@@ -37,6 +37,7 @@ pub mod observing_conditions;
 pub mod rotator;
 pub mod safety_monitor;
 pub mod session;
+pub mod slot;
 pub mod supervisor;
 pub mod switch;
 pub mod trains;
@@ -54,6 +55,7 @@ pub use observing_conditions::ObservingConditionsEntry;
 pub use rotator::RotatorEntry;
 pub use safety_monitor::SafetyMonitorEntry;
 pub use session::DeviceSession;
+pub use slot::{DeviceSlot, SlotGuard};
 pub use supervisor::ReconnectSupervisor;
 pub use switch::SwitchEntry;
 

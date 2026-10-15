@@ -29,7 +29,7 @@ use crate::world::RpWorld;
 
 // --- Given steps: equipment compositions ----------------------------
 
-async fn add_stub_guider(world: &mut RpWorld, settle_delay: Duration) {
+pub async fn add_stub_guider(world: &mut RpWorld, settle_delay: Duration) {
     let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
         settle_delay,
         ..CannedGuiding::default()

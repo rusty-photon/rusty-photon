@@ -100,6 +100,10 @@ struct MockCamera {
     /// camera to Idle with no image). Without either state knob the
     /// mock reports `Exposing`, a camera mid-exposure.
     report_idle_state: bool,
+    /// Once set, `camera_state` reports `Idle`: a camera whose exposure
+    /// ended after a test began, such as one finishing the frame its
+    /// driver would not abort.
+    idle_now: std::sync::atomic::AtomicBool,
     /// When set, `image_ready` reports `false` for the first N calls
     /// and errors thereafter — drives the aborted-idle re-check's
     /// read-error arm.
@@ -259,7 +263,8 @@ impl ascom_alpaca::api::Camera for MockCamera {
         use ascom_alpaca::api::camera::CameraState;
         Ok(if self.report_error_state {
             CameraState::Error
-        } else if self.report_idle_state {
+        } else if self.report_idle_state || self.idle_now.load(std::sync::atomic::Ordering::SeqCst)
+        {
             CameraState::Idle
         } else {
             CameraState::Exposing
@@ -1344,6 +1349,7 @@ fn filter_wheel_registry(
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(fw),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         cover_calibrators: vec![],
         focusers: vec![],
@@ -1425,6 +1431,7 @@ fn focuser_registry_with_backlash(
                 foc,
                 crate::equipment::FocuserInvariants::default(),
             ),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         mount: None,
         ..Default::default()
@@ -1524,6 +1531,7 @@ async fn test_capture_start_exposure_fails() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1548,6 +1556,7 @@ async fn test_capture_image_ready_error() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1572,6 +1581,7 @@ async fn test_capture_image_array_fails() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1606,6 +1616,7 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1639,6 +1650,7 @@ async fn test_capture_times_out_when_camera_never_ready() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1670,6 +1682,7 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1704,6 +1717,7 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -1823,6 +1837,7 @@ fn set_filter_to(filter_name: &str) -> SetFilterParams {
         filter_wheel_id: Some("fw".into()),
         train_id: None,
         filter_name: filter_name.into(),
+        lease_id: None,
     }
 }
 
@@ -2309,6 +2324,7 @@ async fn test_capture_write_fits_fails() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2362,6 +2378,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2427,6 +2444,7 @@ fn plain_capture_params() -> CaptureParams {
         camera_id: Some("cam".into()),
         train_id: None,
         duration: Duration::from_millis(100),
+        lease_id: None,
     }
 }
 
@@ -2520,6 +2538,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2717,6 +2736,7 @@ async fn capture_addressed_by_train_resolves_the_terminal_camera() {
                 camera_id: None,
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2741,6 +2761,7 @@ async fn capture_rejects_both_camera_and_train_addressing() {
                 camera_id: Some("cam".into()),
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2764,6 +2785,7 @@ async fn capture_with_neither_address_names_both_alternatives() {
                 camera_id: None,
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2784,6 +2806,7 @@ async fn capture_through_an_unknown_train_is_rejected() {
                 camera_id: None,
                 train_id: Some("nope".into()),
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -2802,6 +2825,7 @@ async fn set_filter_addressed_by_train_resolves_the_sole_wheel() {
                 filter_wheel_id: None,
                 train_id: Some("main".into()),
                 filter_name: "Lum".into(),
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -2830,6 +2854,7 @@ async fn set_filter_rejects_both_wheel_and_train_addressing() {
                 filter_wheel_id: Some("fw".into()),
                 train_id: Some("main".into()),
                 filter_name: "Lum".into(),
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -2849,6 +2874,7 @@ async fn set_filter_with_neither_address_names_both_alternatives() {
                 filter_wheel_id: None,
                 train_id: None,
                 filter_name: "Lum".into(),
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -2869,6 +2895,7 @@ async fn set_filter_through_a_wheelless_train_names_the_train() {
                 filter_wheel_id: None,
                 train_id: Some("main".into()),
                 filter_name: "Lum".into(),
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -2886,6 +2913,7 @@ async fn set_filter_through_a_train_with_several_wheels_is_ambiguous() {
                 filter_wheel_id: None,
                 train_id: Some("two-wheels".into()),
                 filter_name: "Lum".into(),
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -3037,6 +3065,7 @@ async fn capture_into(
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -3680,6 +3709,7 @@ fn optics_registry(
             Arc::new(MockFocuser::default()),
             crate::equipment::FocuserInvariants { step_size_um },
         ),
+        slot: crate::equipment::DeviceSlot::default(),
     });
     registry
         .filter_wheels
@@ -3707,6 +3737,7 @@ fn optics_registry(
             session: crate::equipment::DeviceSession::connected(Arc::new(
                 MockFilterWheel::default(),
             )),
+            slot: crate::equipment::DeviceSlot::default(),
         });
     registry
 }
@@ -4359,6 +4390,7 @@ async fn test_set_filter_filter_not_found() {
                 filter_wheel_id: Some("fw".into()),
                 train_id: None,
                 filter_name: "Ultraviolet".into(), // not in mock's filter list
+                lease_id: None,
             },
             &Cancel::never(),
         )
@@ -4489,6 +4521,7 @@ async fn test_move_focuser_success() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 4321,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4509,6 +4542,7 @@ async fn test_move_focuser_not_found() {
             MoveFocuserParams {
                 focuser_id: "missing".into(),
                 position: 100,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4526,6 +4560,7 @@ async fn test_move_focuser_below_min_position() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 500,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4543,6 +4578,7 @@ async fn test_move_focuser_above_max_position() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 9500,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4563,6 +4599,7 @@ async fn test_move_focuser_command_fails() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 1000,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4583,6 +4620,7 @@ async fn test_move_focuser_is_moving_poll_fails() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 1000,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4603,6 +4641,7 @@ async fn test_move_focuser_position_read_fails() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 1000,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4629,6 +4668,7 @@ async fn test_move_focuser_timeout() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 1000,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4665,6 +4705,7 @@ async fn test_move_focuser_not_connected() {
                 auth: None,
             },
             session: crate::equipment::DeviceSession::disconnected(),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         mount: None,
         ..Default::default()
@@ -4675,6 +4716,7 @@ async fn test_move_focuser_not_connected() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 1000,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -4773,6 +4815,7 @@ async fn test_get_focuser_position_not_connected() {
                 auth: None,
             },
             session: crate::equipment::DeviceSession::disconnected(),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         mount: None,
         ..Default::default()
@@ -7248,6 +7291,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 Arc::new(focuser),
                 crate::equipment::FocuserInvariants::default(),
             ),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         mount: None,
         ..Default::default()
@@ -7632,6 +7676,7 @@ fn rotator_registry(
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(rot),
+            slot: crate::equipment::DeviceSlot::default(),
         }],
         ..Default::default()
     }
@@ -8561,6 +8606,40 @@ async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
 }
 
 #[tokio::test]
+async fn refocus_train_refuses_a_leased_step_before_announcing_the_refocus() {
+    // A guiding-coupled refocus, with guiding live, over a focuser and
+    // camera a train lease holds: refused before `refocus_started` and
+    // before the guiding handshake, which has no expectations here, so
+    // any call to the guider fails the test.
+    const STARTING_POSITION: i32 = 11_000;
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(MockGuiderClient::new());
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+    let plan = crate::train_lease::LeasePlan {
+        train_id: "other".into(),
+        guiding: false,
+        camera_id: "cam".into(),
+        focuser_id: "foc".into(),
+        filter_wheel_ids: vec![],
+        held_focuser_ids: vec![],
+        held_rotator_ids: vec![],
+        drained_camera_ids: vec![],
+    };
+    let acquiring = handler.leases.reserve("held", plan).unwrap();
+    acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .await;
+
+    assert_tool_error(result, "lease 'held' reserves its camera or focuser");
+    assert_no_more_events(&mut rx).await;
+    drop(acquiring);
+}
+
+#[tokio::test]
 async fn refocus_train_success_payload_over_the_fixture_registry() {
     const STARTING_POSITION: i32 = 11_000;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -8940,6 +9019,7 @@ async fn do_capture_emits_progress_during_readout_wait() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             Some(&emitter),
             &Cancel::never(),
@@ -9015,6 +9095,7 @@ async fn do_capture_emits_exposing_phase_before_readout() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             Some(&emitter),
             &Cancel::never(),
@@ -9892,6 +9973,7 @@ async fn move_focuser_tool_reports_backlash_compensated() {
             MoveFocuserParams {
                 focuser_id: "foc".into(),
                 position: 900,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -9970,6 +10052,7 @@ async fn capture_with_binning(
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10036,6 +10119,7 @@ async fn capture_records_the_binning_the_camera_reports() {
                 binning: rp_vocabulary::Binning { x: 2, y: 2 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10068,6 +10152,7 @@ async fn a_binning_above_the_cameras_maximum_is_rejected_before_any_write() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10107,6 +10192,7 @@ async fn an_asymmetric_binning_is_rejected_on_a_camera_that_cannot_do_it() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10156,6 +10242,7 @@ async fn an_unreadable_binning_envelope_leaves_the_driver_as_the_backstop() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10192,6 +10279,7 @@ async fn a_sensor_size_missing_from_the_cache_is_re_read_rather_than_skipped() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10227,6 +10315,7 @@ async fn a_sensor_size_neither_cached_nor_readable_fails_the_capture() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10258,6 +10347,7 @@ async fn a_camera_that_lands_on_a_different_binning_fails_the_capture() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10292,6 +10382,7 @@ async fn only_the_axis_whose_limit_failed_to_read_loses_its_check() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10320,6 +10411,7 @@ async fn a_camera_that_refuses_the_binning_write_fails_the_capture_without_event
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10355,6 +10447,7 @@ async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &cancel,
@@ -10404,6 +10497,7 @@ async fn a_capture_cancelled_before_the_geometry_writes_never_touches_the_camera
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
+                lease_id: None,
             },
             None,
             &cancel,
@@ -10466,6 +10560,7 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10510,6 +10605,7 @@ async fn capture_failure_emits_exposure_failed() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10817,6 +10913,7 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
                         camera_id: Some("cam".into()),
                         train_id: None,
                         duration: Duration::from_millis(100),
+                        lease_id: None,
                     },
                     None,
                     &Cancel::never(),
@@ -10854,6 +10951,7 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
+                lease_id: None,
             },
             None,
             &Cancel::never(),
@@ -10895,6 +10993,7 @@ fn capture_request(camera_id: &str, binning: u8) -> CaptureRequest<'_> {
         },
         target: None,
         frame_type: None,
+        lease_id: None,
     }
 }
 
@@ -12098,6 +12197,7 @@ async fn do_capture_cancelled_aborts_the_exposure_within_one_tick() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                lease_id: None,
             },
             None,
             &cancel,
@@ -12642,4 +12742,359 @@ async fn cooling_tools_answer_with_the_cameras_they_drive() {
         None,
         "the rung clears at once"
     );
+}
+
+// -----------------------------------------------------------------------
+// Train lease (rp.md § Train Lease) and the cancelled-capture wind-down
+// (rp.md § Capture Tool Details, Concurrency)
+// -----------------------------------------------------------------------
+
+/// One train over the fixture focuser "foc" and camera "cam", with the
+/// given purpose.
+fn lease_trains(purpose: &str) -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://localhost:1"}},
+        "optical_trains": [{"id": "main", "purpose": purpose, "devices": ["foc", "cam"]}]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+/// A handler over `cam` and a mock focuser, in one train of `purpose`.
+fn lease_handler(cam: Arc<dyn ascom_alpaca::api::Camera>, purpose: &str) -> McpHandler {
+    let mut registry = camera_registry(cam);
+    registry.focusers = focuser_registry(Arc::new(MockFocuser::default()), None, None).focusers;
+    test_handler(registry).with_trains(lease_trains(purpose))
+}
+
+async fn acquire_lease(handler: &McpHandler, lease_id: &str) -> CallToolResult {
+    handler
+        .acquire_train_lease_inner(
+            super::built_in::train_lease::AcquireTrainLeaseParams {
+                train_id: "main".into(),
+                lease_id: lease_id.into(),
+                max_duration: None,
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn release_lease(handler: &McpHandler, lease_id: &str) -> serde_json::Value {
+    ok_text(
+        handler
+            .release_train_lease(Parameters(
+                super::built_in::train_lease::ReleaseTrainLeaseParams {
+                    lease_id: lease_id.into(),
+                },
+            ))
+            .await
+            .unwrap(),
+    )
+}
+
+fn lease_capture(lease_id: Option<&str>) -> CaptureParams {
+    CaptureParams {
+        binning: None,
+        target: None,
+        frame_type: None,
+        camera_id: Some("cam".into()),
+        train_id: None,
+        duration: Duration::from_millis(100),
+        lease_id: lease_id.map(str::to_string),
+    }
+}
+
+#[tokio::test]
+async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
+
+    let json = ok_text(acquire_lease(&handler, "a").await);
+    assert_eq!(json["lease_id"], "a");
+    assert_eq!(json["train_id"], "main");
+    assert_eq!(json["focuser_id"], "foc");
+    assert_eq!(json["cameras"], serde_json::json!(["cam"]));
+    assert_eq!(json["facade_lease"], false);
+    chrono::DateTime::parse_from_rfc3339(json["ends_by"].as_str().unwrap()).unwrap();
+
+    let slew = tokio::time::timeout(
+        Duration::from_millis(100),
+        handler.motion_gate.exclusive("slew"),
+    );
+    assert!(slew.await.is_err(), "a slew ran under a granted lease");
+
+    assert_eq!(release_lease(&handler, "a").await["released"], true);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        handler.motion_gate.exclusive("slew"),
+    )
+    .await
+    .expect("the lease kept the gate after its release");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_capture_under_the_lease_runs_and_one_naming_none_waits_for_its_end() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
+    ok_text(acquire_lease(&handler, "a").await);
+
+    let under = handler
+        .capture_inner(lease_capture(Some("a")), None, &Cancel::never())
+        .await
+        .unwrap();
+    ok_text(under);
+
+    let ordinary = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .capture_inner(lease_capture(None), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !ordinary.is_finished(),
+        "a capture naming no lease ran through a leased camera"
+    );
+
+    release_lease(&handler, "a").await;
+    ok_text(ordinary.await.unwrap().unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_move_naming_no_lease_waits_for_the_lease_on_its_focuser() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
+    ok_text(acquire_lease(&handler, "a").await);
+    let move_to = |lease_id: Option<&str>| MoveFocuserParams {
+        focuser_id: "foc".into(),
+        position: 1000,
+        lease_id: lease_id.map(str::to_string),
+    };
+
+    ok_text(
+        handler
+            .move_focuser_inner(move_to(Some("a")), None, &Cancel::never())
+            .await
+            .unwrap(),
+    );
+
+    let ordinary = {
+        let handler = handler.clone();
+        let params = move_to(None);
+        tokio::spawn(async move {
+            handler
+                .move_focuser_inner(params, None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !ordinary.is_finished(),
+        "a move naming no lease ran through a leased focuser"
+    );
+
+    release_lease(&handler, "a").await;
+    ok_text(ordinary.await.unwrap().unwrap());
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_needs_the_camera_facade_and_keeps_nothing_when_refused() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+
+    assert_tool_error(
+        Ok(acquire_lease(&handler, "a").await),
+        "camera 'cam' of guiding train 'main' does not offer the sweep lease \
+         (rustyphoton:sweep-lease-acquire): it is not the PHD2 camera facade, \
+         or its phd2-guider predates the lease",
+    );
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+        .await
+        .expect("a refused acquire kept the camera's slot");
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_takes_the_facade_lease_and_releases_it_with_the_lease() {
+    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
+    let handler = lease_handler(facade.clone(), "guiding");
+
+    let json = ok_text(acquire_lease(&handler, "a").await);
+    assert_eq!(json["facade_lease"], true);
+    let acquires = facade.calls_of(crate::train_lease::facade::ACQUIRE);
+    let token = acquires[0]["token"].as_str().unwrap().to_string();
+    assert!(
+        token.len() == 32 && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "{token:?}"
+    );
+    assert_eq!(acquires[0]["ttl_s"], 60);
+
+    release_lease(&handler, "a").await;
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+        .await
+        .expect("the released lease kept the camera");
+    let releases = facade.calls_of(crate::train_lease::facade::RELEASE);
+    assert_eq!(releases.len(), 1);
+    assert_eq!(releases[0]["token"], token.as_str());
+}
+
+#[tokio::test]
+async fn a_facade_refusal_is_relayed_and_its_token_released() {
+    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
+    *facade.refuse_acquire.lock().unwrap() =
+        Some("PHD2 is Guiding; the camera facade captures only while PHD2 is Stopped".into());
+    let handler = lease_handler(facade.clone(), "guiding");
+
+    let result = acquire_lease(&handler, "a").await;
+    assert_tool_error(
+        Ok(result),
+        "the camera facade 'cam' refused the sweep lease",
+    );
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+        .await
+        .expect("a refused acquire kept the camera's slot");
+    // The token was named before the acquire, so it is released even
+    // though the facade said no: an answer lost in transit is never a
+    // lease left held.
+    let token = facade.calls_of(crate::train_lease::facade::ACQUIRE)[0]["token"].clone();
+    assert_eq!(
+        facade.calls_of(crate::train_lease::facade::RELEASE),
+        [serde_json::json!({ "token": token })]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_capture_through_a_guiding_trains_camera_waits_for_motion() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+    let exclusive = handler.motion_gate.exclusive("test").await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .capture_inner(lease_capture(None), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "a guiding-train capture ran under a mount motion"
+    );
+
+    drop(exclusive);
+    ok_text(capture.await.unwrap().unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_capture_gives_the_gate_back_at_once_and_its_slot_once_the_camera_idles() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(cam.clone())).with_trains(cam_trains(1000.0));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    let err = handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+    assert_eq!(err, "cancelled: client disconnected");
+    assert_eq!(calls(&cam.abort_exposure_calls), 1);
+
+    tokio::time::timeout(
+        Duration::from_millis(1),
+        handler.motion_gate.exclusive("slew"),
+    )
+    .await
+    .expect("a cancelled capture kept the gate");
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    let early = tokio::time::timeout(Duration::from_secs(1), entry.capture_slot());
+    assert!(
+        early.await.is_err(),
+        "the slot went back while the camera was still exposing"
+    );
+
+    cam.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1), entry.capture_slot())
+        .await
+        .expect("the slot stayed held after the camera went idle");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_capture_whose_camera_never_idles_gives_its_slot_back_at_the_backstop() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(cam.clone()));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+
+    // The backstop is the exposure's 100 ms plus 120 s from its start,
+    // about CANCEL_AT before now.
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    let before = tokio::time::timeout(Duration::from_secs(117), entry.capture_slot());
+    assert!(
+        before.await.is_err(),
+        "the slot went back before the backstop"
+    );
+    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+        .await
+        .expect("the slot stayed held past the backstop");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_move_of_a_reserved_focuser_waits_from_the_reservation_on() {
+    // The acquire reserves the focuser before it waits on anything: a
+    // move naming no lease waits even while the acquire is still held up
+    // at the camera, with the focuser's own slot free.
+    let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
+    let camera_held = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+    let acquire = {
+        let handler = handler.clone();
+        tokio::spawn(async move { acquire_lease(&handler, "a").await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let ordinary = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .move_focuser_inner(
+                    MoveFocuserParams {
+                        focuser_id: "foc".into(),
+                        position: 1000,
+                        lease_id: None,
+                    },
+                    None,
+                    &Cancel::never(),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !ordinary.is_finished(),
+        "a move ran through a focuser an acquire had reserved"
+    );
+
+    drop(camera_held);
+    ok_text(acquire.await.unwrap());
+    release_lease(&handler, "a").await;
+    ok_text(ordinary.await.unwrap().unwrap());
 }

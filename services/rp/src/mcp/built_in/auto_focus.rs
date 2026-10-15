@@ -280,6 +280,9 @@ impl McpHandler {
             Ok(planned) => planned,
             Err(e) => return Ok(*e),
         };
+        if let Err(e) = self.refuse_leased_steps(&planned) {
+            return Ok(tool_error!("refocus_train: {}", e));
+        }
 
         let metric_client = match self.refocus_metric_client(&planned).await {
             Ok(client) => client,
@@ -458,6 +461,33 @@ impl McpHandler {
             }
         }
         Ok(planned)
+    }
+
+    /// A step a train lease reserves is refused when it starts (rp.md
+    /// § Train Lease, "rp's own sweeps"). Checked here as well, before
+    /// `refocus_started` and the guiding pause, so a refocus a lease
+    /// would refuse neither announces itself nor interrupts guiding on
+    /// its way to failing. Each step's own sweep still enters the table
+    /// when it runs.
+    fn refuse_leased_steps(&self, planned: &[PlannedStep]) -> Result<(), String> {
+        for step in planned {
+            let camera_id = match step {
+                PlannedStep::Capture { camera_id, .. } => camera_id.as_str(),
+                PlannedStep::Metric { train_id, .. } => self
+                    .trains
+                    .train(train_id)
+                    .and_then(crate::equipment::trains::Train::camera_id)
+                    .unwrap_or_default(),
+            };
+            if let Some((lease_id, _)) = self.leases.reserving(&[camera_id, step.focuser_id()]) {
+                return Err(format!(
+                    "the step focusing '{}' in train '{}' is refused: lease '{lease_id}' reserves its camera or focuser",
+                    step.focuser_id(),
+                    step.train_id()
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Guiding handshake decision (rp.md §`refocus_train` Contract):
@@ -679,6 +709,15 @@ impl McpHandler {
         progress_sink: Option<ProgressSink>,
         cancel: Cancel,
     ) -> Result<imaging::tools::auto_focus::AutoFocusResult, String> {
+        // The sweep enters the reservation table for its length, put-back
+        // included, and is refused at once when a train lease holds its
+        // camera or focuser (rp.md § Train Lease, "rp's own sweeps"). It
+        // takes its slots per call and holds none across calls.
+        let _sweep = self.leases.enter_sweep(
+            format!("the auto_focus sweep of focuser '{focuser_id}' through camera '{camera_id}'"),
+            camera_id,
+            focuser_id,
+        )?;
         // Resolve devices early — the standard "<kind> not found" /
         // "<kind> not connected" errors, camera before focuser to
         // match input order in the contract. The camera is resolved
@@ -1020,6 +1059,27 @@ impl McpHandler {
     /// HFD of `frames_per_step` fresh guide frames. Corrections stay
     /// active for the whole sweep — pausing them would stop the
     /// `GuideStep` stream this sweep reads.
+    /// The guide-train sweep enters the reservation table for its
+    /// length, put-back included, and is refused at once when a train
+    /// lease holds its camera or focuser (rp.md § Train Lease, "rp's own
+    /// sweeps").
+    fn enter_guide_sweep(
+        &self,
+        train_id: &str,
+        focuser_id: &str,
+    ) -> Result<crate::train_lease::SweepGuard, String> {
+        let camera_id = self
+            .trains
+            .train(train_id)
+            .and_then(crate::equipment::trains::Train::camera_id)
+            .unwrap_or_default();
+        self.leases.enter_sweep(
+            format!("the auto_focus sweep of focuser '{focuser_id}' in guiding train '{train_id}'"),
+            camera_id,
+            focuser_id,
+        )
+    }
+
     async fn run_guide_af_sweep(
         &self,
         train_id: &str,
@@ -1029,6 +1089,7 @@ impl McpHandler {
         progress_sink: Option<ProgressSink>,
         cancel: Cancel,
     ) -> Result<GuideAfOutcome, String> {
+        let _sweep = self.enter_guide_sweep(train_id, focuser_id)?;
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
@@ -1587,6 +1648,7 @@ impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
                     binning: self.binning,
                     target: None,
                     frame_type: None,
+                    lease_id: None,
                 },
                 self.emitter(),
                 &self.cancel,
