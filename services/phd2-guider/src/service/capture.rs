@@ -777,10 +777,9 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
              read on connect; reconnect the camera"
         ));
     }
-    let pixels = unsigned_16(image).ok_or_else(|| {
+    let pixels = unsigned_16(image).map_err(|why| {
         format!(
-            "PHD2's frame {} holds a value outside 0 to 65535, so it is not the unsigned \
-             16-bit frame PHD2 writes",
+            "PHD2's frame {} {why}, so it is not the unsigned 16-bit frame PHD2 writes",
             path.display()
         )
     })?;
@@ -791,34 +790,61 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
     })
 }
 
-/// A frame's values as unsigned 16-bit, or `None` when one falls outside
-/// 0 to 65535. PHD2 writes `BITPIX = 16` with `BZERO = 32768`, which maps
-/// each stored value to its unsigned one with no arithmetic and no wider
-/// copy of the frame. Any other encoding is scaled first.
-fn unsigned_16(image: rp_fits::reader::FitsImage) -> Option<Vec<u16>> {
+/// A frame's values as unsigned 16-bit. PHD2 writes `BITPIX = 16` with
+/// `BZERO = 32768`, which maps each stored value to its unsigned one with
+/// no arithmetic and no wider copy of the frame. A frame of integers in
+/// another encoding is scaled in integer arithmetic, so a value is never
+/// truncated or clamped: it is a whole number from 0 to 65535, or the
+/// frame is refused.
+///
+/// # Errors
+///
+/// Says what is wrong: floating-point values, a `BSCALE` or `BZERO` that
+/// is not a whole number, or a value outside 0 to 65535.
+fn unsigned_16(image: rp_fits::reader::FitsImage) -> Result<Vec<u16>, String> {
+    use rp_fits::reader::Pixels;
     let rp_fits::reader::FitsImage {
         data,
         bscale,
         bzero,
         ..
     } = image;
-    match data {
-        rp_fits::reader::Pixels::I16(stored)
-            if bscale.total_cmp(&1.0).is_eq() && bzero.total_cmp(&32768.0).is_eq() =>
-        {
-            Some(
-                stored
-                    .into_iter()
-                    .map(|value| value.cast_unsigned() ^ 0x8000)
-                    .collect(),
-            )
+    let (Some(scale), Some(zero)) = (whole(bscale), whole(bzero)) else {
+        return Err(format!(
+            "scales its values by BSCALE {bscale} and BZERO {bzero}, which are not both whole \
+             numbers"
+        ));
+    };
+    let value = |stored: i64| {
+        stored
+            .checked_mul(scale)
+            .and_then(|scaled| scaled.checked_add(zero))
+            .and_then(|value| u16::try_from(value).ok())
+    };
+    let values: Option<Vec<u16>> = match data {
+        Pixels::I16(stored) if (scale, zero) == (1, 32768) => {
+            return Ok(stored
+                .into_iter()
+                .map(|value| value.cast_unsigned() ^ 0x8000)
+                .collect());
         }
-        other => other
-            .scaled_to_i32(bscale, bzero)
-            .into_iter()
-            .map(|value| u16::try_from(value).ok())
-            .collect(),
-    }
+        Pixels::U8(stored) => stored.into_iter().map(|v| value(i64::from(v))).collect(),
+        Pixels::I16(stored) => stored.into_iter().map(|v| value(i64::from(v))).collect(),
+        Pixels::I32(stored) => stored.into_iter().map(|v| value(i64::from(v))).collect(),
+        Pixels::I64(stored) => stored.into_iter().map(value).collect(),
+        Pixels::F32(_) | Pixels::F64(_) => {
+            return Err("holds floating-point values (BITPIX -32 or -64)".to_string());
+        }
+    };
+    values.ok_or_else(|| "holds a value outside 0 to 65535".to_string())
+}
+
+/// `value` as an integer, when it is a whole number an `i64` holds. No
+/// `TryFrom<f64>` exists. `f64`'s `Display` writes a whole number as its
+/// exact digits, with no exponent and no fraction, while a fraction, NaN
+/// and the infinities write text that does not parse as one.
+fn whole(value: f64) -> Option<i64> {
+    value.to_string().parse().ok()
 }
 
 #[cfg(unix)]
@@ -1362,37 +1388,49 @@ mod tests {
         assert_eq!(frame.pixels[47], 47 * 1365);
     }
 
-    /// A signed 16-bit 2 x 1 frame with no `BZERO`, holding `values`.
-    fn write_signed_pair(path: &Path, values: [i16; 2]) {
+    /// A 2 x 1 frame: `cards` (its `BITPIX` and any scaling) between the
+    /// size cards and `END`, then `data`, the two values big-endian.
+    fn write_pair(path: &Path, cards: &[&str], data: &[u8]) {
         let header = [
             "SIMPLE  =                    T",
-            "BITPIX  =                   16",
             "NAXIS   =                    2",
             "NAXIS1  =                    2",
             "NAXIS2  =                    1",
-            "END",
         ]
         .iter()
+        .chain(cards)
+        .chain(&["END"])
         .fold(String::new(), |mut header, card| {
             use std::fmt::Write as _;
             write!(header, "{card:<80}").unwrap();
             header
         });
         let mut bytes = format!("{header:<2880}").into_bytes();
-        let mut data = Vec::new();
-        for value in values {
-            data.extend_from_slice(&value.to_be_bytes());
-        }
+        let mut data = data.to_vec();
         data.resize(2880, 0);
         bytes.extend_from_slice(&data);
         std::fs::write(path, bytes).unwrap();
+    }
+
+    const SIGNED_16: &str = "BITPIX  =                   16";
+
+    /// A signed 16-bit 2 x 1 frame holding `values`, with `scaling` cards.
+    fn write_signed_pair(path: &Path, scaling: &[&str], values: [i16; 2]) {
+        let cards: Vec<&str> = std::iter::once(SIGNED_16)
+            .chain(scaling.iter().copied())
+            .collect();
+        write_pair(
+            path,
+            &cards,
+            &[values[0].to_be_bytes(), values[1].to_be_bytes()].concat(),
+        );
     }
 
     #[test]
     fn a_frame_holding_a_value_below_zero_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f.fits");
-        write_signed_pair(&path, [-1, 7]);
+        write_signed_pair(&path, &[], [-1, 7]);
         let err = read_frame(&path, 2, 1).unwrap_err();
         assert!(err.contains("outside 0 to 65535"), "{err}");
     }
@@ -1401,8 +1439,40 @@ mod tests {
     fn a_frame_in_another_encoding_is_scaled_to_its_values() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f.fits");
-        write_signed_pair(&path, [7, 32767]);
+        write_signed_pair(&path, &[], [7, 32767]);
         assert_eq!(read_frame(&path, 2, 1).unwrap().pixels, [7, 32767]);
+        write_signed_pair(
+            &path,
+            &[
+                "BSCALE  =                    2",
+                "BZERO   =                   10",
+            ],
+            [7, 100],
+        );
+        assert_eq!(read_frame(&path, 2, 1).unwrap().pixels, [24, 210]);
+    }
+
+    #[test]
+    fn a_frame_scaled_by_a_fraction_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.fits");
+        write_signed_pair(&path, &["BSCALE  =                  0.5"], [14, 15]);
+        let err = read_frame(&path, 2, 1).unwrap_err();
+        assert!(err.contains("BSCALE 0.5"), "{err}");
+        assert!(err.contains("not both whole numbers"), "{err}");
+    }
+
+    #[test]
+    fn a_floating_point_frame_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.fits");
+        write_pair(
+            &path,
+            &["BITPIX  =                  -32"],
+            &[7.0_f32.to_be_bytes(), 8.0_f32.to_be_bytes()].concat(),
+        );
+        let err = read_frame(&path, 2, 1).unwrap_err();
+        assert!(err.contains("floating-point values"), "{err}");
     }
 
     #[test]

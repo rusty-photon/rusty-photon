@@ -1074,10 +1074,14 @@ mod tests {
     use super::*;
 
     use crate::config::{Phd2Config, SettleParams};
+    use crate::io::{ConnectionFactory, ConnectionPair, LineReader, MessageWriter};
     use crate::service::guider::GuiderOps;
 
     fn test_camera(image_dir: &std::path::Path) -> Phd2Camera {
-        let client = Arc::new(Phd2Client::new(Phd2Config::default()));
+        camera_on(Arc::new(Phd2Client::new(Phd2Config::default())), image_dir)
+    }
+
+    fn camera_on(client: Arc<Phd2Client>, image_dir: &std::path::Path) -> Phd2Camera {
         let ops = Arc::new(GuiderOps::new(
             Arc::clone(&client),
             SettleParams::default(),
@@ -1104,12 +1108,16 @@ mod tests {
     /// leaves it.
     fn connected_camera(image_dir: &std::path::Path) -> Phd2Camera {
         let camera = test_camera(image_dir);
+        open_session(&camera);
+        camera
+    }
+
+    fn open_session(camera: &Phd2Camera) {
         camera.begin_session(Geometry {
             width: 8,
             height: 6,
             sensor_name: "Mock Camera".to_string(),
         });
-        camera
     }
 
     fn set_exposure(camera: &Phd2Camera, exposure: Exposure) {
@@ -1610,6 +1618,102 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{err}");
+    }
+
+    /// PHD2's side of a connection, read from a channel the test writes.
+    struct ChannelReader(tokio::sync::mpsc::UnboundedReceiver<String>);
+
+    #[async_trait::async_trait]
+    impl LineReader for ChannelReader {
+        async fn read_line(&mut self) -> crate::Result<Option<String>> {
+            Ok(self.0.recv().await)
+        }
+    }
+
+    /// The client's requests, passed to a channel the test reads.
+    struct ChannelWriter(tokio::sync::mpsc::UnboundedSender<String>);
+
+    #[async_trait::async_trait]
+    impl MessageWriter for ChannelWriter {
+        async fn write_message(&mut self, message: &str) -> crate::Result<()> {
+            self.0.send(message.to_string()).unwrap();
+            Ok(())
+        }
+
+        async fn shutdown(&mut self) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct OneConnection(std::sync::Mutex<Option<ConnectionPair>>);
+
+    #[async_trait::async_trait]
+    impl ConnectionFactory for OneConnection {
+        async fn connect(&self, _addr: &str, _timeout: Duration) -> crate::Result<ConnectionPair> {
+            Ok(self.0.lock().unwrap().take().unwrap())
+        }
+
+        async fn can_connect(&self, _addr: &str) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_disconnect_waits_for_a_running_acquire_and_ends_its_lease() {
+        let (phd2, reader) = tokio::sync::mpsc::unbounded_channel();
+        let (writer, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let factory = OneConnection(std::sync::Mutex::new(Some(ConnectionPair {
+            reader: Box::new(ChannelReader(reader)),
+            writer: Box::new(ChannelWriter(writer)),
+        })));
+        let client = Arc::new(Phd2Client::with_connection_factory(
+            Phd2Config::default(),
+            Arc::new(factory),
+        ));
+        client.connect().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let camera = camera_on(client, dir.path());
+        open_session(&camera);
+
+        let acquire = tokio::spawn({
+            let camera = camera.clone();
+            async move {
+                camera
+                    .action(lease::ACQUIRE.to_string(), TOKEN_A.to_string())
+                    .await
+            }
+        });
+        let request: serde_json::Value =
+            serde_json::from_str(&requests.recv().await.unwrap()).unwrap();
+        assert_eq!(request["method"], "get_app_state");
+        let disconnect = tokio::spawn({
+            let camera = camera.clone();
+            async move { camera.set_connected(false).await }
+        });
+        // Paused time moves only once every task is idle, so by the time
+        // this returns the disconnect has run as far as it can.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !disconnect.is_finished(),
+            "the disconnect did not wait for the acquire"
+        );
+
+        phd2.send(format!(
+            r#"{{"jsonrpc":"2.0","result":"Stopped","id":{}}}"#,
+            request["id"]
+        ))
+        .unwrap();
+        acquire.await.unwrap().unwrap();
+        disconnect.await.unwrap().unwrap();
+        let err = camera
+            .action(lease::RENEW.to_string(), TOKEN_A.to_string())
+            .await
+            .unwrap_err();
+        assert!(
+            err.message
+                .contains("its lease was ended when the camera was disconnected"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

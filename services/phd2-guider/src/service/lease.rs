@@ -86,8 +86,11 @@ struct AcquireParameters {
     ttl_s: Option<u64>,
 }
 
+/// A renewal's or a release's parameters. Every field but `token` is
+/// ignored, so a holder can renew or release with its acquire's own
+/// `{"token", "ttl_s"}` object: a clean-up refused over a field it does
+/// not read would leave the lease held until its TTL.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TokenParameters {
     token: String,
 }
@@ -126,7 +129,7 @@ pub fn parse_acquire(parameters: &str) -> Result<AcquireRequest, String> {
 }
 
 /// Parse a renewal's or a release's `Parameters`: `{"token": "<32 hex
-/// digits>"}`.
+/// digits>"}`, any other field ignored.
 ///
 /// # Errors
 ///
@@ -456,14 +459,28 @@ mod tests {
     fn parameters_of_another_shape_name_the_shape_expected() {
         let err = parse_acquire("not json").unwrap_err();
         assert!(err.contains(r#"{"token": "<32 hex digits>""#), "{err}");
-        let err = parse_token(
-            RELEASE,
-            r#"{"token": "0123456789abcdef0123456789abcdef", "ttl_s": 60}"#,
-        )
-        .unwrap_err();
-        assert!(err.contains("unknown field"), "{err}");
         let err = parse_acquire(r#"{"ttl_s": 60}"#).unwrap_err();
         assert!(err.contains("missing field `token`"), "{err}");
+        let err = parse_token(RELEASE, r#"{"ttl_s": 60}"#).unwrap_err();
+        assert!(err.contains("missing field `token`"), "{err}");
+    }
+
+    #[test]
+    fn an_acquire_refuses_a_field_it_does_not_take() {
+        let err = parse_acquire(r#"{"token": "0123456789abcdef0123456789abcdef", "ttl": 60}"#)
+            .unwrap_err();
+        assert!(err.contains("unknown field `ttl`"), "{err}");
+    }
+
+    #[test]
+    fn a_renewal_or_release_reads_only_the_token_of_the_acquires_parameters() {
+        let acquired = r#"{"token": "0123456789abcdef0123456789abcdef", "ttl_s": 60}"#;
+        for action in [RENEW, RELEASE] {
+            assert_eq!(
+                parse_token(action, acquired).unwrap().to_string(),
+                "0123456789abcdef0123456789abcdef"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

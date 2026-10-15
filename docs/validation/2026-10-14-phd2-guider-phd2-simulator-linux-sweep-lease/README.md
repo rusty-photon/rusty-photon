@@ -21,7 +21,7 @@ QHY5III715C is C7d's hardware check.
 
 | | |
 |---|---|
-| Commit | [`83210804`](https://github.com/rusty-photon/rusty-photon/commit/83210804) (branch `feature/device-claims-c7b`, PR #1517). The commits after it on the branch change `mock_phd2`, a test binary, and the wording and sharing of the facade's refusals; none changes what the lease does |
+| Commit | [`83210804`](https://github.com/rusty-photon/rusty-photon/commit/83210804) (branch `feature/device-claims-c7b`, PR #1517). The commits after it on the branch change `mock_phd2`, a test binary; the wording and sharing of the facade's refusals; what a renewal or a release reads (only `token`, and the probe sent nothing else); and the decode of a frame in an encoding PHD2 does not write (PHD2 wrote `BITPIX` 16, `BZERO` 32768 throughout). None changes how the facade answers what the probe sent |
 | Host | the field rig (Raspberry Pi 5, Raspberry Pi OS, Debian 13, aarch64) |
 | Build | `cargo run --release -p phd2-guider --bin phd2-guider -- --config <file> serve` on the rig (cargo 1.99.0), no features; no native SDK is involved in the facade. `RUST_LOG=info,phd2_guider=debug`, so `service.log` shows each lease's grant, renewal, release and end |
 | PHD2 | 2.6.14, source-built on the rig, headless under TigerVNC as the operator, equipment profile "Simulator" (PHD2's built-in camera and mount simulator), camera 752 × 580. Started for the run and shut down after it (`set_connected false`, then `shutdown`), as it was found |
@@ -67,6 +67,15 @@ that does not hold and exits 1. It ran to its `done` line
 | `Connected = false` under a lease, then a renewal | the renewal 1035, "ended when the camera was disconnected" |
 | A 10 s lease left alone for 11 s, then a renewal | 1035, "expired at …: no renewal came within its TTL"; `calibration/clear` then 200 |
 | An acquire sent as soon as a 3 s `StartExposure` answered | 1035, naming when the frame ends "at the latest" |
+
+The refusal texts quoted above are those of `83210804`. Later commits on
+the branch reworded some of them without changing when they are given:
+an expired lease's renewal, for one, now says "its lease expired at …,
+with no renewal within its TTL". The probe asserts a key phrase of each
+refusal ("not connected", "already held", "used before", "Looping",
+"guiding stop", "disconnected", "expired", "at the latest"), and each
+still appears in the branch's wording. `probe/probe.jsonl` holds every
+answer in full.
 
 `service.log` shows the same transitions from the service's side: each
 `sweep lease granted`, `renewed`, `release`, and `the sweep lease ended`

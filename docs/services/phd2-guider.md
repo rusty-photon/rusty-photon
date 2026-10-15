@@ -1348,6 +1348,10 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
   from 10 to 300, and 60 when left out. A `Parameters` string that is not
   such an object, a token of any other form, or a `ttl_s` outside the
   range is refused with `InvalidValue` before anything else is looked at.
+  An acquire also refuses a field it does not take. A renewal and a
+  release read only `token` and ignore any other field, so a holder can
+  send its acquire's own parameters: a clean-up refused over a field it
+  does not need would leave the lease held until its TTL.
 - **Acquiring** takes the guiding lock with `try_lock`, as a capture
   does, so it never queues behind a guiding operation. It grants the
   lease only when every check below passes, and each refusal says why:
@@ -1404,7 +1408,11 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
   - `guiding/stop`, which is never refused. It ends the lease as soon as
     it holds the guiding lock, whether or not PHD2 then confirms
     `Stopped`. This is the privileged stop: it breaks a lease without
-    waiting for its TTL;
+    waiting for its TTL. A stop that arrives while an acquire holds the
+    lock waits for it, then ends the lease that acquire granted, so the
+    holder may start a sweep under a lease already ended. It learns this
+    at its next renewal, and until then each frame's `Stopped` check
+    fails a frame taken after guiding restarted;
   - `Connected = false`;
   - shutdown, with the process: the lease lives only in the service's
     memory and is never written to disk. A restart therefore forgets it,
@@ -1437,8 +1445,11 @@ The ASCOM errors are listed under [Errors](#errors).
   16-bit pixels plus eight 2880-byte header blocks. A larger file is
   refused unread. A frame whose `NAXIS1`/`NAXIS2` differ from the size
   read on connect fails with "PHD2's frame size changed; reconnect the
-  camera". A value outside 0 to 65535, which no frame PHD2 writes holds,
-  fails it too. The read and the decode are bounded by `capture_grace`: one
+  camera". A frame PHD2 does not write fails it too: floating-point
+  values, a `BSCALE` or `BZERO` that is not a whole number, or a value
+  outside 0 to 65535. A frame of integers in another encoding is scaled
+  in integer arithmetic, so no value is truncated or clamped. The read
+  and the decode are bounded by `capture_grace`: one
   that takes longer fails the exposure, so a stalled read cannot leave
   the camera downloading for good.
 - **Deleting.** The file is deleted on every exit from the capture:
