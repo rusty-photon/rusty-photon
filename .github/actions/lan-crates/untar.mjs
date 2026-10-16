@@ -35,9 +35,10 @@ function checksumMatches(block) {
 }
 
 // A pax extended header: records of the form "<length> <key>=<value>\n".
-function paxPath(data) {
+// Returns the two this reader uses, `path` and `mtime`, where present.
+function paxRecords(data) {
+  const found = {};
   let at = 0;
-  let found;
   while (at < data.length) {
     const space = data.indexOf(0x20, at);
     if (space === -1) throw new Error('tar: bad pax record');
@@ -47,7 +48,14 @@ function paxPath(data) {
     }
     const record = data.subarray(space + 1, at + length - 1).toString('utf8');
     const equals = record.indexOf('=');
-    if (equals !== -1 && record.slice(0, equals) === 'path') found = record.slice(equals + 1);
+    const key = equals === -1 ? '' : record.slice(0, equals);
+    const value = record.slice(equals + 1);
+    if (key === 'path') found.path = value;
+    if (key === 'mtime') {
+      // Seconds since the epoch, with an optional fraction (POSIX pax).
+      if (!/^\d+(?:\.\d+)?$/.test(value)) throw new Error(`tar: bad pax mtime ${JSON.stringify(value)}`);
+      found.mtime = Number(value);
+    }
     at += length;
   }
   return found;
@@ -55,14 +63,14 @@ function paxPath(data) {
 
 /**
  * The entries of the uncompressed tar archive `archive`: `{ path, type, mode,
- * data }`, where `type` is 'file' or 'directory' and `data` is a view into
- * `archive`. Throws on a damaged header, an archive cut short, or an entry
+ * mtime, data }`, where `type` is 'file' or 'directory', `mtime` is in
+ * seconds since the epoch and `data` is a view into `archive`. Throws on a damaged header, an archive cut short, or an entry
  * that is neither a file nor a directory.
  */
 export function untar(archive) {
   const entries = [];
   let longName;
-  let paxName;
+  let pax = {};
   let at = 0;
   for (;;) {
     if (at + BLOCK > archive.length) throw new Error('tar: archive ends without its end-of-archive blocks');
@@ -81,7 +89,7 @@ export function untar(archive) {
       continue;
     }
     if (type === PAX_NEXT) {
-      paxName = paxPath(data);
+      pax = paxRecords(data);
       continue;
     }
     if (type === PAX_GLOBAL) continue;
@@ -94,14 +102,15 @@ export function untar(archive) {
       const prefix = text(header, 345, 155);
       if (prefix !== '') path = `${prefix}/${path}`;
     }
-    path = paxName ?? longName ?? path;
+    path = pax.path ?? longName ?? path;
+    const mtime = pax.mtime ?? octal(header, 136, 12, 'mtime');
     longName = undefined;
-    paxName = undefined;
+    pax = {};
 
     if (FILE_TYPES.has(type)) {
-      entries.push({ path, type: 'file', mode: octal(header, 100, 8, 'mode'), data });
+      entries.push({ path, type: 'file', mode: octal(header, 100, 8, 'mode'), mtime, data });
     } else if (type === DIRECTORY) {
-      entries.push({ path, type: 'directory', mode: octal(header, 100, 8, 'mode'), data });
+      entries.push({ path, type: 'directory', mode: octal(header, 100, 8, 'mode'), mtime, data });
     } else {
       throw new Error(`tar: ${JSON.stringify(path)} is of type ${JSON.stringify(type)}, which is neither a file nor a directory`);
     }

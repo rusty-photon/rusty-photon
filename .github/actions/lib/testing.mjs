@@ -1,6 +1,7 @@
 // Test fixtures every action's tests share: reading what the helpers print,
-// and a loopback HTTP server to stand in for an API, a store or a download
-// server. Imported only by tests (docs/skills/ci-logic.md §Tests).
+// a loopback HTTP server to stand in for an API, a store or a download
+// server, and environment variables set for one test. Imported only by tests
+// (docs/skills/ci-logic.md §Tests).
 
 import { createServer } from 'node:http';
 
@@ -54,4 +55,24 @@ export async function serve(handler) {
         server.close(resolve);
       }),
   };
+}
+
+/**
+ * Sets the environment variables `vars` (undefined deletes one) for the
+ * length of `fn`, then puts back what was there.
+ */
+export async function withEnv(vars, fn) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const assign = (values) => {
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  assign(vars);
+  try {
+    return await fn();
+  } finally {
+    assign(saved);
+  }
 }

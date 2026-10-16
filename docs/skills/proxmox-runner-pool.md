@@ -273,11 +273,24 @@ Components:
   `.github/actions/lan-crates` reads every crates.io package `Cargo.lock`
   pins from `/cas/<checksum>` (a crate's SHA-256 is its CAS key), checks
   each against `Cargo.lock`, and makes the result a Cargo directory source
-  that replaces crates.io. A crate the cache lacks comes from crates.io and,
-  on push to main, is uploaded with the write credential; bazel-remote
-  refuses an upload whose SHA-256 is not its key. A cache that is down
-  costs the job a download from crates.io, never a failure
+  that replaces crates.io, each file keeping the mtime its `.crate` gives
+  it, as Cargo's own registry does. A crate the cache lacks comes from
+  crates.io and, on push to main, is uploaded with the write credential;
+  bazel-remote refuses an upload whose SHA-256 is not its key. A cache that
+  is down costs the job a download from crates.io, never a failure
   ([ci-shell-to-code.md](../plans/ci-shell-to-code.md) J14).
+
+  It also keeps that job's compiled dependencies:
+  `.github/actions/cargo-cache` restores `target/` (without the
+  workspace's own crates) and `$CARGO_HOME/git` on a pull request, from
+  archives in the CAS that an action-cache entry points to, each checked
+  against its SHA-256 before it is unpacked; a push to main builds cold
+  and saves them, if the job succeeded and its commit is still main's
+  head. The entry's key covers the toolchain, the runner's system packages
+  and the paths Cargo records, so a template rebuild starts a new cache
+  with nothing to bump by hand, and eviction retires the old one. A cache
+  that is missing, down or wrong is a cold build, never a failure
+  ([ci-shell-to-code.md](../plans/ci-shell-to-code.md) J1).
 
 * **Remote Asset API — repository-fetch caching, gated on the
   `RP_LAN_ASSET_API` repo variable.** The same bazel-remote can also serve

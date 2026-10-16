@@ -63,6 +63,27 @@ test('untar takes a path from a pax header, and skips a global one', () => {
   );
 });
 
+test('untar reads the mtime from the header, or from a pax record before it, fraction and all', () => {
+  const pax = Buffer.from(paxRecord('mtime', '1700000000.25'));
+  const entries = untar(
+    tar([
+      { path: 'demo-1.0.0/a', mtime: 1153704088 },
+      { path: 'PaxHeader/b', type: 'x', data: pax },
+      { path: 'demo-1.0.0/b', mtime: 1153704088 },
+      { path: 'demo-1.0.0/c', mtime: 1153704088 },
+    ]),
+  );
+  assert.deepEqual(
+    entries.map((e) => e.mtime),
+    [1153704088, 1700000000.25, 1153704088],
+  );
+});
+
+test('untar refuses a pax mtime that is not a count of seconds', () => {
+  const pax = Buffer.from(paxRecord('mtime', '-1'));
+  assert.throws(() => untar(tar([{ path: 'PaxHeader/a', type: 'x', data: pax }, { path: 'demo-1.0.0/a' }])), /bad pax mtime "-1"/);
+});
+
 test('untar refuses a link, which Cargo never packages', () => {
   for (const type of ['1', '2']) {
     assert.throws(() => untar(tar([{ path: 'demo-1.0.0/link', type }])), /"demo-1\.0\.0\/link" is of type "[12]", which is neither a file nor a directory/);
