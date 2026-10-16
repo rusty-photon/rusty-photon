@@ -89,7 +89,7 @@ first in their columns.
 | --- | ---- | -------- | ----- | ------ |
 | F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#1508) |
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Not started |
-| J1  | Cargo cache on the LAN object store | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Not started |
+| J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | In review (#1534); done when proven on main |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Not started |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
@@ -178,7 +178,7 @@ set; what later items build on:
 
 ## JavaScript items
 
-### J1 — Cargo cache on the LAN object store
+### J1 — Cargo build cache in the LAN bazel-remote
 
 #1505 moved the `stable / clippy` job to the pool, where
 Swatinem/rust-cache cannot help: its cache lives in GitHub, across the
@@ -189,32 +189,41 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   about 110 s of its 2m13s. Installing the toolchain takes about 10 s more,
   over the WAN, because the pool template has no rustup; T1 puts it in the
   template. Downloading the crates is J14's.
-- **Store:** an S3-compatible object store on the operator's NAS, serving
-  anonymous reads of one bucket over plain HTTP and accepting writes
-  signed with AWS Signature Version 4. The owner chose this on 2026-10-13,
-  and the spike below used Garage.
-- **An alternative to weigh first:** the LAN bazel-remote already splits
-  anonymous reads from authenticated writes, and its HTTP CAS is content
-  addressed, so a restore would be checked for free, with no new store,
-  secret or SigV4 code. The catch is the pointer from a Rust version to
-  the newest archive's digest: it needs an AC entry, which bazel-remote
-  validates as a Bazel `ActionResult` unless that validation is turned
-  off. Record the comparison in the PR; changing the store needs the
-  owner's say.
+- **Store: the LAN bazel-remote**, by the owner's decision of 2026-10-15,
+  over the S3-compatible object store chosen on 2026-10-13, which the
+  first spike below used. It needs no new service, secret or signing
+  code. Its HTTP CAS keeps each archive under its SHA-256, so a restore is
+  checked for free, and it refuses an upload whose hash is not its key
+  (J14). Its eviction of the least recently used entries retires the
+  archives of old toolchains and templates, which no run reads. The
+  transport stays plain HTTP: TLS on the LAN cache was weighed the same
+  day and left for later.
+- **The pointer** from a key to the newest archives is an action-cache
+  entry: an `ActionResult` that names each archive as an output file.
+  bazel-remote v2.6.2, the NAS's version, takes and gives one as JSON
+  (`Content-Type` and `Accept: application/json`), so the action encodes
+  no protobuf. It refuses an entry whose digest is malformed, and answers
+  404 for one that names an archive it no longer holds, or holds at
+  another size, so an evicted archive is a cold build. It records the
+  writer's address in an entry's `worker` unless the entry names one, and
+  anyone can read the entry back, so the action names its own. Checked
+  against a local v2.6.2 on 2026-10-15, and in its source (`server/http.go`:
+  `addWorkerMetadataHTTP`, `handleGetValidAC`).
 - **The action:** `.github/actions/cargo-cache/`, `runs.using: node24`.
   Its main step restores; its `post:` step saves, with `post-if:
   success()`: a post step otherwise runs after a failed or cancelled job
-  too, and would overwrite the one good archive with a half-built one. No
+  too, and would replace the one good cache with a half-built one. No
   endpoint means it does nothing, which covers hosted runners and fork
-  PRs.
-- **Endpoint:** reaches the job from the runner, never from a workflow
-  file, and is masked before use, as the bazel-remote endpoint is
-  ([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)). Either a
-  new runner `.env` entry (a template rebuild) or derived from
-  `RP_LAN_CACHE_URL`'s host, as the Remote Asset API's endpoint is.
-  Decide in the item.
-- **Write key:** a GitHub secret, passed only on push to main with the
-  expression bazel.yml uses for `BAZEL_LAN_CACHE_WRITE_AUTH`
+  PRs. It runs after the toolchain install, which the key reads, and
+  before `cargo fmt`.
+- **Endpoint:** `RP_LAN_CACHE_URL`, the bazel-remote lan-crates reads, so
+  no runner `.env` entry and no template rebuild. Masked before use, with
+  its host and hostname; what the action prints about a failed request is
+  its status or error codes, never fetch's message, which names the
+  address it connected to. Both helpers moved to `lib/helpers.mjs`
+  (`maskUrl`, `requestFailure`), as lan-crates uses them too.
+- **Write key:** `BAZEL_LAN_CACHE_WRITE_AUTH`, passed only on push to main
+  with the expression bazel.yml uses
   (`github.event_name == 'push' && secrets.… || ''`). It never lives on
   the runner VM, so a PR can read the cache but never write it. Unlike
   bazel.yml's, it goes to the action as an input (`with:`), never into
@@ -226,71 +235,101 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   any object the key can write. It can also poison `target/`, which the
   save uploads for every PR to restore; that much is no worse than the
   dependency itself, which those PRs compile anyway, and the next push to
-  main replaces the archive with a cold build. To keep the key out of the
-  build's reach, a job that builds nothing could hold it and hand the
-  build job a short-lived pre-signed URL for the one object instead; the
-  item weighs that against signing over the payload (below), which a URL
-  minted before the archive exists cannot do.
+  main replaces the archive with a cold build. bazel-remote has no
+  pre-signed URLs, so the alternative weighed here before, a job that
+  builds nothing holding the key and handing the build job a URL for one
+  object, is not open. Like Bazel's and lan-crates', the credential
+  crosses the runner VLAN in clear text.
 - **Writers never restore.** A push-to-main run builds cold and saves; only
   PR runs restore. The archive holds build-script and proc-macro binaries
-  that the job runs, and an anonymous plain-HTTP read has no integrity
-  check, so a tampered restore must never run in a job that holds the
+  that the job runs, and the pointer that names it is read over plain
+  HTTP, so a tampered restore must never run in a job that holds the
   write key, or be saved back for every later PR. A cold build on main
   also means the archive holds only what the current lockfile needs.
-- **What is cached:** `target/`, with the workspace members' own outputs
-  removed (every run re-lints them anyway), and `$CARGO_HOME/git`, for
-  the workspace's git dependency. Not the crates.io crates: J14 serves
-  them from the LAN as a directory source, unpacked and checked against
-  `Cargo.lock` on every run, so Cargo writes nothing under
-  `$CARGO_HOME/registry` on the pool, and a restored copy of the sources
-  Cargo compiles would bypass that check. `target/` records those sources
-  by absolute path (see the spike below), so J14's directory must keep
-  one path from run to run, as `$RUNNER_TEMP/lan-crates` does on the
-  pool. Archived with the system `tar`. Whether to
-  compress (system `zstd`, if present) or send it raw over the LAN is
-  measured in the item; Node 24's built-in zstd is still marked
-  experimental.
-- **Key and retention:** one object per Rust version and pool template,
-  overwritten by each push to main from its cold build, so it never
-  accumulates the dependencies of older lockfiles. The template is in the
-  key because `target/` holds build-script outputs (pkg-config probes,
-  bindgen output) that Cargo does not rebuild when the template's system
-  libraries change; the item finds an identity the runner can read, such
-  as a version in its `.env`. Objects for older Rust versions and
-  templates must not pile up either; decide how they go.
+- **What is cached:** two archives, each unpacked only under its own root.
+  `target/`, without the workspace's own units: their fingerprint and
+  build-script directories (named after the package), their compiled
+  files (named after the target), the incremental state and the examples.
+  Every run lints those crates anyway, and a restored fingerprint could
+  let Cargo skip linting one. And `$CARGO_HOME/git`, for the workspace's
+  git dependency. Not the crates.io crates: J14 serves them from the LAN
+  as a directory source, unpacked and checked against `Cargo.lock` on
+  every run, so Cargo writes nothing under `$CARGO_HOME/registry` on the
+  pool, and a restored copy of the sources Cargo compiles would bypass
+  that check. `target/` records those sources by absolute path (see the
+  first spike below), so J14's directory must keep one path from run to
+  run, as `$RUNNER_TEMP/lan-crates` does on the pool. Packed by GNU tar
+  with `--zstd`, on as many threads as the runner has (`ZSTD_NBTHREADS`,
+  from zstd's manual), or uncompressed on a runner without zstd; the
+  pointer names which.
+- **The crates' mtimes, a fix to J14.** The first measurement with
+  bazel-remote saved almost nothing: 84 s warm against 94 s cold. Cargo's
+  own unpacking into its registry keeps each file's mtime from the tar
+  header, and `cargo package` writes a fixed one (2006-07-23); lan-crates
+  wrote each file at the time of the run. A build script that declares
+  `rerun-if-changed` reruns when a file it names is newer than its last
+  run, so after a restore every such build script reran, and every crate
+  that depends on its crate was rebuilt. lan-crates now keeps the header's
+  mtime, and gives the directories and `.cargo-checksum.json` the crate's
+  newest.
+- **Key:** the SHA-256 of the job's ID, `rustc -vV`, a hash of the
+  runner's system packages (`dpkg-query`), and the paths Cargo records:
+  the workspace, `CARGO_HOME` and `RUNNER_TEMP`, under which lan-crates
+  unpacks. The packages stand in for the pool template: `target/` holds
+  build-script outputs (pkg-config probes, bindgen output) that Cargo does
+  not rebuild when the template's system libraries change, and a template
+  rebuilt with other packages gets a new key, with no version to keep in
+  step by hand. Each push to main overwrites its key's pointer with its
+  own cold build, so the archives never gather the dependencies of older
+  lockfiles; the keys of older toolchains and templates, which no run
+  reads, are evicted with their archives.
 - **Order between writers:** two pushes to main close together run
   concurrently, and the older commit can finish last. The save first
-  checks that the run's commit is still the head of `main`, and skips
-  if `main` has moved on.
-- **Signing:** SigV4 with `node:crypto`, tested against AWS's published
-  Signature Version 4 examples, and **over the payload**: the request
-  carries the archive's SHA-256, so the store can refuse a body changed on
-  the way; confirm it does, by sending a deliberately wrong hash. The
-  unsigned-payload form, which the spike used, would let
-  anyone who can tamper with the plain-HTTP read also replace the upload,
-  undoing what "writers never restore" protects. Hashing a few hundred MB
-  first costs about a second.
-- **Failure:** a missing object, a slow store or a store that is down
-  gives a cold run, never a failed job. Every request has a timeout. A
-  failed save is an annotation on the run, so a broken save path is
-  visible and not just a cache that silently stays cold.
-- **Spike (2026-10-13, local Docker Garage, both clippy passes at `-j 6`,
-  the same paths for both runs):** cold 113 s; after a restore, 34 s. The
-  restore took 1.2 s and the upload 0.6 s, for a 326 MiB archive at
-  `zstd -3`. Restoring to different paths saved nothing, because Cargo
-  fingerprints absolute paths; the pool's paths are fixed.
-- **Operator steps, outside the repo:** run the store, publish only its
-  S3 and website ports, and only on the runner VLAN interface; create the
-  bucket and allow anonymous website reads of it; create a key that can
-  write that bucket; add the key as a repository secret.
+  reads the head of the default branch (the GitHub API, with the job's
+  token) and skips if it is not the run's commit, so the newer push's own
+  save is left to that push. The save writes the archives first and the
+  pointer last, so the pointer never names an archive the store lacks.
+- **Integrity:** each archive is checked against the size and SHA-256 its
+  pointer names before anything is unpacked, and a restore that fails part
+  way takes back what it unpacked. The pointer itself is read over plain
+  HTTP and checked against nothing: something on the runner VLAN that
+  could answer for the cache could name archives of its own. That is the
+  gap TLS would close. Bazel's own reads of the same cache, whose action
+  results name the outputs a build then runs, have the same one.
+- **Failure:** a missing pointer or archive, a slow store or a store that
+  is down gives a cold run, never a failed job. Every request has a
+  timeout: 10 s for the pointer, 300 s for an archive. A failed restore or
+  save is a warning annotation on the run, so a broken path is visible and
+  not just a cache that silently stays cold; a missing pointer is a line
+  in the log, since every new toolchain starts with one.
+- **First spike (2026-10-13, local Docker Garage, both clippy passes at
+  `-j 6`, the same paths for both runs):** cold 113 s; after a restore,
+  34 s. The restore took 1.2 s and the upload 0.6 s, for a 326 MiB
+  archive at `zstd -3`. Restoring to different paths saved nothing,
+  because Cargo fingerprints absolute paths; the pool's paths are fixed.
+- **Measured with bazel-remote (2026-10-15, a local v2.6.2, both passes at
+  `-j 6`, fixed paths, the crates from lan-crates):** cold, 96 s and 21 s.
+  `target/` came to 4.5 GB, 837 MB without the workspace's own units, and
+  234 MiB at `zstd -3`; packing, the upload and the restore took under a
+  second each. With the crates' mtimes kept, the warm passes took 30 s and
+  11 s, and pass 1 rechecked the workspace's 54 crates and nothing else. A
+  planted unused variable in a workspace crate still failed pass 1 after a
+  restore. The action itself, its main and post entry files run as the
+  runner runs them: the writer saved 233 MiB and 2 MiB in 1.4 s after its
+  cold passes (95 s and 21 s); the reader restored them in 1.0 s and ran
+  warm in 34 s and 11 s.
 - **What the PR cannot prove:** the save runs only on a push to main,
-  since only that event gets the key. Before merge, run the action's save
-  path by hand against the store with the key, and its tests against a
-  fake store; after merge, watch the first push to main write the object
-  and the next PR restore it.
+  since only that event gets the key, and a PR's own run finds no pointer
+  until one has. The tests run the action against a fake bazel-remote
+  that answers as v2.6.2 does, and break each guarded behaviour on
+  purpose. After merge, watch the first push to main save, and the next
+  PR restore and run warm.
 - **Done when** a pool `stable / clippy` run on a PR restores the cache
-  and runs warm, a push to main builds cold and saves it, and the job
-  still passes with the store stopped.
+  and runs warm, and a push to main builds cold and saves it. A stopped
+  store is left to the tests, as J14's was by the owner's decision of
+  2026-10-15: a refused connection, a store that does not answer in time,
+  a refused upload and a wrong archive are each a cold build or an unsaved
+  cache there, never a failed step.
 
 ### J2 — Shared download-verify-extract module, first used by `install-omnisim`
 

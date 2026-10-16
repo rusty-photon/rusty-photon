@@ -18,14 +18,14 @@ function octal(value, width) {
  * One tar header. `magic` is GNU's 'ustar  \0' (what `cargo package` writes)
  * or POSIX's 'ustar\0', which comes with the version '00' and a `prefix`.
  */
-export function tarHeader({ name, size = 0, type = '0', mode = 0o644, magic = 'gnu', prefix = '', checksum }) {
+export function tarHeader({ name, size = 0, type = '0', mode = 0o644, mtime = 0, magic = 'gnu', prefix = '', checksum }) {
   const header = Buffer.alloc(BLOCK);
   field(header, 0, 100, name);
   field(header, 100, 8, octal(mode, 8), 'latin1');
   field(header, 108, 8, octal(0, 8), 'latin1');
   field(header, 116, 8, octal(0, 8), 'latin1');
   field(header, 124, 12, octal(size, 12), 'latin1');
-  field(header, 136, 12, octal(0, 12), 'latin1');
+  field(header, 136, 12, octal(mtime, 12), 'latin1');
   field(header, 156, 1, type, 'latin1');
   if (magic === 'gnu') {
     field(header, 257, 8, 'ustar  \0', 'latin1');
@@ -55,7 +55,7 @@ function padded(data) {
 }
 
 /**
- * An uncompressed tar archive of `entries`: `{ path, data, type, mode }`,
+ * An uncompressed tar archive of `entries`: `{ path, data, type, mode, mtime }`,
  * or `{ raw }` for bytes placed as they are. A path over 100 bytes gets the
  * GNU long-name entry `cargo package` writes. The end-of-archive blocks
  * close it unless `end` is false.
@@ -74,7 +74,10 @@ export function tar(entries, { end = true } = {}) {
       parts.push(tarHeader({ name: '././@LongLink', size: long.length, type: 'L' }), padded(long));
       name = name.slice(0, 100);
     }
-    parts.push(tarHeader({ name, size: data.length, type: entry.type ?? '0', mode: entry.mode ?? 0o644 }), padded(data));
+    parts.push(
+      tarHeader({ name, size: data.length, type: entry.type ?? '0', mode: entry.mode ?? 0o644, mtime: entry.mtime ?? 0 }),
+      padded(data),
+    );
   }
   if (end) parts.push(Buffer.alloc(2 * BLOCK));
   return Buffer.concat(parts);

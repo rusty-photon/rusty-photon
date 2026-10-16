@@ -12,11 +12,11 @@
 // failed step.
 
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 
-import { describe, fetchWithRetry, group, HttpError, io, retry, setSecret, warning } from '../lib/helpers.mjs';
+import { describe, fetchWithRetry, group, HttpError, io, maskUrl, requestFailure, retry, setSecret, warning } from '../lib/helpers.mjs';
 import { untar } from './untar.mjs';
 
 /** How Cargo.lock names crates.io, in lockfile versions 3 and 4. */
@@ -98,25 +98,6 @@ function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/**
- * Why a request to the store failed, without the store's address: the HTTP
- * status of an answer, or the error codes along the causes of no answer.
- * fetch's own messages name the address it connected to ("connect
- * ECONNREFUSED <ip>:<port>"), which the masks cover only when the URL holds
- * that same address, not a name that resolves to it.
- */
-export function storeFailure(err) {
-  if (err instanceof HttpError) return `HTTP ${err.status}`;
-  const codes = [];
-  const seen = new Set();
-  for (let e = err; e !== undefined && e !== null && !seen.has(e); e = e.cause) {
-    seen.add(e);
-    if (typeof e.code === 'string') codes.push(e.code);
-    else if (e.name === 'TimeoutError') codes.push('no answer in time');
-  }
-  return codes.length > 0 ? codes.join(': ') : (err?.name ?? 'an unknown error');
-}
-
 // The crate's bytes from the store, or undefined when it holds none (404).
 // Any other failure throws. One attempt: a store that fails is treated as
 // down for the rest of the run, and a retry would only slow that down.
@@ -193,14 +174,30 @@ function segmentsUnder(root, entryPath) {
  * `.cargo-checksum.json` a directory source needs. Its `package` is the
  * checksum Cargo compares with Cargo.lock; its `files` is empty, so Cargo
  * checks no file against it: the crate was checked as a whole before this.
+ *
+ * Each file keeps the mtime its tar header gives, as Cargo's own unpacking
+ * into its registry does; `cargo package` writes a fixed one, in 2006. The
+ * directories and `.cargo-checksum.json` get the newest of those. A build
+ * script that declares `rerun-if-changed` is rerun when a file it names is
+ * newer than its last run, so crates unpacked at the time of each run would
+ * make every such build script rerun after a build cache's restore, and
+ * everything that depends on its crate rebuild.
  */
 export async function unpack(bytes, crate, dir) {
   const root = `${crate.name}-${crate.version}`;
   const entries = untar(gunzipSync(bytes, { maxOutputLength: MAX_UNPACKED_BYTES }));
   const base = path.join(dir, root);
   await mkdir(base, { recursive: true });
+  const directories = new Set([base]);
+  let newest = 0;
   for (const entry of entries) {
-    const target = path.join(base, ...segmentsUnder(root, entry.path));
+    const segments = segmentsUnder(root, entry.path);
+    const target = path.join(base, ...segments);
+    newest = Math.max(newest, entry.mtime);
+    // Every directory on the way down, the ones the archive lists or not.
+    for (let i = 1; i <= segments.length - (entry.type === 'directory' ? 0 : 1); i++) {
+      directories.add(path.join(base, ...segments.slice(0, i)));
+    }
     if (entry.type === 'directory') {
       await mkdir(target, { recursive: true });
       continue;
@@ -209,8 +206,12 @@ export async function unpack(bytes, crate, dir) {
     // Executable stays executable: some build scripts run a script the
     // crate ships.
     await writeFile(target, entry.data, { mode: entry.mode & 0o111 ? 0o755 : 0o644 });
+    await utimes(target, entry.mtime, entry.mtime);
   }
-  await writeFile(path.join(base, '.cargo-checksum.json'), JSON.stringify({ files: {}, package: crate.checksum }));
+  const checksumFile = path.join(base, '.cargo-checksum.json');
+  await writeFile(checksumFile, JSON.stringify({ files: {}, package: crate.checksum }));
+  // Last, as writing into a directory updates its mtime.
+  for (const p of [checksumFile, ...directories]) await utimes(p, newest, newest);
 }
 
 // Runs `fn` on every item, `limit` at a time. `fn` must not throw.
@@ -257,7 +258,7 @@ export async function vendorCrates({
             result.wrongInStore.push(crate);
           }
         } catch (err) {
-          result.storeDown ??= storeFailure(err);
+          result.storeDown ??= requestFailure(err);
         }
       }
       if (bytes === undefined) {
@@ -268,7 +269,7 @@ export async function vendorCrates({
             await upload(storeUrl, crate, bytes, writeAuth, storeTimeoutMs);
             result.uploaded++;
           } catch (err) {
-            result.uploadsStopped ??= storeFailure(err);
+            result.uploadsStopped ??= requestFailure(err);
           }
         }
       }
@@ -336,19 +337,9 @@ export async function lanCrates({ storeUrl, writeAuth = '', lockPath, dir, cargo
   }
   if (writeAuth !== '') setSecret(writeAuth);
   // The store's address is the operator's LAN. What the action prints about
-  // a failure leaves it out (storeFailure); these masks are for anything
+  // a failure leaves it out (requestFailure); these masks are for anything
   // else that names it, such as an error that fails the step.
-  const base = storeUrl.replace(/\/+$/, '');
-  setSecret(base);
-  try {
-    const { host, hostname } = new URL(base);
-    setSecret(host);
-    setSecret(hostname);
-    // An IPv6 address without its brackets, as a connect error prints it.
-    if (hostname.startsWith('[')) setSecret(hostname.slice(1, -1));
-  } catch {
-    throw new Error('RP_LAN_CACHE_URL does not parse as a URL (it is not shown, as it is the LAN address)');
-  }
+  const base = maskUrl(storeUrl, 'RP_LAN_CACHE_URL');
   let crates;
   try {
     crates = parseLock(await readFile(lockPath, 'utf8'));
