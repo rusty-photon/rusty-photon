@@ -139,7 +139,7 @@ impl PlannedStep {
 #[tool_router(router = tool_router_auto_focus, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, drop samples whose star count collapsed (min_star_fraction of the sweep's best frame), fit a parabola in HFR, move the focuser to the fitted minimum, and confirm it with one more frame — falling back to the lowest measured sweep sample when the confirmation measures worse than confirmation_tolerance allows. A capture sweep whose fit fails is repeated with the same parameters up to max_attempts times (default 2), shifted toward the lowest sample after a monotonic curve, and its result reports attempts and the wing slope the next sweep can be sized from; the guiding train's PHD2-metric sweep makes one attempt and reports neither field. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
+        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, drop samples whose star count collapsed (min_star_fraction of the sweep's best frame), fit a parabola in HFR, move the focuser to the fitted minimum, and confirm it with one more frame — falling back to the lowest measured sweep sample when the confirmation measures worse than confirmation_tolerance allows. A capture sweep whose fit fails is repeated with the same parameters up to max_attempts times (default 2), shifted toward the lowest sample after a monotonic curve, and its result reports attempts and the wing slope the next sweep can be sized from; the guiding train's PHD2-metric sweep makes one attempt, reports neither field, and refuses a focuser an imaging train holds, which only the imaging camera focuses. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
     )]
     pub(crate) async fn auto_focus(
         &self,
@@ -152,7 +152,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Expand one refocus trigger on an optical train into the dependency-ordered auto-focus sequence: shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser. Sweep parameters come from each run train's auto_focus config block; guiding is paused around the sequence when a step moves a guiding-train focuser."
+        description = "Expand one refocus trigger on an optical train into the dependency-ordered auto-focus sequence: shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser; a focuser an imaging train holds always runs in an imaging train, through its camera. Sweep parameters come from each run train's auto_focus config block; guiding is paused around the sequence when a step moves a guiding-train focuser."
     )]
     pub(crate) async fn refocus_train(
         &self,
@@ -966,6 +966,17 @@ impl McpHandler {
         let Some(focuser_id) = train.terminal_focuser().map(str::to_string) else {
             return Ok(tool_error!("train '{}' has no focuser", train_id));
         };
+        // A focuser an imaging train holds is focused through the
+        // imaging camera alone, the guide camera taken as parfocal
+        // (rp.md § Guide-train sweep): PHD2's HFD must not move it.
+        if let Some(imaging) = self.trains.imaging_train_focusing(&focuser_id) {
+            return Ok(tool_error!(
+                "guide-train auto_focus: focuser '{}' is in imaging train '{}', which \
+                 focuses it; the guide camera is taken as parfocal with that train's camera",
+                focuser_id,
+                imaging.id
+            ));
+        }
         let block = train.auto_focus.as_ref();
         let Some(step_size) = params
             .step_size

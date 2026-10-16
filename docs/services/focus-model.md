@@ -222,7 +222,13 @@ passed to each capture step and checked against that step's run train,
 so a walk started on a filterless guiding train may still name the
 filter its imaging step focuses through. A plan whose only step is the
 guide step is refused before anything actuates: its result has nowhere
-to go without a capture step to report. A failed step stops the
+to go without a capture step to report. So is a plan with a capture
+step whose focuser is not its run train's terminal focuser, which
+`rp` plans for a shared focuser terminal in no train: a sweep moves
+its train's terminal focuser and is recorded on that train, so it
+cannot measure that step, and the walk reads each run train's
+`get_train_info` before anything moves to tell. `rp`'s own
+`refocus_train` sweeps the step's focuser and runs such a plan. A failed step stops the
 sequence and puts back only that step's focuser; completed steps are
 good positions. The guide step is `rp`'s tool and keeps `rp`'s
 put-back rule ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)):
@@ -787,6 +793,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
+| `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
@@ -1302,7 +1309,10 @@ the run; `set_focus_offsets` validates and writes, `reset_focus_model`
 drops the history and keeps the offsets, `get_focus_runs` pages newest
 first; a cancelled sweep restores the start; a guide-coupled train
 pauses and resumes guiding around the sweep, on the failure path too;
-a `shared: true` walk stops at the failed step;
+a `shared: true` walk stops at the failed step, a walk on a guiding
+train whose only focuser the imaging train has is that train's capture
+sweep, and a walk with a step whose focuser its run train does not end
+in is refused before anything pauses or moves;
 `determine_filter_offsets` refuses a train without a wheel, a
 reference outside its filter list and a `rounds` out of range, and —
 every sweep being starless — runs the sweeps of both rounds, records
@@ -1353,7 +1363,8 @@ credential — and that `tools/list` answers with no `rp` running.
 - Workflow, against a `mockall` rig: the resolution errors, the filter
   switch, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the
-  shared walk's stop-at-failure. On a guiding train: the refusal
+  shared walk's stop-at-failure, and its refusal of a step whose
+  focuser its run train does not end in. On a guiding train: the refusal
   naming every train that has its focuser, and none for an imaging
   train; the one lease taken before the handshake, every move and
   capture under it, the put-back too, and its release last; a refused
@@ -1408,16 +1419,18 @@ credential — and that `tools/list` answers with no `rp` running.
   focused by hand (one that shares an upstream focuser but keeps its
   own terminal focuser is the first case, not this) — and in-session
   guide focus stays on the
-  PHD2-metric sweep wherever the guide path has a focuser to move at
-  all (a fixed-focus path has none; `rp`'s train model accepts a
+  PHD2-metric sweep wherever the guide path has a focuser of its own
+  to move (a fixed-focus path has none; `rp`'s train model accepts a
   camera-only train and reports `terminal_focuser_id: null`, and it is
-  the focus tools that refuse it). Who sequences that sweep against
+  the focus tools that refuse it). A focuser an imaging train holds
+  is focused through the imaging camera only, the guide camera being
+  taken as parfocal (the plan's O4 rules 2, 4 and 8, the owner's rule
+  of 2026-10-15): `rp`'s refocus plan runs it in the imaging train,
+  and `rp`'s metric `auto_focus` refuses it. Who sequences that sweep against
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
   that share none. The record shape admits a
   filterless train, but a guiding train is not necessarily one. A
   training run on a guiding train is built ([Training runs on a
-  guiding train](#training-runs-on-a-guiding-train)). What is left of
-  the plan's S10 is `rp`'s: the redundant guide step `af_sequence`
-  still yields where rule 4 holds, and the two topologies rule 2 leaves
-  open.
+  guiding train](#training-runs-on-a-guiding-train)), and so is the
+  rest of the plan's S10, `rp`'s plan and refusal above (C7e).

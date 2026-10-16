@@ -3718,7 +3718,16 @@ the offending entry:
 - devices shared between trains appear in a consistent relative order
   across them (the merged order relation is acyclic);
 - at most one train has `purpose: "guiding"`, and a guiding train
-  requires `equipment.mount.guiding`.
+  requires `equipment.mount.guiding`;
+- the guiding train's terminal focuser, where an imaging train holds
+  it, is that imaging train's terminal focuser too. A focuser after it
+  in an imaging train would move the main camera's focus and not the
+  guide camera's, so no camera could focus the shared one for both
+  paths, which the AF sequence below needs: a shared focuser is
+  focused through the imaging camera, the guide camera taken as
+  parfocal. The error names the shared focuser, the guiding train,
+  and the imaging train with the focuser that follows it, at the
+  guiding train's entry for the shared focuser.
 
 Derivation rules — the questions the derived train model answers.
 Consumers land phase by phase per the plan:
@@ -3726,7 +3735,7 @@ Consumers land phase by phase per the plan:
 | Question | Rule |
 |---|---|
 | Which focuser focuses camera C? | Last focuser in C's train list |
-| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser — `get_refocus_plan` returns it as a read, `refocus_train` runs it |
+| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in an imaging train (T itself for T's own terminal focuser when T images, else the first imaging train where the focuser is terminal, else T when T images, else the first imaging train holding it), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, `refocus_train` runs it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (measured on imaging trains today — the provider does not yet refuse a guiding train, which that plan's O4 rule 7 records as S10's first change; a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5 — entered by hand through `set_focus_offsets` today and invalidated by this row like any other, while *measuring* it with `determine_filter_offsets` waits on S10's capture transport, rule 7, so any guiding train `rp` can address can hold hand-entered offsets today, but only one whose camera is the PHD2 facade of device-claims-and-phd2-camera.md — the vendor driver being excluded from the guide camera by that plan's Part A — measures them, once S10, that plan's C7, lands; a guide camera in no `rp` train has no offset path of either kind) |
@@ -3797,7 +3806,14 @@ rp's own auto-focus **on the guiding train itself** never captures
 through the guide camera (PHD2 may own it at the SDK level):
 train-addressed `auto_focus` and `refocus_train` steps that run in
 the guiding train use the PHD2-metric sweep — moving the focuser and
-reading PHD2's per-frame HFD — and require an active guide loop. A
+reading PHD2's per-frame HFD — and require an active guide loop. That
+sweep moves only a focuser no imaging train holds: a focuser an
+imaging train holds is focused through the imaging camera alone, the
+guide camera being taken as parfocal with it (the owner's rule of
+2026-10-15, the focus-model plan's O4 rules 2, 4 and 8). So the AF
+sequence runs such a focuser in an imaging train, and train-addressed
+`auto_focus` on a guiding train whose terminal focuser an imaging
+train holds is refused, naming that imaging train. A
 client may still capture through a guiding train's camera when it is
 the PHD2 camera facade ([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)): that is how
 a focus provider's training run on a guiding train samples it, under
@@ -5209,6 +5225,17 @@ is a different operation, under a [train lease](#train-lease).
 
 Requirements, checked before any motion:
 
+- The guiding train's terminal focuser is one no imaging train
+  holds. A focuser an imaging train holds is focused through the
+  imaging camera alone, with the guide camera taken as parfocal
+  ([Optical Trains](#optical-trains)), so sweeping it against PHD2's
+  HFD would move the main camera's focus by the worse camera's
+  measure. Error: "guide-train auto_focus: focuser 'main-focuser' is
+  in imaging train 'main', which focuses it; the guide camera is taken
+  as parfocal with that train's camera". `deep_sky.json`'s
+  `guide_focus_degraded` trigger logs this and goes on, and the
+  escalation's `refocus_train` sweeps the focuser through the imaging
+  camera.
 - `equipment.mount.guiding` is configured, and the guider's stats
   report an **active guide loop** — PHD2 only emits `GuideStep`
   (and with it HFD) while guiding, so without it there is nothing
@@ -5307,7 +5334,9 @@ geometry is per-train — each step takes its parameters from its
 **Expansion**: the train model's AF sequence — shared focusers of
 the train upstream-first, each run in the train where that focuser
 is *terminal* (capturing through that train's camera), then the
-train's own terminal focuser. Each step is one full V-curve run with
+train's own terminal focuser, with any focuser an imaging train
+holds run in an imaging train (the derivation table's *run train*,
+[Optical Trains](#optical-trains)). Each step is one full V-curve run with
 the semantics of the [`auto_focus` Contract](#auto_focus-contract),
 including its per-step `focus_started` / `focus_complete` /
 `focus_failed` triple. A step whose run train is the **guiding
@@ -5382,15 +5411,23 @@ D16), and `rp` moves nothing in answering.
 **Output**: `train_id`, `guide_coupled`, and `steps` in run order,
 each `{focuser_id, run_train_id, camera_id, metric}`:
 
-- the train's shared focusers upstream-first, each run in the train
-  where that focuser is terminal (`run_train_id`; a shared focuser
-  terminal nowhere runs in the addressed train), then the train's own
-  terminal focuser — the same derivation `refocus_train` executes;
+- the train's shared focusers upstream-first, then the train's own
+  terminal focuser, each with its run train (`run_train_id`) — the
+  same derivation `refocus_train` executes. A focuser an imaging train
+  holds runs in an imaging train: where it is terminal, or, for a
+  shared focuser terminal in no imaging train, the addressed train
+  when it images and otherwise the first imaging train holding it. A
+  focuser no imaging train holds runs in the guiding train. So a
+  guiding train whose only focuser is the imaging train's plans that
+  focuser's capture step in the imaging train, and no guide step;
 - `metric` is `"capture"` — measure through `camera_id`, the run
   train's terminal camera — or `"guide"` for a step whose run train
   is the guiding train: the PHD2-metric sweep, with a `null`
   `camera_id` because nothing is captured through the guide camera,
-  and always last;
+  and always last, since only the guiding train's own terminal
+  focuser runs there. A capture step's focuser is the run train's
+  terminal focuser unless the shared focuser is terminal in no
+  imaging train;
 - `guide_coupled` is `true` when a capture step moves a focuser that
   is a member of the guiding train. A walker pauses guide corrections
   around such steps (`pause_guiding` / `resume_guiding`) and resumes

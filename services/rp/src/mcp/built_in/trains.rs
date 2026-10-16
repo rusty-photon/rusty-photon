@@ -110,7 +110,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "The dependency-ordered refocus sequence of an optical train, as a read — nothing moves: steps of {focuser_id, run_train_id, camera_id, metric} in run order (the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser; a guiding-train step is last with metric \"guide\" and a null camera_id, every other step metric \"capture\" through the run train's camera), and guide_coupled, whether a capture step moves a focuser the guiding train shares (a walker pauses guide corrections around it). An unknown train, or one without focusers, is an error naming it"
+        description = "The dependency-ordered refocus sequence of an optical train, as a read — nothing moves: steps of {focuser_id, run_train_id, camera_id, metric} in run order (the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser; a focuser an imaging train holds always runs in an imaging train, the guide camera taken as parfocal, so a guiding-train step, for a focuser only the guiding train holds, is last with metric \"guide\" and a null camera_id, every other step metric \"capture\" through the run train's camera), and guide_coupled, whether a capture step moves a focuser the guiding train shares (a walker pauses guide corrections around it). An unknown train, or one without focusers, is an error naming it"
     )]
     pub(crate) async fn get_refocus_plan(
         &self,

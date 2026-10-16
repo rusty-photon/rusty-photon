@@ -126,6 +126,49 @@ async fn rp_with_guide_focuser_and_block(world: &mut RpWorld, train_id: String) 
     start_rp(world).await;
 }
 
+/// The simulator focuser terminal in both an imaging train and the
+/// guiding train — a guide path with no focuser of its own, as behind
+/// an unmotorised OAG. Both cameras are offline: what these scenarios
+/// assert is settled before a frame would be taken. The imaging block
+/// carries the capture fields a `refocus_train` step needs.
+#[given(
+    expr = "rp is running with a focuser on the simulator shared by imaging train {string} and guiding train {string}"
+)]
+async fn rp_with_focuser_shared_by_imaging_and_guiding(
+    world: &mut RpWorld,
+    imaging_id: String,
+    guiding_id: String,
+) {
+    ensure_omnisim(world).await;
+    add_focuser(world, None, None, None);
+    add_offline_camera(world, "main-cam");
+    add_offline_camera(world, "guide-cam");
+    world
+        .optical_trains
+        .push(bdd_infra::rp_harness::OpticalTrainConfig {
+            telescope: None,
+            aperture_mm: None,
+            id: imaging_id,
+            purpose: Some("imaging".to_string()),
+            focal_length_mm: None,
+            default_position_angle_degrees: None,
+            devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+            auto_focus: Some(bdd_infra::rp_harness::TrainAutoFocusConfig {
+                binning: None,
+                duration: Some("100ms".to_string()),
+                step_size: 50,
+                half_width: 100,
+                min_area: Some(4),
+                max_area: Some(500),
+                threshold_sigma: None,
+                frames_per_step: None,
+                max_attempts: Some(1),
+            }),
+        });
+    push_guiding_focuser_train(world, guiding_id, true);
+    start_rp(world).await;
+}
+
 #[given(
     expr = "rp is running with a focuser on the simulator in guiding train {string} without an auto_focus block"
 )]
