@@ -22,6 +22,31 @@ use crate::steps::tool_steps::{
 };
 use crate::world::RpWorld;
 
+/// The reference roster + trains of [`reference_equipment`].
+#[given("a temp rp config with the reference optical trains")]
+fn temp_config_reference_trains(world: &mut RpWorld) {
+    write_scenario_config(world, reference_equipment());
+}
+
+/// The reference roster with a third focuser, `main-helical`, and the
+/// docstring's trains: the layouts the reference trains do not have.
+#[given("a temp rp config with the reference roster and the optical trains:")]
+fn temp_config_reference_roster_with_trains(world: &mut RpWorld, step: &Step) {
+    let trains: Value = serde_json::from_str(
+        step.docstring
+            .as_deref()
+            .expect("this step takes the trains as a docstring"),
+    )
+    .expect("the docstring must be a JSON array of trains");
+    let mut equipment = reference_equipment();
+    equipment["focusers"]
+        .as_array_mut()
+        .expect("the reference roster lists focusers")
+        .push(serde_json::json!({ "id": "main-helical", "alpaca_url": "not-a-url" }));
+    equipment["optical_trains"] = trains;
+    write_scenario_config(world, equipment);
+}
+
 /// The reference roster + trains from rp.md § Optical Trains: two
 /// cameras, two focusers, a rotator, and a filter wheel, a mount
 /// carrying the guiding block, and the main/guide trains sharing
@@ -29,50 +54,46 @@ use crate::world::RpWorld;
 /// merely unbound): an invalid URL fails client construction before
 /// the connect retry loop, so rp starts instantly instead of paying
 /// 3-attempt backoff per device — these scenarios only exercise the
-/// config endpoints. The guiding service URL stays a well-formed
-/// unbound address (it is never dialed at startup).
-#[given("a temp rp config with the reference optical trains")]
-fn temp_config_reference_trains(world: &mut RpWorld) {
-    write_scenario_config(
-        world,
-        serde_json::json!({
-            "cameras": [
-                { "id": "main-cam", "alpaca_url": "not-a-url" },
-                { "id": "guide-cam", "alpaca_url": "not-a-url" }
-            ],
-            "focusers": [
-                { "id": "main-focuser", "alpaca_url": "not-a-url" },
-                { "id": "guide-focuser", "alpaca_url": "not-a-url" }
-            ],
-            "rotators": [
-                { "id": "falcon", "alpaca_url": "not-a-url" }
-            ],
-            "filter_wheels": [
-                { "id": "main-fw", "alpaca_url": "not-a-url" }
-            ],
-            "cover_calibrators": [
-                { "id": "flat-panel", "alpaca_url": "not-a-url" },
-                { "id": "dust-cap", "alpaca_url": "not-a-url" }
-            ],
-            "mount": {
-                "alpaca_url": "not-a-url",
-                "guiding": { "url": "http://127.0.0.1:1",
-                             "focus_watch": { "window": 3,
-                                              "degrade_ratio": 1.25 } }
-            },
-            "optical_trains": [
-                { "id": "main", "purpose": "imaging", "focal_length_mm": 1000.0,
-                  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
-                  "auto_focus": { "duration": "3s", "step_size": 100,
-                                  "half_width": 1000, "min_area": 4,
-                                  "max_area": 500 } },
-                { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
-                  "devices": ["main-focuser", "guide-focuser", "guide-cam"],
-                  "auto_focus": { "step_size": 50, "half_width": 500,
-                                  "frames_per_step": 3 } }
-            ]
-        }),
-    );
+/// config endpoints and the train-model reads. The guiding service URL
+/// stays a well-formed unbound address (it is never dialed at startup).
+fn reference_equipment() -> Value {
+    serde_json::json!({
+        "cameras": [
+            { "id": "main-cam", "alpaca_url": "not-a-url" },
+            { "id": "guide-cam", "alpaca_url": "not-a-url" }
+        ],
+        "focusers": [
+            { "id": "main-focuser", "alpaca_url": "not-a-url" },
+            { "id": "guide-focuser", "alpaca_url": "not-a-url" }
+        ],
+        "rotators": [
+            { "id": "falcon", "alpaca_url": "not-a-url" }
+        ],
+        "filter_wheels": [
+            { "id": "main-fw", "alpaca_url": "not-a-url" }
+        ],
+        "cover_calibrators": [
+            { "id": "flat-panel", "alpaca_url": "not-a-url" },
+            { "id": "dust-cap", "alpaca_url": "not-a-url" }
+        ],
+        "mount": {
+            "alpaca_url": "not-a-url",
+            "guiding": { "url": "http://127.0.0.1:1",
+                         "focus_watch": { "window": 3,
+                                          "degrade_ratio": 1.25 } }
+        },
+        "optical_trains": [
+            { "id": "main", "purpose": "imaging", "focal_length_mm": 1000.0,
+              "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
+              "auto_focus": { "duration": "3s", "step_size": 100,
+                              "half_width": 1000, "min_area": 4,
+                              "max_area": 500 } },
+            { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
+              "devices": ["main-focuser", "guide-focuser", "guide-cam"],
+              "auto_focus": { "step_size": 50, "half_width": 500,
+                              "frames_per_step": 3 } }
+        ]
+    })
 }
 
 #[given(

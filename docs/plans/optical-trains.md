@@ -162,18 +162,23 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    OAG behind a shared focuser that keeps its own motorised helical is
    that plan's O4 rule 1, and does.
 
-   Today, though, it still gets a redundant step: `af_sequence` appends
-   the terminal focuser unconditionally, so `get_refocus_plan` returns a
-   `metric: "guide"` step for such a train
-   (`services/rp/src/equipment/trains.rs`), and suppressing it is part of
-   S10. The metric stream stays exactly as described above for the
-   in-session case, which is what the escalation still uses. Until S10
-   lands, this decision plus that redundant step is the shipped
-   behaviour.
+   **Amended 2026-10-15 by the owner** (that plan's O4 rules 2, 4 and
+   8, built in its C7e): *"If a focuser is shared, only the main train
+   can focus. We assume that the guide cam is setup at the same focus
+   point as the main cam."* Such a train used to get a redundant
+   `metric: "guide"` step for the shared focuser, because `af_sequence`
+   appended the terminal focuser unconditionally. Now a focuser an
+   imaging train holds runs in that imaging train, so the guiding
+   train's `get_refocus_plan` is the shared focuser's capture step
+   alone (`services/rp/src/equipment/trains.rs`), and the guide-only AF
+   above refuses it, naming the imaging train. The metric stream stays
+   exactly as described above for a guiding train with a focuser of
+   its own, the case the guide-only AF serves.
 
 7. **Autofocus derivations.** A camera's focuser is the *last* focuser in
    its own list. Focusers shared across trains run before train-local ones,
-   using the train where the shared focuser is terminal. Moving focuser F
+   using the train where the shared focuser is terminal — an imaging train
+   wherever one holds it (decision 6's 2026-10-15 amendment). Moving focuser F
    marks every train containing F focus-invalid; each re-runs its own
    terminal focuser's AF. This is requirement 1 above, generalized.
 

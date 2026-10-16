@@ -544,6 +544,7 @@ impl TrainModel {
                 ),
             });
         }
+        errors.extend(guide_focuser_followed(equipment, &trains));
 
         if errors.is_empty() {
             Ok(Self { trains })
@@ -609,9 +610,9 @@ impl TrainModel {
 
     /// The dependency-ordered auto-focus sequence for a refocus
     /// trigger on `train_id`: shared focusers of the train
-    /// upstream-first — each run in the train where it is terminal —
-    /// then the train's own terminal focuser. `None` for an unknown
-    /// train id; empty for a train without focusers.
+    /// upstream-first, then the train's own terminal focuser, each in
+    /// its [run train](Self::run_train). `None` for an unknown train
+    /// id; empty for a train without focusers.
     #[must_use]
     pub fn af_sequence(&self, train_id: &str) -> Option<Vec<AfStep>> {
         let train = self.train(train_id)?;
@@ -626,26 +627,56 @@ impl TrainModel {
                 // train's own AF belongs to the terminal focuser.
                 continue;
             }
-            // Run the shared focuser in the train where it is terminal
-            // (first in config order); a shared focuser terminal
-            // nowhere falls back to this train.
-            let run_train = self
-                .trains
-                .iter()
-                .find(|t| t.terminal_focuser() == Some(device.id.as_str()))
-                .map_or(train_id, |t| t.id.as_str());
             steps.push(AfStep {
                 focuser_id: device.id.clone(),
-                train_id: run_train.to_string(),
+                train_id: self.run_train(train, &device.id).to_string(),
             });
         }
         if let Some(terminal) = terminal {
             steps.push(AfStep {
                 focuser_id: terminal.to_string(),
-                train_id: train_id.to_string(),
+                train_id: self.run_train(train, terminal).to_string(),
             });
         }
         Some(steps)
+    }
+
+    /// The train `focuser_id`'s step runs in when `train` is refocused
+    /// (rp.md § Optical Trains, the AF sequence row). A focuser an
+    /// imaging train holds is focused through an imaging camera alone,
+    /// the guide camera taken as parfocal with it: an imaging `train`
+    /// runs its own terminal focuser itself and a shared one in the
+    /// first imaging train where it is terminal, else itself; the
+    /// guiding train runs it in [`Self::imaging_train_focusing`]. Only a
+    /// focuser no imaging train holds runs in the guiding train.
+    fn run_train<'a>(&'a self, train: &'a Train, focuser_id: &str) -> &'a str {
+        let ends_in = |t: &&Train| t.terminal_focuser() == Some(focuser_id);
+        let run = match train.purpose {
+            TrainPurpose::Imaging if ends_in(&train) => train,
+            TrainPurpose::Imaging => self.imaging_trains().find(ends_in).unwrap_or(train),
+            TrainPurpose::Guiding => self.imaging_train_focusing(focuser_id).unwrap_or(train),
+        };
+        &run.id
+    }
+
+    /// The imaging train that focuses `focuser_id` through its camera:
+    /// the first where it is terminal, else the first that holds it.
+    /// `None` when no imaging train holds it — the guiding train's own
+    /// focuser, which the guide-train metric sweep moves.
+    #[must_use]
+    pub fn imaging_train_focusing(&self, focuser_id: &str) -> Option<&Train> {
+        self.imaging_trains()
+            .find(|t| t.terminal_focuser() == Some(focuser_id))
+            .or_else(|| {
+                self.imaging_trains()
+                    .find(|t| t.devices.iter().any(|d| d.id == focuser_id))
+            })
+    }
+
+    fn imaging_trains(&self) -> impl Iterator<Item = &Train> {
+        self.trains
+            .iter()
+            .filter(|t| t.purpose == TrainPurpose::Imaging)
     }
 
     /// The AF sequence as a plan a focus provider walks (rp.md §
@@ -723,6 +754,49 @@ pub struct RefocusPlan {
     /// guiding train, so a walker pauses guide corrections around it.
     pub guide_coupled: bool,
     pub steps: Vec<PlanStep>,
+}
+
+/// The guiding train's terminal focuser followed by another focuser in
+/// an imaging train that holds it: that focuser moves the main camera's
+/// focus and not the guide camera's, so no camera could focus the
+/// shared one for both paths — a shared focuser is focused through the
+/// imaging camera, the guide camera taken as parfocal (rp.md § Optical
+/// Trains). One error per such imaging train, at the guiding train's
+/// entry for the shared focuser. Only clean trains contribute.
+fn guide_focuser_followed(equipment: &EquipmentConfig, trains: &[Train]) -> Vec<FieldError> {
+    let Some(guide) = trains.iter().find(|t| t.purpose == TrainPurpose::Guiding) else {
+        return Vec::new();
+    };
+    let Some(shared) = guide.terminal_focuser() else {
+        return Vec::new();
+    };
+    let i = equipment
+        .optical_trains
+        .iter()
+        .position(|t| t.id == guide.id)
+        .unwrap_or_default();
+    let j = guide
+        .devices
+        .iter()
+        .position(|d| d.id == shared)
+        .unwrap_or_default();
+    trains
+        .iter()
+        .filter(|t| t.purpose == TrainPurpose::Imaging)
+        .filter(|t| t.devices.iter().any(|d| d.id == shared))
+        .filter_map(|t| {
+            let follower = t.terminal_focuser().filter(|f| *f != shared)?;
+            Some(FieldError {
+                path: train_path(i, &format!(".devices.{j}")),
+                msg: format!(
+                    "guiding train '{}' ends in focuser '{shared}', which imaging train \
+                     '{}' follows with '{follower}': a shared focuser is focused through \
+                     the imaging camera, so the guide camera could not be parfocal with it",
+                    guide.id, t.id
+                ),
+            })
+        })
+        .collect()
 }
 
 /// Kahn's algorithm over the consecutive-pair order relation of the
@@ -1471,6 +1545,143 @@ mod tests {
                     train_id: "a".to_string()
                 },
             ]
+        );
+    }
+
+    /// The reference roster with a third focuser, `helical`, and
+    /// `trains`: the layouts the reference rig does not have.
+    fn rig_with_trains(trains: serde_json::Value) -> EquipmentConfig {
+        equipment(serde_json::json!({
+            "cameras": [
+                {"id": "main-cam", "alpaca_url": "http://x"},
+                {"id": "guide-cam", "alpaca_url": "http://x"}
+            ],
+            "focusers": [
+                {"id": "eaf", "alpaca_url": "http://x"},
+                {"id": "scops-focuser", "alpaca_url": "http://x"},
+                {"id": "helical", "alpaca_url": "http://x"}
+            ],
+            "filter_wheels": [{"id": "main-fw", "alpaca_url": "http://x"}],
+            "mount": {
+                "alpaca_url": "http://x",
+                "guiding": {"url": "http://x"}
+            },
+            "optical_trains": trains
+        }))
+    }
+
+    fn step(focuser_id: &str, train_id: &str) -> AfStep {
+        AfStep {
+            focuser_id: focuser_id.to_string(),
+            train_id: train_id.to_string(),
+        }
+    }
+
+    /// A guide path with no focuser of its own, as behind an unmotorised
+    /// OAG: the guiding train's only focuser is the imaging train's, so
+    /// its sequence runs it in the imaging train — though the guiding
+    /// train comes first in config order — and plans no guide step.
+    #[test]
+    fn a_guiding_train_without_a_focuser_of_its_own_runs_it_in_the_imaging_train() {
+        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
+            {"id": "guide", "purpose": "guiding", "devices": ["eaf", "guide-cam"]},
+            {"id": "main", "devices": ["eaf", "main-cam"]}
+        ])))
+        .unwrap();
+
+        assert_eq!(
+            model.af_sequence("guide").unwrap(),
+            vec![step("eaf", "main")]
+        );
+        let plan = model.refocus_plan("guide").unwrap();
+        assert!(plan.guide_coupled);
+        assert_eq!(
+            plan.steps,
+            vec![PlanStep {
+                focuser_id: "eaf".to_string(),
+                run_train_id: "main".to_string(),
+                camera_id: Some("main-cam".to_string()),
+                metric: StepMetric::Capture,
+            }]
+        );
+        assert_eq!(
+            model.af_sequence("main").unwrap(),
+            vec![step("eaf", "main")]
+        );
+    }
+
+    /// A shared focuser terminal in no train is measured through an
+    /// imaging train that holds it, ahead of the guiding train's own
+    /// step, rather than as a second guide step.
+    #[test]
+    fn a_shared_focuser_terminal_nowhere_runs_in_an_imaging_train_before_the_guide_step() {
+        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
+            {"id": "main", "devices": ["eaf", "helical", "main-cam"]},
+            {"id": "guide", "purpose": "guiding", "devices": ["eaf", "scops-focuser", "guide-cam"]}
+        ])))
+        .unwrap();
+
+        assert_eq!(
+            model.af_sequence("guide").unwrap(),
+            vec![step("eaf", "main"), step("scops-focuser", "guide")]
+        );
+        let metrics: Vec<StepMetric> = model
+            .refocus_plan("guide")
+            .unwrap()
+            .steps
+            .iter()
+            .map(|s| s.metric)
+            .collect();
+        assert_eq!(metrics, [StepMetric::Capture, StepMetric::Guide]);
+        assert_eq!(
+            model.af_sequence("main").unwrap(),
+            vec![step("eaf", "main"), step("helical", "main")]
+        );
+    }
+
+    /// The imaging train that focuses a focuser is one where it is
+    /// terminal before one that merely holds it, an imaging train runs
+    /// its own terminal focuser itself, and a focuser no imaging train
+    /// holds has none.
+    #[test]
+    fn the_imaging_train_focusing_a_focuser_is_one_it_ends_first() {
+        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
+            {"id": "a", "devices": ["eaf", "helical", "main-cam"]},
+            {"id": "b", "devices": ["eaf", "guide-cam"]}
+        ])))
+        .unwrap();
+        assert_eq!(model.imaging_train_focusing("eaf").unwrap().id, "b");
+        assert_eq!(model.imaging_train_focusing("helical").unwrap().id, "a");
+        assert_eq!(model.af_sequence("a").unwrap()[0], step("eaf", "b"));
+
+        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
+            {"id": "a", "devices": ["eaf", "main-cam"]},
+            {"id": "b", "devices": ["eaf", "guide-cam"]}
+        ])))
+        .unwrap();
+        assert_eq!(model.af_sequence("b").unwrap(), vec![step("eaf", "b")]);
+
+        let model = TrainModel::try_from_equipment(&reference_rig()).unwrap();
+        assert_eq!(model.imaging_train_focusing("eaf").unwrap().id, "main");
+        assert!(model.imaging_train_focusing("scops-focuser").is_none());
+    }
+
+    /// A focuser after the guiding train's terminal focuser in an
+    /// imaging train leaves no camera to focus the shared one for both
+    /// paths: rejected at the guiding train's entry for it.
+    #[test]
+    fn a_guiding_trains_focuser_followed_in_an_imaging_train_is_rejected() {
+        let errors = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
+            {"id": "main", "devices": ["eaf", "helical", "main-cam"]},
+            {"id": "guide", "purpose": "guiding", "devices": ["main-fw", "eaf", "guide-cam"]}
+        ])))
+        .unwrap_err();
+        assert_eq!(paths(&errors), ["equipment.optical_trains.1.devices.1"]);
+        assert_eq!(
+            errors[0].msg,
+            "guiding train 'guide' ends in focuser 'eaf', which imaging train 'main' follows \
+             with 'helical': a shared focuser is focused through the imaging camera, so the \
+             guide camera could not be parfocal with it"
         );
     }
 }

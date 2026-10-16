@@ -14,7 +14,12 @@ Feature: Guide-train focus via PHD2 metrics
   started. The capture-only parameters, the sparse gate
   (min_star_fraction) included, are rejected for this train.
   refocus_train expansions run a guiding-train step the same way,
-  always last and never under paused corrections. The stub guider in
+  always last and never under paused corrections. The sweep moves only
+  a focuser no imaging train holds: one an imaging train holds is
+  focused through the imaging camera alone, the guide camera taken as
+  parfocal with it, so the guide-train sweep refuses it before anything
+  moves, naming the imaging train, and refocus_train on that guiding
+  train runs the focuser's capture step in the imaging train. The stub guider in
   these scenarios serves perfectly flat HFD, so the fit
   deterministically reports no minimum (a monotonic_curve error) —
   the success-path payload is pinned by unit tests over scripted
@@ -107,6 +112,29 @@ Feature: Guide-train focus via PHD2 metrics
     When the MCP client calls "refocus_train" with train "guide"
     Then the tool call should return an error
     And the error message should contain "requires active guiding"
+
+  # An unmotorised OAG: the guiding train's only focuser is the imaging
+  # train's, which only the imaging camera focuses.
+  Scenario: Guide-train auto_focus refuses a focuser an imaging train holds, before anything moves
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a focuser on the simulator shared by imaging train "main" and guiding train "guide"
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "guide"
+    Then the tool call should return an error
+    And the error message should contain "guide-train auto_focus: focuser 'main-focuser' is in imaging train 'main', which focuses it"
+    And the stub guider should not have received a "/guiding/metrics" request
+
+  # With guiding idle a metric step would be refused up front; the
+  # capture step runs instead, and fails on the offline main camera.
+  Scenario: refocus_train on a guiding train with no focuser of its own sweeps through the imaging camera
+    Given a running Alpaca simulator
+    And a stub guider reporting guiding inactive
+    And rp is running with a focuser on the simulator shared by imaging train "main" and guiding train "guide"
+    And an MCP client connected to rp
+    When the MCP client calls "refocus_train" with train "guide"
+    Then the tool call should return an error
+    And the error message should contain "step 1 (focuser 'main-focuser' in train 'main') failed:"
 
   Scenario: The guide focus watch turns a degrading HFD trend into events naming the guiding train
     Given a running Alpaca simulator

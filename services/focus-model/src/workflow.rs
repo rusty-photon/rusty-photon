@@ -1626,6 +1626,7 @@ pub async fn focus_shared(
     if !plan.steps.iter().any(|step| !step.is_guide()) {
         return Err(no_capture_step(&params.train_id));
     }
+    check_capture_steps(rig.active, &params.train_id, &plan).await?;
     let mut paused = pause_if_coupled(rig.active, plan.guide_coupled).await?;
     let walked_paused = paused;
 
@@ -1720,6 +1721,27 @@ async fn release_guiding(rig: Rig<'_>, paused: &mut bool, when: &str) -> Result<
             e.tool_message()
         ))
     })
+}
+
+/// Refuse a plan with a capture step a sweep cannot measure, before
+/// anything pauses or moves. A sweep moves its train's terminal focuser
+/// and records on that train, and `rp` plans a shared focuser terminal
+/// in no train through a train that ends in another focuser.
+async fn check_capture_steps(rig: &dyn FocusRig, train_id: &str, plan: &RefocusPlan) -> Result<()> {
+    for step in plan.steps.iter().filter(|step| !step.is_guide()) {
+        let info = rig.get_train_info(&step.run_train_id).await?;
+        let terminal = info.terminal_focuser_id.as_deref();
+        if terminal != Some(step.focuser_id.as_str()) {
+            return Err(FocusModelError::Workflow(format!(
+                "train '{train_id}' has a plan step this provider cannot sweep: focuser '{}' \
+                 in train '{}', whose sweep moves '{}'; rp's refocus_train runs that plan",
+                step.focuser_id,
+                step.run_train_id,
+                terminal.unwrap_or("no focuser")
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A plan whose only step is the guiding metric sweep.
@@ -3288,32 +3310,47 @@ mod tests {
     async fn a_shared_walk_pauses_once_and_releases_before_the_guide_step() {
         let (store, _dir) = temp_store().await;
         let position = Position::new(25_000);
-        let mut active = rig_with_plan(
-            &position,
-            RefocusPlan {
-                guide_coupled: true,
-                steps: vec![
-                    PlanStep {
-                        focuser_id: "shared-focuser".to_owned(),
-                        run_train_id: "main".to_owned(),
-                        camera_id: Some("main-cam".to_owned()),
-                        metric: "capture".to_owned(),
-                    },
-                    PlanStep {
-                        focuser_id: "main-focuser".to_owned(),
-                        run_train_id: "main".to_owned(),
-                        camera_id: Some("main-cam".to_owned()),
-                        metric: "capture".to_owned(),
-                    },
-                    PlanStep {
-                        focuser_id: "guide-focuser".to_owned(),
-                        run_train_id: "guide".to_owned(),
-                        camera_id: None,
-                        metric: "guide".to_owned(),
-                    },
-                ],
-            },
-        );
+        let mut active = MockFocusRig::new();
+        // As `rp` plans it: the shared focuser runs in a train it ends.
+        active
+            .expect_get_train_info()
+            .withf(|train_id| train_id == "upper")
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(TrainInfo {
+                        terminal_focuser_id: Some("shared-focuser".to_owned()),
+                        ..train_info(true, true, true)
+                    })
+                })
+            });
+        let plan = RefocusPlan {
+            guide_coupled: true,
+            steps: vec![
+                PlanStep {
+                    focuser_id: "shared-focuser".to_owned(),
+                    run_train_id: "upper".to_owned(),
+                    camera_id: Some("main-cam".to_owned()),
+                    metric: "capture".to_owned(),
+                },
+                PlanStep {
+                    focuser_id: "main-focuser".to_owned(),
+                    run_train_id: "main".to_owned(),
+                    camera_id: Some("main-cam".to_owned()),
+                    metric: "capture".to_owned(),
+                },
+                PlanStep {
+                    focuser_id: "guide-focuser".to_owned(),
+                    run_train_id: "guide".to_owned(),
+                    camera_id: None,
+                    metric: "guide".to_owned(),
+                },
+            ],
+        };
+        active.expect_get_refocus_plan().returning(move |_| {
+            let plan = plan.clone();
+            Box::pin(async move { Ok(plan) })
+        });
+        let mut active = base_rig(active, &position);
         measures_a_v(&mut active, &position, 25_010);
         active
             .expect_guiding_active()
@@ -3347,7 +3384,21 @@ mod tests {
                 cleanup: &cleanup,
             },
             &store,
-            &config(CONFIGURED),
+            &config(
+                r#"{
+                    "mcp_server_url": "http://127.0.0.1:1/mcp",
+                    "trains": {
+                        "upper": {
+                            "duration": "10ms", "step_size": 10, "half_width": 40,
+                            "min_fit_points": 3, "max_attempts": 1
+                        },
+                        "main": {
+                            "duration": "10ms", "step_size": 10, "half_width": 40,
+                            "min_fit_points": 3, "max_attempts": 1
+                        }
+                    }
+                }"#,
+            ),
             &FocusTrainParams {
                 train_id: "main".to_owned(),
                 filter: None,
@@ -3360,11 +3411,71 @@ mod tests {
 
         let steps = outcome.steps.unwrap();
         assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].run_train_id, "upper");
         assert_eq!(steps[2].metric, "guide");
         assert_eq!(steps[2].position, Some(9_000));
         assert!(outcome.guiding_paused, "the walk held the pause");
         active.checkpoint();
         cleanup.checkpoint();
+    }
+
+    /// A capture step whose focuser its run train does not end in — a
+    /// shared focuser terminal in no train — is one a sweep of that
+    /// train cannot measure, so the walk is refused before it pauses
+    /// guiding or moves anything.
+    #[tokio::test]
+    async fn a_plan_step_a_sweep_cannot_measure_is_refused_before_anything_moves() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: true,
+                steps: vec![
+                    PlanStep {
+                        focuser_id: "shared-focuser".to_owned(),
+                        run_train_id: "main".to_owned(),
+                        camera_id: Some("main-cam".to_owned()),
+                        metric: "capture".to_owned(),
+                    },
+                    PlanStep {
+                        focuser_id: "guide-focuser".to_owned(),
+                        run_train_id: "guide".to_owned(),
+                        camera_id: None,
+                        metric: "guide".to_owned(),
+                    },
+                ],
+            },
+        );
+        active.expect_pause_guiding().times(0);
+        active.expect_auto_focus_guide_train().times(0);
+        let cleanup = MockFocusRig::new();
+
+        let err = focus_shared(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &FocusTrainParams {
+                train_id: "guide".to_owned(),
+                filter: None,
+                shared: true,
+            },
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err.tool_message(),
+            "train 'guide' has a plan step this provider cannot sweep: focuser \
+             'shared-focuser' in train 'main', whose sweep moves 'main-focuser'; \
+             rp's refocus_train runs that plan"
+        );
+        assert_eq!(position.get(), 25_000);
+        active.checkpoint();
     }
 
     /// A plan that is the guiding metric sweep alone has nowhere to

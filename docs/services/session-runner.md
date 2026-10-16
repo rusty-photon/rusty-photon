@@ -1336,7 +1336,11 @@ catch-log:
   `event.train_id` — the guiding train named by the event, so the
   document needs no guide-train parameter. Sweep geometry comes from
   that train's `auto_focus` block; re-fire pacing is the watch's own
-  `cooldown`.
+  `cooldown`. A guiding train whose only focuser the imaging train
+  holds (an unmotorised OAG, a duo camera) has no metric sweep: rp
+  refuses it, naming the imaging train, the `catch` logs that, and
+  the escalation below focuses the shared focuser through the
+  imaging camera.
 - `refocus-on-escalation` — on `guide_focus_escalation` (same gate):
   run the full `refocus_train` on `event.train_id` — shared focusers
   first, then the guide differential (rp.md § `refocus_train`

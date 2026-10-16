@@ -282,9 +282,57 @@ async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {
             "main-cam".to_string(),
         ],
     );
-    // An offline guide camera: the guiding train exists in the model —
-    // which is what makes the shared focuser guide-coupled — without a
-    // second simulator camera.
+    push_offline_guiding_train(
+        world,
+        vec!["main-focuser".to_string(), "guide-cam".to_string()],
+    );
+    start_provider_then_rp(world).await;
+}
+
+/// `main-focuser` upstream of `main-helical` in the imaging train and
+/// of `guide-focuser` in the guiding train, the two downstream
+/// focusers offline: a shared focuser terminal in no train, which rp
+/// plans through the main camera.
+#[given(
+    "rp is running with a shared focuser terminal in no train and focus-model registered as a tool provider"
+)]
+async fn rp_with_shared_focuser_terminal_nowhere(world: &mut FocusModelWorld) {
+    configure_rig(world, Some(APERTURE_MM));
+    for id in ["main-helical", "guide-focuser"] {
+        world.focusers.push(FocuserConfig {
+            id: id.to_string(),
+            alpaca_url: "not-a-url".to_string(),
+            device_number: 0,
+            min_position: None,
+            max_position: None,
+            backlash: None,
+            microns_per_step: None,
+        });
+    }
+    push_train(
+        world,
+        vec![
+            "main-fw".to_string(),
+            "main-focuser".to_string(),
+            "main-helical".to_string(),
+            "main-cam".to_string(),
+        ],
+    );
+    push_offline_guiding_train(
+        world,
+        vec![
+            "main-focuser".to_string(),
+            "guide-focuser".to_string(),
+            "guide-cam".to_string(),
+        ],
+    );
+    start_provider_then_rp(world).await;
+}
+
+/// The guiding train `guide` over `devices`, ending in an offline guide
+/// camera: the train exists in the model — which is what makes a focuser
+/// it shares guide-coupled — without a second simulator camera.
+fn push_offline_guiding_train(world: &mut FocusModelWorld, devices: Vec<String>) {
     world.cameras.push(CameraConfig {
         id: "guide-cam".to_string(),
         alpaca_url: "not-a-url".to_string(),
@@ -298,7 +346,7 @@ async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
         default_position_angle_degrees: None,
-        devices: vec!["main-focuser".to_string(), "guide-cam".to_string()],
+        devices,
         auto_focus: None,
     });
     // Guiding is mount-scoped, so the guider block needs a mount; it
@@ -308,7 +356,6 @@ async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {
         device_number: 0,
         settle_after_slew: None,
     });
-    start_provider_then_rp(world).await;
 }
 
 #[given("an MCP client connected to rp")]

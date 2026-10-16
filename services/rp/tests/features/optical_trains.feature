@@ -34,7 +34,14 @@ Feature: Optical trains configuration
   as a read: shared focusers upstream-first, each run in the train where
   it is terminal, then the train's own focuser, a guiding-train step
   last, plus whether a capture step moves a focuser the guiding train
-  shares. Device-id addressing stays first-class.
+  shares. A focuser an imaging train holds is focused through the
+  imaging camera alone, the guide camera taken as parfocal with it: it
+  runs in an imaging train — one where it is terminal, else one that
+  holds it — so a guide step appears only for a focuser the guiding
+  train alone holds. A guiding train whose terminal focuser has another
+  focuser after it in an imaging train is rejected, since no camera
+  could then focus the shared one for both paths. Device-id addressing
+  stays first-class.
 
   Scenario: Configured optical trains round-trip through GET /api/config
     Given a temp rp config with the reference optical trains
@@ -174,6 +181,26 @@ Feature: Optical trains configuration
     Then the config response status should be 200
     And the apply status should be "invalid"
     And the apply errors should name path "equipment.optical_trains"
+
+  # main-helical moves the main camera's focus and not the guide
+  # camera's, so main-focuser, the guide path's only focuser, could not
+  # be focused through the main camera with the guide camera parfocal.
+  Scenario: A guiding train's focuser with a focuser after it in an imaging train is rejected
+    Given a temp rp config with the reference roster and the optical trains:
+      """
+      [ { "id": "main",  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
+        { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-focuser", "guide-cam"] } ]
+      """
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains" to:
+      """
+      [ { "id": "main",  "devices": ["main-focuser", "main-helical", "main-cam"] },
+        { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-cam"] } ]
+      """
+    Then the config response status should be 200
+    And the apply status should be "invalid"
+    And the apply error at path "equipment.optical_trains.1.devices.0" should mention "guiding train 'guide' ends in focuser 'main-focuser', which imaging train 'main' follows with 'main-helical'"
 
   Scenario: A non-positive train focal length is rejected at parse
     Given a temp rp config with the reference optical trains
@@ -517,6 +544,34 @@ Feature: Optical trains configuration
     When the MCP client calls "get_refocus_plan" with train "main"
     Then the tool result at "/guide_coupled" should be the JSON true
     And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}]
+
+  # An unmotorised OAG behind the imaging focuser: focusing the imaging
+  # train focuses the guide path, so there is no guide step.
+  Scenario: get_refocus_plan on a guiding train with no focuser of its own is the imaging train's capture step
+    Given a temp rp config with the reference roster and the optical trains:
+      """
+      [ { "id": "main",  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
+        { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-cam"] } ]
+      """
+    And rp is started with that config file
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "guide"
+    Then the tool result at "/guide_coupled" should be the JSON true
+    And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}]
+
+  # main-focuser is upstream in both trains and terminal in neither:
+  # the imaging camera still measures it, ahead of the guide step.
+  Scenario: get_refocus_plan runs a shared focuser terminal in no train through the imaging camera, before the guide step
+    Given a temp rp config with the reference roster and the optical trains:
+      """
+      [ { "id": "main",  "devices": ["main-focuser", "main-helical", "main-cam"] },
+        { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-focuser", "guide-cam"] } ]
+      """
+    And rp is started with that config file
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "guide"
+    Then the tool result at "/guide_coupled" should be the JSON true
+    And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}, {"focuser_id": "guide-focuser", "run_train_id": "guide", "camera_id": null, "metric": "guide"}]
 
   Scenario: get_refocus_plan on an unknown train is an error naming it
     Given a temp rp config with the reference optical trains
