@@ -32,6 +32,8 @@ tokio-util = { workspace = true }
 redb = { workspace = true }
 # `at` / `updated_at` stamps.
 chrono = { workspace = true }
+# A training run's fresh train-lease id (lease.rs).
+uuid = { workspace = true }
 # The MCP `Host` allowlist: hostname + interface addresses, as rp derives it.
 hostname = { workspace = true }
 if-addrs = { workspace = true }

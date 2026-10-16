@@ -12,14 +12,23 @@
 //! recorded, so a scenario can assert the token rp named, the TTL it
 //! asked for, and that the release named the same token.
 //!
-//! The stub takes no exposures: rp's captures under a lease run against
-//! the simulator's camera in an imaging train, and the facade's own
-//! capture path has its own suite in `phd2-guider`.
+//! Started with [`FacadeCameraStub::start`] the stub takes no
+//! exposures: rp's captures under a lease run against the simulator's
+//! camera in an imaging train, and the facade's own capture path has
+//! its own suite in `phd2-guider`. Started with
+//! [`FacadeCameraStub::start_over`] it passes every other Camera call
+//! through to a real Alpaca camera, so a sweep through the facade takes
+//! that camera's frames: what a focus provider's training run on a
+//! guiding train needs.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use axum::body::{Body, Bytes};
+use axum::http::header::{ACCEPT, CONTENT_TYPE};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -58,6 +67,15 @@ struct FacadeState {
     calls: Mutex<Vec<FacadeCall>>,
 }
 
+/// The camera a stub started with [`FacadeCameraStub::start_over`] passes
+/// every call but the sweep-lease Actions to.
+#[derive(Debug)]
+struct Upstream {
+    client: reqwest::Client,
+    /// `<alpaca_url>/api/v1/camera/<device_number>`.
+    camera: String,
+}
+
 /// A running stub facade. Dropping it stops the server.
 pub struct FacadeCameraStub {
     addr: SocketAddr,
@@ -73,6 +91,30 @@ impl FacadeCameraStub {
     ///
     /// Panics when the loopback listener cannot be bound.
     pub async fn start() -> Self {
+        Self::serve(None).await
+    }
+
+    /// Serve the stub with every Camera call but the sweep-lease Actions
+    /// (`SupportedActions`, `Action`) passed through to the Alpaca camera
+    /// at `alpaca_url`, device `device_number`: `Connected` and the
+    /// exposure, readout and image calls reach that camera, so a capture
+    /// through the facade returns its frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the loopback listener cannot be bound.
+    pub async fn start_over(alpaca_url: &str, device_number: u32) -> Self {
+        Self::serve(Some(Arc::new(Upstream {
+            client: reqwest::Client::new(),
+            camera: format!(
+                "{}/api/v1/camera/{device_number}",
+                alpaca_url.trim_end_matches('/')
+            ),
+        })))
+        .await
+    }
+
+    async fn serve(upstream: Option<Arc<Upstream>>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind the stub facade's listener");
@@ -83,7 +125,7 @@ impl FacadeCameraStub {
             held: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
         });
-        let app = router(state.clone());
+        let app = router(state.clone(), upstream);
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -151,10 +193,10 @@ impl Drop for FacadeCameraStub {
     }
 }
 
-fn router(state: Arc<FacadeState>) -> Router {
+fn router(state: Arc<FacadeState>, upstream: Option<Arc<Upstream>>) -> Router {
     let get_connected = state.clone();
     let put_connected = state.clone();
-    Router::new()
+    let router = Router::new()
         .route(
             "/management/v1/configureddevices",
             get(|| async {
@@ -171,22 +213,6 @@ fn router(state: Arc<FacadeState>) -> Router {
             }),
         )
         .route(
-            "/api/v1/camera/0/connected",
-            get(move || {
-                let state = get_connected.clone();
-                async move { value(&json!(state.connected.load(Ordering::SeqCst))) }
-            })
-            .put(move |form: axum::Form<Vec<(String, String)>>| {
-                let state = put_connected.clone();
-                async move {
-                    let requested =
-                        field(&form.0, "Connected").is_some_and(|v| v.eq_ignore_ascii_case("true"));
-                    state.connected.store(requested, Ordering::SeqCst);
-                    Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
-                }
-            }),
-        )
-        .route(
             "/api/v1/camera/0/supportedactions",
             get(|| async { value(&json!(SWEEP_LEASE_ACTIONS)) }),
         )
@@ -196,7 +222,74 @@ fn router(state: Arc<FacadeState>) -> Router {
                 let state = state.clone();
                 async move { action(&state, &form.0) }
             }),
-        )
+        );
+    // Over a real camera, `Connected` is that camera's too: the
+    // fallback carries it there with every other call.
+    if let Some(upstream) = upstream {
+        return router.fallback(
+            move |method: Method, uri: Uri, headers: HeaderMap, body: Bytes| {
+                let upstream = upstream.clone();
+                async move { pass_through(&upstream, method, &uri, &headers, body).await }
+            },
+        );
+    }
+    router.route(
+        "/api/v1/camera/0/connected",
+        get(move || {
+            let state = get_connected.clone();
+            async move { value(&json!(state.connected.load(Ordering::SeqCst))) }
+        })
+        .put(move |form: axum::Form<Vec<(String, String)>>| {
+            let state = put_connected.clone();
+            async move {
+                let requested =
+                    field(&form.0, "Connected").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+                state.connected.store(requested, Ordering::SeqCst);
+                Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
+            }
+        }),
+    )
+}
+
+/// Send one Camera call on to the upstream camera and hand back its
+/// answer: the status, the content type (an `ImageBytes` frame keeps
+/// its own) and the body.
+async fn pass_through(
+    upstream: &Upstream,
+    method: Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(member) = uri.path().strip_prefix("/api/v1/camera/0/") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut url = format!("{}/{member}", upstream.camera);
+    if let Some(query) = uri.query() {
+        url.push('?');
+        url.push_str(query);
+    }
+    let mut request = upstream.client.request(method, url).body(body);
+    for name in [CONTENT_TYPE, ACCEPT] {
+        if let Some(value) = headers.get(&name) {
+            request = request.header(name, value);
+        }
+    }
+    let answer = match request.send().await {
+        Ok(answer) => answer,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    };
+    let status = answer.status();
+    let content_type = answer.headers().get(CONTENT_TYPE).cloned();
+    let body = match answer.bytes().await {
+        Ok(body) => body,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    };
+    let mut response = (status, Body::from(body)).into_response();
+    if let Some(content_type) = content_type {
+        response.headers_mut().insert(CONTENT_TYPE, content_type);
+    }
+    response
 }
 
 fn field<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
