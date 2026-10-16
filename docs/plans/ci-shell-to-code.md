@@ -102,7 +102,7 @@ first in their columns.
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
-| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Merged in #1519; done when proven on main |
+| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
@@ -565,8 +565,7 @@ push script's header for the upload order, and changes with it.
 
 ### J14 — Crates from the LAN bazel-remote
 
-Merged in #1519, as `.github/actions/lan-crates`; done once its proof
-runs on main (**Done when**, below). The pool `stable / clippy`
+Done in #1519, as `.github/actions/lan-crates`. The pool `stable / clippy`
 reads every crates.io package `Cargo.lock` pins from the LAN bazel-remote's
 HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 `Cargo.lock` records. The owner chose this over a new caching service on
@@ -631,14 +630,33 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
   bazel-remote v2.6.2, the action took 582 crates from crates.io and
   uploaded them in 2.4 s, then served all 583 from the CAS in 1.5 s; Cargo's
   `fmt --check` and both clippy passes then ran on that directory with a
-  fresh `CARGO_HOME`, downloading nothing. After merge, watch the first
-  push to main fill the CAS and the next PR's pool `stable / clippy` take
-  every crate from it.
+  fresh `CARGO_HOME`, downloading nothing.
+- **Proven after merge**, on 2026-10-14:
+  - the merge's own push to main
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38677070592/job/116232983685))
+    read 61 crates from the LAN cache, fetched 522 from crates.io and
+    uploaded all 522;
+  - the next push, a dependency bump
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38677152335/job/116233245405)),
+    read 581 from the cache and fetched only the 2 the bump added,
+    uploading both;
+  - a PR on that lockfile, #1527
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38679877014/job/116241751234)),
+    logged "583 crates from Cargo.lock in 3.3 s: 583 from the LAN cache, 0
+    from crates.io." and passed.
 - **Done when** a pool `stable / clippy` run on a PR whose lockfile main
   has already built downloads no crate from crates.io ("583 from the LAN
-  cache, 0 from crates.io"), and the job still passes with the cache
-  stopped. The git dependency is outside this check; its clone is J1's to
-  cache.
+  cache, 0 from crates.io"): #1527's run above. The git dependency is
+  outside this check; its clone is J1's to cache.
+- **A stopped cache is left to the tests**, not a live run: a refused
+  connection, a cache that does not answer in time and one that answers
+  with an error are each a miss there, and the crates come from
+  crates.io. The cache is the bazel-remote the pool's Bazel legs build
+  from, and with the Remote Asset API on they fail outright while it is
+  unreachable ([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)),
+  so no PR goes green with it stopped anyway. The owner chose this on
+  2026-10-15, in place of the plan's live check that the job passes with
+  the cache stopped.
 
 ## Rust items
 

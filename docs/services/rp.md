@@ -3070,7 +3070,8 @@ optics", and none of them does — plus the `focus_tools` declaration
     "get_train_info", "get_refocus_plan", "get_focuser_position",
     "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
     "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
-    "resume_guiding", "auto_focus"
+    "resume_guiding", "auto_focus", "acquire_train_lease",
+    "release_train_lease"
   ]
 }
 ```
@@ -7528,7 +7529,8 @@ return a structured "site not configured" error.
         "get_train_info", "get_refocus_plan", "get_focuser_position",
         "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
         "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
-        "resume_guiding", "auto_focus"
+        "resume_guiding", "auto_focus", "acquire_train_lease",
+        "release_train_lease"
       ]
     }
   ],
