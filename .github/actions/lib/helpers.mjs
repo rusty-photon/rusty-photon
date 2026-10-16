@@ -203,6 +203,20 @@ export function exportVariable(name, value) {
   process.env[name] = String(value);
 }
 
+/**
+ * Keeps `value` under `name` for the action's own post step, which reads it
+ * back with getState. The runner hands it to that step alone, as STATE_<name>
+ * (FileCommandManager.cs, SaveStateFileCommand).
+ */
+export function saveState(name, value) {
+  appendEntry('GITHUB_STATE', name, value);
+}
+
+/** What the action's main step kept under `name` with saveState, or ''. */
+export function getState(name) {
+  return process.env[`STATE_${name}`] ?? '';
+}
+
 /** Puts `dir` first on PATH for the job's later steps, and for this process. */
 export function addPath(dir) {
   if (typeof dir !== 'string' || dir === '' || /[\r\n]/.test(dir)) {
@@ -487,6 +501,50 @@ export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs 
     },
     { attempts: tries, delayMs, label: `${method} ${forLog(target)}`, signal: init.signal },
   );
+}
+
+// --- A LAN address --------------------------------------------------------------
+
+/**
+ * Masks the URL `url`, which `name` names, before anything can print it: the
+ * whole URL without trailing slashes, its host and its hostname, and an IPv6
+ * address without its brackets as well, as a connect error prints it.
+ * Returns the URL without its trailing slashes. One that does not parse
+ * throws, without showing it. For an address that is the operator's own,
+ * such as the LAN cache's (RP_LAN_CACHE_URL).
+ */
+export function maskUrl(url, name) {
+  const base = url.replace(/\/+$/, '');
+  setSecret(base);
+  let parsed;
+  try {
+    parsed = new URL(base);
+  } catch {
+    throw new Error(`${name} does not parse as a URL (it is not shown, as it is a LAN address)`);
+  }
+  setSecret(parsed.host);
+  setSecret(parsed.hostname);
+  if (parsed.hostname.startsWith('[')) setSecret(parsed.hostname.slice(1, -1));
+  return base;
+}
+
+/**
+ * Why a request failed, without the address it went to: the HTTP status of
+ * an answer, or the error codes along the causes of no answer. fetch's own
+ * messages name the address it connected to ("connect ECONNREFUSED
+ * <ip>:<port>"), which maskUrl's masks cover only when the URL holds that
+ * same address, not a name that resolves to it.
+ */
+export function requestFailure(err) {
+  if (err instanceof HttpError) return `HTTP ${err.status}`;
+  const codes = [];
+  const seen = new Set();
+  for (let e = err; e !== undefined && e !== null && !seen.has(e); e = e.cause) {
+    seen.add(e);
+    if (typeof e.code === 'string') codes.push(e.code);
+    else if (e.name === 'TimeoutError') codes.push('no answer in time');
+  }
+  return codes.length > 0 ? codes.join(': ') : (err?.name ?? 'an unknown error');
 }
 
 // --- Hashing ------------------------------------------------------------------

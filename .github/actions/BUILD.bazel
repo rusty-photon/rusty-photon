@@ -19,6 +19,20 @@ node_test(
     ],
 )
 
+# cargo-cache: the pool `stable / clippy`'s compiled dependencies, kept in the
+# LAN bazel-remote. The tests that pack and unpack run on Linux only, where
+# the action runs, with GNU tar (and zstd, where the machine has it).
+node_test(
+    name = "cargo_cache_test",
+    size = "small",
+    srcs = ["cargo-cache/cache.test.mjs"],
+    data = [
+        "cargo-cache/cache.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # lan-crates: the pool `stable / clippy`'s crates from the LAN bazel-remote.
 # Reads the repository's own Cargo.lock too: a format Cargo starts to write
 # that the action cannot read fails here, where on the runner it would only

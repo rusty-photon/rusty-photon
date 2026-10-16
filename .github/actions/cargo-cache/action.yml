@@ -1,0 +1,31 @@
+name: Build cache from the LAN
+description: >-
+  The pool `stable / clippy`'s compiled dependencies (target/ without the
+  workspace's own crates, and $CARGO_HOME/git), kept in the LAN bazel-remote
+  (RP_LAN_CACHE_URL, set by the pool runner). Without write-auth it restores
+  them before the build; with it the build runs cold, and the post step saves
+  them if the job succeeded and the commit is still the head of the default
+  branch. A cache that is missing, down or wrong is a cold build, never a
+  failure. Does nothing without RP_LAN_CACHE_URL (hosted runners, fork PRs).
+  Run it after the toolchain install and lan-crates, before any Cargo step.
+  Plan item J1 in docs/plans/ci-shell-to-code.md.
+inputs:
+  write-auth:
+    description: >-
+      The LAN cache's write credential, a whole Authorization header value
+      (BAZEL_LAN_CACHE_WRITE_AUTH). Pass it on push to main only, as bazel.yml
+      does. With it the action never restores, and saves; empty means it
+      restores, and never saves.
+    required: false
+    default: ""
+  github-token:
+    description: Reads the head of the default branch before a save.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs
+  post: post.mjs
+  # A post step otherwise runs after a failed or cancelled job too, and would
+  # replace the one good cache with a half-built one.
+  post-if: success()

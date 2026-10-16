@@ -14,36 +14,23 @@ import {
   fetchWithRetry,
   getBooleanInput,
   getInput,
+  getState,
   group,
   HttpError,
   isTransient,
+  maskUrl,
+  requestFailure,
   retry,
   run,
+  saveState,
   setOutput,
   setSecret,
   sha256,
   warning,
 } from './helpers.mjs';
-import { capture, serve } from './testing.mjs';
+import { capture, serve, withEnv } from './testing.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
-
-// Sets `vars` (undefined deletes) for the length of `fn`, then puts back what was there.
-async function withEnv(vars, fn) {
-  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
-  const assign = (values) => {
-    for (const [k, v] of Object.entries(values)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  };
-  assign(vars);
-  try {
-    return await fn();
-  } finally {
-    assign(saved);
-  }
-}
 
 function emptyFile() {
   const dir = mkdtempSync(join(process.env.TEST_TMPDIR ?? tmpdir(), 'helpers-'));
@@ -291,6 +278,16 @@ test('exportVariable refuses NODE_OPTIONS, which the runner would drop', async (
   });
   assert.equal(process.env.NODE_OPTIONS, before);
   assert.equal(readFileSync(file, 'utf8'), '');
+});
+
+test('saveState writes GITHUB_STATE in the form the runner reads, and getState reads STATE_<name>', async () => {
+  const file = emptyFile();
+  await withEnv({ GITHUB_STATE: file }, () => saveState('key', 'one\ntwo'));
+  assert.deepEqual(parseCommandFile(readFileSync(file, 'utf8')), [['key', 'one\ntwo']]);
+  await withEnv({ STATE_key: 'abc', STATE_other: undefined }, () => {
+    assert.equal(getState('key'), 'abc');
+    assert.equal(getState('other'), '');
+  });
 });
 
 test('addPath appends a line to GITHUB_PATH and puts the directory first on PATH', async () => {
@@ -796,6 +793,45 @@ test("fetchWithRetry does not retry the caller's own timeout", async (t) => {
     assert.rejects(fetchWithRetry(`${server.url}/x`, { signal: AbortSignal.timeout(100), delayMs: 1 }), { name: 'TimeoutError' }),
   );
   assert.equal(stdout, '', 'a retry was attempted');
+});
+
+// --- A LAN address --------------------------------------------------------------
+
+test('maskUrl masks the URL, its host and its hostname before returning it without trailing slashes', async () => {
+  const { value, stdout } = await capture(() => maskUrl('http://cache.lan:8080//', 'RP_LAN_CACHE_URL'));
+  assert.equal(value, 'http://cache.lan:8080');
+  assert.deepEqual(stdout.split('\n').slice(0, -1), [
+    '::add-mask::http://cache.lan:8080',
+    '::add-mask::cache.lan:8080',
+    '::add-mask::cache.lan',
+  ]);
+});
+
+test('maskUrl masks an IPv6 address with and without its brackets, as a connect error prints it', async () => {
+  const { stdout } = await capture(() => maskUrl('http://[fd00::5]:8080', 'RP_LAN_CACHE_URL'));
+  assert.deepEqual(stdout.split('\n').slice(0, -1), [
+    '::add-mask::http://[fd00::5]:8080',
+    '::add-mask::[fd00::5]:8080',
+    '::add-mask::[fd00::5]',
+    '::add-mask::fd00::5',
+  ]);
+});
+
+test('maskUrl refuses a URL that does not parse, naming it without showing it', async () => {
+  await assert.rejects(
+    capture(() => maskUrl('not a url', 'RP_LAN_CACHE_URL')),
+    (err) => /^RP_LAN_CACHE_URL does not parse as a URL/.test(err.message) && !err.message.includes('not a url'),
+  );
+});
+
+test('requestFailure gives a status or error codes, never a message that may hold the address', () => {
+  const refused = Object.assign(new AggregateError([new Error('connect ECONNREFUSED 10.9.8.7:80')], ''), { code: 'ECONNREFUSED' });
+  assert.equal(requestFailure(new TypeError('fetch failed', { cause: refused })), 'ECONNREFUSED');
+  const reset = Object.assign(new Error('read ECONNRESET 10.9.8.7:80'), { code: 'UND_ERR_SOCKET' });
+  assert.equal(requestFailure(new TypeError('terminated', { cause: reset })), 'UND_ERR_SOCKET');
+  assert.equal(requestFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), 'no answer in time');
+  assert.equal(requestFailure(new RangeError('something at 10.9.8.7')), 'RangeError');
+  assert.equal(requestFailure(new HttpError('GET', 'http://10.9.8.7/cas/x', 503, 'Service Unavailable')), 'HTTP 503');
 });
 
 // --- Hashing ------------------------------------------------------------------

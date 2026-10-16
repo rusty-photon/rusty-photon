@@ -179,8 +179,9 @@ jobs:
     #
     # On hosted runners the shared `linux-stable` cache is saved by test.yml's
     # --all-features build, so pass 2 rebuilds most deps — a check-only
-    # ~1 min, measured. On the pool there is no cache and both passes compile
-    # cold: 83 s and 27 s, measured.
+    # ~1 min, measured. On the pool a push to main compiles both passes cold
+    # (83 s and 27 s, measured), and a pull request restores those
+    # dependencies from the LAN first (the cargo-cache step below).
     #
     # Venue routing (ADR-020): byte-for-byte the expression in
     # bazel-coverage.yml, so the Linux pool serves it for push-to-main and
@@ -248,6 +249,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The compiled dependencies of both clippy passes, from the LAN
+      # bazel-remote: a pull request restores what the last push to main saved,
+      # and lints only the workspace's own crates. A push to main never
+      # restores: it builds cold, and the action's post step saves the result
+      # if the job succeeded and the commit is still main's head, with the
+      # write credential under bazel.yml's push-only expression (ADR-020
+      # layer 4). Unlike lan-crates', that step runs after the build, from the
+      # checkout, which a build script compromised on main could rewrite first
+      # to take the credential; the plan accepts that (J1, "Write key"). A
+      # cache that is missing, down or wrong is a cold build, never a failure.
+      # A no-op on hosted runners (no RP_LAN_CACHE_URL). Plan item J1 in
+      # docs/plans/ci-shell-to-code.md.
+      - name: Build cache from the LAN
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        uses: ./.github/actions/cargo-cache
+        with:
+          write-auth: ${{ github.event_name == 'push' && secrets.BAZEL_LAN_CACHE_WRITE_AUTH || '' }}
       - name: cargo fmt --check
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --check

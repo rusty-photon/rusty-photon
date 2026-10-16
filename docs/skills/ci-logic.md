@@ -79,12 +79,15 @@ parsers, which its comments name.
 | `getInput`, `getBooleanInput` | Read an input. A boolean accepts `true`/`True`/`TRUE` and the three `false` spellings; anything else, empty included, throws, so give it a default in `action.yml`. |
 | `setOutput`, `exportVariable`, `addPath` | Write `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`. Values always go in the multi-line form, under a random delimiter. A name the runner would split (`=`, `<<`, a line break) throws, and so does `NODE_OPTIONS`, which the runner refuses to pass to later steps. |
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
+| `saveState`, `getState` | Keep a value for the action's own `post:` step, which reads it back; the runner hands it to that step alone. |
 | `warning`, `group`, `fail` | A warning annotation; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
 | `describe` | An error's message followed by its causes', which is where `fetch` says why a request failed (`fetch failed: connect ECONNREFUSED …`): what `run` puts in its annotation, for an action that reports a failure without failing the step. |
 | `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks, or a minute for its secondary limit, measured on the server's clock (a wait over two minutes is not retried). Each retry is a plain log line, not a warning annotation. Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
 | `HttpError` | Its message holds the method, the URL without its query string (where a pre-signed URL carries its signature) and the status. `body` holds the start of the response's body, where an API says why it refused. That stays out of the message and the logged stack, since a server may echo credentials there; add it to an error of your own when you trust the server. |
 | `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. Give a `fetchWithRetry` inside it `attempts: 1`, or the two retry counts multiply (3 × 3 requests). `attempts` must be a whole number of 1 or more. The default `isRetryable` is `isTransient`, which retries no bug in the callback. A Retry-After over two minutes is never waited out, whatever `isRetryable` says. An abort during a wait throws an AbortError whose cause is the error being retried. |
+| `maskUrl` | Mask a URL that is the operator's own, such as the LAN cache's: the URL, its host and its hostname. Returns it without trailing slashes; one that does not parse throws without showing it. |
+| `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `io` | Where the helpers write. Tests swap it out (below). |
 
@@ -139,11 +142,23 @@ it stays in the action.
   server on `127.0.0.1`, port 0: `serve` in `lib/testing.mjs`, which
   records each request with its body. Command
   files are temp files under `TEST_TMPDIR`. An environment variable a test
-  sets is put back when it ends (`withEnv`).
+  sets is put back when it ends (`withEnv` in `lib/testing.mjs`).
 - Show that a test which guards a behaviour fails with the behaviour
   broken: break it on purpose and watch the test go red.
 - There is no JavaScript formatter or linter (ADR-022). Match
   `helpers.mjs`: two-space indent, single quotes, semicolons.
+
+### An action with a post step
+
+An action that also has work to do when the job ends, such as saving a
+cache, declares `runs.post` beside `runs.main`, with its own entry file.
+It runs at the end of the job, and by default after a failed or cancelled
+job too (`post-if` "defaults to `always()`", and its status functions read
+the job's status): give `runs.post-if: success()` to a post step that must
+not act on a half-finished job. The
+two entry files run as separate processes; what the post step needs from
+the main step goes through `saveState` and `getState`, and its inputs are
+the main step's. `cargo-cache` is the example.
 
 ### A job that checks nothing else out
 

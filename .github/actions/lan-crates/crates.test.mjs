@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
 import { capture, serve } from '../lib/testing.mjs';
-import { CRATES_IO, lanCrates, parseLock, replaceCratesIo, storeFailure, unpack } from './crates.mjs';
+import { CRATES_IO, lanCrates, parseLock, replaceCratesIo, unpack } from './crates.mjs';
 import { crateFile, lockfile, sha256Hex, tar } from './fixtures.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -123,6 +123,28 @@ test('unpack keeps an executable file executable', { skip: process.platform === 
   assert.equal(statSync(join(dir, 'gamma-1.0.0', 'README')).mode & 0o111, 0);
 });
 
+// `cargo package`'s fixed mtime (2006-07-23), and a later one.
+const PACKAGED = 1153704088;
+const LATER = 1700000000;
+
+test('unpack gives each file its tar mtime, as Cargo does, and the directories and checksum file the newest', async () => {
+  const bytes = gzipSync(
+    tar([
+      { path: 'gamma-1.0.0/build.rs', data: 'fn main() {}', mtime: PACKAGED },
+      { path: 'gamma-1.0.0/src/deep/lib.rs', data: '', mtime: LATER },
+      { path: 'gamma-1.0.0/empty/', type: '5', mtime: PACKAGED },
+    ]),
+  );
+  const dir = tempDir();
+  await unpack(bytes, { name: 'gamma', version: '1.0.0', checksum: sha256Hex(bytes) }, dir);
+  const mtime = (...p) => statSync(join(dir, 'gamma-1.0.0', ...p)).mtimeMs / 1000;
+  assert.equal(mtime('build.rs'), PACKAGED);
+  assert.equal(mtime('src', 'deep', 'lib.rs'), LATER);
+  for (const p of [[], ['src'], ['src', 'deep'], ['empty'], ['.cargo-checksum.json']]) {
+    assert.equal(mtime(...p), LATER, p.join('/') || 'the crate directory');
+  }
+});
+
 test('unpack refuses an entry outside <name>-<version>/, or one that climbs out of it', async () => {
   for (const path of ['other-1.0.0/x', 'gamma-1.0.0/../escaped', '/etc/x', 'gamma-1.0.0//x']) {
     const bytes = gzipSync(tar([{ path, data: 'x' }]));
@@ -227,17 +249,6 @@ test('a store that refuses the connection is a miss, and its address is masked f
   // error names the address a host name resolved to, which no mask covers.
   assert.deepEqual(lines.slice(3).filter((l) => l.includes(hostname)), []);
   assert.match(cargoConfig(ws.cargoHome), /replace-with = "lan-crates"/);
-});
-
-test('an IPv6 store address is masked with and without its brackets, as a connect error prints it', async () => {
-  const ws = workspace([]);
-  const { stdout } = await capture(() => lanCrates({ storeUrl: 'http://[fd00::5]:8080', ...ws, ...OPTIONS }));
-  assert.deepEqual(stdout.split('\n').slice(0, 4), [
-    '::add-mask::http://[fd00::5]:8080',
-    '::add-mask::[fd00::5]:8080',
-    '::add-mask::[fd00::5]',
-    '::add-mask::fd00::5',
-  ]);
 });
 
 test('a store that does not answer in time is a miss', async (t) => {
@@ -376,15 +387,6 @@ test('a Cargo.lock the action cannot read is a warning, and Cargo is left alone'
   assert.match(stdout, /::warning::Cargo\.lock version 5: this action reads versions 3 and 4; Cargo downloads its crates itself\./);
   assert.equal(cas.requests.length, 0);
   assert.equal(cargoConfig(ws.cargoHome), undefined);
-});
-
-test('storeFailure gives a status or error codes, never a message that may hold the address', () => {
-  const refused = Object.assign(new AggregateError([new Error('connect ECONNREFUSED 10.9.8.7:80')], ''), { code: 'ECONNREFUSED' });
-  assert.equal(storeFailure(new TypeError('fetch failed', { cause: refused })), 'ECONNREFUSED');
-  const reset = Object.assign(new Error('read ECONNRESET 10.9.8.7:80'), { code: 'UND_ERR_SOCKET' });
-  assert.equal(storeFailure(new TypeError('terminated', { cause: reset })), 'UND_ERR_SOCKET');
-  assert.equal(storeFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), 'no answer in time');
-  assert.equal(storeFailure(new RangeError('something at 10.9.8.7')), 'RangeError');
 });
 
 test('no store URL: nothing is fetched and Cargo is left alone', async () => {
