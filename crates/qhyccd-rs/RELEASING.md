@@ -79,7 +79,7 @@ succeeded — that is what proves the release path.
 
 The version bump **does** need a repin. `MODULE.bazel.lock` records a hash of
 `Cargo.lock` and of every workspace `Cargo.toml`, and the bump edits both
-manifests and the lock. So run `scripts/repin-bazel-lock.sh` in the bump commit
+manifests and the lock. So run `cargo ci repin-bazel-lock` in the bump commit
 (Rule 10); the pre-commit hook refuses that commit otherwise, and so does CI.
 `MODULE.bazel` itself is unchanged, because workspace members are
 auto-discovered.

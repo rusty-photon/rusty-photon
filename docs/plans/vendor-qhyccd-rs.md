@@ -200,7 +200,7 @@ Original design (as implemented):
   simulation's optional deps in `@cr`" (document that), or pull them via a
   `crate.annotation`. **Spike this first** (`bazel query @cr//:rayon` after a
   no-dev-dep repin) before deciding.
-- `scripts/repin-bazel-lock.sh` (Rule 10), then
+- `cargo ci repin-bazel-lock` (Rule 10), then
   `git diff --cached MODULE.bazel.lock`.
 - **Verify Bazel:**
   - `bazel build //crates/qhyccd-rs/...` + `//services/qhy-camera/...`.

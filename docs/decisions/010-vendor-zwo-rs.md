@@ -168,7 +168,7 @@ wrapper's dependency resolves on crates.io.
 `MODULE.bazel` is unchanged across a publish (members are auto-discovered).
 *Amended 2026-10-03:* the version bump itself needs a repin, because
 `MODULE.bazel.lock` records a hash of `Cargo.lock` and of every workspace
-`Cargo.toml`, the root's included. Run `scripts/repin-bazel-lock.sh` in the bump commit (Rule 10).
+`Cargo.toml`, the root's included. Run `cargo ci repin-bazel-lock` in the bump commit (Rule 10).
 The original text said a repin was needed only when external deps changed.
 *Amended 2026-10-08:* step 1 used to require a green run of the
 `publish-readiness.yml` workflow, which verified the crates out of the workspace

@@ -48,7 +48,7 @@ Two constraints decide what can replace it:
    macOS, the Proxmox pool's Linux and Windows templates, and the Pi.
 2. **Some logic is a developer tool as much as a CI step** —
    `tools/ci/bazel-clippy.sh` is in AGENTS.md rule 4's local gate,
-   `scripts/repin-bazel-lock.sh` in rule 10. It has to run on a developer's
+   the lock repin in rule 10. It has to run on a developer's
    machine without CI around it, and it benefits from knowing the
    workspace (crates, features, pins).
 
@@ -106,9 +106,9 @@ Three kinds of code are outside this decision:
 - **Python.** `tools/ci/*.py` and `tools/coverage/*.py` are already in a
   programming language. Whether to move them is a separate question.
 - **Git hooks.** `.cargo-husky/hooks/pre-commit` stays shell. It runs
-  Cargo, Bazel and the Python lock check, and names the repin script only
+  Cargo, Bazel and the Python lock check, and names the repin tool only
   in a comment; the lock check's messages are what send developers to
-  that script.
+  it.
 
 ## Consequences
 

@@ -821,7 +821,7 @@ established, and building cleanly on all four target platforms including
 the Raspberry Pi 5. As only `rp-targets` uses it initially, it is
 declared in `crates/rp-targets/Cargo.toml` rather than hoisted to the
 workspace (CLAUDE.md Rule 10); after adding it, run
-`scripts/repin-bazel-lock.sh` to refresh `MODULE.bazel.lock` (Rule 10 /
+`cargo ci repin-bazel-lock` to refresh `MODULE.bazel.lock` (Rule 10 /
 [pre-push.md](../skills/pre-push.md#refreshing-modulebazellock)).
 The crate does **not** depend on `rp-catalog` or `rp-ephemeris`: catalog
 resolution and ephemeris evaluation happen in `rp`, which passes already

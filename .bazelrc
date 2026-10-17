@@ -354,7 +354,7 @@ build:ci --disk_cache=
 # recorded inputs no longer match the lock — for crate_universe that is a
 # fresh `cargo-bazel` splice against Cargo.lock — and the ephemeral runner
 # then throws the refreshed lock away. Two things go wrong under that default.
-# A PR that changes a Cargo file without the repin (scripts/repin-bazel-lock.sh;
+# A PR that changes a Cargo file without the repin (`cargo ci repin-bazel-lock`;
 # docs/skills/pre-push.md) passes every Bazel check and lands a stale
 # lock on main, which the next `bazel` run on every developer machine rewrites
 # into a dirty working tree. And every dependabot cargo PR arrives with exactly
@@ -794,6 +794,8 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 #    `bazel coverage`; we only choose WHICH targets via --instrumentation_filter.
 #  * --instrumentation_filter -- first-party only; @cr// crates.io deps are never
 #    instrumented (matches cargo llvm-cov, which reports workspace crates only).
+#    ^//tools/rusty-photon-ci is the one workspace crate outside crates/ and
+#    services/, the developer tools; the rest of tools/ is not Rust.
 #    ^//tests is in it for the end-to-end suites under tests/, for the reason
 #    the next point gives.
 #  * --instrument_test_targets -- rules_rust builds a crate with
@@ -844,7 +846,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # guarded in parity.yml. See docs/plans/archive/bazel-migration.md.
 coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
-coverage:coverage --instrumentation_filter=^//crates,^//services,^//tests
+coverage:coverage --instrumentation_filter=^//crates,^//services,^//tests,^//tools/rusty-photon-ci
 coverage:coverage --instrument_test_targets
 coverage:coverage --combined_report=lcov
 # Cap any single coverage test. An instrumented BDD suite (observed:

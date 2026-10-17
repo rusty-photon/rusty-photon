@@ -4723,6 +4723,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-ci"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rusty-photon-config"
 version = "0.1.0"
 dependencies = [

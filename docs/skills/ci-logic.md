@@ -20,11 +20,47 @@ says how to write it there. Moving the existing shell is
 | --- | --- |
 | One command (a `bazel`, `cargo` or similar invocation, with its flags), or a short fixed sequence of them with no control flow | The workflow YAML, as a `run:` step |
 | Anything else that only CI runs: installing tools, choosing flags, caches, the GitHub API, reading `cargo metadata` or `bazel query` output | A local JavaScript action |
-| A tool a developer also runs (AGENTS.md rules 4 and 10 name some) | The Rust tools crate: plan item F2, not built yet |
+| A tool a developer also runs (AGENTS.md rules 4 and 10 name some) | The Rust tools crate, `tools/rusty-photon-ci`, run as `cargo ci <tool>` |
 
 Shell stays for the one-command steps above and for what ADR-022 leaves
 out: host provisioning, the Python scripts, the git hooks. A reviewer may
 ask for a new shell block of more than a few lines to move.
+
+## The Rust tools crate
+
+`tools/rusty-photon-ci` is a workspace member like any other: it builds
+under Cargo and Bazel, under the workspace lints and MSRV, with
+`publish = false`. A developer runs a tool with `cargo ci <tool>`; the
+alias is in `.cargo/config.toml`, and `cargo ci help` lists the tools.
+
+```
+tools/rusty-photon-ci/
+  Cargo.toml
+  BUILD.bazel              the library, the binary and the unit test
+  src/main.rs              clap: one subcommand per tool, nothing else
+  src/lib.rs
+  src/process.rs           Cmd, the Runner trait, and System, which runs for real
+  src/<tool>.rs            one module per tool, with its tests
+```
+
+- **One module per tool, one subcommand per module.** `main.rs` parses
+  the command line, calls the tool and prints what it returns; it holds no
+  logic, since no test runs it.
+- **A tool takes a `Runner`**, not `std::process::Command`. It builds each
+  command as a `Cmd` (program, arguments, directory, the variables it sets
+  and removes) and hands it to `run` or `read`. Its tests pass a fake that
+  records each `Cmd` and answers `read` from a queue, so they check what
+  the tool would run, in what order and with what environment, and what it
+  does when a command fails, with no Bazel or git on the test's host.
+  `process.rs`'s own tests run `System` on the test binary itself, the one
+  program every OS and Bazel's sandbox are sure to have.
+- **The shell it replaces goes in the same PR**, with every mention of it
+  (ADR-022): search the repository for its path before deleting it.
+- **Dependencies are the workspace's** (rule 10), and few: `clap` for the
+  command line, `thiserror` for the errors.
+- **CI does not run the crate yet.** The Linux pool template has no Cargo
+  until the plan's T1, so a workflow step that does what a tool does
+  stays YAML, and the tool's source names the step to keep in step with.
 
 ## JavaScript actions
 
