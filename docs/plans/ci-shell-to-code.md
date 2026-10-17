@@ -108,7 +108,7 @@ first in their columns.
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
-| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Not started |
+| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | In review (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
