@@ -19,6 +19,7 @@ allowed-tools:
   - Bash(bazel build:*)
   - Bash(bazel test:*)
   - Skill(code-review)
+  - Skill(review-pr)
   - Agent
 ---
 
@@ -41,11 +42,15 @@ Arguments: $ARGUMENTS
 2. Read `docs/skills/babysitting-prs.md` and `docs/skills/code-review.md`,
    then run the loop the first one defines — exit criteria, rating step,
    round comment, watcher, CI diagnosis.
-3. Review every new head with the Skill tool: `skill: "code-review"`,
-   `args: "high <n> --max-findings all"`. No `--comment`: the findings
-   come back here, not to the PR.
-4. Rate the findings with one fresh `general-purpose` subagent — never a
-   fork — using the prompt in code-review.md §The rating step.
+3. Review every new head on Opus with the Skill tool:
+   `skill: "review-pr"`, `args: "high <n> --max-findings all"`, which
+   runs `code-review` on Opus. A session already on Opus may call
+   `skill: "code-review"` directly; if the Skill tool does not know
+   `review-pr`, use the Agent-tool form in code-review.md §Running a
+   review. No `--comment`: the findings come back here, not to the PR.
+4. Rate the findings with one fresh `general-purpose` subagent on Opus
+   (`model: opus`) — never a fork — using the prompt in code-review.md
+   §The rating step.
 5. Act on each verdict (babysitting-prs.md, step 4 of the loop): fix what
    rates fix, fix an optional one only if the round pushes anyway and the
    change is small and in code the PR touches, decline the rest once the

@@ -17,8 +17,9 @@ for the context around the diff:
 /code-review high <pr> --max-findings all
 ```
 
-An agent runs the same thing with the Skill tool: `skill: "code-review"`,
-`args: "high <pr> --max-findings all"`.
+An agent on Opus runs the same thing with the Skill tool:
+`skill: "code-review"`, `args: "high <pr> --max-findings all"`; an agent
+on any other model goes through `/review-pr` (the model paragraph below).
 
 - No `--comment`. The findings come back to the session that ran the
   review, which has them rated (§Rating a finding) and records every one,
@@ -36,6 +37,44 @@ the calling session's conversation about the change. That independence
 from the author is most of what a review is worth. It does load
 CLAUDE.md and, on a machine with Claude Code auto-memory, the user's
 memory index, which can hold notes about the PR under review.
+
+**Model: Opus**, the owner's call on 2026-10-17: a review costs by its
+model, and what decides a finding's fate is the rating step, not the
+reviewer's size. `/code-review` has no model argument. It runs on the
+model of the session that calls it: the fork takes the caller's model
+and the files the caller loaded at start, not the conversation (the
+paragraph above), so a review launched from a session on a larger
+model runs, and bills, on that model. So the review is launched from
+a caller that is on Opus:
+
+- `/review-pr high <pr> --max-findings all` — the repo skill in
+  `.claude/skills/review-pr/SKILL.md`. Its frontmatter forks it to a
+  `general-purpose` agent on Opus; that agent runs `/code-review` with
+  the same arguments, waits for the background review, and hands the
+  findings back verbatim. Verified on 2026-10-17 twice: from a fresh
+  headless session started on another model, where the run billed
+  Opus alone; and on a `high` review of #1546 from a session on another
+  model, where the skill's agent and the review nested in it both ran
+  on Opus by their transcripts and all eight findings came back. A
+  skill added while a session runs is not always listed at once —
+  `/review-pr` was unknown right after its file was written and listed
+  some minutes later — and a skill must not be named `code-review`,
+  which would replace the bundled review instead of wrapping it.
+- When the Skill tool does not know `/review-pr` — a checkout without
+  it, or a session that has not listed it yet — the Agent tool,
+  `general-purpose`, `model: opus`, with the prompt: call the Skill
+  tool with skill `code-review` and args `high <pr> --max-findings
+  all`, wait for the background review's result, return its findings
+  verbatim, change nothing. Verified the same day: the nested review's
+  transcript named `claude-opus-5-5`.
+
+A session already on Opus can call `/code-review` directly; the
+wrapper changes the model and nothing else. The transcripts settle
+what a fork carries: a `high` review forked straight from a long
+session held none of that session's conversation, and its first turn
+was about 42k tokens — the system prompt, CLAUDE.md, the memory index
+and the review's own prompt — the same as one launched through the
+wrapper.
 
 **Level: `high`**, chosen on 2026-10-10 as the starting point and kept
 after the first 22 PRs (§What the record shows). The level trades cost
@@ -227,8 +266,9 @@ it agreed with the review too readily: it fixed 421 of the 612
 decline-rated findings that have a recorded outcome, and those fixes
 were where much of the next round's fallout came from. After each
 review, one fresh subagent rates every finding — in Claude Code, the
-Agent tool with `general-purpose`, never a `fork`, which would inherit
-the author's context. It reads the head from the checkout, so change
+Agent tool with `general-purpose` and `model: opus` (the cost call in
+§Running a review), never a `fork`, which would inherit the author's
+context and model. It reads the head from the checkout, so change
 nothing there while it runs. Its prompt:
 
 ```text
