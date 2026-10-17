@@ -774,8 +774,11 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   `self-hosted`, and our runners' own (the pool's two and the Raspberry
   Pi's `raspberry-pi`). It reads our runners' labels from
   `.github/actionlint.yaml`, the list actionlint checks `runs-on` against,
-  so a new runner label goes there and nowhere else. Labels are matched in
-  any case, as GitHub matches them, and only as whole
+  so a new runner label goes there and nowhere else. A label there may be
+  quoted and carry a trailing comment; once those are gone it must be plain
+  (letters, digits, `.`, `_`, `-`), or the test fails naming it, rather
+  than guess at a spelling actionlint might read differently. Labels are
+  matched in any case, as GitHub matches them, and only as whole
   labels, so a file name such as `raspberry-pi-runner.md` is not one. A
   value runs on over the lines indented deeper than its key, without blank
   lines. Comment lines are left out too, except inside a block scalar
@@ -825,7 +828,10 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - `group: Default` as test.yml's `runs-on`;
   - a label added to actionlint.yaml alone, then routed as test.yml's
     `runs-on` or put in bazel.yml's matrix;
-  - actionlint.yaml without its `self-hosted-runner` list.
+  - actionlint.yaml without its `self-hosted-runner` list;
+  - in actionlint.yaml: a new label in double or single quotes, or before
+    a tab and a comment, then routed as test.yml's `runs-on`; a label with
+    `#` inside its quotes, and one spelled with an escape.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.
