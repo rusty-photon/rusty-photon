@@ -136,10 +136,12 @@ fn overlay_at(
             };
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                // Optional: clear to null. Required: keep the prior value
-                // (clearing a port must not silently become 0).
+                // Optional: clear to null. Required: say so, rather than
+                // keep the prior value and call the save unchanged.
                 if *nullable {
                     set_pointer(config, pointer, Value::Null);
+                } else {
+                    errors.push(field_error(name, "is required"));
                 }
             } else {
                 match trimmed.parse::<i64>() {
@@ -158,6 +160,8 @@ fn overlay_at(
             if trimmed.is_empty() {
                 if *nullable {
                     set_pointer(config, pointer, Value::Null);
+                } else {
+                    errors.push(field_error(name, "is required"));
                 }
             } else {
                 match trimmed.parse::<f64>() {
@@ -481,20 +485,34 @@ mod tests {
     }
 
     #[test]
-    fn a_cleared_integer_is_null_when_optional_and_kept_when_required() {
+    fn a_cleared_integer_is_null_when_optional_and_an_error_when_required() {
         let mut config = json!({ "server": { "port": 11119, "discovery_port": 32227 } });
-        overlay(
+        let errors = overlay(
             &mut config,
             "server.discovery_port",
             &form_from(&[("server.discovery_port", "")]),
         );
+        assert_eq!(errors, Vec::new());
         assert!(config["server"]["discovery_port"].is_null());
-        overlay(
+        let errors = overlay(
             &mut config,
             "server.port",
             &form_from(&[("server.port", "")]),
         );
-        assert_eq!(config["server"]["port"], 11119);
+        assert_eq!(errors[0].path, "server.port");
+        assert_eq!(errors[0].msg, "is required");
+        assert_eq!(
+            config["server"]["port"], 11119,
+            "the prior value stays for the re-render"
+        );
+        let mut config = json!({ "serial": { "gain": 1.5 } });
+        let errors = overlay(
+            &mut config,
+            "serial.gain",
+            &form_from(&[("serial.gain", " ")]),
+        );
+        assert_eq!(errors[0].msg, "is required");
+        assert_eq!(config["serial"]["gain"], 1.5);
     }
 
     #[test]

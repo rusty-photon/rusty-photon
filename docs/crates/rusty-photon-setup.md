@@ -81,8 +81,8 @@ key order so the rendered order is the same on every host:
 |---|---|---|
 | `string` | text input | verbatim; an optional (`["string","null"]`) string cleared persists `null`, a required one persists `""` |
 | `boolean` | checkbox | present ⇒ `true`, absent ⇒ `false` |
-| `integer` with optional `minimum`/`maximum` | number input | parsed and range-checked; out of range or not a number is a field error; an optional one cleared persists `null`, a required one cleared keeps the prior value |
-| `number` | number input | parsed; an optional one cleared persists `null` |
+| `integer` with optional `minimum`/`maximum` | number input | parsed and range-checked; out of range or not a number is a field error; an optional one cleared persists `null`, a required one cleared is a field error |
+| `number` | number input | parsed; an optional one cleared persists `null`, a required one cleared is a field error |
 | `array` of an integer `enum` | one checkbox per enumerated value, in schema order | the checked values, in schema order; none checked ⇒ `[]` |
 | a plain object | recursed | — |
 | `$ref` into `$defs` | resolved | — |
@@ -109,7 +109,7 @@ headers and a body. The statuses:
 |---|---|
 | `GET` | `200` with the form |
 | `POST` that saved | `200` with the saved page |
-| `POST` whose values were rejected | `422 Unprocessable Content`, the form again with each error beside its field and the submitted values kept |
+| `POST` whose values were rejected | `422 Unprocessable Content`, the form again with each error beside its field and the submitted values kept; an error on a field this page does not show (the file's other section failing validation) is named above the form, with its path |
 | `POST` that fails the origin check | `403` with a sentence saying why |
 | `POST` whose save failed (the file could not be written, the file on disk is not valid JSON) | `500` with the reason |
 | a device page for a device the config has no section for | `404` with a sentence; the crate in front answers `403` first for a device it does not serve |

@@ -64,15 +64,32 @@ pub fn banner(kind: &str, id: &str, text: &str) -> Markup {
     }
 }
 
-/// The error a rejected save puts above the form.
+/// The errors a rejected save puts above the form.
+///
+/// A general one (no path), and any whose path is not a control on the
+/// page — the file's other section failing validation, say — named with
+/// its path, so an error is never silently dropped. `placed` names the
+/// page's controls.
 #[must_use]
-pub fn rejected_banner(errors: &[FieldError]) -> Markup {
-    let general: Vec<&FieldError> = errors.iter().filter(|e| e.path.is_empty()).collect();
+pub fn rejected_banner(errors: &[FieldError], placed: &[&str]) -> Markup {
+    let unplaced: Vec<&FieldError> = errors
+        .iter()
+        .filter(|e| !placed.contains(&e.path.as_str()))
+        .collect();
     html! {
-        @if general.is_empty() {
+        @if unplaced.is_empty() {
             (banner("error", "rejected", "Some values were rejected. Fix the marked fields and save again."))
         } @else {
-            @for e in general { (banner("error", "rejected", &e.msg)) }
+            @for e in unplaced {
+                @if e.path.is_empty() {
+                    (banner("error", "rejected", &e.msg))
+                } @else {
+                    div class="banner error" id="rejected" {
+                        span.dot {}
+                        span { "Rejected: " code { (e.path) } " " (e.msg) " — a field this page does not show." }
+                    }
+                }
+            }
         }
     }
 }
@@ -604,17 +621,39 @@ mod tests {
 
     #[test]
     fn the_rejected_banner_names_a_general_error_or_the_marked_fields() {
-        let general = rejected_banner(&[FieldError {
-            path: String::new(),
-            msg: "not a configuration: x".to_string(),
-        }])
+        let general = rejected_banner(
+            &[FieldError {
+                path: String::new(),
+                msg: "not a configuration: x".to_string(),
+            }],
+            &["a"],
+        )
         .into_string();
         assert!(general.contains("not a configuration: x"), "{general}");
-        let fields = rejected_banner(&[FieldError {
-            path: "a".to_string(),
-            msg: "bad".to_string(),
-        }])
+        let fields = rejected_banner(
+            &[FieldError {
+                path: "a".to_string(),
+                msg: "bad".to_string(),
+            }],
+            &["a"],
+        )
         .into_string();
         assert!(fields.contains("Fix the marked fields"), "{fields}");
+        // An error on a field the page does not show is named, never dropped.
+        let elsewhere = rejected_banner(
+            &[FieldError {
+                path: "panel.unique_id".to_string(),
+                msg: "must not be empty".to_string(),
+            }],
+            &["serial.port"],
+        )
+        .into_string();
+        assert!(
+            elsewhere.contains(
+                "<code>panel.unique_id</code> must not be empty — a field this page does not show."
+            ),
+            "{elsewhere}"
+        );
+        assert!(!elsewhere.contains("Fix the marked fields"), "{elsewhere}");
     }
 }

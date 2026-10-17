@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::form::{changed_paths, overlay_field, set_pointer, FormValues};
 use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
-use crate::schema::{dotted_to_pointer, humanize, FieldModel, FieldSpec};
+use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
 use crate::{origin, security};
 
 /// Delay before firing the in-process reload, so the saved page flushes
@@ -278,6 +278,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             };
             render::field(spec, shown, state)
         };
+        let placed = Self::placed_controls(page, &fields, auth_pointer.is_some());
         let pending_banner = html! {
             @if !pending.is_empty() {
                 div class="banner warn" id="pending-restart" {
@@ -297,22 +298,13 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         section_names.push(f.section());
                     }
                 }
-                let devices: Vec<DeviceRow> = sections
-                    .iter()
-                    .map(|s| DeviceRow {
-                        name: s.name.clone(),
-                        device_type: s.device_type.clone(),
-                        device_number: s.device_number,
-                        enabled: s.enabled,
-                        href: format!("setup/v1/{}/{}/setup", s.device_type, s.device_number),
-                    })
-                    .collect();
+                let devices = Self::device_rows(sections);
                 let auth = auth_pointer.map(|p| security::AuthView::from_config(shown, p));
                 html! {
                     div.card {
                         h1 { (self.service) " setup" }
                         p.subtitle { "The whole server. Each device it serves has its own page, listed below." }
-                        @if !errors.is_empty() { (render::rejected_banner(errors)) }
+                        @if !errors.is_empty() { (render::rejected_banner(errors, &placed)) }
                         (pending_banner)
                         form method="post" action="" {
                             @for section in &section_names {
@@ -339,7 +331,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                     div.card {
                         h1 { (section.name) }
                         p.subtitle { (section.device_type) " " (section.device_number) " · " (self.service) }
-                        @if !errors.is_empty() { (render::rejected_banner(errors)) }
+                        @if !errors.is_empty() { (render::rejected_banner(errors, &placed)) }
                         (pending_banner)
                         form method="post" action="" {
                             fieldset {
@@ -360,6 +352,40 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }
         };
         render::document(&self.service, &page.title(), &body)
+    }
+
+    /// Every control the page shows, so the banner can name an error on any
+    /// other field rather than drop it.
+    fn placed_controls<'a>(page: &Page, fields: &[&'a FieldSpec], with_auth: bool) -> Vec<&'a str> {
+        let mut placed: Vec<&str> = Vec::new();
+        for f in fields {
+            placed.push(f.name());
+            if let FieldKind::Variants { variants, .. } = f.kind() {
+                placed.extend(
+                    variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter().map(FieldSpec::name)),
+                );
+            }
+        }
+        if with_auth && matches!(page, Page::Server { .. }) {
+            placed.extend([security::USERNAME, security::PASSWORD, security::REPEAT]);
+        }
+        placed
+    }
+
+    /// The server page's device list.
+    fn device_rows(sections: &[DeviceSection]) -> Vec<DeviceRow> {
+        sections
+            .iter()
+            .map(|s| DeviceRow {
+                name: s.name.clone(),
+                device_type: s.device_type.clone(),
+                device_number: s.device_number,
+                enabled: s.enabled,
+                href: format!("setup/v1/{}/{}/setup", s.device_type, s.device_number),
+            })
+            .collect()
     }
 
     /// The save: the origin check, the overlay onto the file's section, the
@@ -1070,6 +1096,41 @@ mod tests {
                 .is_err(),
             "no reload after a rejected save"
         );
+    }
+
+    #[tokio::test]
+    async fn an_error_on_another_pages_field_is_named_in_the_banner() {
+        // A file whose device section is invalid (hand-edited, or saved by
+        // an older build) must not make the server page unsaveable without
+        // a word: the error is named, with its path.
+        let mut file = config();
+        file.panel.unique_id = String::new();
+        let fx = fixture(&file);
+        let p = pages(&fx, file, Overrides::default());
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("serial.port", "/dev/mock"),
+                    ("serial.baud_rate", "9600"),
+                    ("server.port", "11119"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            response.body.contains(
+                "<code>panel.unique_id</code> must not be empty — a field this page does not show."
+            ),
+            "{}",
+            response.body
+        );
+        assert!(
+            !response.body.contains("Fix the marked fields"),
+            "{}",
+            response.body
+        );
+        assert_eq!(on_disk(&fx)["serial"]["baud_rate"], 115_200);
     }
 
     #[tokio::test]

@@ -287,9 +287,10 @@ for:
 - **Numeric fields are parsed into their bounded types** (`u16` ports, `u32`
   baud/brightness). An out-of-range or non-numeric value becomes a field-level
   error (re-rendered, not sent), rather than silently coercing to `0` or
-  producing a non-field driver parse error. An empty *required* number keeps the
-  prior value (clearing a port can't silently become OS-assigned); an empty
-  *optional* number (`discovery_port`) persists `null`.
+  producing a non-field driver parse error. An empty *required* number is a
+  field error ("is required"), so a cleared port can neither silently become
+  OS-assigned nor silently keep its value; an empty *optional* number
+  (`discovery_port`) persists `null`.
 - **Clearing an optional field unsets it, in the spelling that means it.**
   A cleared *optional* text box persists `null`, exactly as a cleared optional
   number does — `""` and absent are different states, and only `null` is the

@@ -750,6 +750,14 @@ noted.
   members; and `pages/mod.rs`'s comment says "three surface tabs" where
   the doc and the page have four.
 - **Sentinel's dashboard has the restart API and no button.** P4.
+- **The pages' origin check trusts the request's `Host`.** A page on
+  another site that rebinds its name to the rig's address passes the
+  check as the browser sees it (`Sec-Fetch-Site: same-origin`, or an
+  `Origin` equal to the `Host` it chose), and with no `server.auth` the
+  save is accepted — the same surface the unauthenticated Alpaca API on
+  that listener has always had. The complement is a `Host` allow-list,
+  which needs configured hostnames the config does not carry; not this
+  plan's.
 
 ## References
 
