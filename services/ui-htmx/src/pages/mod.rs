@@ -1,14 +1,16 @@
 //! Server-rendered pages and fragments (Maud + HTMX) for the configuration UI,
-//! plus the **schema-driven** form ⇆ Config mapping.
+//! plus the form ⇆ Config mapping the BFF layers over the shared walker.
 //!
 //! The form is rendered generically from a driver's `config.schema` (a JSON
-//! Schema + editability tiers): [`FieldModel::from_schema`] walks the schema into
-//! a flat list of scalar leaves (resolving `$ref`, recursing plain objects, and
-//! skipping `oneOf`/`anyOf`/`enum`/`const` subtrees, which round-trip untouched
-//! via the hidden blob). [`config_card`] renders any driver's form from that
-//! model; [`merge_form`] coerces a submission back into a `Config` using the same
-//! model. No driver-specific field lists live here — every tier and field type
-//! comes from the driver's own `config.schema` / `config.get`.
+//! Schema + editability tiers): the schema walker, the field kinds and the
+//! coercion of a submission live in `rusty-photon-setup` (the drivers' own
+//! setup pages render from the same walker); this module adds what only the
+//! BFF has — the editability tiers, the hidden round-trip blob, the unlock
+//! hatch and the htmx wiring. [`FieldModel`] wraps the walker's model with
+//! the tiers; [`config_card`] renders any driver's form from it; [`merge_form`]
+//! coerces a submission back into a `Config` using the same model. No
+//! driver-specific field lists live here — every tier and field type comes
+//! from the driver's own `config.schema` / `config.get`.
 //!
 //! The HTMX swap unit is the `#config-card` element: `GET /config/{service}`
 //! returns the full page (or just the card for an HTMX request); `POST` and the
@@ -20,9 +22,16 @@ pub mod stream;
 pub mod targets;
 
 use maud::{html, Markup, DOCTYPE};
+use rusty_photon_setup::form::{array_contains, bool_at, overlay_field, text_at};
+use rusty_photon_setup::schema::{resolve, unwrap_optional};
+use rusty_photon_setup::{FieldKind, FieldSpec};
 use serde_json::Value;
 
 use crate::driver_client::{ConfigClientError, ConfigSchemaResponse, FieldError};
+
+pub use rusty_photon_setup::form::canonical_json;
+pub use rusty_photon_setup::schema::humanize;
+pub use rusty_photon_setup::FormValues;
 
 /// Page identity passed to the card/fragment renderers: the service id (used in
 /// every route URL) plus the display strings shown in the card header.
@@ -77,7 +86,7 @@ pub enum NavTab {
 /// The full HTML shell: dark theme, embedded CSS + HTMX, and the top
 /// nav.
 ///
-/// The nav carries the three surface tabs plus the mock's pure-CSS
+/// The nav carries the four surface tabs plus the mock's pure-CSS
 /// night-vision toggle (a page-level red filter via
 /// `body:has(#night-vision:checked)`; no JavaScript).
 #[must_use]
@@ -127,63 +136,15 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: &Markup) -> Markup {
 
 // --- the schema-derived field model -------------------------------------------
 
-/// How a submitted form value is coerced back into JSON for a single leaf,
-/// inferred from the schema's `{type, minimum, maximum}`.
-#[derive(Debug, Clone, PartialEq)]
-enum FieldKind {
-    /// A `string` leaf — rendered as a text input, set verbatim.
-    /// `nullable` (schema `type:["string","null"]`) persists `null` when
-    /// cleared, exactly as it does for [`FieldKind::Int`]/[`FieldKind::Num`]:
-    /// an optional field the operator emptied is *unset*, and `""` is a
-    /// value the driver is entitled to reject.
-    Str { nullable: bool },
-    /// A `boolean` leaf — rendered as a checkbox (present ⇒ true, absent ⇒ false).
-    Bool,
-    /// An `integer` leaf. `nullable` (schema `type:["integer","null"]`) persists
-    /// `null` when cleared; `min`/`max` (schema bounds) gate the parsed value.
-    Int {
-        nullable: bool,
-        min: Option<i64>,
-        max: Option<i64>,
-    },
-    /// A `number` (floating-point) leaf. `nullable` persists `null` when cleared.
-    Num { nullable: bool },
-    /// An `array` whose `items` are an integer `enum` — rendered as a
-    /// checkbox group, one checkbox per enumerated value in schema order
-    /// (e.g. rp's per-camera `cooler_targets_c` grid). Checked values are
-    /// written back as an array in `options` order; nothing checked ⇒ an
-    /// empty array. Every other array shape stays [`Shape::Skip`].
-    IntSet { options: Vec<i64> },
-}
-
-/// One renderable config field discovered in the schema.
-#[derive(Debug, Clone)]
-pub struct FieldSpec {
-    /// Dotted path (`serial.port`) — the form input `name` and the tier key.
-    name: String,
-    /// RFC-6901 JSON pointer (`/serial/port`) into the config blob.
-    pointer: String,
-    /// Top-level section (`serial`) — fields are grouped into a fieldset by this.
-    section: String,
-    /// Human-readable label (the humanised sub-path after the section).
-    label: String,
-    kind: FieldKind,
-}
-
-impl FieldSpec {
-    const fn input_type(&self) -> &'static str {
-        match self.kind {
-            FieldKind::Bool | FieldKind::IntSet { .. } => "checkbox",
-            FieldKind::Int { .. } | FieldKind::Num { .. } => "number",
-            FieldKind::Str { .. } => "text",
-        }
-    }
-}
-
-/// The driver's form model: the ordered scalar leaves plus the editability tiers
-/// (both straight from `config.schema`). Drives both rendering and `merge_form`.
+/// The driver's form model: the shared walker's fields plus the editability
+/// tiers (both straight from `config.schema`). Drives both rendering and
+/// `merge_form`.
+///
+/// Only the scalar leaves render and merge here: a leaf the walker names as
+/// file-only, or a tagged enum, round-trips untouched through the hidden
+/// blob, which is exactly how redacted secrets stay safe on this page.
 pub struct FieldModel {
-    fields: Vec<FieldSpec>,
+    inner: rusty_photon_setup::FieldModel,
     locked: Vec<String>,
     read_only: Vec<String>,
 }
@@ -193,7 +154,7 @@ impl FieldModel {
     #[must_use]
     pub fn from_schema(resp: &ConfigSchemaResponse) -> Self {
         Self {
-            fields: build_fields(&resp.schema),
+            inner: rusty_photon_setup::FieldModel::from_schema(&resp.schema),
             locked: resp.locked_fields.clone(),
             read_only: resp.read_only_fields.clone(),
         }
@@ -218,13 +179,12 @@ impl FieldModel {
             .get("items")
             .map_or(kind_node, |items| resolve(items, root));
         let entry_node = unwrap_optional(entry_node, root)?;
-        let mut fields = Vec::new();
-        walk_schema(entry_node, root, "", &mut fields);
-        if fields.is_empty() {
+        let inner = rusty_photon_setup::FieldModel::from_node(root, entry_node);
+        if inner.fields().iter().all(|f| !f.is_editable_scalar()) {
             return None;
         }
         Some(Self {
-            fields,
+            inner,
             locked: Vec::new(),
             read_only: Vec::new(),
         })
@@ -238,208 +198,14 @@ impl FieldModel {
         self.read_only.iter().any(|n| n == name)
     }
 
-    /// The ordered scalar leaves — for renderers in sibling page modules.
-    pub(crate) fn field_specs(&self) -> &[FieldSpec] {
-        &self.fields
-    }
-}
-
-impl FieldSpec {
-    /// The RFC-6901 pointer segments (used to build add-form skeletons).
-    pub(crate) fn pointer_segments(&self) -> Vec<&str> {
-        self.pointer.trim_start_matches('/').split('/').collect()
-    }
-}
-
-/// Unwrap an `Option<T>` schema node: schemars renders it as an
-/// `anyOf`/`oneOf` whose branches are `T` and `{"type":"null"}` — return the
-/// resolved non-null branch. A node that is not such a wrapper is returned
-/// as-is; `None` when the wrapper has no single non-null branch.
-fn unwrap_optional<'a>(node: &'a Value, root: &'a Value) -> Option<&'a Value> {
-    let branches = node
-        .get("anyOf")
-        .or_else(|| node.get("oneOf"))
-        .and_then(Value::as_array);
-    let Some(branches) = branches else {
-        return Some(node);
-    };
-    let non_null: Vec<&Value> = branches
-        .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) != Some("null"))
-        .collect();
-    match non_null.as_slice() {
-        [only] => Some(resolve(only, root)),
-        _ => None,
-    }
-}
-
-/// Walk a JSON Schema into a flat, ordered list of scalar leaf [`FieldSpec`]s.
-/// Resolves `$ref` into `$defs`, recurses plain objects, and **skips** any
-/// `oneOf`/`anyOf`/`allOf`/`enum`/`const` subtree (optional nested objects,
-/// tagged enums, custom-serde types) — those round-trip untouched through the
-/// hidden blob, which is exactly how redacted secrets stay safe.
-fn build_fields(schema: &Value) -> Vec<FieldSpec> {
-    let mut out = Vec::new();
-    walk_schema(schema, schema, "", &mut out);
-    out
-}
-
-/// Resolve a single-level `#/$defs/...` `$ref` against the schema root. A node
-/// with no `$ref` is returned as-is. (Sibling keys like `default`/`description`
-/// on a `$ref` node are irrelevant to leaf classification, so they are dropped.)
-fn resolve<'a>(node: &'a Value, root: &'a Value) -> &'a Value {
-    if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
-        if let Some(name) = reference.strip_prefix("#/$defs/") {
-            if let Some(target) = root.pointer(&format!("/$defs/{name}")) {
-                return target;
-            }
-        }
-    }
-    node
-}
-
-/// Classification of a (resolved) schema node.
-enum Shape {
-    /// A scalar leaf with its JSON base type and nullability.
-    Scalar { base: String, nullable: bool },
-    /// An array of enumerated integers — a checkbox-group leaf.
-    IntEnumArray { options: Vec<i64> },
-    /// A plain object to recurse into.
-    Object,
-    /// A composite/enum/custom subtree to skip (round-trips via the blob).
-    Skip,
-}
-
-fn classify(node: &Value, root: &Value) -> Shape {
-    // Composite or enum/const subtrees are never rendered as scalar inputs.
-    // (An enum on an array's *items* is fine — that check is on the node
-    // itself, and the integer-enum-array case below depends on it.)
-    if ["oneOf", "anyOf", "allOf", "enum", "const"]
-        .iter()
-        .any(|k| node.get(k).is_some())
-    {
-        return Shape::Skip;
-    }
-    // `type` is either a string, or an array like ["integer","null"] for an
-    // optional scalar.
-    let (base, nullable) = match node.get("type") {
-        Some(Value::String(s)) => (Some(s.clone()), false),
-        Some(Value::Array(arr)) => {
-            let nullable = arr.iter().any(|v| v.as_str() == Some("null"));
-            let non_null: Vec<&str> = arr
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|s| *s != "null")
-                .collect();
-            let base = match non_null.as_slice() {
-                [only] => Some((*only).to_string()),
-                _ => None,
-            };
-            (base, nullable)
-        }
-        _ => (None, false),
-    };
-    match base.as_deref() {
-        Some(t @ ("string" | "integer" | "number" | "boolean")) => Shape::Scalar {
-            base: t.to_string(),
-            nullable,
-        },
-        Some("object") => Shape::Object,
-        // The one renderable array shape: items are an integer enum
-        // (e.g. rp's `cooler_targets_c` grid) — a checkbox group. All
-        // other arrays (objects, `$ref` items, un-enumerated scalars)
-        // fall through to `Skip` and round-trip via the blob.
-        Some("array") => int_enum_options(node, root)
-            .map_or(Shape::Skip, |options| Shape::IntEnumArray { options }),
-        // An object def may omit `type` but carry `properties`.
-        None if node.get("properties").is_some() => Shape::Object,
-        _ => Shape::Skip,
-    }
-}
-
-/// The enumerated integer values of an array node's `items`, when that is
-/// what they are: `items` (after `$ref` resolution) typed `integer` with a
-/// non-empty all-integer `enum`.
-fn int_enum_options(node: &Value, root: &Value) -> Option<Vec<i64>> {
-    let items = resolve(node.get("items")?, root);
-    if items.get("type").and_then(Value::as_str) != Some("integer") {
-        return None;
-    }
-    let options: Vec<i64> = items
-        .get("enum")?
-        .as_array()?
-        .iter()
-        .map(Value::as_i64)
-        .collect::<Option<Vec<i64>>>()?;
-    (!options.is_empty()).then_some(options)
-}
-
-fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec>) {
-    let resolved = resolve(node, root);
-    match classify(resolved, root) {
-        Shape::Object => {
-            if let Some(props) = resolved.get("properties").and_then(Value::as_object) {
-                // Walk properties in sorted key order so the rendered field order
-                // is deterministic *regardless* of serde_json's `preserve_order`
-                // feature. `serde_json::Map` iterates sorted only when
-                // `preserve_order` is off (BTreeMap) and in insertion order when
-                // it is on (IndexMap) — and a dev-dependency (thirtyfour) unifies
-                // that feature on under `--all-features`. Sorting here keeps the
-                // output identical across that feature, build systems, and OSes.
-                let mut props: Vec<_> = props.iter().collect();
-                props.sort_by_key(|(name, _)| *name);
-                for (name, child) in props {
-                    let child_prefix = if prefix.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{prefix}.{name}")
-                    };
-                    walk_schema(child, root, &child_prefix, out);
-                }
-            }
-        }
-        Shape::Scalar { base, nullable } => {
-            if prefix.is_empty() {
-                return; // a top-level scalar config is not a form field
-            }
-            out.push(make_field(prefix, &base, nullable, resolved));
-        }
-        Shape::IntEnumArray { options } => {
-            if prefix.is_empty() {
-                return; // a top-level array config is not a form field
-            }
-            out.push(field_spec(prefix, FieldKind::IntSet { options }));
-        }
-        Shape::Skip => {}
-    }
-}
-
-fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec {
-    let kind = match base {
-        "boolean" => FieldKind::Bool,
-        "number" => FieldKind::Num { nullable },
-        "integer" => FieldKind::Int {
-            nullable,
-            min: node.get("minimum").and_then(Value::as_i64),
-            max: node.get("maximum").and_then(Value::as_i64),
-        },
-        // "string" and any unexpected base fall back to a text field.
-        _ => FieldKind::Str { nullable },
-    };
-    field_spec(name, kind)
-}
-
-fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
-    let (section, sub) = match name.split_once('.') {
-        Some((s, rest)) => (s.to_string(), rest.to_string()),
-        None => (name.to_string(), name.to_string()),
-    };
-    FieldSpec {
-        name: name.to_string(),
-        pointer: dotted_to_pointer(name),
-        section,
-        label: humanize(&sub),
-        kind,
+    /// The ordered scalar leaves the page renders and merges — for renderers
+    /// in sibling page modules.
+    pub(crate) fn field_specs(&self) -> Vec<&FieldSpec> {
+        self.inner
+            .fields()
+            .iter()
+            .filter(|f| f.is_editable_scalar())
+            .collect()
     }
 }
 
@@ -472,9 +238,9 @@ pub fn config_card(
     banner: Option<Banner>,
 ) -> Markup {
     // Sorted-key serialization so the hidden blob's bytes are deterministic
-    // regardless of serde_json's `preserve_order` feature (see `canonical_json`
-    // and the note in `walk_schema`). Key order is semantically irrelevant to the
-    // round-trip, but it must be stable for the cross-OS byte snapshots (P2).
+    // regardless of serde_json's `preserve_order` feature. Key order is
+    // semantically irrelevant to the round-trip, but it must be stable for
+    // the cross-OS byte snapshots (P2).
     let config_blob = canonical_json(config);
     let overrides_blob = serde_json::to_string(overrides).unwrap_or_default();
     // The unlocked set round-trips on POST so an invalid submission re-renders
@@ -489,6 +255,7 @@ pub fn config_card(
         errors,
     };
     let action = format!("/config/{}", page.service);
+    let fields = model.field_specs();
     html! {
         div #config-card.card {
             @if let Some(b) = banner { (banner_markup(page, &b)) }
@@ -502,9 +269,9 @@ pub fn config_card(
                 input type="hidden" name="__overrides" value=(overrides_blob);
                 input type="hidden" name="__unlocked" value=(unlocked_blob);
 
-                @for (section, fields) in group_by_section(&model.fields) {
+                @for (section, fields) in group_by_section(&fields) {
                     fieldset {
-                        legend { (humanize(section)) }
+                        legend { (rusty_photon_setup::schema::humanize(section)) }
                         @for spec in fields { (render_field(page, &ctx, spec)) }
                     }
                 }
@@ -547,13 +314,13 @@ fn restart_button(page: &Page<'_>) -> Markup {
 }
 
 /// Group fields by their top-level section, preserving first-seen order.
-fn group_by_section(fields: &[FieldSpec]) -> Vec<(&str, Vec<&FieldSpec>)> {
+fn group_by_section<'a>(fields: &[&'a FieldSpec]) -> Vec<(&'a str, Vec<&'a FieldSpec>)> {
     let mut groups: Vec<(&str, Vec<&FieldSpec>)> = Vec::new();
     for f in fields {
-        if let Some(group) = groups.iter_mut().find(|(s, _)| *s == f.section) {
+        if let Some(group) = groups.iter_mut().find(|(s, _)| *s == f.section()) {
             group.1.push(f);
         } else {
-            groups.push((f.section.as_str(), vec![f]));
+            groups.push((f.section(), vec![f]));
         }
     }
     groups
@@ -585,7 +352,7 @@ impl FieldGuard {
 }
 
 fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup {
-    let name = &spec.name;
+    let name = spec.name();
     let guard = if ctx.overrides.iter().any(|o| o == name) {
         FieldGuard::Pinned
     } else if ctx.model.is_read_only(name) {
@@ -600,15 +367,15 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
         FieldGuard::Editable
     };
     let disabled = guard.disables();
-    let err = ctx.errors.iter().find(|e| &e.path == name);
+    let err = ctx.errors.iter().find(|e| e.path == name);
     html! {
         div.field.pinned[disabled].invalid[err.is_some()] {
-            @match &spec.kind {
+            @match spec.kind() {
                 FieldKind::Bool => {
                     div.checkbox {
                         input type="checkbox" id=(name) name=(name)
-                            checked[bool_at(ctx.config, &spec.pointer)] disabled[disabled];
-                        label for=(name) { (spec.label) }
+                            checked[bool_at(ctx.config, spec.pointer())] disabled[disabled];
+                        label for=(name) { (spec.label()) }
                     }
                 }
                 // One checkbox per enumerated value, in schema order; all
@@ -618,13 +385,13 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
                 // `role="group"` + `aria-label` name the group for
                 // assistive tech, and each member keeps its own real label.
                 FieldKind::IntSet { options } => {
-                    span.group-label { (spec.label) }
-                    div.checkbox-group role="group" aria-label=(spec.label) {
+                    span.group-label { (spec.label()) }
+                    div.checkbox-group role="group" aria-label=(spec.label()) {
                         @for option in options {
                             @let option_id = format!("{name}.{option}");
                             div.checkbox {
                                 input type="checkbox" id=(option_id) name=(name) value=(option)
-                                    checked[array_contains(ctx.config, &spec.pointer, *option)]
+                                    checked[array_contains(ctx.config, spec.pointer(), *option)]
                                     disabled[disabled];
                                 label for=(option_id) { (option) }
                             }
@@ -632,9 +399,9 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
                     }
                 }
                 _ => {
-                    label for=(name) { (spec.label) }
+                    label for=(name) { (spec.label()) }
                     input type=(spec.input_type()) id=(name) name=(name)
-                        value=(str_at(ctx.config, &spec.pointer)) disabled[disabled];
+                        value=(text_at(ctx.config, spec.pointer())) disabled[disabled];
                 }
             }
             @if let Some(e) = err { div.error { (e.msg) } }
@@ -644,7 +411,7 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
 }
 
 fn field_hints(page: &Page<'_>, spec: &FieldSpec, guard: FieldGuard) -> Markup {
-    let unlock_href = format!("/config/{}?unlock={}", page.service, spec.name);
+    let unlock_href = format!("/config/{}?unlock={}", page.service, spec.name());
     let lock_href = format!("/config/{}", page.service);
     html! {
         @if guard == FieldGuard::Pinned {
@@ -852,54 +619,13 @@ pub enum FormError {
     BadOverrides(String),
 }
 
-/// Submitted form pairs with duplicate keys preserved.
-///
-/// A checkbox group posts one `name=value` pair per checked box, and
-/// `serde_urlencoded` collapses duplicates when decoding into a map —
-/// so the handlers extract `Form<Vec<(String, String)>>` and wrap the
-/// pairs here. Single-value lookups take the first occurrence.
-#[derive(Debug, Default)]
-pub struct FormValues(Vec<(String, String)>);
-
-impl From<Vec<(String, String)>> for FormValues {
-    fn from(pairs: Vec<(String, String)>) -> Self {
-        Self(pairs)
-    }
-}
-
-impl FormValues {
-    fn get(&self, name: &str) -> Option<&str> {
-        self.0
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-    }
-
-    fn get_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
-        self.0
-            .iter()
-            .filter(move |(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-    }
-
-    fn contains_key(&self, name: &str) -> bool {
-        self.0.iter().any(|(k, _)| k == name)
-    }
-
-    /// Replace every pair under `name` with a single `value` (appending
-    /// when absent) — the equipment entry forms re-seed `__config` this way.
-    pub fn set(&mut self, name: &str, value: String) {
-        self.0.retain(|(k, _)| k != name);
-        self.0.push((name.to_string(), value));
-    }
-}
-
 /// Rebuild the full Config from a submitted form: start from the hidden
 /// round-tripped blob and overlay each editable schema leaf by JSON pointer.
 ///
 /// Override-pinned, hard-read-only, and not-unlocked locked fields are
 /// not overlaid (they round-trip from the blob); schema subtrees the
-/// model skipped (`oneOf`/`anyOf`/secrets) round-trip untouched too.
+/// model does not render (file-only leaves, tagged enums, secrets)
+/// round-trip untouched too.
 ///
 /// # Errors
 ///
@@ -926,13 +652,13 @@ pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, F
     let is_unlocked = |name: &str| unlocked.iter().any(|u| u == name);
 
     let mut errors = Vec::new();
-    for spec in &model.fields {
-        if is_pinned(&spec.name) || model.is_read_only(&spec.name) {
+    for spec in model.field_specs() {
+        if is_pinned(spec.name()) || model.is_read_only(spec.name()) {
             continue;
         }
         // A locked/identity field round-trips from the blob untouched unless the
         // user explicitly unlocked it (and it isn't pinned).
-        if model.is_locked(&spec.name) && !is_unlocked(&spec.name) {
+        if model.is_locked(spec.name()) && !is_unlocked(spec.name()) {
             continue;
         }
         overlay_field(&mut config, spec, form, &mut errors);
@@ -944,118 +670,6 @@ pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, F
         unlocked,
         errors,
     })
-}
-
-/// Overlay one editable schema leaf from the submitted form onto the
-/// config blob ([`merge_form`] applies the pinned/read-only/locked
-/// skip rules before calling this).
-fn overlay_field(
-    config: &mut Value,
-    spec: &FieldSpec,
-    form: &FormValues,
-    errors: &mut Vec<FieldError>,
-) {
-    match &spec.kind {
-        // A checkbox submits its name only when checked: present ⇒ true.
-        // (Only reached for editable booleans; read-only ones are skipped
-        // by the caller and round-trip from the blob.)
-        FieldKind::Bool => {
-            set_pointer(
-                config,
-                &spec.pointer,
-                Value::Bool(form.contains_key(&spec.name)),
-            );
-        }
-        // A checkbox group submits one pair per checked box; absent
-        // pairs mean nothing is checked ⇒ an empty array (same
-        // present/absent semantics as `Bool`). Values are written in
-        // `options` (schema `enum`) order, which also dedupes.
-        FieldKind::IntSet { options } => {
-            let selected: Result<Vec<i64>, ()> = form
-                .get_all(&spec.name)
-                .map(|raw| match raw.trim().parse::<i64>() {
-                    Ok(n) if options.contains(&n) => Ok(n),
-                    _ => Err(()),
-                })
-                .collect();
-            match selected {
-                Ok(selected) => {
-                    let chosen: Vec<Value> = options
-                        .iter()
-                        .filter(|o| selected.contains(o))
-                        .map(|o| Value::from(*o))
-                        .collect();
-                    set_pointer(config, &spec.pointer, Value::Array(chosen));
-                }
-                Err(()) => {
-                    errors.push(field_error(
-                        &spec.name,
-                        "must be values from the allowed set",
-                    ));
-                }
-            }
-        }
-        FieldKind::Str { nullable } => {
-            if let Some(raw) = form.get(&spec.name) {
-                // Optional: clear to null, the same gesture the number
-                // kinds honour below. `""` is not a spelling of "unset" —
-                // a driver that distinguishes the two (rp's naming
-                // patterns: absent means a documented default, empty
-                // means malformed) must receive the one the operator
-                // meant. Required: keep writing the empty string, so a
-                // driver that validates its own required fields still
-                // gets to say so.
-                if *nullable && raw.trim().is_empty() {
-                    set_pointer(config, &spec.pointer, Value::Null);
-                } else {
-                    set_pointer(config, &spec.pointer, Value::String(raw.to_string()));
-                }
-            }
-        }
-        FieldKind::Int { nullable, min, max } => {
-            let Some(raw) = form.get(&spec.name) else {
-                return;
-            };
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                // Optional: clear to null. Required: keep the prior value
-                // (clearing a port must not silently become 0).
-                if *nullable {
-                    set_pointer(config, &spec.pointer, Value::Null);
-                }
-            } else {
-                match trimmed.parse::<i64>() {
-                    Ok(n) if min.is_none_or(|lo| n >= lo) && max.is_none_or(|hi| n <= hi) => {
-                        set_pointer(config, &spec.pointer, Value::from(n));
-                    }
-                    _ => errors.push(field_error(&spec.name, &int_error(*min, *max))),
-                }
-            }
-        }
-        FieldKind::Num { nullable } => {
-            let Some(raw) = form.get(&spec.name) else {
-                return;
-            };
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                if *nullable {
-                    set_pointer(config, &spec.pointer, Value::Null);
-                }
-            } else {
-                match trimmed.parse::<f64>() {
-                    Ok(n) => set_pointer(config, &spec.pointer, Value::from(n)),
-                    Err(_) => errors.push(field_error(&spec.name, "must be a number")),
-                }
-            }
-        }
-    }
-}
-
-fn int_error(min: Option<i64>, max: Option<i64>) -> String {
-    match (min, max) {
-        (Some(lo), Some(hi)) => format!("must be a whole number between {lo} and {hi}"),
-        _ => "must be a whole number".to_string(),
-    }
 }
 
 /// Parse a JSON string array of field names into the set of currently-unlocked
@@ -1079,93 +693,6 @@ pub fn unlocked_from_query(model: &FieldModel, unlock: Option<&str>) -> Vec<Stri
     }
 }
 
-// --- small JSON helpers --------------------------------------------------------
-
-/// Serialize `value` to JSON with object keys sorted recursively, so the bytes
-/// are deterministic regardless of `serde_json`'s `preserve_order` feature (which
-/// changes `Value` map ordering and is unified on by a dev-dependency under
-/// `--all-features`). Inserting keys in sorted order is stable under both the
-/// `IndexMap` (`preserve_order`) and `BTreeMap` (default) `Map` backends.
-fn canonical_json(value: &Value) -> String {
-    fn sort_keys(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort();
-                let mut sorted = serde_json::Map::new();
-                for key in keys {
-                    sorted.insert(key.clone(), sort_keys(&map[key]));
-                }
-                Value::Object(sorted)
-            }
-            Value::Array(items) => Value::Array(items.iter().map(sort_keys).collect()),
-            other => other.clone(),
-        }
-    }
-    serde_json::to_string(&sort_keys(value)).unwrap_or_default()
-}
-
-fn str_at(config: &Value, pointer: &str) -> String {
-    match config.pointer(pointer) {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::Bool(b)) => b.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn bool_at(config: &Value, pointer: &str) -> bool {
-    config
-        .pointer(pointer)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// Whether the config array at `pointer` contains the integer `value` —
-/// drives the `checked` state of a checkbox-group member.
-fn array_contains(config: &Value, pointer: &str, value: i64) -> bool {
-    config
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .is_some_and(|items| items.iter().any(|v| v.as_i64() == Some(value)))
-}
-
-fn field_error(path: &str, msg: &str) -> FieldError {
-    FieldError {
-        path: path.to_string(),
-        msg: msg.to_string(),
-    }
-}
-
-fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
-    if let Some(slot) = config.pointer_mut(pointer) {
-        *slot = value;
-    }
-}
-
-/// Convert a dotted path (`serial.port`) to an RFC-6901 JSON pointer (`/serial/port`).
-fn dotted_to_pointer(dotted: &str) -> String {
-    let mut pointer = String::with_capacity(dotted.len().saturating_add(1));
-    pointer.push('/');
-    pointer.push_str(&dotted.replace('.', "/"));
-    pointer
-}
-
-/// Turn a dotted, `snake_case` sub-path into a readable label, e.g.
-/// `dec_limits.max_degrees` → `Dec limits · Max degrees`.
-fn humanize(path: &str) -> String {
-    path.split('.')
-        .map(|seg| {
-            let spaced = seg.replace('_', " ");
-            let mut chars = spaced.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -1174,8 +701,9 @@ mod tests {
 
     /// A representative dsd-fp2-shaped `config.schema` response: `$defs` + `$ref`
     /// (so the walker's ref-resolution is exercised), an `anyOf` optional struct
-    /// (`server.auth`, skipped), a nullable optional int (`server.discovery_port`),
-    /// and the three editability tiers the driver reports.
+    /// (`server.auth`, file-only, never rendered here), a nullable optional int
+    /// (`server.discovery_port`), and the three editability tiers the driver
+    /// reports.
     fn sample_schema() -> ConfigSchemaResponse {
         ConfigSchemaResponse {
             schema: json!({
@@ -1278,16 +806,6 @@ mod tests {
                 "properties": {
                     "equipment": { "$ref": "#/$defs/EquipmentConfig" },
                     "server": { "type": "object", "properties": { "port": { "type": "integer" } } },
-                    // rp's `session`: a required string beside an
-                    // `Option<String>`, the pair that makes the nullable
-                    // distinction observable.
-                    "session": {
-                        "type": "object",
-                        "properties": {
-                            "data_directory": { "type": "string" },
-                            "file_naming_pattern": { "type": ["string", "null"] },
-                        },
-                    },
                 },
             }),
             locked_fields: vec![],
@@ -1295,16 +813,23 @@ mod tests {
         }
     }
 
+    fn names(model: &FieldModel) -> Vec<&str> {
+        model
+            .field_specs()
+            .into_iter()
+            .map(FieldSpec::name)
+            .collect()
+    }
+
     #[test]
     fn from_item_schema_walks_an_array_kind_with_relative_names() {
         let model =
             FieldModel::from_item_schema(&rp_like_schema(), "cameras").expect("cameras item model");
-        let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
-        // Relative, sorted leaf names; the optional `auth` subtree is skipped
-        // (anyOf) exactly like on the config pages, while the integer-enum
-        // array (`cooler_targets_c`) is a renderable leaf.
+        // Relative, sorted leaf names; the optional `auth` subtree is file-only
+        // and so not rendered here, while the integer-enum array
+        // (`cooler_targets_c`) is a renderable leaf.
         assert_eq!(
-            names,
+            names(&model),
             vec![
                 "alpaca_url",
                 "cooler_targets_c",
@@ -1319,42 +844,46 @@ mod tests {
     }
 
     #[test]
-    fn walker_classifies_an_integer_enum_array_as_a_checkbox_group() {
-        let model =
-            FieldModel::from_item_schema(&rp_like_schema(), "cameras").expect("cameras item model");
-        let spec = model
-            .fields
-            .iter()
-            .find(|f| f.name == "cooler_targets_c")
-            .expect("cooler_targets_c must be a walked leaf");
-        assert_eq!(
-            spec.kind,
-            FieldKind::IntSet {
-                options: vec![-15, -10, -5, 0, 5]
-            },
-            "options must carry the schema enum in its declared order"
+    fn the_page_never_renders_a_file_only_leaf_or_an_object_array() {
+        // rp's `equipment.cameras` is an array of objects and `server.auth`
+        // an optional struct — both keep round-tripping via the blob.
+        let model = FieldModel::from_schema(&rp_like_schema());
+        assert!(
+            !names(&model).iter().any(|n| n.starts_with("equipment")),
+            "object arrays must stay off the page: {:?}",
+            names(&model)
+        );
+        let model = sample_model();
+        assert!(
+            !names(&model).iter().any(|n| n.starts_with("server.auth")),
+            "server.auth must stay off the page: {:?}",
+            names(&model)
         );
     }
 
     #[test]
-    fn walker_still_skips_object_arrays() {
-        // rp's `equipment.cameras` is an array of objects — it must keep
-        // round-tripping via the blob, not render.
-        let model = FieldModel::from_schema(&rp_like_schema());
-        assert!(
-            !model
-                .fields
-                .iter()
-                .any(|f| f.name.starts_with("equipment.cameras")),
-            "object arrays must stay skipped: {:?}",
-            model.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
-        );
+    fn from_item_schema_unwraps_the_optional_singular_mount() {
+        let model =
+            FieldModel::from_item_schema(&rp_like_schema(), "mount").expect("mount item model");
+        assert_eq!(names(&model), vec!["alpaca_url", "device_number"]);
+    }
+
+    #[test]
+    fn from_item_schema_unknown_kind_is_none() {
+        assert!(FieldModel::from_item_schema(&rp_like_schema(), "rotators").is_none());
+        // A schema without an equipment block at all.
+        let bare = ConfigSchemaResponse {
+            schema: json!({ "type": "object", "properties": {} }),
+            locked_fields: vec![],
+            read_only_fields: vec![],
+        };
+        assert!(FieldModel::from_item_schema(&bare, "cameras").is_none());
     }
 
     /// A minimal schema with one integer-enum array leaf at a nested path,
-    /// for the checkbox-group render + merge tests.
-    fn grid_schema() -> ConfigSchemaResponse {
-        ConfigSchemaResponse {
+    /// for the checkbox-group render test.
+    fn grid_model() -> FieldModel {
+        FieldModel::from_schema(&ConfigSchemaResponse {
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1372,11 +901,7 @@ mod tests {
             }),
             locked_fields: vec![],
             read_only_fields: vec![],
-        }
-    }
-
-    fn grid_model() -> FieldModel {
-        FieldModel::from_schema(&grid_schema())
+        })
     }
 
     #[test]
@@ -1404,100 +929,6 @@ mod tests {
                 "checkbox {id} checked-state mismatch: {tag}"
             );
         }
-    }
-
-    #[test]
-    fn form_values_preserves_duplicates_and_set_replaces_them() {
-        let mut form = FormValues::from(vec![
-            ("targets".to_string(), "-10".to_string()),
-            ("other".to_string(), "x".to_string()),
-            ("targets".to_string(), "0".to_string()),
-        ]);
-        assert_eq!(form.get("targets"), Some("-10"), "get takes the first pair");
-        assert_eq!(
-            form.get_all("targets").collect::<Vec<_>>(),
-            vec!["-10", "0"]
-        );
-        assert!(form.contains_key("other"));
-        assert!(!form.contains_key("absent"));
-        assert_eq!(form.get("absent"), None);
-
-        form.set("targets", "5".to_string());
-        assert_eq!(form.get_all("targets").collect::<Vec<_>>(), vec!["5"]);
-        form.set("fresh", "1".to_string());
-        assert_eq!(form.get("fresh"), Some("1"), "set appends when absent");
-    }
-
-    #[test]
-    fn merge_form_collects_checkbox_group_values_in_enum_order() {
-        let form = form_from(&[
-            ("__config", r#"{"cooling":{"targets":[0]}}"#),
-            ("__overrides", "[]"),
-            // Submitted out of enum order — the merge normalizes.
-            ("cooling.targets", "0"),
-            ("cooling.targets", "-10"),
-        ]);
-        let merged = merge_form(&form, &grid_model()).unwrap();
-        assert_eq!(
-            merged.config.pointer("/cooling/targets"),
-            Some(&json!([-10, 0])),
-            "checked values must be written back in schema enum order"
-        );
-        assert!(merged.errors.is_empty(), "{:?}", merged.errors);
-    }
-
-    #[test]
-    fn merge_form_empty_checkbox_group_becomes_empty_array() {
-        // Nothing checked ⇒ no pairs under the field name ⇒ empty array
-        // (same present/absent semantics as a boolean checkbox).
-        let form = form_from(&[
-            ("__config", r#"{"cooling":{"targets":[-10,0]}}"#),
-            ("__overrides", "[]"),
-        ]);
-        let merged = merge_form(&form, &grid_model()).unwrap();
-        assert_eq!(
-            merged.config.pointer("/cooling/targets"),
-            Some(&json!([])),
-            "unchecking every box must clear the array, not keep the prior value"
-        );
-    }
-
-    #[test]
-    fn merge_form_checkbox_group_value_outside_the_enum_is_a_field_error() {
-        let form = form_from(&[
-            ("__config", r#"{"cooling":{"targets":[]}}"#),
-            ("__overrides", "[]"),
-            ("cooling.targets", "-10"),
-            ("cooling.targets", "7"),
-        ]);
-        let merged = merge_form(&form, &grid_model()).unwrap();
-        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
-        assert_eq!(merged.errors[0].path, "cooling.targets");
-        assert_eq!(
-            merged.config.pointer("/cooling/targets"),
-            Some(&json!([])),
-            "a rejected submission must leave the blob value untouched"
-        );
-    }
-
-    #[test]
-    fn from_item_schema_unwraps_the_optional_singular_mount() {
-        let model =
-            FieldModel::from_item_schema(&rp_like_schema(), "mount").expect("mount item model");
-        let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, vec!["alpaca_url", "device_number"]);
-    }
-
-    #[test]
-    fn from_item_schema_unknown_kind_is_none() {
-        assert!(FieldModel::from_item_schema(&rp_like_schema(), "rotators").is_none());
-        // A schema without an equipment block at all.
-        let bare = ConfigSchemaResponse {
-            schema: json!({ "type": "object", "properties": {} }),
-            locked_fields: vec![],
-            read_only_fields: vec![],
-        };
-        assert!(FieldModel::from_item_schema(&bare, "cameras").is_none());
     }
 
     fn sample_config() -> Value {
@@ -1552,66 +983,6 @@ mod tests {
         tag.get(..=end).unwrap().to_string()
     }
 
-    // --- schema walker -------------------------------------------------------
-
-    #[test]
-    fn walker_produces_scalar_leaves_and_skips_anyof() {
-        let model = sample_model();
-        let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
-        // Plain scalar leaves are rendered (including the nullable optional int)…
-        for expected in [
-            "serial.port",
-            "serial.baud_rate",
-            "server.port",
-            "server.discovery_port",
-            "cover_calibrator.unique_id",
-            "cover_calibrator.enabled",
-            "cover_calibrator.max_brightness",
-        ] {
-            assert!(
-                names.contains(&expected),
-                "missing leaf {expected}: {names:?}"
-            );
-        }
-        // …but the anyOf optional struct (a secret-bearing subtree) is skipped.
-        assert!(
-            !names.iter().any(|n| n.starts_with("server.auth")),
-            "server.auth should be skipped (round-trips via blob): {names:?}"
-        );
-    }
-
-    #[test]
-    fn walker_infers_field_kinds() {
-        let model = sample_model();
-        let kind = |name: &str| {
-            model
-                .fields
-                .iter()
-                .find(|f| f.name == name)
-                .unwrap()
-                .kind
-                .clone()
-        };
-        assert_eq!(kind("serial.port"), FieldKind::Str { nullable: false });
-        assert_eq!(kind("cover_calibrator.enabled"), FieldKind::Bool);
-        assert_eq!(
-            kind("server.discovery_port"),
-            FieldKind::Int {
-                nullable: true,
-                min: Some(0),
-                max: Some(65535)
-            }
-        );
-        assert_eq!(
-            kind("server.port"),
-            FieldKind::Int {
-                nullable: false,
-                min: Some(0),
-                max: Some(65535)
-            }
-        );
-    }
-
     // --- rendering -----------------------------------------------------------
 
     #[test]
@@ -1623,19 +994,9 @@ mod tests {
         assert!(markup.contains(r#"name="__unlocked""#), "{markup}");
         // Form posts to the service-scoped route.
         assert!(markup.contains(r#"hx-post="/config/dsd-fp2""#), "{markup}");
-    }
-
-    #[test]
-    fn canonical_json_sorts_keys_recursively() {
-        // Under the test build serde_json's `preserve_order` is unified on (a
-        // dev-dependency requires it), so a Value built in this order would
-        // otherwise serialize unsorted. canonical_json must still sort — at every
-        // depth, including inside arrays — so the hidden blob's bytes are stable.
-        let value = json!({ "b": 1, "a": { "y": 2, "x": 3 }, "c": [ { "n": 1, "m": 2 } ] });
-        assert_eq!(
-            canonical_json(&value),
-            r#"{"a":{"x":3,"y":2},"b":1,"c":[{"m":2,"n":1}]}"#
-        );
+        // The file-only `server.auth` leaf is not on the page at all: it
+        // rides in the blob.
+        assert!(!markup.contains(r#"id="server.auth""#), "{markup}");
     }
 
     #[test]
@@ -1797,6 +1158,27 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(2048)
         );
+        assert!(merged.errors.is_empty(), "{:?}", merged.errors);
+    }
+
+    #[test]
+    fn merge_form_reports_a_coercion_error_and_keeps_the_prior_value() {
+        // 99999 doesn't fit the schema maximum (65535) for discovery_port.
+        let form = form_from(&[
+            ("__config", &sample_config().to_string()),
+            ("__overrides", "[]"),
+            ("server.discovery_port", "99999"),
+        ]);
+        let merged = merge_form(&form, &sample_model()).unwrap();
+        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
+        assert_eq!(merged.errors[0].path, "server.discovery_port");
+        assert_eq!(
+            merged
+                .config
+                .pointer("/server/discovery_port")
+                .and_then(Value::as_u64),
+            Some(32227)
+        );
     }
 
     #[test]
@@ -1818,13 +1200,14 @@ mod tests {
     }
 
     #[test]
-    fn merge_form_never_changes_read_only_enabled() {
-        // `enabled` is read-only via the schema tier, so a forged value is
-        // ignored and the field round-trips from the blob (stays true).
+    fn merge_form_never_changes_read_only_fields() {
+        // `enabled` and `server.port` are read-only via the schema tier, so a
+        // forged value is ignored and the field round-trips from the blob.
         let form = form_from(&[
             ("__config", &sample_config().to_string()),
             ("__overrides", "[]"),
             ("cover_calibrator.enabled", "false"),
+            ("server.port", "22222"),
         ]);
         let merged = merge_form(&form, &sample_model()).unwrap();
         assert_eq!(
@@ -1834,73 +1217,12 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
-    }
-
-    #[test]
-    fn merge_form_empty_optional_becomes_null() {
-        let form = form_from(&[
-            ("__config", &sample_config().to_string()),
-            ("__overrides", "[]"),
-            ("server.discovery_port", ""),
-        ]);
-        let merged = merge_form(&form, &sample_model()).unwrap();
-        assert!(merged
-            .config
-            .pointer("/server/discovery_port")
-            .unwrap()
-            .is_null());
-    }
-
-    /// Clearing an optional *text* box unsets the field, exactly as
-    /// clearing an optional number does. `""` is a different state — rp
-    /// reads an absent `file_naming_pattern` as "no templated naming" but
-    /// an empty one as malformed — so the form must send the state the
-    /// operator actually chose.
-    #[test]
-    fn merge_form_empty_nullable_string_becomes_null() {
-        let model = FieldModel::from_schema(&rp_like_schema());
-        let config = json!({
-            "session": {
-                "data_directory": "/var/lib/rusty-photon",
-                "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}",
-            },
-        });
-        let form = form_from(&[
-            ("__config", &config.to_string()),
-            ("__overrides", "[]"),
-            ("session.file_naming_pattern", ""),
-            ("session.data_directory", "/var/lib/rusty-photon"),
-        ]);
-        let merged = merge_form(&form, &model).unwrap();
-        assert!(
-            merged
-                .config
-                .pointer("/session/file_naming_pattern")
-                .unwrap()
-                .is_null(),
-            "a cleared optional string must reach the driver as null, not \"\""
-        );
-    }
-
-    /// The other half of the rule: a *required* string keeps sending `""`,
-    /// so a driver that validates its own required fields still gets the
-    /// chance to reject the empty value rather than seeing it as unset.
-    #[test]
-    fn merge_form_empty_required_string_stays_a_string() {
-        let model = FieldModel::from_schema(&rp_like_schema());
-        let config = json!({ "session": { "data_directory": "/var/lib/rusty-photon" } });
-        let form = form_from(&[
-            ("__config", &config.to_string()),
-            ("__overrides", "[]"),
-            ("session.data_directory", ""),
-        ]);
-        let merged = merge_form(&form, &model).unwrap();
         assert_eq!(
             merged
                 .config
-                .pointer("/session/data_directory")
-                .and_then(Value::as_str),
-            Some("")
+                .pointer("/server/port")
+                .and_then(Value::as_u64),
+            Some(11119)
         );
     }
 
@@ -1909,62 +1231,6 @@ mod tests {
         let form = form_from(&[("serial.port", "/dev/ttyACM0")]);
         let err = merge_form(&form, &sample_model()).unwrap_err();
         assert!(matches!(err, FormError::MissingConfig));
-    }
-
-    #[test]
-    fn merge_form_out_of_range_optional_int_is_a_field_error() {
-        // 99999 doesn't fit the schema maximum (65535) for discovery_port.
-        let form = form_from(&[
-            ("__config", &sample_config().to_string()),
-            ("__overrides", "[]"),
-            ("server.discovery_port", "99999"),
-        ]);
-        let merged = merge_form(&form, &sample_model()).unwrap();
-        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
-        assert_eq!(merged.errors[0].path, "server.discovery_port");
-        // The prior value is kept (not coerced) so re-render shows it.
-        assert_eq!(
-            merged
-                .config
-                .pointer("/server/discovery_port")
-                .and_then(Value::as_u64),
-            Some(32227)
-        );
-    }
-
-    #[test]
-    fn merge_form_empty_required_number_keeps_prior_value() {
-        let form = form_from(&[
-            ("__config", &sample_config().to_string()),
-            ("__overrides", "[]"),
-            ("serial.baud_rate", ""),
-        ]);
-        let merged = merge_form(&form, &sample_model()).unwrap();
-        assert!(merged.errors.is_empty(), "{:?}", merged.errors);
-        assert_eq!(
-            merged
-                .config
-                .pointer("/serial/baud_rate")
-                .and_then(Value::as_u64),
-            Some(115_200)
-        );
-    }
-
-    #[test]
-    fn merge_form_never_changes_read_only_server_port() {
-        let form = form_from(&[
-            ("__config", &sample_config().to_string()),
-            ("__overrides", "[]"),
-            ("server.port", "22222"),
-        ]);
-        let merged = merge_form(&form, &sample_model()).unwrap();
-        assert_eq!(
-            merged
-                .config
-                .pointer("/server/port")
-                .and_then(Value::as_u64),
-            Some(11119)
-        );
     }
 
     #[test]
@@ -2064,18 +1330,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_form_non_numeric_baud_rate_is_a_field_error() {
-        let form = form_from(&[
-            ("__config", &sample_config().to_string()),
-            ("__overrides", "[]"),
-            ("serial.baud_rate", "fast"),
-        ]);
-        let merged = merge_form(&form, &sample_model()).unwrap();
-        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
-        assert_eq!(merged.errors[0].path, "serial.baud_rate");
-    }
-
-    #[test]
     fn merge_form_missing_overrides_is_an_error() {
         let form = form_from(&[("__config", &sample_config().to_string())]);
         let err = merge_form(&form, &sample_model()).unwrap_err();
@@ -2090,51 +1344,5 @@ mod tests {
         ]);
         let err = merge_form(&form, &sample_model()).unwrap_err();
         assert!(matches!(err, FormError::BadOverrides(_)), "{err:?}");
-    }
-
-    #[test]
-    fn merge_form_coerces_float_leaf() {
-        // A `number` (f64) leaf parses as a float; this isn't present in the
-        // dsd-fp2 sample, so exercise it against a minimal one-field model.
-        let schema = ConfigSchemaResponse {
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "optics": {
-                        "type": "object",
-                        "properties": { "focal_length_mm": { "type": "number", "format": "double" } }
-                    }
-                }
-            }),
-            locked_fields: vec![],
-            read_only_fields: vec![],
-        };
-        let model = FieldModel::from_schema(&schema);
-        let form = form_from(&[
-            (
-                "__config",
-                &json!({ "optics": { "focal_length_mm": 200.0 } }).to_string(),
-            ),
-            ("__overrides", "[]"),
-            ("optics.focal_length_mm", "135.5"),
-        ]);
-        let merged = merge_form(&form, &model).unwrap();
-        assert_eq!(
-            merged
-                .config
-                .pointer("/optics/focal_length_mm")
-                .and_then(Value::as_f64),
-            Some(135.5)
-        );
-    }
-
-    #[test]
-    fn humanize_makes_readable_labels() {
-        assert_eq!(humanize("port"), "Port");
-        assert_eq!(humanize("max_brightness"), "Max brightness");
-        assert_eq!(
-            humanize("dec_limits.max_degrees"),
-            "Dec limits · Max degrees"
-        );
     }
 }

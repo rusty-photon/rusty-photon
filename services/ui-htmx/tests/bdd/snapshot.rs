@@ -59,10 +59,10 @@ fn snapshot_dir() -> PathBuf {
 /// Assert that `html` matches the committed golden named `name`, scrubbing the
 /// one run/OS-varying token first so a single golden compares everywhere.
 ///
-/// The dsd-fp2 driver binds `:0` (the OS assigns a free port), and the page
+/// The qhy-focuser driver binds `:0` (the OS assigns a free port), and the page
 /// carries that effective `server.port` both in the read-only input and inside
 /// the HTML-escaped hidden `__config` blob — so it is filtered to `<port>`
-/// before compare. The serial port, baud rate, brightness, names, hints, and
+/// before compare. The serial port, baud rate, step limit, names, hints, and
 /// `hx-*` wiring are all fixed inputs, so nothing else varies. (The
 /// driver-unreachable error card is deliberately **not** snapshotted: its banner
 /// embeds an OS-specific connection-refused string — "os error 111/61/10061" —

@@ -9,23 +9,23 @@ Feature: Real-browser behavior
   without a browser on every OS.
 
   Scenario: The configuration form renders in a real browser
-    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
-    When I load the dsd-fp2 config page in a browser
+    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
+    When I load the qhy-focuser config page in a browser
     Then the browser renders the configuration form
 
   Scenario: Unlocking the identity field swaps the card via htmx
-    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
-    When I load the dsd-fp2 config page in a browser
-    And I click the unlock link for cover_calibrator.unique_id
-    Then the browser shows cover_calibrator.unique_id editable
+    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
+    When I load the qhy-focuser config page in a browser
+    And I click the unlock link for focuser.unique_id
+    Then the browser shows focuser.unique_id editable
 
   # Tier 0 step 3 (plan §9): quitting the browser before stopping the BFF lets the
   # BFF shut down gracefully, so it runs its atexit handler and flushes coverage.
   # Reversing the order would block the BFF on the browser's held connection until
   # the 5s SIGKILL grace and silently zero its BDD coverage (testing.md §5.4).
   Scenario: The BFF flushes coverage on graceful shutdown with a browser attached
-    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
-    When I load the dsd-fp2 config page in a browser
+    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
+    When I load the qhy-focuser config page in a browser
     And I quit the browser and then stop the BFF
     Then the BFF shuts down gracefully before the 5s SIGKILL grace elapses
 
@@ -37,8 +37,8 @@ Feature: Real-browser behavior
   # Linux CI + dev; macOS/Windows browser support is plan §9 step 5 (deferred), and
   # forcing UI_BROWSER_TESTS=1 there fails loud rather than silently passing.
   Scenario: A crashed browser session is reaped with no orphaned processes
-    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
-    When I load the dsd-fp2 config page in a browser
+    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
+    When I load the qhy-focuser config page in a browser
     And the geckodriver process is killed and the session is reaped
     Then the reaper leaves no orphaned browser processes
     And the failure artifacts were captured at an absolute path before the reap

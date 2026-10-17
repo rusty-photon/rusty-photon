@@ -43,6 +43,11 @@ tls-auth = [
     "dep:rusty-photon-tls",
     "dep:uuid",
 ]
+# Enables the `setup_pages` module: the shared steps behind every service's
+# `setup_pages.feature` (the HTML setup pages the service serves). Built on
+# `tls-auth` for the credential scenarios, plus `scraper` for the DOM
+# assertions the steps make on the rendered pages.
+setup-pages = ["tls-auth", "dep:scraper"]
 
 [dependencies]
 libc = { workspace = true }
@@ -73,4 +78,6 @@ rp-mcp-client = { workspace = true, optional = true }
 # Only pulled in when the conformu feature is enabled.
 rusty-photon-process = { workspace = true, optional = true }
 rusty-photon-tls = { workspace = true, optional = true }
+# Only pulled in when the setup-pages feature is enabled.
+scraper = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }

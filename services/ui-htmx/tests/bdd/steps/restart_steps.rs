@@ -25,7 +25,7 @@ async fn sentinel_with_no_services(world: &mut UiWorld) {
     world.start_sentinel_and_rewire_bff().await;
 }
 
-#[when("I request a restart of the dsd-fp2 driver")]
+#[when("I request a restart of the qhy-focuser driver")]
 async fn request_restart(world: &mut UiWorld) {
     world.request_restart().await;
 }

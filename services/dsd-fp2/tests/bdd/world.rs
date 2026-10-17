@@ -13,6 +13,7 @@ use std::time::Duration;
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::api::{CoverCalibrator, TypedDevice};
 use ascom_alpaca::{ASCOMError, Client as AlpacaClient};
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -26,12 +27,12 @@ pub struct Fp2World {
     /// Stashed result of the last fallible call so a subsequent Then step
     /// can assert against it.
     pub last_error: Option<ASCOMError>,
-    /// Parsed JSON body of the last `config.get` / `config.apply` action.
-    pub last_response: Option<serde_json::Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 }
@@ -66,6 +67,12 @@ impl TlsAuthSmokeWorld for Fp2World {
         )
         .await;
         self.handle = Some(handle);
+    }
+}
+
+impl SetupPagesWorld for Fp2World {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 
@@ -121,52 +128,51 @@ impl Fp2World {
     pub async fn start(&mut self) {
         let config_path = self.write_config();
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
+        self.adopt(handle, config_path).await;
+    }
+
+    /// Spawn the binary with `serial.port` pinned by a `--port` override,
+    /// so the server page shows the field pinned and never persists it.
+    pub async fn start_with_serial_override(&mut self, serial_port: &str) {
+        let config_path = self.write_config();
+        let handle = ServiceHandle::start_with_args(
+            env!("CARGO_PKG_NAME"),
+            &["--config", &config_path, "--port", serial_port],
+        )
+        .await;
+        self.adopt(handle, config_path).await;
+    }
+
+    /// Spawn the binary through the TLS + auth fixture, so the setup pages
+    /// sit behind the credential.
+    pub async fn start_with_tls_and_auth(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.base_test_config();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.handle = Some(handle);
+    }
+
+    /// Record a spawned plain-HTTP service: acquire its device client and
+    /// hand the setup-page steps its address and config file.
+    async fn adopt(&mut self, handle: ServiceHandle, config_path: String) {
         let device = acquire_device(&handle).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
         self.device = Some(device);
         self.handle = Some(handle);
     }
 
     pub fn device(&self) -> &Arc<dyn CoverCalibrator> {
         self.device.as_ref().expect("device not acquired")
-    }
-
-    /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
-        self.handle.as_ref().expect("service not started").port
-    }
-
-    /// Call `config.get`, stash the parsed response, and return the `config`
-    /// object (so a When step can edit a field and re-`config.apply` it).
-    pub async fn current_config(&mut self) -> serde_json::Value {
-        let device = Arc::clone(self.device());
-        let body = device
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.get` and stash the parsed response.
-    pub async fn call_config_get(&mut self) {
-        self.current_config().await;
-    }
-
-    /// Call `config.apply` with `params` and stash the parsed response.
-    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
-        let device = Arc::clone(self.device());
-        let body = device
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
     }
 
     /// Poll the device until `cover_state` matches `expected`, panicking
@@ -199,39 +205,6 @@ impl Fp2World {
             self.device().calibrator_state().await.unwrap()
         );
     }
-
-    /// Poll `config.get` until `cover_calibrator.max_brightness` equals
-    /// `expected`, panicking after ~20 s. A *fresh* client is used each attempt
-    /// so a connection dropped by the reload doesn't wedge the poll, and the
-    /// loop tolerates the brief blip while the server tears down and rebinds.
-    /// If the rebind failed (e.g. an `AddrInUse` regression) the process exits,
-    /// the polls never succeed, and this panics — which is the point.
-    pub async fn wait_for_config_max_brightness(&self, expected: u32) {
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
-        for _ in 0..80 {
-            if try_get_max_brightness(addr).await == Some(u64::from(expected)) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("reloaded service did not report max_brightness {expected} within 20s");
-    }
-}
-
-/// Read `cover_calibrator.max_brightness` via a fresh client, returning `None`
-/// on any transport/parse failure (e.g. mid-reload).
-async fn try_get_max_brightness(addr: SocketAddr) -> Option<u64> {
-    let client = AlpacaClient::new_from_addr(addr);
-    let mut devices = client.get_devices().await.ok()?;
-    if let Some(TypedDevice::CoverCalibrator(cc)) = devices.next() {
-        let body = cc
-            .action("config.get".to_string(), String::new())
-            .await
-            .ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
-        return parsed["config"]["cover_calibrator"]["max_brightness"].as_u64();
-    }
-    None
 }
 
 /// Poll the Alpaca management endpoint until a `CoverCalibrator` device is

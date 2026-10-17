@@ -625,8 +625,23 @@ ppba-driver's). The two scenarios spawn the suite's staged binary with
 `doctor --json` and assert the clean-report and unknown-key contracts; the
 runner's deep behavior is unit-tested in `rusty-photon-doctor-checks`.
 
+**Setup pages (the `setup-pages` feature, on top of `tls-auth`)** — the
+shared steps behind every service's `setup_pages.feature`
+([rusty-photon-setup.md](../crates/rusty-photon-setup.md)):
+`SetupPagesState` + `SetupPagesWorld` + `setup_pages_steps!` in
+`bdd_infra::setup_pages`. The World embeds the state, implements the trait
+(one accessor), and invokes the macro in its `setup_pages_steps.rs` beside its
+own Given steps, which start the service in each shape and hand the state the
+address and config file through `adopt_plain` or `adopt_tls_auth`. The When
+and Then steps are service-neutral — opening either page, submitting it the
+way its own form would (the rendered controls, the edit, the `Origin` of the
+page itself or of another site), the reload wait, the file's contents at a
+pointer, a field's error under `422`, the credential's absence from a page —
+so field names, values and statuses live in the feature file. `dsd-fp2`'s
+suite is the reference.
+
 Under Bazel, BDD targets link the matching crate variant:
-`//crates/bdd-infra:bdd-infra_tls_auth`, or
+`//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or
 `:bdd-infra_rp_harness_tls_auth` when the suite also spawns rp.
 
 ```toml

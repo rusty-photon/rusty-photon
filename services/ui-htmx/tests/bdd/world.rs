@@ -3,14 +3,17 @@
 //! Mirrors the binary-spawning pattern the other services use (see
 //! [`sentinel`](../../../../sentinel/tests/bdd/world.rs)): every scenario
 //! spawns the *real* `ui-htmx` binary **plus** a real `rp` orchestrator and a
-//! real `dsd-fp2` driver (mock hardware) rostered in rp's config — every
-//! config target is roster-derived (#569) — and drives the BFF over HTTP.
-//! There is no in-process router and no stubbed client: the production
-//! `ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
-//! `config.get` / `config.apply` / in-process reload are exercised end to end.
+//! real driver with mock hardware rostered in rp's config — every config
+//! target is roster-derived (#569) — and drives the BFF over HTTP. The
+//! config-page suites use `qhy-focuser`, which still carries the config
+//! actions; the equipment page's setup-page tier uses `dsd-fp2`, which serves
+//! its own setup pages instead. There is no in-process router and no stubbed
+//! client: the production `ReqwestHttpClient` → `AlpacaConfigClient` path and
+//! the driver's real `config.get` / `config.apply` / in-process reload are
+//! exercised end to end.
 //!
-//! Requires both binaries pre-built with `--all-features` (the `dsd-fp2` mock
-//! transport is feature-gated): `cargo build --all-features --all-targets`.
+//! Requires the binaries pre-built with `--all-features` (the drivers' mock
+//! transports are feature-gated): `cargo build --all-features --all-targets`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,22 +26,28 @@ use tempfile::TempDir;
 use crate::browser::BrowserSession;
 use crate::dom;
 
-/// The dsd-fp2 `CoverCalibrator` action endpoint the BFF (and these helpers) call.
-const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
+/// The qhy-focuser `Focuser` action endpoint the BFF (and these helpers) call.
+const DRIVER_ACTION_PATH: &str = "/api/v1/focuser/0/action";
 
 /// A reserved, low-numbered loopback port that reliably refuses connections —
 /// the repo's convention for an unreachable Alpaca target (see ui-htmx's
 /// `io.rs` test and rp's BDD steps). Deterministic, unlike a released free port.
 const UNREACHABLE_PORT: u16 = 1;
 
-/// The roster id the dsd-fp2 driver is registered under in rp's config — the
-/// config-page suites reach it at [`UiWorld::device_config_path`].
-const DEVICE_ID: &str = "dsd-fp2";
+/// The roster id the qhy-focuser driver is registered under in rp's config —
+/// the config-page suites reach it at [`UiWorld::device_config_path`].
+const DEVICE_ID: &str = "qhy-focuser";
 
 #[derive(Debug, Default, World)]
 pub struct UiWorld {
-    /// The dsd-fp2 driver the BFF configures (absent in the "unreachable" case).
+    /// The qhy-focuser driver the BFF configures (absent in the "unreachable" case).
     pub driver: Option<ServiceHandle>,
+    /// The dsd-fp2 driver the equipment page probes as a setup-page device.
+    pub panel: Option<ServiceHandle>,
+    /// The panel's bound port and the scheme it serves (`http`, or `https`
+    /// when started through the TLS + auth fixture).
+    panel_port: u16,
+    panel_scheme: &'static str,
     /// The BFF under test.
     pub ui: Option<ServiceHandle>,
     /// A real sentinel the BFF's restart affordance calls (restart scenarios only).
@@ -138,39 +147,45 @@ impl UiWorld {
 
     // --- spawning real services -------------------------------------------
 
-    /// The roster-derived config-page path of the dsd-fp2 device the suites
-    /// exercise (rp's roster is the only device source — #569).
+    /// The roster-derived config-page path of the qhy-focuser device the
+    /// suites exercise (rp's roster is the only device source — #569).
     pub fn device_config_path() -> String {
-        format!("/config/rp:cover_calibrators:{DEVICE_ID}")
+        format!("/config/rp:focusers:{DEVICE_ID}")
     }
 
-    /// Spawn a real dsd-fp2 driver (mock hardware) reporting the given
-    /// effective `serial.port` and `max_brightness`, roster it in a fresh rp,
+    /// The port the dsd-fp2 panel bound.
+    pub const fn panel_port(&self) -> u16 {
+        self.panel_port
+    }
+
+    /// The scheme the dsd-fp2 panel serves.
+    pub const fn panel_scheme(&self) -> &'static str {
+        self.panel_scheme
+    }
+
+    /// Spawn a real qhy-focuser driver (mock hardware) reporting the given
+    /// effective `serial.port` and `max_step`, roster it in a fresh rp,
     /// and point a fresh BFF at that rp.
-    pub async fn start_driver_and_bff(&mut self, serial_port: &str, max_brightness: u32) {
+    pub async fn start_driver_and_bff(&mut self, serial_port: &str, max_step: u32) {
         // The driver binds port 0, so the OS assigns a free port atomically —
         // no racy preselection. The reload-reconnect scenario pins the resulting
         // port (`pin_driver_port`) so a reload keeps the same address.
-        self.start_driver_and_rp_with_cover_calibrator_config(
-            DEVICE_ID,
-            serial_port,
-            max_brightness,
-        )
-        .await;
+        self.start_driver_and_rp_with_focuser_config(DEVICE_ID, serial_port, max_step)
+            .await;
         self.start_bff_with_rp().await;
     }
 
-    /// Spawn a real dsd-fp2 driver whose `serial.port` is pinned by a `--port`
-    /// command-line override (so `config.get` reports it in `overrides[]`),
-    /// roster it in a fresh rp, and point a fresh BFF at that rp.
+    /// Spawn a real qhy-focuser driver whose `serial.port` is pinned by a
+    /// `--port` command-line override (so `config.get` reports it in
+    /// `overrides[]`), roster it in a fresh rp, and point a fresh BFF at that rp.
     pub async fn start_driver_with_serial_override_and_bff(&mut self, serial_port: &str) {
         // The file carries its own serial.port; the override pins a different
         // effective value, which is what the page must render read-only. Binds
         // port 0 (OS-assigned); this scenario never reloads, so the port needn't
         // be pinned.
-        let config_path = self.write_driver_config("/dev/ttyACM0", 4096);
+        let config_path = self.write_driver_config("/dev/ttyACM0", 60_000);
         let handle = ServiceHandle::start_with_args(
-            "dsd-fp2",
+            "qhy-focuser",
             &["--config", &config_path, "--port", serial_port],
         )
         .await;
@@ -270,7 +285,7 @@ impl UiWorld {
     /// driver Given has already started the first BFF. Sentinel runs its
     /// first discovery pass before binding, so the discovered set is complete
     /// as soon as the handle returns. Its config lives in its own
-    /// subdirectory, seeded with a sibling `dsd-fp2.json` carrying the
+    /// subdirectory, seeded with a sibling `qhy-focuser.json` carrying the
     /// driver's real bound port: discovery derives each service's probe port
     /// from such files, and the BFF's roster-derived restart match needs
     /// `probe_port` to equal the rostered device's `alpaca_url` port. (The
@@ -284,7 +299,7 @@ impl UiWorld {
         let config_dir = self.temp_path("sentinel-home");
         std::fs::create_dir_all(&config_dir).expect("failed to create sentinel config dir");
         std::fs::write(
-            config_dir.join("dsd-fp2.json"),
+            config_dir.join("qhy-focuser.json"),
             json!({ "server": { "port": self.driver_port, "discovery_port": null } }).to_string(),
         )
         .expect("failed to write the driver probe config");
@@ -324,32 +339,61 @@ impl UiWorld {
     }
 
     /// [`request_restart_at`](Self::request_restart_at) for the rostered
-    /// dsd-fp2 device page.
+    /// qhy-focuser device page.
     pub async fn request_restart(&mut self) {
         let path = Self::device_config_path();
         self.request_restart_at(&path).await;
     }
 
-    fn write_driver_config(&mut self, serial_port: &str, max_brightness: u32) -> String {
+    /// The qhy-focuser config the config-page suites render: mock hardware
+    /// behind `serial_port`, the OS-assigned server port, and the given step
+    /// limit (the value the scenarios read back and change).
+    fn write_driver_config(&mut self, serial_port: &str, max_step: u32) -> String {
         let config = json!({
             "serial": {
                 "port": serial_port,
-                "baud_rate": 115_200,
+                "baud_rate": 9600,
                 "polling_interval": "100ms",
                 "timeout": "2s"
             },
             // Port 0: the OS assigns a free port atomically (no preselect race).
             "server": { "port": 0, "discovery_port": null },
+            "focuser": {
+                "name": "QHY Q-Focuser",
+                "unique_id": "qhy-focuser-ui-bdd",
+                "description": "BDD test instance",
+                "enabled": true,
+                "max_step": max_step,
+                "speed": 0,
+                "reverse": false
+            }
+        });
+        let path = self.temp_path("qhy-focuser.json");
+        std::fs::write(&path, config.to_string()).expect("failed to write driver config");
+        path.to_str().unwrap().to_string()
+    }
+
+    /// The dsd-fp2 panel's config: mock hardware, the OS-assigned server
+    /// port, and — when `server` is given — the TLS + auth fixture's block.
+    fn write_panel_config(&mut self, server: Option<Value>) -> String {
+        let config = json!({
+            "serial": {
+                "port": "/dev/mock",
+                "baud_rate": 115_200,
+                "polling_interval": "100ms",
+                "timeout": "2s"
+            },
+            "server": server.unwrap_or_else(|| json!({ "port": 0, "discovery_port": null })),
             "cover_calibrator": {
                 "name": "Deep Sky Dad FP2",
                 "unique_id": "dsd-fp2-ui-bdd",
                 "description": "BDD test instance",
                 "enabled": true,
-                "max_brightness": max_brightness
+                "max_brightness": 4096
             }
         });
         let path = self.temp_path("dsd-fp2.json");
-        std::fs::write(&path, config.to_string()).expect("failed to write driver config");
+        std::fs::write(&path, config.to_string()).expect("failed to write panel config");
         path.to_str().unwrap().to_string()
     }
 
@@ -393,7 +437,7 @@ impl UiWorld {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("dsd-fp2 driver did not answer config.get within 10s");
+        panic!("qhy-focuser driver did not answer config.get within 10s");
     }
 
     /// The driver's current `config.get` `(config, overrides)` — the exact blob
@@ -529,37 +573,109 @@ impl UiWorld {
         }
     }
 
-    /// Spawn a real dsd-fp2 (mock hardware), then rp with that driver in its
-    /// roster as cover calibrator `id` — the all-first-party managed-device
-    /// stack (no `OmniSim`).
-    pub async fn start_driver_and_rp_with_cover_calibrator(&mut self, id: &str) {
-        self.start_driver_and_rp_with_cover_calibrator_config(id, "/dev/ttyACM0", 4096)
+    /// Spawn a real qhy-focuser (mock hardware), then rp with that driver in
+    /// its roster as focuser `id` — the all-first-party managed-device stack
+    /// (no `OmniSim`).
+    pub async fn start_driver_and_rp_with_focuser(&mut self, id: &str) {
+        self.start_driver_and_rp_with_focuser_config(id, "/dev/ttyACM0", 60_000)
             .await;
     }
 
-    /// [`start_driver_and_rp_with_cover_calibrator`] with an explicit driver
-    /// config (the config-page suite renders these exact values).
-    pub async fn start_driver_and_rp_with_cover_calibrator_config(
+    /// [`start_driver_and_rp_with_focuser`] with an explicit driver config
+    /// (the config-page suite renders these exact values).
+    pub async fn start_driver_and_rp_with_focuser_config(
         &mut self,
         id: &str,
         serial_port: &str,
-        max_brightness: u32,
+        max_step: u32,
     ) {
-        let config_path = self.write_driver_config(serial_port, max_brightness);
-        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
+        let config_path = self.write_driver_config(serial_port, max_step);
+        let handle = ServiceHandle::start("qhy-focuser", &config_path).await;
         self.driver_port = handle.port;
         self.driver = Some(handle);
         self.wait_for_driver_ready().await;
         self.roster_driver_and_start_rp(id).await;
     }
 
-    /// Spawn rp with the (already known) `self.driver_port` rostered as cover
-    /// calibrator `id`.
+    /// Spawn rp with the (already known) `self.driver_port` rostered as
+    /// focuser `id`.
     async fn roster_driver_and_start_rp(&mut self, id: &str) {
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.add_focuser(bdd_infra::rp_harness::FocuserConfig {
+            id: id.to_string(),
+            alpaca_url: format!("http://127.0.0.1:{}", self.driver_port),
+            device_number: 0,
+            min_position: None,
+            max_position: None,
+            backlash: None,
+            microns_per_step: None,
+        });
+        self.start_rp(&builder).await;
+    }
+
+    /// Spawn a real dsd-fp2 (mock hardware) — a driver with its own setup
+    /// pages and no config actions — then rp with it rostered as cover
+    /// calibrator `id`.
+    pub async fn start_panel_and_rp_with_cover_calibrator(&mut self, id: &str) {
+        let config_path = self.write_panel_config(None);
+        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
+        self.panel_port = handle.port;
+        self.panel_scheme = "http";
+        self.panel = Some(handle);
+        let url = format!("http://127.0.0.1:{}", self.panel_port);
+        self.wait_for_panel_ready(&reqwest::Client::new(), &url, None)
+            .await;
+        self.roster_panel_and_start_rp(id, &url).await;
+    }
+
+    /// Spawn the dsd-fp2 panel behind the TLS + auth fixture, then rp with it
+    /// rostered as cover calibrator `id` over `https://localhost` (the name
+    /// the fixture's certificate carries). The BFF started afterwards trusts
+    /// the fixture's CA, so its probe reaches the panel and meets its `401`.
+    pub async fn start_panel_with_tls_auth_and_rp_with_cover_calibrator(&mut self, id: &str) {
+        let pki = bdd_infra::tls_auth::shared_pki("dsd-fp2").await;
+        let config_path = self.write_panel_config(Some(pki.server_block(0)));
+        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
+        self.panel_port = handle.port;
+        self.panel_scheme = "https";
+        self.panel = Some(handle);
+        let url = format!("https://localhost:{}", self.panel_port);
+        let client = pki.https_client();
+        self.wait_for_panel_ready(&client, &url, Some((pki.username(), pki.password())))
+            .await;
+        self.pki = Some(pki);
+        self.roster_panel_and_start_rp(id, &url).await;
+    }
+
+    /// Wait until the panel's Alpaca management endpoint answers 200.
+    async fn wait_for_panel_ready(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        credential: Option<(&str, &str)>,
+    ) {
+        let url = format!("{base_url}/management/v1/configureddevices");
+        for _ in 0..100 {
+            let mut request = client.get(&url);
+            if let Some((user, pass)) = credential {
+                request = request.basic_auth(user, Some(pass));
+            }
+            if let Ok(resp) = request.send().await {
+                if resp.status().as_u16() == 200 {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("dsd-fp2 panel did not answer its management endpoint within 10s");
+    }
+
+    /// Spawn rp with the panel at `url` rostered as cover calibrator `id`.
+    async fn roster_panel_and_start_rp(&mut self, id: &str, url: &str) {
         let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
         builder.add_cover_calibrator(bdd_infra::rp_harness::CoverCalibratorConfig {
             id: id.to_string(),
-            alpaca_url: format!("http://127.0.0.1:{}", self.driver_port),
+            alpaca_url: url.to_string(),
             device_number: 0,
             poll_interval: Some(Duration::from_millis(100)),
         });
@@ -568,12 +684,17 @@ impl UiWorld {
 
     /// Spawn a BFF whose config carries an `rp` target at the given port.
     /// When a sentinel is running (restart scenarios), its URL is carried in
-    /// the BFF's `sentinel` block so the restart affordances render.
+    /// the BFF's `sentinel` block so the restart affordances render. When the
+    /// panel runs behind the TLS fixture, the rp target carries the fixture's
+    /// CA so the BFF's probe trusts the panel's certificate.
     pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
         let mut config = json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
             "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
         });
+        if let (Some(pki), "https") = (&self.pki, self.panel_scheme) {
+            config["rp"]["ca_cert_path"] = json!(pki.ca_path().to_string_lossy());
+        }
         if let Some(sentinel) = &self.sentinel {
             config["sentinel"] = json!({
                 "base_url": format!("http://127.0.0.1:{}", sentinel.port)
@@ -740,6 +861,21 @@ impl UiWorld {
         let url = self.ui_url(path);
         let resp = reqwest::Client::new()
             .get(&url)
+            .send()
+            .await
+            .expect("BFF GET failed");
+        self.current_url = url;
+        self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// [`get`](Self::get) with the `Host` header a browser that reached the
+    /// BFF by `host` would send — the host a setup-page link carries for a
+    /// loopback-addressed device.
+    pub async fn get_as_host(&mut self, path: &str, host: &str) {
+        let url = self.ui_url(path);
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .header(reqwest::header::HOST, host)
             .send()
             .await
             .expect("BFF GET failed");

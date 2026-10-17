@@ -1,6 +1,6 @@
 //! Step definitions for `config_page.feature`.
 //!
-//! Every scenario drives the real BFF over HTTP against a real dsd-fp2 driver
+//! Every scenario drives the real BFF over HTTP against a real qhy-focuser driver
 //! (see [`crate::world::UiWorld`]); the Then-steps assert on the HTML the BFF
 //! actually renders using CSS-selector DOM checks (see [`crate::dom`]) — Layer A
 //! of the UI-testing plan (docs/plans/archive/ui-testing.md §4).
@@ -12,21 +12,19 @@ use crate::{dom, snapshot};
 
 // --- Given: stand up the real services --------------------------------------
 
-#[given(
-    regex = r#"^a dsd-fp2 driver running with serial\.port "([^"]+)" and max_brightness (\d+)$"#
-)]
-async fn driver_running(world: &mut UiWorld, port: String, max_brightness: u32) {
-    world.start_driver_and_bff(&port, max_brightness).await;
+#[given(regex = r#"^a qhy-focuser driver running with serial\.port "([^"]+)" and max_step (\d+)$"#)]
+async fn driver_running(world: &mut UiWorld, port: String, max_step: u32) {
+    world.start_driver_and_bff(&port, max_step).await;
 }
 
 #[given(
-    regex = r#"^a dsd-fp2 driver running with the serial port pinned to "([^"]+)" by a command-line override$"#
+    regex = r#"^a qhy-focuser driver running with the serial port pinned to "([^"]+)" by a command-line override$"#
 )]
 async fn driver_running_with_override(world: &mut UiWorld, port: String) {
     world.start_driver_with_serial_override_and_bff(&port).await;
 }
 
-#[given("the BFF is pointed at a dsd-fp2 driver that is not running")]
+#[given("the BFF is pointed at a qhy-focuser driver that is not running")]
 async fn driver_not_running(world: &mut UiWorld) {
     world.start_bff_with_unreachable_driver().await;
 }
@@ -38,13 +36,13 @@ async fn pin_driver_port(world: &mut UiWorld) {
 
 // --- When: interact with the BFF --------------------------------------------
 
-#[when("I open the dsd-fp2 config page")]
+#[when("I open the qhy-focuser config page")]
 async fn open_page(world: &mut UiWorld) {
     let path = UiWorld::device_config_path();
     world.get(&path).await;
 }
 
-#[when(regex = r"^I open the dsd-fp2 config page with ([\w.]+) unlocked$")]
+#[when(regex = r"^I open the qhy-focuser config page with ([\w.]+) unlocked$")]
 async fn open_page_with_unlock(world: &mut UiWorld, field: String) {
     // Follow the page's rendered "Unlock to edit" affordance the way htmx would,
     // rather than fabricating the `?unlock=` URL out of band.
@@ -63,11 +61,9 @@ async fn open_named_config_page(world: &mut UiWorld, service: String) {
     world.get(&format!("/config/{service}")).await;
 }
 
-#[when(regex = r"^I submit the config form setting max_brightness to (\d+)$")]
-async fn submit_max_brightness(world: &mut UiWorld, value: String) {
-    world
-        .submit_form(&[("cover_calibrator.max_brightness", &value)])
-        .await;
+#[when(regex = r"^I submit the config form setting max_step to (\d+)$")]
+async fn submit_max_step(world: &mut UiWorld, value: String) {
+    world.submit_form(&[("focuser.max_step", &value)]).await;
 }
 
 #[when(regex = r"^I submit the config form setting baud_rate to (\d+)$")]
@@ -80,10 +76,10 @@ async fn submit_unchanged(world: &mut UiWorld) {
     world.submit_form(&[]).await;
 }
 
-#[when(regex = r"^I poll the reconnect status until max_brightness (\d+) is served$")]
+#[when(regex = r"^I poll the reconnect status until max_step (\d+) is served$")]
 async fn poll_until_served(world: &mut UiWorld, value: String) {
     world
-        .poll_status_until_value("cover_calibrator.max_brightness", &value)
+        .poll_status_until_value("focuser.max_step", &value)
         .await;
 }
 

@@ -31,7 +31,6 @@
 
 pub mod codec;
 pub mod config;
-pub mod config_actions;
 pub mod device;
 pub mod doctor;
 pub mod error;
@@ -39,6 +38,7 @@ pub mod manager;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub mod protocol;
+pub mod setup;
 pub mod transport;
 
 pub use codec::Fp2Codec;
@@ -62,22 +62,23 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::TransportFactory;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
 
-use crate::config_actions::DsdFp2Driver;
+use crate::setup::DsdFp2Driver;
 
 /// Builder for the FP2 ASCOM Alpaca server.
 pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
-    /// Where `config.apply` persists and reload re-reads. `Some` enables the
-    /// config actions (together with `reload`).
+    /// Where a setup-page save persists and reload re-reads. `Some` enables
+    /// the setup pages (together with `reload`).
     config_path: Option<PathBuf>,
-    /// CLI overrides, so config actions can distinguish file vs. override layers.
+    /// CLI overrides, so the pages can show a pinned field and never persist it.
     overrides: CliOverrides,
-    /// Reload trigger handed to the device for fire-after-response reload.
+    /// Reload trigger the pages fire after a save's response has flushed.
     reload: Option<ReloadSignal>,
 }
 
@@ -125,9 +126,9 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the config source (persist path + CLI overrides) for the
-    /// `config.get` / `config.apply` actions. Together with
-    /// [`Self::with_reload_signal`], this enables config editing.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], this enables
+    /// config editing.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
@@ -135,7 +136,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response
+    /// Provide the reload trigger a setup-page save fires after its response
     /// flushes. Together with [`Self::with_config_source`], this enables config
     /// editing.
     #[must_use]
@@ -169,7 +170,7 @@ impl ServerBuilder {
         info!("validating hardware via eager startup handshake");
         manager.transport().start().await?;
 
-        // Config-action wiring (persist path + CLI overrides + reload trigger),
+        // Setup-page wiring (persist path + CLI overrides + reload trigger),
         // cloned out here so the borrowing build block below can consume them.
         let config_path = self.config_path.clone();
         let overrides = self.overrides.clone();
@@ -186,21 +187,33 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
+            // The setup pages: one handler behind the server page and the
+            // device page, present when the builder was given a config source
+            // and a reload signal (the normal path through `main`).
+            let pages = match (config_path.clone(), reload.clone()) {
+                (Some(path), Some(reload)) => Some(Arc::new(
+                    SetupPages::<DsdFp2Driver>::new(
+                        "dsd-fp2",
+                        self.config.clone(),
+                        path,
+                        overrides.clone(),
+                    )
+                    .with_reload(reload)
+                    .with_https(self.config.server.tls.is_some()),
+                )),
+                _ => None,
+            };
+            if let Some(pages) = &pages {
+                server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                    pages,
+                ))));
+            }
+
             if self.config.cover_calibrator.enabled {
                 let mut device =
                     DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
-                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<DsdFp2Driver>> =
-                    match (config_path.clone(), reload.clone()) {
-                        (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
-                            effective: self.config.clone(),
-                            path,
-                            overrides: overrides.clone(),
-                            reload,
-                        }),
-                        _ => None,
-                    };
-                if let Some(ctx) = config_ctx {
-                    device = device.with_config_actions(ctx);
+                if let Some(pages) = &pages {
+                    device = device.with_setup_pages(Arc::clone(pages));
                 }
                 server.devices.register(device);
                 info!(

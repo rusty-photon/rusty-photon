@@ -1,4 +1,4 @@
 ---
 source: services/ui-htmx/tests/bdd/snapshot.rs
 ---
-<div class="card" id="config-card" hx-get="/config/rp:cover_calibrators:dsd-fp2/status" hx-trigger="every 1s" hx-swap="outerHTML" hx-target="this"><div class="banner applying"><span class="dot"></span><span>Saved — the driver is reloading. Reconnecting…</span></div></div>
+<div class="card" id="config-card" hx-get="/config/rp:focusers:qhy-focuser/status" hx-trigger="every 1s" hx-swap="outerHTML" hx-target="this"><div class="banner applying"><span class="dot"></span><span>Saved — the driver is reloading. Reconnecting…</span></div></div>

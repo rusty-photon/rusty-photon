@@ -1,16 +1,21 @@
-//! The capability probe behind the equipment page's managed/foreign tier.
+//! The capability probe behind the equipment page's tiers.
 //!
 //! One probe per roster device, against the device's own Alpaca server
 //! (`docs/services/ui-htmx.md` "Equipment page"): read
 //! `GET /api/v1/{type}/{n}/supportedactions`; `config.get` present ⇒ the device
 //! is **managed** (it speaks the config-actions protocol and gets a
-//! roster-derived config page). Otherwise a reachable
-//! `GET /setup/v1/{type}/{n}/setup` ⇒ **setup page**; else **control only**.
-//! A 401/403 ⇒ **auth required** (the BFF probes without credentials — rp
-//! redacts per-device auth); a transport error or timeout ⇒ **unreachable**.
+//! roster-derived config page). Otherwise — the actions answer `401`, or list
+//! no `config.*` — ask for the Alpaca device setup page,
+//! `GET /setup/v1/{type}/{n}/setup`: a page that answers, or answers `401`
+//! (the browser will ask for the credential), ⇒ **setup page**. Failing that,
+//! a `401`/`403` on the actions ⇒ **auth required** (the BFF probes without
+//! credentials — rp redacts per-device auth); anything else reachable ⇒
+//! **control only**; a transport error or timeout ⇒ **unreachable**.
 //! Because `config.*` is self-advertising, any third-party server adopting the
 //! convention auto-upgrades to managed — this probe *is* the capability
-//! detection, not a hardcoded table.
+//! detection, not a hardcoded table. The actions come first so a driver still
+//! carrying them keeps its Configure form while the drivers move to their
+//! own setup pages, family by family.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,11 +27,13 @@ use async_trait::async_trait;
 pub enum Tier {
     /// Speaks `config.*` — gets a "Configure" link (`/config/rp:{kind}:{id}`).
     Managed,
-    /// No `config.*`, but serves the standard Alpaca setup page at this URL.
+    /// No `config.*`, but serves the standard Alpaca device setup page at
+    /// this URL (behind a credential or not).
     SetupPage(String),
     /// Reachable, but neither `config.*` nor a setup page.
     ControlOnly,
-    /// The device's server answered 401/403 to the credential-less probe.
+    /// The device's server answered 401/403 to the credential-less probe, and
+    /// has no setup page either.
     AuthRequired,
     /// The device's server did not answer (down, or timed out).
     Unreachable,
@@ -102,16 +109,18 @@ pub async fn probe_device(
     let Ok((status, body)) = http.get(&actions_url).await else {
         return Tier::Unreachable;
     };
-    match status {
-        200..=299 if supports_config_actions(&body) => return Tier::Managed,
-        401 | 403 => return Tier::AuthRequired,
-        // Any other status (404 on a device number that doesn't exist, 500, …,
-        // or a 2xx without config actions): not managed; fall through to the
-        // setup-page check.
-        _ => {}
+    if (200..=299).contains(&status) && supports_config_actions(&body) {
+        return Tier::Managed;
     }
-    match http.get(&setup_url).await {
-        Ok((200..=299, _)) => Tier::SetupPage(setup_url),
+    // Not managed: a 401 (the actions are behind a credential), a 2xx without
+    // config actions, a 400 on a device number the server does not have, a
+    // 500, … — ask for the setup page. A 401 there is a page that exists:
+    // the browser will ask for the credential.
+    if let Ok((200..=299 | 401, _)) = http.get(&setup_url).await {
+        return Tier::SetupPage(setup_url);
+    }
+    match status {
+        401 | 403 => Tier::AuthRequired,
         _ => Tier::ControlOnly,
     }
 }
@@ -196,10 +205,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthorized_probe_is_auth_required() {
-        let http = probe_http(vec![("/supportedactions", Ok((401, String::new())))]);
+    async fn a_credential_on_the_actions_and_a_setup_page_behind_it_is_setup_page() {
+        // A first-party driver on an auth-on rig: the BFF holds no credential,
+        // but the page exists and the browser will ask for one.
+        let http = probe_http(vec![
+            ("/supportedactions", Ok((401, String::new()))),
+            ("/setup", Ok((401, String::new()))),
+        ]);
+        let tier = probe_device(&http, "http://dev:11119", "covercalibrator", 0).await;
+        assert_eq!(
+            tier,
+            Tier::SetupPage("http://dev:11119/setup/v1/covercalibrator/0/setup".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_on_the_actions_and_no_setup_page_is_auth_required() {
+        let http = probe_http(vec![
+            ("/supportedactions", Ok((401, String::new()))),
+            ("/setup", Ok((404, String::new()))),
+        ]);
         let tier = probe_device(&http, "http://dev:11119", "camera", 0).await;
         assert_eq!(tier, Tier::AuthRequired);
+        let http = probe_http(vec![
+            ("/supportedactions", Ok((403, String::new()))),
+            ("/setup", Err("timed out".to_string())),
+        ]);
+        let tier = probe_device(&http, "http://dev:11119", "camera", 0).await;
+        assert_eq!(tier, Tier::AuthRequired);
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_setup_page_is_not_a_page() {
+        // The spec's 403 for a device the server does not serve.
+        let http = probe_http(vec![
+            ("/supportedactions", Ok((400, String::new()))),
+            ("/setup", Ok((403, "<p>unknown device</p>".to_string()))),
+        ]);
+        let tier = probe_device(&http, "http://dev:11119", "camera", 1).await;
+        assert_eq!(tier, Tier::ControlOnly);
     }
 
     #[tokio::test]

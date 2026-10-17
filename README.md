@@ -24,7 +24,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
 | [pa-scops-oag](services/pa-scops-oag) | ASCOM Focuser | 11123 | Driver for Pegasus Astro Scops OAG (motorized off-axis guider focuser) |
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
-| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
+| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | Server-rendered configuration UI (axum + Maud + HTMX); edits a driver's config via its `config.get`/`config.apply` actions, and links to a driver's own setup pages where it serves them |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
 | [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
@@ -242,6 +242,7 @@ rusty-photon/
     rp-plate-solver/                 HTTP client for the plate-solver service
     rusty-photon-tls/                TLS serving for inter-service comms (ADR-002; issuance lives in doctor)
     rusty-photon-config/             Config-path + first-run UniqueID + config.get/apply/schema protocol
+    rusty-photon-setup/              The setup pages a service serves for its own configuration
     rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + config-action dispatch (ADR-007)
     rusty-photon-i18n/               Workspace Fluent i18n loader + locale resolver
     rusty-photon-i18n-derive/        Proc-macro deriving LocalizedParser for clap structs
