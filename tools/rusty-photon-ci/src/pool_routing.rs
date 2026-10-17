@@ -22,6 +22,13 @@
 //! A `runs-on` that names a self-hosted runner and is not listed in
 //! [`RUNNERS`] fails them, and so does a mention of `runs-on` the scan does
 //! not read.
+//!
+//! The scan reads the workflows as text, line by line. It catches a copy
+//! that drifts and a new route written the plain way, in review. A route
+//! disguised on purpose gets past it, such as a label built at runtime or
+//! YAML that hides a line from a line-by-line reading; the plan's R6 section
+//! lists those. Against a fork's pull request, the defence remains the
+//! approval its workflows wait for (ADR-020 layer 2).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -212,8 +219,9 @@ fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)]) -> Vec<String> {
     problems
 }
 
-/// The `runs-on` values in a workflow that name a self-hosted runner, and
-/// the lines that mention one elsewhere. A value runs on over every line
+/// The `runs-on` values in a workflow that name a self-hosted runner (a
+/// pool kill switch, one of [`LABELS`] or a runner group), and the lines
+/// that name one of [`LABELS`] elsewhere. A value runs on over every line
 /// indented deeper than its key, as a block scalar (`>-`, `|`) or a plain
 /// one does, and is joined into one line. In a block scalar a line that
 /// starts with `#` is text, not a comment.
@@ -264,7 +272,12 @@ fn scan(text: &str) -> Scan {
             .filter(|part| !part.is_empty() && (is_block || !part.starts_with('#')))
             .collect::<Vec<_>>()
             .join(" ");
-        if value.to_lowercase().contains("rp_pool_") || names_label(&value) {
+        // A runner group picks self-hosted runners: this organization's only
+        // group is the default one, which holds the pool's runners.
+        if value.to_lowercase().contains("rp_pool_")
+            || names_label(&value)
+            || has_word(&value, "group")
+        {
             scan.runners.push((number, value));
         }
     }
@@ -278,16 +291,20 @@ fn indent(line: &str) -> usize {
 /// Whether `text` names one of [`LABELS`], in any case, as a whole label
 /// rather than part of a longer word such as a file name.
 fn names_label(text: &str) -> bool {
+    LABELS.iter().any(|label| has_word(text, label))
+}
+
+/// Whether `text` holds `word`, in any case, as a whole word: not part of a
+/// longer label or name.
+fn has_word(text: &str, word: &str) -> bool {
     let text = text.to_lowercase();
     let is_label_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
-    LABELS.iter().any(|label| {
-        text.match_indices(label).any(|(at, _)| {
-            let before = text.get(..at).and_then(|s| s.chars().next_back());
-            let after = text
-                .get(at.saturating_add(label.len())..)
-                .and_then(|s| s.chars().next());
-            !before.is_some_and(is_label_char) && !after.is_some_and(is_label_char)
-        })
+    text.match_indices(word).any(|(at, _)| {
+        let before = text.get(..at).and_then(|s| s.chars().next_back());
+        let after = text
+            .get(at.saturating_add(word.len())..)
+            .and_then(|s| s.chars().next());
+        !before.is_some_and(is_label_char) && !after.is_some_and(is_label_char)
     })
 }
 
@@ -598,6 +615,12 @@ fn scan_reports_a_runs_on_it_does_not_read() {
         scan(text).stray,
         [(1, "\"runs-on\": ubuntu-latest".to_owned())]
     );
+}
+
+#[test]
+fn scan_counts_a_runner_group_as_self_hosted() {
+    let text = "    runs-on:\n      group: Default\n    name: a\n";
+    assert_eq!(scan(text).runners, [(1, "group: Default".to_owned())]);
 }
 
 #[test]

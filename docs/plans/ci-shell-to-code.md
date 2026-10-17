@@ -785,7 +785,9 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - **Each label list** must equal the reviewed one, in a workflow that
     only a schedule or a dispatch starts; another trigger fails the test.
   - **A new `runs-on` that names a self-hosted runner**, in any workflow,
-    fails the test until it is listed.
+    fails the test until it is listed. A `runs-on` that picks a runner
+    group (`group:`) counts as one: this organization's only group is the
+    default one, which holds the pool's runners.
   - **A self-hosted label anywhere else**, outside comments, fails it, so
     a matrix cannot carry one into `matrix.os`. That includes a block
     scalar's text, and a job's name: the Pi nightly's job is
@@ -815,16 +817,27 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - a line starting with `#` inside bazel.yml's matrix block, and inside
     check.yml's copy;
   - `raspberry-pi` alone, as test.yml's `runs-on` and in bazel.yml's
-    matrix.
+    matrix;
+  - `group: Default` as test.yml's `runs-on`.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.
-- **Not guarded:**
-  - a runner chosen without naming one of those labels (a self-hosted
-    runner also carries `Linux` and `X64`), or by spelling one with a YAML
-    escape such as `s`;
-  - a runner chosen by a value from outside the workflow file, such as
-    a script's output.
+- **Not guarded.** The test reads the workflows as text, line by line.
+  It catches a copy that drifts and a new route written the plain way, in
+  review; a route disguised on purpose gets past it. Against a fork's pull
+  request the defence remains the approval its workflows wait for (ADR-020
+  layer 2). What gets past it:
+  - a runner chosen without naming one of those labels, since a
+    self-hosted runner also carries `Linux` and `X64`;
+  - a label or runner group that reaches `runs-on` through a matrix or
+    another value without naming one of those labels;
+  - a label built at runtime, by `format()` or `join()`, or spelled with an
+    escape: YAML's `\u0073`, or JSON's inside `fromJSON`;
+  - YAML that hides a line from a line-by-line reading: a line starting
+    with `#` inside a multi-line quoted string, or a tag or anchor before a
+    block indicator (`!!str >-`);
+  - a runner chosen by a value from outside the workflow file, such as a
+    script's output.
 - **Done when** the test runs on both Bazel legs of a PR, a workflow that
   differs from what it reviews fails it, and the workflows' comments name
   it.
