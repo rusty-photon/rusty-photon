@@ -92,8 +92,9 @@ jobs:
     if: github.actor == 'dependabot[bot]'
     # Venue routing (ADR-020): byte-for-byte the expression in
     # bazel-coverage.yml. Keep the copies identical — a divergence here is a
-    # security boundary moving. Every falsy branch (fork PR, kill switch off,
-    # null head.repo) lands on the hosted runner.
+    # security boundary moving, and tools/rusty-photon-ci/src/pool_routing.rs
+    # fails `bazel test //...` on one. Every falsy branch (fork PR, kill
+    # switch off, null head.repo) lands on the hosted runner.
     runs-on: >-
       ${{ (vars.RP_POOL_LINUX == 'on'
            && (github.event_name == 'push'

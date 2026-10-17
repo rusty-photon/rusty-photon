@@ -108,7 +108,7 @@ first in their columns.
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
-| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Not started |
+| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | In review (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
@@ -754,18 +754,100 @@ the tools crate. They are in S1's list.
 
 The pool's `runs-on` routing expression is copied into bazel.yml,
 bazel-coverage.yml, repin-bazel.yml and check.yml. ADR-020 makes it a
-security boundary, and only a comment keeps the copies in step. They
-come in two shapes: bazel.yml holds the Linux and Windows clauses in one
-expression, each prefixed `matrix.os == '…' &&`, with `|| matrix.os` as
-the fallback, while the others are standalone and end in
-`|| 'ubuntu-latest'`. The test in the tools crate extracts each OS's
-clause from every copy (the kill-switch variable, the trusted-event test
-and the pool labels, without the matrix prefix or the fallback) and
-asserts each equals the reviewed clause for that OS, held in the test
-itself. A PR that changes one copy fails `bazel test //...`, and a PR
-that changes them all has to change the test too, in the same diff the
-reviewer reads. The test reads files under `.github`, which F1 took out
-of `.bazelignore`. Raised by the review of #1505.
+security boundary, and until R6 only a comment kept the copies in step.
+They come in two shapes: bazel.yml holds the Linux and Windows clauses in
+one expression, each prefixed `matrix.os == '…' &&`, with `|| matrix.os`
+as the fallback, while the others are standalone and end in
+`|| 'ubuntu-latest'`. A PR that changes one copy now fails
+`bazel test //...`, and a PR that changes them all has to change the test
+too, in the same diff the reviewer reads. Raised by the review of #1505.
+
+- **The guard:** `tools/rusty-photon-ci/src/pool_routing.rs`, a module
+  only the crate's tests compile. Its `RUNNERS` lists every `runs-on` that
+  names a self-hosted runner:
+  - the four copies, each with its reviewed branches (the kill-switch
+    variable, the trusted-event test and the pool labels, behind a
+    `matrix.os` label in bazel.yml) and its hosted fallback;
+  - the three label lists, in pi-nightly.yml and proxmox-runner-test.yml.
+- **What it checks.** It reads every workflow. A `runs-on` names a
+  self-hosted runner when it mentions `RP_POOL_` or one of the labels:
+  `self-hosted`, and our runners' own (the pool's two and the Raspberry
+  Pi's `raspberry-pi`). It reads our runners' labels from
+  `.github/actionlint.yaml`, the list actionlint checks `runs-on` against,
+  so a new runner label goes there and nowhere else. Labels are matched in
+  any case, as GitHub matches them, and only as whole
+  labels, so a file name such as `raspberry-pi-runner.md` is not one. A
+  value runs on over the lines indented deeper than its key, without blank
+  lines. Comment lines are left out too, except inside a block scalar
+  (`>-`, `|`), where a line starting with `#` is text.
+  - **Each copy** is split at its top-level `||` into pool branches and a
+    fallback, and each must equal the reviewed one. Whitespace is collapsed
+    first, so a reflowed copy still matches. The fallback is checked too,
+    which the plan had left out: a copy that fell back to a pool label
+    would send every falsy branch to the pool, a fork PR among them.
+  - **Each label list** must equal the reviewed one, in a workflow that
+    only a schedule or a dispatch starts; another trigger fails the test.
+  - **A new `runs-on` that names a self-hosted runner**, in any workflow,
+    fails the test until it is listed. A `runs-on` that picks a runner
+    group (`group:`) counts as one: this organization's only group is the
+    default one, which holds the pool's runners.
+  - **A self-hosted label anywhere else**, outside comments, fails it, so
+    a matrix cannot carry one into `matrix.os`. That includes a block
+    scalar's text, and a job's name: the Pi nightly's job is
+    `pi / linux / arm64 / stable` for that reason.
+  - **What the scan does not read fails it:** a mention of `runs-on` that
+    is not a plain `runs-on:` key, such as a quoted one, and a copy that is
+    not one `${{ }}` expression.
+- **Under Bazel** the workflows and `.github/actionlint.yaml` are the
+  unit test's `data` (`//:workflows`, a glob in the root package, and the
+  file the root package exports, since neither directory has a BUILD file;
+  F1 took `.github` out of `.bazelignore`). The BUILD file sets
+  `CARGO_MANIFEST_DIR` for the test, relative to the runfiles root; Cargo
+  sets it when it runs a test.
+- **Proven locally.** Each of these edits to a real workflow failed the
+  test under Cargo, and the first also under Bazel:
+  - dropping the same-repo test from check.yml;
+  - a pool-label fallback in repin-bazel.yml;
+  - the Windows kill switch in bazel-coverage.yml;
+  - bazel.yml's Windows leg trusting every pull request;
+  - its Windows leg behind `macos-latest`;
+  - in test.yml: a new pool-routed job, one continued on a second line,
+    one asking only for generic self-hosted labels, and a label list;
+  - a quoted `runs-on` key in check.yml;
+  - a self-hosted label in bazel.yml's matrix;
+  - a `pull_request` trigger in pi-nightly.yml;
+  - `Self-Hosted` in bazel.yml's matrix, and `[Self-Hosted,
+    Proxmox-Ephemeral]` in test.yml;
+  - a line starting with `#` inside bazel.yml's matrix block, and inside
+    check.yml's copy;
+  - `raspberry-pi` alone, as test.yml's `runs-on` and in bazel.yml's
+    matrix;
+  - `group: Default` as test.yml's `runs-on`;
+  - a label added to actionlint.yaml alone, then routed as test.yml's
+    `runs-on` or put in bazel.yml's matrix;
+  - actionlint.yaml without its `self-hosted-runner` list.
+
+  Reflowing check.yml's copy onto fewer lines passed, and so did blank
+  lines after it.
+- **Not guarded.** The test reads the workflows as text, line by line.
+  It catches a copy that drifts and a new route written the plain way, in
+  review; a route disguised on purpose gets past it. Against a fork's pull
+  request the defence remains the approval its workflows wait for (ADR-020
+  layer 2). What gets past it:
+  - a runner chosen without naming one of those labels, since a
+    self-hosted runner also carries `Linux` and `X64`;
+  - a label or runner group that reaches `runs-on` through a matrix or
+    another value without naming one of those labels;
+  - a label built at runtime, by `format()` or `join()`, or spelled with an
+    escape: YAML's `\u0073`, or JSON's inside `fromJSON`;
+  - YAML that hides a line from a line-by-line reading: a line starting
+    with `#` inside a multi-line quoted string, or a tag or anchor before a
+    block indicator (`!!str >-`);
+  - a runner chosen by a value from outside the workflow file, such as a
+    script's output.
+- **Done when** the test runs on both Bazel legs of a PR, a workflow that
+  differs from what it reviews fails it, and the workflows' comments name
+  it.
 
 ### R7 — ConformU runner
 

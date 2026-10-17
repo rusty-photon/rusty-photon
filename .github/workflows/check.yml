@@ -188,7 +188,9 @@ jobs:
     # same-repo PRs under the same RP_POOL_LINUX kill switch. The hosted
     # queue is what this avoids: about one hosted start in ten waited over
     # two minutes, where the Linux pool starts within seconds. Keep the
-    # copies identical — a divergence here is a security boundary moving.
+    # copies identical — a divergence here is a security boundary moving,
+    # and tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...`
+    # on one.
     # Every falsy branch (fork PR, the nightly schedule, kill switch off,
     # null head.repo) lands on the hosted runner.
     runs-on: >-

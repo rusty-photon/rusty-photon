@@ -4,7 +4,9 @@
 # ONLY. Never add `pull_request` or `push` here while this file targets
 # self-hosted runners: on pull_request events Actions executes the PR's copy
 # of this YAML, which would hand a fork arbitrary code execution on the
-# runner host. Dispatch requires write access to the repo.
+# runner host. Dispatch requires write access to the repo, and
+# tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...` if any
+# other event starts this workflow.
 #
 # The runner is an ephemeral clone of a pre-provisioned VM template (SDKs,
 # OmniSim, Pebble, bazelisk baked in), registered just-in-time for exactly

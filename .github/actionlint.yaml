@@ -8,6 +8,11 @@
 #
 # Add a label here only when a runner actually advertises it; a label listed
 # here but never registered makes the job queue forever instead of failing.
+#
+# This list is also the one tools/rusty-photon-ci/src/pool_routing.rs reads:
+# every `runs-on` that names one of these labels, or `self-hosted`, must be a
+# route that test reviews, so `bazel test //...` fails on a new one until it is
+# listed there. A new runner label goes here and nowhere else.
 self-hosted-runner:
   labels:
     # Pi 5 field rig, ARM64 — the nightly `pi-nightly.yml` runner.

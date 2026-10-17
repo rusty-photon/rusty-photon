@@ -16,6 +16,28 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# The workflows and actionlint's list of our runners' labels, read by the tools
+# crate's guard on self-hosted runners (tools/rusty-photon-ci/src/pool_routing.rs).
+# Neither `.github/workflows` nor `.github` has a BUILD file, so these files
+# belong to this package. A glob that matches nothing leaves the guard finding
+# no routes, which fails it.
+filegroup(
+    name = "workflows",
+    srcs = glob(
+        [
+            ".github/workflows/*.yml",
+            ".github/workflows/*.yaml",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+exports_files(
+    [".github/actionlint.yaml"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
 # `bazel run //:buildifier` formats every BUILD / *.bzl / MODULE.bazel file in the
 # workspace in place. Pinned via MODULE.bazel (buildifier_prebuilt) so every dev
 # machine and CI run the identical formatter with no system install.

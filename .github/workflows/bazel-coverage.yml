@@ -67,7 +67,8 @@ jobs:
     # land on the safe side. The schedule staying hosted is deliberate — it keeps
     # the CLOUD cache's coverage entries warm for fork PRs, while push-to-main
     # warms the LAN cache. Keep the trusted-event test identical to bazel.yml's:
-    # a divergence here is a security boundary moving.
+    # a divergence here is a security boundary moving, and
+    # tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...` on one.
     runs-on: >-
       ${{ (vars.RP_POOL_LINUX == 'on'
            && (github.event_name == 'push'
