@@ -16,7 +16,9 @@ Feature: Unpark from AP position
   SetUnparkFromApPosition persists a new value (applied on the next
   fresh-power-up connect), SetPreferredApPark sets the Park() target, and
   UnparkFromApPosition is a recovery operation that resets the firmware
-  encoder to a named park before clearing AtPark.
+  encoder to a named park before clearing AtPark. The three names are
+  matched without regard to case, as the Alpaca specification requires of
+  every Action name; SupportedActions lists the spelling above.
 
   Scenario: Fresh power-up with ap_park_0 leaves the encoder untouched
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_0"
@@ -61,3 +63,10 @@ Feature: Unpark from AP position
   Scenario: SupportedActions advertises the driver-specific actions
     Given a running star-adventurer service
     Then SupportedActions should include "SetUnparkFromApPosition", "SetPreferredApPark", and "UnparkFromApPosition"
+
+  Scenario: An action name is matched without regard to case
+    Given a star-adventurer service configured with park_ra_ticks 0 and park_dec_ticks 0
+    When I connect the device
+    And I park the mount
+    And I run the action "unparkfromapposition" with "ap_park_0"
+    Then AtPark should be false

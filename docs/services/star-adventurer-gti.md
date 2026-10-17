@@ -2805,6 +2805,9 @@ any slew or sync.
 Three driver-specific Actions (ASCOM `Action(name, parameters)`)
 expose runtime control over the position assumption and the
 preferred-park target. All three are advertised via `SupportedActions`.
+A name is matched without regard to case, as the Alpaca specification
+requires of every `Action` name; `SupportedActions` lists the spelling
+below.
 
 | Action name | Parameters | Behaviour |
 |---|---|---|

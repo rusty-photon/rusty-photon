@@ -55,6 +55,12 @@ async fn acquire(world: &mut GuiderWorld, name: String) {
     lease_action_ok(world, ACQUIRE, parameters.to_string()).await;
 }
 
+#[when(expr = "the client acquires a sweep lease under token {word} by the action name {string}")]
+async fn acquire_by_name(world: &mut GuiderWorld, name: String, action: String) {
+    let parameters = serde_json::json!({ "token": token(&name) });
+    lease_action_ok(world, &action, parameters.to_string()).await;
+}
+
 #[when(expr = "the client tries to acquire a sweep lease under token {word}")]
 async fn try_acquire(world: &mut GuiderWorld, name: String) {
     let parameters = serde_json::json!({ "token": token(&name) });

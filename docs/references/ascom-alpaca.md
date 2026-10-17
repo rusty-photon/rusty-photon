@@ -55,7 +55,7 @@ All responses include standard fields:
 | Code | Meaning |
 |------|---------|
 | 200 | Request formatted correctly, passed to device handler (check ErrorNumber for actual success) |
-| 400 | Device couldn't interpret request (invalid device number or misspelled type) |
+| 400 | Device couldn't interpret request (invalid device number, misspelled type, unknown action, or a missing or malformed parameter) |
 | 500 | Unexpected device error |
 
 ## Common Device Endpoints (All Devices)
@@ -76,6 +76,26 @@ All device types share these standard endpoints:
 | `/{device_type}/{device_number}/supportedactions` | GET | List of custom actions |
 | `/{device_type}/{device_number}/devicestate` | GET | Aggregated operational state |
 | `/{device_type}/{device_number}/action` | PUT | Execute device-specific action |
+
+`Action` names are matched without regard to case: "SelectWheel,
+selectwheel and SELECTWHEEL all refer to the same action".
+`SupportedActions` returns each name in its canonical spelling.
+
+## Setup Pages (Management API)
+
+The Management API defines two HTML pages, served by the server itself
+(our drivers serve them behind their own TLS and Basic Auth; see
+[driver-setup-pages.md](../plans/driver-setup-pages.md)):
+
+| Path | Method | Purpose |
+|------|--------|---------|
+| `/setup` | GET | Whole-server configuration page; "must also enable the user to set cross cutting information that applies to the whole device such as the operating IP address and port number" |
+| `/setup/v1/{device_type}/{device_number}/setup` | GET | One device's configuration page; "must be implemented, even if the response to the user is that the device is not configurable"; 403 with an HTML message for an unknown device |
+
+The pinned `ascom-alpaca` fork routes both for `GET` and `POST` through
+`Device::setup_request` and `Server::setup`; the crate's old device page
+path, `/api/v1/{device_type}/{device_number}/setup`, answers a 308 to the
+specification's path.
 
 ---
 

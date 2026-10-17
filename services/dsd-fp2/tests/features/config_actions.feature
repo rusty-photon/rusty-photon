@@ -9,7 +9,9 @@ Feature: Configuration actions
   (`status:"applying"`). `config.schema` returns a JSON Schema describing the
   configuration's shape plus the editability tiers (identity/locked and hard
   read-only fields) the web UI renders the form from. The actions work whether
-  or not the device is connected.
+  or not the device is connected. An action name is matched without regard
+  to case, as the Alpaca specification requires of every Action name;
+  SupportedActions lists the canonical spelling.
 
   Scenario: The config actions are advertised
     Given a running FP2 service
@@ -56,3 +58,8 @@ Feature: Configuration actions
     Given a running FP2 service
     When the action "config.frobnicate" is called
     Then the call should fail with an action-not-implemented error
+
+  Scenario: An action name is matched without regard to case
+    Given a running FP2 service
+    When the action "CONFIG.GET" is called
+    Then the config should report serial.port as /dev/mock

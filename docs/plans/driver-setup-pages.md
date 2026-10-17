@@ -1,12 +1,14 @@
 # Driver-served setup pages
 
-**Status:** proposed (2026-10-16; revised the same day on the owner's
-direction: the servers are specification-compliant from the first
-phase, and the `ascom-alpaca` crate is fixed properly — its setup hooks
-take a request — with both fixes offered upstream; D10, P1). D8 and D10
-are settled by the owner (2026-10-16) and P1 implements them; the owner
-settles the rest before P2 starts, and the plan is revised in place as
-they are settled.
+**Status:** accepted (merged 2026-10-17,
+[#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)); P1 in
+review ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)). On the owner's direction the servers are
+specification-compliant from the first phase, and the `ascom-alpaca`
+crate is fixed properly — its setup hooks take a request (D10, P1); the
+owner decided on 2026-10-17 that the fork's fixes are **not offered
+upstream for now**. D8 and D10 are settled by the owner (2026-10-16) and
+P1 implements them; the owner settles the rest before P2 starts, and the
+plan is revised in place as they are settled.
 
 ## Goal
 
@@ -477,8 +479,11 @@ form cannot use, since `action` is a `PUT`. The crate has no hook at all
 for the `/setup` page: it renders a static device list.
 
 **Settled by the owner on 2026-10-16: the crate is fixed properly,
-before any page of ours is built.** Two pull requests from one fork
-branch, both landed in P1:
+before any page of ours is built.** Two changes on one fork branch, both
+landed in P1 — and, on the owner's decision of 2026-10-17, **not offered
+upstream for now**: the fork branch `feature/spec-setup-pages` carries
+both in one commit, and the split below is how they go upstream as two
+pull requests when the owner says so:
 
 1. **The paths and statuses** — small and plainly right:
    - a `GET /setup/v1/{device_type}/{device_number}/setup` route — the
@@ -524,10 +529,10 @@ a page of ours — none, after P3 — gets the crate's default, and so does
 every other user of the crate. The workspace pin moves to the fork
 branch carrying both pull requests — a `Cargo.lock` change, so
 `MODULE.bazel.lock` is repinned (rule 10) — and
-[workspace.md](../workspace.md)'s note on the pin names all three
-upstream pull requests (#23 and these two). If upstream merges, the pin
-follows upstream as the existing one is meant to; nothing of ours waits
-on it.
+[workspace.md](../workspace.md)'s note on the pin names #23 and the
+setup-page change, and says which has been offered upstream. If upstream
+merges, the pin follows upstream as the existing one is meant to; nothing
+of ours waits on it.
 
 ### D11. The camera drivers' `usb_devices` editor — C8 lands here
 
@@ -654,8 +659,8 @@ Small, each mergeable alone, in this order.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | In review | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
-| P1 | **Specification compliance first.** The `ascom-alpaca` fork, in two pull requests offered upstream (D10): the paths and statuses — the specification's device setup path routed, linked from `/setup`, the old path redirected, the statuses the specifications give, with tests — and the request-taking hooks, `setup_request` on a device and a setup handler on `Server`, routed for `GET` and `POST`, with their defaults. The workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default pages until P2 | Not started | |
+| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | Plan merged; the ADRs wait on the decisions | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
+| P1 | **Specification compliance first.** The `ascom-alpaca` fork, in the two changes D10 describes (not offered upstream yet, the owner's call): the paths and statuses — the specification's device setup path routed, linked from `/setup`, the old path redirected, the statuses the specifications give, with tests — and the request-taking hooks, `setup_request` on a device and a setup handler on `Server`, routed for `GET` and `POST`, with their defaults. The workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default pages until P2 | In review | `feature/setup-pages-p1` ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)) |
 | P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), the shared handler behind the pages (the render, the save, the origin check, the reload hook) and its tagged-enum and file-only rules, the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, whose device and server hooks (D10) call that handler, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands | Not started | |
 | P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | Not started | |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
@@ -711,7 +716,7 @@ noted.
   specification's device setup path** (`/setup/v1/{type}/{n}/setup`),
   the path `ui-htmx` probes and the Remote client opens; the crate
   routes the page at `/api/v1/{type}/{n}/setup` instead, upstream too.
-  P1 fixes it in the fork and offers the fix upstream (D10).
+  P1 fixes it in the fork (D10; not offered upstream yet).
 - **`doctor auth rotate` rewrites `server.auth` on every service and
   sentinel's `service_auth`, nothing else**; `doctor.md` says it
   "re-runs the same distribution". `rp`'s equipment entries and

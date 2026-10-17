@@ -6,7 +6,9 @@ Feature: The sweep lease holds guiding off for a whole focus sweep
   lease does: three ASCOM Actions on the facade's Camera,
   rustyphoton:sweep-lease-acquire, rustyphoton:sweep-lease-renew and
   rustyphoton:sweep-lease-release. Each takes its Parameters as a JSON
-  object and answers one.
+  object and answers one. The three names are matched without regard to
+  case, as the Alpaca specification requires of every Action name;
+  SupportedActions lists them in the spelling above.
 
   The caller names the token, 32 lowercase hex digits, so a caller whose
   acquire got no answer can still release it. Token A here stands for 32
@@ -47,6 +49,13 @@ Feature: The sweep lease holds guiding off for a whole focus sweep
     And the guider service is running with the camera facade enabled
     And the facade camera is connected
     When the client acquires a sweep lease under token A
+    Then the lease reply should name token A with a TTL of 60 s
+
+  Scenario: A lease Action is matched by its name in any case
+    Given a mock PHD2 2.6.14 with an 8 x 6 camera
+    And the guider service is running with the camera facade enabled
+    And the facade camera is connected
+    When the client acquires a sweep lease under token A by the action name "RustyPhoton:Sweep-Lease-Acquire"
     Then the lease reply should name token A with a TTL of 60 s
 
   Scenario Outline: A guiding operation while a lease is held is refused with camera_busy

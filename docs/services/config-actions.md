@@ -97,6 +97,10 @@ Each `Value` is a JSON **string** inside the standard Alpaca envelope (the BFF
 unwraps the envelope, then parses the string). The wire types are defined once in
 `rusty_photon_config::actions` and reused by the BFF.
 
+The three names are matched without regard to ASCII case, as the Alpaca
+specification requires of every `Action` name (`CONFIG.GET` dispatches as
+`config.get`); `SupportedActions` lists the canonical lowercase spelling.
+
 ### `config.apply` sequence
 
 1. Parse `Parameters` into the driver's typed `Config` (parse failure →

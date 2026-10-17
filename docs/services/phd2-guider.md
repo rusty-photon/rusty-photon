@@ -1342,6 +1342,9 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
 | `rustyphoton:sweep-lease-renew` | `{"token": "<32 hex digits>"}` | `{"token": "<the token>", "ttl_s": 60}` |
 | `rustyphoton:sweep-lease-release` | `{"token": "<32 hex digits>"}` | `{"released": true}`, or `{"released": false}` when the token holds no lease |
 
+- **The names are matched without regard to case**, as the specification
+  requires of every `Action` name; `SupportedActions` lists the spelling
+  above.
 - **The caller names the token**: 32 lowercase hex digits, new for each
   lease. The caller knows it before it asks, so a caller whose acquire
   got no answer (a timeout, a dropped connection) can still release the
