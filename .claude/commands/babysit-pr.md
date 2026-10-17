@@ -45,8 +45,8 @@ Arguments: $ARGUMENTS
 3. Review every new head on Opus with the Skill tool:
    `skill: "review-pr"`, `args: "high <n> --max-findings all"`, which
    runs `code-review` on Opus. A session already on Opus may call
-   `skill: "code-review"` directly; a session that started before the
-   skill existed uses the Agent-tool form in code-review.md §Running a
+   `skill: "code-review"` directly; if the Skill tool does not know
+   `review-pr`, use the Agent-tool form in code-review.md §Running a
    review. No `--comment`: the findings come back here, not to the PR.
 4. Rate the findings with one fresh `general-purpose` subagent on Opus
    (`model: opus`) — never a fork — using the prompt in code-review.md

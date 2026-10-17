@@ -10,10 +10,9 @@ allowed-tools:
 ---
 
 Run the project's code review on Opus, whatever model the calling session
-uses. The bundled review forks whoever calls it and inherits that caller's
-model and context; this skill is the caller, so the review runs on Opus
-with only this prompt behind it (docs/skills/code-review.md §Running a
-review).
+uses. The bundled review forks whoever calls it and runs on that caller's
+model; this skill is the caller, so the review runs on Opus
+(docs/skills/code-review.md §Running a review).
 
 1. Call the Skill tool once: skill `code-review`, args exactly
    `$ARGUMENTS`.

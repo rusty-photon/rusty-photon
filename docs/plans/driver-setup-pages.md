@@ -318,13 +318,17 @@ privileged port for an unprivileged service, an address the host does
 not have — is the operator's risk, accepted as is. The save checks the
 number's range only; the rebuilt server fails to bind, the reload loop
 returns the error, the process exits, and the unit restarts it on the
-same file until someone edits the file over the shell or starts the
-service with `--server-port`. The old `read_only_paths` pinned the port
-to prevent exactly this; D2 makes the port editable, and the owner
+same file until someone edits the file over the shell (a bad port can
+also be overridden by starting the service with `--server-port`; the
+bind address has no flag). D2 makes the port editable, and the owner
 prefers the power with the responsibility to a page that cannot move
-the port. No bind probe before the save, and no fallback to the
-previous configuration in the reload loop, are owed; a shared reload
-loop built in P3 may revisit the fallback.
+the port. (The old `read_only_paths` had held `server.port` for a
+different reason — the BFF could not follow a rebind — which the saved
+page's new URL answers; the self-lockout rules and why they dissolve
+are point 5 of §Why that is the wrong shape.) No bind probe before the
+save, and no fallback to the previous configuration in the reload
+loop, are owed; a shared reload loop built in P3 may revisit the
+fallback.
 
 ### D4. `rp`'s roster page is `rp`'s own
 
@@ -704,9 +708,10 @@ section (`star-adventurer-gti`'s transport):* a driver `validate` error
 on a variant's field carries the config path (`transport.port`) while
 the variant's control is named `transport:udp.port`, so today it lands
 in the banner as a field the page does not show — the handler must map
-it to the chosen variant's control; and `with_secrets` marks only
-top-level fields, so a secret pointer inside a variant would render in a
-plain input — it must recurse into the variants. Neither bites a driver
+it to the chosen variant's control; and `with_secrets` marks the
+model's fields at any depth but not the fields a tagged enum's variants
+carry, so a secret pointer inside a variant would render in a plain
+input — it must reach into the variants. Neither bites a driver
 without a tagged enum, which is every driver on the crate today.
 
 P1 comes first and depends on no decision: it makes what we ship
