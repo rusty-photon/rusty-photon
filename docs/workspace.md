@@ -162,6 +162,7 @@ listed here.
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel + EAF focuser SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera` and `zwo-focuser`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
 | [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Phase A/B landed 2026-07-21; consumed by `services/svbony-camera` as a direct path dependency (not promoted to `[workspace.dependencies]` — Rule 10's promotion threshold is a second consumer) since Phase C — see [svbony-camera.md](plans/archive/svbony-camera.md). |
+| [rusty-photon-ci](../tools/rusty-photon-ci/) | `tools/rusty-photon-ci` | The workspace's developer tools ([ADR-022](decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md)), one subcommand each, run as `cargo ci <tool>`: `repin-bazel-lock` refreshes and stages `MODULE.bazel.lock` (rule 10). No service links it. See [ci-logic.md](skills/ci-logic.md#the-rust-tools-crate). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 
@@ -840,7 +841,7 @@ the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 Any commit that changes `Cargo.lock` or any workspace `Cargo.toml` (the root's
 or a member's) must include a refreshed `MODULE.bazel.lock`, because the lock
-records a hash of each of those files. Run `scripts/repin-bazel-lock.sh`, which refreshes and
+records a hash of each of those files. Run `cargo ci repin-bazel-lock`, which refreshes and
 stages it; the pre-commit hook refuses a commit whose lock does not match the
 staged Cargo files. See
 [pre-push.md](skills/pre-push.md#refreshing-modulebazellock) for why each step

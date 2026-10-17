@@ -3,7 +3,7 @@ set -e
 
 # First, because it is quick and the clippy passes are not: a Cargo file
 # staged without a refreshed MODULE.bazel.lock fails every Bazel leg in CI.
-# The fix it asks for is `scripts/repin-bazel-lock.sh`.
+# The fix it asks for is `cargo ci repin-bazel-lock`.
 #
 # Every worktree runs this one installed hook, so it also runs on branches
 # that predate the check; there it skips rather than refusing every commit.

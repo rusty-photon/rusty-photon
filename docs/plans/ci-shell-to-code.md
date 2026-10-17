@@ -150,29 +150,44 @@ set; what later items build on:
 
 ### F2 — Rust tools crate
 
-- A workspace binary crate, proposed name `rusty-photon-ci`, with one
-  subcommand per tool, `publish = false`, under the workspace lints and
-  MSRV, built and tested by both Bazel and Cargo (it joins the parity
-  check like any crate).
-- A Cargo alias (`cargo ci <tool>`) in `.cargo/config.toml`, so developers
-  have a short command that needs nothing but Cargo.
+- **The crate:** `tools/rusty-photon-ci`, a workspace member with
+  `publish = false`, under the workspace lints and MSRV, built and tested
+  by Bazel and Cargo (it joins the parity check like any crate). It sits
+  under `tools/`, not `crates/`, because no service links it. A library
+  holds the tools and their tests; the binary only parses the command
+  line, as the services' binaries do. [ci-logic.md](../skills/ci-logic.md#the-rust-tools-crate)
+  has the conventions for adding a tool.
+- **`cargo ci <tool>`:** a Cargo alias in `.cargo/config.toml`
+  (`run --package rusty-photon-ci --`), so developers have a short command
+  that needs nothing but Cargo. Its first run compiles the crate.
+- **A tool takes a `Runner`.** It builds each command as data (program,
+  arguments, directory, the variables it sets and removes), so its tests
+  check what it would run, in what order and with what environment,
+  against a fake, with no Bazel or git on the test's host.
 - **First tool:** `repin-bazel-lock`, replacing
   `scripts/repin-bazel-lock.sh` (60 lines): it refreshes and stages
   `MODULE.bazel.lock`, and AGENTS.md rule 10 and the pre-commit hook send
   developers to it. It touches no CI step, so it proves the crate without
   risking one. `repin-bazel.yml`'s "Repin crate index" step runs the same
   sequence on dependabot PRs, on the Linux pool, which has no Cargo until
-  T1. That step is
-  a fixed sequence of three commands with no control flow, which ADR-022
-  leaves in YAML; its "keep the two in step" comment points at the new
-  tool.
-- **What names it today:** about twenty files. The one that matters most
-  is `tools/ci/check_bazel_lock.py`, whose refusal messages are what a
-  developer actually sees when the pre-commit hook rejects a stale lock.
-  The others include AGENTS.md rule 10, the hook's comment, `.bazelrc`,
-  `MODULE.bazel`, `repin-bazel.yml`, several skill, service and crate
-  docs, ADR-010, open plans and the vendored crates' RELEASING.md files.
-  Grep before deleting.
+  T1. That step is a fixed sequence of three commands with no control
+  flow, which ADR-022 leaves in YAML; its "keep the two in step" comment
+  points at the tool.
+- **Running Bazel under `cargo run`** gives it Cargo's variables
+  (`CARGO_*`, the library path, `.cargo/config.toml`'s `[env]`). None
+  reaches the lock: it records only crate_universe's own variables, which
+  the tool removes, and `--incompatible_strict_action_env` keeps the rest
+  out of the actions.
+- **Proven locally:** on the same tree, the tool and the script wrote a
+  byte-identical lock, and printed the same report of unstaged Cargo
+  files. Run with `REPIN`, `CARGO_BAZEL_ISOLATED` and `CARGO_BAZEL_DEBUG`
+  exported, the tool wrote that lock again; `bazel mod tidy` run directly
+  with `CARGO_BAZEL_DEBUG=1` wrote a lock recording it.
+- **What named the script:** about twenty files, the pre-commit hook's
+  messages among them (`tools/ci/check_bazel_lock.py`'s refusals, which
+  are what a developer sees). All of them name the tool now, except this
+  plan's record of what F2 replaced, and the archived plan and ADR-022's
+  context, which now say "the lock repin".
 - **Done when** the shell script is gone, nothing in the repo names it,
   and the tool's report of unstaged Cargo files is unit-tested.
 

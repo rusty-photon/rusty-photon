@@ -67,6 +67,8 @@ members = [
   # End-to-end harness (tests only): real rp + real sentinel exercising the
   # operation watchdog + corrective ladder. See docs/services/sentinel.md.
   "tests/operation-watchdog-e2e",
+  # The developer tools (ADR-022), run as `cargo ci <tool>`.
+  "tools/rusty-photon-ci",
 ]
 resolver = "2"
 

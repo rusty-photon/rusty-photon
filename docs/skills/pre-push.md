@@ -793,7 +793,7 @@ needs from you:
   - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
     prints them from the release's GPG-signed channel manifest);
   - the root Cargo.toml's `rust-version` and `clippy.toml`'s `msrv`, then
-    `scripts/repin-bazel-lock.sh`;
+    `cargo ci repin-bazel-lock`;
   - the coverage nightly, to the last nightly of the new MSRV's cycle
     (`MODULE.bazel` says why), with its hashes from
     `scripts/rust-toolchain-sha256s.sh nightly/<date>`. On stderr the script
@@ -842,32 +842,36 @@ and the lock records a SHA-256 of each one as an input of its extension
 Refresh it with:
 
 ```bash
-scripts/repin-bazel-lock.sh
+cargo ci repin-bazel-lock
 ```
 
-The script runs the repin, resolves once more in CI's
-`--lockfile_mode=error` on this host, and stages the lock. Its comments say
-why each step is needed:
-- It unsets crate_universe's environment variables first. The lock
-  records them, and CI sets none of them.
+It is a subcommand of the workspace's tools crate (`tools/rusty-photon-ci`;
+the `ci` alias is in `.cargo/config.toml`), so its first run compiles the
+crate. It runs the repin, resolves once more in CI's
+`--lockfile_mode=error` on this host, and stages the lock. Its source
+(`src/repin_bazel_lock.rs`) says why each step is needed:
+- It takes crate_universe's environment variables out of every Bazel run.
+  The lock records them, and CI sets none of them. The variables Cargo sets
+  for the tool do not reach the lock: it records only crate_universe's own,
+  and `--incompatible_strict_action_env` keeps the rest out of the actions.
 - `bazel mod tidy` runs twice, forced and then un-forced, so the committed
   lock does not churn on later plain `bazel` runs.
 - A `--lockfile_mode=update` build follows, which fills in an extension
   `mod tidy` cannot reach.
 
 The repin hashes the working tree, so stage the Cargo change as well. The
-script says so if it finds one left unstaged.
+tool says so if it finds one left unstaged.
 
 The pre-commit hook runs `tools/ci/check_bazel_lock.py` first. It compares
 the hashes the staged lock records with the staged files, and refuses the
 commit with what to do:
-- for a Cargo file changed since the last repin, run the script;
+- for a Cargo file changed since the last repin, run the tool;
 - for a file whose working-tree copy matches the lock but whose staged copy
   does not (typically a change the repin saw but you did not stage, a new
   member's untracked manifest included), `git add` it if the working tree
   is what you mean to commit;
 - for a lock written with one of those environment variables set, run the
-  script;
+  tool;
 - for a lock whose file inputs it cannot read, update the check, because
   Bazel's format has changed.
 
@@ -878,7 +882,7 @@ also leave the lock stale, and only CI catches that.
 The hook does not run on a rebase, a cherry-pick or a clean merge. After
 resolving a `MODULE.bazel.lock` conflict there, typically the
 `FILE:@@//Cargo.lock` line after a dependabot bump, take either side and run
-the script, or run `python3 tools/ci/check_bazel_lock.py` before pushing.
+the tool, or run `python3 tools/ci/check_bazel_lock.py` before pushing.
 
 Every worktree runs the hook installed in the main checkout's `.git/hooks`.
 cargo-husky, a dev-dependency, writes it from `.cargo-husky/hooks/` when its

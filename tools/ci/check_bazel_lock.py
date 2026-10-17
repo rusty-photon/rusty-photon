@@ -13,7 +13,7 @@ so the miss is caught at commit time rather than on the PR. It also refuses
 a lock that recorded one of crate_universe's own environment variables as
 set: a repin run with `CARGO_BAZEL_REPIN` (or a sibling) exported in the
 shell writes that into the lock, and CI, which never sets them, rejects it.
-The fix it asks for is `scripts/repin-bazel-lock.sh`, which refreshes the
+The fix it asks for is `cargo ci repin-bazel-lock`, which refreshes the
 lock and stages it. See docs/skills/pre-push.md, "Refreshing
 MODULE.bazel.lock".
 
@@ -84,7 +84,7 @@ def main() -> int:
         print(
             f"check_bazel_lock: {LOCK} is not valid JSON; a merge or rebase "
             "conflict left in it? Take either side, then run "
-            "scripts/repin-bazel-lock.sh.",
+            "`cargo ci repin-bazel-lock`.",
             file=sys.stderr,
         )
         return 1
@@ -178,7 +178,7 @@ def main() -> int:
         print(
             "If the working tree is what you mean to commit, `git add` them. "
             "If the staged copy is, put it back in the working tree and run "
-            "scripts/repin-bazel-lock.sh.",
+            "`cargo ci repin-bazel-lock`.",
             file=sys.stderr,
         )
     if env_set:
@@ -189,7 +189,7 @@ def main() -> int:
         )
     if changed or env_set:
         print(
-            "Run scripts/repin-bazel-lock.sh, which refreshes and stages it, "
+            "Run `cargo ci repin-bazel-lock`, which refreshes and stages it, "
             "then commit again.",
             file=sys.stderr,
         )
