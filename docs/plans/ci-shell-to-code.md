@@ -770,9 +770,13 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     `matrix.os` label in bazel.yml) and its hosted fallback;
   - the three label lists, in pi-nightly.yml and proxmox-runner-test.yml.
 - **What it checks.** It reads every workflow. A `runs-on` names a
-  self-hosted runner when it mentions `RP_POOL_`, `self-hosted` or a pool
-  label. Its value runs on over the lines indented deeper than its key,
-  without blank or comment lines.
+  self-hosted runner when it mentions `RP_POOL_` or one of the labels:
+  `self-hosted`, the pool's two, and the Raspberry Pi's `raspberry-pi`.
+  Labels are matched in any case, as GitHub matches them, and only as whole
+  labels, so a file name such as `raspberry-pi-runner.md` is not one. A
+  value runs on over the lines indented deeper than its key, without blank
+  lines. Comment lines are left out too, except inside a block scalar
+  (`>-`, `|`), where a line starting with `#` is text.
   - **Each copy** is split at its top-level `||` into pool branches and a
     fallback, and each must equal the reviewed one. Whitespace is collapsed
     first, so a reflowed copy still matches. The fallback is checked too,
@@ -783,7 +787,9 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - **A new `runs-on` that names a self-hosted runner**, in any workflow,
     fails the test until it is listed.
   - **A self-hosted label anywhere else**, outside comments, fails it, so
-    a matrix cannot carry one into `matrix.os`.
+    a matrix cannot carry one into `matrix.os`. That includes a block
+    scalar's text, and a job's name: the Pi nightly's job is
+    `pi / linux / arm64 / stable` for that reason.
   - **What the scan does not read fails it:** a mention of `runs-on` that
     is not a plain `runs-on:` key, such as a quoted one, and a copy that is
     not one `${{ }}` expression.
@@ -803,13 +809,20 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     one asking only for generic self-hosted labels, and a label list;
   - a quoted `runs-on` key in check.yml;
   - a self-hosted label in bazel.yml's matrix;
-  - a `pull_request` trigger in pi-nightly.yml.
+  - a `pull_request` trigger in pi-nightly.yml;
+  - `Self-Hosted` in bazel.yml's matrix, and `[Self-Hosted,
+    Proxmox-Ephemeral]` in test.yml;
+  - a line starting with `#` inside bazel.yml's matrix block, and inside
+    check.yml's copy;
+  - `raspberry-pi` alone, as test.yml's `runs-on` and in bazel.yml's
+    matrix.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.
 - **Not guarded:**
-  - a runner chosen without naming `self-hosted` or a pool label (a
-    self-hosted runner also carries `Linux` and `X64`);
+  - a runner chosen without naming one of those labels (a self-hosted
+    runner also carries `Linux` and `X64`), or by spelling one with a YAML
+    escape such as `s`;
   - a runner chosen by a value from outside the workflow file, such as
     a script's output.
 - **Done when** the test runs on both Bazel legs of a PR, a workflow that

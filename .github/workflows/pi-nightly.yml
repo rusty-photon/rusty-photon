@@ -54,7 +54,9 @@ jobs:
     # implies main; this keeps that property explicit and survives any future
     # trigger change.
     if: github.ref == 'refs/heads/main'
-    name: raspberry-pi / linux / arm64 / stable
+    # The name leaves out the runner's label: tools/rusty-photon-ci's
+    # pool_routing.rs refuses a self-hosted label outside a listed `runs-on`.
+    name: pi / linux / arm64 / stable
     # `raspberry-pi` is the custom label applied during runner registration;
     # the other three are standard self-hosted labels GitHub injects
     # automatically. Match in the same shape used during `config.sh

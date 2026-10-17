@@ -101,12 +101,19 @@ const RUNNERS: &[(&str, Runner)] = &[
 ];
 
 /// The events that may start a workflow naming self-hosted runners by
-/// label: each runs the default branch's copy of the workflow, never a pull
-/// request's.
+/// label. A schedule runs the default branch's copy of the workflow; a
+/// dispatch runs the copy on the ref its dispatcher picks, and dispatching
+/// needs write access to the repository. No pull request starts either.
 const MAINTAINER_EVENTS: [&str; 2] = ["schedule", "workflow_dispatch"];
 
-/// The pool's labels, and the label every self-hosted runner carries.
-const LABELS: [&str; 2] = ["self-hosted", "proxmox-ephemeral"];
+/// The label every self-hosted runner carries, and the labels of our own:
+/// the pool's two and the Raspberry Pi's. GitHub matches labels in any case.
+const LABELS: [&str; 4] = [
+    "self-hosted",
+    "proxmox-ephemeral",
+    "proxmox-ephemeral-windows",
+    "raspberry-pi",
+];
 
 /// The end of every refusal.
 const MOVED: &str = "A divergence here is a security boundary moving (ADR-020). \
@@ -208,23 +215,38 @@ fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)]) -> Vec<String> {
 /// The `runs-on` values in a workflow that name a self-hosted runner, and
 /// the lines that mention one elsewhere. A value runs on over every line
 /// indented deeper than its key, as a block scalar (`>-`, `|`) or a plain
-/// one does, and is joined into one line.
+/// one does, and is joined into one line. In a block scalar a line that
+/// starts with `#` is text, not a comment.
 fn scan(text: &str) -> Scan {
     let lines: Vec<&str> = text.lines().collect();
     let mut scan = Scan::default();
     let mut next = 0;
+    // The indentation of the key whose block scalar the lines below belong to.
+    let mut block = None;
     for (at, line) in lines.iter().enumerate() {
         if at < next {
             continue;
         }
         let number = at.saturating_add(1);
         let body = line.trim_start();
+        if let Some(key) = block {
+            if body.is_empty() || indent(line) > key {
+                if names_label(body) {
+                    scan.stray.push((number, body.to_owned()));
+                }
+                continue;
+            }
+            block = None;
+        }
         if body.starts_with('#') {
             continue;
         }
         let Some(first) = body.strip_prefix("runs-on:") else {
-            if body.contains("runs-on") || LABELS.iter().any(|label| body.contains(label)) {
+            if body.to_lowercase().contains("runs-on") || names_label(body) {
                 scan.stray.push((number, body.to_owned()));
+            }
+            if opens_block(body) {
+                block = Some(indent(line));
             }
             continue;
         };
@@ -235,17 +257,14 @@ fn scan(text: &str) -> Scan {
             .count();
         next = number.saturating_add(deeper);
         let first = first.trim();
-        let first = if first.starts_with(['>', '|']) {
-            ""
-        } else {
-            first
-        };
+        let is_block = first.starts_with(['>', '|']);
+        let first = if is_block { "" } else { first };
         let value = std::iter::once(first)
             .chain(rest.iter().take(deeper).map(|next| next.trim()))
-            .filter(|part| !part.is_empty() && !part.starts_with('#'))
+            .filter(|part| !part.is_empty() && (is_block || !part.starts_with('#')))
             .collect::<Vec<_>>()
             .join(" ");
-        if value.contains("RP_POOL_") || LABELS.iter().any(|label| value.contains(label)) {
+        if value.to_lowercase().contains("rp_pool_") || names_label(&value) {
             scan.runners.push((number, value));
         }
     }
@@ -254,6 +273,36 @@ fn scan(text: &str) -> Scan {
 
 fn indent(line: &str) -> usize {
     line.len().saturating_sub(line.trim_start().len())
+}
+
+/// Whether `text` names one of [`LABELS`], in any case, as a whole label
+/// rather than part of a longer word such as a file name.
+fn names_label(text: &str) -> bool {
+    let text = text.to_lowercase();
+    let is_label_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    LABELS.iter().any(|label| {
+        text.match_indices(label).any(|(at, _)| {
+            let before = text.get(..at).and_then(|s| s.chars().next_back());
+            let after = text
+                .get(at.saturating_add(label.len())..)
+                .and_then(|s| s.chars().next());
+            !before.is_some_and(is_label_char) && !after.is_some_and(is_label_char)
+        })
+    })
+}
+
+/// Whether `body`, a line without its indentation, ends in a block scalar's
+/// indicator (`>` or `|`, with its chomping and indentation marks), so the
+/// lines indented below it are text.
+fn opens_block(body: &str) -> bool {
+    let value = body
+        .split_once(": ")
+        .map_or_else(|| body.strip_prefix("- ").unwrap_or(""), |(_, value)| value);
+    let Some(marks) = value.trim().strip_prefix(['>', '|']) else {
+        return false;
+    };
+    let rest = marks.trim_start_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
+    rest.trim().is_empty() || rest.trim_start().starts_with('#')
 }
 
 /// The events a workflow's top-level `on:` names, or `None` if the scan
@@ -555,6 +604,71 @@ fn scan_reports_a_runs_on_it_does_not_read() {
 fn scan_skips_comments() {
     let text = "    # runs-on: [self-hosted]\n";
     assert_eq!(scan(text), Scan::default());
+}
+
+#[test]
+fn scan_reads_a_hash_line_in_a_block_scalar_as_text() {
+    let text = "        os: >-\n          ${{ fromJSON('[\"x\", \"\n          #\", \"self-hosted\"]') }}\n";
+    assert_eq!(
+        scan(text).stray,
+        [(3, "#\", \"self-hosted\"]') }}".to_owned())]
+    );
+}
+
+#[test]
+fn scan_keeps_a_hash_line_in_a_block_runs_on() {
+    let text = "    runs-on: >-\n      ${{ vars.RP_POOL_LINUX\n      #x\n      }}\n";
+    assert_eq!(
+        scan(text).runners,
+        [(1, "${{ vars.RP_POOL_LINUX #x }}".to_owned())]
+    );
+}
+
+#[test]
+fn scan_ends_a_block_scalar_at_its_key() {
+    let text = "      run: |\n        echo hi\n      # runs on self-hosted\n";
+    assert_eq!(scan(text), Scan::default());
+}
+
+#[test]
+fn names_label_matches_in_any_case() {
+    assert!(names_label("os: [ubuntu-latest, Self-Hosted]"));
+}
+
+#[test]
+fn names_label_skips_a_longer_word() {
+    assert!(!names_label("see docs/skills/raspberry-pi-runner.md"));
+}
+
+#[test]
+fn names_label_reads_the_windows_pool_label_whole() {
+    assert!(names_label("[\"proxmox-ephemeral-windows\"]"));
+}
+
+#[test]
+fn opens_block_reads_a_key_or_list_item_ending_in_an_indicator() {
+    assert!(opens_block("run: |"));
+    assert!(opens_block("if: >-  # why"));
+    assert!(opens_block("- |2"));
+    assert!(!opens_block("run: echo \"a: |\""));
+    assert!(!opens_block("if: ${{ a || b }}"));
+}
+
+#[test]
+fn review_places_a_failed_check_at_its_line() {
+    let workflows = [Workflow {
+        name: "w.yml".to_owned(),
+        text: "on:\n  workflow_dispatch:\njobs:\n  a:\n    runs-on: [self-hosted, y]\n".to_owned(),
+    }];
+    let problems = review(&workflows, &[("w.yml", Runner::Labels("[self-hosted, x]"))]);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].starts_with(
+            "w.yml:5: it runs on [self-hosted, y], where the reviewed list is [self-hosted, x]."
+        ),
+        "{}",
+        problems[0]
+    );
 }
 
 #[test]
