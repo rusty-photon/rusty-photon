@@ -147,8 +147,8 @@ a user PAT cannot).
 
 `bazel-coverage.yml` uploads `coverage-lcov/*.info` as the artifact
 **`bazel-coverage-lcov`**: one `lcov-<pkg>.info` per workspace package, named
-for the directory basename under `crates/` or `services/`. This is the same
-data Coveralls ingests (before the exempt-file filter), so it is the
+for the directory basename under `crates/`, `services/` or `tools/`. This is
+the same data Coveralls ingests (before the exempt-file filter), so it is the
 authority when a published number and your intuition disagree.
 
 ```bash
