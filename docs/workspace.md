@@ -808,7 +808,8 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
     defines, answers 404 on the Management API's
     `/setup/v1/{type}/{n}/setup`, builds the page from a hook that sees no
     request (`Device::setup(&self)`), and answers 404 where the API
-    Reference's examples give 400 (an unknown device number or action). The
+    Reference's examples give 400 (an unknown device number, or an unknown
+    method name in the path). The
     fork routes `/setup` and the device path for `GET` and `POST` through
     request-taking hooks — `Device::setup_request` and `Server::setup` — with
     defaults that keep every implementor working, redirects the old path

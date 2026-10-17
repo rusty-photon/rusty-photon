@@ -262,7 +262,7 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 # `/api/v1/{type}/{n}/setup`, a path no specification defines, and 404s the
 # Management API's `/setup/v1/{type}/{n}/setup`; its setup hook sees no
 # request, so no page can take a setting; and an unknown device number or
-# action answers 404 where the API Reference's examples give 400. The fork
+# method name answers 404 where the API Reference's examples give 400. The fork
 # routes both specification paths for GET and POST through request-taking
 # hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
 # and answers the statuses the specifications give (see

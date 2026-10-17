@@ -55,7 +55,7 @@ All responses include standard fields:
 | Code | Meaning |
 |------|---------|
 | 200 | Request formatted correctly, passed to device handler (check ErrorNumber for actual success) |
-| 400 | Device couldn't interpret request (invalid device number, misspelled type, unknown action, or a missing or malformed parameter) |
+| 400 | Device couldn't interpret request: an invalid device number, a misspelled device type, an unknown method name in the path (`GET …/camera/0/canslew`), or a missing or malformed parameter. An unknown `Action` *name* sent to `PUT …/action` is not a 400: it answers 200 with `ErrorNumber` 0x40C (`ACTION_NOT_IMPLEMENTED`) |
 | 500 | Unexpected device error |
 
 ## Common Device Endpoints (All Devices)
