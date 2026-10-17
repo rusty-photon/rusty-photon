@@ -14,7 +14,10 @@
 //!   (`ApplyError` and `ASCOMError` are both foreign here).
 //! - [`ConfigActionCtx`] + [`dispatch`] + [`supported_actions`] — the generic
 //!   `config.get` / `config.apply` / `config.schema` action dispatch, including the
-//!   fire-after-response in-process reload.
+//!   fire-after-response in-process reload, for the drivers that still carry
+//!   the actions while they move to their own setup pages.
+//! - `setup` — the glue from the crate's setup hooks (`Device::setup_request`,
+//!   `Server::setup`) to `rusty-photon-setup`'s pages.
 //! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
 //!   whose session may have been lost to a device that left the bus.
 //! - `claims` (the `claims` feature) — a camera driver's device claims at
@@ -60,7 +63,9 @@ pub mod connection;
 pub mod discovery;
 pub mod error;
 mod macros;
+pub mod setup;
 
 pub use actions::{dispatch, supported_actions, ConfigActionCtx, RELOAD_AFTER_RESPONSE_DELAY};
 pub use connection::{connected_transition, ConnectedTransition};
 pub use error::apply_error_to_ascom;
+pub use setup::{device_setup_request, ServerPages};

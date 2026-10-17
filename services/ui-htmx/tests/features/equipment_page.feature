@@ -10,7 +10,14 @@ Feature: Equipment page
   rp's default applies", never an empty string. A device whose
   supportedactions advertises config.get is "managed" and gets a
   roster-derived config page at /config/rp:{kind}:{id} — no hand-added BFF
-  drivers entry needed.
+  drivers entry needed. A device that advertises no config.get, or answers
+  the probe with 401, is asked for the Alpaca device setup page at
+  /setup/v1/{type}/{n}/setup; a page that answers, or answers 401 (the
+  browser will ask for the credential), is the "setup page" tier with an
+  external link to it. The link keeps the entry's scheme and port, and when
+  the entry's host is a loopback address it carries the host the browser
+  reached the BFF by, so a link to 127.0.0.1 never points a laptop at
+  itself.
 
   Scenario: The roster lists a configured device with its live connection state
     Given a running dsd-fp2 driver registered in rp's roster as cover calibrator "flat-panel"
@@ -20,12 +27,32 @@ Feature: Equipment page
     And the roster row for "flat-panel" shows a connected LED
 
   Scenario: A config-actions-capable device is managed and serves a roster-derived config page
+    Given a running qhy-focuser driver registered in rp's roster as focuser "focuser-1"
+    And a BFF pointed at rp
+    When I open the equipment page
+    Then the roster row for "focuser-1" carries the "managed" tier
+    When I open the config page for "rp:focusers:focuser-1"
+    Then the page shows an input named "focuser.max_step" with value "60000"
+
+  Scenario: A device with its own setup pages and no config actions links to its device setup page
     Given a running dsd-fp2 driver registered in rp's roster as cover calibrator "flat-panel"
     And a BFF pointed at rp
     When I open the equipment page
-    Then the roster row for "flat-panel" carries the "managed" tier
-    When I open the config page for "rp:cover_calibrators:flat-panel"
-    Then the page shows an input named "cover_calibrator.max_brightness" with value "4096"
+    Then the roster row for "flat-panel" carries the "setup" tier
+    And the roster row for "flat-panel" links to the driver's path "/setup/v1/covercalibrator/0/setup" at the driver's port
+
+  Scenario: The setup-page link carries the host the browser reached the BFF by
+    Given a running dsd-fp2 driver registered in rp's roster as cover calibrator "flat-panel"
+    And a BFF pointed at rp
+    When I open the equipment page as the host "observatory.example:8080"
+    Then the roster row for "flat-panel" links to "http://observatory.example" at the driver's port
+
+  Scenario: A device behind a credential still gets its setup-page link
+    Given a running dsd-fp2 driver with TLS and auth registered in rp's roster as cover calibrator "flat-panel"
+    And a BFF pointed at rp
+    When I open the equipment page
+    Then the roster row for "flat-panel" carries the "setup" tier
+    And the roster row for "flat-panel" links to the driver's path "/setup/v1/covercalibrator/0/setup" at the driver's port
 
   Scenario: Adding a device stores it in rp's config and reports the restart callout
     Given a running rp orchestrator with an empty roster

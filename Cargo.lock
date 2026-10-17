@@ -414,6 +414,7 @@ dependencies = [
  "rusty-photon-process",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
+ "scraper",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1305,6 +1306,7 @@ dependencies = [
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
  "schemars",
@@ -4764,8 +4766,10 @@ version = "0.1.0"
 dependencies = [
  "ascom-alpaca",
  "async-trait",
+ "http",
  "rusty-photon-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-shared-transport",
  "schemars",
  "serde",
@@ -4843,6 +4847,23 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "windows-service",
+]
+
+[[package]]
+name = "rusty-photon-setup"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "maud",
+ "rp-auth",
+ "rusty-photon-config",
+ "rusty-photon-service-lifecycle",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6226,6 +6247,7 @@ dependencies = [
  "rusty-photon-doctor-checks",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-tls",
  "scraper",
  "serde",

@@ -1,25 +1,24 @@
-//! dsd-fp2's [`ConfigurableDriver`] implementation — the driver-specific half of
-//! the `config.get` / `config.apply` / `config.schema` protocol.
+//! dsd-fp2's [`ConfigurableDriver`] implementation — the driver-specific half
+//! behind its setup pages.
 //!
-//! The generic machinery (wire envelopes, redaction, layer-aware persist, diff,
-//! schema generation) lives in [`rusty_photon_config::actions`]; this module
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the reload) are `rusty-photon-setup`'s; this module
 //! supplies only what varies for the FP2: its `Config` type, normalization,
-//! validation, secret location, CLI overrides, and editability tiers. See
-//! [`docs/services/dsd-fp2.md`] "Config Actions".
+//! validation, its one secret, its command-line overrides, and which config
+//! section the cover calibrator's page edits. See
+//! [`docs/services/dsd-fp2.md`] "Setup Pages".
 //!
 //! [`docs/services/dsd-fp2.md`]: ../../../docs/services/dsd-fp2.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::{CliOverrides, Config};
 use crate::protocol::MAX_BRIGHTNESS;
 
-/// Re-exported so `device.rs` and tests can name the redaction sentinel without
-/// reaching across crates.
-pub use rusty_photon_config::actions::REDACTED;
+/// The cover calibrator's device type in its Alpaca path spelling.
+pub const DEVICE_TYPE: &str = "covercalibrator";
 
-/// Driver marker wiring the FP2's `Config` into the generic config-action
-/// protocol via [`rusty_photon_config::actions`].
+/// Driver marker wiring the FP2's `Config` into the shared setup pages.
 pub struct DsdFp2Driver;
 
 impl ConfigurableDriver for DsdFp2Driver {
@@ -83,8 +82,9 @@ impl ConfigurableDriver for DsdFp2Driver {
         errors
     }
 
-    /// The FP2's one secret: the server-auth password hash. `TlsConfig` stores
-    /// file *paths*, not key material, so there is nothing to redact there.
+    /// The FP2's one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows. `TlsConfig` stores file
+    /// *paths*, not key material, so there is nothing to hide there.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -97,17 +97,16 @@ impl ConfigurableDriver for DsdFp2Driver {
         overrides.apply(config);
     }
 
-    /// The device owns and generates its ASCOM `UniqueID`; editing it is an
-    /// escape hatch for a misbehaving driver, not routine configuration.
-    fn locked_paths() -> &'static [&'static str] {
-        &["cover_calibrator.unique_id"]
-    }
-
-    /// `server.port` (the BFF can't follow a rebind to a new port) and
-    /// `cover_calibrator.enabled` (disabling the device tears down the very
-    /// endpoint the config actions live on) are self-lockout fields.
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port", "cover_calibrator.enabled"]
+    /// The cover calibrator's page edits the `cover_calibrator` section; the
+    /// server page holds `serial` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![DeviceSection {
+            device_type: DEVICE_TYPE.to_string(),
+            device_number: 0,
+            pointer: "/cover_calibrator".to_string(),
+            name: config.cover_calibrator.name.clone(),
+            enabled: config.cover_calibrator.enabled,
+        }]
     }
 }
 
@@ -135,7 +134,7 @@ mod tests {
     fn validate_accepts_populated_config() {
         assert_eq!(
             DsdFp2Driver::validate(&valid_config()),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -211,10 +210,7 @@ mod tests {
             },
             ..Config::default()
         };
-        assert_eq!(
-            DsdFp2Driver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
-        );
+        assert_eq!(DsdFp2Driver::validate(&config), Vec::<FieldError>::new());
     }
 
     #[test]
@@ -253,14 +249,29 @@ mod tests {
     }
 
     #[test]
-    fn editability_tiers_match_self_lockout_intent() {
+    fn the_cover_calibrators_page_edits_its_own_section() {
+        let mut config = valid_config();
+        config.cover_calibrator.name = "Flat panel".to_string();
+        let sections = DsdFp2Driver::device_sections(&config);
         assert_eq!(
-            DsdFp2Driver::locked_paths(),
-            &["cover_calibrator.unique_id"]
+            sections,
+            vec![DeviceSection {
+                device_type: "covercalibrator".to_string(),
+                device_number: 0,
+                pointer: "/cover_calibrator".to_string(),
+                name: "Flat panel".to_string(),
+                enabled: true,
+            }]
         );
+        config.cover_calibrator.enabled = false;
+        assert!(!DsdFp2Driver::device_sections(&config)[0].enabled);
+    }
+
+    #[test]
+    fn the_pages_secret_is_the_auth_hash_alone() {
         assert_eq!(
-            DsdFp2Driver::read_only_paths(),
-            &["server.port", "cover_calibrator.enabled"]
+            DsdFp2Driver::secret_pointers(),
+            &["/server/auth/password_hash"]
         );
     }
 }

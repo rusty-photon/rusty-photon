@@ -282,7 +282,7 @@ without any driver-specific code.
   silently driving the panel into its measured non-linear range (see
   [Brightness linearity](#hardware-constraints)). `0` is always accepted
   regardless of the floor, since it is the ASCOM "on at zero" state, not
-  a dim request. `config.apply` rejects `min_brightness > max_brightness`
+  a dim request. A save on the setup pages rejects `min_brightness > max_brightness`
   (see [Validation rules](#validation-rules)), but a hand-edited config
   file loaded at startup isn't validated, so this inconsistent state is
   still reachable; when it is, the rejection message names it as a driver
@@ -409,11 +409,11 @@ a required field) is left byte for byte as it was, and the start fails with
 `config file <path> is valid JSON but not a valid configuration: <detail>`. See
 [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
 
-The only escape hatch for changing the id is an explicit edit through the
-UI / `config.apply`. To prevent an operator from accidentally blanking the
-device's stable identity, `config.apply` **rejects an empty (or
-whitespace-only) `cover_calibrator.unique_id`** with a `status:"invalid"`
-field error on `cover_calibrator.unique_id` (see [Validation
+The only escape hatch for changing the id is the Identity disclosure on the
+device's setup page. To prevent an operator from accidentally blanking the
+device's stable identity, a save **rejects an empty (or
+whitespace-only) `cover_calibrator.unique_id`** with a field error on
+`cover_calibrator.unique_id` (see [Validation
 rules](#validation-rules)). Editing the config file by hand to remove the id
 is recoverable: the next startup re-mints a fresh one. Removing the whole
 `cover_calibrator` section is recoverable the same way, with the section
@@ -434,26 +434,31 @@ config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
 
-## Config Actions
+## Setup Pages
 
-The driver exposes its own configuration over HTTP as two vendor ASCOM
-`Action`s, so a host-agnostic UI (the BFF) can read and write config without a
-bespoke endpoint. This is the `dsd-fp2` instance of the cross-driver protocol
-defined in
-[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md).
+The driver configures itself through the two HTML pages the Alpaca
+Management API defines, served by the driver itself behind its own TLS and
+Basic Auth, with no other process in between
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
 
-### Supported actions
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `serial` section, the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list with a link to the cover calibrator's page. |
+| `/setup/v1/covercalibrator/0/setup` | The device page: the `cover_calibrator` section alone — name, description, `enabled`, `max_brightness`, `min_brightness`, and `unique_id` under a collapsed Identity disclosure. |
 
-`supported_actions()` lists:
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate; this
+driver supplies only its config type, its validation and normalization,
+which section its device edits (`device_sections`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags
+pin. The pages work whether or not the device is `Connected` — a wrong
+`serial.port` must be fixable without first connecting to the thing the
+bad port blocks connecting to.
 
-| Action | `Parameters` | Returns (HTTP 200 body) |
-|--------|--------------|--------------------------|
-| `config.get` | empty | JSON: effective config (secrets redacted) + override markers |
-| `config.apply` | full Config JSON | JSON: apply status + per-field classification |
-
-Unknown actions return `ASCOMError::ACTION_NOT_IMPLEMENTED`. Both actions work
-whether or not the device is `Connected` — a wrong `serial.port` must be fixable
-without first connecting to the thing the bad port blocks connecting to.
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` is empty and every `Action`
+answers `ACTION_NOT_IMPLEMENTED`.
 
 ### Config-path resolution
 
@@ -476,62 +481,46 @@ exists from then on and same-host consumers that read it — sentinel's
 health-probe derivation, doctor — see it. A missing file at an **explicit**
 `--config` path is still only created by the identity minting, never by the
 default-materialization step. Startup and reload read the resolved path,
-falling back to `Config::default()` if the file is somehow absent;
-`config.apply` **writes** it, creating parent directories as needed.
+falling back to `Config::default()` if the file is somehow absent; a save on
+a setup page **writes** it, creating parent directories as needed.
 
-### `config.get`
+### What a page shows
 
-```jsonc
-{
-  "config": { /* effective Config — see Configuration — with secrets redacted */ },
-  "overrides": ["serial.port"]   // fields pinned by --port / --server-port
-}
-```
+- **Effective config** = file config with CLI overrides applied: exactly what
+  the running driver is using.
+- A field pinned by a CLI override (`--port` → `serial.port`,
+  `--server-port` → `server.port`) renders disabled with a note saying so;
+  a save never persists it.
+- **No secret reaches a page**: the Security section carries no hash, and
+  `server.tls` is named as file-only.
 
-- **Effective config** = file config with CLI overrides applied: exactly what the
-  running driver is using.
-- **Redaction** (hygiene, independent of auth): `server.auth` credential material
-  and `server.tls` key material are never emitted in cleartext.
-- **`overrides`** lists JSON paths currently pinned by a CLI override (`--port` →
-  `serial.port`, `--server-port` → `server.port`). The UI surfaces these as
-  not-editable-here; `config.apply` will not persist them.
+### Saving
 
-### `config.apply`
+A `POST` to either page submits that page's fields. The shared handler:
 
-`Parameters` carries the full Config as JSON. The handler:
-
-1. **Parse** as the typed `Config`. Parse failure → ASCOM `INVALID_VALUE` (the
-   request was malformed, not the config).
-2. **Validate** ranges + semantics (table below). On failure returns **HTTP 200**
-   with `{"status":"invalid","errors":[{"path":"serial.baud_rate","msg":"…"}]}`
-   and **leaves the file unchanged** — a domain error the BFF renders as
-   field-level messages, distinct from a transport/ASCOM error.
-3. **Persist** atomically (stage to a unique `NamedTempFile` in the target dir →
+1. **Reads the file** as the base and overlays the submitted fields onto
+   the page's section alone: a save of the device page cannot alter the
+   `serial` or `server` section, and a save of the server page cannot alter
+   `cover_calibrator`. Pinned fields keep the file's value. If the existing
+   config file is *present but not valid JSON*, the save is refused rather
+   than treating it as default and overwriting (losing) its contents.
+2. **Validates** (table below) after `normalize` (which trims
+   `serial.port`). On failure the form is answered again under `422` with
+   each error beside its field and the submitted values kept, and the file
+   is untouched.
+3. **Persists** atomically (stage to a unique `NamedTempFile` in the target dir →
    fsync → rename → fsync dir; the random `O_EXCL` temp name avoids collisions
-   between concurrent applies and symlink attacks). If the existing config file
-   is *present but not valid JSON*, the apply is refused with an
-   `INVALID_OPERATION` error rather than treating it as default and overwriting
-   (losing) its contents. CLI-override-pinned fields are
-   written through from the file's prior value, not the submitted value, and
-   listed in `skipped_override[]`. A redacted/sentinel secret (`********`) is
-   treated as "unchanged" so a round-tripped form does not blank it — **except**
-   when no secret is stored to restore, where the sentinel is rejected as
-   `status:"invalid"` (a field error on `server.auth.password_hash`) rather than
-   persisted verbatim as the real hash.
-4. **Classify** changed fields and **fire the in-process reload** if anything is
-   in `reload[]` — *after the response is flushed* (see In-process reload).
-5. **Return** HTTP 200 with the classification:
-
-```jsonc
-{
-  "status": "applying",          // "ok" if nothing needed reload; "invalid" on validation failure
-  "applied": [],                 // took effect live (none in Phase 1)
-  "reload": ["cover_calibrator.max_brightness"],
-  "restart_required": [],        // would need a Sentinel process restart (none in Phase 1)
-  "skipped_override": [],        // override-pinned, not persisted
-  "persisted_to": "~/.config/rusty-photon/dsd-fp2.json"
-}
-```
+   between concurrent saves and symlink attacks).
+4. **Answers** with a page that says the configuration was saved and that
+   the driver is reloading, then **fires the in-process reload** *after the
+   response is flushed* (see In-process reload). The page polls its own
+   URL until the rebuilt server answers and then navigates to it; without
+   script, a refresh header and a link do the same by hand. A save that
+   changed nothing says so and fires no reload. When `server.port` or the
+   bind address changed, the page names the URL the pages now live at.
+5. A `POST` that does not come from the page itself (no `Sec-Fetch-Site`
+   of `same-origin`/`none`, no `Origin` matching the request's `Host`) is
+   refused with `403`.
 
 #### Validation rules
 
@@ -545,29 +534,20 @@ falling back to `Config::default()` if the file is somehow absent;
 | `cover_calibrator.min_brightness` | `<= cover_calibrator.max_brightness` |
 | `cover_calibrator.unique_id` | non-empty (the device's stable ASCOM `UniqueID`; see [Device identity](#device-identity-uniqueid)) |
 | `server.port` | any `u16` (`0` = OS-assigned, used in tests) |
-
-#### Field classification (Phase 1)
-
-Every persisted change is classified `reload`: the driver re-reads the file and
-rebuilds its server + transport in-process. `applied` (live, no blip) and
-`restart_required` exist in the protocol but are unused by `dsd-fp2` in Phase 1;
-a later optimisation can move e.g. `cover_calibrator.max_brightness` to `applied`
-via a shared config cell. A `server.port` change reloads cleanly here, but
-carries a cross-service reference (the BFF's hard-coded driver URL) that Phase 1
-does not follow — see the plan's open questions.
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
 
 ### In-process reload
 
-`config.apply` triggers an **in-process reload**, not a process restart.
+A save triggers an **in-process reload**, not a process restart.
 `main.rs` runs under `ServiceRunner::run_with_reload`: each loop iteration loads
-the effective config and builds the server; a `ReloadSignal` held in the device's
-config-action state (fired via `notify()`) makes the loop tear the current server
-down and rebuild from the new file.
+the effective config and builds the server; a `ReloadSignal` held by the
+setup-page handler (fired via `notify()`) makes the loop tear the current
+server down and rebuild from the new file.
 
 - **Fire-after-response.** The reload is fired from a detached task that yields
-  briefly so the `config.apply` response flushes first — the server being torn
-  down is the very one serving the request. `status:"applying"` tells the BFF to
-  expect a short connection blip and re-`config.get` to confirm.
+  briefly so the saved page flushes first — the server being torn
+  down is the very one serving the request. The page's own wait covers the
+  short connection blip.
 - **Await the server's own teardown.** The loop passes `start()` a stop future
   that resolves on *either* the service shutdown *or* a reload, and **awaits
   `start()` to completion** rather than dropping it. So `start()`'s teardown
@@ -594,7 +574,7 @@ down and rebuild from the new file.
   with `SO_REUSEADDR` (`rusty_photon_tls::server::bind_dual_stack`), so the rebind succeeds
   immediately instead of failing with `AddrInUse`. (`SO_REUSEADDR` does not permit
   two live listeners on the port, so it can't mask an "already running" error.)
-  A `config_actions.feature` scenario drives a full apply → reload → rebind cycle
+  A `setup_pages.feature` scenario drives a full save → reload → rebind cycle
   over the wire (pinning the OS-assigned port so the same port is rebound),
   guarding this OS-sensitive path in CI; `rusty-photon-tls` adds a focused unit test that
   rebinds a port with a lingering connection.
@@ -624,15 +604,15 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 | Module                | Description                                                                                  |
 |-----------------------|----------------------------------------------------------------------------------------------|
 | `config.rs`           | `Config`, `SerialConfig`, `ServerConfig`, `CoverCalibratorConfig` + defaults + JSON load; `CliOverrides`, XDG path resolution, `load_effective_config` |
-| `config_actions.rs`   | Config-action protocol: `ConfigAction` enum, request/response envelopes, `validate` / `classify` / `redact` / atomic `save`, override-path tracking |
+| `setup.rs`            | The driver's `ConfigurableDriver` impl behind the setup pages: `normalize`, `validate`, the secret pointer, the override paths, and `device_sections` (the cover calibrator's section) |
 | `error.rs`            | `DsdFp2Error` (generated by `rusty_photon_driver::driver_error!`: the common transport-driver variants + `to_ascom_error()` + `From<TransportError>` + `From<DsdFp2Error> for ASCOMError`, plus device-specific `MalformedResponse` / `HandshakeFailed`) + `From<SessionError<…>>` |
 | `protocol.rs`         | `Command` enum + `RawResponse` body parsers                                                  |
 | `codec.rs`            | `Fp2Codec` — `rusty_photon_shared_transport::Codec` impl                                    |
 | `transport.rs`        | `Fp2SerialTransportFactory` — opens via the shared `open_serial_port`, asserts DTR, wraps in `SerialFrameTransport` |
 | `manager.rs`          | `FlatPanelManager` over `SharedTransport<Fp2Codec>` + `CachedState` + Hooks (handshake / while_open / teardown) |
-| `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>`; `supported_actions` / `action` dispatch for `config.get` / `config.apply` |
+| `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>`; its `setup_request` answers the device setup page through the shared handler |
 | `mock.rs`             | `MockTransportFactory` + `MockFrameTransport` (feature `mock`); shared `MockState` simulator |
-| `lib.rs`              | Public exports, `ServerBuilder`, `BoundServer`                                              |
+| `lib.rs`              | Public exports, `ServerBuilder` (wires the setup-page handler into the device and the server), `BoundServer` |
 | `main.rs`             | CLI (clap) + tracing init; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner` |
 
 ## MVP Scope
@@ -643,13 +623,13 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 - Cover open / close + state polling (`CoverState` ∈ {`Open`, `Closed`, `Moving`, `Unknown`, `Error`})
 - Calibrator on / off + brightness set (`CalibratorState` ∈ {`Off`, `Ready`, `Unknown`, `Error`})
 - Brightness read (cached) and `max_brightness = 4096`
-- **Config actions** (`config.get` / `config.apply`) with platform-default config
-  path, layer-aware persist, validation, secret redaction, and in-process reload
+- **Setup pages** (`/setup` and the device page) with platform-default config
+  path, layer-aware persist, validation, no secret on any page, and in-process reload
 - Mock factory for ConformU and BDD (consumed by both the spawned
   binary and the in-process `manager.rs` mock tests)
 - Four BDD feature files: connection_lifecycle, cover_control, calibrator_control,
-  config_actions
-- Unit tests for protocol parsing, state derivation, and config-action internals
+  setup_pages
+- Unit tests for protocol parsing, state derivation, and the setup-page validation
 
 ### Deferred
 
@@ -686,16 +666,18 @@ Four feature files cover the MVP behaviour:
 - `calibrator_control.feature` — turn on at brightness, turn off, reject
   brightness above max or below the configured minimum (zero still
   accepted), state after disconnect.
-- `config_actions.feature` — `supportedactions` lists the config actions;
-  `config.get` returns the effective config and marks overrides (over the wire,
-  while disconnected); `config.apply` with a valid change returns
-  `status:"applying"` with the reload classification; an invalid `baud_rate`
-  returns `status:"invalid"` with validation errors; an unknown action returns
-  `ACTION_NOT_IMPLEMENTED`; and a valid change is **reloaded end-to-end** — the
-  scenario pins the bound port, applies, and then confirms the rebuilt server
-  rebinds and serves the new value over the wire (guarding the reload + rebind
-  on every CI OS). Secret redaction and file-unchanged-on-invalid are covered by
-  the faster in-process unit tests (`device::mock_tests`, `config_actions::tests`).
+- `setup_pages.feature` — the server page shows the current values; the
+  device page shows only its section; a valid save persists, reloads, and
+  the page shows the new value after the wait (the scenario pins the bound
+  port so the rebuilt server rebinds the same port and serves the new value
+  over the wire, guarding the reload + rebind on every CI OS); an invalid
+  save names the field and leaves the file untouched; an override-pinned
+  field is shown pinned and not persisted; no hash appears on any page; a
+  cross-site `POST` is refused; with auth on, the pages answer `401` without
+  a credential and render with one; a `server.port` change answers with the
+  new URL; `SupportedActions` is empty. The steps are the shared
+  `setup_pages_steps!` in `bdd-infra`, so the feature reads the same on
+  every driver.
 
 Scenarios spawn the dsd-fp2 binary (built with `--features mock` so
 `MockTransportFactory` is wired in place of the real serial transport)
@@ -722,10 +704,9 @@ rejection) are covered by the in-process unit test
   tables above).
 - `manager.rs`: brightness validation; the shared-transport crate's
   own integration suite covers refcount + handshake-rollback edge cases.
-- `config_actions.rs`: validation field-errors; classification of changed
-  fields; secret redaction + "absent secret = unchanged" round-trip; atomic
-  `save` round-trips and leaves the file unchanged on invalid input;
-  layer-aware persist skips CLI-override-pinned fields; XDG path resolution.
+- `setup.rs`: validation field-errors; normalization; the device section
+  the device page edits. The save, the overlay, the pinned-field skip and
+  the secret rules are pinned once, in `rusty-photon-setup`.
 - `error.rs`: `to_ascom_error()` round-trips per the table in
   [Error Handling](#error-handling); `From<TransportError>` /
   `From<SessionError<DsdFp2Error>>` flattening (centralised here so

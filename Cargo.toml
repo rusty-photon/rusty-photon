@@ -23,6 +23,7 @@ members = [
   "crates/rusty-photon-i18n-derive",
   "crates/rusty-photon-server-config",
   "crates/rusty-photon-service-lifecycle",
+  "crates/rusty-photon-setup",
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
@@ -217,6 +218,9 @@ rmpfit = "2.0"
 thiserror = "2.0.18"
 base64 = "0.23.0"
 mockall = "0.15.0"
+# The Servo html5ever/selectors stack: CSS-selector assertions on rendered
+# pages, in ui-htmx's suite and in bdd-infra's shared setup-page steps.
+scraper = "0.27"
 parking_lot = "0.12.5"
 # Single-file embedded stores: rp-targets (the imaging plan),
 # calibrator-flats (flat timing per train and filter) and focus-model (each
@@ -282,6 +286,12 @@ ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", br
 zwo-rs = { path = "crates/zwo-rs", default-features = false }
 axum = "0.8"
 tower = "0.5"
+# The HTTP vocabulary (`Method`, `StatusCode`, `HeaderMap`) the setup pages
+# speak without depending on a server framework.
+http = "1"
+# Compile-time HTML templates: the setup pages every service serves and the
+# BFF's own pages. `ui-htmx` adds the `axum` feature for its responders.
+maud = "0.27"
 reqwest = { version = "0.13.4", features = ["form", "json", "query"] }
 rp-auth = { path = "crates/rp-auth" }
 rp-mcp-client = { path = "crates/rp-mcp-client" }
@@ -332,6 +342,7 @@ rusty-photon-driver = { path = "crates/rusty-photon-driver" }
 rusty-photon-rolling-stats = { path = "crates/rusty-photon-rolling-stats" }
 rusty-photon-server-config = { path = "crates/rusty-photon-server-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
+rusty-photon-setup = { path = "crates/rusty-photon-setup" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"

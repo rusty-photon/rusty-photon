@@ -89,8 +89,8 @@ The Management API defines two HTML pages, served by the server itself
 
 | Path | Method | Purpose |
 |------|--------|---------|
-| `/setup` | GET | Whole-server configuration page; "must also enable the user to set cross cutting information that applies to the whole device such as the operating IP address and port number" |
-| `/setup/v1/{device_type}/{device_number}/setup` | GET | One device's configuration page; "must be implemented, even if the response to the user is that the device is not configurable"; 403 with an HTML message for an unknown device |
+| `/setup` | GET, POST | Whole-server configuration page; "must also enable the user to set cross cutting information that applies to the whole device such as the operating IP address and port number". Ours (`rusty-photon-setup`) answers `POST` with the save |
+| `/setup/v1/{device_type}/{device_number}/setup` | GET, POST | One device's configuration page; "must be implemented, even if the response to the user is that the device is not configurable"; 403 with an HTML message for an unknown device |
 
 The pinned `ascom-alpaca` fork routes both for `GET` and `POST` through
 `Device::setup_request` and `Server::setup`; the crate's old device page

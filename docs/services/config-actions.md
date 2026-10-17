@@ -1,6 +1,14 @@
 # Config actions — the cross-driver configuration protocol
 
-Every rusty-photon Alpaca driver exposes its own configuration over HTTP as three
+> **Being retired.** [driver-setup-pages.md](../plans/driver-setup-pages.md)
+> replaces these actions with the two HTML setup pages the Alpaca
+> specification defines, served by each driver itself and rendered by the
+> shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate.
+> `dsd-fp2` has made the move and no longer carries the actions; the other
+> drivers follow family by family, and this document goes with the last of
+> them.
+
+Every rusty-photon Alpaca driver but `dsd-fp2` exposes its own configuration over HTTP as three
 **vendor ASCOM `Action`s** — `config.get`, `config.apply`, and `config.schema` —
 so a single web UI can read, edit, and apply any driver's config without the
 driver-specific knowledge living in the UI. This is the generalisation of the
@@ -30,8 +38,13 @@ pub trait ConfigurableDriver {
     fn locked_paths() -> &'static [&'static str] { &[] }     // identity fields (unlock-to-edit)
     fn read_only_paths() -> &'static [&'static str] { &[] }  // hard read-only (self-lockout)
     fn apply_disposition() -> ApplyDisposition { ApplyDisposition::Reload } // how changes take effect
+    fn device_sections(config: &Self::Config) -> Vec<DeviceSection> { vec![] } // the setup pages' per-device sections
 }
 ```
+
+The trait is shared with the setup pages: `device_sections` names the config
+section each served device's page edits, and the pages ignore the two tier
+lists, which exist for `config.schema` alone.
 
 Two details of the trait surface:
 
@@ -184,8 +197,7 @@ locked so the UI can't edit away its own reachability.
 
 | Driver | Devices | Secrets | Notes |
 |--------|---------|---------|-------|
-| `dsd-fp2` | CoverCalibrator | auth password hash | the reference implementation |
-| `qhy-focuser` | Focuser | auth password hash | single device |
+| `qhy-focuser` | Focuser | auth password hash | single device; the BFF's BDD vehicle |
 | `pa-falcon-rotator` | Rotator + Switch | auth password hash | two devices share one config + reload |
 | `ppba-driver` | Switch + ObservingConditions | auth password hash | two devices; `--enable-*` flags pin the enabled fields |
 | `pa-scops-oag` | Focuser | auth password hash | single device; FTDI serial focuser, no temperature sensor |
@@ -199,7 +211,12 @@ locked so the UI can't edit away its own reachability.
 The `ui-htmx` BFF ([`ui-htmx.md`](ui-htmx.md)) is the browser-facing consumer: it
 calls `config.get` / `config.schema` to render a form and `config.apply` to save,
 reusing the `rusty_photon_config::actions` wire types. See `ui-htmx.md` for the
-rendering and multi-driver routing.
+rendering and multi-driver routing. The schema walker and the form coercion it
+renders with are `rusty-photon-setup`'s, shared with the drivers' own pages.
+
+`dsd-fp2` no longer carries the actions: its `SupportedActions` is empty and it
+configures itself on its own setup pages
+([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages"); the BFF's roster links there.
 
 ## References
 

@@ -1,7 +1,9 @@
 //! BDD entry point for `ui-htmx`. Each scenario spawns the real `ui-htmx`
-//! binary and a real `dsd-fp2` driver (mock hardware) and drives the BFF over
-//! HTTP, so the `bdd_infra::bdd_main!` macro is used (child-process spawning,
-//! skipped under Miri). Both binaries must be pre-built with `--all-features`.
+//! binary and a real driver with mock hardware (`qhy-focuser` for the config
+//! pages, `dsd-fp2` for the equipment page's setup-page tier) and drives the
+//! BFF over HTTP, so the `bdd_infra::bdd_main!` macro is used (child-process
+//! spawning, skipped under Miri). The binaries must be pre-built with
+//! `--all-features`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -84,6 +86,9 @@ bdd_infra::bdd_main! {
                     }
                     if let Some(driver) = world.driver.as_mut() {
                         driver.stop().await;
+                    }
+                    if let Some(panel) = world.panel.as_mut() {
+                        panel.stop().await;
                     }
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;

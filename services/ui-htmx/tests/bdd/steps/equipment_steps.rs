@@ -11,12 +11,33 @@ use crate::world::UiWorld;
     regex = r#"^a running dsd-fp2 driver registered in rp's roster as cover calibrator "([\w-]+)"$"#
 )]
 async fn driver_in_rp_roster(world: &mut UiWorld, id: String) {
-    world.start_driver_and_rp_with_cover_calibrator(&id).await;
+    world.start_panel_and_rp_with_cover_calibrator(&id).await;
+}
+
+#[given(
+    regex = r#"^a running dsd-fp2 driver with TLS and auth registered in rp's roster as cover calibrator "([\w-]+)"$"#
+)]
+async fn auth_driver_in_rp_roster(world: &mut UiWorld, id: String) {
+    world
+        .start_panel_with_tls_auth_and_rp_with_cover_calibrator(&id)
+        .await;
+}
+
+#[given(
+    regex = r#"^a running qhy-focuser driver registered in rp's roster as focuser "([\w-]+)"$"#
+)]
+async fn focuser_in_rp_roster(world: &mut UiWorld, id: String) {
+    world.start_driver_and_rp_with_focuser(&id).await;
 }
 
 #[when("I open the equipment page")]
 async fn open_equipment(world: &mut UiWorld) {
     world.get("/equipment").await;
+}
+
+#[when(regex = r#"^I open the equipment page as the host "([^"]+)"$"#)]
+async fn open_equipment_as_host(world: &mut UiWorld, host: String) {
+    world.get_as_host("/equipment", &host).await;
 }
 
 #[when(regex = r#"^I open the add-equipment form for "([\w_]+)"$"#)]
@@ -143,6 +164,35 @@ fn row_tier(world: &mut UiWorld, id: String, tier: String) {
         ),
         "row {id} does not carry tier {tier}:\n{}",
         world.last_body
+    );
+}
+
+#[then(
+    regex = r#"^the roster row for "([\w-]+)" links to the driver's path "([^"]+)" at the driver's port$"#
+)]
+fn row_links_to_driver_path(world: &mut UiWorld, id: String, path: String) {
+    let expected = format!(
+        "{}://127.0.0.1:{}{path}",
+        world.panel_scheme(),
+        world.panel_port()
+    );
+    let href = dom::attr(&world.last_body, &row_css(&id, "a.setup-link"), "href");
+    assert_eq!(
+        href.as_deref(),
+        Some(expected.as_str()),
+        "setup-page link for {id}:\n{}",
+        world.last_body
+    );
+}
+
+#[then(regex = r#"^the roster row for "([\w-]+)" links to "([^"]+)" at the driver's port$"#)]
+fn row_links_to_host(world: &mut UiWorld, id: String, origin: String) {
+    let expected = format!("{origin}:{}/", world.panel_port());
+    let href = dom::attr(&world.last_body, &row_css(&id, "a.setup-link"), "href")
+        .unwrap_or_else(|| panic!("no setup-page link for {id}:\n{}", world.last_body));
+    assert!(
+        href.starts_with(&expected),
+        "setup-page link {href} for {id} does not start with {expected}"
     );
 }
 

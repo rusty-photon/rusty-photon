@@ -157,6 +157,41 @@ pub trait ConfigurableDriver {
     fn apply_disposition() -> ApplyDisposition {
         ApplyDisposition::Reload
     }
+
+    /// The config section each served device's setup page edits — one
+    /// [`DeviceSection`] per device, read from `config` because the devices a
+    /// service serves can depend on it (a camera driver's `usb_devices`
+    /// list). The server setup page holds every other section. Empty for a
+    /// service with no device pages of its own.
+    #[must_use]
+    fn device_sections(config: &Self::Config) -> Vec<DeviceSection> {
+        let _ = config;
+        Vec::new()
+    }
+}
+
+/// One served device and the config section its setup page edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSection {
+    /// The device type in its Alpaca path spelling (`covercalibrator`).
+    pub device_type: String,
+    /// The device number on this server.
+    pub device_number: u32,
+    /// RFC-6901 pointer to the top-level section (`/cover_calibrator`).
+    pub pointer: String,
+    /// The device's name, for the server page's device list.
+    pub name: String,
+    /// Whether the section is enabled: a disabled device is listed but not
+    /// served, so it has no page.
+    pub enabled: bool,
+}
+
+impl DeviceSection {
+    /// The section's top-level key (`cover_calibrator`).
+    #[must_use]
+    pub fn section(&self) -> &str {
+        self.pointer.trim_start_matches('/')
+    }
 }
 
 /// A single field-level validation error (`config.apply` `status:"invalid"`).

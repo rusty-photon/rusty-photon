@@ -65,7 +65,13 @@ Phase 2 shipped a hand-built `dsd-fp2`-only page; Phase 3b (this design) replace
 the hardcoded field lists with a **schema-driven renderer** that walks any
 driver's `config.schema` into a form and reads its editability tiers
 (`locked_fields` / `read_only_fields`) from the schema, so a new driver needs **no
-BFF changes** to get a config page.
+BFF changes** to get a config page. The walker and the form coercion now live
+in the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate,
+which the drivers' own setup pages render from too; the BFF keeps the tiers,
+the hidden blob and the htmx wiring. The config pages are on their way out:
+[driver-setup-pages.md](../plans/driver-setup-pages.md) retires them once
+every driver serves its own pages (P4), and the roster's probe already links
+to a driver's own setup page where it has one.
 
 [axum]: https://github.com/tokio-rs/axum
 [Maud]: https://maud.lambda.xyz/
@@ -234,16 +240,19 @@ page-level red filter preserving dark adaptation; no JavaScript).
 ### Schema-driven rendering (`FieldModel`)
 
 The form is **generated from the driver's `config.schema`**, not a hardcoded
-field list. `FieldModel::from_schema` walks the JSON Schema into a flat, ordered
-list of scalar leaves:
+field list. `rusty_photon_setup::FieldModel::from_schema` (wrapped here with
+the tiers) walks the JSON Schema into a flat, ordered list of leaves, of which
+the BFF renders the scalar ones:
 
 - **`$ref` into `$defs` is resolved**, and plain objects are recursed, so nested
   config sections (`serial.port`, `server.discovery_port`, …) become dotted leaf
   paths.
-- **`oneOf` / `anyOf` / `allOf` / `enum` / `const` subtrees are skipped** — an
-  optional nested struct (`Option<TlsConfig>`/`Option<AuthConfig>`), a tagged
-  enum (`star-adventurer`'s `transport`), or a custom-serde type is not rendered
-  as editable inputs; it **round-trips untouched** through the hidden blob. This
+- **`oneOf` / `anyOf` / `allOf` / `enum` / `const` subtrees are not rendered
+  here** — the walker names an optional nested struct
+  (`Option<TlsConfig>`/`Option<AuthConfig>`) or a custom-serde type as a
+  file-only leaf and a tagged enum (`star-adventurer`'s `transport`) as a
+  variants leaf, which the drivers' own pages render; the BFF leaves both out
+  of the form, so they **round-trip untouched** through the hidden blob. This
   is exactly how redacted secrets (which live inside such optional structs) stay
   safe — they are never rendered, only carried through.
 - **One array shape renders: `array` whose `items` are an integer `enum`**
@@ -504,14 +513,25 @@ time):
 | Probe result | Tier | Affordance |
 |---|---|---|
 | `supportedactions` lists `config.get` | **Managed** | "Configure" → `/config/rp:{kind}:{id}` |
-| 2xx but no `config.*`; `/setup/v1/{type}/{n}/setup` reachable | **Setup page** | external link to the device's own setup UI |
+| no `config.*` (or `401` on the actions); `/setup/v1/{type}/{n}/setup` answers 2xx or `401` | **Setup page** | external link to the device's own setup page (a `401` there means the browser will ask for the credential) |
 | 2xx but no `config.*`, no setup page | **Control only** | badge |
-| 401/403 | **Auth required** | badge + hint that the BFF holds no credentials for it |
+| 401/403 on the actions, no setup page | **Auth required** | badge + hint that the BFF holds no credentials for it |
 | transport error / timeout | **Unreachable** | badge |
 
 Because `config.*` is self-advertising, any third-party server adopting the
 convention auto-upgrades to *Managed* — the probe is the capability detection,
-not a hardcoded table.
+not a hardcoded table. The actions come first so a driver still carrying
+them keeps its Configure form while the drivers move to their own setup
+pages, family by family; a driver that has made the move (`dsd-fp2` first)
+gets the setup-page link in the same step, on an auth-on rig too.
+
+**The setup-page link's host.** A roster entry on the single-box rig names
+its driver by a loopback address (`http://127.0.0.1:11119`), which a browser
+on the operator's laptop would follow to itself. The link therefore keeps the
+entry's scheme and port and, when the entry's host is a loopback address
+(`127.0.0.1`, `::1`, `localhost`), carries the host the browser reached the
+BFF by — the request's `Host` header without its port. Any other host is
+used as written.
 
 **Editing the roster edits rp's config.** Add / edit / remove perform a
 read-modify-write on the equipment arrays: `GET /api/config` → splice the entry
@@ -999,16 +1019,18 @@ Follows [`docs/skills/testing.md`](../skills/testing.md).
 `config_page.feature` is the canonical contract for the page behaviour, and —
 like every other service — it exercises the **real binaries end to end**. Each
 scenario spawns the real `ui-htmx` process, a real `rp` with the driver
-rostered as cover calibrator `dsd-fp2`, and a real `dsd-fp2` driver in mock
+rostered as focuser `qhy-focuser`, and a real `qhy-focuser` driver in mock
 mode (via `bdd_infra::ServiceHandle`), and drives the BFF over HTTP at the
-roster-derived `/config/rp:cover_calibrators:dsd-fp2`, asserting on the HTML
-it actually renders. There is no in-process router and no stubbed
-`ConfigClient`: the production `ReqwestHttpClient` → `AlpacaConfigClient`
-path and the driver's real `config.get` / `config.apply` / in-process reload
-all run for real. The entry
+roster-derived `/config/rp:focusers:qhy-focuser`, asserting on the HTML
+it actually renders. (`qhy-focuser` is the vehicle because it still carries
+the config actions; `dsd-fp2`, the first driver with its own setup pages,
+now stands in for the equipment page's setup-page tier instead.) There is no
+in-process router and no stubbed `ConfigClient`: the production
+`ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
+`config.get` / `config.apply` / in-process reload all run for real. The entry
 point therefore uses `bdd_infra::bdd_main!` (child-process spawning, skipped
-under Miri), and both binaries are built with the driver's mock transport (it is
-feature-gated):
+under Miri), and the driver binaries are built with their mock transports
+(feature-gated):
 
 ```
 bazel test //services/ui-htmx:bdd
@@ -1121,7 +1143,7 @@ body is a plain fragment; the divergence lives entirely in the response header �
 §A tripwire asserts the header, the browser asserts the landing), and an
 `HX-Push-Url` header changing the browser location. The BDD suite spawns a binary
 built with the feature: cargo `--all-features` provides it; under Bazel the
-`:ui-htmx_fixtures` binary (the dsd-fp2 `_mock` pattern) does, so
+`:ui-htmx_fixtures` binary (the drivers' `_mock` pattern) does, so
 `bazel test --config=browser` stays green.
 
 [`fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
@@ -1179,14 +1201,14 @@ binary (dashboard on port 0, `bound_addr=` discovery) with
 `SENTINEL_SERVICE_MANAGER_DIR` pointing at a stub service-manager directory
 (see [sentinel.md §The test seam](sentinel.md#the-test-seam-sentinel_service_manager_dir))
 that lists the driver's unit; sentinel's config dir is seeded with a sibling
-`dsd-fp2.json` carrying the driver's real bound port, so discovery derives
+`qhy-focuser.json` carrying the driver's real bound port, so discovery derives
 the `probe_port` the BFF's restart match resolves against. Scenarios:
 
 - The device config card offers "Restart via Sentinel" when a sentinel block
   is configured (the port match names the discovered service), and clicking
   it restarts the discovered unit (the stub's `restarts.log` records it) and
   swaps in the reconnecting fragment, which then serves the form again (the
-  dsd-fp2 driver never actually died — the stub restart is a stand-in — so
+  qhy-focuser driver never actually died — the stub restart is a stand-in — so
   the poll reconnects immediately).
 - A failing restart (the stub's `restart-fail` marker) surfaces Sentinel's
   `status:"failed"` detail in an error banner.
@@ -1218,11 +1240,16 @@ suites run everywhere the existing one does. Coverage:
   edit renders the driver-side field error with the file untouched; rp down →
   error banner.
 - `equipment_page.feature`: the roster lists rp's devices with live
-  connected LEDs (the dsd-fp2-backed entry probes as **Managed** and links to
-  `/config/rp:cover_calibrators:{id}`, which renders that device's real
-  schema-driven form end to end); add / edit / remove splice rp's config and
-  render the restart callout; an entry pointing nowhere shows **Unreachable**;
-  no rp configured → the "no rp configured" card.
+  connected LEDs; a qhy-focuser-backed entry probes as **Managed** and links
+  to `/config/rp:focusers:{id}`, which renders that device's real
+  schema-driven form end to end; a dsd-fp2-backed entry — a driver with its
+  own setup pages and no config actions — probes as **Setup page** and links
+  to `/setup/v1/covercalibrator/0/setup` on the driver, with the link's host
+  following the browser's `Host` header for a loopback entry, and behind the
+  TLS + auth fixture too (the probe meets a `401` and still links); add /
+  edit / remove splice rp's config and render the restart callout; an entry
+  pointing nowhere shows **Unreachable**; no rp configured → the "no rp
+  configured" card.
 - `stream_page.feature`: drives `/stream/events` directly over HTTP (SSE is
   server bytes — no browser needed for P1): a safety monitor flipping
   unsafe and back on rp produces `safety_changed` envelopes that arrive
@@ -1359,6 +1386,6 @@ avoids.
 - Design plan: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 - Targets inbox (P4): [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
-- Driver config-action protocol (Phase 1): [`dsd-fp2.md`](dsd-fp2.md) "Config Actions"
+- Driver config-action protocol: [`config-actions.md`](config-actions.md); the shared walker and the drivers' own pages: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md)
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)
 - Lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md) "Plain axum service"

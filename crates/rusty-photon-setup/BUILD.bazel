@@ -1,0 +1,58 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
+# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
+# names it as `lint_config`: rustc applies its rustc lints, and the clippy
+# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "rusty-photon-setup",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    # The stylesheet the page shell inlines (`include_str!`).
+    compile_data = glob(["assets/**"]),
+    crate_name = "rusty_photon_setup",
+    edition = "2021",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rusty-photon-setup_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = glob(["assets/**"]),
+    crate = ":rusty-photon-setup",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
