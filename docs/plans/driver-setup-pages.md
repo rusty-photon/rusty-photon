@@ -482,8 +482,8 @@ for the `/setup` page: it renders a static device list.
 before any page of ours is built.** Two changes on one fork branch, both
 landed in P1 — and, on the owner's decision of 2026-10-17, **not offered
 upstream for now**: the fork branch `feature/spec-setup-pages` carries
-both in one commit, and the split below is how they go upstream as two
-pull requests when the owner says so:
+both, with their tests, and the split below is how they go upstream as
+two pull requests when the owner says so:
 
 1. **The paths and statuses** — small and plainly right:
    - a `GET /setup/v1/{device_type}/{device_number}/setup` route — the
