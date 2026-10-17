@@ -177,8 +177,8 @@ fn repo_root() -> PathBuf {
 }
 
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
-/// `self-hosted-runner:` and `labels:`, one `- label` per line, or `None`
-/// if the scan finds none there.
+/// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
+/// not, or `None` if the scan finds none there.
 fn actionlint_labels(text: &str) -> Option<Vec<String>> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
@@ -197,8 +197,16 @@ fn actionlint_labels(text: &str) -> Option<Vec<String>> {
         if body == "labels:" {
             in_labels = true;
         } else if let Some(label) = body.strip_prefix("- ").filter(|_| in_labels) {
-            let label = label.split_once(" #").map_or(label, |(label, _)| label);
-            labels.push(label.trim().to_owned());
+            let label = label
+                .split_once(" #")
+                .map_or(label, |(label, _)| label)
+                .trim();
+            // YAML may quote a label; actionlint reads it without the quotes.
+            let label = ['"', '\'']
+                .iter()
+                .find_map(|quote| label.strip_prefix(*quote)?.strip_suffix(*quote))
+                .unwrap_or(label);
+            labels.push(label.to_owned());
         } else {
             in_labels = false;
         }
@@ -556,6 +564,12 @@ fn labels() -> Labels {
 fn actionlint_labels_reads_the_list_without_comments() {
     let text = "# labels\nself-hosted-runner:\n  labels:\n    # the Pi\n    - pi\n    - pool  # Proxmox\nconfig-variables: null\n";
     assert_eq!(actionlint_labels(text).unwrap(), ["pi", "pool"]);
+}
+
+#[test]
+fn actionlint_labels_reads_a_quoted_label_without_its_quotes() {
+    let text = "self-hosted-runner:\n  labels:\n    - \"pool\"  # Proxmox\n    - 'pi'\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pool", "pi"]);
 }
 
 #[test]
