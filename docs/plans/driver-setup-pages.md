@@ -37,7 +37,8 @@ enter that address and credential on the entry that uses the driver.
 
 ### What exists today
 
-Every driver exposes three vendor ASCOM `Action`s on each of its devices
+Every driver but `planetarium-bridge` exposes three vendor ASCOM
+`Action`s on each of its devices
 ([config-actions.md](../services/config-actions.md)). `config.get`
 returns the effective config as a JSON string with secrets replaced by a
 sentinel; `config.schema` returns a JSON Schema plus two lists of dotted
@@ -274,8 +275,9 @@ A `POST` to either page submits that page's fields. The handler:
      (`RELOAD_AFTER_RESPONSE_DELAY` moves to the route builder);
    - for a `Restart` service (`rp`, `phd2-guider`), which fields take
      effect on the next start, and how to restart it (D12);
-   - when `server.port` or the bind address changed, the new URL, as a
-     link.
+   - when `server.port` or the bind address changed, the new URL — as a
+     link for a `Reload` service, and beside the restart text for a
+     `Restart` service, where nothing answers at it until the restart.
 
 Nothing a `GET` does changes state.
 
@@ -288,6 +290,14 @@ to it (D6), and two links: the driver's server page and that device's
 page (D5). Adding, editing and removing entries are forms on this page,
 generated per kind from the entry types, as `ui-htmx`'s are today. The
 REST `/api/config` routes are retired with the drivers' actions.
+
+`rp`'s `plugins` registry is an array of opaque objects — a
+registration is the plugin author's vocabulary — which no generic walker
+renders and no page of `ui-htmx` edits today; its only wire path was
+`PUT /api/config`. After P4 it stays edited in the file, which `rp`'s
+page says beside its list of the registered plugins; a typed plugins
+section is a custom section (D2) for a later item. With `/api/config`
+gone, a plugin's credential reaches no page.
 
 `rp` is not an Alpaca device, so the specification does not oblige it;
 the argument is uniformity. One rule — *a service's configuration is
@@ -360,9 +370,14 @@ for every client, rendered as an empty password input, blank meaning
 Doctor's minted observatory credential (ADR-016 decision 10(e)) stays
 the zero-touch default: `doctor --fix` fills absent blocks, on both
 sides, and a credential set on a page is the "operator intent" doctor
-already treats a present block as. The two paths coexist exactly as
-they do today for a hand-edited file; nothing new is needed on doctor's
-side. Two gaps found on the way are recorded below, not fixed here:
+already treats a present block as. The two paths coexist as they do
+today for a hand-edited file, with one consequence the page states:
+doctor's provisioning writes `server.auth` wherever it is absent
+(ADR-016 decision 10 — auth on by default), so on a doctor-wired rig
+clearing the username lasts only until the next `doctor --fix`. Running
+without auth is a choice for a rig doctor does not wire, not a page
+setting; the plan asks nothing of doctor. Two gaps found on the way are
+recorded below, not fixed here:
 `doctor auth rotate` overwrites every `server.auth` without
 redistributing the plaintext, and `doctor.md` disagrees with itself on
 whether `rp` holds the observatory credential.
@@ -500,8 +515,8 @@ The device-claims plan's deferred C8 (`ui-htmx` editing of
 - a mode switch between "serve every camera automatically" (no list)
   and "serve only the checked cameras" (a list); all boxes unchecked is
   the empty list, saved like any other — the server page outlives it;
-- the rows name the `rp` entry bound to each number where the driver
-  can tell (it cannot; that join is `rp`'s, and shows on `rp`'s page).
+- the rows do not name the `rp` entry bound to each number: that join
+  is `rp`'s, and shows on `rp`'s page.
 
 The two problems that held C8 — the page was reachable only through a
 device, and the empty list cut it off — do not exist on a server page.
@@ -594,7 +609,7 @@ Small, each mergeable alone, in this order.
 | P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | In review | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
 | P1 | **Specification compliance first.** The `ascom-alpaca` fork routes the specification's device setup path, links to it from `/setup`, redirects the old path, with tests (D10); the change is offered upstream as a pull request; the workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default page until P2 | Not started | |
 | P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), `rusty-photon-driver::setup_router` (both pages, the save, the CSRF check, the reload hook), the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands | Not started | |
-| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser` and `planetarium-bridge`; `phd2-guider` (D13: its `/setup` on the service listener, the facade's loopback-only rule lifted) | Not started | |
+| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener, the facade's loopback-only rule lifted) | Not started | |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
 | P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Not started | |
 
