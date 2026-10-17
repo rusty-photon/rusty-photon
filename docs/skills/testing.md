@@ -2141,7 +2141,7 @@ it starts, so a production caller would reopen teardown races.
   feature through a dev-dependency on the crate itself:
   `name = { path = ".", features = ["test-util"] }`. Cargo turns it on for
   this crate's tests and never for a dependent's build. Run
-  `scripts/repin-bazel-lock.sh` afterwards, as for any manifest edit.
+  `cargo ci repin-bazel-lock` afterwards, as for any manifest edit.
 - **Bazel.** Add a `testonly = True` twin of the library with
   `crate_features = ["test-util"]`, and build every test target against it,
   the unit test included (`crate = ":<lib>_test_util"`). `testonly` makes a

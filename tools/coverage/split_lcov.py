@@ -6,12 +6,13 @@ covering every first-party crate. The Cargo coverage job, by contrast, emits
 one report per package (`cargo llvm-cov report --package <pkg>`) and uploads
 each to Codecov under its own flag so the per-service badges work. To keep that
 behaviour under Bazel we split the combined report here: every LCOV record is
-routed to a package by the `crates/<pkg>/` or `services/<pkg>/` segment of its
+routed to a package by the `crates/<pkg>/`, `services/<pkg>/` or
+`tools/<pkg>/` segment of its
 `SF:` source path (the directory basename is the Cargo package name throughout
 this workspace), producing `lcov-<pkg>.info` files ready to upload with
 `--flag <pkg>` (or `--flag bazel-<pkg>` in shadow mode).
 
-Records whose source path is under neither `crates/` nor `services/` (generated
+Records whose source path is under none of those (generated
 files, or external crates that slipped past the instrumentation filter) are
 dropped -- they have no package flag. Test-file records (tests/, mock_*/test_*
 bins) are kept; Codecov's `ignore:` rules drop them uniformly, exactly as for
@@ -26,9 +27,10 @@ import re
 import sys
 from collections import defaultdict
 
-# Match .../crates/<pkg>/... or .../services/<pkg>/... anywhere in the path,
+# Match .../crates/<pkg>/..., .../services/<pkg>/... or .../tools/<pkg>/...
+# anywhere in the path,
 # tolerating absolute, workspace-relative, or bazel-out-prefixed SF: paths.
-_PKG_RE = re.compile(r"(?:^|/)(?:crates|services)/([^/]+)/")
+_PKG_RE = re.compile(r"(?:^|/)(?:crates|services|tools)/([^/]+)/")
 
 
 def split(report_path: str, output_dir: str) -> "dict[str, int]":
@@ -90,7 +92,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     counts = split(args.report, args.output_dir)
     if not counts:
-        print("warning: no first-party (crates/|services/) records found", file=sys.stderr)
+        print("warning: no first-party (crates/|services/|tools/) records found", file=sys.stderr)
         return 0
 
     total = sum(counts.values())

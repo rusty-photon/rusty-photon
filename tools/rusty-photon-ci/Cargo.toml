@@ -1,0 +1,17 @@
+[package]
+name = "rusty-photon-ci"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The workspace's developer tools, one subcommand each, run as `cargo ci <tool>`"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+thiserror = { workspace = true }

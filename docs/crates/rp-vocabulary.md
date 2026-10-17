@@ -478,7 +478,7 @@ letting `rp` project the vocabulary onto the wire.
 
 No new crates.io dependency is introduced — every one is already in the
 workspace. Adding the crate as a workspace member still changes the root
-`Cargo.toml` and `Cargo.lock`, so it needs `scripts/repin-bazel-lock.sh` per
+`Cargo.toml` and `Cargo.lock`, so it needs `cargo ci repin-bazel-lock` per
 [Rule 10](../skills/pre-push.md#refreshing-modulebazellock).
 
 ## Module layout

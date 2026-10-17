@@ -148,7 +148,7 @@ The order follows production risk:
 - **PR 7** turns "nothing in production calls `reconnect_now`" from a
   grep result into a compile error. It is independent of the others
   and can move earlier at no cost. It edits the crate's `Cargo.toml`,
-  so it needs `scripts/repin-bazel-lock.sh`, merged in
+  so it needs the lock repin, merged in
   [#1391](https://github.com/rusty-photon/rusty-photon/pull/1391).
 - **PR 8** closes W1, W2, W3 and the Lazy variant in the code.
 
@@ -1520,7 +1520,7 @@ harm that outlives the instance and hurts its successor.
 **Scope.**
 - `Cargo.toml`: the feature and the self dev-dependency, with comments.
 - `Cargo.lock`: gains one line, the self-edge.
-- `MODULE.bazel.lock`: refreshed with `scripts/repin-bazel-lock.sh`
+- `MODULE.bazel.lock`: refreshed with the lock repin
   ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391)). The
   diff is two hash lines, and the `cr` hub is unchanged.
 - `BUILD.bazel`: the `_test_util` twin, and `test-util` on every test
@@ -1978,7 +1978,7 @@ Settled on review (2026-10-03):
 - PR 2's constructor-panic commit ships, and PR 2 moves ahead of bug A;
 - rule 10's trigger is any change to `Cargo.lock` or any workspace
   `Cargo.toml` (the root's or a member's), with
-  `scripts/repin-bazel-lock.sh` and a pre-commit check
+  a lock repin script and a pre-commit check
   ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391));
 - "never abort a poll task mid-request" was made part of PR 8 (decision
   6 as first merged). It was undone on 2026-10-04, below, and PR 8 no

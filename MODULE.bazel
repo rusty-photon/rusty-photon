@@ -9,7 +9,7 @@ source tree hits the Windows MAX_PATH (260) limit with longer names.
 
 After any change to Cargo.lock or any workspace Cargo.toml (the root's or a
 member's), run
-`scripts/repin-bazel-lock.sh` to refresh MODULE.bazel.lock (rule 10;
+`cargo ci repin-bazel-lock` to refresh MODULE.bazel.lock (rule 10;
 docs/skills/pre-push.md, "Refreshing MODULE.bazel.lock").
 """
 
