@@ -9,7 +9,6 @@
 //! be torn down — is spawned here on a short delay.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use rusty_photon_config::actions::{self, ApplyStatus, ConfigAction, ConfigurableDriver};
@@ -18,8 +17,9 @@ use strum::VariantArray;
 use tracing::debug;
 
 /// Delay before firing the in-process reload, so the `config.apply` HTTP response
-/// flushes before the server that served it is torn down by the reload.
-pub const RELOAD_AFTER_RESPONSE_DELAY: Duration = Duration::from_millis(100);
+/// flushes before the server that served it is torn down by the reload — the
+/// same delay the setup pages use, defined once in `rusty-photon-setup`.
+pub use rusty_photon_setup::RELOAD_AFTER_RESPONSE_DELAY;
 
 /// State the config actions need, cloned across a driver's device(s).
 ///
@@ -143,6 +143,7 @@ mod tests {
     use rusty_photon_config::actions::FieldError;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
+    use std::time::Duration;
 
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
     struct FakeConfig {

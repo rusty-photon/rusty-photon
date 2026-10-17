@@ -1,0 +1,227 @@
+# `rusty-photon-setup` Crate Design
+
+The HTML setup pages every rusty-photon service serves for its own
+configuration: the form a page renders from the service's config type, the
+save a `POST` to it performs, and the rules both follow. The pages are the
+ones the Alpaca Management API defines — `/setup` for the whole server and
+`/setup/v1/{device_type}/{device_number}/setup` for one device — served by
+the service itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)).
+
+This is a workspace library, not a service. It depends on neither
+`ascom-alpaca` nor any service: an Alpaca driver reaches it through
+`rusty-photon-driver`'s glue, which turns the pinned crate's
+`SetupRequest` into this crate's [`PageRequest`](#requests-and-responses)
+and back; a plain HTTP service calls the handler from its own router.
+
+## Scope
+
+- Walk a service's config schema (`schemars`) into the fields a form
+  renders, and coerce a submitted form back into config values.
+- Render the two pages: the server page (every section that is not one
+  device's, the Security section, the device list) and a device page (that
+  device's section alone).
+- Save: overlay a submission onto the page's section of the *file* config,
+  parse it as the typed config, normalize and validate, persist atomically,
+  answer with what was saved, and fire the service's reload after the
+  response has flushed.
+- Refuse a cross-site `POST`.
+- The Security section: a username and password that become
+  `server.auth` with an Argon2id hash, never a page that shows a hash.
+
+What it leaves to the service: the config type and its validation
+(`ConfigurableDriver` in `rusty-photon-config`), which config section each
+device edits (`device_sections`), which fields a command-line flag pins,
+and where the file lives.
+
+## The pages
+
+Both pages answer `GET` with the form and `POST` with the save. Each is one
+HTML document with its stylesheet inline (the dark theme and tokens of the
+`ui-htmx` mocks), no script except the reload wait's, and a form whose
+`action` is the page's own path, so the page works at any mount.
+
+**The server page** holds, in this order:
+
+1. every top-level section of the config that no device page edits
+   (`serial`, `server`, a service-wide `usb_devices` list, …), each a
+   `<fieldset>` with the section's fields;
+2. **Security**: the server's username, a password and its repeat. See
+   [Credentials](#credentials);
+3. **Devices**: one row per device section the config has, naming the
+   device and linking to its page. A device whose section is disabled
+   (`enabled: false`) is listed with a note that its page is not served
+   while it is disabled and that the file is where to enable it; the crate
+   it sits behind serves no page for a device it did not register.
+
+**A device page** holds that device's section alone: its name,
+description, `enabled`, the settings only it has, and its `unique_id` under
+a collapsed **Identity** disclosure, editable — the driver owns the id and
+mints it, so editing it is an escape hatch, not routine. A device whose
+section carries no `enabled` or `unique_id` field renders without those.
+The page links back to the server page.
+
+A page shows the configuration **file** — what the service runs once it
+has reloaded, and the base the next save overlays — read through the typed
+config so a field the file leaves at its default shows that default, with
+a field a command-line flag pins showing what the running service uses:
+disabled, with a note that says so, and never persisted by a save (see
+[Saving](#saving)). A service that restarts rather than reloads
+(`ApplyDisposition::Restart`) names, above the form, the saved fields
+still waiting for its restart. A file that cannot be read shows the
+running configuration instead.
+
+### Fields
+
+The walker turns the schema into scalar leaves, each a form control named
+by its dotted path (`serial.port`), grouped by top-level section, in sorted
+key order so the rendered order is the same on every host:
+
+| Schema shape | Control | Coercion of the submission |
+|---|---|---|
+| `string` | text input | verbatim; an optional (`["string","null"]`) string cleared persists `null`, a required one persists `""` |
+| `boolean` | checkbox | present ⇒ `true`, absent ⇒ `false` |
+| `integer` with optional `minimum`/`maximum` | number input | parsed and range-checked; out of range or not a number is a field error; an optional one cleared persists `null`, a required one cleared is a field error |
+| `number` | number input | parsed; an optional one cleared persists `null`, a required one cleared is a field error |
+| `array` of an integer `enum` | one checkbox per enumerated value, in schema order | the checked values, in schema order; none checked ⇒ `[]` |
+| a plain object | recursed | — |
+| `$ref` into `$defs` | resolved | — |
+| `Option<T>` where `T` is an object (`anyOf [T, null]`) | file-only (below) | — |
+| an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored |
+| anything else (`allOf`, `enum`, `const`, arrays of objects, custom-serde types) | file-only | — |
+
+**File-only** is never silent: the page names the field, says it is edited
+in the configuration file, and the save leaves it as the file has it.
+`server.tls` (certificate and key paths) is file-only on every driver;
+doctor writes it.
+
+Labels are humanised from the path's last segments (`max_brightness` →
+"Max brightness").
+
+### Requests and responses
+
+The handler takes a `PageRequest` — the method, the headers, the query
+string's pairs and the form body's pairs, both in order with repeats kept,
+so a checkbox group arrives whole — and answers a `PageResponse`: a status,
+headers and a body. The statuses:
+
+| Situation | Status |
+|---|---|
+| `GET` | `200` with the form |
+| `POST` that saved | `200` with the saved page |
+| `POST` whose values were rejected | `422 Unprocessable Content`, the form again with each error beside its field and the submitted values kept; an error on a field this page does not show (the file's other section failing validation) is named above the form, with its path |
+| `POST` that fails the origin check | `403` with a sentence saying why |
+| `POST` whose save failed (the file could not be written, the file on disk is not valid JSON) | `500` with the reason |
+| a device page for a device the config has no section for | `404` with a sentence; the crate in front answers `403` first for a device it does not serve |
+
+## Saving
+
+A `POST` to a page submits that page's fields. The handler:
+
+1. reads the config **file** as the base (a missing file is the running
+   config; a file that is not valid JSON refuses the save, so a typo is
+   never overwritten), and overlays the submitted fields onto the page's
+   section alone — a save of a device page cannot alter the server section,
+   and a save of the server page cannot alter a device's;
+2. skips every field a command-line flag pins: the file's value stays;
+3. parses the result as the typed config, then `normalize` and `validate`;
+   a failure re-renders the form with each error beside its field and the
+   file untouched;
+4. persists with `rusty_photon_config::save` (atomic, owner and mode kept);
+5. answers with a page that says what was saved, and
+   - for a service that reloads in process (`ApplyDisposition::Reload`),
+     that it is reloading: the reload is fired after the response has
+     flushed, and the page waits for the listener to come back. A few
+     lines of script poll the page's own URL until any HTTP answer arrives
+     — a `401` after a credential change included — then navigate to it
+     (a `no-cors` probe, since after a port change the URL is another
+     origin); without script, a `Refresh` header after a delay longer than
+     a typical reload and a link do the same by hand. A save that changed
+     nothing says so and fires no reload;
+   - for a service that needs a restart (`ApplyDisposition::Restart`),
+     which fields take effect on the next start and that the service must
+     be restarted;
+   - when `server.port` or `server.bind_address` changed, the URL the page
+     will have: the host the browser used, the new port;
+   - when a device page disabled its device, that the device's page is no
+     longer served, and the wait reopens the server page instead, which
+     lists the device and names the file as the way to enable it again.
+
+Nothing a `GET` does changes state.
+
+## Credentials
+
+The server page's **Security** section edits `server.auth` through three
+inputs: username, password, repeat. The page never carries the stored hash.
+
+- A username with a password (and its repeat equal) hashes the password
+  with Argon2id (`rp-auth`, on the blocking pool) and persists
+  `server.auth` with the hash — once every other value has passed: a
+  rejected save hashes nothing, and its re-render says what the file
+  holds.
+- A username with a blank password keeps the stored hash; with no hash
+  stored, the save is refused with the password field named — turning auth
+  on needs a password.
+- A password whose repeat differs is refused with the repeat field named.
+- A blank username with blank password fields turns auth off:
+  `server.auth` is absent from the file. A blank username with a typed
+  password is refused with the username field named — a contradiction,
+  not a request.
+
+A secret leaf the driver names in `secret_pointers` that is not the
+server-auth hash renders as an empty password input whose blank submission
+means "unchanged", and never carries its stored value.
+
+## Cross-site protection
+
+Browsers resend cached Basic credentials on any request to the origin, so
+a form `POST` behind Basic Auth could be submitted by a page on another
+site. Every `POST` is accepted only when the request says it came from the
+page itself:
+
+- `Sec-Fetch-Site` is `same-origin` or `none`; or
+- the request carries no `Sec-Fetch-Site` and its `Origin` header's host
+  and port are the request's own `Host`.
+
+A `POST` with neither header, or with either naming another site, is
+refused with `403` and a sentence saying why. No token, no cookie, no
+state. A client that is not a browser sends an `Origin` equal to the
+server's `Host` to be accepted.
+
+## Reload
+
+The reload is `rusty-photon-service-lifecycle`'s `ReloadSignal`, fired
+from a detached task after `RELOAD_AFTER_RESPONSE_DELAY` so the response
+flushes before the server that served it is torn down. The constant lives
+here; `rusty-photon-driver`'s config-action dispatch re-exports it until
+the actions retire.
+
+## What is not here
+
+- Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
+  `setup_request` hook to the handler is `rusty-photon-driver`'s.
+- No custom sections yet: a section the walker cannot render, with its own
+  markup and its own parse (the camera drivers' `usb_devices` editor), is
+  the plan's D11 and lands with the camera family.
+- No navigation between services: a page links to its own server page and
+  its own device pages, nothing else.
+
+## Testing
+
+Unit tests in the crate pin the walker (every row of the table above, the
+sorted order, `$ref` resolution, the tagged-enum detection against
+`schemars`'s own output), the coercion rules, the renderer (a control per
+kind, the pinned state, a file-only note, the Security section), the
+origin check, and the handler against a fake driver (the overlay onto one
+section, the skipped pinned field, the rejected save leaving the file
+untouched, the persisted file, the reload fired, the credential rules).
+
+Each service pins its own contract in a `setup_pages.feature` driven by
+the shared steps in `bdd-infra`'s `setup_pages` module
+([testing.md §5.1](../skills/testing.md#51-shared-infrastructure-bdd-infra-crate));
+`dsd-fp2` is the reference. Every page carries its handler's generation in
+a `<meta name="setup-generation">`; a reload builds a new handler, so the
+step that waits for a saved value after the reload accepts only a page
+whose generation differs from the one before the save — the old listener,
+which already shows the file's new value, cannot pass for the rebuilt
+one.

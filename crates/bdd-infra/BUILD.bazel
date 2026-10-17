@@ -99,7 +99,12 @@ rust_library(
         exclude = ["src/bin/**"],
     ),
     aliases = aliases(),
-    crate_features = ["tls-auth"],
+    # `setup-pages` rides along: every service's setup-page suite links this
+    # variant, and the module's steps need the fixture's credential pair.
+    crate_features = [
+        "tls-auth",
+        "setup-pages",
+    ],
     crate_name = "bdd_infra",
     edition = "2021",
     lint_config = ":lints",
@@ -125,6 +130,7 @@ rust_library(
     crate_features = [
         "rp-harness",
         "tls-auth",
+        "setup-pages",
     ],
     crate_name = "bdd_infra",
     data = glob(["omnisim-config/**"]),
@@ -227,9 +233,15 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    args = ["tls_auth::"],
+    args = [
+        "tls_auth::",
+        "setup_pages::",
+    ],
     crate = ":bdd-infra_tls_auth",
-    crate_features = ["tls-auth"],
+    crate_features = [
+        "tls-auth",
+        "setup-pages",
+    ],
     lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

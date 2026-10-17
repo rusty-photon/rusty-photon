@@ -42,6 +42,7 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
+rusty-photon-setup = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
@@ -117,7 +118,7 @@ require-sh = true
 tracing-subscriber = { workspace = true }
 tokio-test = { workspace = true }
 cucumber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 
 [[test]]
 name = "bdd"

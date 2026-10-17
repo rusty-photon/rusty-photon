@@ -12,19 +12,19 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::api::{CoverCalibrator, Device};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::Fp2Codec;
 use crate::config::CoverCalibratorConfig;
-use crate::config_actions::DsdFp2Driver;
 use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
+use crate::setup::{DsdFp2Driver, DEVICE_TYPE};
 
 /// Deep Sky Dad FP2 as an ASCOM `CoverCalibrator`.
 #[derive(derive_more::Debug)]
@@ -34,11 +34,12 @@ pub struct DsdFp2Device {
     manager: Arc<FlatPanelManager>,
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<Fp2Codec>>>>,
-    /// `Some` when the driver was built with a config source (the normal path
+    /// The setup pages behind `/setup/v1/covercalibrator/0/setup`: `Some`
+    /// when the driver was built with a config source (the normal path
     /// through `ServerBuilder`); `None` for focused unit-test devices that
-    /// don't exercise config actions.
+    /// don't exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<DsdFp2Driver>>,
+    pages: Option<Arc<SetupPages<DsdFp2Driver>>>,
 }
 
 impl DsdFp2Device {
@@ -48,14 +49,15 @@ impl DsdFp2Device {
             config,
             manager,
             session: Arc::new(RwLock::new(None)),
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the config-action context, enabling `config.get` / `config.apply`.
+    /// Attach the shared setup pages, so the device's setup page renders and
+    /// saves the `cover_calibrator` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<DsdFp2Driver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<DsdFp2Driver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 
@@ -126,12 +128,35 @@ impl Device for DsdFp2Device {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    /// No custom action: the configuration moved to the setup pages, and the
+    /// specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<DsdFp2Driver>(&self.config_ctx, action, parameters).await
+    /// The device's setup page, `/setup/v1/covercalibrator/0/setup`, for
+    /// `GET` and `POST`, through the shared handler. A device built without
+    /// the pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -219,7 +244,7 @@ impl CoverCalibrator for DsdFp2Device {
         let min_brightness = self.config.min_brightness;
         if brightness != 0 && brightness < min_brightness {
             // config.apply rejects min_brightness > max_brightness (see
-            // config_actions.rs), but a hand-edited config file loaded at
+            // setup.rs), but a hand-edited config file loaded at
             // startup isn't validated — so effective_max can still be below
             // min_brightness here. Don't suggest an unreachable remediation
             // ("a value >= min_brightness") when no such value exists.
@@ -393,7 +418,7 @@ mod mock_tests {
     }
 
     /// `CoverCalibratorConfig::default()` now has an empty `unique_id` (minted on
-    /// first run by `materialize_identity`), which `config_actions::validate`
+    /// first run by `materialize_identity`), which `setup::validate`
     /// rejects. Tests model a post-materialization config with a populated id.
     fn test_cover_calibrator() -> CoverCalibratorConfig {
         CoverCalibratorConfig {
@@ -600,7 +625,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn calibrator_on_reports_misconfiguration_when_min_exceeds_max() {
-        // config.apply rejects min_brightness > max_brightness (config_actions
+        // A setup-page save rejects min_brightness > max_brightness (setup
         // tests), but a device built straight from a hand-edited config file
         // isn't validated — so this inconsistent state is reachable at
         // runtime. The error message must not suggest an unreachable
@@ -637,12 +662,12 @@ mod mock_tests {
         assert_ne!(ver, "");
     }
 
-    // --- Config actions ---------------------------------------------------
+    // --- Setup pages ------------------------------------------------------
 
-    /// Build a device wired with a config-action context backed by a temp file
-    /// pre-seeded with `effective`. Returns the reload handle (clone) so tests
-    /// can assert the fire-after-response reload, and the `TempDir`/path.
-    fn device_with_config_actions(
+    /// Build a device wired with the setup pages over a temp file pre-seeded
+    /// with `effective`. Returns the reload handle (clone) so tests can assert
+    /// the fire-after-response reload, and the `TempDir`/path.
+    fn device_with_setup_pages(
         effective: Config,
     ) -> (
         DsdFp2Device,
@@ -656,102 +681,88 @@ mod mock_tests {
         let path = dir.path().join("dsd-fp2.json");
         std::fs::write(&path, serde_json::to_string(&effective).unwrap()).unwrap();
         let reload = ReloadSignal::new();
-        let device = DsdFp2Device::new(effective.cover_calibrator.clone(), manager)
-            .with_config_actions(ConfigActionCtx {
-                effective,
-                path: path.clone(),
-                overrides: CliOverrides::default(),
-                reload: reload.clone(),
-            });
+        let pages = SetupPages::<DsdFp2Driver>::new(
+            "dsd-fp2",
+            effective.clone(),
+            path.clone(),
+            CliOverrides::default(),
+        )
+        .with_reload(reload.clone());
+        let device = DsdFp2Device::new(effective.cover_calibrator, manager)
+            .with_setup_pages(Arc::new(pages));
         (device, reload, dir, path)
     }
 
-    #[tokio::test]
-    async fn supported_actions_lists_config_actions_when_configured() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let actions = device.supported_actions().await.unwrap();
-        assert!(actions.contains(&"config.get".to_string()));
-        assert!(actions.contains(&"config.apply".to_string()));
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
     }
 
     #[tokio::test]
-    async fn supported_actions_empty_without_config_ctx() {
-        let (device, _) = make_device();
+    async fn the_config_actions_are_gone() {
+        let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert_eq!(
             device.supported_actions().await.unwrap(),
             Vec::<String>::new()
         );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
-    async fn config_get_returns_effective_config_and_overrides() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        // Config actions must work while disconnected.
+    async fn the_device_page_renders_the_cover_calibrator_section_while_disconnected() {
+        let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert!(!device.connected().await.unwrap());
-        let body = device
-            .action("config.get".to_string(), String::new())
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            value
-                .pointer("/config/serial/port")
-                .and_then(|v| v.as_str()),
-            Some("/dev/mock")
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.body();
+        assert!(
+            body.contains(r#"name="cover_calibrator.max_brightness" value="4096""#),
+            "{body}"
         );
-        assert_eq!(
-            value
-                .get("overrides")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .as_slice(),
-            Vec::<serde_json::Value>::new()
-        );
+        assert!(!body.contains(r#"name="serial.port""#), "{body}");
     }
 
     #[tokio::test]
-    async fn config_get_redacts_password_hash() {
-        let mut effective = test_config();
-        effective.server.auth = Some(rp_auth::config::AuthConfig {
-            username: "obs".to_string(),
-            password_hash: "$argon2id$v=19$real".to_string(),
-        });
-        let (device, _reload, _dir, _path) = device_with_config_actions(effective);
-        let body = device
-            .action("config.get".to_string(), String::new())
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            value
-                .pointer("/config/server/auth/password_hash")
-                .and_then(|v| v.as_str()),
-            Some(crate::config_actions::REDACTED)
+    async fn a_device_page_save_persists_and_fires_the_reload() {
+        let (device, reload, _dir, path) = device_with_setup_pages(test_config());
+        let mut headers = axum::http::HeaderMap::new();
+        _ = headers.insert(
+            "sec-fetch-site",
+            axum::http::HeaderValue::from_static("same-origin"),
         );
-    }
-
-    #[tokio::test]
-    async fn config_apply_persists_and_fires_reload() {
-        let (device, reload, _dir, path) = device_with_config_actions(test_config());
-        let mut changed = test_config();
-        changed.cover_calibrator.max_brightness = 2048;
-        let params = serde_json::to_string(&changed).unwrap();
-
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let form = [
+            ("cover_calibrator.name", "Deep Sky Dad FP2"),
+            ("cover_calibrator.description", "panel"),
+            ("cover_calibrator.unique_id", "dsd-fp2-001"),
+            ("cover_calibrator.enabled", "on"),
+            ("cover_calibrator.max_brightness", "2048"),
+            ("cover_calibrator.min_brightness", "250"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+        let response = device
+            .setup_request(SetupRequest {
+                method: axum::http::Method::POST,
+                headers,
+                query: Vec::new(),
+                form,
+            })
+            .await;
         assert_eq!(
-            value.get("status").and_then(|v| v.as_str()),
-            Some("applying")
+            response.status(),
+            axum::http::StatusCode::OK,
+            "{}",
+            response.body()
         );
-        let reload_paths = value.get("reload").and_then(|v| v.as_array()).unwrap();
-        assert!(reload_paths
-            .iter()
-            .any(|p| p.as_str() == Some("cover_calibrator.max_brightness")));
-
-        // Persisted to disk with the new value.
         let persisted: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
@@ -760,70 +771,15 @@ mod mock_tests {
                 .and_then(serde_json::Value::as_u64),
             Some(2048)
         );
-
-        // The reload is fired after the response — it must arrive.
         tokio::time::timeout(Duration::from_secs(2), reload.recv())
             .await
-            .expect("config.apply should fire the reload");
+            .expect("a changed save fires the reload");
     }
 
     #[tokio::test]
-    async fn config_apply_without_change_returns_ok() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let params = serde_json::to_string(&test_config()).unwrap();
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value.get("status").and_then(|v| v.as_str()), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn config_apply_invalid_leaves_file_unchanged() {
-        let (device, _reload, _dir, path) = device_with_config_actions(test_config());
-        let before = std::fs::read_to_string(&path).unwrap();
-        let mut bad = test_config();
-        bad.serial.baud_rate = 0; // fails validation
-        let params = serde_json::to_string(&bad).unwrap();
-
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            value.get("status").and_then(|v| v.as_str()),
-            Some("invalid")
-        );
-        assert_ne!(
-            value
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .as_slice(),
-            Vec::<serde_json::Value>::new()
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-    }
-
-    #[tokio::test]
-    async fn config_apply_rejects_non_json() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let err = device
-            .action("config.apply".to_string(), "not json".to_string())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-    }
-
-    #[tokio::test]
-    async fn unknown_action_returns_action_not_implemented() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let err = device
-            .action("config.frobnicate".to_string(), String::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    async fn a_device_without_pages_has_no_setup_page() {
+        let (device, _) = make_device();
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }

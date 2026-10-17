@@ -1,0 +1,27 @@
+[package]
+name = "rusty-photon-setup"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The HTML setup pages a rusty-photon service serves for its own configuration: the form rendered from its config schema, the save behind a POST, the origin check, the credential section, and the reload after the response"
+
+[lints]
+workspace = true
+
+[dependencies]
+http = { workspace = true }
+maud = { workspace = true }
+rp-auth = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

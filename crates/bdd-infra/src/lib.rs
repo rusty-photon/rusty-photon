@@ -254,6 +254,9 @@ pub use conformu::{run_conformu, run_conformu_from_settings, ConformuRun, FullRu
 #[cfg(feature = "tls-auth")]
 pub mod tls_auth;
 
+#[cfg(feature = "setup-pages")]
+pub mod setup_pages;
+
 /// The band [`reserved_test_port`] draws from: below every platform's
 /// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the
 /// OS can never assign one of these to a `bind(0)` caller, and clear of

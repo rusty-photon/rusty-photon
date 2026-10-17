@@ -289,6 +289,16 @@ pub fn stage_config_file(state: &mut TlsAuthState, config: &serde_json::Value) -
     path
 }
 
+/// The config file [`stage_config_file`] wrote for this scenario, if any —
+/// the file a setup-page save then persists to.
+#[must_use]
+pub fn staged_config_path(state: &TlsAuthState) -> Option<PathBuf> {
+    state
+        .config_dir
+        .as_ref()
+        .map(|dir| dir.path().join("tls-auth-config.json"))
+}
+
 /// Default launch path: write the config file, spawn the service binary via
 /// [`ServiceHandle`](crate::ServiceHandle), and record the bound port in
 /// `state`.

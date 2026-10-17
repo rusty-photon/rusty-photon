@@ -2,7 +2,7 @@
 //!
 //! These drive a real headless Firefox via `WebDriver` to prove behaviors only a
 //! browser can establish: that `htmx.min.js` actually loads and executes the
-//! declared swaps. They reuse the `Given a dsd-fp2 driver running …` setup from
+//! declared swaps. They reuse the `Given a qhy-focuser driver running …` setup from
 //! [`super::config_page_steps`]; only the When/Then verbs here touch the browser.
 //! The whole feature is gated behind `UI_BROWSER_TESTS=1` (see `tests/bdd.rs`).
 
@@ -25,7 +25,7 @@ const MAX_POLLS: usize = 50;
 /// between the two: well above a real graceful stop, below the 5s SIGKILL point.
 const GRACEFUL_STOP_BUDGET: Duration = Duration::from_secs(4);
 
-#[when("I load the dsd-fp2 config page in a browser")]
+#[when("I load the qhy-focuser config page in a browser")]
 async fn load_in_browser(world: &mut UiWorld) {
     let path = UiWorld::device_config_path();
     world.browser_goto(&path).await;
@@ -44,26 +44,26 @@ async fn renders_form(world: &mut UiWorld) {
     );
 }
 
-#[when("I click the unlock link for cover_calibrator.unique_id")]
+#[when("I click the unlock link for focuser.unique_id")]
 async fn click_unlock(world: &mut UiWorld) {
     // The unlock affordance is a `<button hx-get>` (plan §7: the no-JS `<a href>`
     // fallback was dropped), so the selector targets the button.
     world
         .browser()
-        .click(r#"button[hx-get$="unlock=cover_calibrator.unique_id"]"#)
+        .click(r#"button[hx-get$="unlock=focuser.unique_id"]"#)
         .await;
 }
 
-#[then("the browser shows cover_calibrator.unique_id editable")]
+#[then("the browser shows focuser.unique_id editable")]
 async fn shows_unique_id_editable(world: &mut UiWorld) {
     // Proves real htmx executed the hx-get → outerHTML swap: the re-rendered
     // #config-card replaces the disabled identity input with an enabled one.
     assert!(
         world
             .browser()
-            .wait_enabled(r#"input[name="cover_calibrator.unique_id"]"#, MAX_POLLS)
+            .wait_enabled(r#"input[name="focuser.unique_id"]"#, MAX_POLLS)
             .await,
-        "cover_calibrator.unique_id never became editable after the htmx swap"
+        "focuser.unique_id never became editable after the htmx swap"
     );
 }
 

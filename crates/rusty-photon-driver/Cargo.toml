@@ -42,6 +42,10 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-setup = { workspace = true }
+# The header vocabulary the setup glue reads (`Content-Type`); the same
+# crate the pinned ascom-alpaca speaks.
+http = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 
 [dev-dependencies]
