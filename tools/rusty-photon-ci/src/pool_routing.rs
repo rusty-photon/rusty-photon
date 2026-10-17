@@ -1,16 +1,27 @@
-//! The pool's routing stays as reviewed.
+//! Self-hosted runners stay behind reviewed routes.
 //!
 //! Four workflows send a job to the self-hosted pool with a copy of one
 //! `runs-on` expression. For each OS it holds the kill-switch variable, the
 //! trusted-event test and the pool's labels, and every falsy branch falls
 //! back to a hosted runner. ADR-020 makes the expression a security
 //! boundary. It is copied because `runs-on` is evaluated before the job
-//! exists, so neither `env` nor a job output can hold it.
+//! exists, so neither `env` nor a job output can hold it. Two more workflows
+//! name self-hosted runners by label, and only a schedule or a maintainer's
+//! dispatch starts them.
 //!
-//! These tests hold every copy to the clauses reviewed here. A pull request
-//! that changes one copy fails `bazel test //...`, and one that changes them
-//! all changes this file too, in the diff its reviewer reads. A new job that
-//! routes to the pool fails them until it is listed in [`ROUTES`].
+//! These tests hold every workflow to what is reviewed here:
+//! - each copy of the pool's expression to the reviewed clauses and
+//!   fallback. A pull request that changes one copy fails
+//!   `bazel test //...`, and one that changes them all changes this file
+//!   too, in the diff its reviewer reads;
+//! - each label list to the reviewed one, in a workflow that nothing else
+//!   starts;
+//! - the pool's labels to those `runs-on` values, so that no matrix or other
+//!   value carries one into a job's runner.
+//!
+//! A `runs-on` that names a self-hosted runner and is not listed in
+//! [`RUNNERS`] fails them, and so does a mention of `runs-on` the scan does
+//! not read.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,10 +45,8 @@ const WINDOWS: &str = r#"
     && fromJSON('["self-hosted", "proxmox-ephemeral-windows"]')
 "#;
 
-/// A job that routes to the pool, as reviewed.
+/// A copy of the pool's routing expression, as reviewed.
 struct Route {
-    /// Its workflow, in `.github/workflows`.
-    workflow: &'static str,
     /// Each pool branch in order: the `matrix.os` label it sits behind, when
     /// the job has a matrix, and its clause.
     branches: &'static [(Option<&'static str>, &'static str)],
@@ -45,44 +54,79 @@ struct Route {
     fallback: &'static str,
 }
 
-/// Every job that routes to the pool, in workflow-name order.
-const ROUTES: &[Route] = &[
-    Route {
-        workflow: "bazel-coverage.yml",
-        branches: &[(None, LINUX)],
-        fallback: "'ubuntu-latest'",
-    },
-    Route {
-        workflow: "bazel.yml",
-        branches: &[
-            (Some("ubuntu-latest"), LINUX),
-            (Some("windows-latest"), WINDOWS),
-        ],
-        // The matrix's own label, always a hosted one.
-        fallback: "matrix.os",
-    },
-    Route {
-        workflow: "check.yml",
-        branches: &[(None, LINUX)],
-        fallback: "'ubuntu-latest'",
-    },
-    Route {
-        workflow: "repin-bazel.yml",
-        branches: &[(None, LINUX)],
-        fallback: "'ubuntu-latest'",
-    },
+/// A job without a matrix, on the Linux pool.
+const LINUX_JOB: Route = Route {
+    branches: &[(None, LINUX)],
+    fallback: "'ubuntu-latest'",
+};
+
+/// A `runs-on` that names a self-hosted runner, as reviewed.
+enum Runner {
+    /// A copy of the pool's routing expression.
+    Pool(Route),
+    /// A label list, in a workflow that only [`MAINTAINER_EVENTS`] start.
+    Labels(&'static str),
+}
+
+/// Every `runs-on` that names a self-hosted runner, in workflow-name order
+/// and, within a workflow, in line order.
+const RUNNERS: &[(&str, Runner)] = &[
+    ("bazel-coverage.yml", Runner::Pool(LINUX_JOB)),
+    (
+        "bazel.yml",
+        Runner::Pool(Route {
+            branches: &[
+                (Some("ubuntu-latest"), LINUX),
+                (Some("windows-latest"), WINDOWS),
+            ],
+            // The matrix's own label, a hosted one: no pool label may appear
+            // outside a listed `runs-on`.
+            fallback: "matrix.os",
+        }),
+    ),
+    ("check.yml", Runner::Pool(LINUX_JOB)),
+    (
+        "pi-nightly.yml",
+        Runner::Labels("[self-hosted, Linux, ARM64, raspberry-pi]"),
+    ),
+    (
+        "proxmox-runner-test.yml",
+        Runner::Labels("[self-hosted, Linux, X64, proxmox-ephemeral]"),
+    ),
+    (
+        "proxmox-runner-test.yml",
+        Runner::Labels("[self-hosted, Windows, X64, proxmox-ephemeral-windows]"),
+    ),
+    ("repin-bazel.yml", Runner::Pool(LINUX_JOB)),
 ];
+
+/// The events that may start a workflow naming self-hosted runners by
+/// label: each runs the default branch's copy of the workflow, never a pull
+/// request's.
+const MAINTAINER_EVENTS: [&str; 2] = ["schedule", "workflow_dispatch"];
+
+/// The pool's labels, and the label every self-hosted runner carries.
+const LABELS: [&str; 2] = ["self-hosted", "proxmox-ephemeral"];
 
 /// The end of every refusal.
 const MOVED: &str = "A divergence here is a security boundary moving (ADR-020). \
      If the change is meant, make it in every copy and in \
      tools/rusty-photon-ci/src/pool_routing.rs.";
 
-/// A `runs-on` expression that names the pool, and where it is.
-struct Found {
-    workflow: String,
-    line: usize,
-    expression: String,
+/// A workflow file's name and text.
+struct Workflow {
+    name: String,
+    text: String,
+}
+
+/// What a scan of one workflow found, each with its line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Scan {
+    /// Each `runs-on` value that names a self-hosted runner.
+    runners: Vec<(usize, String)>,
+    /// Each other line that names one of [`LABELS`], or mentions `runs-on`
+    /// in a form the scan does not read.
+    stray: Vec<(usize, String)>,
 }
 
 /// `.github/workflows`, two levels above the crate. Cargo sets
@@ -99,9 +143,9 @@ fn workflows_dir() -> PathBuf {
         .join(".github/workflows")
 }
 
-/// Every pool `runs-on` in the workflows in `dir`, in workflow-name order.
-fn pool_routes(dir: &Path) -> Vec<Found> {
-    let mut workflows: Vec<PathBuf> = fs::read_dir(dir)
+/// The workflows in `dir`, in name order.
+fn read_workflows(dir: &Path) -> Vec<Workflow> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
@@ -109,58 +153,137 @@ fn pool_routes(dir: &Path) -> Vec<Found> {
                 .is_some_and(|ext| ext == "yml" || ext == "yaml")
         })
         .collect();
-    workflows.sort();
-    let mut found = Vec::new();
-    for path in workflows {
-        let text =
-            fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        let workflow = path.file_name().unwrap().to_string_lossy().into_owned();
-        for (line, expression) in pool_expressions(&text) {
-            found.push(Found {
-                workflow: workflow.clone(),
-                line,
-                expression,
-            });
-        }
-    }
-    found
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| Workflow {
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            text: fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display())),
+        })
+        .collect()
 }
 
-/// Every `runs-on` in a workflow that is an expression naming the pool, with
-/// its line. A block value (`>-`, `|`), or one on the lines below the key, is
-/// joined into one line. A label list is not an expression and is left out:
-/// proxmox-runner-test.yml, which only a maintainer can dispatch, names the
-/// pool that way.
-fn pool_expressions(text: &str) -> Vec<(usize, String)> {
-    let lines: Vec<&str> = text.lines().collect();
+/// Every way `workflows` differ from the `reviewed` runners, as messages.
+fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)]) -> Vec<String> {
+    let mut problems = Vec::new();
     let mut found = Vec::new();
-    for (at, line) in lines.iter().enumerate() {
-        let Some(value) = line.trim_start().strip_prefix("runs-on:") else {
-            continue;
+    for workflow in workflows {
+        let scan = scan(&workflow.text);
+        for (line, text) in scan.stray {
+            problems.push(format!(
+                "{}:{line}: `{text}` names a self-hosted label outside a listed \
+                 `runs-on`, or mentions `runs-on` in a form the test does not read.\n{MOVED}",
+                workflow.name,
+            ));
+        }
+        found.extend(
+            scan.runners
+                .into_iter()
+                .map(|(line, value)| (workflow, line, value)),
+        );
+    }
+    let names: Vec<&str> = found.iter().map(|(w, _, _)| w.name.as_str()).collect();
+    let listed: Vec<&str> = reviewed.iter().map(|(name, _)| *name).collect();
+    if names != listed {
+        problems.push(format!(
+            "the `runs-on` values that name a self-hosted runner are in {names:?}, \
+             where RUNNERS lists {listed:?}. A new one is reviewed against ADR-020 \
+             and listed there.\n{MOVED}"
+        ));
+        return problems;
+    }
+    for ((workflow, line, value), (_, runner)) in found.iter().zip(reviewed) {
+        let result = match runner {
+            Runner::Pool(route) => check_route(value, route),
+            Runner::Labels(labels) => check_labels(value, labels, &workflow.text),
         };
-        let value = value.trim();
-        let value = if value.is_empty() || value.starts_with(['>', '|']) {
-            let below = lines.get(at.saturating_add(1)..).unwrap_or_default();
-            below
-                .iter()
-                .take_while(|next| next.trim().is_empty() || indent(next) > indent(line))
-                .map(|next| next.trim())
-                .collect::<Vec<_>>()
-                .join(" ")
-        } else {
-            value.to_owned()
-        };
-        if value.contains("${{")
-            && (value.contains("RP_POOL_") || value.contains("proxmox-ephemeral"))
-        {
-            found.push((at.saturating_add(1), value));
+        if let Err(e) = result {
+            problems.push(format!("{}:{line}: {e}\n{MOVED}", workflow.name));
         }
     }
-    found
+    problems
+}
+
+/// The `runs-on` values in a workflow that name a self-hosted runner, and
+/// the lines that mention one elsewhere. A value runs on over every line
+/// indented deeper than its key, as a block scalar (`>-`, `|`) or a plain
+/// one does, and is joined into one line.
+fn scan(text: &str) -> Scan {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut scan = Scan::default();
+    let mut next = 0;
+    for (at, line) in lines.iter().enumerate() {
+        if at < next {
+            continue;
+        }
+        let number = at.saturating_add(1);
+        let body = line.trim_start();
+        if body.starts_with('#') {
+            continue;
+        }
+        let Some(first) = body.strip_prefix("runs-on:") else {
+            if body.contains("runs-on") || LABELS.iter().any(|label| body.contains(label)) {
+                scan.stray.push((number, body.to_owned()));
+            }
+            continue;
+        };
+        let rest = lines.get(number..).unwrap_or_default();
+        let deeper = rest
+            .iter()
+            .take_while(|next| next.trim().is_empty() || indent(next) > indent(line))
+            .count();
+        next = number.saturating_add(deeper);
+        let first = first.trim();
+        let first = if first.starts_with(['>', '|']) {
+            ""
+        } else {
+            first
+        };
+        let value = std::iter::once(first)
+            .chain(rest.iter().take(deeper).map(|next| next.trim()))
+            .filter(|part| !part.is_empty() && !part.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if value.contains("RP_POOL_") || LABELS.iter().any(|label| value.contains(label)) {
+            scan.runners.push((number, value));
+        }
+    }
+    scan
 }
 
 fn indent(line: &str) -> usize {
     line.len().saturating_sub(line.trim_start().len())
+}
+
+/// The events a workflow's top-level `on:` names, or `None` if the scan
+/// does not read it. It reads one event or a `[list]` after the key, or one
+/// key per event on the lines below.
+fn triggers(text: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|line| line.starts_with("on:"))?;
+    let inline = lines.get(at)?.strip_prefix("on:")?.trim();
+    if !inline.is_empty() {
+        let list = inline
+            .strip_prefix('[')
+            .and_then(|list| list.strip_suffix(']'))
+            .unwrap_or(inline);
+        return Some(list.split(',').map(|e| e.trim().to_owned()).collect());
+    }
+    let body: Vec<&str> = lines
+        .get(at.saturating_add(1)..)?
+        .iter()
+        .take_while(|line| line.trim().is_empty() || line.starts_with([' ', '#']))
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .copied()
+        .collect();
+    let depth = indent(body.first()?);
+    Some(
+        body.iter()
+            .filter(|line| indent(line) == depth)
+            .map(|line| line.trim().split(':').next().unwrap_or_default().to_owned())
+            .collect(),
+    )
 }
 
 /// `expr` on one line: whitespace outside quoted strings collapsed to one
@@ -233,11 +356,11 @@ fn unwrap_parens(term: &str) -> &str {
 
 /// A routing expression's pool branches, each without the parentheses
 /// around it, and its fallback, the last `||` term.
-fn parse(value: &str) -> Result<(Vec<String>, String), &'static str> {
+fn parse(value: &str) -> Result<(Vec<String>, String), String> {
     let expr = value
         .strip_prefix("${{")
         .and_then(|v| v.strip_suffix("}}"))
-        .ok_or("`runs-on` is not one ${{ }} expression")?;
+        .ok_or_else(|| format!("`runs-on` is not one ${{{{ }}}} expression: {value}"))?;
     let expr = normalize(expr);
     let mut terms: Vec<String> = split_top_level(&expr, "||")
         .into_iter()
@@ -247,10 +370,9 @@ fn parse(value: &str) -> Result<(Vec<String>, String), &'static str> {
     Ok((terms, fallback))
 }
 
-/// Why `found` is not the reviewed `route`, if it is not.
-fn check(found: &Found, route: &Route) -> Result<(), String> {
-    let at = format!("{}:{}", found.workflow, found.line);
-    let (branches, fallback) = parse(&found.expression).map_err(|e| format!("{at}: {e}"))?;
+/// Why the `runs-on` `value` is not the reviewed `route`, if it is not.
+fn check_route(value: &str, route: &Route) -> Result<(), String> {
+    let (branches, fallback) = parse(value)?;
     let reviewed: Vec<String> = route
         .branches
         .iter()
@@ -263,38 +385,85 @@ fn check(found: &Found, route: &Route) -> Result<(), String> {
         .collect();
     if branches != reviewed {
         return Err(format!(
-            "{at}: its pool branches are not the reviewed ones.\n  found:\n    {}\n  \
-             reviewed:\n    {}\n{MOVED}",
+            "its pool branches are not the reviewed ones.\n  found:\n    {}\n  \
+             reviewed:\n    {}",
             branches.join("\n    "),
             reviewed.join("\n    "),
         ));
     }
     if fallback != route.fallback {
         return Err(format!(
-            "{at}: it falls back to {fallback}, where the reviewed copy falls back to \
-             the hosted {}.\n{MOVED}",
+            "it falls back to {fallback}, where the reviewed copy falls back to the \
+             hosted {}.",
             route.fallback,
         ));
     }
     Ok(())
 }
 
-#[test]
-fn every_job_that_routes_to_the_pool_holds_the_reviewed_clauses() {
-    let found = pool_routes(&workflows_dir());
-    let workflows: Vec<&str> = found.iter().map(|f| f.workflow.as_str()).collect();
-    let listed: Vec<&str> = ROUTES.iter().map(|r| r.workflow).collect();
-    assert_eq!(
-        workflows, listed,
-        "the jobs that route to the pool are not the ones ROUTES lists. A new one \
-         is reviewed against ADR-020 and listed there."
-    );
-    let wrong: Vec<String> = found
+/// Why the `runs-on` `value`, in the workflow `text`, is not the reviewed
+/// label list `labels` in a workflow only [`MAINTAINER_EVENTS`] start.
+fn check_labels(value: &str, labels: &str, text: &str) -> Result<(), String> {
+    if value != labels {
+        return Err(format!(
+            "it runs on {value}, where the reviewed list is {labels}."
+        ));
+    }
+    let events = triggers(text)
+        .ok_or("it names self-hosted runners, and the test does not read its workflow's `on:`.")?;
+    let others: Vec<&str> = events
         .iter()
-        .zip(ROUTES)
-        .filter_map(|(found, route)| check(found, route).err())
+        .map(String::as_str)
+        .filter(|event| !MAINTAINER_EVENTS.contains(event))
         .collect();
-    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
+    if !others.is_empty() {
+        return Err(format!(
+            "it names self-hosted runners in a workflow that {others:?} also start; \
+             only {MAINTAINER_EVENTS:?} may."
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn every_self_hosted_runner_a_workflow_names_is_a_reviewed_one() {
+    let problems = review(&read_workflows(&workflows_dir()), RUNNERS);
+    assert!(problems.is_empty(), "{}", problems.join("\n\n"));
+}
+
+#[test]
+fn review_refuses_a_runner_it_does_not_list() {
+    let workflows = [Workflow {
+        name: "w.yml".to_owned(),
+        text: "on: push\njobs:\n  a:\n    runs-on: [self-hosted, x]\n".to_owned(),
+    }];
+    let problems = review(&workflows, &[]);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].starts_with(
+            "the `runs-on` values that name a self-hosted runner are in [\"w.yml\"], \
+             where RUNNERS lists []."
+        ),
+        "{}",
+        problems[0]
+    );
+}
+
+#[test]
+fn review_refuses_a_pool_label_in_a_matrix() {
+    let workflows = [Workflow {
+        name: "w.yml".to_owned(),
+        text:
+            "jobs:\n  a:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, self-hosted]\n"
+                .to_owned(),
+    }];
+    let problems = review(&workflows, &[]);
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].starts_with("w.yml:5: `os: [ubuntu-latest, self-hosted]` names"),
+        "{}",
+        problems[0]
+    );
 }
 
 #[test]
@@ -329,10 +498,10 @@ fn unwrap_parens_keeps_two_groups() {
 }
 
 #[test]
-fn pool_expressions_joins_a_folded_block_and_gives_its_line() {
+fn scan_joins_a_folded_block_and_gives_its_line() {
     let text = "jobs:\n  a:\n    runs-on: >-\n      ${{ (vars.RP_POOL_LINUX == 'on'\n           && x)\n          || 'ubuntu-latest' }}\n    name: a\n";
     assert_eq!(
-        pool_expressions(text),
+        scan(text).runners,
         [(
             3,
             "${{ (vars.RP_POOL_LINUX == 'on' && x) || 'ubuntu-latest' }}".to_owned()
@@ -341,102 +510,158 @@ fn pool_expressions_joins_a_folded_block_and_gives_its_line() {
 }
 
 #[test]
-fn pool_expressions_reads_an_inline_expression() {
-    let text = "    runs-on: ${{ vars.RP_POOL_LINUX == 'on' && 'x' || 'ubuntu-latest' }}\n";
+fn scan_joins_a_plain_value_continued_below_its_key() {
+    let text = "    runs-on: ${{ (github.event_name == 'push'\n      && 'self-hosted') || 'ubuntu-latest' }}\n    name: a\n";
     assert_eq!(
-        pool_expressions(text),
+        scan(text).runners,
         [(
             1,
-            "${{ vars.RP_POOL_LINUX == 'on' && 'x' || 'ubuntu-latest' }}".to_owned()
+            "${{ (github.event_name == 'push' && 'self-hosted') || 'ubuntu-latest' }}".to_owned()
         )]
     );
 }
 
 #[test]
-fn pool_expressions_leaves_out_hosted_runners_and_label_lists() {
-    let text = "    runs-on: ubuntu-latest\n    runs-on: ${{ matrix.os }}\n    runs-on: [self-hosted, proxmox-ephemeral]\n";
-    assert_eq!(pool_expressions(text), []);
-}
-
-/// A copy of the Linux route, as a standalone job spells it.
-fn linux_copy(clause: &str, fallback: &str) -> Found {
-    Found {
-        workflow: "w.yml".to_owned(),
-        line: 7,
-        expression: ["${{ (", clause, ") || ", fallback, " }}"].concat(),
-    }
-}
-
-const LINUX_ROUTE: Route = Route {
-    workflow: "w.yml",
-    branches: &[(None, LINUX)],
-    fallback: "'ubuntu-latest'",
-};
-
-#[test]
-fn check_accepts_a_reviewed_copy() {
-    check(&linux_copy(LINUX, "'ubuntu-latest'"), &LINUX_ROUTE).unwrap();
+fn scan_drops_the_blank_lines_after_a_value() {
+    let text = "    runs-on: >-\n      ${{ vars.RP_POOL_LINUX }}\n\n\n    name: a\n";
+    assert_eq!(
+        scan(text).runners,
+        [(1, "${{ vars.RP_POOL_LINUX }}".to_owned())]
+    );
 }
 
 #[test]
-fn check_refuses_a_copy_without_the_same_repository_test() {
+fn scan_reads_a_label_list() {
+    let text = "    runs-on: [self-hosted, Linux]\n";
+    assert_eq!(scan(text).runners, [(1, "[self-hosted, Linux]".to_owned())]);
+}
+
+#[test]
+fn scan_leaves_out_hosted_runners() {
+    let text = "    runs-on: ubuntu-latest\n    runs-on: ${{ matrix.os }}\n";
+    assert_eq!(scan(text), Scan::default());
+}
+
+#[test]
+fn scan_reports_a_runs_on_it_does_not_read() {
+    let text = "    \"runs-on\": ubuntu-latest\n";
+    assert_eq!(
+        scan(text).stray,
+        [(1, "\"runs-on\": ubuntu-latest".to_owned())]
+    );
+}
+
+#[test]
+fn scan_skips_comments() {
+    let text = "    # runs-on: [self-hosted]\n";
+    assert_eq!(scan(text), Scan::default());
+}
+
+#[test]
+fn triggers_reads_one_key_per_event() {
+    let text =
+        "on:\n  # nightly\n  schedule:\n    - cron: '0 7 * * *'\n\n  workflow_dispatch:\njobs:\n";
+    assert_eq!(triggers(text).unwrap(), ["schedule", "workflow_dispatch"]);
+}
+
+#[test]
+fn triggers_reads_an_inline_list() {
+    assert_eq!(
+        triggers("on: [push, pull_request]\n").unwrap(),
+        ["push", "pull_request"]
+    );
+}
+
+#[test]
+fn triggers_without_an_on_key_is_none() {
+    assert_eq!(triggers("\"on\": push\n"), None);
+}
+
+/// A copy of the Linux route, as a job without a matrix spells it.
+fn linux_copy(clause: &str, fallback: &str) -> String {
+    ["${{ (", clause, ") || ", fallback, " }}"].concat()
+}
+
+#[test]
+fn check_route_accepts_a_reviewed_copy() {
+    check_route(&linux_copy(LINUX, "'ubuntu-latest'"), &LINUX_JOB).unwrap();
+}
+
+#[test]
+fn check_route_refuses_a_copy_without_the_same_repository_test() {
     let clause = normalize(LINUX).replace(
         " && github.event.pull_request.head.repo.full_name == github.repository",
         "",
     );
-    let err = check(&linux_copy(&clause, "'ubuntu-latest'"), &LINUX_ROUTE).unwrap_err();
+    let err = check_route(&linux_copy(&clause, "'ubuntu-latest'"), &LINUX_JOB).unwrap_err();
     assert!(
-        err.starts_with("w.yml:7: its pool branches are not the reviewed ones."),
+        err.starts_with("its pool branches are not the reviewed ones."),
         "{err}"
     );
 }
 
 #[test]
-fn check_refuses_a_fallback_to_the_pool() {
+fn check_route_refuses_a_fallback_to_the_pool() {
     let pool = "fromJSON('[\"self-hosted\", \"proxmox-ephemeral\"]')";
-    let err = check(&linux_copy(LINUX, pool), &LINUX_ROUTE).unwrap_err();
+    let err = check_route(&linux_copy(LINUX, pool), &LINUX_JOB).unwrap_err();
     assert!(
-        err.starts_with(&format!("w.yml:7: it falls back to {pool},")),
+        err.starts_with(&format!("it falls back to {pool},")),
         "{err}"
     );
 }
 
 #[test]
-fn check_refuses_a_missing_branch() {
+fn check_route_refuses_a_missing_branch() {
     let both = Route {
-        workflow: "w.yml",
         branches: &[
             (Some("ubuntu-latest"), LINUX),
             (Some("windows-latest"), WINDOWS),
         ],
         fallback: "matrix.os",
     };
-    let found = Found {
-        workflow: "w.yml".to_owned(),
-        line: 7,
-        expression: [
-            "${{ (matrix.os == 'windows-latest' && ",
-            WINDOWS,
-            ") || matrix.os }}",
-        ]
-        .concat(),
-    };
-    let err = check(&found, &both).unwrap_err();
+    let value = [
+        "${{ (matrix.os == 'windows-latest' && ",
+        WINDOWS,
+        ") || matrix.os }}",
+    ]
+    .concat();
+    let err = check_route(&value, &both).unwrap_err();
     assert!(
-        err.starts_with("w.yml:7: its pool branches are not the reviewed ones."),
+        err.starts_with("its pool branches are not the reviewed ones."),
         "{err}"
     );
 }
 
 #[test]
-fn check_refuses_a_quoted_expression() {
-    let found = Found {
-        workflow: "w.yml".to_owned(),
-        line: 7,
-        expression: "\"${{ vars.RP_POOL_LINUX == 'on' }}\"".to_owned(),
-    };
+fn check_route_refuses_what_is_not_one_expression() {
+    let value = "${{ vars.RP_POOL_LINUX == 'on' }} # pool";
     assert_eq!(
-        check(&found, &LINUX_ROUTE).unwrap_err(),
-        "w.yml:7: `runs-on` is not one ${{ }} expression"
+        check_route(value, &LINUX_JOB).unwrap_err(),
+        format!("`runs-on` is not one ${{{{ }}}} expression: {value}")
+    );
+}
+
+#[test]
+fn check_labels_accepts_a_dispatched_workflow() {
+    let text = "on:\n  workflow_dispatch:\n";
+    check_labels("[self-hosted, x]", "[self-hosted, x]", text).unwrap();
+}
+
+#[test]
+fn check_labels_refuses_a_workflow_a_pull_request_starts() {
+    let text = "on:\n  pull_request:\n  workflow_dispatch:\n";
+    assert_eq!(
+        check_labels("[self-hosted, x]", "[self-hosted, x]", text).unwrap_err(),
+        "it names self-hosted runners in a workflow that [\"pull_request\"] also start; \
+         only [\"schedule\", \"workflow_dispatch\"] may."
+    );
+}
+
+#[test]
+fn check_labels_refuses_another_list() {
+    let text = "on:\n  workflow_dispatch:\n";
+    assert_eq!(
+        check_labels("[self-hosted, y]", "[self-hosted, x]", text).unwrap_err(),
+        "it runs on [self-hosted, y], where the reviewed list is [self-hosted, x]."
     );
 }

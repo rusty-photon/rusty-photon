@@ -23,6 +23,8 @@
 #   * `ref: main` pinned on `actions/checkout`
 #   * Workflow-level `permissions: contents: read` (the issue-writer job
 #     elevates only what it needs, scoped to that job)
+#   * tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...` if
+#     any event but a schedule or a dispatch starts this workflow
 #
 # If you ever feel tempted to add `pull_request:` to this file, do not — see
 # docs/skills/raspberry-pi-runner.md §"Why no pull_request trigger".

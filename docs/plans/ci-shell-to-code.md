@@ -763,43 +763,58 @@ as the fallback, while the others are standalone and end in
 too, in the same diff the reviewer reads. Raised by the review of #1505.
 
 - **The guard:** `tools/rusty-photon-ci/src/pool_routing.rs`, a module
-  only the crate's tests compile. It holds the reviewed Linux and Windows
-  clauses (the kill-switch variable, the trusted-event test and the pool
-  labels) and a list of every job that routes to the pool: its branches,
-  the `matrix.os` label each sits behind, and its hosted fallback.
-- **What it checks.** It reads every workflow and takes each `runs-on`
-  that is an expression naming the pool (a kill-switch variable or a pool
-  label). It splits each at its top-level `||` into pool branches and a
-  fallback, and each must equal the reviewed one; whitespace is collapsed
-  first, so a reflowed copy still matches.
-  - **The fallback is checked too**, which the plan had left out: a copy
-    that fell back to a pool label would send every falsy branch to the
-    pool, a fork PR among them.
-  - **A new expression that names the pool**, in any workflow, fails the
-    test until its job is listed.
-  - **An expression the test cannot read**, such as a quoted one, fails it.
+  only the crate's tests compile. Its `RUNNERS` lists every `runs-on` that
+  names a self-hosted runner:
+  - the four copies, each with its reviewed branches (the kill-switch
+    variable, the trusted-event test and the pool labels, behind a
+    `matrix.os` label in bazel.yml) and its hosted fallback;
+  - the three label lists, in pi-nightly.yml and proxmox-runner-test.yml.
+- **What it checks.** It reads every workflow. A `runs-on` names a
+  self-hosted runner when it mentions `RP_POOL_`, `self-hosted` or a pool
+  label. Its value runs on over the lines indented deeper than its key,
+  without blank or comment lines.
+  - **Each copy** is split at its top-level `||` into pool branches and a
+    fallback, and each must equal the reviewed one. Whitespace is collapsed
+    first, so a reflowed copy still matches. The fallback is checked too,
+    which the plan had left out: a copy that fell back to a pool label
+    would send every falsy branch to the pool, a fork PR among them.
+  - **Each label list** must equal the reviewed one, in a workflow that
+    only a schedule or a dispatch starts; another trigger fails the test.
+  - **A new `runs-on` that names a self-hosted runner**, in any workflow,
+    fails the test until it is listed.
+  - **A self-hosted label anywhere else**, outside comments, fails it, so
+    a matrix cannot carry one into `matrix.os`.
+  - **What the scan does not read fails it:** a mention of `runs-on` that
+    is not a plain `runs-on:` key, such as a quoted one, and a copy that is
+    not one `${{ }}` expression.
 - **Under Bazel** the workflows are the unit test's `data`
   (`//:workflows`, a glob in the root package, since `.github/workflows`
   has no BUILD file; F1 took `.github` out of `.bazelignore`). The BUILD
   file sets `CARGO_MANIFEST_DIR` for the test, relative to the runfiles
   root; Cargo sets it when it runs a test.
-- **Proven locally.** Each of these edits to a real copy failed the test
-  under Cargo, and the first also under Bazel:
+- **Proven locally.** Each of these edits to a real workflow failed the
+  test under Cargo, and the first also under Bazel:
   - dropping the same-repo test from check.yml;
   - a pool-label fallback in repin-bazel.yml;
   - the Windows kill switch in bazel-coverage.yml;
   - bazel.yml's Windows leg trusting every pull request;
   - its Windows leg behind `macos-latest`;
-  - a new pool-routed job in test.yml.
+  - in test.yml: a new pool-routed job, one continued on a second line,
+    one asking only for generic self-hosted labels, and a label list;
+  - a quoted `runs-on` key in check.yml;
+  - a self-hosted label in bazel.yml's matrix;
+  - a `pull_request` trigger in pi-nightly.yml.
 
-  Reflowing check.yml's copy onto fewer lines passed.
+  Reflowing check.yml's copy onto fewer lines passed, and so did blank
+  lines after it.
 - **Not guarded:**
-  - a `runs-on` label list, which is how proxmox-runner-test.yml names
-    the pool, in jobs only a maintainer can dispatch;
-  - bazel.yml's matrix, whose labels `matrix.os` falls back to.
-- **Done when** the test runs on both Bazel legs of a PR, a copy that
-  differs from the reviewed clauses fails it, and each copy's comment
-  names it.
+  - a runner chosen without naming `self-hosted` or a pool label (a
+    self-hosted runner also carries `Linux` and `X64`);
+  - a runner chosen by a value from outside the workflow file, such as
+    a script's output.
+- **Done when** the test runs on both Bazel legs of a PR, a workflow that
+  differs from what it reviews fails it, and the workflows' comments name
+  it.
 
 ### R7 — ConformU runner
 
