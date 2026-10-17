@@ -61,10 +61,15 @@ mints it, so editing it is an escape hatch, not routine. A device whose
 section carries no `enabled` or `unique_id` field renders without those.
 The page links back to the server page.
 
-A page shows the **effective** config — the file with the command-line
-overrides applied, what the running service uses. A field a flag pins
-renders disabled with a note that says so; a save never persists it (see
-[Saving](#saving)).
+A page shows the configuration **file** — what the service runs once it
+has reloaded, and the base the next save overlays — read through the typed
+config so a field the file leaves at its default shows that default, with
+a field a command-line flag pins showing what the running service uses:
+disabled, with a note that says so, and never persisted by a save (see
+[Saving](#saving)). A service that restarts rather than reloads
+(`ApplyDisposition::Restart`) names, above the form, the saved fields
+still waiting for its restart. A file that cannot be read shows the
+running configuration instead.
 
 ### Fields
 
@@ -128,15 +133,19 @@ A `POST` to a page submits that page's fields. The handler:
      that it is reloading: the reload is fired after the response has
      flushed, and the page waits for the listener to come back. A few
      lines of script poll the page's own URL until any HTTP answer arrives
-     — a `401` after a credential change included — then navigate to it;
-     without script, a `Refresh` header after a delay longer than a
-     typical reload and a link do the same by hand. A save that changed
+     — a `401` after a credential change included — then navigate to it
+     (a `no-cors` probe, since after a port change the URL is another
+     origin); without script, a `Refresh` header after a delay longer than
+     a typical reload and a link do the same by hand. A save that changed
      nothing says so and fires no reload;
    - for a service that needs a restart (`ApplyDisposition::Restart`),
      which fields take effect on the next start and that the service must
      be restarted;
    - when `server.port` or `server.bind_address` changed, the URL the page
-     will have: the host the browser used, the new port.
+     will have: the host the browser used, the new port;
+   - when a device page disabled its device, that the device's page is no
+     longer served, and the wait reopens the server page instead, which
+     lists the device and names the file as the way to enable it again.
 
 Nothing a `GET` does changes state.
 
@@ -147,7 +156,9 @@ inputs: username, password, repeat. The page never carries the stored hash.
 
 - A username with a password (and its repeat equal) hashes the password
   with Argon2id (`rp-auth`, on the blocking pool) and persists
-  `server.auth` with the hash.
+  `server.auth` with the hash — once every other value has passed: a
+  rejected save hashes nothing, and its re-render says what the file
+  holds.
 - A username with a blank password keeps the stored hash; with no hash
   stored, the save is refused with the password field named — turning auth
   on needs a password.

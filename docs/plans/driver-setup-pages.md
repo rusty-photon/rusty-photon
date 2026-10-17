@@ -265,17 +265,13 @@ the pages ignore them. `custom_sections` lands with its first user, the
 camera family's `usb_devices` editor (D11, P3). The tagged-enum selector
 is built and unit-tested in the crate (one radio button per variant, the
 chosen variant's fields shown by CSS, no script); `star-adventurer-gti`
-proves it on a page in P3.
-
-*As built in P2:* `device_sections` takes the config (a camera driver's
-devices depend on its `usb_devices` list) and defaults to none, so the
-fourteen implementors still on the actions compile unchanged; the two tier
-lists stay on the trait until P5, because `config.schema` reads them, and
-the pages ignore them. `custom_sections` lands with its first user, the
-camera family's `usb_devices` editor (D11, P3). The tagged-enum selector
-is built and unit-tested in the crate (one radio button per variant, the
-chosen variant's fields shown by CSS, no script); `star-adventurer-gti`
-proves it on a page in P3.
+proves it on a page in P3. A page shows the configuration file (through
+the typed config, so a default shows) with the pinned fields as the running
+service has them — the base the next save overlays — and a `Restart`
+service's page names the saved fields still waiting for its restart.
+Disabling a device from its page sends the browser to the server page,
+since the crate serves no page for an unregistered device; re-enabling it
+is a file edit until a phase decides otherwise.
 
 **Alternative:** hand-built Maud pages per driver, as FocusLynx has. They
 would look better and cost fifteen pages that drift. **Recommendation:**

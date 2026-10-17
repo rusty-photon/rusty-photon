@@ -16,7 +16,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::form::{changed_paths, overlay_field, set_pointer, FormValues};
-use crate::render::{self, DeviceRow, FieldState, Saved};
+use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
 use crate::schema::{dotted_to_pointer, humanize, FieldModel, FieldSpec};
 use crate::{origin, security};
 
@@ -200,10 +200,13 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         };
         let pinned = D::override_paths(&self.overrides);
         match request.method {
-            Method::GET => PageResponse::html(
-                StatusCode::OK,
-                self.render(&page, &model, &effective, &pinned, &[], None),
-            ),
+            Method::GET => {
+                let (shown, pending) = self.current_view(&effective, &pinned);
+                PageResponse::html(
+                    StatusCode::OK,
+                    self.render(&page, &model, &shown, &pinned, &[], None, &pending),
+                )
+            }
             Method::POST => self.save(&page, &model, &effective, &pinned, request).await,
             _ => PageResponse::text(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -212,7 +215,46 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         }
     }
 
-    /// The form, filled from `shown`, with `errors` beside their fields.
+    /// What a `GET` shows: the configuration file — what the service runs
+    /// once it has reloaded, and the base the next save overlays — with a
+    /// pinned field showing what the running service uses. A service that
+    /// restarts rather than reloads also gets the saved fields still waiting
+    /// for that restart, which the running configuration does not carry.
+    fn current_view(&self, effective: &Value, pinned: &[String]) -> (Value, Vec<String>) {
+        let mut shown = match read_file_value(&self.path, effective) {
+            // Through the typed config, so a field the file leaves at its
+            // default shows that default rather than nothing.
+            Ok(raw) => serde_json::from_value::<D::Config>(raw.clone())
+                .ok()
+                .and_then(|typed| serde_json::to_value(&typed).ok())
+                .unwrap_or(raw),
+            Err(e) => {
+                warn!(error = %e, path = %self.path.display(), "a setup page could not read the configuration file; showing the running configuration");
+                effective.clone()
+            }
+        };
+        Self::pin(&mut shown, effective, pinned);
+        let pending = match D::apply_disposition() {
+            ApplyDisposition::Restart => changed_paths(effective, &shown),
+            ApplyDisposition::Reload => Vec::new(),
+        };
+        (shown, pending)
+    }
+
+    /// Show a pinned field as the running service has it, whatever the file
+    /// or a submission says.
+    fn pin(shown: &mut Value, effective: &Value, pinned: &[String]) {
+        for p in pinned {
+            let pointer = dotted_to_pointer(p);
+            if let Some(v) = effective.pointer(&pointer) {
+                set_pointer(shown, &pointer, v.clone());
+            }
+        }
+    }
+
+    /// The form, filled from `shown`, with `errors` beside their fields and
+    /// `pending` the saved fields waiting for a restart.
+    #[allow(clippy::too_many_arguments)]
     fn render(
         &self,
         page: &Page,
@@ -221,6 +263,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         pinned: &[String],
         errors: &[FieldError],
         submitted: Option<&FormValues>,
+        pending: &[String],
     ) -> String {
         let auth_pointer = self.auth_pointer.as_deref();
         let fields: Vec<&FieldSpec> = page
@@ -231,12 +274,20 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         let field_markup = |spec: &FieldSpec| {
             let state = FieldState {
                 pinned: pinned.iter().any(|p| p == spec.name()),
-                error: errors
-                    .iter()
-                    .find(|e| e.path == spec.name())
-                    .map(|e| e.msg.as_str()),
+                errors,
             };
             render::field(spec, shown, state)
+        };
+        let pending_banner = html! {
+            @if !pending.is_empty() {
+                div class="banner warn" id="pending-restart" {
+                    span.dot {}
+                    span {
+                        "Saved and waiting for the service's restart: "
+                        span.mono { (pending.join(", ")) }
+                    }
+                }
+            }
         };
         let body = match page {
             Page::Server { sections } => {
@@ -262,6 +313,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         h1 { (self.service) " setup" }
                         p.subtitle { "The whole server. Each device it serves has its own page, listed below." }
                         @if !errors.is_empty() { (render::rejected_banner(errors)) }
+                        (pending_banner)
                         form method="post" action="" {
                             @for section in &section_names {
                                 fieldset {
@@ -288,6 +340,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         h1 { (section.name) }
                         p.subtitle { (section.device_type) " " (section.device_number) " · " (self.service) }
                         @if !errors.is_empty() { (render::rejected_banner(errors)) }
+                        (pending_banner)
                         form method="post" action="" {
                             fieldset {
                                 legend { (humanize(section.section())) }
@@ -310,7 +363,8 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// The save: the origin check, the overlay onto the file's section, the
-    /// typed parse with its validation, the persist, and the answer.
+    /// typed parse with its validation, the credential, the persist, and
+    /// the answer.
     async fn save(
         &self,
         page: &Page,
@@ -333,39 +387,84 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        let mut errors = self.overlay(page, model, pinned, &form, &mut file).await;
+        let mut errors = Vec::new();
+        // The credential is read now and applied only once every other
+        // value has passed: a rejected save must not hash anything, and its
+        // re-render must say what the file holds, not what it would have.
+        let auth_pointer = self
+            .auth_pointer
+            .as_deref()
+            .filter(|_| matches!(page, Page::Server { .. }));
+        let auth_change = auth_pointer.and_then(|pointer| {
+            let stored = security::AuthView::from_config(&file, pointer).has_hash;
+            match security::parse(&form, stored) {
+                Ok(change) => Some((pointer, change)),
+                Err(e) => {
+                    errors.extend(e);
+                    None
+                }
+            }
+        });
+        Self::overlay_fields(
+            page,
+            model,
+            pinned,
+            auth_pointer,
+            &form,
+            &mut file,
+            &mut errors,
+        );
         // What a re-render shows: the submitted values, with a pinned field
         // still showing what the running service uses.
         let mut shown = file.clone();
-        for p in pinned {
-            let pointer = dotted_to_pointer(p);
-            if let Some(v) = effective.pointer(&pointer) {
-                set_pointer(&mut shown, &pointer, v.clone());
-            }
-        }
-        let typed = match serde_json::from_value::<D::Config>(file.clone()) {
+        Self::pin(&mut shown, effective, pinned);
+        match serde_json::from_value::<D::Config>(file.clone()) {
             Ok(mut typed) => {
                 D::normalize(&mut typed);
                 errors.extend(D::validate(&typed));
-                typed
             }
-            Err(e) => {
-                errors.push(FieldError {
-                    path: String::new(),
-                    msg: format!("The submitted values do not form a valid configuration: {e}"),
-                });
-                return PageResponse::html(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    self.render(page, model, &shown, pinned, &errors, Some(&form)),
-                );
-            }
-        };
+            Err(e) => errors.push(FieldError {
+                path: String::new(),
+                msg: format!("The submitted values do not form a valid configuration: {e}"),
+            }),
+        }
         if !errors.is_empty() {
             return PageResponse::html(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                self.render(page, model, &shown, pinned, &errors, Some(&form)),
+                self.render(page, model, &shown, pinned, &errors, Some(&form), &[]),
             );
         }
+        if let Some((pointer, change)) = auth_change {
+            if let Err(e) = security::apply(change, &mut file, pointer).await {
+                return PageResponse::html(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    self.render(page, model, &shown, pinned, &[e], Some(&form), &[]),
+                );
+            }
+        }
+        let typed = match serde_json::from_value::<D::Config>(file) {
+            Ok(mut typed) => {
+                D::normalize(&mut typed);
+                typed
+            }
+            Err(e) => {
+                return PageResponse::text(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("the credential block does not fit the configuration, so nothing was saved: {e}"),
+                )
+            }
+        };
+        self.persist(page, typed, effective, &request.headers)
+    }
+
+    /// Persist the validated configuration and answer with what happened.
+    fn persist(
+        &self,
+        page: &Page,
+        typed: D::Config,
+        effective: &Value,
+        headers: &HeaderMap,
+    ) -> PageResponse {
         let to_persist = match serde_json::to_value(&typed) {
             Ok(v) => v,
             Err(e) => {
@@ -398,7 +497,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             );
         }
         debug!(path = %self.path.display(), changed = ?changed, "a setup page saved the configuration");
-        let moved_to = self.moved_to(page, &changed, &effective_after, &request.headers);
+        let destination = self.destination(page, &changed, &effective_after, &to_persist, headers);
         let saved = if changed.is_empty() {
             Saved::Unchanged
         } else {
@@ -410,39 +509,26 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 ApplyDisposition::Restart => Saved::RestartRequired(changed),
             }
         };
-        Self::saved_response(&self.service, &saved, moved_to.as_deref())
+        Self::saved_response(&self.service, &saved, destination.as_ref())
     }
 
-    /// Overlay the page's submitted fields (a pinned one skipped) and, on the
-    /// server page, the Security section onto `file`.
-    async fn overlay(
-        &self,
+    /// Overlay the page's submitted fields onto `file`: a pinned one is
+    /// skipped, and the credential block is the Security section's.
+    fn overlay_fields(
         page: &Page,
         model: &FieldModel,
         pinned: &[String],
+        auth_pointer: Option<&str>,
         form: &FormValues,
         file: &mut Value,
-    ) -> Vec<FieldError> {
-        let auth_pointer = self.auth_pointer.as_deref();
-        let mut errors = Vec::new();
+        errors: &mut Vec<FieldError>,
+    ) {
         for spec in page.fields(model) {
             if Some(spec.pointer()) == auth_pointer || pinned.iter().any(|p| p == spec.name()) {
                 continue;
             }
-            overlay_field(file, spec, form, &mut errors);
+            overlay_field(file, spec, form, errors);
         }
-        if let (Page::Server { .. }, Some(pointer)) = (page, auth_pointer) {
-            let stored = security::AuthView::from_config(file, pointer).has_hash;
-            match security::parse(form, stored) {
-                Ok(change) => {
-                    if let Err(e) = security::apply(change, file, pointer).await {
-                        errors.push(e);
-                    }
-                }
-                Err(e) => errors.extend(e),
-            }
-        }
-        errors
     }
 
     /// Fire the in-process reload after the response has flushed.
@@ -458,14 +544,18 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// The saved page, with the no-script `Refresh` when a reload is on.
-    fn saved_response(service: &str, saved: &Saved, moved_to: Option<&str>) -> PageResponse {
-        let body = render::saved_body(saved, moved_to, "");
+    fn saved_response(
+        service: &str,
+        saved: &Saved,
+        destination: Option<&Destination>,
+    ) -> PageResponse {
+        let body = render::saved_body(saved, destination, "");
         let mut response =
             PageResponse::html(StatusCode::OK, render::document(service, "Saved", &body));
         if matches!(saved, Saved::Reloading) {
-            let refresh = moved_to.map_or_else(
+            let refresh = destination.map_or_else(
                 || NOSCRIPT_REFRESH_SECONDS.to_string(),
-                |url| format!("{NOSCRIPT_REFRESH_SECONDS}; url={url}"),
+                |d| format!("{NOSCRIPT_REFRESH_SECONDS}; url={}", d.url),
             );
             if let Ok(value) = HeaderValue::from_str(&refresh) {
                 _ = response.headers.insert("refresh", value);
@@ -474,28 +564,55 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         response
     }
 
-    /// Where the pages live after a save that changed the server's port or
-    /// bind address: the host the browser used, the new port.
-    fn moved_to(
+    /// Where the browser goes after the save, when not back to the page it
+    /// saved: the new address when the server's port or bind address
+    /// changed (the host the browser used, the new port), and the server
+    /// page when a device page just disabled its device, whose page is no
+    /// longer served.
+    fn destination(
         &self,
         page: &Page,
         changed: &[String],
         effective_after: &Value,
+        persisted: &Value,
         headers: &HeaderMap,
-    ) -> Option<String> {
-        if !changed
+    ) -> Option<Destination> {
+        let moved = changed
             .iter()
-            .any(|p| p == "server.port" || p == "server.bind_address")
-        {
-            return None;
+            .any(|p| p == "server.port" || p == "server.bind_address");
+        let disabled = match page {
+            Page::Device(section) => {
+                persisted
+                    .pointer(&format!("{}/enabled", section.pointer))
+                    .and_then(Value::as_bool)
+                    == Some(false)
+            }
+            Page::Server { .. } => false,
+        };
+        let note = disabled.then(|| {
+            "This device is disabled now, so its page is no longer served; the server page lists it.".to_string()
+        });
+        let path = if disabled {
+            "/setup".to_string()
+        } else {
+            page.path()
+        };
+        if moved {
+            let port = effective_after.pointer("/server/port")?.as_u64()?;
+            let host = headers
+                .get(HOST)
+                .and_then(|v| v.to_str().ok())
+                .map_or_else(|| "localhost".to_string(), origin::host_without_port);
+            let scheme = if self.https { "https" } else { "http" };
+            return Some(Destination {
+                url: format!("{scheme}://{host}:{port}{path}"),
+                note,
+            });
         }
-        let port = effective_after.pointer("/server/port")?.as_u64()?;
-        let host = headers
-            .get(HOST)
-            .and_then(|v| v.to_str().ok())
-            .map_or_else(|| "localhost".to_string(), origin::host_without_port);
-        let scheme = if self.https { "https" } else { "http" };
-        Some(format!("{scheme}://{host}:{port}{}", page.path()))
+        disabled.then(|| Destination {
+            url: "../../../../setup".to_string(),
+            note,
+        })
     }
 }
 
@@ -1199,6 +1316,130 @@ mod tests {
         let disk = on_disk(&fx);
         assert_eq!(disk["panel"]["name"], "Renamed");
         assert_eq!(disk["serial"]["port"], "/dev/mock");
+    }
+
+    #[tokio::test]
+    async fn a_restart_service_shows_the_file_and_names_the_fields_waiting_for_the_restart() {
+        let fx = fixture(&config());
+        let p =
+            SetupPages::<RestartFake>::new("rp", config(), fx.path.clone(), Overrides::default());
+        let base = [("serial.port", "/dev/mock"), ("server.port", "11119")];
+        let mut first = base.to_vec();
+        first.push(("serial.baud_rate", "9600"));
+        let response = p.handle(PageScope::Server, post(&first)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        // The page shows what was saved, not the running value, and says
+        // the field waits for the restart.
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="serial.baud_rate" value="9600""#),
+            "{page}"
+        );
+        assert!(page.contains(r#"id="pending-restart""#), "{page}");
+        assert!(page.contains("serial.baud_rate"), "{page}");
+        // A second save of another field keeps the first one.
+        let mut second = base.to_vec();
+        second.push(("serial.baud_rate", "9600"));
+        second[0] = ("serial.port", "/dev/other");
+        let response = p.handle(PageScope::Server, post(&second)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = on_disk(&fx);
+        assert_eq!(
+            disk["serial"]["baud_rate"], 9600,
+            "the first save survives the second"
+        );
+        assert_eq!(disk["serial"]["port"], "/dev/other");
+        assert!(
+            response.body.contains("serial.baud_rate") && response.body.contains("serial.port"),
+            "both fields still wait for the restart: {}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reload_service_shows_the_file_with_its_defaults_and_no_pending_note() {
+        let fx = fixture(&config());
+        // A file that leaves `discovery_port` out: the page shows the field
+        // empty, and nothing is said about a restart.
+        let p = pages(&fx, config(), Overrides::default());
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="server.discovery_port" value="""#),
+            "{page}"
+        );
+        assert!(!page.contains(r#"id="pending-restart""#), "{page}");
+        // A corrupt file falls back to the running configuration.
+        std::fs::write(&fx.path, "{ not json").unwrap();
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="serial.port" value="/dev/mock""#),
+            "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_save_hashes_nothing_and_says_no_credential_is_stored() {
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default());
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("serial.port", "/dev/mock"),
+                    ("serial.baud_rate", "0"),
+                    ("server.port", "11119"),
+                    ("auth.username", "obs"),
+                    ("auth.password", "pw"),
+                    ("auth.password_repeat", "pw"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            response.body.contains("No credential is required"),
+            "{}",
+            response.body
+        );
+        assert!(
+            !response.body.contains("Blank keeps the stored password"),
+            "{}",
+            response.body
+        );
+        assert!(on_disk(&fx)["server"].get("auth").is_none());
+    }
+
+    #[tokio::test]
+    async fn disabling_a_device_sends_the_browser_to_the_server_page() {
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default());
+        let response = p
+            .handle(
+                DEVICE,
+                post(&[
+                    ("panel.name", "Panel"),
+                    ("panel.unique_id", "panel-1"),
+                    ("panel.level", "4096"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(on_disk(&fx)["panel"]["enabled"], false);
+        assert!(
+            response.body.contains("its page is no longer served"),
+            "{}",
+            response.body
+        );
+        assert!(
+            response
+                .body
+                .contains(r#"var url = "../../../../setup" || window.location.href;"#),
+            "{}",
+            response.body
+        );
+        assert_eq!(
+            response.headers.get("refresh").unwrap(),
+            "6; url=../../../../setup"
+        );
     }
 
     #[test]

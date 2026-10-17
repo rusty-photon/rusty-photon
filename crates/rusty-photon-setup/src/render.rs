@@ -16,8 +16,18 @@ const STYLESHEET: &str = include_str!("../assets/setup.css");
 pub struct FieldState<'a> {
     /// Pinned by a command-line override: disabled, with a note.
     pub pinned: bool,
-    /// The error a rejected save attached to the field.
-    pub error: Option<&'a str>,
+    /// The errors a rejected save attached, by field name; a field shows
+    /// its own, a variant's inner field included.
+    pub errors: &'a [FieldError],
+}
+
+impl FieldState<'_> {
+    fn error_for(&self, name: &str) -> Option<&str> {
+        self.errors
+            .iter()
+            .find(|e| e.path == name)
+            .map(|e| e.msg.as_str())
+    }
 }
 
 /// The whole document: the shell around `body`, titled `title`, for the
@@ -82,8 +92,9 @@ pub fn field(spec: &FieldSpec, config: &Value, state: FieldState<'_>) -> Markup 
 fn scalar_field(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldState<'_>) -> Markup {
     let name = spec.name();
     let disabled = state.pinned;
+    let error = state.error_for(name);
     html! {
-        div.field.pinned[disabled].invalid[state.error.is_some()] {
+        div.field.pinned[disabled].invalid[error.is_some()] {
             @match spec.kind() {
                 FieldKind::Bool => {
                     div.checkbox {
@@ -121,7 +132,7 @@ fn scalar_field(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldSta
                         value=(text_at(config, pointer)) disabled[disabled];
                 }
             }
-            @if let Some(e) = state.error { div.error { (e) } }
+            @if let Some(e) = error { div.error { (e) } }
             @if state.pinned {
                 div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
             }
@@ -158,8 +169,9 @@ fn variants_field(
         .unwrap_or_default()
         .to_string();
     let chosen = |variant: &str| variant == current;
+    let error = state.error_for(name);
     html! {
-        div.field.variants.invalid[state.error.is_some()] role="group" aria-label=(spec.label()) {
+        div.field.variants.invalid[error.is_some()] role="group" aria-label=(spec.label()) {
             span.group-label { (spec.label()) }
             @for variant in variants {
                 @let id = format!("{name}.{}", variant.name);
@@ -173,12 +185,12 @@ fn variants_field(
                         @for inner in &variant.fields {
                             @let pointer = format!("{enum_pointer}{}", inner.pointer());
                             @let shown = if chosen(&variant.name) { config } else { &Value::Null };
-                            (scalar_field(inner, &pointer, shown, FieldState { pinned: state.pinned, error: None }))
+                            (scalar_field(inner, &pointer, shown, state))
                         }
                     }
                 }
             }
-            @if let Some(e) = state.error { div.error { (e) } }
+            @if let Some(e) = error { div.error { (e) } }
         }
     }
 }
@@ -234,10 +246,22 @@ pub enum Saved {
     RestartRequired(Vec<String>),
 }
 
-/// The page a save answers with: what happened, where the pages now live
-/// if the address changed (`moved_to`, an absolute URL), and the wait.
+/// Where the browser goes after a save, when not back to the page it saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    /// The URL: absolute when the server's address changed, relative when
+    /// only the page changed.
+    pub url: String,
+    /// Why, when it is not that the pages moved: a disabled device's page is
+    /// no longer served.
+    pub note: Option<String>,
+}
+
+/// The page a save answers with: what happened, where the browser goes if
+/// not back to this page (`destination`), and the wait.
 #[must_use]
-pub fn saved_body(saved: &Saved, moved_to: Option<&str>, back: &str) -> Markup {
+pub fn saved_body(saved: &Saved, destination: Option<&Destination>, back: &str) -> Markup {
+    let moved_to = destination.map(|d| d.url.as_str());
     let target = moved_to.map(str::to_string);
     let target_json = serde_json::to_string(&target).unwrap_or_else(|_| "null".to_string());
     html! {
@@ -259,11 +283,15 @@ pub fn saved_body(saved: &Saved, moved_to: Option<&str>, back: &str) -> Markup {
                     }
                 }
             }
-            @if let Some(url) = moved_to {
+            @if let Some(d) = destination {
                 p id="moved" {
-                    "The setup pages now live at "
-                    a href=(url) { (url) }
-                    "."
+                    @if let Some(note) = &d.note {
+                        (note) " " a href=(d.url) { "Open the server page" } "."
+                    } @else {
+                        "The setup pages now live at "
+                        a href=(d.url) { (d.url) }
+                        "."
+                    }
                 }
             }
             p {
@@ -283,10 +311,12 @@ pub fn saved_body(saved: &Saved, moved_to: Option<&str>, back: &str) -> Markup {
 
 /// The reload wait: poll the page's URL until any HTTP answer arrives — a
 /// `401` after a credential change included, which means the listener is
-/// back — then navigate to it.
+/// back — then navigate to it. The probe is `no-cors`: after a port change
+/// the URL is another origin, and the server sends no CORS headers, so a
+/// plain fetch would reject every answer and never navigate.
 fn reload_wait_script(target_json: &str) -> String {
     format!(
-        "(function () {{\n  var url = {target_json} || window.location.href;\n  function probe() {{\n    fetch(url, {{ cache: \"no-store\", credentials: \"same-origin\" }})\n      .then(function () {{ window.location.assign(url); }})\n      .catch(function () {{ window.setTimeout(probe, 500); }});\n  }}\n  window.setTimeout(probe, 1000);\n}})();"
+        "(function () {{\n  var url = {target_json} || window.location.href;\n  function probe() {{\n    fetch(url, {{ mode: \"no-cors\", cache: \"no-store\", credentials: \"same-origin\" }})\n      .then(function () {{ window.location.assign(url); }})\n      .catch(function () {{ window.setTimeout(probe, 500); }});\n  }}\n  window.setTimeout(probe, 1000);\n}})();"
     )
 }
 
@@ -332,6 +362,16 @@ mod tests {
         field(model().field(name).unwrap(), &config(), state).into_string()
     }
 
+    fn errors(pairs: &[(&str, &str)]) -> Vec<FieldError> {
+        pairs
+            .iter()
+            .map(|(path, msg)| FieldError {
+                path: (*path).to_string(),
+                msg: (*msg).to_string(),
+            })
+            .collect()
+    }
+
     #[test]
     fn a_text_field_carries_its_value_and_a_pinned_one_is_disabled() {
         let markup = render("serial.port", FieldState::default());
@@ -346,7 +386,7 @@ mod tests {
             "serial.port",
             FieldState {
                 pinned: true,
-                error: None,
+                errors: &[],
             },
         );
         assert!(pinned.contains("disabled"), "{pinned}");
@@ -359,11 +399,12 @@ mod tests {
 
     #[test]
     fn a_rejected_field_shows_its_error() {
+        let errs = errors(&[("serial.baud_rate", "must be greater than 0")]);
         let markup = render(
             "serial.baud_rate",
             FieldState {
                 pinned: false,
-                error: Some("must be greater than 0"),
+                errors: &errs,
             },
         );
         assert!(markup.contains(r#"class="field invalid""#), "{markup}");
@@ -440,6 +481,38 @@ mod tests {
     }
 
     #[test]
+    fn a_variants_inner_field_shows_its_own_error() {
+        let errs = errors(&[("transport:udp.host", "must not be empty")]);
+        let markup = render(
+            "transport",
+            FieldState {
+                pinned: false,
+                errors: &errs,
+            },
+        );
+        assert!(
+            markup.contains(r#"name="transport:udp.host" value="mount.local"><div class="error">must not be empty</div>"#),
+            "{markup}"
+        );
+        let errs = errors(&[("transport", "must be one of the offered variants")]);
+        let markup = render(
+            "transport",
+            FieldState {
+                pinned: false,
+                errors: &errs,
+            },
+        );
+        assert!(
+            markup.contains(r#"class="field variants invalid""#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains("must be one of the offered variants"),
+            "{markup}"
+        );
+    }
+
+    #[test]
     fn the_device_list_links_enabled_devices_and_notes_disabled_ones() {
         let devices = vec![
             DeviceRow {
@@ -482,18 +555,33 @@ mod tests {
             reloading.contains("var url = null || window.location.href;"),
             "{reloading}"
         );
-        let moved = saved_body(&Saved::Reloading, Some("http://h:1/setup"), "").into_string();
+        assert!(reloading.contains(r#"mode: "no-cors""#), "{reloading}");
+        let moved_dest = Destination {
+            url: "http://h:1/setup".to_string(),
+            note: None,
+        };
+        let moved = saved_body(&Saved::Reloading, Some(&moved_dest), "").into_string();
         assert!(
             moved.contains(r#"var url = "http://h:1/setup" || window.location.href;"#),
             "{moved}"
         );
         assert!(moved.contains(r#"<p id="moved">The setup pages now live at <a href="http://h:1/setup">http://h:1/setup</a>.</p>"#), "{moved}");
+        let noted = Destination {
+            url: "../../../../setup".to_string(),
+            note: Some("This device is disabled now.".to_string()),
+        };
+        let noted = saved_body(&Saved::Reloading, Some(&noted), "").into_string();
+        assert!(noted.contains(r#"<p id="moved">This device is disabled now. <a href="../../../../setup">Open the server page</a>.</p>"#), "{noted}");
         let unchanged = saved_body(&Saved::Unchanged, None, "").into_string();
         assert!(unchanged.contains(r#"id="saved-unchanged""#), "{unchanged}");
         assert!(!unchanged.contains("<script>"), "{unchanged}");
+        let restart_dest = Destination {
+            url: "http://h:2/setup".to_string(),
+            note: None,
+        };
         let restart = saved_body(
             &Saved::RestartRequired(vec!["server.port".to_string()]),
-            Some("http://h:2/setup"),
+            Some(&restart_dest),
             "",
         )
         .into_string();

@@ -233,7 +233,10 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    args = ["tls_auth::"],
+    args = [
+        "tls_auth::",
+        "setup_pages::",
+    ],
     crate = ":bdd-infra_tls_auth",
     crate_features = [
         "tls-auth",
