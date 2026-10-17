@@ -771,8 +771,11 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - the three label lists, in pi-nightly.yml and proxmox-runner-test.yml.
 - **What it checks.** It reads every workflow. A `runs-on` names a
   self-hosted runner when it mentions `RP_POOL_` or one of the labels:
-  `self-hosted`, the pool's two, and the Raspberry Pi's `raspberry-pi`.
-  Labels are matched in any case, as GitHub matches them, and only as whole
+  `self-hosted`, and our runners' own (the pool's two and the Raspberry
+  Pi's `raspberry-pi`). It reads our runners' labels from
+  `.github/actionlint.yaml`, the list actionlint checks `runs-on` against,
+  so a new runner label goes there and nowhere else. Labels are matched in
+  any case, as GitHub matches them, and only as whole
   labels, so a file name such as `raspberry-pi-runner.md` is not one. A
   value runs on over the lines indented deeper than its key, without blank
   lines. Comment lines are left out too, except inside a block scalar
@@ -795,11 +798,12 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - **What the scan does not read fails it:** a mention of `runs-on` that
     is not a plain `runs-on:` key, such as a quoted one, and a copy that is
     not one `${{ }}` expression.
-- **Under Bazel** the workflows are the unit test's `data`
-  (`//:workflows`, a glob in the root package, since `.github/workflows`
-  has no BUILD file; F1 took `.github` out of `.bazelignore`). The BUILD
-  file sets `CARGO_MANIFEST_DIR` for the test, relative to the runfiles
-  root; Cargo sets it when it runs a test.
+- **Under Bazel** the workflows and `.github/actionlint.yaml` are the
+  unit test's `data` (`//:workflows`, a glob in the root package, and the
+  file the root package exports, since neither directory has a BUILD file;
+  F1 took `.github` out of `.bazelignore`). The BUILD file sets
+  `CARGO_MANIFEST_DIR` for the test, relative to the runfiles root; Cargo
+  sets it when it runs a test.
 - **Proven locally.** Each of these edits to a real workflow failed the
   test under Cargo, and the first also under Bazel:
   - dropping the same-repo test from check.yml;
@@ -818,7 +822,10 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     check.yml's copy;
   - `raspberry-pi` alone, as test.yml's `runs-on` and in bazel.yml's
     matrix;
-  - `group: Default` as test.yml's `runs-on`.
+  - `group: Default` as test.yml's `runs-on`;
+  - a label added to actionlint.yaml alone, then routed as test.yml's
+    `runs-on` or put in bazel.yml's matrix;
+  - actionlint.yaml without its `self-hosted-runner` list.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.

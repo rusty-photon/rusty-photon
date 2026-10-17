@@ -113,14 +113,31 @@ const RUNNERS: &[(&str, Runner)] = &[
 /// needs write access to the repository. No pull request starts either.
 const MAINTAINER_EVENTS: [&str; 2] = ["schedule", "workflow_dispatch"];
 
-/// The label every self-hosted runner carries, and the labels of our own:
-/// the pool's two and the Raspberry Pi's. GitHub matches labels in any case.
-const LABELS: [&str; 4] = [
-    "self-hosted",
-    "proxmox-ephemeral",
-    "proxmox-ephemeral-windows",
-    "raspberry-pi",
-];
+/// The label every self-hosted runner carries. Our runners' own labels are
+/// read from `.github/actionlint.yaml`, the list actionlint checks `runs-on`
+/// against, so one list serves both.
+const SELF_HOSTED: &str = "self-hosted";
+
+/// The labels that name a self-hosted runner: [`SELF_HOSTED`] and our
+/// runners' own.
+struct Labels(Vec<String>);
+
+impl Labels {
+    fn new(ours: impl IntoIterator<Item = String>) -> Self {
+        Self(
+            std::iter::once(SELF_HOSTED.to_owned())
+                .chain(ours)
+                .collect(),
+        )
+    }
+
+    /// Whether `text` names one of the labels, in any case, as GitHub
+    /// matches them, and as a whole label rather than part of a longer word
+    /// such as a file name.
+    fn named_in(&self, text: &str) -> bool {
+        self.0.iter().any(|label| has_word(text, label))
+    }
+}
 
 /// The end of every refusal.
 const MOVED: &str = "A divergence here is a security boundary moving (ADR-020). \
@@ -138,23 +155,53 @@ struct Workflow {
 struct Scan {
     /// Each `runs-on` value that names a self-hosted runner.
     runners: Vec<(usize, String)>,
-    /// Each other line that names one of [`LABELS`], or mentions `runs-on`
+    /// Each other line that names one of the labels, or mentions `runs-on`
     /// in a form the scan does not read.
     stray: Vec<(usize, String)>,
 }
 
-/// `.github/workflows`, two levels above the crate. Cargo sets
+/// The repository's root, two levels above the crate. Cargo sets
 /// `CARGO_MANIFEST_DIR` when it runs a test. For Bazel the BUILD file sets
 /// it, relative to the runfiles root the test starts in, which holds the
-/// workflows as the test's data.
-fn workflows_dir() -> PathBuf {
+/// workflows and `.github/actionlint.yaml` as the test's data.
+fn repo_root() -> PathBuf {
     let crate_dir = std::env::var_os("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR is set by Cargo, and for Bazel by the BUILD file");
     Path::new(&crate_dir)
         .ancestors()
         .nth(2)
         .expect("the crate sits two levels below the repository root")
-        .join(".github/workflows")
+        .to_path_buf()
+}
+
+/// Our runners' own labels, as `.github/actionlint.yaml` lists them under
+/// `self-hosted-runner:` and `labels:`, one `- label` per line, or `None`
+/// if the scan finds none there.
+fn actionlint_labels(text: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.trim_end() == "self-hosted-runner:")?;
+    let mut labels = Vec::new();
+    let mut in_labels = false;
+    for line in lines.get(at.saturating_add(1)..)? {
+        let body = line.trim();
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        if indent(line) == 0 {
+            break;
+        }
+        if body == "labels:" {
+            in_labels = true;
+        } else if let Some(label) = body.strip_prefix("- ").filter(|_| in_labels) {
+            let label = label.split_once(" #").map_or(label, |(label, _)| label);
+            labels.push(label.trim().to_owned());
+        } else {
+            in_labels = false;
+        }
+    }
+    (!labels.is_empty()).then_some(labels)
 }
 
 /// The workflows in `dir`, in name order.
@@ -179,11 +226,11 @@ fn read_workflows(dir: &Path) -> Vec<Workflow> {
 }
 
 /// Every way `workflows` differ from the `reviewed` runners, as messages.
-fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)]) -> Vec<String> {
+fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)], labels: &Labels) -> Vec<String> {
     let mut problems = Vec::new();
     let mut found = Vec::new();
     for workflow in workflows {
-        let scan = scan(&workflow.text);
+        let scan = scan(&workflow.text, labels);
         for (line, text) in scan.stray {
             problems.push(format!(
                 "{}:{line}: `{text}` names a self-hosted label outside a listed \
@@ -220,12 +267,12 @@ fn review(workflows: &[Workflow], reviewed: &[(&str, Runner)]) -> Vec<String> {
 }
 
 /// The `runs-on` values in a workflow that name a self-hosted runner (a
-/// pool kill switch, one of [`LABELS`] or a runner group), and the lines
-/// that name one of [`LABELS`] elsewhere. A value runs on over every line
+/// pool kill switch, one of the `labels` or a runner group), and the lines
+/// that name one of the `labels` elsewhere. A value runs on over every line
 /// indented deeper than its key, as a block scalar (`>-`, `|`) or a plain
 /// one does, and is joined into one line. In a block scalar a line that
 /// starts with `#` is text, not a comment.
-fn scan(text: &str) -> Scan {
+fn scan(text: &str, labels: &Labels) -> Scan {
     let lines: Vec<&str> = text.lines().collect();
     let mut scan = Scan::default();
     let mut next = 0;
@@ -239,7 +286,7 @@ fn scan(text: &str) -> Scan {
         let body = line.trim_start();
         if let Some(key) = block {
             if body.is_empty() || indent(line) > key {
-                if names_label(body) {
+                if labels.named_in(body) {
                     scan.stray.push((number, body.to_owned()));
                 }
                 continue;
@@ -250,7 +297,7 @@ fn scan(text: &str) -> Scan {
             continue;
         }
         let Some(first) = body.strip_prefix("runs-on:") else {
-            if body.to_lowercase().contains("runs-on") || names_label(body) {
+            if body.to_lowercase().contains("runs-on") || labels.named_in(body) {
                 scan.stray.push((number, body.to_owned()));
             }
             if opens_block(body) {
@@ -275,7 +322,7 @@ fn scan(text: &str) -> Scan {
         // A runner group picks self-hosted runners: this organization's only
         // group is the default one, which holds the pool's runners.
         if value.to_lowercase().contains("rp_pool_")
-            || names_label(&value)
+            || labels.named_in(&value)
             || has_word(&value, "group")
         {
             scan.runners.push((number, value));
@@ -286,12 +333,6 @@ fn scan(text: &str) -> Scan {
 
 fn indent(line: &str) -> usize {
     line.len().saturating_sub(line.trim_start().len())
-}
-
-/// Whether `text` names one of [`LABELS`], in any case, as a whole label
-/// rather than part of a longer word such as a file name.
-fn names_label(text: &str) -> bool {
-    LABELS.iter().any(|label| has_word(text, label))
 }
 
 /// Whether `text` holds `word`, in any case, as a whole word: not part of a
@@ -493,8 +534,31 @@ fn check_labels(value: &str, labels: &str, text: &str) -> Result<(), String> {
 
 #[test]
 fn every_self_hosted_runner_a_workflow_names_is_a_reviewed_one() {
-    let problems = review(&read_workflows(&workflows_dir()), RUNNERS);
+    let root = repo_root();
+    let path = root.join(".github/actionlint.yaml");
+    let actionlint =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    let ours = actionlint_labels(&actionlint)
+        .unwrap_or_else(|| panic!("{} lists no self-hosted-runner labels", path.display()));
+    let workflows = read_workflows(&root.join(".github/workflows"));
+    let problems = review(&workflows, RUNNERS, &Labels::new(ours));
     assert!(problems.is_empty(), "{}", problems.join("\n\n"));
+}
+
+/// Labels for the tests: a pool's two, one the start of the other.
+fn labels() -> Labels {
+    Labels::new(["pool".to_owned(), "pool-windows".to_owned()])
+}
+
+#[test]
+fn actionlint_labels_reads_the_list_without_comments() {
+    let text = "# labels\nself-hosted-runner:\n  labels:\n    # the Pi\n    - pi\n    - pool  # Proxmox\nconfig-variables: null\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pi", "pool"]);
+}
+
+#[test]
+fn actionlint_labels_without_the_list_is_none() {
+    assert_eq!(actionlint_labels("paths: {}\n"), None);
 }
 
 #[test]
@@ -503,7 +567,7 @@ fn review_refuses_a_runner_it_does_not_list() {
         name: "w.yml".to_owned(),
         text: "on: push\njobs:\n  a:\n    runs-on: [self-hosted, x]\n".to_owned(),
     }];
-    let problems = review(&workflows, &[]);
+    let problems = review(&workflows, &[], &labels());
     assert_eq!(problems.len(), 1);
     assert!(
         problems[0].starts_with(
@@ -523,7 +587,7 @@ fn review_refuses_a_pool_label_in_a_matrix() {
             "jobs:\n  a:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, self-hosted]\n"
                 .to_owned(),
     }];
-    let problems = review(&workflows, &[]);
+    let problems = review(&workflows, &[], &labels());
     assert_eq!(problems.len(), 1);
     assert!(
         problems[0].starts_with("w.yml:5: `os: [ubuntu-latest, self-hosted]` names"),
@@ -567,7 +631,7 @@ fn unwrap_parens_keeps_two_groups() {
 fn scan_joins_a_folded_block_and_gives_its_line() {
     let text = "jobs:\n  a:\n    runs-on: >-\n      ${{ (vars.RP_POOL_LINUX == 'on'\n           && x)\n          || 'ubuntu-latest' }}\n    name: a\n";
     assert_eq!(
-        scan(text).runners,
+        scan(text, &labels()).runners,
         [(
             3,
             "${{ (vars.RP_POOL_LINUX == 'on' && x) || 'ubuntu-latest' }}".to_owned()
@@ -579,7 +643,7 @@ fn scan_joins_a_folded_block_and_gives_its_line() {
 fn scan_joins_a_plain_value_continued_below_its_key() {
     let text = "    runs-on: ${{ (github.event_name == 'push'\n      && 'self-hosted') || 'ubuntu-latest' }}\n    name: a\n";
     assert_eq!(
-        scan(text).runners,
+        scan(text, &labels()).runners,
         [(
             1,
             "${{ (github.event_name == 'push' && 'self-hosted') || 'ubuntu-latest' }}".to_owned()
@@ -591,7 +655,7 @@ fn scan_joins_a_plain_value_continued_below_its_key() {
 fn scan_drops_the_blank_lines_after_a_value() {
     let text = "    runs-on: >-\n      ${{ vars.RP_POOL_LINUX }}\n\n\n    name: a\n";
     assert_eq!(
-        scan(text).runners,
+        scan(text, &labels()).runners,
         [(1, "${{ vars.RP_POOL_LINUX }}".to_owned())]
     );
 }
@@ -599,20 +663,23 @@ fn scan_drops_the_blank_lines_after_a_value() {
 #[test]
 fn scan_reads_a_label_list() {
     let text = "    runs-on: [self-hosted, Linux]\n";
-    assert_eq!(scan(text).runners, [(1, "[self-hosted, Linux]".to_owned())]);
+    assert_eq!(
+        scan(text, &labels()).runners,
+        [(1, "[self-hosted, Linux]".to_owned())]
+    );
 }
 
 #[test]
 fn scan_leaves_out_hosted_runners() {
     let text = "    runs-on: ubuntu-latest\n    runs-on: ${{ matrix.os }}\n";
-    assert_eq!(scan(text), Scan::default());
+    assert_eq!(scan(text, &labels()), Scan::default());
 }
 
 #[test]
 fn scan_reports_a_runs_on_it_does_not_read() {
     let text = "    \"runs-on\": ubuntu-latest\n";
     assert_eq!(
-        scan(text).stray,
+        scan(text, &labels()).stray,
         [(1, "\"runs-on\": ubuntu-latest".to_owned())]
     );
 }
@@ -620,20 +687,23 @@ fn scan_reports_a_runs_on_it_does_not_read() {
 #[test]
 fn scan_counts_a_runner_group_as_self_hosted() {
     let text = "    runs-on:\n      group: Default\n    name: a\n";
-    assert_eq!(scan(text).runners, [(1, "group: Default".to_owned())]);
+    assert_eq!(
+        scan(text, &labels()).runners,
+        [(1, "group: Default".to_owned())]
+    );
 }
 
 #[test]
 fn scan_skips_comments() {
     let text = "    # runs-on: [self-hosted]\n";
-    assert_eq!(scan(text), Scan::default());
+    assert_eq!(scan(text, &labels()), Scan::default());
 }
 
 #[test]
 fn scan_reads_a_hash_line_in_a_block_scalar_as_text() {
     let text = "        os: >-\n          ${{ fromJSON('[\"x\", \"\n          #\", \"self-hosted\"]') }}\n";
     assert_eq!(
-        scan(text).stray,
+        scan(text, &labels()).stray,
         [(3, "#\", \"self-hosted\"]') }}".to_owned())]
     );
 }
@@ -642,7 +712,7 @@ fn scan_reads_a_hash_line_in_a_block_scalar_as_text() {
 fn scan_keeps_a_hash_line_in_a_block_runs_on() {
     let text = "    runs-on: >-\n      ${{ vars.RP_POOL_LINUX\n      #x\n      }}\n";
     assert_eq!(
-        scan(text).runners,
+        scan(text, &labels()).runners,
         [(1, "${{ vars.RP_POOL_LINUX #x }}".to_owned())]
     );
 }
@@ -650,22 +720,22 @@ fn scan_keeps_a_hash_line_in_a_block_runs_on() {
 #[test]
 fn scan_ends_a_block_scalar_at_its_key() {
     let text = "      run: |\n        echo hi\n      # runs on self-hosted\n";
-    assert_eq!(scan(text), Scan::default());
+    assert_eq!(scan(text, &labels()), Scan::default());
 }
 
 #[test]
-fn names_label_matches_in_any_case() {
-    assert!(names_label("os: [ubuntu-latest, Self-Hosted]"));
+fn labels_named_in_any_case() {
+    assert!(labels().named_in("os: [ubuntu-latest, Self-Hosted]"));
 }
 
 #[test]
-fn names_label_skips_a_longer_word() {
-    assert!(!names_label("see docs/skills/raspberry-pi-runner.md"));
+fn labels_named_in_skips_a_longer_word() {
+    assert!(!labels().named_in("see docs/skills/pool-runner.md"));
 }
 
 #[test]
-fn names_label_reads_the_windows_pool_label_whole() {
-    assert!(names_label("[\"proxmox-ephemeral-windows\"]"));
+fn labels_named_in_reads_a_label_that_extends_another() {
+    assert!(labels().named_in("[\"pool-windows\"]"));
 }
 
 #[test]
@@ -683,7 +753,11 @@ fn review_places_a_failed_check_at_its_line() {
         name: "w.yml".to_owned(),
         text: "on:\n  workflow_dispatch:\njobs:\n  a:\n    runs-on: [self-hosted, y]\n".to_owned(),
     }];
-    let problems = review(&workflows, &[("w.yml", Runner::Labels("[self-hosted, x]"))]);
+    let problems = review(
+        &workflows,
+        &[("w.yml", Runner::Labels("[self-hosted, x]"))],
+        &labels(),
+    );
     assert_eq!(problems.len(), 1);
     assert!(
         problems[0].starts_with(
