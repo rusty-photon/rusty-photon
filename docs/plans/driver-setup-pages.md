@@ -1,8 +1,11 @@
 # Driver-served setup pages
 
-**Status:** proposed (2026-10-17). The decisions below carry a
-recommendation each; the owner settles them before P1 starts, and the
-plan is revised in place as they are settled.
+**Status:** proposed (2026-10-16; revised the same day on the owner's
+direction: the servers are specification-compliant from the first
+phase, with the `ascom-alpaca` fix offered upstream — D10, P1). The
+decisions below carry a recommendation each; the owner settles them
+before P2 starts, and the plan is revised in place as they are settled.
+P1 depends on none of them.
 
 ## Goal
 
@@ -56,7 +59,7 @@ driver answers. Fields a save could use to cut the page off from the
 driver (`server.port`, each device's `enabled`) are rendered read-only;
 a device's `unique_id` sits behind an "unlock to edit" hatch.
 
-The footprint, by the survey of 2026-10-17 (production lines unless
+The footprint, by the survey of 2026-10-16 (production lines unless
 stated):
 
 | Piece | Where | Size |
@@ -196,9 +199,9 @@ A placeholder's page says which port it stands in for and links to the
 server page's `usb_devices` section.
 
 Both pages answer `GET` with the form and `POST` with the save (D3). The
-crate's non-spec device path, `/api/v1/{type}/{n}/setup`, answers with a
-redirect to the spec path so a client following the crate's link does
-not land on "this device does not support configuration" (D10).
+crate, once fixed (D10), routes the specification's device path itself,
+links to it from its `/setup`, and redirects its old non-spec path
+there; our pages take over both spec paths.
 
 **Recommendation:** as stated. The split follows the specification's;
 FocusLynx uses it, and the ASCOM simulators' pages follow the same shape
@@ -257,10 +260,14 @@ A `POST` to either page submits that page's fields. The handler:
 3. persists with `rusty_photon_config::save`, override-pinned fields
    written through from the file;
 4. answers with a page that says what was saved, and
-   - for a `Reload` service, that the service is reloading; the page
-     refreshes itself after a short delay (`<meta http-equiv="refresh">`,
-     no script) until the server answers again, and shows the saved
-     values. The reload is fired after the response flushes, as today
+   - for a `Reload` service, that the service is reloading. A reload
+     drops the listener and binds again only after the driver's
+     handshake, so the page cannot simply refresh once — a refresh that
+     lands in that window is a browser error page with nothing left to
+     refresh. A few lines of inline script poll the page's own URL until
+     it answers, then navigate to it; without script, a refresh header
+     after a delay longer than a typical reload and a link do the same
+     by hand. The reload is fired after the response flushes, as today
      (`RELOAD_AFTER_RESPONSE_DELAY` moves to the route builder);
    - for a `Restart` service (`rp`, `phd2-guider`), which fields take
      effect on the next start, and how to restart it (D12);
@@ -283,11 +290,21 @@ REST `/api/config` routes are retired with the drivers' actions.
 the argument is uniformity. One rule — *a service's configuration is
 edited on that service's `/setup`* — is simpler to hold than one rule
 for drivers and another for `rp`, and it is where the operator looks for
-the roster after configuring a driver. Tenet 7 ("UI is a client, not a
-component") is about application logic, which a config form is not;
-tenet 8 already carves config out of the MCP-only rule ("plus config,
-which must stay reachable while conditions are unsafe"). Sentinel
-already serves its own dashboard behind the same layers.
+the roster after configuring a driver. `rp.md`'s design tenet 7 ("UI
+is a client, not a component") is about application logic, which a
+config form is not; its tenet 8 already carves config out of the
+MCP-only rule ("plus config, which must stay reachable while conditions
+are unsafe"). Sentinel already serves its own dashboard behind the same
+layers.
+
+The rule's reach under this plan: every Alpaca server — the thirteen
+drivers, `planetarium-bridge`, and `phd2-guider`'s facade (D13) — and
+the services the plan touches anyway, `rp`, `ui-htmx` and
+`phd2-guider`. The other core services with a listener and a config
+file (`sentinel`, `plate-solver`, `session-runner`, `calibrator-flats`,
+`focus-model`, `polar-align`) stay file-edited and doctor-wired; once
+the shared crate exists, a `/setup` for each is a small later item, not
+one of these phases.
 
 **Alternative:** `ui-htmx` keeps `/equipment` and `/config/rp` over
 `rp`'s REST config, and only gains the links. It is the smaller change
@@ -312,8 +329,11 @@ only complaint is the observatory CA, imported once; an IP address is a
 SAN only when doctor was given `--extra-san`, and the page says so when
 the substituted host is an IP. Under ACME the wildcard `*.<domain>`
 covers any `<name>.<domain>` the operator reached `rp` by. The same
-rule applies to `ui-htmx`'s navigation link to `rp`'s page, and to a
-third-party server's link, as with `rig2`'s `focuslynx` entry.
+rule applies to the Setup-page link `ui-htmx`'s equipment page renders
+from P2 until P4 retires that page, to its navigation link to `rp`'s
+page, and to a third-party server's link, as with `rig2`'s `focuslynx`
+entry. The one server the rule cannot reach is one that listens on
+loopback alone; today that is `phd2-guider`'s facade (D13).
 
 ### D6. Credentials
 
@@ -321,7 +341,10 @@ A driver's `/setup` has a **Security** section: username, password,
 repeat. A submitted password is hashed (Argon2id, `rp-auth`) by the
 driver and persisted as `server.auth.password_hash`; the hash never
 reaches a page, and a blank password with a username means "keep the
-stored hash". Clearing the username turns auth off. After a save that
+stored hash". A username with no stored hash and a blank password is
+refused with the field named — turning auth on needs a password — so
+`server.auth` is never persisted without its hash. Clearing the
+username turns auth off. After a save that
 turned auth on or changed the password, the reload answers the page's
 own refresh with a `401`, and the browser asks for the new credential:
 the same path the sentinel dashboard has always used.
@@ -380,11 +403,13 @@ final pass (P4):
   2026-05 plan it documents; the "Config actions" section of every
   service doc, replaced by a "Setup pages" section.
 
-Kept: every runtime custom action, and `Action` itself. In passing, the
-names are matched case-insensitively, as the specification requires
-("Action names must be case insensitive, so for example SelectWheel,
-selectwheel and SELECTWHEEL all refer to the same action"); today both
-the config and the lease actions match exactly.
+Kept: every runtime custom action, and `Action` itself. In P1 the names
+are matched case-insensitively, as the specification requires ("Action
+names must be case insensitive, so for example SelectWheel, selectwheel
+and SELECTWHEEL all refer to the same action"); today the config, the
+lease and the park actions all match exactly. `SupportedActions` keeps
+returning each name in its canonical spelling, which the specification
+also requires.
 
 ### D9. `ui-htmx` after this plan
 
@@ -397,17 +422,49 @@ stays for a future dashboard link is D12's. Its own config is then
 edited on its own `/setup`, served by the same shared crate (`ServerConfig`
 plus `rp`'s address), so the rule in D4 holds for it too.
 
-### D10. The `ascom-alpaca` fork
+### D10. The `ascom-alpaca` fork: specification-compliant paths first
 
-The pinned crate routes `/setup` (a static device list) and the device
-page at `/api/v1/{type}/{n}/setup` through `Device::setup()`, which
-takes no request and so cannot serve a form; it does not route the
-specification's `/setup/v1/{type}/{n}/setup` at all. Our routes, merged
-ahead of the fallback, override `/setup` and add the spec path, and
-answer the crate's path with a redirect, so nothing in the crate needs
-to change for this plan. Separately, the fork's `/setup` link to the
-non-spec path is a bug against the specification; it is fixed in the
-fork and offered upstream, outside this plan's phases.
+The pinned crate — and upstream's `main`, which registers the same five
+routes — serves the device setup page at `/api/v1/{type}/{n}/setup`, a
+path no specification defines, as a special case inside the action
+route; its `/setup` page links there; and the specification's
+`/setup/v1/{device_type}/{device_number}/setup` is not routed at all.
+The Device API says `SetupDialog` "has been omitted from the Alpaca
+Device API because it presents a user interface rather than returning
+data" and defers configuration to the Management API, which defines
+exactly two setup paths: `/setup` and
+`/setup/v1/{device_type}/{device_number}/setup`. So every server built
+on the crate, ours included, answers `404` where a spec-following client
+(the Remote client's "This ASCOM Device" button, `ui-htmx`'s own probe)
+looks.
+
+The crate is fixed before any page of ours is built, so our servers are
+compliant from the first phase and so is every other user of the crate:
+
+- a `GET /setup/v1/{device_type}/{device_number}/setup` route calling
+  `Device::setup()`, answering `400` for an unknown device type or
+  number as the action route does;
+- the `/setup` page links to that path;
+- `/api/v1/{type}/{n}/setup` answers with a permanent redirect to the
+  spec path, so a client that followed the old link is not stranded; a
+  later crate release removes it;
+- a test per route, in the crate's own suite.
+
+The change lands on a branch of our fork stacked on the pinned branch
+(the pin that carries upstream PR #23), is offered upstream as a pull
+request against `main`, and the workspace pin moves to the new branch —
+a `Cargo.lock` change, so `MODULE.bazel.lock` is repinned (rule 10) and
+[workspace.md](../workspace.md)'s note on the pin names both pull
+requests. If upstream merges, the pin follows upstream as the existing
+one is meant to.
+
+`Device::setup()` still takes no request, so a form cannot be served
+through it; our pages remain our own routes merged ahead of the crate's
+fallback (D2), overriding the crate's `/setup` and its spec-path device
+page. The crate's fix is what a device without a page of ours gets, and
+what every other crate user gets. Extending `Device::setup()` to take
+the request is not proposed: it is a larger upstream change than the fix
+needs, and nothing of ours waits on it.
 
 ### D11. The camera drivers' `usb_devices` editor — C8 lands here
 
@@ -444,6 +501,26 @@ restarts. No page links to Sentinel, because no driver knows where it
 is. **Recommendation:** as stated; the alternative, a `sentinel_url` on
 every service, is a cross-reference ADR-016 spent a plan removing.
 
+### D13. `phd2-guider`
+
+`phd2-guider`'s only Alpaca server is the camera facade, which is off by
+default and, by the device-claims plan's C6, listens on a loopback
+address alone — any other bind address is refused at load. A `/setup`
+on that server would be unreachable from the operator's browser and
+absent whenever the facade is off, and D5's host rule would render a
+link to a port nothing answers on.
+
+So `phd2-guider`'s `/setup` is served by its always-on service listener,
+the one its REST API and `/health` use, and covers its whole config,
+the `camera` block included; the facade, when on, answers both spec
+paths with a redirect to that page. The device link on `rp`'s roster
+still needs the facade reachable from the browser, so P3's
+`phd2-guider` item lifts the loopback-only rule — the catalog, firewall
+and verify-script registration the device-claims plan deferred in C6 —
+and the facade binds like every other Alpaca server, behind the same
+TLS and auth. P4's roster page comes after P3, so by the time `rp`
+renders the link the facade answers it.
+
 ## Consequences
 
 - **Browser trust is per origin.** The operator's browser talks to N
@@ -454,9 +531,10 @@ every service, is a cross-reference ADR-016 spent a plan removing.
   the only origin; it also could not reach an authenticated driver.
 - **Drivers render HTML.** Each gains `maud` (compile-time templates,
   no runtime cost) and a few routes. No JavaScript: the pages are plain
-  forms, the reload wait is a refresh header, and the look comes from
-  one embedded stylesheet in the shared crate using the mocks' tokens.
-  Tenet 5's footprint is unchanged in kind — a page is a string.
+  forms, the only script is the reload wait's poll (D3) with a
+  no-script fallback, and the look comes from one embedded stylesheet in
+  the shared crate using the mocks' tokens. `rp.md`'s footprint tenet
+  (5) is unchanged in kind — a page is a string.
 - **The recovery model holds.** A service that cannot start has no
   page, as it had no actions; `doctor --fix` and the file remain the
   repair path (ADR-016, Consequences).
@@ -464,6 +542,11 @@ every service, is a cross-reference ADR-016 spent a plan removing.
   `SupportedActions`; no third-party client is known to use it. The
   2026-05 plan's intent to publish `config.*` as a vendor-neutral crate
   is withdrawn.
+- **The fork carries one more branch until upstream merges.** The pin
+  already tracks a fork branch for upstream PR #23; P1 stacks the setup
+  fix on it, so the arrangement does not change in kind, and
+  `workspace.md` records both pull requests until the pin can return
+  to upstream.
 - **ADR-016 is amended, and a new ADR records the rule.** ADR-016's
   recovery model ("config-actions tunes what runs; doctor repairs what
   won't start") keeps its substance with the page in the actions'
@@ -490,17 +573,19 @@ Small, each mergeable alone, in this order.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D12 are settled | In review | `feature/driver-setup-pages` |
-| P1 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), `rusty-photon-driver::setup_router` (both pages, the save, the CSRF check, the reload hook, the redirect from the crate's path), the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe prefers a reachable spec-path setup page over `config.*`, so a driver that loses the actions gains the link in the same step. The `Action`-name casing fix | Not started | |
-| P2 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `phd2-guider`'s facade | Not started | |
-| P3 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
-| P4 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated; the fork's `/setup` link fixed and offered upstream (D10) | Not started | |
+| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D12 are settled | In review | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
+| P1 | **Specification compliance first.** The `ascom-alpaca` fork routes the specification's device setup path, links to it from `/setup`, redirects the old path, with tests (D10); the change is offered upstream as a pull request; the workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default page until P2 | Not started | |
+| P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), `rusty-photon-driver::setup_router` (both pages, the save, the CSRF check, the reload hook), the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe asks for the spec-path setup page first and treats a `401` there as a page that exists (the browser will ask for the credential), so a driver that loses the actions gains the link in the same step, on an auth-on rig too, with the link's host following D5 | Not started | |
+| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser` and `planetarium-bridge`; `phd2-guider` (D13: its `/setup` on the service listener, the facade's loopback-only rule lifted) | Not started | |
+| P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
+| P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Not started | |
 
-P1 is the proof: one driver whose config is read and written on its own
-pages, with the actions gone and the equipment link working, before
-anything is rolled out. P2's families can land in any order. P3 waits
-for P1 only; it is ordered after P2 so `rp`'s page links to drivers
-that have pages.
+P1 comes first and depends on no decision: it makes what we ship
+compliant before anything new is built on it. P2 is the proof: one
+driver whose config is read and written on its own pages, with the
+actions gone and the equipment link working, before anything is rolled
+out. P3's families can land in any order. P4 waits for P2 only; it is
+ordered after P3 so `rp`'s page links to drivers that have pages.
 
 ## Testing
 
@@ -522,9 +607,10 @@ that have pages.
 - **`rp`:** the roster page with its links (a loopback entry's host
   substituted, another host kept), per-entry credentials round-tripping
   blank-as-unchanged, add/edit/remove, and the restart-required text.
-- **`ui-htmx`:** the probe's new preference (a first-party driver with
-  pages and no `config.*` gets the Setup-page link), the navigation
-  link, and the browser scenarios on the stream page.
+- **`ui-htmx`:** the probe's new order (a first-party driver with pages
+  and no `config.*` gets the Setup-page link, behind auth too, from the
+  `401`; its host follows D5), the navigation link, and the browser
+  scenarios on the stream page.
 - **On the rigs:** `pier1` (Linux, doctor-wired, TLS and auth on) and
   `rig2` (Windows, the FocusLynx entry): open each driver's page from a
   laptop, save a change, see the reload, set a credential and enter it
@@ -539,10 +625,12 @@ noted.
   `plugins[].auth.password` is a plaintext client credential and is not
   among `rp`'s `secret_pointers()`, so the response carries it and
   `ui-htmx`'s `rp` config page embeds it in the browser's hidden blob.
-  A one-line fix today (add the pointer); the route goes in P3.
-- **Our drivers answer `404` on the specification's device setup path**
-  (`/setup/v1/{type}/{n}/setup`), which is the path `ui-htmx` probes
-  and the Dynamic Client opens. P1 fixes it.
+  A one-line fix today (add the pointer); the route goes in P4.
+- **Every server built on `ascom-alpaca` answers `404` on the
+  specification's device setup path** (`/setup/v1/{type}/{n}/setup`),
+  the path `ui-htmx` probes and the Remote client opens; the crate
+  routes the page at `/api/v1/{type}/{n}/setup` instead, upstream too.
+  P1 fixes it in the fork and offers the fix upstream (D10).
 - **`doctor auth rotate` rewrites `server.auth` on every service and
   sentinel's `service_auth`, nothing else**; `doctor.md` says it
   "re-runs the same distribution". `rp`'s equipment entries and
@@ -555,7 +643,7 @@ noted.
 - **`ui-htmx.md` drift:** the restart callout's text, the two
   `equipment_page` scenarios it describes that do not exist, `RpApi`'s
   members, "three surface tabs" where there are four.
-- **Sentinel's dashboard has the restart API and no button.** P3.
+- **Sentinel's dashboard has the restart API and no button.** P4.
 
 ## References
 
