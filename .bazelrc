@@ -794,8 +794,8 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 #    `bazel coverage`; we only choose WHICH targets via --instrumentation_filter.
 #  * --instrumentation_filter -- first-party only; @cr// crates.io deps are never
 #    instrumented (matches cargo llvm-cov, which reports workspace crates only).
-#    ^//tools/rusty-photon-ci is the one workspace crate outside crates/ and
-#    services/, the developer tools; the rest of tools/ is not Rust.
+#    ^//tools/rusty-photon-ci is the developer tools' crate; the rest of
+#    tools/ is not Rust.
 #    ^//tests is in it for the end-to-end suites under tests/, for the reason
 #    the next point gives.
 #  * --instrument_test_targets -- rules_rust builds a crate with
