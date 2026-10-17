@@ -41,6 +41,7 @@ tools/rusty-photon-ci/
   src/lib.rs
   src/process.rs           Cmd, the Runner trait, and System, which runs for real
   src/<tool>.rs            one module per tool, with its tests
+  src/pool_routing.rs      a guard over the workflows, compiled only for tests
 ```
 
 - **One module per tool, one subcommand per module.** `main.rs` parses
@@ -54,13 +55,20 @@ tools/rusty-photon-ci/
   does when a command fails, with no Bazel or git on the test's host.
   `process.rs`'s own tests run `System` on the test binary itself, the one
   program every OS and Bazel's sandbox are sure to have.
+- **A guard over the repository's own files is a module only the tests
+  compile** (`#[cfg(test)] mod` in `lib.rs`), with no subcommand:
+  `bazel test //...` runs it on every PR. The files it reads are the unit
+  test's `data` in `BUILD.bazel`. It finds them from `CARGO_MANIFEST_DIR`:
+  Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
+  relative to the runfiles root.
 - **The shell it replaces goes in the same PR**, with every mention of it
   (ADR-022): search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the
   command line, `thiserror` for the errors.
-- **CI does not run the crate yet.** The Linux pool template has no Cargo
-  until the plan's T1, so a workflow step that does what a tool does
-  stays YAML, and the tool's source names the step to keep in step with.
+- **CI runs the crate's tests, not its tools, yet.** The Linux pool
+  template has no Cargo until the plan's T1, so a workflow step that does
+  what a tool does stays YAML, and the tool's source names the step to
+  keep in step with.
 
 ## JavaScript actions
 
