@@ -626,10 +626,11 @@ link `rp` can already compute makes the lift unnecessary for this plan.
   `SupportedActions`; no third-party client is known to use it. The
   2026-05 plan's intent to publish `config.*` as a vendor-neutral crate
   is withdrawn.
-- **The fork carries one more branch until upstream merges.** The pin
-  already tracks a fork branch for upstream PR #23; P1 stacks the two
-  setup fixes on it, so the arrangement does not change in kind, and
-  `workspace.md` records the three pull requests until the pin can
+- **The fork carries one more change until upstream merges.** The pin
+  already tracked a fork branch for upstream PR #23; P1 stacks the
+  setup-page change on it, so the arrangement does not change in kind,
+  and `workspace.md` records both — #23, offered upstream, and the
+  setup-page change, not offered for now (D10) — until the pin can
   return to upstream. The hooks' shape is the maintainer's call, and a
   different shape upstream changes only the glue in
   `rusty-photon-driver`, not the shared handler.

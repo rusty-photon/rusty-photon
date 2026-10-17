@@ -257,7 +257,7 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 # connect handshake is still running — which is what ConformU's
 # `alpacaprotocol` casing sweep does to qhy-camera (see
 # `docs/services/qhy-camera.md` "Connect is asynchronous"). The fork counts
-# the operations instead (offered upstream as RReverser/ascom-alpaca-rs#23).
+# the operations instead; that fix is offered upstream.
 # The setup pages: upstream serves the device setup page at
 # `/api/v1/{type}/{n}/setup`, a path no specification defines, and 404s the
 # Management API's `/setup/v1/{type}/{n}/setup`; its setup hook sees no
