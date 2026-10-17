@@ -43,6 +43,8 @@ rust_binary(
     deps = [":rusty-photon-ci_lib"] + all_crate_deps(normal = True),
 )
 
+# pool_routing.rs reads the workflows. Cargo sets CARGO_MANIFEST_DIR when it
+# runs a test; here it is relative to the runfiles root the test starts in.
 rust_test(
     name = "rusty-photon-ci_unit_test",
     size = "small",
@@ -51,6 +53,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":rusty-photon-ci_lib",
+    data = ["//:workflows"],
+    env = {"CARGO_MANIFEST_DIR": "tools/rusty-photon-ci"},
     lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

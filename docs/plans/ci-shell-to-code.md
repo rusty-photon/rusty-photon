@@ -752,18 +752,52 @@ the tools crate. They are in S1's list.
 
 The pool's `runs-on` routing expression is copied into bazel.yml,
 bazel-coverage.yml, repin-bazel.yml and check.yml. ADR-020 makes it a
-security boundary, and only a comment keeps the copies in step. They
-come in two shapes: bazel.yml holds the Linux and Windows clauses in one
-expression, each prefixed `matrix.os == '…' &&`, with `|| matrix.os` as
-the fallback, while the others are standalone and end in
-`|| 'ubuntu-latest'`. The test in the tools crate extracts each OS's
-clause from every copy (the kill-switch variable, the trusted-event test
-and the pool labels, without the matrix prefix or the fallback) and
-asserts each equals the reviewed clause for that OS, held in the test
-itself. A PR that changes one copy fails `bazel test //...`, and a PR
-that changes them all has to change the test too, in the same diff the
-reviewer reads. The test reads files under `.github`, which F1 took out
-of `.bazelignore`. Raised by the review of #1505.
+security boundary, and until R6 only a comment kept the copies in step.
+They come in two shapes: bazel.yml holds the Linux and Windows clauses in
+one expression, each prefixed `matrix.os == '…' &&`, with `|| matrix.os`
+as the fallback, while the others are standalone and end in
+`|| 'ubuntu-latest'`. A PR that changes one copy now fails
+`bazel test //...`, and a PR that changes them all has to change the test
+too, in the same diff the reviewer reads. Raised by the review of #1505.
+
+- **The guard:** `tools/rusty-photon-ci/src/pool_routing.rs`, a module
+  only the crate's tests compile. It holds the reviewed Linux and Windows
+  clauses (the kill-switch variable, the trusted-event test and the pool
+  labels) and a list of every job that routes to the pool: its branches,
+  the `matrix.os` label each sits behind, and its hosted fallback.
+- **What it checks.** It reads every workflow and takes each `runs-on`
+  that is an expression naming the pool (a kill-switch variable or a pool
+  label). It splits each at its top-level `||` into pool branches and a
+  fallback, and each must equal the reviewed one; whitespace is collapsed
+  first, so a reflowed copy still matches.
+  - **The fallback is checked too**, which the plan had left out: a copy
+    that fell back to a pool label would send every falsy branch to the
+    pool, a fork PR among them.
+  - **A new expression that names the pool**, in any workflow, fails the
+    test until its job is listed.
+  - **An expression the test cannot read**, such as a quoted one, fails it.
+- **Under Bazel** the workflows are the unit test's `data`
+  (`//:workflows`, a glob in the root package, since `.github/workflows`
+  has no BUILD file; F1 took `.github` out of `.bazelignore`). The BUILD
+  file sets `CARGO_MANIFEST_DIR` for the test, relative to the runfiles
+  root; Cargo sets it when it runs a test.
+- **Proven locally.** Each of these edits to a real copy failed the test
+  under Cargo, and the first also under Bazel:
+  - dropping the same-repo test from check.yml;
+  - a pool-label fallback in repin-bazel.yml;
+  - the Windows kill switch in bazel-coverage.yml;
+  - bazel.yml's Windows leg trusting every pull request;
+  - its Windows leg behind `macos-latest`;
+  - a new pool-routed job in test.yml.
+
+  Reflowing check.yml's copy onto fewer lines passed.
+- **Not guarded:**
+  - a `runs-on` label list, which is how proxmox-runner-test.yml names
+    the pool, in jobs only a maintainer can dispatch;
+  - bazel.yml's matrix, whose labels `matrix.os` falls back to.
+- **Done when** the test runs on both Bazel legs of a PR, a copy that
+  differs from the reviewed clauses fails it, and each copy's comment
+  names it.
 
 ### R7 — ConformU runner
 

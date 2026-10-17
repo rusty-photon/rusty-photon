@@ -71,6 +71,9 @@ jobs:
     # out: `runs-on` is evaluated before the job exists, so neither the `env`
     # context nor a job output is available to hold it. Keep the two copies
     # identical — a divergence here is a security boundary moving.
+    # tools/rusty-photon-ci/src/pool_routing.rs holds every copy, these and
+    # the other workflows', to the reviewed clauses, so `bazel test //...`
+    # fails on one.
     runs-on: >-
       ${{ (matrix.os == 'ubuntu-latest'
            && vars.RP_POOL_LINUX == 'on'
