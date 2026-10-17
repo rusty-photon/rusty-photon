@@ -4,9 +4,9 @@
 direction: the servers are specification-compliant from the first
 phase, and the `ascom-alpaca` crate is fixed properly — its setup hooks
 take a request — with both fixes offered upstream; D10, P1). D8 and D10
-are settled by the owner (2026-10-16), with one item in D10 awaiting a
-separate yes, and P1 implements them; the owner settles the rest before
-P2 starts, and the plan is revised in place as they are settled.
+are settled by the owner (2026-10-16) and P1 implements them; the owner
+settles the rest before P2 starts, and the plan is revised in place as
+they are settled.
 
 ## Goal
 
@@ -498,8 +498,8 @@ branch, both landed in P1:
      not a valid Camera command", §2.5.2); the crate answers `404` today.
      It is the one change in the set a client can see, so ConformU's
      Alpaca-protocol checks run against a driver on the fork before the
-     pin moves. *This bullet is the plan's addition to the owner's
-     direction and awaits the owner's separate yes.*
+     pin moves. The owner confirmed this item separately on
+     2026-10-16.
    - a test per route and per status, in the crate's own suite.
 2. **Saving through the hooks** — a pull request of its own, since the
    shape of the API is the maintainer's call:
