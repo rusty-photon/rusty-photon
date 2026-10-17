@@ -89,7 +89,7 @@ first in their columns.
 | --- | ---- | -------- | ----- | ------ |
 | F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#1508) |
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Not started |
-| J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | In review (#1534); done when proven on main |
+| J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Done (#1534) |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Not started |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
@@ -180,8 +180,9 @@ set; what later items build on:
 
 ### J1 — Cargo build cache in the LAN bazel-remote
 
-#1505 moved the `stable / clippy` job to the pool, where
-Swatinem/rust-cache cannot help: its cache lives in GitHub, across the
+Done in #1534, as `.github/actions/cargo-cache`. #1505 moved the
+`stable / clippy` job to the pool, where Swatinem/rust-cache cannot help:
+its cache lives in GitHub, across the
 operator's WAN, so the job runs it on hosted runners only. This item
 gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
 
@@ -322,12 +323,34 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   since only that event gets the key, and a PR's own run finds no pointer
   until one has. The tests run the action against a fake bazel-remote
   that answers as v2.6.2 does, and break each guarded behaviour on
-  purpose. After merge, watch the first push to main save, and the next
-  PR restore and run warm.
+  purpose.
+- **Proven after merge**, on 2026-10-15:
+  - the merge's own push to main
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38849381705/job/116806978129))
+    built cold and logged "Saved the build cache in 3.4 s: target 243 MiB,
+    git 2 MiB.";
+  - #1511, a dependency bump
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38850843667/job/116811503083)),
+    logged "Restored the build cache in 2.1 s: 245 MiB", and its clippy
+    passes took 44 s and 27 s, against 1m23s and 42 s cold on #1534's own
+    run
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38849131769/job/116806224373)).
+    Its bump changed the lockfile, so the crates it touched were checked
+    again too;
+  - #1535, a change to `rp`
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38851459832/job/116813359122)),
+    restored the same archive in 2.1 s and passed in 33 s and 17 s;
+  - when both merged, on 2026-10-16, their two pushes to main ran
+    together. The older one finished first and logged that main had moved
+    on, leaving the cache to the newer push
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38981023774/job/117241666183)),
+    which saved it in 2.9 s
+    ([job](https://github.com/rusty-photon/rusty-photon/actions/runs/38981086513/job/117241862959)).
 - **Done when** a pool `stable / clippy` run on a PR restores the cache
-  and runs warm, and a push to main builds cold and saves it. A stopped
-  store is left to the tests, as J14's was by the owner's decision of
-  2026-10-15: a refused connection, a store that does not answer in time,
+  and runs warm, and a push to main builds cold and saves it: the runs
+  above. A stopped store is left to the tests, as J14's was by the
+  owner's decision of 2026-10-15: a refused connection, a store that does
+  not answer in time,
   a refused upload and a wrong archive are each a cold build or an unsaved
   cache there, never a failed step.
 
