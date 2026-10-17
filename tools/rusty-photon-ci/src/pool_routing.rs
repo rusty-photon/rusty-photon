@@ -177,16 +177,19 @@ fn repo_root() -> PathBuf {
 }
 
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
-/// `self-hosted-runner:` and `labels:`, one `- label` per line, or `None`
-/// if the scan finds none there.
-fn actionlint_labels(text: &str) -> Option<Vec<String>> {
+/// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
+/// not. Once its comment and quotes are gone a label must be plain
+/// (letters, digits, `.`, `_`, `-`): the scan does not guess at another
+/// spelling, which actionlint might read differently, and refuses it.
+fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
         .iter()
-        .position(|line| line.trim_end() == "self-hosted-runner:")?;
+        .position(|line| line.trim_end() == "self-hosted-runner:")
+        .ok_or("has no `self-hosted-runner:` key")?;
     let mut labels = Vec::new();
     let mut in_labels = false;
-    for line in lines.get(at.saturating_add(1)..)? {
+    for line in lines.get(at.saturating_add(1)..).unwrap_or_default() {
         let body = line.trim();
         if body.is_empty() || body.starts_with('#') {
             continue;
@@ -196,14 +199,51 @@ fn actionlint_labels(text: &str) -> Option<Vec<String>> {
         }
         if body == "labels:" {
             in_labels = true;
-        } else if let Some(label) = body.strip_prefix("- ").filter(|_| in_labels) {
-            let label = label.split_once(" #").map_or(label, |(label, _)| label);
-            labels.push(label.trim().to_owned());
+        } else if let Some(item) = body.strip_prefix("- ").filter(|_| in_labels) {
+            let item = without_comment(item).trim();
+            // YAML may quote a label; actionlint reads it without the quotes.
+            let label = ['"', '\'']
+                .iter()
+                .find_map(|quote| item.strip_prefix(*quote)?.strip_suffix(*quote))
+                .unwrap_or(item);
+            if !is_plain_label(label) {
+                return Err(format!(
+                    "lists `{item}`, which the test does not read as a plain label \
+                     (letters, digits, `.`, `_`, `-`)"
+                ));
+            }
+            labels.push(label.to_owned());
         } else {
             in_labels = false;
         }
     }
-    (!labels.is_empty()).then_some(labels)
+    if labels.is_empty() {
+        return Err("lists no labels under `self-hosted-runner:`".to_owned());
+    }
+    Ok(labels)
+}
+
+/// `text` without a trailing YAML comment: from a `#` that follows a space
+/// or a tab.
+fn without_comment(text: &str) -> &str {
+    text.char_indices()
+        .find(|&(at, c)| {
+            c == '#'
+                && text
+                    .get(..at)
+                    .and_then(|before| before.chars().next_back())
+                    .is_some_and(char::is_whitespace)
+        })
+        .and_then(|(at, _)| text.get(..at))
+        .unwrap_or(text)
+}
+
+/// Whether `label` is non-empty and only letters, digits, `.`, `_` and `-`.
+fn is_plain_label(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// The workflows in `dir`, in name order.
@@ -540,8 +580,7 @@ fn every_self_hosted_runner_a_workflow_names_is_a_reviewed_one() {
     let path = root.join(".github/actionlint.yaml");
     let actionlint =
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    let ours = actionlint_labels(&actionlint)
-        .unwrap_or_else(|| panic!("{} lists no self-hosted-runner labels", path.display()));
+    let ours = actionlint_labels(&actionlint).unwrap_or_else(|e| panic!("{} {e}", path.display()));
     let workflows = read_workflows(&root.join(".github/workflows"));
     let problems = review(&workflows, RUNNERS, &Labels::new(ours));
     assert!(problems.is_empty(), "{}", problems.join("\n\n"));
@@ -559,8 +598,61 @@ fn actionlint_labels_reads_the_list_without_comments() {
 }
 
 #[test]
-fn actionlint_labels_without_the_list_is_none() {
-    assert_eq!(actionlint_labels("paths: {}\n"), None);
+fn actionlint_labels_reads_a_quoted_label_without_its_quotes() {
+    let text = "self-hosted-runner:\n  labels:\n    - \"pool\"  # Proxmox\n    - 'pi'\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pool", "pi"]);
+}
+
+#[test]
+fn actionlint_labels_cuts_a_comment_after_a_tab() {
+    let text = "self-hosted-runner:\n  labels:\n    - \"pool\"\t# Proxmox\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pool"]);
+}
+
+#[test]
+fn actionlint_labels_refuses_a_hash_inside_quotes() {
+    let text = "self-hosted-runner:\n  labels:\n    - \"pool #2\"\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "lists `\"pool`, which the test does not read as a plain label \
+         (letters, digits, `.`, `_`, `-`)"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_an_escape() {
+    let backslash = char::from(92_u8);
+    let text = format!("self-hosted-runner:\n  labels:\n    - \"pool{backslash}x2dgpu\"\n");
+    assert!(
+        actionlint_labels(&text).unwrap_err().starts_with(&format!(
+            "lists `\"pool{backslash}x2dgpu\"`, which the test"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_an_empty_label() {
+    let text = "self-hosted-runner:\n  labels:\n    - \"\"\n";
+    assert!(actionlint_labels(text)
+        .unwrap_err()
+        .starts_with("lists `\"\"`"));
+}
+
+#[test]
+fn actionlint_labels_without_the_key_is_an_error() {
+    assert_eq!(
+        actionlint_labels("paths: {}\n").unwrap_err(),
+        "has no `self-hosted-runner:` key"
+    );
+}
+
+#[test]
+fn actionlint_labels_without_labels_is_an_error() {
+    assert_eq!(
+        actionlint_labels("self-hosted-runner:\n  labels:\nconfig-variables: null\n").unwrap_err(),
+        "lists no labels under `self-hosted-runner:`"
+    );
 }
 
 #[test]
