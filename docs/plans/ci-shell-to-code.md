@@ -88,7 +88,7 @@ first in their columns.
 | ID  | Item | Replaces | Needs | Status |
 | --- | ---- | -------- | ----- | ------ |
 | F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#1508) |
-| F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Not started |
+| F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | In review (#1541) |
 | J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Done (#1534) |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Not started |
