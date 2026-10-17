@@ -123,10 +123,12 @@ const SELF_HOSTED: &str = "self-hosted";
 struct Labels(Vec<String>);
 
 impl Labels {
+    /// The labels, lowercased: `has_word` compares lowercased text.
     fn new(ours: impl IntoIterator<Item = String>) -> Self {
         Self(
             std::iter::once(SELF_HOSTED.to_owned())
                 .chain(ours)
+                .map(|label| label.to_lowercase())
                 .collect(),
         )
     }
@@ -726,6 +728,12 @@ fn scan_ends_a_block_scalar_at_its_key() {
 #[test]
 fn labels_named_in_any_case() {
     assert!(labels().named_in("os: [ubuntu-latest, Self-Hosted]"));
+}
+
+#[test]
+fn labels_named_in_matches_a_label_listed_with_capitals() {
+    let labels = Labels::new(["Pool".to_owned()]);
+    assert!(labels.named_in("runs-on: [pool]"));
 }
 
 #[test]
