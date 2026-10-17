@@ -149,7 +149,10 @@ insta = { version = "1.48", features = ["filters", "redactions"] }
 # (P3 — htmx actually executes the swap/poll). Pure Rust, no Node. The @browser
 # scenarios it drives are gated behind UI_BROWSER_TESTS=1 (see tests/bdd.rs), so
 # this always-compiled dev-dep never drags a browser into the default gate.
-thirtyfour = "0.37"
+# Its defaults minus `manager`, the driver auto-download: the tests spawn
+# geckodriver themselves, and `manager` pulls in `zip` 8, every release of
+# which crates.io has yanked, so `cargo update` cannot resolve it.
+thirtyfour = { version = "0.37", default-features = false, features = ["reqwest", "rustls", "component", "cdp"] }
 # Layer C Tier 0 step 4 (§9): the kill-the-tree reaper for the @browser worst-case
 # scenario — killpg of geckodriver's process group + a /proc orphan scan, both
 # unix-only (the @browser layer runs on Linux). Test-only.
