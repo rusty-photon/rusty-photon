@@ -33,13 +33,17 @@ impl FieldState<'_> {
 /// The whole document: the shell around `body`, titled `title`, for the
 /// service named `service`.
 #[must_use]
-pub fn document(service: &str, title: &str, body: &Markup) -> String {
+pub fn document(service: &str, title: &str, generation: &str, body: &Markup) -> String {
     html! {
         (DOCTYPE)
         html lang="en" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                // The handler's generation: a reload builds a new handler, so a
+                // page from the rebuilt server carries a different value — the
+                // signal the suites wait for after a save.
+                meta name="setup-generation" content=(generation);
                 title { (title) " · " (service) }
                 style { (PreEscaped(STYLESHEET)) }
             }
@@ -611,10 +615,14 @@ mod tests {
     }
 
     #[test]
-    fn the_document_inlines_the_stylesheet() {
-        let doc = document("dsd-fp2", "Setup", &html! { p { "hi" } });
+    fn the_document_inlines_the_stylesheet_and_carries_the_generation() {
+        let doc = document("dsd-fp2", "Setup", "gen-7", &html! { p { "hi" } });
         assert!(doc.starts_with("<!DOCTYPE html>"), "{doc}");
         assert!(doc.contains("<title>Setup · dsd-fp2</title>"), "{doc}");
+        assert!(
+            doc.contains(r#"<meta name="setup-generation" content="gen-7">"#),
+            "{doc}"
+        );
         assert!(doc.contains("--accent-a"), "{doc}");
         assert!(doc.contains("<p>hi</p>"), "{doc}");
     }

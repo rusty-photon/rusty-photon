@@ -58,6 +58,9 @@ pub struct SetupPagesState {
     pub last_body: String,
     /// The port a `server.port` save moved the pages to.
     pub moved_port: Option<u16>,
+    /// The handler generation the page carried before the last submission:
+    /// a page after the reload carries another.
+    pub generation_before_save: Option<String>,
 }
 
 /// Contract the [`setup_pages_steps!`](crate::setup_pages_steps) macro
@@ -164,6 +167,7 @@ pub async fn submit(
         "the page to submit did not render:\n{}",
         state.last_body
     );
+    state.generation_before_save = dom::generation(&state.last_body);
     let mut controls = dom::successful_controls(&state.last_body);
     for (name, value) in changes {
         controls.retain(|(k, _)| k != name);
@@ -198,8 +202,13 @@ pub async fn post(
     state.last_body = response.text().await.unwrap_or_default();
 }
 
-/// Poll a page until it renders the input `name` with `value`, through the
-/// service's reload: a failed fetch is "not yet" until the budget runs out.
+/// Poll a page until the **rebuilt** server renders the input `name` with
+/// `value`.
+///
+/// Only a page whose handler generation differs from the one recorded
+/// before the save counts, so an answer from the old listener (which
+/// already shows the file's new value) never passes for the reload. A
+/// failed fetch is "not yet" until the budget runs out.
 ///
 /// # Panics
 ///
@@ -212,6 +221,7 @@ pub async fn wait_until_input_shows(
     value: &str,
 ) {
     let url = format!("{}{path}", state.base_url());
+    let before = state.generation_before_save.clone();
     let started = Instant::now();
     let mut last: Result<(u16, String), String> = Err("not asked yet".to_string());
     while started.elapsed() < RELOAD_BUDGET {
@@ -223,7 +233,11 @@ pub async fn wait_until_input_shows(
             Ok(response) => {
                 let status = response.status().as_u16();
                 let body = response.text().await.unwrap_or_default();
-                if status == 200 && dom::input(&body, name).is_some_and(|i| i.value == value) {
+                let rebuilt = dom::generation(&body).is_some_and(|g| Some(g) != before);
+                if status == 200
+                    && rebuilt
+                    && dom::input(&body, name).is_some_and(|i| i.value == value)
+                {
                     state.last_status = Some(status);
                     state.last_body = body;
                     return;
@@ -235,7 +249,7 @@ pub async fn wait_until_input_shows(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     panic!(
-        "{path} did not show {name}={value:?} within {:?} (last: {last:?})",
+        "{path} did not show {name}={value:?} from a rebuilt server (generation before the save: {before:?}) within {:?} (last: {last:?})",
         started.elapsed()
     );
 }
@@ -320,6 +334,15 @@ pub mod dom {
         let doc = Html::parse_document(html);
         doc.select(&selector(css))
             .any(|el| el.text().collect::<String>().contains(needle))
+    }
+
+    /// The handler generation the page carries (`<meta name="setup-generation">`).
+    #[must_use]
+    pub fn generation(html: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector(r#"meta[name="setup-generation"]"#))
+            .next()
+            .and_then(|el| el.value().attr("content").map(str::to_owned))
     }
 
     /// Every `href` of an `<a>` matching `css`.
@@ -660,7 +683,8 @@ mod tests {
         <input type="radio" name="transport" value="udp">
         <input type="password" name="auth.password" value="">
         <div class="field invalid"><input type="number" name="serial.baud_rate" value="0"><div class="error">must be greater than 0</div></div>
-        </form><a href="setup/v1/covercalibrator/0/setup">Panel</a>"#;
+        </form><a href="setup/v1/covercalibrator/0/setup">Panel</a>
+        <meta name="setup-generation" content="1700000000-3">"#;
 
     #[test]
     fn successful_controls_follow_what_a_browser_sends() {
@@ -694,6 +718,8 @@ mod tests {
         );
         assert!(dom::matches(PAGE, "div.field.invalid"));
         assert!(dom::text_contains(PAGE, ".error", "must be"));
+        assert_eq!(dom::generation(PAGE).as_deref(), Some("1700000000-3"));
+        assert_eq!(dom::generation("<p>no meta</p>"), None);
     }
 
     #[test]

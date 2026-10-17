@@ -60,7 +60,7 @@ pub fn render(view: &AuthView, submitted: Option<&FormValues>, errors: &[FieldEr
             legend { "Security" }
             p.hint {
                 @if view.has_hash {
-                    "Requests need this username and password. Leave the password blank to keep the stored one; clear the username to require no credential."
+                    "Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential."
                 } @else {
                     "No credential is required. Set a username and a password to require one."
                 }
@@ -109,11 +109,20 @@ pub fn parse(form: &FormValues, stored_hash: bool) -> Result<AuthChange, Vec<Fie
         return Ok(AuthChange::Untouched);
     };
     let username = username.trim();
-    if username.is_empty() {
-        return Ok(AuthChange::Off);
-    }
     let password = form.get(PASSWORD).unwrap_or_default();
     let repeat = form.get(REPEAT).unwrap_or_default();
+    if username.is_empty() {
+        // A typed password with no username is a contradiction, not a
+        // request to turn authentication off.
+        if !password.is_empty() || !repeat.is_empty() {
+            return Err(vec![FieldError {
+                path: USERNAME.to_string(),
+                msg: "a password needs a username; clear the password fields to require no credential"
+                    .to_string(),
+            }]);
+        }
+        return Ok(AuthChange::Off);
+    }
     if password.is_empty() {
         if repeat.is_empty() && stored_hash {
             return Ok(AuthChange::Keep {
@@ -261,6 +270,21 @@ mod tests {
             parse(&form_from(&[(USERNAME, "  ")]), true).unwrap(),
             AuthChange::Off
         );
+        assert_eq!(
+            parse(
+                &form_from(&[(USERNAME, ""), (PASSWORD, ""), (REPEAT, "")]),
+                true
+            )
+            .unwrap(),
+            AuthChange::Off
+        );
+        let err = parse(
+            &form_from(&[(USERNAME, ""), (PASSWORD, "pw"), (REPEAT, "pw")]),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err[0].path, USERNAME);
+        assert!(err[0].msg.contains("needs a username"), "{}", err[0].msg);
         assert_eq!(
             parse(
                 &form_from(&[(USERNAME, "obs"), (PASSWORD, ""), (REPEAT, "")]),

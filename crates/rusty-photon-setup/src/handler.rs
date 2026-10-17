@@ -98,6 +98,20 @@ pub struct SetupPages<D: ConfigurableDriver> {
     reload: Option<ReloadSignal>,
     https: bool,
     auth_pointer: Option<String>,
+    /// Unique to this handler: a reload builds a new one, so a page carrying
+    /// a different generation is a page from the rebuilt server.
+    generation: String,
+}
+
+/// The generation the next handler is born with.
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_generation() -> String {
+    let count = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{nanos}-{count}")
 }
 
 // Manual: the config may hold a credential hash, which never belongs in a
@@ -109,6 +123,7 @@ impl<D: ConfigurableDriver> std::fmt::Debug for SetupPages<D> {
             .field("path", &self.path)
             .field("reload", &self.reload.is_some())
             .field("https", &self.https)
+            .field("generation", &self.generation)
             .finish_non_exhaustive()
     }
 }
@@ -131,6 +146,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             reload: None,
             https: false,
             auth_pointer: Some(DEFAULT_AUTH_POINTER.to_string()),
+            generation: next_generation(),
         }
     }
 
@@ -351,7 +367,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 }
             }
         };
-        render::document(&self.service, &page.title(), &body)
+        render::document(&self.service, &page.title(), &self.generation, &body)
     }
 
     /// Every control the page shows, so the banner can name an error on any
@@ -535,7 +551,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 ApplyDisposition::Restart => Saved::RestartRequired(changed),
             }
         };
-        Self::saved_response(&self.service, &saved, destination.as_ref())
+        self.saved_response(&saved, destination.as_ref())
     }
 
     /// Overlay the page's submitted fields onto `file`: a pinned one is
@@ -570,14 +586,12 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// The saved page, with the no-script `Refresh` when a reload is on.
-    fn saved_response(
-        service: &str,
-        saved: &Saved,
-        destination: Option<&Destination>,
-    ) -> PageResponse {
+    fn saved_response(&self, saved: &Saved, destination: Option<&Destination>) -> PageResponse {
         let body = render::saved_body(saved, destination, "");
-        let mut response =
-            PageResponse::html(StatusCode::OK, render::document(service, "Saved", &body));
+        let mut response = PageResponse::html(
+            StatusCode::OK,
+            render::document(&self.service, "Saved", &self.generation, &body),
+        );
         if matches!(saved, Saved::Reloading) {
             let refresh = destination.map_or_else(
                 || NOSCRIPT_REFRESH_SECONDS.to_string(),
@@ -1131,6 +1145,40 @@ mod tests {
             response.body
         );
         assert_eq!(on_disk(&fx)["serial"]["baud_rate"], 115_200);
+    }
+
+    #[tokio::test]
+    async fn every_handler_has_its_own_generation_on_every_page() {
+        let fx = fixture(&config());
+        let first = pages(&fx, config(), Overrides::default());
+        let second = pages(&fx, config(), Overrides::default());
+        let generation = |body: &str| {
+            body.split(r#"<meta name="setup-generation" content=""#)
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_string)
+                .expect("a page carries its generation")
+        };
+        let a = generation(&first.handle(PageScope::Server, get()).await.body);
+        let a_device = generation(&first.handle(DEVICE, get()).await.body);
+        let b = generation(&second.handle(PageScope::Server, get()).await.body);
+        assert_eq!(a, a_device, "one handler, one generation on both pages");
+        assert_ne!(a, b, "a rebuilt handler carries a new generation");
+        let saved = first
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("serial.port", "/dev/mock"),
+                    ("serial.baud_rate", "115200"),
+                    ("server.port", "11119"),
+                ]),
+            )
+            .await;
+        assert_eq!(
+            generation(&saved.body),
+            a,
+            "the saved page is the old handler's"
+        );
     }
 
     #[tokio::test]

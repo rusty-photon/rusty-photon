@@ -669,8 +669,10 @@ Four feature files cover the MVP behaviour:
 - `setup_pages.feature` — the server page shows the current values; the
   device page shows only its section; a valid save persists, reloads, and
   the page shows the new value after the wait (the scenario pins the bound
-  port so the rebuilt server rebinds the same port and serves the new value
-  over the wire, guarding the reload + rebind on every CI OS); an invalid
+  port so the rebuilt server rebinds the same port, and the wait accepts
+  only a page whose handler generation differs from the one before the
+  save — a page the rebuilt server served — guarding the reload + rebind
+  on every CI OS); an invalid
   save names the field and leaves the file untouched; an override-pinned
   field is shown pinned and not persisted; no hash appears on any page; a
   cross-site `POST` is refused; with auth on, the pages answer `401` without

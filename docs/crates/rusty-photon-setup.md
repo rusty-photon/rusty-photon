@@ -163,7 +163,10 @@ inputs: username, password, repeat. The page never carries the stored hash.
   stored, the save is refused with the password field named — turning auth
   on needs a password.
 - A password whose repeat differs is refused with the repeat field named.
-- A blank username turns auth off: `server.auth` is absent from the file.
+- A blank username with blank password fields turns auth off:
+  `server.auth` is absent from the file. A blank username with a typed
+  password is refused with the username field named — a contradiction,
+  not a request.
 
 A secret leaf the driver names in `secret_pointers` that is not the
 server-auth hash renders as an empty password input whose blank submission
@@ -216,4 +219,9 @@ untouched, the persisted file, the reload fired, the credential rules).
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module
 ([testing.md §5.1](../skills/testing.md#51-shared-infrastructure-bdd-infra-crate));
-`dsd-fp2` is the reference.
+`dsd-fp2` is the reference. Every page carries its handler's generation in
+a `<meta name="setup-generation">`; a reload builds a new handler, so the
+step that waits for a saved value after the reload accepts only a page
+whose generation differs from the one before the save — the old listener,
+which already shows the file's new value, cannot pass for the rebuilt
+one.
