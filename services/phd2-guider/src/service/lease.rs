@@ -43,15 +43,20 @@ pub enum LeaseAction {
 }
 
 impl LeaseAction {
-    /// The lease Action an ASCOM `Action` name names, matched exactly.
+    /// The lease Action an ASCOM `Action` name names. The name is matched
+    /// without regard to ASCII case, as the specification requires of every
+    /// Action name, and untrimmed; `SupportedActions` lists the canonical
+    /// spelling.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            ACQUIRE => Some(Self::Acquire),
-            RENEW => Some(Self::Renew),
-            RELEASE => Some(Self::Release),
-            _ => None,
-        }
+        [
+            (ACQUIRE, Self::Acquire),
+            (RENEW, Self::Renew),
+            (RELEASE, Self::Release),
+        ]
+        .into_iter()
+        .find(|(canonical, _)| canonical.eq_ignore_ascii_case(name))
+        .map(|(_, action)| action)
     }
 }
 
@@ -401,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn the_action_names_are_matched_exactly() {
+    fn the_action_names_are_matched_without_regard_to_case() {
         assert_eq!(
             LeaseAction::from_name("rustyphoton:sweep-lease-acquire"),
             Some(LeaseAction::Acquire)
@@ -414,8 +419,18 @@ mod tests {
             LeaseAction::from_name("rustyphoton:sweep-lease-release"),
             Some(LeaseAction::Release)
         );
+        // The specification has every Action name matched case-insensitively.
         assert_eq!(
             LeaseAction::from_name("RustyPhoton:sweep-lease-acquire"),
+            Some(LeaseAction::Acquire)
+        );
+        assert_eq!(
+            LeaseAction::from_name("RUSTYPHOTON:SWEEP-LEASE-RELEASE"),
+            Some(LeaseAction::Release)
+        );
+        // Case is the only thing folded: no trimming.
+        assert_eq!(
+            LeaseAction::from_name(" rustyphoton:sweep-lease-acquire"),
             None
         );
         assert_eq!(LeaseAction::from_name("config.get"), None);

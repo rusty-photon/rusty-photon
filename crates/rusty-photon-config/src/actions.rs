@@ -36,7 +36,10 @@ pub const REDACTED: &str = "********";
 ///
 /// The per-variant strings are the ASCOM Alpaca vendor Action names on the
 /// wire, so each is pinned explicitly rather than derived from its variant
-/// name; matching is exact — case-sensitive and untrimmed.
+/// name. A name is matched without regard to ASCII case, as the Alpaca
+/// specification requires of every Action name ("`SelectWheel`, `selectwheel`
+/// and `SELECTWHEEL` all refer to the same action"), and untrimmed;
+/// `SupportedActions` lists the canonical spelling.
 #[derive(
     Debug,
     Clone,
@@ -48,6 +51,7 @@ pub const REDACTED: &str = "********";
     strum::IntoStaticStr,
     strum::VariantArray,
 )]
+#[strum(ascii_case_insensitive)]
 pub enum ConfigAction {
     #[strum(serialize = "config.get")]
     Get,
@@ -840,15 +844,31 @@ mod tests {
     }
 
     #[test]
+    fn config_action_from_name_folds_ascii_case() {
+        // The specification has every Action name matched case-insensitively.
+        for (spelling, action) in [
+            ("Config.Get", ConfigAction::Get),
+            ("CONFIG.GET", ConfigAction::Get),
+            ("config.Get", ConfigAction::Get),
+            ("CONFIG.APPLY", ConfigAction::Apply),
+            ("Config.Schema", ConfigAction::Schema),
+        ] {
+            assert_eq!(
+                ConfigAction::from_name(spelling),
+                Some(action),
+                "{spelling:?} must parse"
+            );
+        }
+    }
+
+    #[test]
     fn config_action_from_name_rejects_near_misses() {
-        // Matching is exact: case-sensitive, no trimming, no bare variant names.
+        // Matching folds ASCII case and nothing else: no trimming, no bare
+        // variant names.
         for near_miss in [
             "config.list",
             "Get",
             "get",
-            "Config.Get",
-            "CONFIG.GET",
-            "config.Get",
             "config.get ",
             " config.get",
             "config_get",

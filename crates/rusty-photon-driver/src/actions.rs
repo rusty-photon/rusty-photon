@@ -202,20 +202,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_name_matching_is_case_sensitive() {
+    async fn action_name_matching_folds_ascii_case() {
+        // The specification has every Action name matched case-insensitively.
         let ctx = Some(ctx_with(
-            FakeConfig::default(),
+            FakeConfig {
+                name: "panel".into(),
+                value: 7,
+            },
             PathBuf::from("/tmp/unused"),
         ));
-        for wrong_case in ["Config.Get", "CONFIG.GET", "config.Get"] {
-            let err = dispatch::<FakeDriver>(&ctx, wrong_case.into(), String::new())
+        for spelling in ["Config.Get", "CONFIG.GET", "config.Get"] {
+            let json = dispatch::<FakeDriver>(&ctx, spelling.into(), String::new())
                 .await
-                .unwrap_err();
-            assert_eq!(
-                err.code,
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                "{wrong_case:?} must not dispatch"
-            );
+                .unwrap_or_else(|e| panic!("{spelling:?} must dispatch as config.get: {e}"));
+            assert!(json.contains("\"panel\""), "{spelling:?} answered {json}");
         }
     }
 

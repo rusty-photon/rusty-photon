@@ -31,7 +31,9 @@ use super::MountDevice;
 /// Declaration order is the order `SupportedActions` advertises. The
 /// per-variant strings are the ASCOM Alpaca vendor Action names on the
 /// wire, so each is pinned explicitly rather than taken from its variant
-/// name; matching is exact — case-sensitive and untrimmed.
+/// name. A name is matched without regard to ASCII case, as the Alpaca
+/// specification requires of every Action name, and untrimmed;
+/// `SupportedActions` lists the canonical spelling.
 #[derive(
     Debug,
     Clone,
@@ -43,6 +45,7 @@ use super::MountDevice;
     strum::IntoStaticStr,
     strum::VariantArray,
 )]
+#[strum(ascii_case_insensitive)]
 pub(super) enum ApParkAction {
     #[strum(serialize = "SetUnparkFromApPosition")]
     SetUnparkFromApPosition,
@@ -273,17 +276,35 @@ mod tests {
     }
 
     #[test]
-    fn from_name_is_case_sensitive_and_rejects_near_misses() {
-        // Names match exactly — no case folding, no trimming. Anything
-        // else falls through to `ACTION_NOT_IMPLEMENTED` in dispatch.
+    fn from_name_folds_ascii_case() {
+        // The specification has every Action name matched case-insensitively.
+        for (name, action) in [
+            (
+                "setunparkfromapposition",
+                ApParkAction::SetUnparkFromApPosition,
+            ),
+            (
+                "SETUNPARKFROMAPPOSITION",
+                ApParkAction::SetUnparkFromApPosition,
+            ),
+            (
+                "SetUnParkFromApPosition",
+                ApParkAction::SetUnparkFromApPosition,
+            ),
+            ("SetPreferredAPPark", ApParkAction::SetPreferredApPark),
+            ("setPreferredApPark", ApParkAction::SetPreferredApPark),
+            ("unparkFromApPosition", ApParkAction::UnparkFromApPosition),
+        ] {
+            assert_eq!(ApParkAction::from_name(name), Some(action), "name {name:?}");
+        }
+    }
+
+    #[test]
+    fn from_name_rejects_near_misses() {
+        // Case is the only thing folded: no trimming, no other spelling.
+        // Anything else falls through to `ACTION_NOT_IMPLEMENTED` in dispatch.
         for name in [
-            "setunparkfromapposition",
-            "SETUNPARKFROMAPPOSITION",
-            "SetUnParkFromApPosition",
             "set_unpark_from_ap_position",
-            "SetPreferredAPPark",
-            "setPreferredApPark",
-            "unparkFromApPosition",
             "UnparkFromApPosition ",
             " UnparkFromApPosition",
             "UnparkFromApPositions",

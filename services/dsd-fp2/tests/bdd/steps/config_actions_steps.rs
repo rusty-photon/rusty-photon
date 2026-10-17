@@ -65,7 +65,14 @@ async fn apply_pin_port_and_brightness(world: &mut Fp2World, value: u32) {
 #[when(regex = r#"^the action "([^"]+)" is called$"#)]
 async fn call_named_action(world: &mut Fp2World, name: String) {
     let device = Arc::clone(world.device());
-    world.last_error = device.action(name, String::new()).await.err();
+    match device.action(name, String::new()).await {
+        Ok(body) => {
+            world.last_response =
+                Some(serde_json::from_str(&body).expect("the action answered invalid JSON"));
+            world.last_error = None;
+        }
+        Err(e) => world.last_error = Some(e),
+    }
 }
 
 #[then("the supported actions should include config.get and config.apply")]

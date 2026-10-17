@@ -36,6 +36,11 @@ async fn run_unpark_action(world: &mut StarAdventurerWorld, park: String) {
         .unwrap();
 }
 
+#[when(expr = "I run the action {string} with {string}")]
+async fn run_named_action(world: &mut StarAdventurerWorld, action: String, park: String) {
+    world.mount().action(action, park).await.unwrap();
+}
+
 #[then("the mount should have received an encoder seed on both axes")]
 async fn received_encoder_seed_both_axes(world: &mut StarAdventurerWorld) {
     // `:E1` / `:E2` (SetPosition) carry a hex payload, so match on the

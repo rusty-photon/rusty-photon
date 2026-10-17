@@ -249,16 +249,27 @@ rayon = "1.10"
 # `qhy-camera` depends on it today; declared at workspace level so the
 # native-link policy rationale lives in one place.
 qhyccd-rs = { path = "crates/qhyccd-rs" }
-# Pinned to our fork for one server-side fix: upstream tracks in-flight
-# Platform 7 `Connect` / `Disconnect` operations in a set keyed by device, so
-# several outstanding at once collapse to one entry and the first to finish
-# reports `Connecting == false` on behalf of the rest. A client that polls
-# `Connecting` then reads a device whose connect handshake is still running —
-# which is what ConformU's `alpacaprotocol` casing sweep does to qhy-camera (see
-# `docs/services/qhy-camera.md` "Connect is asynchronous"). The fork counts the
-# operations instead. Drop the fork and go back to upstream `main` once the
-# change is merged there.
-ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "fix/connecting-counts-in-flight-operations", default-features = false }
+# Pinned to our fork for two server-side fixes, stacked on one branch.
+# `Connecting`: upstream tracks in-flight Platform 7 `Connect` / `Disconnect`
+# operations in a set keyed by device, so several outstanding at once collapse
+# to one entry and the first to finish reports `Connecting == false` on behalf
+# of the rest; a client that polls `Connecting` then reads a device whose
+# connect handshake is still running — which is what ConformU's
+# `alpacaprotocol` casing sweep does to qhy-camera (see
+# `docs/services/qhy-camera.md` "Connect is asynchronous"). The fork counts
+# the operations instead; that fix is offered upstream.
+# The setup pages: upstream serves the device setup page at
+# `/api/v1/{type}/{n}/setup`, a path no specification defines, and 404s the
+# Management API's `/setup/v1/{type}/{n}/setup`; its setup hook sees no
+# request, so no page can take a setting; and an unknown device number or
+# method name answers 404 where the API Reference's examples give 400. The fork
+# routes both specification paths for GET and POST through request-taking
+# hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
+# and answers the statuses the specifications give (see
+# `docs/plans/driver-setup-pages.md` D10; not offered upstream yet). Drop
+# the fork and go back to upstream `main` once both are merged there; see
+# `docs/workspace.md` "Build Notes".
+ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
 # ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
 # `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
 # first-party + dual-homed at crates/zwo-rs (ADR-010 /
