@@ -173,9 +173,10 @@ shared renderer and one shared route builder.
   listener; routes merged ahead of the fallback are covered with no
   change.
 - **Sentinel.** Process restarts stay its job.
-- **The runtime custom actions**: `phd2-guider`'s facade lease, `rp`'s
-  train lease, `star-adventurer-gti`'s park actions, and the vendor
-  features any driver adds later.
+- **The runtime custom actions**: `phd2-guider`'s facade lease (whose
+  client is `rp`'s train lease, an MCP tool pair, untouched),
+  `star-adventurer-gti`'s park actions, and the vendor features any
+  driver adds later.
 
 ## Decisions
 
@@ -183,10 +184,12 @@ shared renderer and one shared route builder.
 
 `/setup` is the server's page. It holds every section of the config
 that is not one device's: `server` (port, bind address, discovery port,
-TLS paths, auth), the transport (`serial`, `transport`), service-wide
-lists (`usb_devices`, `devices` overrides), and a list of the devices
-the server serves, each linking to its own page. The crate's own
-`/setup` (a static device list) is replaced by ours.
+TLS paths, auth), the transport (`serial`, `transport`), the
+service-wide `usb_devices` list, and a list of the devices the server
+serves, each linking to its own page. A section that belongs to one
+device — a camera's `devices.{id}` override among them — is edited on
+that device's page alone, never here. The crate's own `/setup` (a
+static device list) is replaced by ours.
 
 `/setup/v1/{device_type}/{device_number}/setup` is one device's page:
 the config section that device is built from (`cover_calibrator`,
@@ -378,8 +381,8 @@ no state.
 
 ### D8. What is retired, what is kept
 
-Retired, service by service as each gains its pages (P2) and in the
-final pass (P4):
+Retired, service by service as each gains its pages (P2 and P3) and in
+the final pass (P5):
 
 - `config.get`, `config.apply`, `config.schema` from every
   `SupportedActions`; `ConfigActionCtx`, `dispatch`, the
@@ -442,13 +445,23 @@ The crate is fixed before any page of ours is built, so our servers are
 compliant from the first phase and so is every other user of the crate:
 
 - a `GET /setup/v1/{device_type}/{device_number}/setup` route calling
-  `Device::setup()`, answering `400` for an unknown device type or
-  number as the action route does;
+  `Device::setup()` — the Management API says this page "must be
+  implemented, even if the response to the user is that the device is
+  not configurable", which the crate's default page already is — and
+  answering `403` with an HTML message for an unknown device type or
+  number, the status that API gives the path ("The provided path
+  specifies an unsupported device or method");
 - the `/setup` page links to that path;
 - `/api/v1/{type}/{n}/setup` answers with a permanent redirect to the
   spec path, so a client that followed the old link is not stranded; a
   later crate release removes it;
-- a test per route, in the crate's own suite.
+- the action route's answer for an unknown device number or an unknown
+  action becomes `400`, which the API Reference's status-code examples
+  require ("Camera device 1 does not exist", "'CanSlew' is not a valid
+  Camera command", §2.5.2); the crate answers `404` today. It is the one
+  change in the set a client can see, so ConformU's Alpaca-protocol
+  checks run against a driver on the fork before the pin moves;
+- a test per route and per status, in the crate's own suite.
 
 The change lands on a branch of our fork stacked on the pinned branch
 (the pin that carries upstream PR #23), is offered upstream as a pull
@@ -477,8 +490,13 @@ The device-claims plan's deferred C8 (`ui-htmx` editing of
   every listed port with no camera on it (a placeholder's row);
 - a checkbox per row: checked means served, with its device number,
   name, description, and in `qhy-camera` the declared wheel number; a
-  newly checked row takes the next free number; unchecking renumbers
-  the rows after it, and the page says which numbers move;
+  newly checked row takes the next free number; unchecking any but the
+  highest-numbered camera renumbers the rows after it, as the list's
+  0..N-1 rule requires, and the page shows before the save which
+  numbers move and says that `rp`'s entries bound to those numbers must
+  be renumbered to match — `rp`'s own page (P4) shows which entries
+  those are, the driver cannot — because an entry without a `unique_id`
+  pin would otherwise open the wrong camera with no error;
 - a mode switch between "serve every camera automatically" (no list)
   and "serve only the checked cameras" (a list); all boxes unchecked is
   the empty list, saved like any other — the server page outlives it;
@@ -573,9 +591,9 @@ Small, each mergeable alone, in this order.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D12 are settled | In review | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
+| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | In review | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
 | P1 | **Specification compliance first.** The `ascom-alpaca` fork routes the specification's device setup path, links to it from `/setup`, redirects the old path, with tests (D10); the change is offered upstream as a pull request; the workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default page until P2 | Not started | |
-| P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), `rusty-photon-driver::setup_router` (both pages, the save, the CSRF check, the reload hook), the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe asks for the spec-path setup page first and treats a `401` there as a page that exists (the browser will ask for the credential), so a driver that loses the actions gains the link in the same step, on an auth-on rig too, with the link's host following D5 | Not started | |
+| P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), `rusty-photon-driver::setup_router` (both pages, the save, the CSRF check, the reload hook), the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands | Not started | |
 | P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser` and `planetarium-bridge`; `phd2-guider` (D13: its `/setup` on the service listener, the facade's loopback-only rule lifted) | Not started | |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
 | P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Not started | |
@@ -642,7 +660,8 @@ noted.
   services; fifteen implement the trait.
 - **`ui-htmx.md` drift:** the restart callout's text, the two
   `equipment_page` scenarios it describes that do not exist, `RpApi`'s
-  members, "three surface tabs" where there are four.
+  members; and `pages/mod.rs`'s comment says "three surface tabs" where
+  the doc and the page have four.
 - **Sentinel's dashboard has the restart API and no button.** P4.
 
 ## References
