@@ -486,11 +486,13 @@ a setup page **writes** it, creating parent directories as needed.
 
 ### What a page shows
 
-- **Effective config** = file config with CLI overrides applied: exactly what
-  the running driver is using.
+- **The configuration file**, read through the typed `Config`: the base
+  every save starts from. After a save's reload the running driver and
+  the file agree; a hand edit of the file shows on the page before a
+  reload applies it.
 - A field pinned by a CLI override (`--port` → `serial.port`,
-  `--server-port` → `server.port`) renders disabled with a note saying so;
-  a save never persists it.
+  `--server-port` → `server.port`) shows the running value, disabled,
+  with a note saying so; a save never persists it.
 - **No secret reaches a page**: the Security section carries no hash, and
   `server.tls` is named as file-only.
 

@@ -55,10 +55,14 @@ reviewed under the wrong SHA. Then, for each head:
    the previous head's watcher if it is still running. Re-read the PR's
    reviews, review comments and conversation comments, since the watcher
    misses some of them (§Pacing).
-2. **Review the head** — `/code-review high <n> --max-findings all`
-   (code-review.md §Running a review); change nothing in the checkout
-   while it runs. Its findings come back to the session, not to the PR.
-3. **Rate the findings** — hand all of them to one fresh subagent with
+2. **Review the head** — `/review-pr high <n> --max-findings all`, which
+   runs `/code-review` on Opus whatever the session's model, or
+   `/code-review high <n> --max-findings all` from a session already on
+   Opus (code-review.md §Running a review); change nothing in the
+   checkout while it runs. Its findings come back to the session, not
+   to the PR.
+3. **Rate the findings** — hand all of them to one fresh
+   `general-purpose` subagent on Opus (`model: opus`) with
    the prompt in code-review.md §The rating step, and again change
    nothing in the checkout while it runs. It returns a realism,
    severity and verdict for each finding. A review that raised nothing
