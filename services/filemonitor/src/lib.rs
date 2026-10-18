@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server, SetupRequest, SetupResponse};
+use rusty_photon_config::actions::ConfigurableDriver;
+use rusty_photon_config::ConfigFile;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_setup::SetupPages;
@@ -57,7 +59,21 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
-impl rusty_photon_config::ConfigFile for Config {}
+impl ConfigFile for Config {
+    /// The rules the setup page's save applies (`FileMonitorDriver::validate`),
+    /// so a file the page would refuse does not start the service either:
+    /// [`load_config`] applies them, and the startup bootstrap holds the
+    /// scaffold it writes to them.
+    fn check(&self) -> Result<(), String> {
+        match <FileMonitorDriver as ConfigurableDriver>::validate(self)
+            .into_iter()
+            .next()
+        {
+            Some(error) => Err(format!("{} {}", error.path, error.msg)),
+            None => Ok(()),
+        }
+    }
+}
 
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
@@ -403,15 +419,18 @@ impl SafetyMonitor for FileMonitorDevice {
     }
 }
 
-/// Load a [`Config`] from the JSON file at `path`.
+/// Load a [`Config`] from the JSON file at `path` and check it.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read or does not parse as a
-/// [`Config`].
+/// Returns an error if the file cannot be read, does not parse as a
+/// [`Config`], or breaks a rule the setup page's save applies
+/// ([`ConfigFile::check`]): an empty `device.unique_id` or `file.path`, a
+/// zero `file.polling_interval`, or a regex rule that does not compile.
 pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
+    config.check()?;
     Ok(config)
 }
 
@@ -1193,6 +1212,61 @@ mod default_config_tests {
         let c = load_config(&path).unwrap();
 
         assert_eq!(c.server.port, 11111);
+    }
+
+    /// Writes `config` to a file in `dir` and loads it back.
+    fn load_written(
+        dir: &tempfile::TempDir,
+        config: &Config,
+    ) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
+        let path = dir.path().join("filemonitor.json");
+        std::fs::write(&path, serde_json::to_string_pretty(config).unwrap()).unwrap();
+        load_config(&path)
+    }
+
+    #[test]
+    fn the_load_refuses_a_zero_polling_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.file.polling_interval = Duration::ZERO;
+
+        let err = load_written(&dir, &config).unwrap_err().to_string();
+
+        assert_eq!(err, "file.polling_interval must be greater than 0");
+    }
+
+    #[test]
+    fn the_load_refuses_a_rule_whose_regex_does_not_compile() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.parsing.rules[2].pattern = "(unclosed".to_string();
+
+        let err = load_written(&dir, &config).unwrap_err().to_string();
+
+        assert!(
+            err.starts_with("parsing.rules.2.pattern invalid regex:"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_load_refuses_an_empty_file_path_and_unique_id_naming_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.device.unique_id = String::new();
+        config.file.path = PathBuf::new();
+
+        let err = load_written(&dir, &config).unwrap_err().to_string();
+
+        assert_eq!(
+            err,
+            "device.unique_id must not be empty (it is the device's stable ASCOM UniqueID)"
+        );
+    }
+
+    #[test]
+    fn the_scaffold_passes_the_check_the_bootstrap_holds_it_to() {
+        Config::default().check().unwrap();
     }
 
     #[test]

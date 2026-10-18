@@ -8,9 +8,12 @@ Feature: Setup pages
   one page never alters the other page's section. A duration is shown as
   humantime spells it: the file's 60s as 1m. The parsing rules are a list
   of objects, which no form control renders: the server page names them as
-  edited in the configuration file, and a rule whose regex does not compile
-  refuses every save, named by its index above the form, until the file is
-  fixed by hand. The binary takes no command-line overrides, so no field is
+  edited in the configuration file. The rules a save applies are the rules
+  the file load applies, so a file the page would refuse never starts the
+  service; a rule whose regex does not compile, put into a running
+  service's file by hand, refuses every save, named by its index above the
+  form, until the file is fixed by hand. The binary takes no command-line
+  overrides, so no field is
   ever pinned. No password hash reaches a page. A POST that does not come
   from the page itself is refused with 403 and the file is untouched. With
   auth configured the pages answer 401 without a credential and render
@@ -55,11 +58,12 @@ Feature: Setup pages
     And the configuration file holds "test-001" at "/device/unique_id"
 
   Scenario: A rule whose regex does not compile refuses every save, named by its index
-    The rules are edited in the file. The service starts with the bad rule,
-    which never matches, and the page refuses to persist until the file is
-    fixed, so a typo cannot be saved over.
-    Given a regex rule with pattern "(unclosed" that evaluates to safe
-    And filemonitor is running with these rules
+    The rules are edited in the file, and the load refuses a rule that does
+    not compile, so only a hand edit of a running service's file reaches
+    the page with one. The page then refuses to persist until the file is
+    fixed, so the typo cannot be saved over.
+    Given filemonitor is running
+    And the configuration file is edited by hand to hold a regex rule with pattern "(unclosed"
     When I submit the server setup page setting "file.polling_interval" to "30s"
     Then the page reports the submitted values were rejected naming "parsing.rules.0.pattern"
     And the configuration file holds "60s" at "/file/polling_interval"

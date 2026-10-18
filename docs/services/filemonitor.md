@@ -80,6 +80,8 @@ The parsing rules are evaluated in order, with the first match determining safet
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
+The load then applies the rules the setup page's save applies (`ConfigFile::check`, the one `FileMonitorDriver::validate` behind both): `device.unique_id` and `file.path` non-empty, `file.polling_interval` greater than zero, and every `regex`-type rule's `pattern` compiling. A file that breaks one does not start the service, is refused by a reload, and is named by `doctor` with the rule — the same answer the page gives a save of it. The first-start scaffold (`Config::default()`) is held to the same rules before it is written.
+
 ## Setup pages
 
 filemonitor configures itself on the two HTML pages the Alpaca Management
@@ -111,10 +113,11 @@ no command-line overrides beyond `--config` / `--log-level`, so
   `file.polling_interval` must be greater than zero, and every
   `regex`-type parsing rule's `pattern` must compile — a bad pattern
   otherwise fails silently as a non-match at evaluation time (see
-  [Operation](#operation)). The rules are edited in the file, so a rule
-  that does not compile refuses every save, named by its index above the
-  form (`parsing.rules.0.pattern`), until the file is fixed by hand; the
-  service itself starts with such a file, as it always has.
+  [Operation](#operation)). These are the load's rules too (above), so a
+  file the page would refuse never starts the service. The rules are
+  edited in the file, so a rule that does not compile, put into a running
+  service's file by hand, refuses every save, named by its index above the
+  form (`parsing.rules.0.pattern`), until the file is fixed by hand.
 
 A save that changes a field persists atomically, answers that the service
 is reloading, and fires the in-process reload after the response has

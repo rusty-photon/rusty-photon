@@ -52,8 +52,11 @@ impl ConfigurableDriver for FileMonitorDriver {
         // A rule whose pattern doesn't compile as a regex is otherwise a
         // silent no-match at evaluation time (see `evaluate_safety`) — reject
         // it at the config boundary instead so a typo doesn't quietly disable
-        // a safety rule. The rules are edited in the file, not on a page, so
-        // the page names the rule by its index above the form.
+        // a safety rule. The load applies these rules too (`ConfigFile::check`),
+        // so such a file never starts the service; the rules are edited in
+        // the file, not on a page, so the page names the rule by its index
+        // above the form when a hand edit puts one into a running service's
+        // file.
         for (i, rule) in config.parsing.rules.iter().enumerate() {
             if matches!(rule.rule_type, RuleType::Regex) {
                 if let Err(e) = regex::Regex::new(&rule.pattern) {

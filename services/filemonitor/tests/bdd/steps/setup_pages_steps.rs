@@ -1,6 +1,7 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
-//! `bdd-infra`, plus the Given that starts this service behind TLS and auth
-//! and the steps on its (now empty) action list.
+//! `bdd-infra`, plus the Given that starts this service behind TLS and auth,
+//! the hand edit that puts a rule into a running service's file, and the
+//! steps on its empty action list.
 
 use std::sync::Arc;
 
@@ -14,6 +15,30 @@ bdd_infra::setup_pages_steps!(FilemonitorWorld);
 #[given("filemonitor is running with TLS and auth")]
 async fn running_with_tls_and_auth(world: &mut FilemonitorWorld) {
     world.start_with_tls_and_auth_pages().await;
+}
+
+/// Rewrites the running service's configuration file so its one parsing
+/// rule is a regex rule with `pattern`. The load refuses a rule that does
+/// not compile, so a hand edit is the only way such a rule reaches the
+/// page, which reads the file fresh on every save.
+#[given(
+    expr = "the configuration file is edited by hand to hold a regex rule with pattern {string}"
+)]
+fn edit_file_to_hold_regex_rule(world: &mut FilemonitorWorld, pattern: String) {
+    let path = world
+        .setup_pages
+        .config_path
+        .as_ref()
+        .expect("the service is not running");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("failed to read config"))
+            .expect("the config is not JSON");
+    config["parsing"]["rules"] = serde_json::json!([{
+        "type": "regex",
+        "pattern": pattern,
+        "safe": true,
+    }]);
+    std::fs::write(path, config.to_string()).expect("failed to write config");
 }
 
 #[when("the supported actions are queried")]
