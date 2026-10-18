@@ -12,7 +12,9 @@
 //! `abort_slew`, `close_cover`, ...) is never gated, because it is what
 //! the transition itself does, and every indoor actuator stays
 //! available so an unsafe hour can still go to darks, bias, panel flats
-//! and cooling (tenet 1).
+//! and cooling (tenet 1). `capture` is ungated but reads its own
+//! arguments: while unsafe it refuses a frame that needs the sky with
+//! the same error ([`capture_needs_the_sky`]).
 //!
 //! There is no default class: [`class_of`] returns `None` for a name
 //! that is in neither list, and the unit test below walks the merged
@@ -31,9 +33,11 @@
 use std::collections::BTreeMap;
 
 use rmcp::model::{ErrorCode, ErrorData};
+use rp_vocabulary::FrameType;
 use rusty_photon_config::actions::FieldError;
 
 use crate::config::GateOverrides;
+use crate::persistence::LightSource;
 
 /// Whether a tool call is refused while unsafe and cancelled by the
 /// unsafe transition.
@@ -174,11 +178,33 @@ pub fn class_of(tool: &str) -> Option<ToolClass> {
 /// abort-exposure step delivered through the body, so the caller learns
 /// its frame died for safety (`cancelled: safety`) rather than seeing a
 /// bare "exposure aborted" hardware error. `capture` itself stays
-/// ungated — darks and bias while unsafe are tenet 1. Every other
-/// ungated body runs to completion.
+/// ungated — darks, bias and panel flats while unsafe are tenet 1.
+/// Every other ungated body runs to completion.
 #[must_use]
 pub fn cancelled_on_unsafe(tool: &str, class: ToolClass) -> bool {
     class == ToolClass::Gated || tool == "capture"
+}
+
+/// Whether a `capture` asks for a frame that needs the sky.
+///
+/// `capture` is ungated, but while conditions are unsafe it refuses
+/// such a frame with [`safety_unsafe_error`], so an orchestrator pauses
+/// at its next sky frame wherever the unsafe transition lands (rp.md
+/// § Capture Tool Details, *Light source*). A `Dark` or `Bias` needs no
+/// light and a frame the panel lights needs no sky; a `Light`, a sky
+/// flat and a capture that does not say what lights it all do. A
+/// caller that never names its light source is refused, not trusted.
+#[must_use]
+pub const fn capture_needs_the_sky(
+    frame_type: Option<FrameType>,
+    light_source: Option<LightSource>,
+) -> bool {
+    match (frame_type, light_source) {
+        (Some(FrameType::Dark | FrameType::Bias), _)
+        | (Some(FrameType::Flat) | None, Some(LightSource::Panel)) => false,
+        (Some(FrameType::Light), _)
+        | (Some(FrameType::Flat) | None, Some(LightSource::Sky) | None) => true,
+    }
 }
 
 /// The JSON-RPC error code of a safety refusal (`SafetyUnsafe`).
@@ -449,6 +475,39 @@ mod tests {
         assert!(cancelled_on_unsafe("capture", ToolClass::Ungated));
         assert!(!cancelled_on_unsafe("park", ToolClass::Ungated));
         assert!(!cancelled_on_unsafe("set_filter", ToolClass::Ungated));
+    }
+
+    /// rp.md § Capture Tool Details, *Light source*: the while-unsafe
+    /// table, every frame type (untyped included) against every light
+    /// source.
+    #[test]
+    fn only_darks_bias_and_panel_lit_frames_need_no_sky() {
+        use FrameType::{Bias, Dark, Flat, Light};
+        use LightSource::{Panel, Sky};
+        let cases = [
+            (Some(Dark), None, false),
+            (Some(Dark), Some(Panel), false),
+            (Some(Dark), Some(Sky), false),
+            (Some(Bias), None, false),
+            (Some(Bias), Some(Panel), false),
+            (Some(Bias), Some(Sky), false),
+            (Some(Flat), Some(Panel), false),
+            (None, Some(Panel), false),
+            (Some(Flat), None, true),
+            (Some(Flat), Some(Sky), true),
+            (None, None, true),
+            (None, Some(Sky), true),
+            (Some(Light), None, true),
+            (Some(Light), Some(Panel), true),
+            (Some(Light), Some(Sky), true),
+        ];
+        for (frame_type, light_source, needs_the_sky) in cases {
+            assert_eq!(
+                capture_needs_the_sky(frame_type, light_source),
+                needs_the_sky,
+                "frame_type {frame_type:?}, light_source {light_source:?}"
+            );
+        }
     }
 
     #[test]

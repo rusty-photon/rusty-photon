@@ -123,6 +123,48 @@ async fn mcp_call_capture_frame_type(
 }
 
 #[when(
+    expr = "the MCP client calls \"capture\" with camera {string} for {int} ms, frame_type {string}, and light_source {string}"
+)]
+async fn mcp_call_capture_frame_type_light_source(
+    world: &mut RpWorld,
+    camera_id: String,
+    duration_ms: i32,
+    frame_type: String,
+    light_source: String,
+) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "camera_id": camera_id,
+            "duration": format!("{}ms", duration_ms),
+            "frame_type": frame_type,
+            "light_source": light_source,
+        }),
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"capture\" with camera {string} for {int} ms and light_source {string}"
+)]
+async fn mcp_call_capture_light_source(
+    world: &mut RpWorld,
+    camera_id: String,
+    duration_ms: i32,
+    light_source: String,
+) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "camera_id": camera_id,
+            "duration": format!("{}ms", duration_ms),
+            "light_source": light_source,
+        }),
+    )
+    .await;
+}
+
+#[when(
     expr = "the MCP client calls \"capture\" with camera {string} for {int} ms, target {string}, and frame_type {string}"
 )]
 async fn mcp_call_capture_target_frame_type(

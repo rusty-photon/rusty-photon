@@ -12,8 +12,13 @@ Feature: Safety enforcement
   safety gate sits in the tool dispatch: a gated tool is refused with
   the SafetyUnsafe JSON-RPC error — code -32010, data.reason "safety",
   data.monitor naming the unsafe monitor — and never dispatched, while
-  every ungated tool (a read, park, close_cover, a capture, a filter or
-  focuser move, a panel lamp) keeps answering. Nothing at
+  every ungated tool (a read, park, close_cover, a filter or focuser
+  move, a panel lamp) keeps answering. capture stays ungated but reads
+  its own arguments: while unsafe it takes a Dark, a Bias or a capture
+  whose light_source is "panel", and refuses every other — a Light, a
+  sky flat, a capture that names no light source — with the same
+  SafetyUnsafe refusal, so an orchestrator pauses at its next sky frame
+  wherever the transition lands. Nothing at
   the HTTP layer is gated: the MCP transport keeps serving every
   request (it is session-less — mcp_transport.feature) and the REST
   surface answers. The built-in classes are a default: safety.gate in
@@ -113,15 +118,46 @@ Feature: Safety enforcement
     And the safety status should list "slew" as gated
     And the mount should report parked on the simulator within 10 seconds
     And each of these ungated tools should answer:
-      | tool               | arguments                                                              |
-      | get_mount_position | {}                                                                     |
-      | get_park_state     | {}                                                                     |
-      | park               | {}                                                                     |
-      | close_cover        | {"calibrator_id": "flat-panel"}                                        |
-      | calibrator_on      | {"calibrator_id": "flat-panel", "brightness": 1}                       |
-      | set_filter         | {"filter_wheel_id": "main-fw", "filter_name": "Red"}                   |
-      | move_focuser       | {"focuser_id": "main-focuser", "position": 5000}                       |
-      | capture            | {"camera_id": "main-cam", "duration": "100ms"}                         |
+      | tool               | arguments                                                               |
+      | get_mount_position | {}                                                                      |
+      | get_park_state     | {}                                                                      |
+      | park               | {}                                                                      |
+      | close_cover        | {"calibrator_id": "flat-panel"}                                         |
+      | calibrator_on      | {"calibrator_id": "flat-panel", "brightness": 1}                        |
+      | set_filter         | {"filter_wheel_id": "main-fw", "filter_name": "Red"}                    |
+      | move_focuser       | {"focuser_id": "main-focuser", "position": 5000}                        |
+      | capture            | {"camera_id": "main-cam", "duration": "100ms", "light_source": "panel"} |
+
+  # rp.md § Capture Tool Details, *Light source*. The Light row names a
+  # target the store does not have: the refusal comes before rp looks
+  # the target up or touches the camera. The rig keeps the flat
+  # <uuid8>.fits name, so a typed frame needs no naming pattern.
+  Scenario: While unsafe, rp takes darks, bias and panel-lit frames and refuses every capture that needs the sky
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And rp is running with a capture rig and no naming templates configured
+    And an MCP client connected to rp
+    When the safety monitor reports unsafe
+    And the safety status reports overall "unsafe" within 5 seconds
+    Then each of these captures should be taken:
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Dark"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Bias"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "panel"} |
+      | {"camera_id": "main-cam", "duration": "100ms", "light_source": "panel"}                      |
+    And each of these captures should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Light", "target": "m31"}       |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "sky"}  |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "light_source": "sky"}                        |
+      | {"camera_id": "main-cam", "duration": "100ms"}                                               |
+    When the safety monitor reports safe again
+    And the safety status reports overall "safe" within 5 seconds
+    Then each of these captures should be taken:
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms"}                                               |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "sky"}  |
 
   Scenario: A config override moves a tool across the gate
     Given a running Alpaca simulator

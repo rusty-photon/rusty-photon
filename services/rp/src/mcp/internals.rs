@@ -578,6 +578,7 @@ struct FrameRecord<'a> {
     filter_read: FilterRead,
     target: Option<persistence::ExposureTarget>,
     frame_type: Option<FrameType>,
+    light_source: Option<persistence::LightSource>,
 }
 
 /// What one capture holds for its pipeline: the per-exposure snapshot
@@ -797,6 +798,9 @@ pub(crate) struct CaptureRequest<'a> {
     pub(crate) binning: Binning,
     pub(crate) target: Option<&'a str>,
     pub(crate) frame_type: Option<FrameType>,
+    /// What lights the frame, recorded on the document verbatim (rp.md
+    /// § Capture Tool Details, *Light source*).
+    pub(crate) light_source: Option<persistence::LightSource>,
     /// A held train lease the capture runs under (rp.md § Train Lease);
     /// `None` for an ordinary capture, which waits out any lease that
     /// reserves the camera.
@@ -1483,6 +1487,7 @@ impl McpHandler {
                     filter_read,
                     target: naming.target,
                     frame_type: naming.frame_type,
+                    light_source: req.light_source,
                 },
                 image_array,
             )
@@ -1629,6 +1634,7 @@ impl McpHandler {
             optics,
             target: frame.target,
             frame_type: frame.frame_type,
+            light_source: frame.light_source,
             sections: serde_json::Map::new(),
         };
         let header = fits_header::header_keywords(&doc);

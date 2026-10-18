@@ -8,11 +8,15 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
+use rp_vocabulary::FrameType;
+
+use super::super::gate;
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
 use super::super::internals::CaptureRequest;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
+use crate::persistence::LightSource;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["camera_id"]}, {"required": ["train_id"]}]))]
@@ -54,6 +58,15 @@ pub struct CaptureParams {
     /// Capture Tool Details.
     #[serde(default)]
     pub frame_type: Option<rp_vocabulary::FrameType>,
+    /// What lights the frame: `panel` (a flat panel or another light
+    /// source behind closed optics) or `sky` (a twilight flat). It
+    /// tells a panel flat from a sky flat; accepted on a `Flat` or an
+    /// untyped capture, an error on a `Light`, `Dark` or `Bias`, and
+    /// recorded on the exposure document. While conditions are unsafe
+    /// only a `Dark`, a `Bias` or a `panel` capture is taken — see
+    /// docs/services/rp.md § Capture Tool Details, *Light source*.
+    #[serde(default)]
+    pub light_source: Option<LightSource>,
     /// A held train lease to capture under (docs/services/rp.md § Train
     /// Lease): the capture runs under the lease's slot for the camera
     /// and its gate permit, and is refused when the lease is not held
@@ -74,6 +87,23 @@ pub struct CameraIdParams {
 /// (rp.md § Capture Tool Details, "Binning").
 pub(crate) const DEFAULT_BINNING: rp_vocabulary::Binning = rp_vocabulary::Binning { x: 1, y: 1 };
 
+/// The error for a `light_source` on a frame no light source can
+/// describe: a `Light` is lit by the sky and a `Dark` or `Bias` by
+/// nothing (rp.md § Capture Tool Details, *Light source*).
+fn misplaced_light_source(
+    frame_type: Option<FrameType>,
+    light_source: Option<LightSource>,
+) -> Option<String> {
+    match (frame_type, light_source) {
+        (Some(frame_type @ (FrameType::Light | FrameType::Dark | FrameType::Bias)), Some(_)) => {
+            Some(format!(
+                "capture: light_source applies to a Flat or an untyped capture, not to a {frame_type} frame"
+            ))
+        }
+        _ => None,
+    }
+}
+
 #[tool_router(router = tool_router_camera, vis = "pub")]
 impl McpHandler {
     #[tool(
@@ -87,7 +117,11 @@ impl McpHandler {
                         target (slug) + frame_type (Light/Dark/Flat/Bias) link the frame to \
                         the target store and render session.directory_pattern/ \
                         file_naming_pattern into the final path (Decision 11) — omit both to \
-                        keep the flat <doc_uuid_8>.fits behavior"
+                        keep the flat <doc_uuid_8>.fits behavior. Optional light_source \
+                        (panel/sky, with a Flat or an untyped capture) says what lights the \
+                        frame. While conditions are unsafe only a Dark, a Bias or a \
+                        light_source panel capture is taken; any other is refused with the \
+                        SafetyUnsafe error"
     )]
     pub(crate) async fn capture(
         &self,
@@ -112,6 +146,24 @@ impl McpHandler {
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Some(error) = misplaced_light_source(params.frame_type, params.light_source) {
+            return Ok(tool_error!("{}", error));
+        }
+        // The call is already registered (`ServerHandler::call_tool`), so
+        // a transition after this check cancels it like every capture in
+        // flight (rp.md § In-Flight Tool Calls).
+        if gate::capture_needs_the_sky(params.frame_type, params.light_source)
+            && !self.safety.is_safe()
+        {
+            let monitor = self.safety.unsafe_monitor();
+            debug!(
+                frame_type = ?params.frame_type,
+                light_source = ?params.light_source,
+                monitor = monitor.as_deref().unwrap_or("<none>"),
+                "capture refused: the frame needs the sky and conditions are unsafe"
+            );
+            return Err(gate::safety_unsafe_error(monitor.as_deref()));
+        }
         let camera_id = match self.resolve_camera_addressing(
             "capture",
             params.camera_id.as_deref(),
@@ -128,6 +180,7 @@ impl McpHandler {
                     binning: params.binning.unwrap_or(DEFAULT_BINNING),
                     target: params.target.as_deref(),
                     frame_type: params.frame_type,
+                    light_source: params.light_source,
                     lease_id: params.lease_id.as_deref(),
                 },
                 progress,

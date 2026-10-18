@@ -172,8 +172,28 @@ pub struct ExposureDocument {
     /// the same condition as `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_type: Option<rp_vocabulary::FrameType>,
+    /// This capture's `light_source` parameter, verbatim: what lit the
+    /// frame. Omitted when the caller gave none — see
+    /// `docs/services/rp.md` §"Core Fields".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_source: Option<LightSource>,
     #[serde(default)]
     pub sections: Map<String, Value>,
+}
+
+/// What lights a frame: the `capture` parameter that tells a panel flat
+/// from a sky flat, both of which are `FrameType::Flat`.
+///
+/// While conditions are unsafe, a capture is taken only when it does
+/// not need the sky, and `Panel` is how a lit frame says so
+/// (`docs/services/rp.md` §"Capture Tool Details", *Light source*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LightSource {
+    /// A flat panel or another light source behind closed optics.
+    Panel,
+    /// The sky, as for a twilight flat.
+    Sky,
 }
 
 /// The exposure document's `target` field (Decision 11).
@@ -735,6 +755,24 @@ mod tests {
             !obj.contains_key("frame_type"),
             "frame_type key should be omitted when None, got: {body}"
         );
+        assert!(
+            !obj.contains_key("light_source"),
+            "light_source key should be omitted when None, got: {body}"
+        );
+    }
+
+    /// The sidecar spells the light source as the `capture` parameter
+    /// does, lowercase.
+    #[test]
+    fn light_source_round_trips_in_its_lowercase_spelling() {
+        for (light_source, spelling) in [(LightSource::Panel, "panel"), (LightSource::Sky, "sky")] {
+            let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+            doc.light_source = Some(light_source);
+            let body: Value = serde_json::to_value(&doc).unwrap();
+            assert_eq!(body["light_source"], spelling);
+            let parsed: ExposureDocument = serde_json::from_value(body).unwrap();
+            assert_eq!(parsed.light_source, Some(light_source));
+        }
     }
 
     #[test]

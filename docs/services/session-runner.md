@@ -716,12 +716,20 @@ in-flight tool call (a gated call such as `slew` aborts its motion, a
 `capture` aborts its exposure, and either answers the tool error
 `cancelled: safety`), stops guiding, parks the mount, and answers the
 run's further *gated* calls with the `SafetyUnsafe` JSON-RPC error
-while conditions stay unsafe (per `rp.md` § Safety; ungated calls —
-reads, `park`, `close_cover`, a dark-frame `capture` — keep answering).
+while conditions stay unsafe — and its captures of frames that need
+the sky: a `Light`, a sky flat, any `capture` that names no panel as
+its `light_source` (per `rp.md` § Safety and § Capture Tool Details;
+ungated calls — reads, `park`, `close_cover`, a dark-frame or
+panel-flat `capture` — keep answering).
 There is no MCP session to terminate — the transport is session-less
 (ADR-021) — so the engine sees a safety stop as two signals: the
 in-flight call fails with `cancelled: safety`, and its next gated call
-fails with the safety error. Both are the engine's **safety pause**.
+or sky capture fails with the safety error. Both are the engine's
+**safety pause**. Because `rp` refuses the next sky capture, a run
+pauses wherever the transition lands, between two frames as well as
+during one: `deep_sky.json`'s capture loop calls only ungated tools
+between frames and still pauses at its next frame, and so does
+`sky_flat.json`'s.
 
 The engine's error posture is three-way (mcp-sessionless D9), pinned in
 the MCP client's error mapping:

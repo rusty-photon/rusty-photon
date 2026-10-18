@@ -238,7 +238,7 @@ impl FlatsHandler {
     }
 
     #[tool(
-        description = "Capture `count` flats per filter of an optical train at the timing train_flats learned: checks every requested filter against the store before touching anything (an untrained or stale record — camera_id, max_adu, binning, gain or offset changed — fails the call naming the filter and the field, and nothing moves), then closes the cover, lights the panel at the trained brightness and captures as frame_type Flat. Every frame's median is verified after the fact; one outside 50 % ± flat_warn_tolerance is listed in `out_of_range` and `warnings`, never a failure. Restores the cover only if it started open. Ungated."
+        description = "Capture `count` flats per filter of an optical train at the timing train_flats learned: checks every requested filter against the store before touching anything (an untrained or stale record — camera_id, max_adu, binning, gain or offset changed — fails the call naming the filter and the field, and nothing moves), then closes the cover, lights the panel at the trained brightness and captures as frame_type Flat, light_source panel. Every frame's median is verified after the fact; one outside 50 % ± flat_warn_tolerance is listed in `out_of_range` and `warnings`, never a failure. Restores the cover only if it started open. Ungated."
     )]
     async fn take_flats(
         &self,

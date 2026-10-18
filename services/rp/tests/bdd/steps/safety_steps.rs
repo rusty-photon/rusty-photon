@@ -221,9 +221,41 @@ fn tool_rows(step: &Step) -> Vec<(String, Value)> {
     .collect()
 }
 
-/// Every row is refused before dispatch: the harness renders
-/// `McpCallError::SafetyStopped` naming the JSON-RPC code and the
-/// monitor rp put in `data.monitor`.
+/// The `| arguments |` rows of a step table, each the JSON object a
+/// `capture` is called with.
+fn capture_rows(step: &Step) -> Vec<Value> {
+    let table = step
+        .table
+        .as_ref()
+        .expect("this step takes an | arguments | table");
+    let mut rows = table.rows.iter();
+    let header = rows.next().expect("table header row");
+    assert_eq!(header, &["arguments".to_string()]);
+    rows.map(|row| {
+        serde_json::from_str(&row[0])
+            .unwrap_or_else(|e| panic!("row {row:?}: arguments are not JSON: {e}"))
+    })
+    .collect()
+}
+
+/// The harness renders `McpCallError::SafetyStopped` naming the
+/// JSON-RPC code and the monitor rp put in `data.monitor`.
+fn assert_safety_refusal(call: &str, result: &Result<Value, String>, monitor: &str) {
+    let message = result
+        .as_ref()
+        .err()
+        .unwrap_or_else(|| panic!("{call} was not refused while unsafe: {result:?}"));
+    assert!(
+        message.contains("-32010") && message.contains("safety"),
+        "{call} failed, but not with the SafetyUnsafe refusal: {message}"
+    );
+    assert!(
+        message.contains(monitor),
+        "{call}'s refusal does not name monitor {monitor:?}: {message}"
+    );
+}
+
+/// Every row is refused before dispatch.
 #[then(
     expr = "each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor {string}:"
 )]
@@ -231,17 +263,39 @@ async fn gated_tools_are_refused(world: &mut RpWorld, monitor: String, step: &St
     ensure_mcp_client(world).await;
     for (tool, arguments) in tool_rows(step) {
         let result = world.mcp().call_tool(&tool, arguments).await;
-        let message = result
-            .as_ref()
-            .err()
-            .unwrap_or_else(|| panic!("{tool} was not refused while unsafe: {result:?}"));
+        assert_safety_refusal(&tool, &result, &monitor);
+    }
+}
+
+/// Every row is a `capture` refused with the gated tools' refusal,
+/// although `capture` is ungated: its arguments ask for a frame that
+/// needs the sky.
+#[then(
+    expr = "each of these captures should be refused with SafetyUnsafe code -32010 naming monitor {string}:"
+)]
+async fn sky_captures_are_refused(world: &mut RpWorld, monitor: String, step: &Step) {
+    ensure_mcp_client(world).await;
+    for arguments in capture_rows(step) {
+        let call = format!("capture {arguments}");
+        let result = world.mcp().call_tool("capture", arguments).await;
+        assert_safety_refusal(&call, &result, &monitor);
+    }
+}
+
+/// Every row is a `capture` that succeeds and saves a frame.
+#[then("each of these captures should be taken:")]
+async fn captures_are_taken(world: &mut RpWorld, step: &Step) {
+    ensure_mcp_client(world).await;
+    for arguments in capture_rows(step) {
+        let call = format!("capture {arguments}");
+        let result = world
+            .mcp()
+            .call_tool("capture", arguments)
+            .await
+            .unwrap_or_else(|message| panic!("{call} was not taken: {message}"));
         assert!(
-            message.contains("-32010") && message.contains("safety"),
-            "{tool} failed, but not with the SafetyUnsafe refusal: {message}"
-        );
-        assert!(
-            message.contains(&monitor),
-            "{tool}'s refusal does not name monitor {monitor:?}: {message}"
+            result.get("document_id").and_then(Value::as_str).is_some(),
+            "{call} answered without a document_id: {result}"
         );
     }
 }
