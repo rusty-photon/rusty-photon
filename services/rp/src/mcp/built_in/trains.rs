@@ -18,7 +18,6 @@ use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
-use crate::config::focuser::MicronsPerStep;
 use crate::equipment::trains::{Train, TrainDeviceKind};
 
 /// The plate-scale constant: arcseconds per radian over a thousand,
@@ -143,13 +142,7 @@ impl McpHandler {
         let microns_per_step = train
             .terminal_focuser()
             .and_then(|id| self.equipment.find_focuser(id))
-            .and_then(|entry| {
-                entry
-                    .config
-                    .microns_per_step
-                    .map(MicronsPerStep::value)
-                    .or_else(|| entry.invariants().step_size_um)
-            });
+            .and_then(crate::equipment::focuser::FocuserEntry::microns_per_step);
         let focal_ratio = train.focal_ratio();
         let pixel_scale_arcsec_per_pixel = match (pixel_size_um, train.focal_length_mm) {
             (Some(px), Some(focal_length)) => Some(ARCSEC_PER_MM_PER_UM * px / focal_length),

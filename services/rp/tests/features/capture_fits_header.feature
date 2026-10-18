@@ -4,18 +4,21 @@ Feature: FITS header on captured frames
   third-party tools read - ASTAP, PixInsight, Siril, astrometry.net - so a
   frame stays self-describing after it leaves rp without its sidecar
   (rp.md, Persistence: FITS header). The header is an export of the
-  exposure document: each keyword mirrors a document field, the rig
-  configuration, a connect-time camera read or the build's version, and
-  the sidecar is the record (rp.md, Ground rules).
+  exposure document: each keyword mirrors a document field, so the
+  header carries no fact the sidecar lacks, and the sidecar is the
+  record (rp.md, Ground rules).
 
   A keyword whose source is unknown is left out, never written as a
   placeholder, and no header problem fails a capture. The simulator camera
   implements neither Gain nor Offset and these rigs configure no cooling,
   so their frames carry no GAIN, OFFSET or SET-TEMP. XPIXSZ/YPIXSZ are the
   pixel size after binning. TELESCOP is the train's configured telescope,
-  and APTDIA/FOCRATIO its aperture and focal ratio. RA/DEC are where the
-  mount pointed; OBJCTRA/OBJCTDEC are the target's catalog coordinates.
-  DATE-OBS is the exposure start, the document's `exposure_started_at`.
+  and APTDIA/FOCRATIO its aperture and focal ratio, which the sidecar
+  records in its optics block. SITELAT/SITELONG are the sidecar's site,
+  and SWCREATE names the rp_version that captured the frame. RA/DEC are
+  where the mount pointed; OBJCTRA/OBJCTDEC are the target's catalog
+  coordinates. DATE-OBS is the exposure start, the document's
+  `exposure_started_at`.
 
   In the tables, `{version}` stands for rp's own version and
   `{document_id}` for the capture's document id.
@@ -65,6 +68,15 @@ Feature: FITS header on captured frames
     And the document field "train_id" should be "main"
     And the document field "telescope" should be "Takahashi FSQ-106EDX4"
     And the document field "filter" should be "Luminance"
+    And the document at "/filter_position" should be the JSON 0
+    And the document should have no value at "/filter_wavelength_nm"
+    And the document at "/train_devices" should be the JSON [{"id": "main-fw", "kind": "filter wheel"}, {"id": "main-cam", "kind": "camera"}]
+    And the document at "/optics/focal_length_mm" should be the JSON 530.0
+    And the document at "/optics/aperture_mm" should be the JSON 106.0
+    And the document at "/optics/pixel_size_x_um" should be the JSON 5.6
+    And the document at "/optics/pixel_size_y_um" should be the JSON 5.6
+    And the document at "/site" should be the JSON {"latitude_degrees": 51.0786, "longitude_degrees": -0.2944}
+    And the document's rp_version should be rp's own version
     And the document body should not contain "gain"
     And the document body should not contain "offset"
     And the captured FITS header DATE-OBS should be the document's exposure_started_at

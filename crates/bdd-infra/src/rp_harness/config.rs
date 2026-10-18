@@ -222,7 +222,7 @@ pub struct OpticalTrainConfig {
     pub aperture_mm: Option<f64>,
     /// Effective focal length of the light path in millimetres.
     /// `None` ⇒ omit the field (captures through this train's camera
-    /// carry no `optics` block).
+    /// record no focal length or anything derived from one).
     pub focal_length_mm: Option<f64>,
     /// Default framing angle in degrees east of north (layer two of
     /// the effective position angle, rp.md § Target Store → Position

@@ -3,10 +3,9 @@
 //!
 //! The header is an export of the exposure document for other
 //! programs: every card below is projected from an [`ExposureDocument`]
-//! field, or from a source the document does not repeat yet: the rig
-//! configuration and the camera's connect-time reads ([`HeaderContext`]),
-//! and the build's version (`SWCREATE`). The sidecar is the record, and
-//! `rp` never reads a fact back from the header (rp.md §"Ground rules").
+//! field and from nothing else, so the header carries no fact the
+//! sidecar lacks. The sidecar is the record, and `rp` never reads a
+//! fact back from the header (rp.md §"Ground rules").
 //! A card whose source is absent is left out, never written as a
 //! placeholder. Free text has its typographic punctuation folded to
 //! ASCII; a value `rp-fits` still refuses (`Hα`, one longer than a
@@ -20,30 +19,8 @@ use tracing::debug;
 
 use super::document::ExposureDocument;
 
-/// `SWCREATE`: the software that wrote the frame.
-const SOFTWARE: &str = concat!("rusty-photon rp ", env!("CARGO_PKG_VERSION"));
-
 /// The FITS form of `DATE-OBS` (UTC, millisecond precision, no zone).
 const FITS_TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f";
-
-/// What the header needs beyond the document: rig facts the sidecar
-/// either does not carry or carries only inside the all-or-nothing
-/// `optics` block, which the header does not wait on.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct HeaderContext<'a> {
-    /// Unbinned `PixelSizeX`, µm, from the connect-time cache.
-    pub pixel_size_x_um: Option<f64>,
-    /// Unbinned `PixelSizeY`, µm.
-    pub pixel_size_y_um: Option<f64>,
-    /// The camera's train focal length, mm.
-    pub focal_length_mm: Option<f64>,
-    /// The camera's train clear aperture, mm.
-    pub aperture_mm: Option<f64>,
-    /// The train's focal ratio, as `get_train_info` derives it.
-    pub focal_ratio: Option<f64>,
-    /// The configured observer site.
-    pub site: Option<&'a rp_ephemeris::Site>,
-}
 
 /// Format an exposure-start instant for the document's
 /// `exposure_started_at`: RFC 3339 at millisecond precision, the same
@@ -55,7 +32,7 @@ pub fn document_timestamp(at: DateTime<Utc>) -> String {
 
 /// The standard keyword cards for one frame, in header order.
 #[must_use]
-pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<Keyword> {
+pub fn header_keywords(doc: &ExposureDocument) -> Vec<Keyword> {
     let mut cards = Cards::default();
 
     if let Some(date_obs) = doc.exposure_started_at.as_deref().and_then(fits_timestamp) {
@@ -113,26 +90,8 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         doc.cooler_setpoint_c.map(f64::from),
         "[degC] cooler setpoint",
     );
-    if let Some(binning) = doc.binning {
-        cards.integer("XBINNING", Some(binning.x), "binning factor");
-        cards.integer("YBINNING", Some(binning.y), "binning factor");
-        // The binned pixel — the MaxIm convention plate solvers read
-        // `XPIXSZ` by (rp.md §"FITS header").
-        cards.real(
-            "XPIXSZ",
-            ctx.pixel_size_x_um.map(|um| um * f64::from(binning.x)),
-            "[um] binned pixel width",
-        );
-        cards.real(
-            "YPIXSZ",
-            ctx.pixel_size_y_um.map(|um| um * f64::from(binning.y)),
-            "[um] binned pixel height",
-        );
-    }
-    cards.real("FOCALLEN", ctx.focal_length_mm, "[mm] focal length");
-    cards.real("APTDIA", ctx.aperture_mm, "[mm] aperture diameter");
-    cards.real("FOCRATIO", ctx.focal_ratio, "focal ratio");
-    if let Some(site) = ctx.site {
+    cards.geometry(doc);
+    if let Some(site) = doc.site {
         cards.real(
             "SITELAT",
             Some(site.latitude_degrees),
@@ -144,7 +103,11 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
             "[deg] site longitude, east positive",
         );
     }
-    cards.string("SWCREATE", Some(SOFTWARE), "creating software");
+    let software = doc
+        .rp_version
+        .as_deref()
+        .map(|version| format!("rusty-photon rp {version}"));
+    cards.string("SWCREATE", software.as_deref(), "creating software");
 
     cards.0
 }
@@ -156,6 +119,48 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
 struct Cards(Vec<Keyword>);
 
 impl Cards {
+    /// The binning and the `optics` block's cards: `XBINNING`/`YBINNING`,
+    /// the binned pixel, and the light path's focal length, aperture
+    /// and focal ratio.
+    fn geometry(&mut self, doc: &ExposureDocument) {
+        let optics = doc.optics.as_ref();
+        if let Some(binning) = doc.binning {
+            self.integer("XBINNING", Some(binning.x), "binning factor");
+            self.integer("YBINNING", Some(binning.y), "binning factor");
+            // The binned pixel — the MaxIm convention plate solvers read
+            // `XPIXSZ` by (rp.md §"FITS header").
+            self.real(
+                "XPIXSZ",
+                optics
+                    .and_then(|o| o.pixel_size_x_um)
+                    .map(|um| um * f64::from(binning.x)),
+                "[um] binned pixel width",
+            );
+            self.real(
+                "YPIXSZ",
+                optics
+                    .and_then(|o| o.pixel_size_y_um)
+                    .map(|um| um * f64::from(binning.y)),
+                "[um] binned pixel height",
+            );
+        }
+        self.real(
+            "FOCALLEN",
+            optics.and_then(|o| o.focal_length_mm),
+            "[mm] focal length",
+        );
+        self.real(
+            "APTDIA",
+            optics.and_then(|o| o.aperture_mm),
+            "[mm] aperture diameter",
+        );
+        self.real(
+            "FOCRATIO",
+            optics.and_then(super::document::Optics::focal_ratio),
+            "focal ratio",
+        );
+    }
+
     fn push(&mut self, key: &'static str, value: KeywordValue, comment: &'static str) {
         match Keyword::new(key, value) {
             Ok(card) => self.0.push(card.with_comment(comment)),
@@ -281,12 +286,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::persistence::document::{ExposureTarget, MountPointing};
+    use crate::persistence::document::{
+        ExposureSite, ExposureTarget, MountPointing, Optics, RP_VERSION,
+    };
 
     /// The card list as `(key, value)` pairs, keys trimmed.
-    fn cards(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<(String, KeywordValue)> {
+    fn cards(doc: &ExposureDocument) -> Vec<(String, KeywordValue)> {
         let mut buf = Vec::new();
-        rp_fits::writer::write_u8_image(&mut buf, &[0], 1, 1, &header_keywords(doc, ctx)).unwrap();
+        rp_fits::writer::write_u8_image(&mut buf, &[0], 1, 1, &header_keywords(doc)).unwrap();
         let mut out = Vec::new();
         for card in buf.chunks(80) {
             let key = std::str::from_utf8(&card[..8])
@@ -339,7 +346,18 @@ mod tests {
                 ra_hours: 0.7121,
                 dec_degrees: 41.2702,
             }),
-            optics: None,
+            site: Some(ExposureSite {
+                latitude_degrees: 47.6062,
+                longitude_degrees: -122.3321,
+            }),
+            rp_version: Some(RP_VERSION.to_string()),
+            optics: Some(Optics {
+                focal_length_mm: Some(530.0),
+                aperture_mm: Some(106.0),
+                pixel_size_x_um: Some(3.76),
+                pixel_size_y_um: Some(3.76),
+                ..Optics::default()
+            }),
             target: Some(ExposureTarget {
                 slug: "m31".to_string(),
                 display_name: Some("M31".to_string()),
@@ -347,25 +365,21 @@ mod tests {
                 dec_degrees: Some(41.2689),
             }),
             frame_type: Some(FrameType::Light),
-            sections: serde_json::Map::new(),
+            ..ExposureDocument::default()
         }
     }
 
-    fn full_context(site: &rp_ephemeris::Site) -> HeaderContext<'_> {
-        HeaderContext {
-            pixel_size_x_um: Some(3.76),
-            pixel_size_y_um: Some(3.76),
-            focal_length_mm: Some(530.0),
-            aperture_mm: Some(106.0),
-            focal_ratio: Some(5.0),
-            site: Some(site),
+    /// The full document with its optics block replaced.
+    fn with_optics(optics: Optics) -> ExposureDocument {
+        ExposureDocument {
+            optics: Some(optics),
+            ..full_document()
         }
     }
 
     #[test]
     fn a_full_document_yields_every_keyword_in_header_order() {
-        let site = rp_ephemeris::Site::new(47.6062, -122.3321).unwrap();
-        let cards = cards(&full_document(), &full_context(&site));
+        let cards = cards(&full_document());
         assert_eq!(
             keys(&cards),
             [
@@ -379,8 +393,7 @@ mod tests {
 
     #[test]
     fn values_mirror_the_document() {
-        let site = rp_ephemeris::Site::new(47.6062, -122.3321).unwrap();
-        let cards = cards(&full_document(), &full_context(&site));
+        let cards = cards(&full_document());
         let expect = [
             (
                 "DATE-OBS",
@@ -405,6 +418,8 @@ mod tests {
             ("YBINNING", KeywordValue::Int(2)),
             ("FOCALLEN", KeywordValue::Float(530.0)),
             ("APTDIA", KeywordValue::Float(106.0)),
+            ("XPIXSZ", KeywordValue::Float(7.52)),
+            ("YPIXSZ", KeywordValue::Float(7.52)),
             ("FOCRATIO", KeywordValue::Float(5.0)),
             ("SITELAT", KeywordValue::Float(47.6062)),
             ("SITELONG", KeywordValue::Float(-122.3321)),
@@ -423,7 +438,7 @@ mod tests {
 
     #[test]
     fn ra_dec_are_the_pointing_in_degrees() {
-        let cards = cards(&full_document(), &HeaderContext::default());
+        let cards = cards(&full_document());
         let ra = value_of(&cards, "RA").and_then(|v| v.as_real()).unwrap();
         let dec = value_of(&cards, "DEC").and_then(|v| v.as_real()).unwrap();
         assert!((ra - 0.7121 * 15.0).abs() < 1e-9, "RA {ra}");
@@ -432,15 +447,12 @@ mod tests {
 
     #[test]
     fn a_train_without_a_telescope_or_aperture_carries_neither_card() {
-        let mut doc = full_document();
+        let mut doc = with_optics(Optics {
+            focal_length_mm: Some(530.0),
+            ..Optics::default()
+        });
         doc.telescope = None;
-        let cards = cards(
-            &doc,
-            &HeaderContext {
-                focal_length_mm: Some(530.0),
-                ..HeaderContext::default()
-            },
-        );
+        let cards = cards(&doc);
         for key in ["TELESCOP", "APTDIA", "FOCRATIO"] {
             assert_eq!(value_of(&cards, key), None, "{key}");
         }
@@ -464,7 +476,7 @@ mod tests {
                 ra_hours,
                 dec_degrees: 0.0,
             });
-            let cards = cards(&doc, &HeaderContext::default());
+            let cards = cards(&doc);
             let ra = value_of(&cards, "RA").and_then(|v| v.as_real()).unwrap();
             assert!((ra - want).abs() < 1e-9, "RA {ra} for {ra_hours}h");
         }
@@ -477,21 +489,18 @@ mod tests {
             ra_hours: 1.0,
             dec_degrees: 90.5,
         });
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(value_of(&cards, "DEC"), None);
         assert!(value_of(&cards, "RA").is_some());
     }
 
     #[test]
     fn pixel_size_is_scaled_by_the_binning() {
-        let cards = cards(
-            &full_document(),
-            &HeaderContext {
-                pixel_size_x_um: Some(3.76),
-                pixel_size_y_um: Some(2.0),
-                ..HeaderContext::default()
-            },
-        );
+        let cards = cards(&with_optics(Optics {
+            pixel_size_x_um: Some(3.76),
+            pixel_size_y_um: Some(2.0),
+            ..Optics::default()
+        }));
         let x = value_of(&cards, "XPIXSZ")
             .and_then(|v| v.as_real())
             .unwrap();
@@ -503,9 +512,43 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_document_yields_only_the_software_card() {
-        let cards = cards(&ExposureDocument::default(), &HeaderContext::default());
-        assert_eq!(keys(&cards), ["SWCREATE"]);
+    fn a_bare_document_yields_no_card() {
+        let cards = cards(&ExposureDocument::default());
+        assert_eq!(keys(&cards), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_pixel_size_the_sidecar_left_out_has_no_card() {
+        // `Optics::from_inputs` leaves a pixel size of 0 out, and the
+        // header follows the sidecar rather than the driver's read.
+        let optics = Optics::from_inputs(crate::persistence::document::OpticsInputs {
+            focal_length_mm: Some(530.0),
+            pixel_size_x_um: Some(0.0),
+            pixel_size_y_um: Some(3.76),
+            ..Default::default()
+        })
+        .unwrap();
+        let cards = cards(&with_optics(optics));
+        assert_eq!(value_of(&cards, "XPIXSZ"), None);
+        assert_eq!(value_of(&cards, "YPIXSZ"), Some(KeywordValue::Float(7.52)));
+        assert_eq!(
+            value_of(&cards, "FOCALLEN"),
+            Some(KeywordValue::Float(530.0))
+        );
+    }
+
+    #[test]
+    fn a_document_without_optics_site_or_version_carries_none_of_their_cards() {
+        let mut doc = full_document();
+        doc.optics = None;
+        doc.site = None;
+        doc.rp_version = None;
+        let cards = cards(&doc);
+        for key in [
+            "XPIXSZ", "YPIXSZ", "FOCALLEN", "APTDIA", "FOCRATIO", "SITELAT", "SITELONG", "SWCREATE",
+        ] {
+            assert_eq!(value_of(&cards, key), None, "{key}");
+        }
     }
 
     #[test]
@@ -518,7 +561,7 @@ mod tests {
             ra_hours: None,
             dec_degrees: None,
         });
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(
             value_of(&cards, "IMAGETYP"),
             Some(KeywordValue::Str("Dark Frame".into()))
@@ -532,7 +575,7 @@ mod tests {
     fn free_text_folds_typographic_punctuation_to_ascii() {
         let mut doc = full_document();
         doc.target.as_mut().unwrap().display_name = Some("Pleiades \u{2013} M45".to_string());
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(
             value_of(&cards, "OBJECT"),
             Some(KeywordValue::Str("Pleiades - M45".into()))
@@ -545,7 +588,7 @@ mod tests {
         for name in ["x".repeat(69), format!("{}'s", "x".repeat(67))] {
             let mut doc = full_document();
             doc.camera_name = Some(name.clone());
-            let cards = cards(&doc, &HeaderContext::default());
+            let cards = cards(&doc);
             assert_eq!(value_of(&cards, "INSTRUME"), None, "{name:?}");
             assert_eq!(
                 value_of(&cards, "OBJECT"),
@@ -559,7 +602,7 @@ mod tests {
         for name in ["x".repeat(68), format!("{}'", "x".repeat(66))] {
             let mut doc = full_document();
             doc.camera_name = Some(name.clone());
-            let cards = cards(&doc, &HeaderContext::default());
+            let cards = cards(&doc);
             assert_eq!(
                 value_of(&cards, "INSTRUME"),
                 Some(KeywordValue::Str(name.clone())),
@@ -572,7 +615,7 @@ mod tests {
     fn a_value_no_ascii_stand_in_keeps_distinct_drops_only_its_card() {
         let mut doc = full_document();
         doc.filter = Some("H\u{3b1}".to_string());
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(value_of(&cards, "FILTER"), None);
         assert_eq!(
             value_of(&cards, "OBJECT"),
@@ -584,7 +627,7 @@ mod tests {
     fn a_pasted_invisible_character_does_not_cost_the_card() {
         let mut doc = full_document();
         doc.target.as_mut().unwrap().display_name = Some("M31\u{200B}".to_string());
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(
             value_of(&cards, "OBJECT"),
             Some(KeywordValue::Str("M31".into()))
@@ -595,7 +638,7 @@ mod tests {
     fn an_unparseable_start_time_omits_date_obs() {
         let mut doc = full_document();
         doc.exposure_started_at = Some("yesterday".to_string());
-        let cards = cards(&doc, &HeaderContext::default());
+        let cards = cards(&doc);
         assert_eq!(value_of(&cards, "DATE-OBS"), None);
     }
 

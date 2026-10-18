@@ -32,7 +32,7 @@ use crate::equipment::trains::TrainDeviceKind;
 use crate::equipment::{DeviceSlot, SlotGuard};
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
-use crate::persistence::fits_header::{self, HeaderContext};
+use crate::persistence::fits_header;
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, MountPointing};
 use crate::train_lease::{CallKind, LeaseCall};
 
@@ -342,13 +342,24 @@ fn new_document_ids() -> (String, String) {
 }
 
 /// What a capture's one filter-wheel read found (rp.md § Core Fields,
-/// `filter`): the filter's name and slot, `Ok(None)` when no filter
+/// `filter`): the filter in the beam, `Ok(None)` when no filter
 /// applies — a `Dark`/`Bias` frame, or no wheel in the camera's train —
 /// and `Err` when the wheel failed the read, reported itself moving, or
 /// (for a capture whose filename does not depend on it) did not answer
 /// within [`AUXILIARY_READ_TIMEOUT`]. A templated capture fails on the
-/// `Err`; the document only drops its `filter` field.
-type FilterRead = std::result::Result<Option<(String, u32)>, String>;
+/// `Err`; the document only drops its filter fields.
+type FilterRead = std::result::Result<Option<FilterInBeam>, String>;
+
+/// The filter one wheel read found in the beam: its configured name
+/// (`"Filter <n>"` for an unnamed slot), the slot it sits in, and the
+/// slot's configured wavelength, all from the config in force at the
+/// read.
+#[derive(Debug, PartialEq)]
+pub(super) struct FilterInBeam {
+    pub(super) name: String,
+    pub(super) position: u32,
+    pub(super) wavelength_nm: Option<f64>,
+}
 
 /// How long a capture waits on one of its auxiliary device reads — the
 /// camera's gain, offset and start time, and the filter wheel where the
@@ -562,7 +573,6 @@ struct FrameRecord<'a> {
     duration: Duration,
     binning: Binning,
     invariants: &'a CameraInvariants,
-    focal_length_mm: Option<f64>,
     conditions: CaptureConditions,
     pointing: Option<MountPointing>,
     filter_read: FilterRead,
@@ -584,7 +594,6 @@ struct FrameRecord<'a> {
 /// does underneath it.
 struct CameraClaim {
     cam: Arc<dyn Camera>,
-    focal_length_mm: Option<f64>,
     readout_time_estimate: Duration,
     invariants: CameraInvariants,
     slot: SlotGuard,
@@ -940,62 +949,36 @@ pub(crate) fn validate_binning(
     Ok(())
 }
 
-/// Optical geometry for the sidecar's `optics` block. Combines the
-/// operator-supplied focal length with the cached pixel-size and
-/// sensor-dimension reads from `CameraEntry`. Any missing piece
-/// (focal length not configured, connect-time read failed) drops
-/// the whole block — see `docs/services/rp.md` §"Core Fields".
+/// The sidecar's `optics` block (rp.md § Core Fields): the camera's
+/// train facts, its cached pixel-size and sensor-dimension reads, and
+/// the train's terminal focuser's step size, each recorded on its own
+/// when it is usable, with what they derive.
 fn derive_optics(
     camera_id: &str,
-    focal_length_mm: Option<f64>,
+    train: Option<&crate::equipment::trains::Train>,
     invariants: &CameraInvariants,
+    microns_per_step: Option<f64>,
 ) -> Option<persistence::Optics> {
-    focal_length_mm.map_or_else(
-        || {
-            debug!(
-                camera_id,
-                "focal_length_mm not configured; omitting optics block"
-            );
-            None
-        },
-        |focal_length_mm| match (
-            invariants.pixel_size_x_um,
-            invariants.pixel_size_y_um,
-            invariants.sensor_width_px,
-            invariants.sensor_height_px,
-        ) {
-            (Some(px), Some(py), Some(sw), Some(sh)) => {
-                let derived =
-                    persistence::Optics::from_camera_geometry(persistence::CameraGeometry {
-                        focal_length_mm,
-                        pixel_size_x_um: px,
-                        pixel_size_y_um: py,
-                        sensor_width_px: sw,
-                        sensor_height_px: sh,
-                    });
-                if derived.is_none() {
-                    // All cached values are present but the
-                    // derivation declined — typically a non-
-                    // positive or wild-magnitude reading that
-                    // would have overflowed the derived pixel
-                    // scale / FOV. Surface enough to diagnose
-                    // bad camera state or a misconfigured focal
-                    // length.
-                    debug!(
-                        camera_id,
-                        focal_length_mm,
-                        pixel_size_x_um = px,
-                        pixel_size_y_um = py,
-                        sensor_width_px = sw,
-                        sensor_height_px = sh,
-                        "optics derivation declined; omitting block"
-                    );
-                }
-                derived
-            }
-            _ => None,
-        },
-    )
+    let inputs = persistence::OpticsInputs {
+        focal_length_mm: train.and_then(|train| train.focal_length_mm),
+        aperture_mm: train.and_then(|train| train.aperture_mm),
+        pixel_size_x_um: invariants.pixel_size_x_um,
+        pixel_size_y_um: invariants.pixel_size_y_um,
+        sensor_width_px: invariants.sensor_width_px,
+        sensor_height_px: invariants.sensor_height_px,
+        microns_per_step,
+    };
+    let optics = persistence::Optics::from_inputs(inputs);
+    // Inputs and block side by side: an input present here but absent
+    // from the block was unusable (non-positive or non-finite), as was
+    // a derivation left out although its inputs are recorded.
+    debug!(
+        camera_id,
+        ?inputs,
+        ?optics,
+        "built the frame's optics block"
+    );
+    optics
 }
 
 async fn next_frame_number(
@@ -1389,7 +1372,6 @@ impl McpHandler {
         // waits, keeping its deadline honest.
         let CameraClaim {
             cam,
-            focal_length_mm,
             readout_time_estimate,
             invariants,
             slot: camera_slot,
@@ -1496,7 +1478,6 @@ impl McpHandler {
                     duration,
                     binning,
                     invariants: &invariants,
-                    focal_length_mm,
                     conditions,
                     pointing,
                     filter_read,
@@ -1589,15 +1570,34 @@ impl McpHandler {
         // skip the cache insert.
         let captured_max_adu: Option<u32> = frame.invariants.max_adu;
 
-        let optics = derive_optics(frame.camera_id, frame.focal_length_mm, frame.invariants);
         let train = self.trains.train_for_camera(frame.camera_id);
-        let filter = match frame.filter_read {
-            Ok(read) => read.map(|(name, _position)| name),
+        let microns_per_step = train
+            .and_then(crate::equipment::trains::Train::terminal_focuser)
+            .and_then(|id| self.equipment.find_focuser(id))
+            .and_then(crate::equipment::focuser::FocuserEntry::microns_per_step);
+        let optics = derive_optics(frame.camera_id, train, frame.invariants, microns_per_step);
+        let (filter, filter_position, filter_wavelength_nm) = match frame.filter_read {
+            Ok(Some(filter)) => (
+                Some(filter.name),
+                Some(filter.position),
+                filter.wavelength_nm,
+            ),
+            Ok(None) => (None, None, None),
             Err(e) => {
-                debug!(camera_id = frame.camera_id, error = %e, "filter read failed; omitting the document's filter");
-                None
+                debug!(camera_id = frame.camera_id, error = %e, "filter read failed; omitting the document's filter fields");
+                (None, None, None)
             }
         };
+        let train_devices = train.map(|train| {
+            train
+                .devices
+                .iter()
+                .map(|device| persistence::ExposureTrainDevice {
+                    id: device.id.clone(),
+                    kind: device.kind.name().to_string(),
+                })
+                .collect()
+        });
 
         let doc = ExposureDocument {
             id: frame.document_id.to_string(),
@@ -1612,31 +1612,26 @@ impl McpHandler {
             camera_name: frame.invariants.name.clone(),
             train_id: train.map(|train| train.id.clone()),
             telescope: train.and_then(|train| train.telescope.clone()),
+            train_devices,
             duration: Some(frame.duration),
             binning: Some(frame.binning),
             filter,
+            filter_position,
+            filter_wavelength_nm,
             gain: frame.conditions.gain,
             offset: frame.conditions.offset,
             max_adu: captured_max_adu,
             cooler_setpoint_c: frame.conditions.cooler_setpoint_c,
             sensor_temperature_c: frame.conditions.sensor_temperature_c,
             pointing: frame.pointing,
+            site: self.site.as_ref().map(persistence::ExposureSite::from),
+            rp_version: Some(persistence::RP_VERSION.to_string()),
             optics,
             target: frame.target,
             frame_type: frame.frame_type,
             sections: serde_json::Map::new(),
         };
-        let header = fits_header::header_keywords(
-            &doc,
-            &HeaderContext {
-                pixel_size_x_um: frame.invariants.pixel_size_x_um,
-                pixel_size_y_um: frame.invariants.pixel_size_y_um,
-                focal_length_mm: frame.focal_length_mm,
-                aperture_mm: train.and_then(|train| train.aperture_mm),
-                focal_ratio: train.and_then(crate::equipment::trains::Train::focal_ratio),
-                site: self.site.as_ref(),
-            },
-        );
+        let header = fits_header::header_keywords(&doc);
 
         let cached_pixels = write_pixels(
             frame.image_path,
@@ -1952,7 +1947,6 @@ impl McpHandler {
         let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
         Ok(CameraClaim {
             cam,
-            focal_length_mm: self.trains.focal_length_for_camera(camera_id),
             readout_time_estimate: cam_entry
                 .config
                 .readout_time_estimate
@@ -2165,7 +2159,7 @@ impl McpHandler {
         // rather than mis-filing the frame (rp.md § Capture Tool
         // Details, *Filter resolution*).
         let (filter_name, filter_position) = match ctx.filter {
-            Ok(Some((name, position))) => (name.clone(), *position),
+            Ok(Some(filter)) => (filter.name.clone(), filter.position),
             Ok(None) => ("NA".to_string(), 0),
             Err(e) => return Err(e.clone()),
         };
@@ -2317,10 +2311,7 @@ impl McpHandler {
     /// camera isn't in a train, or the train has no filter wheel — the
     /// common case for mono/OSC rigs. Mirrors `get_filter`'s read
     /// logic (`built_in/filter_wheel.rs`).
-    async fn live_filter(
-        &self,
-        camera_id: &str,
-    ) -> std::result::Result<Option<(String, u32)>, String> {
+    async fn live_filter(&self, camera_id: &str) -> FilterRead {
         let Some(train) = self.trains.train_for_camera(camera_id) else {
             return Ok(None);
         };
@@ -2345,14 +2336,15 @@ impl McpHandler {
         let Some(position) = position else {
             return Err(format!("filter wheel '{fw_id}' is moving"));
         };
-        let filter_name = fw_entry
+        let name = fw_entry
             .config
             .filter_name_at(position)
             .map_or_else(|| format!("Filter {position}"), str::to_string);
-        Ok(Some((
-            filter_name,
-            u32::try_from(position).unwrap_or(u32::MAX),
-        )))
+        Ok(Some(FilterInBeam {
+            name,
+            position: u32::try_from(position).unwrap_or(u32::MAX),
+            wavelength_nm: fw_entry.config.filter_wavelength_at(position),
+        }))
     }
 
     /// Plan a focuser move from the focuser's current position: the legs

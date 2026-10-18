@@ -55,6 +55,18 @@ impl FocuserEntry {
         self.session.metadata()
     }
 
+    /// The image-plane travel of one step in microns (rp.md § Train
+    /// optics): the configured `microns_per_step`, else the driver's
+    /// `StepSize` from the current session. `None` when neither is
+    /// known.
+    #[must_use]
+    pub fn microns_per_step(&self) -> Option<f64> {
+        self.config
+            .microns_per_step
+            .map(config::focuser::MicronsPerStep::value)
+            .or_else(|| self.invariants().step_size_um)
+    }
+
     /// The handle of the current session together with the `(min, max)`
     /// travel every move through it stays inside: the configured bounds
     /// narrowed to the driver's travel, which stands in where the config

@@ -251,6 +251,16 @@ fn document_started_before_captured(world: &mut RpWorld) {
     );
 }
 
+#[then("the document's rp_version should be rp's own version")]
+fn document_rp_version_is_own(world: &mut RpWorld) {
+    let doc = last_document(world);
+    assert_eq!(
+        doc.get("rp_version").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_VERSION")),
+        "unexpected rp_version in {doc}"
+    );
+}
+
 #[then("the captured FITS header RA and DEC should be the document's pointing in degrees")]
 fn header_pointing_mirrors_document(world: &mut RpWorld) {
     let doc = last_document(world);

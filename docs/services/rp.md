@@ -204,26 +204,6 @@ line with the rules, each tracked by its own issue:
     `fits_path`. A frame whose pairs were copied to a new directory is
     solved, measured and written at its old copy; one whose pairs were
     moved fails, although the lookup found it.
-- The train's `aperture_mm`, the configured site's latitude and
-  longitude, and the `rp` version that wrote the frame reach the
-  header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
-  recorded in the sidecar ([#1493](https://github.com/rusty-photon/rusty-photon/issues/1493)). `FOCRATIO` needs no
-  field of its own once `aperture_mm` and the focal length are both
-  recorded; today the focal length is recorded only inside `optics`
-  (next item).
-- `optics` is all-or-nothing: when one of its inputs is unknown or
-  unusable (a non-positive pixel size, say), the whole block is left
-  out, while the header still writes `FOCALLEN`, `FOCRATIO` and
-  `XPIXSZ`/`YPIXSZ` from the inputs it has. It writes them unchecked:
-  a driver that reports a pixel size of 0 puts `XPIXSZ = 0` in the
-  header ([#1492](https://github.com/rusty-photon/rusty-photon/issues/1492)).
-- Train data the sidecar does not record at all: the filter's
-  configured `wavelength_nm` and the terminal focuser's
-  `microns_per_step`, both reported by
-  [`get_train_info`](#train-optics); the filter's slot, which the
-  capture reads along with its name and then drops; and which
-  focuser, filter wheel and rotator were in the train
-  ([#1494](https://github.com/rusty-photon/rusty-photon/issues/1494)).
 - Camera facts the sidecar does not record: `SensorType` and the
   Bayer offsets, so the record cannot tell a one-shot-colour frame
   from a mono one; `ReadoutMode`; `ElectronsPerADU`; and
@@ -268,8 +248,15 @@ line with the rules, each tracked by its own issue:
   "camera_name": "QHY600M",
   "train_id": "main",
   "telescope": "Takahashi FSQ-106EDX4",
+  "train_devices": [
+    { "id": "main-focuser", "kind": "focuser" },
+    { "id": "main-wheel", "kind": "filter wheel" },
+    { "id": "main-camera-1", "kind": "camera" }
+  ],
   "binning": "1x1",
-  "filter": "Luminance",
+  "filter": "Ha",
+  "filter_position": 4,
+  "filter_wavelength_nm": 656.3,
   "gain": 26,
   "offset": 30,
   "exposure_time_secs": 300,
@@ -286,12 +273,19 @@ line with the rules, each tracked by its own issue:
     "ra_hours": 0.7121,
     "dec_degrees": 41.2702
   },
+  "site": {
+    "latitude_degrees": 51.0786,
+    "longitude_degrees": -0.2944
+  },
+  "rp_version": "0.1.0",
   "optics": {
     "focal_length_mm": 1000.0,
+    "aperture_mm": 106.0,
     "pixel_size_x_um": 3.76,
     "pixel_size_y_um": 3.76,
     "sensor_width_px": 9576,
     "sensor_height_px": 6384,
+    "microns_per_step": 2.5,
     "pixel_scale_x_arcsec_per_pixel": 0.7756,
     "pixel_scale_y_arcsec_per_pixel": 0.7756,
     "fov_width_deg": 2.0630,
@@ -380,6 +374,13 @@ sidecar is the record ([Ground rules](#ground-rules)).
 - `telescope` — that train's configured `telescope`, as it stood when
   the frame was taken (a later config edit does not reach back);
   omitted outside every train or when the train names none.
+- `train_devices` — that train's devices in optical order, objective
+  side first, each `{id, kind}` as `get_train_info`'s `devices` lists
+  them (`kind` is `camera`, `focuser`, `rotator`, `filter wheel` or
+  `cover calibrator`), copied from the config in force when the frame
+  was taken. `train_id` is a label, so this is what still says which
+  focuser, filter wheel and rotator were in the light path after the
+  train is edited. Omitted for a camera outside every train.
 - `filter` — the filter in the camera's train filter wheel, named from
   the wheel's configured `filters` (`"Filter <n>"` for an unnamed
   slot). Read live for `Light`, `Flat` and untyped captures, once the
@@ -400,6 +401,15 @@ sidecar is the record ([Ground rules](#ground-rules)).
   and this field, so they cannot disagree — and there a failed read
   fails a typed capture, whether or not the pattern names `{filter}`
   ([Capture Tool Details](#capture-tool-details), *Filter resolution*).
+- `filter_position` — the wheel's ASCOM `Position`, the zero-based
+  slot, from the same read that named `filter` (the value a template's
+  `{filter_position}` renders). Present exactly when `filter` is: once
+  the wheel's `filters` list is edited, the name alone no longer
+  identifies the slot.
+- `filter_wavelength_nm` — that slot's configured `wavelength_nm`
+  ([Train optics](#train-optics)), as it stood when the frame was
+  taken. Omitted when `filter` is, and when the slot's entry carries no
+  wavelength.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
@@ -427,10 +437,18 @@ sidecar is the record ([Ground rules](#ground-rules)).
   configured or connected, or the read fails.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
+- `site` — the configured observer site's `latitude_degrees` and
+  `longitude_degrees` ([Site Configuration](#site-configuration)), as
+  configured when the frame was taken; omitted when no `site` is
+  configured.
+- `rp_version` — the version of `rp` that captured the frame. Present
+  on every frame this version captures. It names the frame's writer: a
+  later `rp` that rewrites the sidecar to add a section keeps it as it
+  is.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
-solve. Built at capture time from three sources:
+solve. Built at capture time from these sources:
 
 1. `focal_length_mm` is operator-supplied on the optical train that
    terminates in this camera (`equipment.optical_trains[].focal_length_mm`
@@ -438,10 +456,14 @@ solve. Built at capture time from three sources:
    (telescope, reducers, extenders) which has no ASCOM Alpaca property —
    even the optional `Telescope.FocalLength` ignores anything screwed in
    front of the camera.
-2. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
+2. `aperture_mm` is the same train's clear aperture
+   (`optical_trains[].aperture_mm`). With `focal_length_mm` it gives the
+   frame's focal ratio, `focal_length_mm / aperture_mm`, which needs no
+   field of its own.
+3. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
    `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns),
    cached on `CameraEntry` at connect time.
-3. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
+4. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
    `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`),
    cached on `CameraEntry` at connect time. That is the frame a driver will
    deliver, which need not be every row the sensor has: the example above
@@ -450,6 +472,12 @@ solve. Built at capture time from three sources:
    bin is one the sensor delivers whole
    ([qhy-camera.md](qhy-camera.md) R4). The FOV is of the frames `rp`
    actually takes, so the reported size is the right one to derive it from.
+5. `microns_per_step` is the image-plane travel of one step of the
+   train's terminal focuser, the value `get_train_info.optics` reports
+   ([Train optics](#train-optics)): the focuser's configured
+   `microns_per_step`, else the driver's `StepSize` read when its
+   session was established. It turns a recorded focuser position into
+   physical travel.
 
 Pixel scale and FOV are derived (`fov_width_deg` corresponds to
 `sensor_width_px`; height likewise):
@@ -459,15 +487,22 @@ pixel_scale_arcsec_per_pixel = 206.265 × pixel_size_um / focal_length_mm
 fov_deg                       = pixel_scale_arcsec_per_pixel × sensor_size_px / 3600
 ```
 
-The block is omitted (serializes as absent, not `null`) when any of
-its inputs is unavailable: the camera terminates no optical train (or
-its train omits `focal_length_mm`), the camera's `pixel_size_*` read
-failed at connect time, or the camera's `camera_*_size` read failed at
-connect time. It is also omitted when an input or a derived value is
-unusable: not a positive, finite number (a driver reporting a pixel
-size of 0, say). Each missing input is logged at `debug!` (at connect
-time for the cached fields; at capture time for the missing focal
-length), and so is a derivation declined at capture. Capture
+Each input is recorded on its own whenever it is known and usable: a
+positive, finite number, or a pixel count above zero. One that is not
+is left out (absent, not `null`) without taking the others with it.
+That happens when the camera terminates no optical train (no focal
+length, aperture or step size), its train omits the fact or has no
+focuser, a connect-time read failed, or a driver reports an unusable
+value: a pixel size of 0 drops that pixel size, not the focal length
+beside it. A derived value is recorded only when all its inputs are,
+and only when it is itself positive and finite. An axis's pixel scale
+needs the focal length and that axis's pixel size; its FOV needs that
+pixel scale and that axis's sensor size. So a camera outside every
+train records its pixel and sensor size and no derivation. The block
+is omitted only when it would be empty. A failed connect-time read is
+logged at `debug!` when it happens, and each capture logs its inputs
+next to the block built from them, so an unusable value or a declined
+derivation shows as an input with no field in the block. Capture
 continues — `optics` is auxiliary metadata, not gating.
 
 The block describes the **light path and the unbinned sensor**, never
@@ -677,10 +712,9 @@ document's core fields, and a frame stays self-describing after it
 leaves `rp` without its sidecar. The export goes one way
 ([Ground rules](#ground-rules)): it is written in the same step as
 the sidecar, from the same capture-time values, it may be lossy, and
-`rp` never reads a fact back from it. Today some cards are filled
-from configuration, connect-time reads and the build's version rather
-than from the document (the table gives each card's source); Ground
-rules lists the gaps that leaves. The keyword set below is what `rp` writes
+`rp` never reads a fact back from it. Every card is built from the
+document alone (the table gives each card's field), so the header
+carries no fact the sidecar lacks. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
 promise that every fact in the document reaches the header.
@@ -703,13 +737,13 @@ promise that every fact in the document reaches the header.
 | `CCD-TEMP` | real | `sensor_temperature_c`, °C | `sensor_temperature_c` present |
 | `SET-TEMP` | real | `cooler_setpoint_c`, °C | `cooler_setpoint_c` present |
 | `XBINNING` / `YBINNING` | integer | `binning` factors | always |
-| `XPIXSZ` / `YPIXSZ` | real | `PixelSizeX`/`PixelSizeY` × `XBINNING`/`YBINNING`, µm | the connect-time pixel-size read succeeded |
-| `FOCALLEN` | real | the train's `focal_length_mm`, mm | the camera's train declares a focal length |
-| `APTDIA` | real | the train's `aperture_mm`, mm | the camera's train declares an aperture |
-| `FOCRATIO` | real | `focal_length_mm / aperture_mm`, as `get_train_info` derives it | the train declares both |
-| `SITELAT` | real | `site.latitude_degrees`, degrees north | a `site` is configured |
-| `SITELONG` | real | `site.longitude_degrees`, degrees east | a `site` is configured |
-| `SWCREATE` | string | `'rusty-photon rp <version>'` | always |
+| `XPIXSZ` / `YPIXSZ` | real | `optics.pixel_size_x_um`/`pixel_size_y_um` × `XBINNING`/`YBINNING`, µm | that pixel size and `binning` present |
+| `FOCALLEN` | real | `optics.focal_length_mm`, mm | `optics.focal_length_mm` present |
+| `APTDIA` | real | `optics.aperture_mm`, mm | `optics.aperture_mm` present |
+| `FOCRATIO` | real | `optics.focal_length_mm / optics.aperture_mm`, as `get_train_info` derives it | both present |
+| `SITELAT` | real | `site.latitude_degrees`, degrees north | `site` present |
+| `SITELONG` | real | `site.longitude_degrees`, degrees east | `site` present |
+| `SWCREATE` | string | `'rusty-photon rp <rp_version>'` | `rp_version` present (every frame this version captures) |
 | `DOC_ID` | string | the document's full UUID | always |
 
 Rules the table does not show:
@@ -719,12 +753,9 @@ Rules the table does not show:
   is the pixel size *after* binning, and plate solvers derive the
   frame's pixel scale from `XPIXSZ` and `FOCALLEN`. The sidecar's
   `optics` block is unbinned by design (§ Core Fields), so the two
-  differ by the binning factor on a binned frame. Today `XPIXSZ`,
-  `FOCALLEN` and `APTDIA` are each written whenever their own input
-  exists, even when the sidecar's all-or-nothing `optics` block is
-  left out, and `APTDIA` has no sidecar field at all. Both put a fact
-  in the header that the sidecar lacks, and
-  [Ground rules](#ground-rules) lists them as gaps.
+  differ by the binning factor on a binned frame. A pixel size the
+  sidecar leaves out as unusable (a driver reporting 0) has no
+  `XPIXSZ`/`YPIXSZ` card either.
 - **`RA`/`DEC` are pointing; `OBJCTRA`/`OBJCTDEC` are the object.**
   The first pair is the mount's live read (`pointing`), the second the
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
@@ -3654,14 +3685,16 @@ Semantics:
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
-  carry no `optics` block, exactly like a camera outside any train.
+  record no focal length in their `optics` block, and no pixel scale
+  or FOV, exactly like a camera outside any train.
 - `aperture_mm` is the clear aperture of that light path in
   millimetres — a positive finite number, rejected at load otherwise.
   Optional. With `focal_length_mm` it gives the train's focal ratio,
   which `get_train_info.optics` reports and a focus provider sizes its
   sweep from ([Train optics](#train-optics)); omitted, `focal_ratio`
-  is `null`. Frames through the train carry both as the FITS `APTDIA`
-  and `FOCRATIO` cards ([FITS header](#fits-header)).
+  is `null`. Frames through the train record it as `optics.aperture_mm`
+  and export it, with the focal ratio, as the FITS `APTDIA` and
+  `FOCRATIO` cards ([FITS header](#fits-header)).
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
@@ -3772,9 +3805,11 @@ Consumers land phase by phase per the plan:
 
 Consumers of the derived model:
 
-- The exposure document's `optics` block
-  ([Core Fields](#core-fields-owned-by-rp)): capture resolves
-  `focal_length_mm` through the captured camera's train.
+- The exposure document ([Core Fields](#core-fields-owned-by-rp)):
+  capture resolves the captured camera's train and copies its
+  `telescope` and `devices`, and into the `optics` block its
+  `focal_length_mm`, `aperture_mm` and terminal focuser's
+  `microns_per_step`.
 - `auto_focus` accepts `train_id` as an alternative to the explicit
   `camera_id` + `focuser_id` pair, resolving the train's camera and
   terminal focuser and falling back to the train's `auto_focus`
@@ -3873,7 +3908,7 @@ optics — the numbers a focus provider sizes a sweep from
   or non-finite value, leaves the fact unknown. A property read;
   nothing moves.
 - the terminal camera's `PixelSizeX`, the connect-time invariant the
-  capture sidecar's `optics` block already uses.
+  capture sidecar's `optics` block also records.
 
 `get_train_info.optics` reports them together with the two
 derivations, each field `null` when an input is unknown:
@@ -3899,6 +3934,13 @@ train without a focuser a `null` `microns_per_step`. The block is
 always present, so a provider that finds a `null` it needs errors
 naming the fact and the operator learns which line of the config to
 fill in.
+
+These are the train's facts now. A capture copies the ones in force
+into the frame's sidecar ([Core Fields](#core-fields-owned-by-rp)):
+the focal length, aperture, pixel size and `microns_per_step` into
+`optics`, the filter's wavelength into `filter_wavelength_nm`. So a
+past frame keeps its own values after the config is edited, and a
+consumer reads them from the frame, not from `get_train_info`.
 
 ### Mount Motion Gate
 

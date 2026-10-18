@@ -521,8 +521,9 @@ pub struct OpticalTrainConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telescope: Option<TelescopeName>,
     /// Effective focal length of this light path. Omitted → captures
-    /// through this train's camera carry no `optics` block, exactly
-    /// like a camera outside any train.
+    /// through this train's camera record no focal length, pixel scale
+    /// or FOV in their `optics` block, exactly like a camera outside
+    /// any train.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focal_length_mm: Option<FocalLengthMm>,
     /// Clear aperture of this light path. With `focal_length_mm` it
