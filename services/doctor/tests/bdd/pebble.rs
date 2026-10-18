@@ -114,10 +114,20 @@ impl Sidecar {
 enum ProbeError {
     /// Nothing usable answered yet; a later poll may pass.
     NotYet(String),
-    /// Another process's server answered on the port. This start's
-    /// challtestsrv has lost that bind and never retries it, so no later
-    /// poll can pass.
+    /// The port gave an answer this start's sidecar never gives, so another
+    /// process's server holds it. The sidecar has lost that bind and never
+    /// retries it, so no later poll can pass.
     Stranger(String),
+}
+
+impl ProbeError {
+    /// The same verdict, its message prefixed with `prefix`.
+    fn context(self, prefix: &str) -> Self {
+        match self {
+            Self::NotYet(e) => Self::NotYet(format!("{prefix} {e}")),
+            Self::Stranger(e) => Self::Stranger(format!("{prefix} {e}")),
+        }
+    }
 }
 
 /// A DNS query for `name` of type `qtype`, wire-format per RFC 1035 §4.1.
@@ -173,70 +183,82 @@ fn first_answer(reply: &[u8], rtype: u16) -> Option<&[u8]> {
     reply.get(at + 10..at + 10 + len)
 }
 
-/// One UDP query and the reply to it.
-async fn dns_query_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, String> {
+/// One UDP query and the reply to it. Socket errors are
+/// [`ProbeError::NotYet`]: a refused query is the port nothing has bound
+/// yet.
+async fn dns_query_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    let not_yet = |what: &str, e: std::io::Error| ProbeError::NotYet(format!("{what}: {e}"));
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
-        .map_err(|e| format!("probe socket: {e}"))?;
+        .map_err(|e| not_yet("probe socket", e))?;
     socket
         .connect(("127.0.0.1", port))
         .await
-        .map_err(|e| format!("connect: {e}"))?;
-    socket.send(query).await.map_err(|e| format!("send: {e}"))?;
+        .map_err(|e| not_yet("connect", e))?;
+    socket.send(query).await.map_err(|e| not_yet("send", e))?;
     let mut buf = [0u8; 512];
     let read = socket
         .recv(&mut buf)
         .await
-        .map_err(|e| format!("recv: {e}"))?;
+        .map_err(|e| not_yet("recv", e))?;
     if is_dns_reply(&buf[..read]) {
         Ok(buf[..read].to_vec())
     } else {
-        Err(format!("{read} bytes back, but not our DNS answer"))
+        Err(ProbeError::Stranger(format!(
+            "{read} bytes back, but not a DNS answer: another process's server"
+        )))
     }
 }
 
 /// One TCP query and the reply to it, two-byte length prefixed per RFC 1035
-/// §4.2.2.
-async fn dns_query_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, String> {
+/// §4.2.2. Connection errors are [`ProbeError::NotYet`], as for UDP.
+async fn dns_query_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    let not_yet = |what: &str, e: std::io::Error| ProbeError::NotYet(format!("{what}: {e}"));
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
-        .map_err(|e| format!("connect: {e}"))?;
+        .map_err(|e| not_yet("connect", e))?;
     let mut framed = (query.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(query);
     stream
         .write_all(&framed)
         .await
-        .map_err(|e| format!("send: {e}"))?;
+        .map_err(|e| not_yet("send", e))?;
     let mut len = [0u8; 2];
     stream
         .read_exact(&mut len)
         .await
-        .map_err(|e| format!("read length: {e}"))?;
+        .map_err(|e| not_yet("read length", e))?;
     let mut reply = vec![0u8; usize::from(u16::from_be_bytes(len))];
     stream
         .read_exact(&mut reply)
         .await
-        .map_err(|e| format!("read reply: {e}"))?;
+        .map_err(|e| not_yet("read reply", e))?;
     if is_dns_reply(&reply) {
         Ok(reply)
     } else {
-        Err("answered, but not with our DNS answer".to_owned())
+        Err(ProbeError::Stranger(
+            "answered, but not with a DNS answer: another process's server".to_owned(),
+        ))
     }
 }
 
 /// One query over UDP, bounded by [`DNS_PROBE_TIMEOUT`].
-async fn ask_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, String> {
+async fn ask_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
     match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_udp(port, query)).await {
-        Ok(result) => result.map_err(|e| format!("udp {e}")),
-        Err(_) => Err(format!("udp silent for {DNS_PROBE_TIMEOUT:?}")),
+        Ok(result) => result.map_err(|e| e.context("udp")),
+        Err(_) => Err(ProbeError::NotYet(format!(
+            "udp silent for {DNS_PROBE_TIMEOUT:?}"
+        ))),
     }
 }
 
 /// One query over TCP, bounded by [`DNS_PROBE_TIMEOUT`].
-async fn ask_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, String> {
+async fn ask_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
     match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_tcp(port, query)).await {
-        Ok(result) => result.map_err(|e| format!("tcp {e}")),
-        Err(_) => Err(format!("tcp silent for {DNS_PROBE_TIMEOUT:?}")),
+        Ok(result) => result.map_err(|e| e.context("tcp")),
+        Err(_) => Err(ProbeError::NotYet(format!(
+            "tcp silent for {DNS_PROBE_TIMEOUT:?}"
+        ))),
     }
 }
 
@@ -249,24 +271,13 @@ async fn sidecar_answers(sidecar: Sidecar) -> Result<(), ProbeError> {
     let query = dns_query(&sidecar.probe_name(), TYPE_A);
     let expected = sidecar.address.octets();
     for (transport, reply) in [
-        (
-            "udp",
-            ask_udp(sidecar.dns_port, &query)
-                .await
-                .map_err(ProbeError::NotYet)?,
-        ),
-        (
-            "tcp",
-            ask_tcp(sidecar.dns_port, &query)
-                .await
-                .map_err(ProbeError::NotYet)?,
-        ),
+        ("udp", ask_udp(sidecar.dns_port, &query).await?),
+        ("tcp", ask_tcp(sidecar.dns_port, &query).await?),
     ] {
         if first_answer(&reply, TYPE_A) != Some(&expected[..]) {
             return Err(ProbeError::Stranger(format!(
-                "DNS 127.0.0.1:{}: {transport} answered, but not with {}: \
-                 another process's DNS server",
-                sidecar.dns_port, sidecar.address
+                "{transport} answered, but not with {}: another process's DNS server",
+                sidecar.address
             )));
         }
     }
@@ -289,15 +300,15 @@ async fn management_reaches(
         .send()
         .await
         .map_err(|e| ProbeError::NotYet(format!("set-txt: {e:?}")))?;
+    // The sidecar takes any set-txt with a host and a value, so an error
+    // status is some other server's answer.
     if !response.status().is_success() {
-        return Err(ProbeError::NotYet(format!(
-            "set-txt answered {}",
+        return Err(ProbeError::Stranger(format!(
+            "{url} answered set-txt with {}: another process's server",
             response.status()
         )));
     }
-    let reply = ask_udp(sidecar.dns_port, &dns_query(&name, TYPE_TXT))
-        .await
-        .map_err(ProbeError::NotYet)?;
+    let reply = ask_udp(sidecar.dns_port, &dns_query(&name, TYPE_TXT)).await?;
     // TXT data is length-prefixed character strings (RFC 1035 §3.3.14).
     let mut expected = vec![token.len() as u8];
     expected.extend_from_slice(token.as_bytes());
@@ -496,9 +507,9 @@ impl PebbleHandle {
     /// already in use` and keeps serving its other listener, so the loss
     /// would otherwise surface only when Pebble resolves a challenge
     /// mid-scenario — long past the retry that would have picked fresh
-    /// ports. Nor does it ever retry the bind, so once either check finds
-    /// another process's server, the attempt ends at once rather than at
-    /// the end of [`READY_BUDGET`].
+    /// ports. Nor does it ever retry the bind, so once either check gets
+    /// an answer this start's sidecar never gives, the attempt ends at once
+    /// rather than at the end of [`READY_BUDGET`].
     async fn wait_ready(&mut self, sidecar: Sidecar) -> Result<(), String> {
         let client = rusty_photon_tls::client::client_builder(Some(&self.ca_pem))
             .expect("builder trusting the pebble CA")
@@ -544,7 +555,9 @@ impl PebbleHandle {
                 match sidecar_answers(sidecar).await {
                     Ok(()) => dns_ready = true,
                     Err(ProbeError::NotYet(e)) => dns_error = e,
-                    Err(ProbeError::Stranger(e)) => return Err(e),
+                    Err(ProbeError::Stranger(e)) => {
+                        return Err(format!("DNS 127.0.0.1:{}: {e}", sidecar.dns_port));
+                    }
                 }
             }
             // Only once the DNS port is proven: the management check reads

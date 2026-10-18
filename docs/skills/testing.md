@@ -1073,10 +1073,14 @@ children have:
 
 Pebble's own management listener is not configured at all: doctor never
 uses it, and without a `managementListenAddress` Pebble opens none. A
-sidecar check that finds another process's server ends the attempt at
-once, since challtestsrv never retries a lost bind; any other shortfall
-gets 30 s. Either way the harness retries the whole start on fresh ports,
-three attempts before it panics with both children's logs.
+sidecar check that gets an answer the sidecar never gives ends the attempt
+at once, since challtestsrv never retries a lost bind. Such an answer is a
+DNS port reply that is not DNS or carries another address, an HTTP error
+from the management port, or a record that port took but the DNS port
+does not serve. Anything else, such as a refused connection or silence,
+gets 30 s.
+Either way the harness retries the whole start on fresh ports, three
+attempts before it panics with both children's logs.
 
 The sidecar's two checks are the ones the directory cannot stand in for.
 challtestsrv does not exit when it loses a bind, DNS or management: it logs
