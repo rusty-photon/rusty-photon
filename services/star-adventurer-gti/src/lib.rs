@@ -39,19 +39,19 @@
 
 pub mod codec;
 pub mod config;
-pub mod config_actions;
 pub mod coordinates;
 pub mod doctor;
 pub mod error;
 pub mod manager;
 pub mod mount_device;
+pub mod setup;
 pub mod transport;
 pub mod units;
 
 pub use config::{
-    load_config, ActiveZone, AlpacaServerConfig, ApPark, AutoFlip, Config, CwExclusionZone,
-    MinAltitudeDegrees, MountConfig, RaPulseEdgeSteps, TrackingGuardMarginHours, TrackingRateName,
-    TransportConfig, UdpConfig, UsbConfig,
+    load_config, ActiveZone, AlpacaServerConfig, ApPark, AutoFlip, CliOverrides, Config,
+    CwExclusionZone, MinAltitudeDegrees, MountConfig, RaPulseEdgeSteps, TrackingGuardMarginHours,
+    TrackingRateName, TransportConfig, UdpConfig, UsbConfig,
 };
 pub use error::{Result, StarAdvError};
 pub use manager::{MountManager, MountParameters, MountSnapshot, PollPauseGuard};
@@ -74,10 +74,11 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
 
-use crate::config_actions::StarAdvDriver;
+use crate::setup::StarAdvDriver;
 
 /// What one lifecycle hands to the next across a reload: what its mount
 /// kept ([`RetainedState`]), and which mount that was.
@@ -111,10 +112,10 @@ impl Handover {
 /// The physical mount a lifecycle drives, as far as its config names it:
 /// where the transport points, and the device identity clients see.
 ///
-/// `config.apply` cannot change either — the transport block is read-only
-/// to it and `mount.unique_id` is locked — but a `SIGHUP` (or Windows
-/// `ParamChange`) reload after a hand edit can, and then the mount on the
-/// other end may be a different one, about which the old lifecycle's
+/// A setup-page save can change either (the server page edits the
+/// transport, the mount's page its identity), as can a `SIGHUP` (or
+/// Windows `ParamChange`) reload after a hand edit, and then the mount on
+/// the other end may be a different one, about which the old lifecycle's
 /// `AtPark` says nothing. A new path to the same device (`/dev/ttyACM0`
 /// to its `/dev/serial/by-id/` link) also counts as a change: the
 /// conservative side, where `AtPark` reads false and a `Park()` runs again.
@@ -161,9 +162,12 @@ pub struct ServerBuilder {
     /// and `SetPark` returns `NOT_IMPLEMENTED`. See the design doc's
     /// [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence).
     config_file_path: Option<PathBuf>,
-    /// In-process reload trigger handed to the device's `config.apply` handler.
-    /// `Some` (with `config_file_path`) enables the config vendor actions.
+    /// In-process reload trigger a setup-page save fires after its response
+    /// has flushed. `Some` (with `config_file_path`) enables the setup pages.
     reload: Option<ReloadSignal>,
+    /// Which fields the command-line flags pin: the setup pages show them
+    /// as the running service has them and never persist them.
+    overrides: CliOverrides,
     /// What the previous lifecycle handed over. The mount device starts
     /// from it when it was kept for the same mount. The default — nothing
     /// kept — is a fresh process.
@@ -201,12 +205,21 @@ impl ServerBuilder {
         self
     }
 
-    /// Hand the mount device the in-process reload trigger fired after a
-    /// `config.apply` that needs a reload. Combined with a config file path,
-    /// this enables `config.get` / `config.apply` / `config.schema`.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes. Combined with a config file path, this enables the setup
+    /// pages.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The command-line overrides in effect, so the setup pages show the
+    /// pinned fields as the running service has them and never persist
+    /// them. Defaults to none.
+    #[must_use]
+    pub fn with_cli_overrides(mut self, overrides: CliOverrides) -> Self {
+        self.overrides = overrides;
         self
     }
 
@@ -247,16 +260,35 @@ impl ServerBuilder {
         self
     }
 
-    /// Register the Telescope device (when `mount.enabled`), wiring in
-    /// the config vendor actions when built with a config file path +
-    /// reload signal (the normal path through `main`). The device starts
-    /// from the hand-over when it was kept for `identity`. Returns a handle
-    /// to the registered device, for [`BoundServer::start`] to retire.
+    /// The setup pages: one handler behind the server page and the mount's
+    /// page, present when the builder was given a config file path and a
+    /// reload signal (the normal path through `main`).
+    fn setup_pages(&self) -> Option<Arc<SetupPages<StarAdvDriver>>> {
+        match (self.config_file_path.clone(), self.reload.clone()) {
+            (Some(path), Some(reload)) => Some(Arc::new(
+                SetupPages::<StarAdvDriver>::new(
+                    "star-adventurer-gti",
+                    self.config.clone(),
+                    path,
+                    self.overrides.clone(),
+                )
+                .with_reload(reload)
+                .with_https(self.config.server.tls.is_some()),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Register the Telescope device (when `mount.enabled`), with its setup
+    /// page when the builder has the pages. The device starts from the
+    /// hand-over when it was kept for `identity`. Returns a handle to the
+    /// registered device, for [`BoundServer::start`] to retire.
     fn register_mount_device(
         &self,
         server: &mut Server,
         manager: &Arc<MountManager>,
         identity: &MountIdentity,
+        pages: Option<&Arc<SetupPages<StarAdvDriver>>>,
     ) -> Option<MountDevice> {
         if !self.config.mount.enabled {
             return None;
@@ -267,18 +299,8 @@ impl ServerBuilder {
             self.config_file_path.clone(),
         )
         .with_retained(self.handover.retained_for(identity));
-        let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
-            match (self.config_file_path.clone(), self.reload.clone()) {
-                (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides: (),
-                    reload,
-                }),
-                _ => None,
-            };
-        if let Some(ctx) = config_ctx {
-            device = device.with_config_actions(ctx);
+        if let Some(pages) = pages {
+            device = device.with_setup_pages(Arc::clone(pages));
         }
         server.devices.register(device.clone());
         info!("Registered Telescope device: {}", self.config.mount.name);
@@ -343,9 +365,16 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
+            let pages = self.setup_pages();
+            if let Some(pages) = &pages {
+                server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                    pages,
+                ))));
+            }
+
             let identity = MountIdentity::of(&self.config);
             let mount = self
-                .register_mount_device(&mut server, &manager, &identity)
+                .register_mount_device(&mut server, &manager, &identity, pages.as_ref())
                 .map(|device| (device, identity));
 
             let tls = self.config.server.tls.clone();
@@ -444,10 +473,9 @@ pub struct BoundServer {
     mount: Option<(MountDevice, MountIdentity)>,
     /// What the previous lifecycle handed over. A lifecycle without a
     /// mount has nothing to retire and hands this on unchanged, so a
-    /// reload that disables the mount and a later one that enables it
-    /// again (both SIGHUP-driven: `mount.enabled` is read-only to
-    /// `config.apply`) lose nothing in between — no driver touched the
-    /// mount meanwhile.
+    /// reload that disables the mount (its page's `enabled` box, or a hand
+    /// edit) and a later one that enables it again (a hand edit) lose
+    /// nothing in between — no driver touched the mount meanwhile.
     handover: Handover,
 }
 

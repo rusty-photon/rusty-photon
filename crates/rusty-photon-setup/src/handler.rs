@@ -15,7 +15,7 @@ use rusty_photon_service_lifecycle::ReloadSignal;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-use crate::form::{changed_paths, overlay_field, set_pointer, FormValues};
+use crate::form::{changed_paths, overlay_field_except, set_pointer, FormValues};
 use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
 use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
 use crate::{origin, security};
@@ -101,6 +101,43 @@ pub struct SetupPages<D: ConfigurableDriver> {
     /// Unique to this handler: a reload builds a new one, so a page carrying
     /// a different generation is a page from the rebuilt server.
     generation: String,
+    /// Held from a save's read of the file to its persist: every page of
+    /// the service saves to the one file, and two saves interleaving would
+    /// have the later one persist its stale copy of the other's section.
+    saving: tokio::sync::Mutex<()>,
+}
+
+/// The fields the command-line overrides pin, in both spellings a page
+/// needs: the dotted config paths (`transport.port`), which is where the
+/// running value is read from and pinned into what the page shows, and the
+/// controls they land on (`transport:usb.port` inside a tagged enum), which
+/// is what a render disables and a save skips.
+struct Pins {
+    paths: Vec<String>,
+    controls: Vec<String>,
+}
+
+impl Pins {
+    fn new(fields: &[&FieldSpec], effective: &Value, paths: Vec<String>) -> Self {
+        let controls = paths
+            .iter()
+            .map(|p| control_for_path(fields, effective, p).unwrap_or_else(|| p.clone()))
+            .collect();
+        Self { paths, controls }
+    }
+}
+
+/// The control a dotted config path lands on when it names a field inside
+/// a tagged enum's chosen variant (`transport.port` on a `usb` transport is
+/// the control `transport:usb.port`); `None` for a path that is its own
+/// control. `config` decides which variant is chosen.
+fn control_for_path(fields: &[&FieldSpec], config: &Value, path: &str) -> Option<String> {
+    fields.iter().find_map(|spec| {
+        let rest = path.strip_prefix(spec.name())?.strip_prefix('.')?;
+        let value = config.pointer(spec.pointer())?;
+        spec.variant_field(value, &dotted_to_pointer(rest))
+            .map(|inner| inner.name().to_string())
+    })
 }
 
 /// The generation the next handler is born with.
@@ -147,6 +184,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             https: false,
             auth_pointer: Some(DEFAULT_AUTH_POINTER.to_string()),
             generation: next_generation(),
+            saving: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -194,7 +232,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        let model = FieldModel::from_schema(&schema).with_secrets(D::secret_pointers());
+        let model = FieldModel::from_schema(&schema)
+            .with_secrets(D::secret_pointers())
+            .with_file_only(D::file_only_pointers());
         let sections = D::device_sections(&self.effective);
         let page = match scope {
             PageScope::Server => Page::Server { sections },
@@ -214,16 +254,20 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 Page::Device(section)
             }
         };
-        let pinned = D::override_paths(&self.overrides);
+        let pins = Pins::new(
+            &page.fields(&model),
+            &effective,
+            D::pinned_paths(&self.effective, &self.overrides),
+        );
         match request.method {
             Method::GET => {
-                let (shown, pending) = self.current_view(&effective, &pinned);
+                let (shown, pending) = self.current_view(&effective, &pins.paths);
                 PageResponse::html(
                     StatusCode::OK,
-                    self.render(&page, &model, &shown, &pinned, &[], None, &pending),
+                    self.render(&page, &model, &shown, &pins, &[], None, &pending),
                 )
             }
-            Method::POST => self.save(&page, &model, &effective, &pinned, request).await,
+            Method::POST => self.save(&page, &model, &effective, &pins, request).await,
             _ => PageResponse::text(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "This setup page takes GET and POST",
@@ -276,7 +320,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         page: &Page,
         model: &FieldModel,
         shown: &Value,
-        pinned: &[String],
+        pins: &Pins,
         errors: &[FieldError],
         submitted: Option<&FormValues>,
         pending: &[String],
@@ -289,7 +333,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             .collect();
         let field_markup = |spec: &FieldSpec| {
             let state = FieldState {
-                pinned: pinned.iter().any(|p| p == spec.name()),
+                pinned: &pins.controls,
                 errors,
             };
             render::field(spec, shown, state)
@@ -314,7 +358,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         section_names.push(f.section());
                     }
                 }
-                let devices = Self::device_rows(sections);
+                let devices = Self::device_rows(sections, &pins.paths);
                 let auth = auth_pointer.map(|p| security::AuthView::from_config(shown, p));
                 html! {
                     div.card {
@@ -390,8 +434,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         placed
     }
 
-    /// The server page's device list.
-    fn device_rows(sections: &[DeviceSection]) -> Vec<DeviceRow> {
+    /// The server page's device list; a device whose `enabled` a flag pins
+    /// (`pinned_paths`) is noted as such when disabled.
+    fn device_rows(sections: &[DeviceSection], pinned_paths: &[String]) -> Vec<DeviceRow> {
         sections
             .iter()
             .map(|s| DeviceRow {
@@ -399,6 +444,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 device_type: s.device_type.clone(),
                 device_number: s.device_number,
                 enabled: s.enabled,
+                pinned: pinned_paths
+                    .iter()
+                    .any(|p| *p == format!("{}.enabled", s.section())),
                 href: format!("setup/v1/{}/{}/setup", s.device_type, s.device_number),
             })
             .collect()
@@ -406,19 +454,21 @@ impl<D: ConfigurableDriver> SetupPages<D> {
 
     /// The save: the origin check, the overlay onto the file's section, the
     /// typed parse with its validation, the credential, the persist, and
-    /// the answer.
+    /// the answer. One save at a time per service, from the file read to
+    /// the persist.
     async fn save(
         &self,
         page: &Page,
         model: &FieldModel,
         effective: &Value,
-        pinned: &[String],
+        pins: &Pins,
         request: PageRequest,
     ) -> PageResponse {
         if let Err(refused) = origin::check(&request.headers) {
             debug!(%refused, "refusing a cross-site POST to a setup page");
             return PageResponse::text(StatusCode::FORBIDDEN, refused.to_string());
         }
+        let _saving = self.saving.lock().await;
         let form = FormValues::from(request.form);
         let mut file = match read_file_value(&self.path, effective) {
             Ok(v) => v,
@@ -429,6 +479,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
+        let file_before = file.clone();
         let mut errors = Vec::new();
         // The credential is read now and applied only once every other
         // value has passed: a rejected save must not hash anything, and its
@@ -450,7 +501,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         Self::overlay_fields(
             page,
             model,
-            pinned,
+            &pins.controls,
             auth_pointer,
             &form,
             &mut file,
@@ -459,7 +510,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         // What a re-render shows: the submitted values, with a pinned field
         // still showing what the running service uses.
         let mut shown = file.clone();
-        Self::pin(&mut shown, effective, pinned);
+        Self::pin(&mut shown, effective, &pins.paths);
         match serde_json::from_value::<D::Config>(file.clone()) {
             Ok(mut typed) => {
                 D::normalize(&mut typed);
@@ -470,17 +521,18 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 msg: format!("The submitted values do not form a valid configuration: {e}"),
             }),
         }
+        Self::place_variant_errors(&page.fields(model), &file, &mut errors);
         if !errors.is_empty() {
             return PageResponse::html(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                self.render(page, model, &shown, pinned, &errors, Some(&form), &[]),
+                self.render(page, model, &shown, pins, &errors, Some(&form), &[]),
             );
         }
         if let Some((pointer, change)) = auth_change {
             if let Err(e) = security::apply(change, &mut file, pointer).await {
                 return PageResponse::html(
                     StatusCode::UNPROCESSABLE_ENTITY,
-                    self.render(page, model, &shown, pinned, &[e], Some(&form), &[]),
+                    self.render(page, model, &shown, pins, &[e], Some(&form), &[]),
                 );
             }
         }
@@ -496,15 +548,43 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        self.persist(page, typed, effective, &request.headers)
+        // What the service would run without this save. For a service that
+        // reloads, the file as it was read, with the overrides applied: a
+        // runtime writer (a mount's `SetPark`) may have moved the file on
+        // since the start, and a reload carries that whether or not this
+        // save changes anything, so a save that changes nothing must not
+        // reload for it. For a service that restarts, the running
+        // configuration, so its list of fields waiting for the restart
+        // stays cumulative across saves.
+        let baseline = match D::apply_disposition() {
+            ApplyDisposition::Reload => self
+                .effective_of(&file_before)
+                .unwrap_or_else(|| effective.clone()),
+            ApplyDisposition::Restart => effective.clone(),
+        };
+        self.persist(page, typed, effective, &baseline, &request.headers)
     }
 
-    /// Persist the validated configuration and answer with what happened.
+    /// The configuration the service would run from `file`: parsed,
+    /// normalized, with the overrides applied. `None` for a file the typed
+    /// config refuses.
+    fn effective_of(&self, file: &Value) -> Option<Value> {
+        let mut typed = serde_json::from_value::<D::Config>(file.clone()).ok()?;
+        D::normalize(&mut typed);
+        D::apply_overrides(&mut typed, &self.overrides);
+        serde_json::to_value(&typed).ok()
+    }
+
+    /// Persist the validated configuration and answer with what happened:
+    /// what changed against `baseline` decides the reload, and where the
+    /// pages live afterwards is read against `effective`, the running
+    /// service, whose address the browser is at.
     fn persist(
         &self,
         page: &Page,
         typed: D::Config,
         effective: &Value,
+        baseline: &Value,
         headers: &HeaderMap,
     ) -> PageResponse {
         let to_persist = match serde_json::to_value(&typed) {
@@ -527,7 +607,10 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        let changed = changed_paths(effective, &effective_after);
+        let changed = changed_paths(baseline, &effective_after);
+        let moved = changed_paths(effective, &effective_after)
+            .iter()
+            .any(|p| p == "server.port" || p == "server.bind_address");
         if let Err(e) = rusty_photon_config::save(&self.path, &to_persist) {
             warn!(error = %e, path = %self.path.display(), "a setup page could not persist the configuration");
             return PageResponse::text(
@@ -539,7 +622,13 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             );
         }
         debug!(path = %self.path.display(), changed = ?changed, "a setup page saved the configuration");
-        let destination = self.destination(page, &changed, &effective_after, &to_persist, headers);
+        // A save that changes nothing takes the browser nowhere: nothing
+        // reloads, so the pages stay where they are.
+        let destination = if changed.is_empty() {
+            None
+        } else {
+            self.destination(page, moved, &effective_after, headers)
+        };
         let saved = if changed.is_empty() {
             Saved::Unchanged
         } else {
@@ -554,22 +643,39 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         self.saved_response(&saved, destination.as_ref())
     }
 
-    /// Overlay the page's submitted fields onto `file`: a pinned one is
-    /// skipped, and the credential block is the Security section's.
+    /// Overlay the page's submitted fields onto `file`: a pinned control is
+    /// skipped (a tagged enum's pinned field inside the enum's overlay too),
+    /// and the credential block is the Security section's.
     fn overlay_fields(
         page: &Page,
         model: &FieldModel,
-        pinned: &[String],
+        pinned_controls: &[String],
         auth_pointer: Option<&str>,
         form: &FormValues,
         file: &mut Value,
         errors: &mut Vec<FieldError>,
     ) {
         for spec in page.fields(model) {
-            if Some(spec.pointer()) == auth_pointer || pinned.iter().any(|p| p == spec.name()) {
+            if Some(spec.pointer()) == auth_pointer
+                || pinned_controls.iter().any(|p| p == spec.name())
+            {
                 continue;
             }
-            overlay_field(file, spec, form, errors);
+            overlay_field_except(file, spec, form, pinned_controls, errors);
+        }
+    }
+
+    /// A driver's `validate` names a field by its config path
+    /// (`transport.port`); inside a tagged enum the control is the chosen
+    /// variant's (`transport:usb.port`). Re-point such an error at its
+    /// control, so it renders beside the field rather than in the banner as
+    /// a field the page does not show. `config` is the submission, whose
+    /// tag says which variant is chosen.
+    fn place_variant_errors(fields: &[&FieldSpec], config: &Value, errors: &mut [FieldError]) {
+        for error in errors.iter_mut() {
+            if let Some(control) = control_for_path(fields, config, &error.path) {
+                error.path = control;
+            }
         }
     }
 
@@ -606,23 +712,21 @@ impl<D: ConfigurableDriver> SetupPages<D> {
 
     /// Where the browser goes after the save, when not back to the page it
     /// saved: the new address when the server's port or bind address
-    /// changed (the host the browser used, the new port), and the server
-    /// page when a device page just disabled its device, whose page is no
-    /// longer served.
+    /// `moved` from the running service's (the host the browser used, the
+    /// new port), and the server page when a device page just disabled its
+    /// device, whose page is no longer served. Both are read off what the
+    /// reloaded service will run, `effective_after` — a device whose
+    /// `enabled` a flag pins stays served whatever the file says.
     fn destination(
         &self,
         page: &Page,
-        changed: &[String],
+        moved: bool,
         effective_after: &Value,
-        persisted: &Value,
         headers: &HeaderMap,
     ) -> Option<Destination> {
-        let moved = changed
-            .iter()
-            .any(|p| p == "server.port" || p == "server.bind_address");
         let disabled = match page {
             Page::Device(section) => {
-                persisted
+                effective_after
                     .pointer(&format!("{}/enabled", section.pointer))
                     .and_then(Value::as_bool)
                     == Some(false)
@@ -701,6 +805,8 @@ impl Page {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use rusty_photon_config::actions::FieldError;
     use schemars::JsonSchema;
@@ -742,12 +848,25 @@ mod tests {
         unique_id: String,
         enabled: bool,
         level: u32,
+        /// Written at runtime by the device (a mount's `SetPark`), so the
+        /// page names it as file-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        park: Option<i32>,
+    }
+
+    /// The `GTi` mount's transport shape: a tagged enum of object variants.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "kind", rename_all = "lowercase")]
+    enum Transport {
+        Usb { port: String, baud_rate: u32 },
+        Udp { host: String, password: String },
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
     struct Config {
         serial: Serial,
         server: Server,
+        transport: Transport,
         panel: Panel,
     }
 
@@ -763,18 +882,28 @@ mod tests {
                 auth: None,
                 tls: None,
             },
+            transport: Transport::Usb {
+                port: "/dev/usb".to_string(),
+                baud_rate: 9600,
+            },
             panel: Panel {
                 name: "Panel".to_string(),
                 unique_id: "panel-1".to_string(),
                 enabled: true,
                 level: 4096,
+                park: None,
             },
         }
     }
 
+    /// The flags: `--port` (serial), `--transport-port` (the USB
+    /// transport's path, a field inside the tagged enum) and
+    /// `--enable-panel`.
     #[derive(Debug, Clone, Default)]
     struct Overrides {
         serial_port: Option<String>,
+        transport_port: Option<String>,
+        panel_enabled: Option<bool>,
     }
 
     struct Fake;
@@ -801,24 +930,52 @@ mod tests {
                     msg: "must not be empty".to_string(),
                 });
             }
+            // Named by its config path, as a driver's validate does, not by
+            // the variant's control.
+            if let Transport::Usb { port, .. } = &config.transport {
+                if port.trim().is_empty() {
+                    errors.push(FieldError {
+                        path: "transport.port".to_string(),
+                        msg: "must not be empty".to_string(),
+                    });
+                }
+            }
             errors
         }
 
         fn secret_pointers() -> &'static [&'static str] {
-            &["/server/auth/password_hash"]
+            &["/server/auth/password_hash", "/transport/password"]
+        }
+
+        fn file_only_pointers() -> &'static [&'static str] {
+            &["/panel/park"]
         }
 
         fn override_paths(overrides: &Overrides) -> Vec<String> {
-            overrides
-                .serial_port
-                .iter()
-                .map(|_| "serial.port".to_string())
-                .collect()
+            let mut paths = Vec::new();
+            if overrides.serial_port.is_some() {
+                paths.push("serial.port".to_string());
+            }
+            if overrides.transport_port.is_some() {
+                paths.push("transport.port".to_string());
+            }
+            if overrides.panel_enabled.is_some() {
+                paths.push("panel.enabled".to_string());
+            }
+            paths
         }
 
         fn apply_overrides(config: &mut Config, overrides: &Overrides) {
             if let Some(port) = &overrides.serial_port {
                 config.serial.port.clone_from(port);
+            }
+            if let (Some(pinned), Transport::Usb { port, .. }) =
+                (&overrides.transport_port, &mut config.transport)
+            {
+                port.clone_from(pinned);
+            }
+            if let Some(enabled) = overrides.panel_enabled {
+                config.panel.enabled = enabled;
             }
         }
 
@@ -1044,6 +1201,7 @@ mod tests {
             effective,
             Overrides {
                 serial_port: Some("/dev/override".to_string()),
+                ..Overrides::default()
             },
         );
         let page = p.handle(PageScope::Server, get()).await.body;
@@ -1549,6 +1707,400 @@ mod tests {
             response.headers.get("refresh").unwrap(),
             "6; url=../../../../setup"
         );
+    }
+
+    /// The server page's base submission, with the transport as the file
+    /// has it.
+    fn server_base() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("serial.port", "/dev/mock"),
+            ("serial.baud_rate", "115200"),
+            ("server.port", "11119"),
+            ("transport", "usb"),
+            ("transport:usb.port", "/dev/usb"),
+            ("transport:usb.baud_rate", "9600"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_validate_error_on_a_variants_field_lands_beside_its_control() {
+        // The driver names `transport.port`; the page's control is the
+        // chosen variant's `transport:usb.port`. Beside the field, not in
+        // the banner as a field the page does not show.
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default());
+        let mut pairs = server_base();
+        pairs.retain(|(k, _)| *k != "transport:usb.port");
+        pairs.push(("transport:usb.port", ""));
+        let response = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response.body;
+        assert!(
+            body.contains(
+                r#"name="transport:usb.port" value=""><div class="error">must not be empty</div>"#
+            ),
+            "{body}"
+        );
+        assert!(!body.contains("a field this page does not show"), "{body}");
+        assert!(body.contains("Fix the marked fields"), "{body}");
+        assert_eq!(on_disk(&fx)["transport"]["port"], "/dev/usb");
+    }
+
+    #[tokio::test]
+    async fn a_pin_inside_a_variant_disables_its_control_and_keeps_the_file() {
+        // `--transport-port` pins the USB path: the page shows the running
+        // value disabled, the sibling stays editable, and a save writes the
+        // sibling while leaving the pinned field as the file has it.
+        let mut effective = config();
+        effective.transport = Transport::Usb {
+            port: "/dev/pinned".to_string(),
+            baud_rate: 9600,
+        };
+        let fx = fixture(&config());
+        let p = pages(
+            &fx,
+            effective,
+            Overrides {
+                transport_port: Some("/dev/pinned".to_string()),
+                ..Overrides::default()
+            },
+        );
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="transport:usb.port" value="/dev/pinned" disabled>"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"name="transport:usb.baud_rate" value="9600">"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(
+                r#"type="radio" id="transport.usb" name="transport" value="usb" checked>"#
+            ),
+            "the selector is not pinned: {page}"
+        );
+        let mut pairs = server_base();
+        pairs.retain(|(k, _)| !k.starts_with("transport:usb."));
+        pairs.push(("transport:usb.port", "/dev/tampered"));
+        pairs.push(("transport:usb.baud_rate", "4800"));
+        let response = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = on_disk(&fx);
+        assert_eq!(
+            disk["transport"]["port"], "/dev/usb",
+            "the pinned field keeps the file's value"
+        );
+        assert_eq!(disk["transport"]["baud_rate"], 4800);
+    }
+
+    /// A driver whose `--transport udp` pins the whole block.
+    struct PinsTheEnum;
+
+    impl ConfigurableDriver for PinsTheEnum {
+        type Config = Config;
+        type Overrides = Overrides;
+        fn normalize(config: &mut Config) {
+            Fake::normalize(config);
+        }
+        fn validate(config: &Config) -> Vec<FieldError> {
+            Fake::validate(config)
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            Fake::secret_pointers()
+        }
+        fn override_paths(_: &Overrides) -> Vec<String> {
+            vec!["transport".to_string()]
+        }
+        fn apply_overrides(config: &mut Config, _: &Overrides) {
+            config.transport = Transport::Udp {
+                host: "mount.local".to_string(),
+                password: "hunter2-token".to_string(),
+            };
+        }
+        fn device_sections(config: &Config) -> Vec<DeviceSection> {
+            Fake::device_sections(config)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pin_on_the_enum_disables_the_block_and_a_save_leaves_it() {
+        // `--transport udp` over a file that says usb: the page shows the
+        // running udp block, every control disabled, and a save that
+        // carries the usb controls leaves the file's block alone.
+        let mut effective = config();
+        effective.transport = Transport::Udp {
+            host: "mount.local".to_string(),
+            password: "hunter2-token".to_string(),
+        };
+        let fx = fixture(&config());
+        let p = SetupPages::<PinsTheEnum>::new(
+            "fake",
+            effective,
+            fx.path.clone(),
+            Overrides::default(),
+        );
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="transport" value="udp" checked disabled>"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"name="transport:udp.host" value="mount.local" disabled>"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"name="transport:udp.password" value="" disabled"#),
+            "the secret inside the variant is a password input: {page}"
+        );
+        assert!(!page.contains("hunter2-token"), "{page}");
+        let response = p.handle(PageScope::Server, post(&server_base())).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(on_disk(&fx)["transport"]["kind"], "usb");
+        assert_eq!(on_disk(&fx)["transport"]["port"], "/dev/usb");
+    }
+
+    #[tokio::test]
+    async fn a_secret_inside_a_variant_keeps_its_value_on_a_blank_submission() {
+        let mut file = config();
+        file.transport = Transport::Udp {
+            host: "mount.local".to_string(),
+            password: "hunter2-token".to_string(),
+        };
+        let fx = fixture(&file);
+        let p = pages(&fx, file, Overrides::default());
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"type="password" id="transport:udp.password" name="transport:udp.password" value="""#),
+            "{page}"
+        );
+        assert!(!page.contains("hunter2-token"), "{page}");
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("serial.port", "/dev/mock"),
+                    ("serial.baud_rate", "115200"),
+                    ("server.port", "11119"),
+                    ("transport", "udp"),
+                    ("transport:udp.host", "mount.lan"),
+                    ("transport:udp.password", ""),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = on_disk(&fx);
+        assert_eq!(disk["transport"]["host"], "mount.lan");
+        assert_eq!(disk["transport"]["password"], "hunter2-token");
+    }
+
+    #[tokio::test]
+    async fn a_device_a_flag_keeps_enabled_is_not_sent_to_the_server_page() {
+        // `--enable-panel true` over a file that says false: the pinned
+        // field is skipped, so the file still says false after a rename,
+        // but the device stays served, and the browser stays on its page.
+        let mut file = config();
+        file.panel.enabled = false;
+        let fx = fixture(&file);
+        let p = pages(
+            &fx,
+            config(),
+            Overrides {
+                panel_enabled: Some(true),
+                ..Overrides::default()
+            },
+        );
+        let response = p
+            .handle(
+                DEVICE,
+                post(&[
+                    ("panel.name", "Renamed"),
+                    ("panel.unique_id", "panel-1"),
+                    ("panel.level", "4096"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(on_disk(&fx)["panel"]["enabled"], false);
+        assert_eq!(on_disk(&fx)["panel"]["name"], "Renamed");
+        assert!(
+            !response.body.contains("its page is no longer served"),
+            "{}",
+            response.body
+        );
+        assert_eq!(response.headers.get("refresh").unwrap(), "6");
+    }
+
+    #[tokio::test]
+    async fn the_server_page_names_a_flag_that_disables_a_device() {
+        let mut effective = config();
+        effective.panel.enabled = false;
+        let fx = fixture(&config());
+        let p = pages(
+            &fx,
+            effective,
+            Overrides {
+                panel_enabled: Some(false),
+                ..Overrides::default()
+            },
+        );
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains("Disabled by a command-line override"),
+            "{page}"
+        );
+        assert!(
+            !page.contains("enable it in the configuration file"),
+            "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_runtime_written_field_is_named_file_only_and_a_save_leaves_it() {
+        // The device wrote `panel.park` after the page was opened: the page
+        // names it rather than carrying an input, and a save cannot write
+        // the stale value back.
+        let fx = fixture(&config());
+        let mut disk = on_disk(&fx);
+        disk["panel"]["park"] = json!(7);
+        std::fs::write(&fx.path, disk.to_string()).unwrap();
+        let p = pages(&fx, config(), Overrides::default());
+        let page = p.handle(DEVICE, get()).await.body;
+        assert!(
+            page.contains(r#"<div class="file-only" id="panel.park"><code>panel.park</code> is edited in the configuration file; it is set.</div>"#),
+            "{page}"
+        );
+        assert!(!page.contains(r#"name="panel.park""#), "{page}");
+        let response = p
+            .handle(
+                DEVICE,
+                post(&[
+                    ("panel.name", "Renamed"),
+                    ("panel.unique_id", "panel-1"),
+                    ("panel.enabled", "on"),
+                    ("panel.level", "4096"),
+                    ("panel.park", "1"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = on_disk(&fx);
+        assert_eq!(disk["panel"]["park"], 7, "the runtime value is kept");
+        assert_eq!(disk["panel"]["name"], "Renamed");
+    }
+
+    #[tokio::test]
+    async fn a_runtime_write_since_the_start_does_not_make_an_unchanged_save_reload() {
+        // The device wrote the file after the service started (a mount's
+        // `SetPark`): a save that changes nothing answers "unchanged" and
+        // fires no reload, which would halt the mount and drop its clients
+        // for nothing.
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default());
+        let mut disk = on_disk(&fx);
+        disk["panel"]["park"] = json!(7);
+        std::fs::write(&fx.path, disk.to_string()).unwrap();
+        let response = p.handle(PageScope::Server, post(&server_base())).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert!(
+            response.body.contains(r#"id="saved-unchanged""#),
+            "{}",
+            response.body
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), fx.reload.recv())
+                .await
+                .is_err(),
+            "no reload when the save changed nothing"
+        );
+        assert_eq!(on_disk(&fx)["panel"]["park"], 7);
+        // A save that does change a field still reloads, and still names
+        // what it changed, not what the runtime write did.
+        let mut pairs = server_base();
+        pairs.retain(|(k, _)| *k != "serial.baud_rate");
+        pairs.push(("serial.baud_rate", "9600"));
+        let response = p.handle(PageScope::Server, post(&pairs)).await;
+        assert!(
+            response.body.contains(r#"id="saved-reloading""#),
+            "{}",
+            response.body
+        );
+        tokio::time::timeout(Duration::from_secs(5), fx.reload.recv())
+            .await
+            .expect("the reload fires after a changed save");
+    }
+
+    #[tokio::test]
+    async fn a_port_the_file_moved_by_hand_is_named_when_a_save_reloads() {
+        // The file's port was edited by hand after the start and no reload
+        // ran: the page shows the file's port, so a save does not change
+        // it against the file, but the reload it fires binds it, and the
+        // browser is at the running port.
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default()).with_https(true);
+        let mut disk = on_disk(&fx);
+        disk["server"]["port"] = json!(4247);
+        std::fs::write(&fx.path, disk.to_string()).unwrap();
+        let mut pairs = server_base();
+        pairs.retain(|(k, _)| *k != "server.port" && *k != "serial.baud_rate");
+        pairs.push(("server.port", "4247"));
+        pairs.push(("serial.baud_rate", "9600"));
+        let response = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert!(
+            response.body.contains(r#"<p id="moved">The setup pages now live at <a href="https://driver.example:4247/setup">"#),
+            "{}",
+            response.body
+        );
+        // The same save with nothing else changed goes nowhere: no reload,
+        // so the pages stay where the browser is.
+        let mut pairs = server_base();
+        pairs.retain(|(k, _)| *k != "server.port" && *k != "serial.baud_rate");
+        pairs.push(("server.port", "4247"));
+        pairs.push(("serial.baud_rate", "9600"));
+        let response = p.handle(PageScope::Server, post(&pairs)).await;
+        assert!(
+            response.body.contains(r#"id="saved-unchanged""#),
+            "{}",
+            response.body
+        );
+        assert!(
+            !response.body.contains(r#"id="moved""#),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn saves_on_one_file_wait_for_each_other() {
+        // One save at a time per service: a second save cannot read the
+        // file until the first has persisted.
+        let fx = fixture(&config());
+        let p = Arc::new(pages(&fx, config(), Overrides::default()));
+        let held = p.saving.lock().await;
+        let saver = Arc::clone(&p);
+        let save = tokio::spawn(async move {
+            saver
+                .handle(
+                    PageScope::Server,
+                    post(&[
+                        ("serial.port", "/dev/mock"),
+                        ("serial.baud_rate", "9600"),
+                        ("server.port", "11119"),
+                    ]),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !save.is_finished(),
+            "the save ran while another save held the file"
+        );
+        assert_eq!(on_disk(&fx)["serial"]["baud_rate"], 115_200);
+        drop(held);
+        let response = save.await.unwrap();
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(on_disk(&fx)["serial"]["baud_rate"], 9600);
     }
 
     #[test]

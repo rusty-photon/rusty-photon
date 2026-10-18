@@ -4,7 +4,9 @@
 [#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)); P1 merged
 ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)); P2 merged
 ([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)); P3 under
-way, the serial family first (the Phases table has the state). On the owner's direction the servers are
+way: the serial family merged
+([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)), the
+`GTi` in review (the Phases table has the state). On the owner's direction the servers are
 specification-compliant from the first phase, and the `ascom-alpaca`
 crate is fixed properly — its setup hooks take a request (D10, P1); the
 owner decided on 2026-10-17 that the fork's fixes are **not offered
@@ -700,20 +702,34 @@ Small, each mergeable alone, in this order.
 | P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | Plan merged; the ADRs wait on the decisions | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
 | P1 | **Specification compliance first.** The `ascom-alpaca` fork, in the two changes D10 describes (not offered upstream yet, the owner's call): the paths and statuses — the specification's device setup path routed, linked from `/setup`, the old path redirected, the statuses the specifications give, with tests — and the request-taking hooks, `setup_request` on a device and a setup handler on `Server`, routed for `GET` and `POST`, with their defaults. The workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default pages until P2 | Merged | `feature/setup-pages-p1` ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)) |
 | P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), the shared handler behind the pages (the render, the save, the origin check, the reload hook) and its tagged-enum and file-only rules, the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, whose device and server hooks (D10) call that handler, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands. `ui-htmx`'s own config-page suites move their vehicle from `dsd-fp2` to `qhy-focuser`, which still carries the actions, until P4 retires those pages | Merged | `feature/setup-pages-p2` ([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)) |
-| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | In progress | Serial family, first PR: `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver` (`feature/setup-pages-p3-serial`). `star-adventurer-gti` follows on its own, with the two tagged-enum gaps below closed first. `qhy-focuser` is the BFF's BDD vehicle for its config pages and keeps the actions until P4 retires those pages. |
+| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | In progress | Serial family merged: `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver` ([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)). `star-adventurer-gti` on its own (`feature/setup-pages-p3-gti`), the tagged-enum gaps below closed in the crate first. `qhy-focuser` is the BFF's BDD vehicle for its config pages and keeps the actions until P4 retires those pages. |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
 | P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Not started | |
 
-*Noted for P3 from P2's review, for the first driver with a tagged-enum
-section (`star-adventurer-gti`'s transport):* a driver `validate` error
-on a variant's field carries the config path (`transport.port`) while
-the variant's control is named `transport:udp.port`, so today it lands
-in the banner as a field the page does not show — the handler must map
-it to the chosen variant's control; and `with_secrets` marks the
-model's fields at any depth but not the fields a tagged enum's variants
-carry, so a secret pointer inside a variant would render in a plain
-input — it must reach into the variants. Neither bites a driver
-without a tagged enum, which is every driver on the crate today.
+*Closed in the `GTi`'s PR, for the first driver with a tagged-enum
+section (`star-adventurer-gti`'s transport), from P2's review and the
+serial family's:* a driver `validate` error on a variant's field carries
+the config path (`transport.port`) while the control is named by the
+variant (`transport:usb.port`) — the handler re-points it at the chosen
+variant's control, so it renders beside the field rather than in the
+banner; `with_secrets` reaches the fields a variant carries; a flag that
+pins a field inside a variant (`--port`) pins that control alone, and one
+that pins the enum (`--transport`) pins the selector and every field —
+`ConfigurableDriver::pinned_paths` takes the config, because `--port`
+lands on `transport.port` or `transport.address` by the kind in effect;
+an unchosen variant's fields render their schema defaults, so a switch
+starts from them rather than from blanks; saves are serialized per
+service, from the file read to the persist; and the redirect after a
+device page disables its device, like the server page's note under a
+disabled device, reads the configuration the reloaded service runs, so a
+device an `--enable-*` flag keeps on stays on its page and one the flag
+keeps off is noted as the flag's doing, not the file's. From the `GTi`'s
+own review: a driver names the fields it writes at runtime
+(`file_only_pointers` — the park position `SetPark` captures, the AP-park
+choices) and the page names them as file-only rather than carrying inputs
+a stale form would write back over the device's write; and whether a save
+changed anything is judged against the file as it was read, so a runtime
+write since the start does not make a save that changes nothing reload.
 
 P1 comes first and depends on no decision: it makes what we ship
 compliant before anything new is built on it. P2 is the proof: one

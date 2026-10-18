@@ -25,6 +25,7 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
+rusty-photon-setup = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -121,7 +122,7 @@ require-sh = true
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 tokio-test = { workspace = true }
 # `test-util` unlocks paused tokio time (`start_paused`): the mock mount's
 # tracking motion runs on the tokio clock, so a pulse-guide test can measure

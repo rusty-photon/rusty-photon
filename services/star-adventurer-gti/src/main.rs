@@ -37,8 +37,8 @@ use tracing::{debug, info, Level};
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
 use star_adventurer_gti::{
-    canonicalise_config_path, load_config, warn_if_park_path_unwritable, Config, Handover,
-    ServerBuilder, TransportFactory,
+    canonicalise_config_path, load_config, warn_if_park_path_unwritable, CliOverrides, Config,
+    Handover, ServerBuilder, TransportFactory,
 };
 
 #[derive(Parser)]
@@ -125,6 +125,16 @@ fn main() -> ServiceResult {
         args.config, args.transport, args.port, args.server_port, args.log_level
     );
 
+    // CLI overrides are tracked (not just applied) so a setup-page save can
+    // keep them out of the persisted file — a transient `--port` is never
+    // baked in.
+    let overrides = CliOverrides {
+        transport: args.transport.clone(),
+        port: args.port.clone(),
+        baud: args.baud,
+        server_port: args.server_port,
+    };
+
     // Bootstrap a real config-file path up front: the explicit `--config`
     // path if given, else the platform config dir
     // (`~/.config/rusty-photon/star-adventurer-gti.json` on Linux). A path
@@ -142,9 +152,10 @@ fn main() -> ServiceResult {
     )?;
     debug!("Resolved config path: {:?}", config_path);
 
-    // Park persistence + config.apply target the *same* resolved config file.
-    // Canonicalise it once so writes hit a stable absolute location even if the
-    // process later `chdir`s, and run the early-warning writability probe.
+    // Park persistence and the setup pages' saves target the *same* resolved
+    // config file. Canonicalise it once so writes hit a stable absolute
+    // location even if the process later `chdir`s, and run the early-warning
+    // writability probe.
     let config_file_path = canonicalise_config_path(&config_path);
     warn_if_park_path_unwritable(&config_file_path);
 
@@ -152,9 +163,10 @@ fn main() -> ServiceResult {
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
 
-    // Reload loop: a `config.apply` that changes a field fires the reload signal;
-    // the loop re-reads + re-applies the CLI overrides and rebuilds the server,
-    // awaiting `start()` to completion so the old server drains before rebind.
+    // Reload loop: a setup-page save that changes a field fires the reload
+    // signal; the loop re-reads + re-applies the CLI overrides and rebuilds the
+    // server, awaiting `start()` to completion so the old server drains before
+    // rebind.
     ServiceRunner::new("star-adventurer-gti")
         .with_reload()
         .scm_mode(args.service)
@@ -191,7 +203,7 @@ fn main() -> ServiceResult {
                 // The file always exists (materialize wrote the scaffold on
                 // first run). Re-read + re-apply overrides each cycle.
                 let mut config = load_config(&config_path)?;
-                apply_cli_overrides(&mut config, &args)?;
+                overrides.apply(&mut config)?;
                 info!("Server port: {}", config.server.port);
                 // Deliberately `info!` (not `debug!`): a negative floor
                 // permits below-horizon pointing, and support
@@ -208,6 +220,7 @@ fn main() -> ServiceResult {
                     .with_config(config)
                     .with_config_file_path(Some(config_file_path.clone()))
                     .with_reload_signal(reload.clone())
+                    .with_cli_overrides(overrides.clone())
                     .with_handover(handover);
 
                 #[cfg(feature = "mock")]
@@ -245,66 +258,10 @@ fn main() -> ServiceResult {
         })
 }
 
-fn apply_cli_overrides(
-    config: &mut Config,
-    args: &Args,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use star_adventurer_gti::{TransportConfig, UdpConfig, UsbConfig};
-
-    if let Some(kind) = &args.transport {
-        match kind.as_str() {
-            "usb" => {
-                if !matches!(config.transport, TransportConfig::Usb(_)) {
-                    config.transport = TransportConfig::Usb(UsbConfig::default());
-                }
-            }
-            "udp" => {
-                if !matches!(config.transport, TransportConfig::Udp(_)) {
-                    config.transport = TransportConfig::Udp(UdpConfig::default());
-                }
-            }
-            other => return Err(format!("invalid --transport: {other}").into()),
-        }
-    }
-
-    if let Some(port) = &args.port {
-        match &mut config.transport {
-            TransportConfig::Usb(usb) => usb.port.clone_from(port),
-            TransportConfig::Udp(udp) => udp.address = port.parse()?,
-        }
-    }
-
-    if let Some(baud) = args.baud {
-        if let TransportConfig::Usb(usb) = &mut config.transport {
-            usb.baud_rate = baud;
-        }
-    }
-
-    if let Some(server_port) = args.server_port {
-        config.server.port = server_port;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use star_adventurer_gti::{TransportConfig, UdpConfig};
-
-    fn args() -> Args {
-        Args {
-            command: None,
-            config: None,
-            transport: None,
-            port: None,
-            baud: None,
-            server_port: None,
-            log_level: Level::INFO,
-            service: false,
-        }
-    }
 
     #[test]
     fn parse_log_level_accepts_canonical_levels() {
@@ -322,121 +279,5 @@ mod tests {
         let err = parse_log_level("not-a-level").unwrap_err();
         assert!(err.contains("not-a-level"));
         assert!(err.contains("trace, debug, info, warn, error"));
-    }
-
-    #[test]
-    fn apply_cli_overrides_no_args_leaves_config_untouched() {
-        let mut cfg = Config::default();
-        let baseline_port = cfg.server.port;
-        apply_cli_overrides(&mut cfg, &args()).unwrap();
-        assert_eq!(cfg.server.port, baseline_port);
-    }
-
-    #[test]
-    fn apply_cli_overrides_switches_transport_kind_usb_to_udp() {
-        let mut cfg = Config::default();
-        // Default is USB; switch to UDP.
-        let mut a = args();
-        a.transport = Some("udp".into());
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        assert!(matches!(cfg.transport, TransportConfig::Udp(_)));
-    }
-
-    #[test]
-    fn apply_cli_overrides_keeps_existing_usb_block_when_transport_is_usb() {
-        // If the config already has a USB block, --transport=usb must
-        // not stomp on its tweaked fields.
-        let mut cfg = Config::default();
-        if let TransportConfig::Usb(usb) = &mut cfg.transport {
-            usb.port = "/dev/ttyUSB-tweaked".into();
-        }
-        let mut a = args();
-        a.transport = Some("usb".into());
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        if let TransportConfig::Usb(usb) = &cfg.transport {
-            assert_eq!(usb.port, "/dev/ttyUSB-tweaked");
-        } else {
-            panic!("transport must remain Usb");
-        }
-    }
-
-    #[test]
-    fn apply_cli_overrides_rejects_unknown_transport_kind() {
-        let mut cfg = Config::default();
-        let mut a = args();
-        a.transport = Some("bluetooth".into());
-        let err = apply_cli_overrides(&mut cfg, &a).unwrap_err();
-        assert!(err.to_string().contains("bluetooth"));
-    }
-
-    #[test]
-    fn apply_cli_overrides_port_sets_usb_port_path() {
-        let mut cfg = Config::default();
-        let mut a = args();
-        a.port = Some("/dev/ttyACM7".into());
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        if let TransportConfig::Usb(usb) = &cfg.transport {
-            assert_eq!(usb.port, "/dev/ttyACM7");
-        } else {
-            panic!("transport must remain Usb");
-        }
-    }
-
-    #[test]
-    fn apply_cli_overrides_port_sets_udp_address_when_udp_transport() {
-        let mut cfg = Config {
-            transport: TransportConfig::Udp(UdpConfig::default()),
-            ..Config::default()
-        };
-        let mut a = args();
-        // UdpConfig.address is an IpAddr -- bare IP, no port suffix.
-        a.port = Some("10.0.0.1".into());
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        if let TransportConfig::Udp(udp) = &cfg.transport {
-            assert_eq!(udp.address.to_string(), "10.0.0.1");
-        } else {
-            panic!("transport must remain Udp");
-        }
-    }
-
-    #[test]
-    fn apply_cli_overrides_port_with_invalid_udp_address_returns_err() {
-        let mut cfg = Config {
-            transport: TransportConfig::Udp(UdpConfig::default()),
-            ..Config::default()
-        };
-        let mut a = args();
-        a.port = Some("not-an-address".into());
-        assert!(apply_cli_overrides(&mut cfg, &a).is_err());
-    }
-
-    #[test]
-    fn apply_cli_overrides_baud_only_applies_to_usb() {
-        let mut cfg = Config::default();
-        let mut a = args();
-        a.baud = Some(57600);
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        if let TransportConfig::Usb(usb) = &cfg.transport {
-            assert_eq!(usb.baud_rate, 57600);
-        } else {
-            panic!("transport must remain Usb");
-        }
-
-        // Same flag against a UDP transport must be a no-op (not an error).
-        let mut udp_cfg = Config {
-            transport: TransportConfig::Udp(UdpConfig::default()),
-            ..Config::default()
-        };
-        apply_cli_overrides(&mut udp_cfg, &a).unwrap();
-        assert!(matches!(udp_cfg.transport, TransportConfig::Udp(_)));
-    }
-
-    #[test]
-    fn apply_cli_overrides_server_port_sets_server_port() {
-        let mut cfg = Config::default();
-        let mut a = args();
-        a.server_port = Some(54321);
-        apply_cli_overrides(&mut cfg, &a).unwrap();
-        assert_eq!(cfg.server.port, 54321);
     }
 }

@@ -27,8 +27,8 @@ impl rusty_photon_config::ConfigFile for Config {
     /// possible, which the CW exclusion zone and the tracking-guard margin
     /// decide. Checked here, it fails [`load_config`] like everything else
     /// and keeps the startup bootstrap from writing a file that load would
-    /// refuse. `config_actions::validate` checks it again so a runtime
-    /// `config.apply` cannot install what startup would have refused.
+    /// refuse. `setup::validate` checks it again so a setup-page save
+    /// cannot install what startup would have refused.
     fn check(&self) -> Result<(), String> {
         self.mount.auto_flip_offset_error().map_or(Ok(()), Err)
     }
@@ -1258,6 +1258,270 @@ impl Default for MountConfig {
             unpark_from_ap_position: default_unpark_from_ap_position(),
             preferred_ap_park: default_preferred_ap_park(),
         }
+    }
+}
+
+/// The command-line overrides, tracked rather than only applied.
+///
+/// A setup-page save keeps them out of the persisted file: the page shows
+/// a pinned field as the running service has it, disabled, and a transient
+/// `--port` is never baked in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CliOverrides {
+    /// `--transport usb|udp`: the transport's kind. Pins the whole
+    /// `transport` block.
+    pub transport: Option<String>,
+    /// `--port`: the serial path on a USB transport, the mount's host on a
+    /// UDP one.
+    pub port: Option<String>,
+    /// `--baud`: the serial baud rate; nothing on a UDP transport.
+    pub baud: Option<u32>,
+    /// `--server-port`.
+    pub server_port: Option<u16>,
+}
+
+impl CliOverrides {
+    /// Apply the overrides onto `config` in place, producing the effective
+    /// config the server runs. `--transport` replaces a block of the other
+    /// kind with that kind's defaults; `--port` then sets the path or host
+    /// of whichever kind is in effect. The fallible step runs last, so a
+    /// failure leaves every other flag applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message for a `--transport` that is neither `usb` nor
+    /// `udp`, and for a `--port` that is not an IP address when the
+    /// transport in effect is UDP.
+    pub fn apply(&self, config: &mut Config) -> std::result::Result<(), String> {
+        if let Some(kind) = &self.transport {
+            match kind.as_str() {
+                "usb" => {
+                    if !matches!(config.transport, TransportConfig::Usb(_)) {
+                        config.transport = TransportConfig::Usb(UsbConfig::default());
+                    }
+                }
+                "udp" => {
+                    if !matches!(config.transport, TransportConfig::Udp(_)) {
+                        config.transport = TransportConfig::Udp(UdpConfig::default());
+                    }
+                }
+                other => return Err(format!("invalid --transport: {other}")),
+            }
+        }
+        if let Some(server_port) = self.server_port {
+            config.server.port = server_port;
+        }
+        if let Some(baud) = self.baud {
+            if let TransportConfig::Usb(usb) = &mut config.transport {
+                usb.baud_rate = baud;
+            }
+        }
+        if let Some(port) = &self.port {
+            match &mut config.transport {
+                TransportConfig::Usb(usb) => usb.port.clone_from(port),
+                TransportConfig::Udp(udp) => {
+                    udp.address = port.parse().map_err(|e| {
+                        format!("invalid --port {port:?} for a UDP transport (an IP address): {e}")
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The dotted config paths the overrides pin, read against `config`
+    /// because `--port` and `--baud` land on fields of whichever transport
+    /// kind is in effect: `--transport` pins the whole `transport` block
+    /// (the selector and every field of either kind), `--port` the USB
+    /// `transport.port` or the UDP `transport.address`, `--baud` the USB
+    /// `transport.baud_rate` and nothing on UDP, `--server-port`
+    /// `server.port`.
+    #[must_use]
+    pub fn pinned_paths(&self, config: &Config) -> Vec<String> {
+        let mut paths = Vec::new();
+        if self.transport.is_some() {
+            paths.push("transport".to_string());
+        } else {
+            let usb = matches!(config.transport, TransportConfig::Usb(_));
+            if self.port.is_some() {
+                paths.push(
+                    if usb {
+                        "transport.port"
+                    } else {
+                        "transport.address"
+                    }
+                    .to_string(),
+                );
+            }
+            if self.baud.is_some() && usb {
+                paths.push("transport.baud_rate".to_string());
+            }
+        }
+        if self.server_port.is_some() {
+            paths.push("server.port".to_string());
+        }
+        paths
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod cli_overrides_tests {
+    use super::*;
+
+    #[test]
+    fn no_flags_leave_the_config_untouched() {
+        let mut cfg = Config::default();
+        let baseline_port = cfg.server.port;
+        CliOverrides::default().apply(&mut cfg).unwrap();
+        assert_eq!(cfg.server.port, baseline_port);
+        assert!(matches!(cfg.transport, TransportConfig::Usb(_)));
+        assert_eq!(
+            CliOverrides::default().pinned_paths(&cfg),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn transport_switches_the_kind_usb_to_udp() {
+        let mut cfg = Config::default();
+        let overrides = CliOverrides {
+            transport: Some("udp".into()),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        assert!(matches!(cfg.transport, TransportConfig::Udp(_)));
+        assert_eq!(overrides.pinned_paths(&cfg), vec!["transport"]);
+    }
+
+    #[test]
+    fn transport_keeps_an_existing_block_of_the_same_kind() {
+        // If the config already has a USB block, --transport=usb must
+        // not stomp on its tweaked fields.
+        let mut cfg = Config::default();
+        if let TransportConfig::Usb(usb) = &mut cfg.transport {
+            usb.port = "/dev/ttyUSB-tweaked".into();
+        }
+        let overrides = CliOverrides {
+            transport: Some("usb".into()),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        let TransportConfig::Usb(usb) = &cfg.transport else {
+            panic!("transport must remain Usb");
+        };
+        assert_eq!(usb.port, "/dev/ttyUSB-tweaked");
+    }
+
+    #[test]
+    fn transport_rejects_an_unknown_kind() {
+        let mut cfg = Config::default();
+        let overrides = CliOverrides {
+            transport: Some("bluetooth".into()),
+            ..CliOverrides::default()
+        };
+        let err = overrides.apply(&mut cfg).unwrap_err();
+        assert!(err.contains("bluetooth"));
+    }
+
+    #[test]
+    fn port_sets_the_usb_path_and_pins_it() {
+        let mut cfg = Config::default();
+        let overrides = CliOverrides {
+            port: Some("/dev/ttyACM7".into()),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        let TransportConfig::Usb(usb) = &cfg.transport else {
+            panic!("transport must remain Usb");
+        };
+        assert_eq!(usb.port, "/dev/ttyACM7");
+        assert_eq!(overrides.pinned_paths(&cfg), vec!["transport.port"]);
+    }
+
+    #[test]
+    fn port_sets_the_udp_address_and_pins_it() {
+        let mut cfg = Config {
+            transport: TransportConfig::Udp(UdpConfig::default()),
+            ..Config::default()
+        };
+        let overrides = CliOverrides {
+            port: Some("10.0.0.1".into()),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        let TransportConfig::Udp(udp) = &cfg.transport else {
+            panic!("transport must remain Udp");
+        };
+        assert_eq!(udp.address.to_string(), "10.0.0.1");
+        assert_eq!(overrides.pinned_paths(&cfg), vec!["transport.address"]);
+    }
+
+    #[test]
+    fn port_that_is_not_an_address_fails_on_udp_after_the_other_flags_applied() {
+        let mut cfg = Config {
+            transport: TransportConfig::Udp(UdpConfig::default()),
+            ..Config::default()
+        };
+        let overrides = CliOverrides {
+            port: Some("not-an-address".into()),
+            server_port: Some(4247),
+            ..CliOverrides::default()
+        };
+        let err = overrides.apply(&mut cfg).unwrap_err();
+        assert!(err.contains("not-an-address"), "{err}");
+        assert_eq!(cfg.server.port, 4247, "the flags before it still applied");
+    }
+
+    #[test]
+    fn baud_applies_and_pins_on_usb_only() {
+        let mut cfg = Config::default();
+        let overrides = CliOverrides {
+            baud: Some(57600),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        let TransportConfig::Usb(usb) = &cfg.transport else {
+            panic!("transport must remain Usb");
+        };
+        assert_eq!(usb.baud_rate, 57600);
+        assert_eq!(overrides.pinned_paths(&cfg), vec!["transport.baud_rate"]);
+        // The same flag against a UDP transport is a no-op, not an error,
+        // and pins nothing.
+        let mut udp_cfg = Config {
+            transport: TransportConfig::Udp(UdpConfig::default()),
+            ..Config::default()
+        };
+        overrides.apply(&mut udp_cfg).unwrap();
+        assert!(matches!(udp_cfg.transport, TransportConfig::Udp(_)));
+        assert_eq!(overrides.pinned_paths(&udp_cfg), Vec::<String>::new());
+    }
+
+    #[test]
+    fn server_port_sets_and_pins_the_server_port() {
+        let mut cfg = Config::default();
+        let overrides = CliOverrides {
+            server_port: Some(54321),
+            ..CliOverrides::default()
+        };
+        overrides.apply(&mut cfg).unwrap();
+        assert_eq!(cfg.server.port, 54321);
+        assert_eq!(overrides.pinned_paths(&cfg), vec!["server.port"]);
+    }
+
+    #[test]
+    fn transport_pins_the_whole_block_whatever_else_is_set() {
+        let cfg = Config::default();
+        let overrides = CliOverrides {
+            transport: Some("usb".into()),
+            port: Some("/dev/ttyACM7".into()),
+            baud: Some(9600),
+            server_port: Some(1),
+        };
+        assert_eq!(
+            overrides.pinned_paths(&cfg),
+            vec!["transport", "server.port"]
+        );
     }
 }
 
