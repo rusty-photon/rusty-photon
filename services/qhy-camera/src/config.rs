@@ -65,7 +65,7 @@ impl Config {
     pub fn list_errors(&self) -> Vec<ListError> {
         let list = self.usb_devices.as_deref();
         let mut errors = claims::list_errors(list, self.devices.keys());
-        errors.extend(list.map(wheel_errors).unwrap_or_default());
+        errors.extend(list.map_or_default(wheel_errors));
         errors
     }
 

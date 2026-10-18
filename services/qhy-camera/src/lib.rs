@@ -459,7 +459,7 @@ impl ServerBuilder {
             match wheel {
                 Ok(conn) => {
                     debug!(filter_wheel = number, port = %entry.usb_port, "a declared filter wheel is served on its camera's connection");
-                    register_wheel(server, conn, entry.filter_names.clone());
+                    register_wheel(server, conn, entry.filter_names);
                     registered.filter_wheels = registered.filter_wheels.saturating_add(1);
                 }
                 Err(reason) => {
