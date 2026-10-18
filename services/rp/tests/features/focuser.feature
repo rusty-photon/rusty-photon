@@ -3,18 +3,26 @@ Feature: Focuser tools
   rp exposes Focuser device operations as MCP tools. move_focuser drives
   the focuser to an absolute position and blocks until the device reports
   is_moving=false. get_focuser_position reads the current absolute
-  position and reports the focuser's configured min_position and
-  max_position travel bounds and its backlash block (approach and
-  steps), each null when the config sets none.
+  position and reports the focuser's min_position and max_position
+  travel bounds and its backlash block (approach and steps), the
+  block null when the config sets none.
   get_focuser_temperature returns the sensor temperature in
   degrees Celsius, or null when the focuser's Temperature property is
   not implemented (i.e. the device returns NOT_IMPLEMENTED). The
   Temperature property is independent of TempCompAvailable: a focuser
   may surface a temperature reading even when temperature compensation
   is unavailable. move_focuser validates the requested position against
-  the operator-configured min_position / max_position bounds before
-  issuing the Alpaca call, and treats the move as settled only once the
-  device is idle and reads back the target position.
+  the travel bounds before issuing the Alpaca call, and treats the move
+  as settled only once the device is idle and reads back the target
+  position.
+
+  The travel bounds are the driver's travel, 0 to MaxStep (read once
+  when the focuser connects), narrowed by the configured min_position
+  and max_position: a configured bound outside the driver's travel is
+  brought inside it, and the driver's travel stands in for a bound the
+  config does not set. A focuser configured without bounds therefore
+  refuses a position below 0 or above MaxStep before it moves.
+  OmniSim's focuser reports MaxStep 50000.
 
   A focuser entry may carry a backlash block: approach names the
   direction every move arrives from ("in" or "out") and steps the
@@ -76,24 +84,33 @@ Feature: Focuser tools
 
   Scenario: get_focuser_position reports the configured travel bounds and backlash
     Given a running Alpaca simulator
-    And rp is running with a focuser on the simulator with bounds 1000..60000 and backlash approach "out" and 100 steps
+    And rp is running with a focuser on the simulator with bounds 1000..40000 and backlash approach "out" and 100 steps
     And an MCP client connected to rp
     When the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the tool call should succeed
     And the get_focuser_position result min_position should be 1000
-    And the get_focuser_position result max_position should be 60000
+    And the get_focuser_position result max_position should be 40000
     And the get_focuser_position result backlash approach should be "out"
     And the get_focuser_position result backlash steps should be 100
 
-  Scenario: get_focuser_position reports null bounds and backlash for a focuser configured without them
+  Scenario: A focuser configured without bounds reports the driver's travel and a null backlash
     Given a running Alpaca simulator
     And rp is running with a focuser on the simulator
     And an MCP client connected to rp
     When the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the tool call should succeed
-    And the tool result "min_position" should be null
-    And the tool result "max_position" should be null
+    And the get_focuser_position result min_position should be 0
+    And the get_focuser_position result max_position should be 50000
     And the tool result "backlash" should be null
+
+  Scenario: A configured bound beyond the driver's travel is narrowed to MaxStep
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with bounds 1000..60000
+    And an MCP client connected to rp
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the tool call should succeed
+    And the get_focuser_position result min_position should be 1000
+    And the get_focuser_position result max_position should be 50000
 
   Scenario: get_focuser_temperature returns a temperature_c field
     Given a running Alpaca simulator
@@ -133,6 +150,26 @@ Feature: Focuser tools
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 9500
     Then the tool call should return an error
     And the error message should contain "position out of range"
+
+  Scenario: A focuser configured without bounds refuses a position below 0 without moving
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position -40
+    Then the tool call should return an error
+    And the error message should contain "position out of range: -40 < min_position 0"
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
+
+  Scenario: A focuser configured without bounds refuses a position above MaxStep without moving
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 50001
+    Then the tool call should return an error
+    And the error message should contain "position out of range: 50001 > max_position 50000"
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
 
   Scenario: move_focuser with missing focuser_id returns error
     Given a running Alpaca simulator

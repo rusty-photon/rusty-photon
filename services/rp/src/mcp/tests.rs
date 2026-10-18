@@ -1391,6 +1391,23 @@ fn focuser_registry(
     focuser_registry_with_backlash(foc, min_position, max_position, None)
 }
 
+/// The [`focuser_registry`] fixture with no configured bounds, its
+/// session carrying the `MaxStep` a connect would have read.
+fn focuser_registry_with_max_step(
+    foc: Arc<dyn ascom_alpaca::api::Focuser>,
+    max_step: i32,
+) -> crate::equipment::EquipmentRegistry {
+    let mut registry = focuser_registry(foc.clone(), None, None);
+    registry.focusers[0].session = crate::equipment::DeviceSession::connected_with(
+        foc,
+        crate::equipment::FocuserInvariants {
+            max_step: Some(max_step),
+            ..Default::default()
+        },
+    );
+    registry
+}
+
 /// A `focusers[].backlash` block for the registry helpers below.
 fn backlash(
     approach: crate::config::focuser::BacklashApproach,
@@ -3734,7 +3751,10 @@ fn optics_registry(
         },
         session: crate::equipment::DeviceSession::connected_with(
             Arc::new(MockFocuser::default()),
-            crate::equipment::FocuserInvariants { step_size_um },
+            crate::equipment::FocuserInvariants {
+                step_size_um,
+                max_step: None,
+            },
         ),
         slot: crate::equipment::DeviceSlot::default(),
     });
@@ -4614,6 +4634,49 @@ async fn test_move_focuser_above_max_position() {
     assert_tool_error(result, "position out of range");
 }
 
+/// The floor of an absolute focuser's travel is ASCOM's `0`, so a
+/// focuser configured without bounds refuses a negative target before
+/// commanding anything.
+#[tokio::test]
+async fn test_move_focuser_below_zero_is_refused_without_configured_bounds() {
+    let foc = Arc::new(MockFocuser::default());
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let result = handler
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: -40,
+                lease_id: None,
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "position out of range: -40 < min_position 0");
+    assert!(foc.move_targets.lock().unwrap().is_empty());
+}
+
+/// The driver's `MaxStep` is the ceiling of a focuser configured
+/// without bounds.
+#[tokio::test]
+async fn test_move_focuser_above_max_step_is_refused_without_configured_bounds() {
+    let foc = Arc::new(MockFocuser::default());
+    let handler = test_handler(focuser_registry_with_max_step(foc.clone(), 22_000));
+    let result = handler
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 22_001,
+                lease_id: None,
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "position out of range: 22001 > max_position 22000");
+    assert!(foc.move_targets.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn test_move_focuser_command_fails() {
     let foc = MockFocuser {
@@ -4801,11 +4864,29 @@ async fn test_get_focuser_position_reports_configured_bounds_and_backlash() {
     );
 }
 
-/// All three config fields are present and `null` for a focuser whose
-/// config sets none of them — a caller distinguishes "no bound" and
-/// "no compensation" from a missing key.
+/// A focuser configured without bounds reports the driver's travel,
+/// `0` to the `MaxStep` its connect read.
 #[tokio::test]
-async fn test_get_focuser_position_reports_null_bounds_and_backlash_when_unset() {
+async fn test_get_focuser_position_reports_the_driver_travel_when_the_config_sets_no_bounds() {
+    let foc = MockFocuser::default();
+    let handler = test_handler(focuser_registry_with_max_step(Arc::new(foc), 22_000));
+    let result = handler
+        .get_focuser_position(Parameters(FocuserIdParams {
+            focuser_id: "foc".into(),
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["min_position"], 0);
+    assert_eq!(json["max_position"], 22_000);
+}
+
+/// With no configured bounds and no `MaxStep` read, the floor still
+/// holds and only the ceiling is unknown. All three keys are present —
+/// a caller distinguishes "no ceiling" and "no compensation" from a
+/// missing key.
+#[tokio::test]
+async fn test_get_focuser_position_reports_no_ceiling_and_null_backlash_when_nothing_sets_them() {
     let foc = MockFocuser::default();
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let result = handler
@@ -4815,7 +4896,7 @@ async fn test_get_focuser_position_reports_null_bounds_and_backlash_when_unset()
         .await
         .unwrap();
     let json = ok_text(result);
-    assert_eq!(json.get("min_position"), Some(&serde_json::Value::Null));
+    assert_eq!(json["min_position"], 0);
     assert_eq!(json.get("max_position"), Some(&serde_json::Value::Null));
     assert_eq!(json.get("backlash"), Some(&serde_json::Value::Null));
 }
@@ -7933,6 +8014,15 @@ fn guide_sweep_trains() -> crate::equipment::trains::TrainModel {
     crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
 }
 
+/// A mock focuser resting mid-travel, so the guide sweep's grid of
+/// ± `half_width` 100 stays clear of the travel floor at 0.
+fn guide_sweep_focuser() -> MockFocuser {
+    MockFocuser {
+        position_value: 10_000,
+        ..Default::default()
+    }
+}
+
 fn guiding_stats_active() -> rp_guider::GuidingStats {
     rp_guider::GuidingStats {
         app_state: "Guiding".to_string(),
@@ -7985,7 +8075,7 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
     // the focuser's starting position. Even indexes back the
     // watermark refreshes and contribute frame numbers only. The
     // final pair serves the confirmation sample set at the vertex.
-    let foc = MockFocuser::default();
+    let foc = guide_sweep_focuser();
     let start = foc.position_value;
     let mock = scripted_metrics_guider(vec![
         9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
@@ -8077,6 +8167,60 @@ async fn guide_train_auto_focus_restores_the_starting_position_after_a_failed_fi
     assert_eq!(foc.position.load(Ordering::SeqCst), 10_000);
 }
 
+/// The floor of the focuser's travel clamps the metric sweep with no
+/// configured bounds: a guide focuser resting at 0 keeps only the upper
+/// half of its five-point grid, too few to fit, and nothing moves.
+#[tokio::test]
+async fn guide_train_auto_focus_clamps_its_grid_at_zero_without_configured_bounds() {
+    let foc = Arc::new(MockFocuser {
+        position_value: 0,
+        ..Default::default()
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(scripted_metrics_guider(vec![2.5]));
+    let handler = test_handler(focuser_registry(foc.clone(), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "sweep grid has 3 positions after clamping");
+    assert!(foc.move_targets.lock().unwrap().is_empty());
+}
+
+/// The same floor clamps the capture sweep: from 0, the eleven-point
+/// grid over ±100 keeps the six points from 0 up.
+#[tokio::test]
+async fn auto_focus_clamps_its_grid_at_zero_without_configured_bounds() {
+    let handler = test_handler(auto_focus_registry(0));
+    let result = handler
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                binning: None,
+                camera_id: Some("cam".to_string()),
+                focuser_id: Some("foc".to_string()),
+                train_id: None,
+                duration: Some(Duration::from_millis(100)),
+                step_size: Some(20),
+                half_width: Some(100),
+                min_area: Some(4),
+                max_area: Some(2000),
+                threshold_sigma: Some(5.0),
+                min_fit_points: Some(7),
+                min_star_fraction: None,
+                confirmation_tolerance: None,
+                max_attempts: None,
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+    assert_tool_error(
+        result,
+        "sweep grid has 6 positions after clamping to focuser bounds; min_fit_points=7",
+    );
+}
+
 #[tokio::test]
 async fn guide_train_auto_focus_rejects_a_negative_confirmation_tolerance() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
@@ -8093,7 +8237,7 @@ async fn guide_train_auto_focus_rejects_a_negative_confirmation_tolerance() {
 #[tokio::test]
 async fn guide_train_auto_focus_walks_the_grid_descending_for_an_inward_approach() {
     use crate::config::focuser::BacklashApproach;
-    let foc = Arc::new(MockFocuser::default());
+    let foc = Arc::new(guide_sweep_focuser());
     let start = foc.position_value;
     let mock = scripted_metrics_guider(vec![
         9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
@@ -8165,7 +8309,7 @@ async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
     });
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
-        Arc::new(MockFocuser::default()),
+        Arc::new(guide_sweep_focuser()),
         None,
         None,
     ))
@@ -8212,7 +8356,7 @@ async fn guide_train_auto_focus_fails_when_the_confirmation_refresh_fails() {
     });
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
-        Arc::new(MockFocuser::default()),
+        Arc::new(guide_sweep_focuser()),
         None,
         None,
     ))
@@ -8273,7 +8417,7 @@ async fn guide_train_auto_focus_rejects_a_minimum_outside_the_sampled_range() {
     let mock = scripted_metrics_guider(vec![9.0, 62.5, 9.0, 40.0, 9.0, 22.5, 9.0, 10.0, 9.0, 2.5]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
-        Arc::new(MockFocuser::default()),
+        Arc::new(guide_sweep_focuser()),
         None,
         None,
     ))
@@ -8301,7 +8445,7 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     });
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
-        Arc::new(MockFocuser::default()),
+        Arc::new(guide_sweep_focuser()),
         None,
         None,
     ))
@@ -8337,7 +8481,7 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
     });
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
-        Arc::new(MockFocuser::default()),
+        Arc::new(guide_sweep_focuser()),
         None,
         None,
     ))
@@ -8354,7 +8498,7 @@ async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
     // The guide train's expansion is its single terminal focuser as a
     // metric step; the scripted V gives a deterministic success
     // payload with no camera involved.
-    let foc = MockFocuser::default();
+    let foc = guide_sweep_focuser();
     let start = foc.position_value;
     let mock = scripted_metrics_guider(vec![
         9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
@@ -8384,7 +8528,7 @@ async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
 
 #[tokio::test]
 async fn guide_train_auto_focus_reports_a_flat_curve_as_monotonic() {
-    let foc = MockFocuser::default();
+    let foc = guide_sweep_focuser();
     let mock = scripted_metrics_guider(vec![2.5]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
@@ -8402,7 +8546,7 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
     // Star-lost frames at the sweep's first position: the sample is
     // null, and with only four valid positions against the default
     // min_fit_points of five, the run reports the shortfall.
-    let foc = MockFocuser::default();
+    let foc = guide_sweep_focuser();
     let mut mock = MockGuiderClient::new();
     mock.expect_guiding_stats()
         .returning(|| Ok(guiding_stats_active()));
@@ -9875,6 +10019,31 @@ async fn do_move_focuser_blocking_in_the_approach_direction_is_a_single_leg() {
     assert_eq!(*foc.move_targets.lock().unwrap(), vec![1500]);
     let started = next_event(&mut rx).await;
     assert_eq!(started.payload["backlash_compensated"], false);
+}
+
+/// A focuser configured without bounds still clamps an overshoot leg at
+/// the floor of its travel: an outward approach to 50 from 100 passes
+/// below the target only as far as 0.
+#[tokio::test]
+async fn do_move_focuser_blocking_clamps_the_overshoot_at_zero_without_configured_bounds() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser {
+        position_value: 100,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 200)),
+    ));
+
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 50, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert!(outcome.backlash_compensated);
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![0, 50]);
 }
 
 /// The settle rule: a driver whose position read lags its idle report
