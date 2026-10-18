@@ -178,28 +178,51 @@ fn repo_root() -> PathBuf {
 
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
 /// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
-/// not. Once its comment and quotes are gone a label must be plain
-/// (letters, digits, `.`, `_`, `-`): the scan does not guess at another
-/// spelling, which actionlint might read differently, and refuses it.
+/// not. The list ends at the next key indented no deeper than `labels:`,
+/// and every other line before it must be a comment or blank. No entry
+/// goes unread: an entry outside the list, or a line at column 0 that is
+/// not a key, fails the test too. Once its comment and quotes are gone a
+/// label must be plain (letters, digits, `.`, `_`, `-`): the scan does not
+/// guess at another spelling, which actionlint might read differently, and
+/// refuses it.
 fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
         .iter()
         .position(|line| line.trim_end() == "self-hosted-runner:")
         .ok_or("has no `self-hosted-runner:` key")?;
+    let unread = |body: &str| {
+        format!(
+            "has `{body}` where the test reads only a key, or a `- label` entry under `labels:`"
+        )
+    };
     let mut labels = Vec::new();
-    let mut in_labels = false;
+    // The indent of `labels:`, while the scan reads its list.
+    let mut list = None;
     for line in lines.get(at.saturating_add(1)..).unwrap_or_default() {
         let body = line.trim();
         if body.is_empty() || body.starts_with('#') {
             continue;
         }
         if indent(line) == 0 {
-            break;
+            // The next top-level key ends `self-hosted-runner:`.
+            if is_key(body) {
+                break;
+            }
+            return Err(unread(body));
         }
         if body == "labels:" {
-            in_labels = true;
-        } else if let Some(item) = body.strip_prefix("- ").filter(|_| in_labels) {
+            list = Some(indent(line));
+            continue;
+        }
+        let Some(key) = list else {
+            // An entry before the list, or after a key ended it.
+            if body.starts_with('-') {
+                return Err(unread(body));
+            }
+            continue;
+        };
+        if let Some(item) = body.strip_prefix("- ") {
             let item = without_comment(item).trim();
             // YAML may quote a label; actionlint reads it without the quotes.
             let label = ['"', '\'']
@@ -213,14 +236,28 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
                 ));
             }
             labels.push(label.to_owned());
+        } else if body.starts_with('-') || indent(line) > key || !is_key(body) {
+            // YAML may read this line as part of the list (a dash and a tab,
+            // a bare dash, a label folded onto the next line), or the file
+            // is not YAML: ending the list here would drop every label
+            // after it.
+            return Err(format!(
+                "has `{body}` under `labels:`, which the test does not read as a `- label` entry"
+            ));
         } else {
-            in_labels = false;
+            list = None;
         }
     }
     if labels.is_empty() {
         return Err("lists no labels under `self-hosted-runner:`".to_owned());
     }
     Ok(labels)
+}
+
+/// Whether a YAML line is a key, `name:` or `name: value`, after its comment.
+fn is_key(body: &str) -> bool {
+    let text = without_comment(body).trim_end();
+    text.ends_with(':') || text.contains(": ")
 }
 
 /// `text` without a trailing YAML comment: from a `#` that follows a space
@@ -635,6 +672,101 @@ fn actionlint_labels_refuses_an_empty_label() {
     assert!(actionlint_labels(text)
         .unwrap_err()
         .starts_with("lists `\"\"`"));
+}
+
+#[test]
+fn actionlint_labels_ends_the_list_at_the_next_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  - pi\n  other:\n    x: y\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pool", "pi"]);
+}
+
+#[test]
+fn actionlint_labels_refuses_an_entry_after_the_list() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  other: x\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `- pi` where the test reads only a key, or a `- label` entry under `labels:`"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_an_entry_at_column_0() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n- gpu\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `- gpu` where the test reads only a key, or a `- label` entry under `labels:`"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_dash_and_a_tab() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  -\tpi\n  - gpu\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-\tpi` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_dash_and_a_tab_before_a_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  -\tgpu: x\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-\tgpu: x` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_bare_dash() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n    -\n      pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_folded_label() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool-\n      gpu\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `gpu` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_key_inside_the_list() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n    other: x\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `other: x` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_line_at_the_key_s_indent_that_is_not_a_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool-\n  gpu\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `gpu` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn is_key_reads_a_key_with_or_without_a_value_or_a_comment() {
+    let lines = [
+        "other:",
+        "other: x",
+        "other:\t# c",
+        "other: x  # c",
+        "gpu",
+        "http://x",
+        "gpu # a: b",
+    ];
+    assert_eq!(
+        lines.map(is_key),
+        [true, true, true, true, false, false, false]
+    );
 }
 
 #[test]
