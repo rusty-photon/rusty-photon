@@ -18,18 +18,18 @@
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Switch};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::FalconCodec;
 use crate::config::SwitchConfig;
-use crate::config_actions::FalconRotatorDriver;
 use crate::error::FalconRotatorError;
 use crate::manager::FalconManager;
-use rusty_photon_driver::ConfigActionCtx;
+use crate::setup::{FalconRotatorDriver, SWITCH_DEVICE_TYPE};
 
 /// Id 0: input voltage (raw ADC count from the Falcon's `VS` command).
 const SWITCH_ID_VOLTAGE: usize = 0;
@@ -117,10 +117,12 @@ pub struct FalconStatusSwitchDevice {
     session: Arc<RwLock<Option<Session<FalconCodec>>>>,
     #[debug(skip)]
     manager: Arc<FalconManager>,
-    /// Shared (cloned) config-action context; `Some` on the normal path through
-    /// `ServerBuilder`, `None` for focused unit-test devices.
+    /// The setup pages behind `/setup/v1/switch/0/setup`: `Some` when
+    /// the driver was built with a config source (the normal path through
+    /// `ServerBuilder`); `None` for focused unit-test devices that don't
+    /// exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<FalconRotatorDriver>>,
+    pages: Option<Arc<SetupPages<FalconRotatorDriver>>>,
 }
 
 impl FalconStatusSwitchDevice {
@@ -129,15 +131,15 @@ impl FalconStatusSwitchDevice {
             config,
             session: Arc::new(RwLock::new(None)),
             manager,
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the shared config-action context, enabling `config.get` /
-    /// `config.apply` / `config.schema` on this device.
+    /// Attach the shared setup pages, so the device's setup page renders and
+    /// saves the `switch` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FalconRotatorDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<FalconRotatorDriver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 
@@ -231,13 +233,34 @@ impl Device for FalconStatusSwitchDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    /// No actions: the configuration lives on the setup pages. An unknown
+    /// action is `ActionNotImplemented`, not the generic `NotImplemented`
+    /// the crate defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<FalconRotatorDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The device's setup page, `/setup/v1/switch/0/setup`, for `GET`
+    /// and `POST`, through the shared handler. A device built without the
+    /// pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, SWITCH_DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -583,6 +606,38 @@ mod tests {
         let device = disconnected_device();
         let err = device.set_switch_value(99, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    // --- Setup pages ------------------------------------------------------
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let device = disconnected_device();
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_device_without_pages_has_no_setup_page() {
+        let device = disconnected_device();
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }
 

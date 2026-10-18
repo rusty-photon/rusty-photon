@@ -238,7 +238,7 @@ Two things to know about the shape:
 
 Three rules, all enforced when the config is **deserialized** rather than by a
 separate validation pass, so a bad map fails at startup — and fails a
-`config.apply` — with the offending entry named:
+reload — with the offending entry named:
 
 1. **Only ids 0-13 may be labelled**: the four 12 V outputs, the three dew
    channels, the variable output and the six USB ports. Those are the
@@ -262,8 +262,11 @@ physical port, so the port stays identifiable after the name is replaced:
 | 20 | `QHY600 Current` | Current draw of this 12V output in Amps |
 | 27 | `QHY600 Overcurrent` | Overcurrent or short-circuit flag for this 12V output. The device shuts the port down when it trips |
 
-Labels are an ordinary config field, so `config.apply` edits them and the
-service reloads onto the new names. `SetSwitchName` stays `NOT_IMPLEMENTED`:
+Labels are a map, which the setup pages cannot edit: the switch's page
+names `switch.labels` as edited in the configuration file, and a save leaves
+the map as the file has it. Edit the file and reload the service (`SIGHUP`,
+or SCM `ParamChange` on Windows), and it comes up on the new names.
+`SetSwitchName` stays `NOT_IMPLEMENTED`:
 a name written over the wire would not survive a restart, and the config file
 is the one place the mapping is recorded.
 
@@ -328,7 +331,7 @@ explicitly. Therefore:
 - The poll loop refreshes `PA` + `PC` + `PS` every `polling_interval`
   (default 5 s) into the shared cache. Reads are served from cache; a write
   refreshes on demand.
-- `config.apply` never pushes output states to hardware.
+- A setup-page save never pushes output states to hardware.
 - The excluded `PE:`/`US:` boot-state commands would have been the one place
   a config-driven output state could leak onto the hardware. Their exclusion
   removes that path entirely.
@@ -338,7 +341,7 @@ state — the driver reports it and changes nothing.
 
 ### Reload gives the port back before it takes it again
 
-A reload (`config.apply`, `SIGHUP`, or SCM `ParamChange`) re-runs the service
+A reload (a setup-page save, `SIGHUP`, or SCM `ParamChange`) re-runs the service
 body in the live process: the old server drains, the transport shuts down, and
 the loop rebuilds — including a fresh eager handshake on the same serial port.
 The port therefore has to be released before the rebuild asks for it, which is
@@ -427,13 +430,13 @@ while `AveragePeriod` read back the value they never used. The
 seconds-to-`Duration` conversion underneath is fallible too, so no path
 through this code can panic.
 
-All three checks — the device, the manager, and the `config.apply` bound
+All three checks — the device, the manager, and the setup page's bound
 below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
 `manager.rs`, so the runtime range and the persisted range cannot drift
 apart.
 
-`config.apply` validates `averaging_period` against the same bounds the device
-enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
+A setup-page save validates `averaging_period` against the same bounds the
+device enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
 hour ceiling, which is ASCOM's. The two must agree — a period a client can
 select at runtime but not persist, or persist but not select, is a trap either
 way.
@@ -442,16 +445,45 @@ The rolling-mean implementation is shared with `ppba-driver`, which handles
 `AveragePeriod` the same way, and lives in
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
 
-### Config actions
+### Setup pages
 
-`config.get` / `config.apply` / `config.schema` per
-[config-actions.md](config-actions.md), dispatched from either device onto
-the one driver config. Secret carried forward: `/server/auth/password_hash`.
-Locked identity fields: both `unique_id`s. Hard read-only: `server.port`,
-`switch.enabled`, `observingconditions.enabled`. `switch.labels` is editable
-and reloads like any other field; a map that breaks one of the four rules
-above is rejected as a parse error naming the offending entry, not as a field
-error, because the rules are enforced by the label type's own deserializer.
+The driver configures itself through the HTML pages the Alpaca Management
+API defines, served by the driver itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
+
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `serial` section, the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to each device's page. |
+| `/setup/v1/switch/0/setup` | The switch's page: the `switch` section alone — name, description, `enabled`, `unique_id` under a collapsed Identity disclosure, and `labels` named as edited in the configuration file ([Operator labels](#operator-labels)). |
+| `/setup/v1/observingconditions/0/setup` | The observing conditions' page: the `observingconditions` section alone — name, description, `enabled`, `averaging_period`, and `unique_id` under the Identity disclosure. |
+
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, which
+[`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes in full (what a page
+shows, the save, the in-process reload); this driver supplies only its
+config type, its validation and normalization, which section each device
+edits (`device_sections` in `setup.rs`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags pin
+(`serial.port` by `--port`, `server.port` by `--server-port`, `switch.enabled` by `--enable-switch`, `observingconditions.enabled` by `--enable-observingconditions`). A pinned field shows the running value, disabled, and a save
+never persists it. A save of one page never alters another page's
+section. The pages work whether or not a device is `Connected`.
+
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` is empty on every device and
+every `Action` answers `ACTION_NOT_IMPLEMENTED`.
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `serial.port` | non-empty (trimmed by `normalize`) |
+| `serial.baud_rate` | `> 0` |
+| `serial.polling_interval` | `> 0` |
+| `serial.timeout` | `> 0` |
+| `observingconditions.averaging_period` | `<= 24h`, the ASCOM `AveragePeriod` ceiling; zero allowed |
+| `switch.unique_id`, `observingconditions.unique_id` | non-empty (each device's stable ASCOM `UniqueID`) |
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
 
 ## Error behavior
 
@@ -474,7 +506,7 @@ error, because the rules are enforced by the label type's own deserializer.
 
 **In:** Switch (39 switches), ObservingConditions (temp / humidity /
 dewpoint with the shared sliding-window mean), the read-only handshake and
-poll loop, config actions, TLS/auth, doctor, packaging, BDD and ConformU.
+poll loop, setup pages, TLS/auth, doctor, packaging, BDD and ConformU.
 
 **Deferred:** the Focuser device (no motor to validate against); `PZ:`
 master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the

@@ -13,19 +13,24 @@
 //! `start_service` harness sets `config.server.auth = None`; the TLS +
 //! auth credential gate is covered by the shared smoke scenario in
 //! `auth.feature` via the `TlsAuthSmokeWorld` impl below.
+//!
+//! The setup-page scenarios (`setup_pages.feature`) are the exception:
+//! a save reloads the process that served it, which only the binary's
+//! `main` can do, so they spawn the mock-feature binary through
+//! [`ServiceHandle`] (`start_process`) like the other serial drivers'
+//! suites.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::{Rotator, Switch, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
+use bdd_infra::ServiceHandle;
 use cucumber::World;
-use pa_falcon_rotator::config::CliOverrides;
 use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
-use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -72,13 +77,16 @@ pub struct FalconRotatorWorld {
     /// Last failure surfaced over Alpaca, if any.
     pub last_error_code: Option<u16>,
 
-    /// Config-action test state: the temp dir + path config.apply persists to,
-    /// the reload signal both devices fire, and the last parsed action response.
-    pub config_temp_dir: Option<TempDir>,
-    pub config_path: Option<PathBuf>,
-    pub reload: Option<ReloadSignal>,
-    pub last_response: Option<serde_json::Value>,
+    /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// The service as a spawned process, for the setup-page scenarios: a
+    /// save reloads the process, which the in-process server cannot do.
+    pub process: Option<ServiceHandle>,
+    /// The spawned process's config directory, alive for the scenario.
+    pub process_dir: Option<TempDir>,
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -139,6 +147,12 @@ impl TlsAuthSmokeWorld for FalconRotatorWorld {
     }
 }
 
+impl SetupPagesWorld for FalconRotatorWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
+    }
+}
+
 impl FalconRotatorWorld {
     pub fn rotator(&self) -> &Arc<dyn Rotator> {
         self.rotator.as_ref().expect("rotator not acquired")
@@ -181,31 +195,16 @@ impl FalconRotatorWorld {
         let mock = Arc::new(MockFalconTransportFactory::default());
         let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
 
-        // Persist the config to a temp file so config.apply has a real target,
-        // and wire a reload signal both devices fire — exercising the same
-        // config-action context the binary's `main` builds.
-        let dir = TempDir::new().expect("failed to create temp dir");
-        let config_path = dir.path().join("config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_string(&config).expect("serialize config"),
-        )
-        .expect("write config file");
-        let reload = ReloadSignal::new();
-
+        // No config source and no reload signal: the in-process server has
+        // no setup pages. The setup-page scenarios spawn the binary instead
+        // (`start_process`), whose `main` reloads it on a save.
         let bound = ServerBuilder::new()
             .with_config(config)
             .with_factory(factory)
-            .with_config_source(config_path.clone(), CliOverrides::default())
-            .with_reload_signal(reload.clone())
             .build()
             .await
             .expect("build in-process Alpaca server");
         let local_addr = bound.listen_addr();
-
-        self.config_temp_dir = Some(dir);
-        self.config_path = Some(config_path);
-        self.reload = Some(reload);
 
         let server_handle = tokio::spawn(async move {
             // BoundServer::start returns `Result<(), Box<dyn Error>>`; the
@@ -233,34 +232,84 @@ impl FalconRotatorWorld {
         self.status_switch = Some(status_switch);
     }
 
-    /// Call `config.get` on the rotator device, stash the parsed response, and
-    /// return the `config` object so a When step can edit it and re-apply.
-    pub async fn current_config(&mut self) -> serde_json::Value {
-        let rotator = Arc::clone(self.rotator());
-        let body = rotator
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
+    /// The config the spawned process starts on: the library defaults with
+    /// the mock serial port, the unique ids `start_service` seeds, and the
+    /// `server` block every scenario shares — port 0 for OS-assigned, no
+    /// discovery, no TLS, no auth.
+    fn process_config(&self) -> serde_json::Value {
+        let mut config = self.config.clone().unwrap_or_default();
+        config.serial.port = "/dev/mock".to_string();
+        if config.rotator.unique_id.is_empty() {
+            config.rotator.unique_id = "pa-falcon-rotator-001".to_string();
+        }
+        if config.switch.unique_id.is_empty() {
+            config.switch.unique_id = "pa-falcon-rotator-status-001".to_string();
+        }
+        let mut config = serde_json::to_value(config).expect("serialize config");
+        config["server"] = serde_json::json!({ "port": 0, "discovery_port": null });
         config
     }
 
-    /// Call `config.apply` on the rotator device with `params`, stashing the
-    /// parsed response.
-    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
-        let rotator = Arc::clone(self.rotator());
-        let body = rotator
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    /// Write the process's config file and return its path.
+    fn write_process_config(&mut self) -> String {
+        let config = self.process_config();
+        let dir = self
+            .process_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, config.to_string()).expect("failed to write config");
+        path.to_str().unwrap().to_string()
+    }
+
+    /// Spawn the mock-feature binary on its config file and acquire clients
+    /// for both devices.
+    pub async fn start_process(&mut self) {
+        let config_path = self.write_process_config();
+        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
+        self.adopt_process(handle, config_path).await;
+    }
+
+    /// Spawn the binary with `serial.port` pinned by a `--port` override,
+    /// so the server page shows the field pinned and never persists it.
+    pub async fn start_process_with_serial_override(&mut self, serial_port: &str) {
+        let config_path = self.write_process_config();
+        let handle = ServiceHandle::start_with_args(
+            env!("CARGO_PKG_NAME"),
+            &["--config", &config_path, "--port", serial_port],
+        )
+        .await;
+        self.adopt_process(handle, config_path).await;
+    }
+
+    /// Spawn the binary through the TLS + auth fixture, so the setup pages
+    /// sit behind the credential.
+    pub async fn start_process_with_tls_and_auth(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.process_config();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.process = Some(handle);
+    }
+
+    /// Record a spawned plain-HTTP process: acquire both device clients and
+    /// hand the setup-page steps its address and config file.
+    async fn adopt_process(&mut self, handle: ServiceHandle, config_path: String) {
+        let http_addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let (rotator, status_switch) = acquire_devices(http_addr).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        self.rotator = Some(rotator);
+        self.status_switch = Some(status_switch);
+        self.server_addr = Some(http_addr);
+        self.process = Some(handle);
     }
 
     /// Abort the in-process server task. Called from cucumber's `after` hook
@@ -277,6 +326,8 @@ impl FalconRotatorWorld {
         self.status_switch = None;
         self.mock = None;
         self.server_addr = None;
+        // A spawned process stops on drop.
+        self.process = None;
     }
 }
 

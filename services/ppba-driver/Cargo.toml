@@ -32,6 +32,7 @@ rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-rolling-stats = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-setup = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -130,7 +131,7 @@ require-sh = true
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["client", "switch", "observing_conditions"] }
-bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }

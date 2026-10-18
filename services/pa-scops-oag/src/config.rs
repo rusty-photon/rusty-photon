@@ -152,9 +152,9 @@ pub fn load_config(
 
 /// CLI overrides layered over the file config.
 ///
-/// Tracks which fields are pinned by a command-line flag so the config actions
-/// can distinguish the file layer from the override layer (see
-/// `docs/services/pa-scops-oag.md` "Config actions").
+/// Tracks which fields are pinned by a command-line flag so the setup pages
+/// can show a pinned field and never persist it (see
+/// `docs/services/pa-scops-oag.md` "Setup pages").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.
@@ -164,8 +164,8 @@ pub struct CliOverrides {
 }
 
 impl CliOverrides {
-    /// Dotted JSON paths currently pinned by an active override. Reported by
-    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    /// Dotted JSON paths currently pinned by an active override. Shown pinned
+    /// on the setup pages and skipped by a save.
     #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
@@ -192,7 +192,7 @@ impl CliOverrides {
 /// Load the effective config: the file at `path` if it exists, else
 /// `Config::default()`, with CLI `overrides` applied on top.
 ///
-/// This is what the running driver uses and what `config.get` reports. A
+/// This is what the running driver uses. A
 /// present-but-corrupt file is surfaced (naming the path) rather than silently
 /// reset.
 ///

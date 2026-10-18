@@ -54,7 +54,6 @@
 
 pub mod codec;
 pub mod config;
-pub mod config_actions;
 pub mod doctor;
 pub mod error;
 pub mod manager;
@@ -67,6 +66,7 @@ pub mod mock;
 pub mod observingconditions_device;
 pub mod protocol;
 pub mod serial;
+pub mod setup;
 pub mod switch_device;
 pub mod switches;
 
@@ -93,21 +93,40 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::TransportFactory;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
 
 use crate::config::CliOverrides;
-use crate::config_actions::Upbv2Driver;
+use crate::setup::Upbv2Driver;
+
+/// The setup pages: one handler behind the server page and both device
+/// pages, present when the builder was given a config source and a reload
+/// signal (the normal path through `main`).
+fn setup_pages(
+    config: &Config,
+    config_source: Option<(PathBuf, CliOverrides)>,
+    reload: Option<ReloadSignal>,
+) -> Option<Arc<SetupPages<Upbv2Driver>>> {
+    match (config_source, reload) {
+        (Some((path, overrides)), Some(reload)) => Some(Arc::new(
+            SetupPages::<Upbv2Driver>::new("upbv2-driver", config.clone(), path, overrides)
+                .with_reload(reload)
+                .with_https(config.server.tls.is_some()),
+        )),
+        _ => None,
+    }
+}
 
 /// Builder for the ASCOM Alpaca server.
 pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
-    /// Where `config.apply` persists + which fields are CLI-pinned. `Some`
-    /// enables the config actions on both registered devices.
+    /// Where a setup-page save persists + which fields are CLI-pinned.
+    /// `Some` enables the setup pages (together with `reload`).
     config_source: Option<(PathBuf, CliOverrides)>,
-    /// In-process reload trigger handed to the devices' `config.apply` handler.
+    /// Reload trigger the pages fire after a save's response has flushed.
     reload: Option<ReloadSignal>,
 }
 
@@ -133,17 +152,18 @@ impl ServerBuilder {
         self
     }
 
-    /// Wire the config-action source (persist path + CLI overrides) so both
-    /// registered devices advertise `config.get` / `config.apply` /
-    /// `config.schema`.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], this enables
+    /// config editing.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_source = Some((path, overrides));
         self
     }
 
-    /// Hand the devices the in-process reload trigger fired after a `config.apply`
-    /// that needs a reload.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables config
+    /// editing.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -186,27 +206,22 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
-            // Build the shared config-action context once (when a config source
-            // + reload signal were supplied) and clone it to each device, so both
-            // advertise the actions against the one driver config + reload signal.
-            let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<Upbv2Driver>> =
-                match (self.config_source.clone(), self.reload.clone()) {
-                    (Some((path, overrides)), Some(reload)) => {
-                        Some(rusty_photon_driver::ConfigActionCtx {
-                            effective: self.config.clone(),
-                            path,
-                            overrides,
-                            reload,
-                        })
-                    }
-                    _ => None,
-                };
+            let pages = setup_pages(
+                &self.config,
+                self.config_source.clone(),
+                self.reload.clone(),
+            );
+            if let Some(pages) = &pages {
+                server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                    pages,
+                ))));
+            }
 
             if self.config.switch.enabled {
                 let mut switch_device =
                     Upbv2SwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
-                if let Some(ctx) = config_ctx.clone() {
-                    switch_device = switch_device.with_config_actions(ctx);
+                if let Some(pages) = &pages {
+                    switch_device = switch_device.with_setup_pages(Arc::clone(pages));
                 }
                 server.devices.register(switch_device);
                 info!("Registered Switch device: {}", self.config.switch.name);
@@ -217,8 +232,8 @@ impl ServerBuilder {
                     self.config.observingconditions.clone(),
                     Arc::clone(&manager),
                 );
-                if let Some(ctx) = config_ctx.clone() {
-                    oc_device = oc_device.with_config_actions(ctx);
+                if let Some(pages) = &pages {
+                    oc_device = oc_device.with_setup_pages(Arc::clone(pages));
                 }
                 server.devices.register(oc_device);
                 info!(

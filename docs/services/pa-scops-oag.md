@@ -212,24 +212,47 @@ config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
 
-### Config actions
+### Setup pages
 
-The focuser exposes its configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema`, the cross-driver protocol
-documented in [`config-actions.md`](config-actions.md) and implemented
-generically in `rusty_photon_config::actions`. `config_actions.rs` supplies only
-the driver-specific half via `ConfigurableDriver for ScopsFocuserDriver`:
+The driver configures itself through the HTML pages the Alpaca Management
+API defines, served by the driver itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
 
-- **Secrets redacted on read / carried forward on apply:** `/server/auth/password_hash`.
-- **Locked (identity) field:** `focuser.unique_id` — the driver owns and mints it.
-- **Hard read-only fields:** `server.port` (the BFF cannot follow a port rebind)
-  and `focuser.enabled` (disabling tears down the device the actions live on).
-- **CLI-override-pinned fields:** `serial.port` (`--port`) and `server.port`
-  (`--server-port`) are reported in `config.get`'s `overrides[]` and never
-  persisted by `config.apply`.
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `serial` section, the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to each device's page. |
+| `/setup/v1/focuser/0/setup` | The device page: the `focuser` section alone — name, description, `enabled`, `max_step`, and `unique_id` under a collapsed Identity disclosure. |
 
-A `config.apply` that changes any field persists atomically, returns
-`status:"applying"`, and fires the in-process reload (`main.rs` runs under
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, which
+[`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes in full (what a page
+shows, the save, the in-process reload); this driver supplies only its
+config type, its validation and normalization, which section each device
+edits (`device_sections` in `setup.rs`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags pin
+(`serial.port` by `--port`, `server.port` by `--server-port`). A pinned field shows the running value, disabled, and a save
+never persists it. A save of one page never alters another page's
+section. The pages work whether or not a device is `Connected`.
+
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` is empty on every device and
+every `Action` answers `ACTION_NOT_IMPLEMENTED`.
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `serial.port` | non-empty (trimmed by `normalize`) |
+| `serial.baud_rate` | `> 0` |
+| `serial.polling_interval` | `> 0` |
+| `serial.timeout` | `> 0` |
+| `focuser.max_step` | `> 0` |
+| `focuser.unique_id` | non-empty (the device's stable ASCOM `UniqueID`) |
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+A save that changes a field persists atomically and fires the in-process
+reload (`main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`): the loop tears the old
 server down — draining HTTP and releasing the serial port — and rebuilds from the
 freshly-persisted file, rebinding the same port.
@@ -240,9 +263,9 @@ freshly-persisted file, rebinding the same port.
 |--------|-------------|
 | `codec.rs` | `ScopsCodec` (frame ↔ typed response) + error mapping |
 | `config.rs` | Configuration types, loading, `CliOverrides`, `load_effective_config` |
-| `config_actions.rs` | `ConfigurableDriver` impl: validation, secrets, editability tiers |
+| `setup.rs` | `ConfigurableDriver` impl behind the setup pages: validation, the secret, the focuser's `device_sections` |
 | `error.rs` | `ScopsOagError` via `rusty_photon_driver::driver_error!` |
-| `focuser_device.rs` | ASCOM Device + Focuser trait implementation; config-action dispatch |
+| `focuser_device.rs` | ASCOM Device + Focuser trait implementation; the device's setup page (`setup_request`) |
 | `lib.rs` | Module declarations, ServerBuilder (config source + reload signal) |
 | `main.rs` | CLI entry point; `run_with_reload` loop owned by `rusty-photon-service-lifecycle::ServiceRunner` |
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
@@ -282,12 +305,12 @@ sessions resume on the new connection on their next request.
 
 - **Unit tests** (`#[cfg(test)]` in `src/`): command serialization, `A`-report
   parsing (happy path + every error variant), codec encode/decode/matches,
-  config defaults + `config_actions` validation, error conversions, and manager
+  config defaults + `setup` validation, error conversions, and manager
   behaviour driven through the mock transport factory. Race / refcount /
   rollback / while-open lifecycle invariants are tested once for everyone in
   `rusty-photon-shared-transport`'s own suite — not duplicated here.
 - **BDD tests** (cucumber-rs): connection lifecycle, device metadata, movement
-  control, focuser readings, background polling, config actions, auth, TLS — all
+  control, focuser readings, background polling, setup pages, auth, TLS — all
   driving the spawned `--features mock` binary over the typed Alpaca client.
 - **Server tests** (`test_lib.rs`, feature-gated `mock`): server startup +
   device registration.
@@ -304,7 +327,7 @@ cargo run  -p pa-scops-oag --features mock
 ## MVP scope
 
 **In scope:** absolute Move, Halt, Position, IsMoving, the connection lifecycle,
-config actions, auth, and TLS — the full ASCOM `IFocuserV4` surface the Scops
+setup pages, auth, and TLS — the full ASCOM `IFocuserV4` surface the Scops
 OAG can back.
 
 **Deferred / out of scope:** reverse and backlash control (rejected by the

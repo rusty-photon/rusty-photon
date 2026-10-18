@@ -79,7 +79,7 @@ pub fn instantaneous_window(poll_interval: Duration) -> Duration {
 /// three read it from here, so none can drift from the others: the device
 /// rejects an out-of-range `SetAveragePeriod` with `INVALID_VALUE`,
 /// [`PpbaManager::set_averaging_period`] holds the same line for a caller that
-/// bypasses the device, and `config.apply` refuses to persist a longer
+/// bypasses the device, and a setup-page save refuses to persist a longer
 /// `averaging_period` than a client could select at runtime.
 pub const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
 

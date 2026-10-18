@@ -189,7 +189,7 @@ fn main() -> ServiceResult {
     )?;
     tracing::debug!("Resolved configuration path: {:?}", config_path);
 
-    // CLI overrides are tracked (not just applied) so config.apply keeps them
+    // CLI overrides are tracked (not just applied) so a setup-page save keeps them
     // out of the persisted file — a transient `--port` / `--enable-switch` is
     // never baked in.
     let overrides = CliOverrides {
@@ -203,7 +203,7 @@ fn main() -> ServiceResult {
     #[cfg(feature = "mock")]
     tracing::info!("Running in MOCK MODE - no real hardware");
 
-    // Reload loop: a `config.apply` that changes a field fires the reload signal
+    // Reload loop: a setup-page save that changes a field fires the reload signal
     // (from either device); the loop re-reads the freshly-persisted config and
     // rebuilds the server, awaiting `start()` to completion so the old server
     // drains HTTP and releases the serial port before the rebuilt one binds.

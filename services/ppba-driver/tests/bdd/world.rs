@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use ascom_alpaca::api::{ObservingConditions, Switch, TypedDevice};
 use ascom_alpaca::{ASCOMError, ASCOMResult, Client};
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
+use bdd_infra::tls_auth::TlsAuthState;
 use cucumber::World;
 
 use crate::steps::infrastructure::ServiceHandle;
@@ -35,10 +37,14 @@ pub struct PpbaWorld {
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 
-    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
-    pub last_response: Option<serde_json::Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
+    /// The TLS + auth fixture the setup-page credential scenario starts
+    /// the service through.
+    pub tls_auth: TlsAuthState,
 
     /// Raw config file text for a scenario that needs a file `config` cannot
     /// express (one that is not JSON at all). Takes precedence over `config`.
@@ -61,11 +67,54 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for PpbaWorld {
     }
 }
 
+impl SetupPagesWorld for PpbaWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
+    }
+}
+
 impl PpbaWorld {
     /// Start the ppba-driver binary with the current config.
     /// Writes config to a temp file, spawns the process, waits for ready,
     /// then discovers devices via the typed ASCOM client.
     pub async fn start_ppba(&mut self) {
+        self.start_ppba_with_args(&[]).await;
+    }
+
+    /// Start the ppba-driver binary with the current config and `extra`
+    /// command-line arguments after `--config <path>` — a `--port` override,
+    /// for one, which pins `serial.port` on the setup pages.
+    pub async fn start_ppba_with_args(&mut self, extra: &[&str]) {
+        let config_path = self.write_config().await;
+        let mut args = vec!["--config", config_path.as_str()];
+        args.extend_from_slice(extra);
+        let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        self.adopt(handle).await;
+    }
+
+    /// Start the ppba-driver binary through the TLS + auth fixture, so the
+    /// setup pages sit behind the credential.
+    pub async fn start_ppba_with_tls_and_auth(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.config.clone();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.base_url = Some(handle.base_url.clone());
+        self.ppba = Some(handle);
+    }
+
+    /// Write the current config to a fresh temp file and return its path.
+    async fn write_config(&self) -> String {
         let config_path = std::env::temp_dir().join(format!(
             "ppba-bdd-config-{}.json",
             std::time::SystemTime::now()
@@ -79,9 +128,12 @@ impl PpbaWorld {
         )
         .await
         .expect("failed to write test config");
+        config_path.to_str().unwrap().to_string()
+    }
 
-        let handle =
-            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
+    /// Record a spawned plain-HTTP service: wait for it, then discover its
+    /// devices through the typed ASCOM client.
+    async fn adopt(&mut self, handle: ServiceHandle) {
         self.base_url = Some(handle.base_url.clone());
         self.ppba = Some(handle);
 
@@ -110,131 +162,6 @@ impl PpbaWorld {
                 }
                 Err(e) => panic!("Failed to discover devices after 20 attempts: {e}"),
             }
-        }
-    }
-
-    /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
-        self.ppba.as_ref().expect("service not started").port
-    }
-
-    /// Call `config.get` on the switch device, stash the parsed response, and
-    /// return the `config` object so a When step can edit it and re-apply.
-    pub async fn current_config(&mut self) -> serde_json::Value {
-        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
-        let body = switch
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.apply` on the switch device with `params`, stashing the
-    /// parsed response.
-    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
-        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
-        let body = switch
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-    }
-
-    /// Poll `config.get` via a fresh client until `switch.name` equals
-    /// `expected`, tolerating the brief blip while the server rebinds.
-    pub async fn wait_for_config_switch_name(&self, expected: &str) {
-        self.wait_for_config_value("/switch/name", &serde_json::json!(expected))
-            .await;
-    }
-
-    /// Poll `config.get` via a fresh client until the JSON pointer `pointer`
-    /// is absent from the served config, tolerating the brief blip while the
-    /// server rebinds.
-    pub async fn wait_for_config_key_absent(&self, pointer: &str) {
-        let base_url = self.base_url.as_ref().expect("server not started").clone();
-        let mut last_seen = None;
-        for _ in 0..80 {
-            // A server that is still rebinding answers nothing at all, which
-            // reads the same as "the key is gone" — so the absence only counts
-            // once `config.get` has answered with a config that lacks it.
-            match try_get_config(&base_url).await {
-                Some(config) if config.pointer(pointer).is_none() => return,
-                seen => last_seen = seen,
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!(
-            "reloaded service still served {pointer} after 20s; last config seen: {last_seen:?}"
-        );
-    }
-
-    /// Poll a fresh client, connecting each attempt, until `GetSwitchName(id)`
-    /// equals `expected`. The reload rebuilds the device, so the client that
-    /// discovered the old one cannot answer for the new one.
-    pub async fn wait_for_switch_name(&self, id: usize, expected: &str) {
-        let base_url = self.base_url.as_ref().expect("server not started").clone();
-        let mut last_seen = None;
-        for _ in 0..80 {
-            last_seen = try_get_switch_name(&base_url, id).await;
-            if last_seen.as_deref() == Some(expected) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!(
-            "reloaded service did not name switch {id} {expected} within 20s; \
-             last name seen: {last_seen:?}"
-        );
-    }
-
-    /// Poll `config.get` via a fresh client until the JSON pointer `pointer`
-    /// into the served config equals `expected`, tolerating the brief blip
-    /// while the server rebinds. Panics after ~20 s — which is the point if
-    /// the reload failed to rebind.
-    pub async fn wait_for_config_value(&self, pointer: &str, expected: &serde_json::Value) {
-        let base_url = self.base_url.as_ref().expect("server not started").clone();
-        let mut last_seen = None;
-        for _ in 0..80 {
-            last_seen = try_get_config_value(&base_url, pointer).await;
-            if last_seen.as_ref() == Some(expected) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!(
-            "reloaded service did not report {pointer} as {expected} within 20s; \
-             last value seen: {last_seen:?}"
-        );
-    }
-
-    /// Call `config.apply` on the switch device with `params`, stashing the
-    /// ASCOM error instead of panicking when the submission is refused
-    /// outright.
-    ///
-    /// A config blob the driver cannot even deserialize — a label map that
-    /// breaks the switch table, say — comes back as an `INVALID_VALUE` error
-    /// rather than as a response carrying field errors, so the "try" shape is
-    /// the only one that can observe it (testing.md section 3.5).
-    pub async fn try_config_apply(&mut self, params: serde_json::Value) {
-        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
-        match switch
-            .action("config.apply".to_string(), params.to_string())
-            .await
-        {
-            Ok(body) => {
-                self.last_error = None;
-                self.last_response =
-                    Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-            }
-            Err(e) => self.last_error = Some(e),
         }
     }
 
@@ -308,44 +235,4 @@ impl PpbaWorld {
         }
         panic!("OC data did not become available within 30 seconds");
     }
-}
-
-/// Read the served config out of `config.get` via a fresh client, returning
-/// `None` on any transport/parse failure (e.g. mid-reload).
-async fn try_get_config(base_url: &str) -> Option<serde_json::Value> {
-    let client = Client::new(base_url).ok()?;
-    let devices = client.get_devices().await.ok()?;
-    for device in devices {
-        if let TypedDevice::Switch(s) = device {
-            let body = s
-                .action("config.get".to_string(), String::new())
-                .await
-                .ok()?;
-            let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
-            return parsed.get("config").cloned();
-        }
-    }
-    None
-}
-
-/// Read the JSON pointer `pointer` out of `config.get`'s served config via a
-/// fresh client, returning `None` on any transport/parse failure (e.g.
-/// mid-reload) or when the key is absent.
-async fn try_get_config_value(base_url: &str, pointer: &str) -> Option<serde_json::Value> {
-    try_get_config(base_url).await?.pointer(pointer).cloned()
-}
-
-/// Read `GetSwitchName(id)` via a fresh client, connecting it first, and
-/// returning `None` on any failure (e.g. mid-reload). Connecting is safe to
-/// repeat: the handshake is read-only and `set_connected` is idempotent.
-async fn try_get_switch_name(base_url: &str, id: usize) -> Option<String> {
-    let client = Client::new(base_url).ok()?;
-    let devices = client.get_devices().await.ok()?;
-    for device in devices {
-        if let TypedDevice::Switch(s) = device {
-            s.set_connected(true).await.ok()?;
-            return s.get_switch_name(id).await.ok();
-        }
-    }
-    None
 }
