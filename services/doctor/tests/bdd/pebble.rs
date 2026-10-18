@@ -8,6 +8,7 @@
 //! through the production knobs an internal ACME directory would use:
 //! `--directory-url` and `--acme-root`.
 
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -82,18 +83,66 @@ impl Drop for PebbleHandle {
     }
 }
 
-/// A DNS query for `readiness.probe. A IN`, wire-format per RFC 1035 §4.1.
-fn dns_query() -> Vec<u8> {
+/// The zone every readiness query asks under; each start asks about its own
+/// name in it ([`Sidecar::probe_name`]).
+const PROBE_ZONE: &str = "readiness.probe.";
+
+/// DNS record types the readiness probes ask for (RFC 1035 §3.2.2).
+const TYPE_A: u16 = 1;
+const TYPE_TXT: u16 = 16;
+
+/// What only this start's challtestsrv knows: the DNS port it was handed,
+/// and the address it answers every A query with.
+#[derive(Clone, Copy)]
+struct Sidecar {
+    dns_port: u16,
+    address: Ipv4Addr,
+}
+
+impl Sidecar {
+    /// The name this start's probes ask about, minted with its address.
+    /// challtestsrv keeps every TXT value set for a name and serves the
+    /// oldest first, so on a name every start shared, another start that
+    /// reached this sidecar's management API first would shadow this
+    /// start's own record for good.
+    fn probe_name(self) -> String {
+        format!("{}.{PROBE_ZONE}", self.address)
+    }
+}
+
+/// Why a readiness probe did not pass.
+enum ProbeError {
+    /// Nothing usable answered yet; a later poll may pass.
+    NotYet(String),
+    /// The port gave an answer this start's sidecar never gives, so another
+    /// process's server holds it. The sidecar has lost that bind and never
+    /// retries it, so no later poll can pass.
+    Stranger(String),
+}
+
+impl ProbeError {
+    /// The same verdict, its message prefixed with `prefix`.
+    fn context(self, prefix: &str) -> Self {
+        match self {
+            Self::NotYet(e) => Self::NotYet(format!("{prefix} {e}")),
+            Self::Stranger(e) => Self::Stranger(format!("{prefix} {e}")),
+        }
+    }
+}
+
+/// A DNS query for `name` of type `qtype`, wire-format per RFC 1035 §4.1.
+fn dns_query(name: &str, qtype: u16) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(&DNS_PROBE_ID.to_be_bytes());
     // Standard query, recursion desired; one question, no other records.
     msg.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-    for label in ["readiness", "probe"] {
+    for label in name.split_terminator('.') {
         msg.push(label.len() as u8);
         msg.extend_from_slice(label.as_bytes());
     }
     msg.push(0); // Root label ends the name.
-    msg.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN.
+    msg.extend_from_slice(&qtype.to_be_bytes());
+    msg.extend_from_slice(&[0x00, 0x01]); // QCLASS IN.
     msg
 }
 
@@ -103,80 +152,183 @@ fn is_dns_reply(msg: &[u8]) -> bool {
     msg.len() >= 12 && msg[..2] == DNS_PROBE_ID.to_be_bytes() && msg[2] & 0x80 != 0
 }
 
-/// One UDP query and its answer.
-async fn dns_query_udp(port: u16) -> Result<(), String> {
+/// The offset just past the domain name that starts at `at` in `msg`.
+fn skip_name(msg: &[u8], mut at: usize) -> Option<usize> {
+    loop {
+        match *msg.get(at)? {
+            0 => return Some(at + 1),
+            // A compression pointer (RFC 1035 §4.1.4) ends the name.
+            len if len & 0xC0 == 0xC0 => return Some(at + 2),
+            len => at += 1 + usize::from(len),
+        }
+    }
+}
+
+/// The data of the first answer record in `reply` (a reply to one
+/// question), when that record is of type `rtype`.
+fn first_answer(reply: &[u8], rtype: u16) -> Option<&[u8]> {
+    let answers = u16::from_be_bytes([*reply.get(6)?, *reply.get(7)?]);
+    if answers == 0 {
+        return None;
+    }
+    // The question: its name, then QTYPE and QCLASS.
+    let at = skip_name(reply, 12)? + 4;
+    // The answer: its name, then TYPE, CLASS, TTL, RDLENGTH and the data.
+    let at = skip_name(reply, at)?;
+    let fixed = reply.get(at..at + 10)?;
+    if u16::from_be_bytes([fixed[0], fixed[1]]) != rtype {
+        return None;
+    }
+    let len = usize::from(u16::from_be_bytes([fixed[8], fixed[9]]));
+    reply.get(at + 10..at + 10 + len)
+}
+
+/// One UDP query and the reply to it. Socket errors are
+/// [`ProbeError::NotYet`]: a refused query is the port nothing has bound
+/// yet.
+async fn dns_query_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    let not_yet = |what: &str, e: std::io::Error| ProbeError::NotYet(format!("{what}: {e}"));
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
-        .map_err(|e| format!("probe socket: {e}"))?;
+        .map_err(|e| not_yet("probe socket", e))?;
     socket
         .connect(("127.0.0.1", port))
         .await
-        .map_err(|e| format!("connect: {e}"))?;
-    socket
-        .send(&dns_query())
-        .await
-        .map_err(|e| format!("send: {e}"))?;
+        .map_err(|e| not_yet("connect", e))?;
+    socket.send(query).await.map_err(|e| not_yet("send", e))?;
     let mut buf = [0u8; 512];
     let read = socket
         .recv(&mut buf)
         .await
-        .map_err(|e| format!("recv: {e}"))?;
+        .map_err(|e| not_yet("recv", e))?;
     if is_dns_reply(&buf[..read]) {
-        Ok(())
+        Ok(buf[..read].to_vec())
     } else {
-        Err(format!("{read} bytes back, but not our DNS answer"))
+        Err(ProbeError::Stranger(format!(
+            "{read} bytes back, but not a DNS answer: another process's server"
+        )))
     }
 }
 
-/// One TCP query and its answer, two-byte length prefixed per RFC 1035 §4.2.2.
-async fn dns_query_tcp(port: u16) -> Result<(), String> {
+/// One TCP query and the reply to it, two-byte length prefixed per RFC 1035
+/// §4.2.2. Connection errors are [`ProbeError::NotYet`], as for UDP.
+async fn dns_query_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    let not_yet = |what: &str, e: std::io::Error| ProbeError::NotYet(format!("{what}: {e}"));
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
-        .map_err(|e| format!("connect: {e}"))?;
-    let query = dns_query();
+        .map_err(|e| not_yet("connect", e))?;
     let mut framed = (query.len() as u16).to_be_bytes().to_vec();
-    framed.extend_from_slice(&query);
+    framed.extend_from_slice(query);
     stream
         .write_all(&framed)
         .await
-        .map_err(|e| format!("send: {e}"))?;
+        .map_err(|e| not_yet("send", e))?;
     let mut len = [0u8; 2];
     stream
         .read_exact(&mut len)
         .await
-        .map_err(|e| format!("read length: {e}"))?;
+        .map_err(|e| not_yet("read length", e))?;
     let mut reply = vec![0u8; usize::from(u16::from_be_bytes(len))];
     stream
         .read_exact(&mut reply)
         .await
-        .map_err(|e| format!("read reply: {e}"))?;
+        .map_err(|e| not_yet("read reply", e))?;
     if is_dns_reply(&reply) {
-        Ok(())
+        Ok(reply)
     } else {
-        Err("answered, but not with our DNS answer".to_owned())
+        Err(ProbeError::Stranger(
+            "answered, but not with a DNS answer: another process's server".to_owned(),
+        ))
     }
 }
 
-/// Whether the sidecar is really serving DNS on `port`, both transports.
-/// TCP and UDP are separate port spaces and challtestsrv binds one listener
-/// on each, so half of it can be lost while the other half looks healthy.
-async fn dns_answers(port: u16) -> Result<(), String> {
-    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_udp(port)).await {
-        Ok(result) => result.map_err(|e| format!("udp {e}"))?,
-        Err(_) => return Err(format!("udp silent for {DNS_PROBE_TIMEOUT:?}")),
+/// One query over UDP, bounded by [`DNS_PROBE_TIMEOUT`].
+async fn ask_udp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_udp(port, query)).await {
+        Ok(result) => result.map_err(|e| e.context("udp")),
+        Err(_) => Err(ProbeError::NotYet(format!(
+            "udp silent for {DNS_PROBE_TIMEOUT:?}"
+        ))),
     }
-    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_tcp(port)).await {
-        Ok(result) => result.map_err(|e| format!("tcp {e}")),
-        Err(_) => Err(format!("tcp silent for {DNS_PROBE_TIMEOUT:?}")),
+}
+
+/// One query over TCP, bounded by [`DNS_PROBE_TIMEOUT`].
+async fn ask_tcp(port: u16, query: &[u8]) -> Result<Vec<u8>, ProbeError> {
+    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_tcp(port, query)).await {
+        Ok(result) => result.map_err(|e| e.context("tcp")),
+        Err(_) => Err(ProbeError::NotYet(format!(
+            "tcp silent for {DNS_PROBE_TIMEOUT:?}"
+        ))),
+    }
+}
+
+/// Whether this start's sidecar serves DNS on its port, both transports:
+/// each answers an A query with the address only this start's challtestsrv
+/// was given. TCP and UDP are separate port spaces and challtestsrv binds
+/// one listener on each, so half of it can be lost while the other half
+/// looks healthy.
+async fn sidecar_answers(sidecar: Sidecar) -> Result<(), ProbeError> {
+    let query = dns_query(&sidecar.probe_name(), TYPE_A);
+    let expected = sidecar.address.octets();
+    for (transport, reply) in [
+        ("udp", ask_udp(sidecar.dns_port, &query).await?),
+        ("tcp", ask_tcp(sidecar.dns_port, &query).await?),
+    ] {
+        if first_answer(&reply, TYPE_A) != Some(&expected[..]) {
+            return Err(ProbeError::Stranger(format!(
+                "{transport} answered, but not with {}: another process's DNS server",
+                sidecar.address
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the management API at `url` belongs to this start's sidecar: a
+/// TXT record set through it must come back from the sidecar's DNS port,
+/// which [`sidecar_answers`] has already proven this start's own.
+async fn management_reaches(
+    client: &reqwest::Client,
+    url: &str,
+    sidecar: Sidecar,
+) -> Result<(), ProbeError> {
+    let name = sidecar.probe_name();
+    let token = sidecar.address.to_string();
+    let response = client
+        .post(format!("{url}/set-txt"))
+        .json(&serde_json::json!({ "host": name, "value": token }))
+        .send()
+        .await
+        .map_err(|e| ProbeError::NotYet(format!("set-txt: {e:?}")))?;
+    // The sidecar takes any set-txt with a host and a value, so an error
+    // status is some other server's answer.
+    if !response.status().is_success() {
+        return Err(ProbeError::Stranger(format!(
+            "{url} answered set-txt with {}: another process's server",
+            response.status()
+        )));
+    }
+    let reply = ask_udp(sidecar.dns_port, &dns_query(&name, TYPE_TXT)).await?;
+    // TXT data is length-prefixed character strings (RFC 1035 §3.3.14).
+    let mut expected = vec![token.len() as u8];
+    expected.extend_from_slice(token.as_bytes());
+    if first_answer(&reply, TYPE_TXT) == Some(&expected[..]) {
+        Ok(())
+    } else {
+        Err(ProbeError::Stranger(format!(
+            "{url} took the record, but the sidecar does not serve it: \
+             another process's management API"
+        )))
     }
 }
 
 impl PebbleHandle {
     /// Spawn the pair, with Pebble issuing certificates valid for
-    /// `validity_seconds`, and wait until the directory answers. The
-    /// dynamic ports are picked bind-and-drop, so a concurrent process can
-    /// steal one before the children claim it — a failed start is retried
-    /// on fresh ports.
+    /// `validity_seconds`, and wait until every endpoint is proven this
+    /// start's own. Neither child can bind port 0 and report the port it
+    /// got, so the ports are picked bind-and-drop, and a concurrent process
+    /// can take one before the children claim it — a start that cannot
+    /// prove its endpoints is retried on fresh ports.
     pub async fn start(validity_seconds: u64) -> Self {
         let mut last_error = String::new();
         for attempt in 1..=3 {
@@ -192,9 +344,9 @@ impl PebbleHandle {
     }
 
     async fn try_start(validity_seconds: u64) -> Result<Self, String> {
-        let (mut handle, dns_port) =
+        let (mut handle, sidecar) =
             bdd_infra::off_loop(move || Self::spawn_pair(validity_seconds)).await;
-        match handle.wait_ready(dns_port).await {
+        match handle.wait_ready(sidecar).await {
             Ok(()) => Ok(handle),
             Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
         }
@@ -203,8 +355,8 @@ impl PebbleHandle {
     /// The synchronous half of a start, run off the poll loop every
     /// scenario shares (docs/skills/testing.md §5.7): mint the endpoint
     /// certificate, pick the ports, write Pebble's config and spawn both
-    /// children. Returns the handle and the sidecar's DNS port.
-    fn spawn_pair(validity_seconds: u64) -> (Self, u16) {
+    /// children. Returns the handle and what identifies its sidecar.
+    fn spawn_pair(validity_seconds: u64) -> (Self, Sidecar) {
         let (pebble_path, challtestsrv_path) =
             env_paths().expect("@pebble scenario ran without PEBBLE_PATH/PEBBLE_CHALLTESTSRV_PATH");
         let dir = tempfile::tempdir().expect("pebble scratch dir");
@@ -224,14 +376,29 @@ impl PebbleHandle {
         )
         .expect("pebble endpoint cert");
 
-        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] = bdd_infra::ephemeral_ports::<4>();
+        let [acme_port, chall_mgmt_port, dns_port] = bdd_infra::ephemeral_ports::<3>();
+        // The address the sidecar answers every A query with, minted for
+        // this start so a DNS answer carrying it can only come from this
+        // start's challtestsrv. Never in 127.0.x.x, so never the sidecar's
+        // own default of 127.0.0.1. Nothing connects to it: doctor's
+        // challenges are DNS-01, which ask only for TXT records.
+        let sidecar = Sidecar {
+            dns_port,
+            address: Ipv4Addr::new(
+                127,
+                rand::random_range(1..=255),
+                rand::random(),
+                rand::random(),
+            ),
+        };
         // The issued-certificate validity rides in the default profile —
         // Pebble ignores the legacy top-level certificateValidityPeriod
         // once profiles exist, and its no-profile default is 90 days.
+        // There is no managementListenAddress: doctor never uses Pebble's
+        // management API, and without one Pebble opens no listener for it.
         let config = serde_json::json!({
             "pebble": {
                 "listenAddress": format!("127.0.0.1:{acme_port}"),
-                "managementListenAddress": format!("127.0.0.1:{mgmt_port}"),
                 "certificate": dir.path().join("localhost.pem"),
                 "privateKey": dir.path().join("localhost-key.pem"),
                 "httpPort": 5002,
@@ -269,6 +436,8 @@ impl PebbleHandle {
             .arg(format!("127.0.0.1:{chall_mgmt_port}"))
             .arg("-dnsserver")
             .arg(format!("127.0.0.1:{dns_port}"))
+            .arg("-defaultIPv4")
+            .arg(sidecar.address.to_string())
             .arg("-doh")
             .arg("")
             .arg("-http01")
@@ -314,21 +483,34 @@ impl PebbleHandle {
             pebble,
             challtestsrv,
         };
-        (handle, dns_port)
+        (handle, sidecar)
     }
 
-    /// Poll the directory (through the minted CA), the challtestsrv
-    /// management endpoint, and the sidecar's DNS listener until all three
-    /// answer; bail out early when either child has already exited (a
-    /// stolen port kills it at bind time).
+    /// Poll until every port the pair was handed is proven this start's
+    /// own; bail out early when either child has already exited (a stolen
+    /// port kills Pebble at bind time).
     ///
-    /// The DNS probe is the one the other two cannot stand in for. A
-    /// challtestsrv that loses its DNS bind does not exit: it logs
-    /// `address already in use` and keeps serving management, so an
-    /// HTTP-only readiness check passes and the loss surfaces only when
-    /// Pebble resolves a challenge mid-scenario — long past the retry that
-    /// would have picked fresh ports.
-    async fn wait_ready(&mut self, dns_port: u16) -> Result<(), String> {
+    /// Any of the ports can be held by another process instead, another
+    /// scenario's pair among them, and a check that asks only "does
+    /// something answer?" adopts it. So each check asks for something only
+    /// this start's children have:
+    ///
+    /// - the ACME directory answers through a client that trusts only the
+    ///   CA minted for this start;
+    /// - the sidecar's DNS port answers an A query, on both transports,
+    ///   with the address minted for this start;
+    /// - a TXT record set through the management API comes back from that
+    ///   DNS port.
+    ///
+    /// The sidecar's two checks are the ones nothing else stands in for: a
+    /// challtestsrv that loses a bind does not exit. It logs `address
+    /// already in use` and keeps serving its other listener, so the loss
+    /// would otherwise surface only when Pebble resolves a challenge
+    /// mid-scenario — long past the retry that would have picked fresh
+    /// ports. Nor does it ever retry the bind, so once either check gets
+    /// an answer this start's sidecar never gives, the attempt ends at once
+    /// rather than at the end of [`READY_BUDGET`].
+    async fn wait_ready(&mut self, sidecar: Sidecar) -> Result<(), String> {
         let client = rusty_photon_tls::client::client_builder(Some(&self.ca_pem))
             .expect("builder trusting the pebble CA")
             .timeout(HTTP_PROBE_TIMEOUT)
@@ -340,6 +522,7 @@ impl PebbleHandle {
             .expect("plain http client");
         let mut directory_error = String::new();
         let mut dns_error = String::new();
+        let mut management_error = String::new();
         let mut directory_ready = false;
         let mut management_ready = false;
         let mut dns_ready = false;
@@ -368,14 +551,22 @@ impl PebbleHandle {
                     Err(e) => directory_error = format!("{e:?}"),
                 }
             }
-            if !management_ready {
-                // Any HTTP answer proves the management server is up.
-                management_ready = plain.get(&self.management_url).send().await.is_ok();
-            }
             if !dns_ready {
-                match dns_answers(dns_port).await {
+                match sidecar_answers(sidecar).await {
                     Ok(()) => dns_ready = true,
-                    Err(e) => dns_error = e,
+                    Err(ProbeError::NotYet(e)) => dns_error = e,
+                    Err(ProbeError::Stranger(e)) => {
+                        return Err(format!("DNS 127.0.0.1:{}: {e}", sidecar.dns_port));
+                    }
+                }
+            }
+            // Only once the DNS port is proven: the management check reads
+            // its record back through it.
+            if dns_ready && !management_ready {
+                match management_reaches(&plain, &self.management_url, sidecar).await {
+                    Ok(()) => management_ready = true,
+                    Err(ProbeError::NotYet(e)) => management_error = e,
+                    Err(ProbeError::Stranger(e)) => return Err(e),
                 }
             }
             if directory_ready && management_ready && dns_ready {
@@ -389,11 +580,13 @@ impl PebbleHandle {
         Err(format!(
             "Pebble did not become ready in {:?} (directory {} \
              ready: {directory_ready}, management {} ready: {management_ready}, \
-             DNS 127.0.0.1:{dns_port} ready: {dns_ready}; last directory error: \
-             {directory_error}; last DNS error: {dns_error})",
+             DNS 127.0.0.1:{} ready: {dns_ready}; last directory error: \
+             {directory_error}; last DNS error: {dns_error}; last management \
+             error: {management_error})",
             started.elapsed(),
             self.directory_url,
-            self.management_url
+            self.management_url,
+            sidecar.dns_port
         ))
     }
 
