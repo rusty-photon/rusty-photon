@@ -449,12 +449,6 @@ mod reserved_port_tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_async_form_hands_out_an_ephemeral_port() {
-        let [port] = ephemeral_ports_async::<1>().await;
-        assert_ne!(port, 0);
-    }
-
     /// The async form waits for the lock without blocking the loop: on a
     /// single-threaded runtime, a closure under the synchronous form on a
     /// pool thread holds the lock while the loop keeps ticking, and the
@@ -1044,13 +1038,18 @@ pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
     spawn()
 }
 
-/// `N` distinct ephemeral loopback ports, for children told their port
-/// after the probe.
+/// `N` distinct ephemeral loopback ports, for children that must be told
+/// their port because they cannot bind port 0 and print the one they got.
 ///
 /// Binds `127.0.0.1:0` `N` times, holds every listener until all `N` ports
 /// are read so no two collide, then lets them go for the children to claim.
 /// The ports come from the OS's ephemeral range, so another process can
-/// take one before its child binds it: a caller retries on that lost race.
+/// bind one before its child does, and that process can be a server of the
+/// child's own kind, which a readiness check asking only "does something
+/// answer?" adopts as the child. A caller therefore proves that what
+/// answers on each port is its own child, and starts again on fresh ports
+/// when it cannot. A child that binds port 0 and prints its port needs
+/// none of this ([`parse_bound_port`], [`parse_port_after`]), and
 /// [`reserved_test_port_async`] is the other shape, a band below the
 /// ephemeral floor probed by connecting, for a port a test must know
 /// before the child starts.
@@ -1063,19 +1062,10 @@ pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
 ///
 /// Panics if a listener cannot be bound or read back, or, as
 /// [`with_spawn_lock`] does, when called from within an async context,
-/// where [`ephemeral_ports_async`] is the form to take.
+/// where it runs under [`off_loop`] instead.
 #[must_use]
 pub fn ephemeral_ports<const N: usize>() -> [u16; N] {
     with_spawn_lock(bind_ephemeral_ports::<N>)
-}
-
-/// [`ephemeral_ports`] for async code.
-///
-/// # Panics
-///
-/// Panics if a listener cannot be bound or read back.
-pub async fn ephemeral_ports_async<const N: usize>() -> [u16; N] {
-    with_spawn_lock_async(bind_ephemeral_ports::<N>).await
 }
 
 fn bind_ephemeral_ports<const N: usize>() -> [u16; N] {
@@ -1358,11 +1348,29 @@ async fn join_or_abort(mut handle: tokio::task::JoinHandle<()>) {
 pub async fn parse_bound_port(
     stdout: tokio::process::ChildStdout,
 ) -> Option<(u16, tokio::task::JoinHandle<()>)> {
+    parse_port_after(stdout, "bound_addr=").await
+}
+
+/// Parse the bound port from the stdout of a child that announces its
+/// address after `marker`.
+///
+/// [`parse_bound_port`] is this for our services' `bound_addr=`; this
+/// form is for a third-party binary told to bind port 0 that prints the
+/// address it got under its own wording, such as geckodriver's
+/// `Listening on `. The text after `marker` on the first line carrying it
+/// ends in `:<port>`.
+///
+/// Returns `None` at end of output without a match, and otherwise drains
+/// the rest of stdout in a background task, as [`parse_bound_port`] does.
+pub async fn parse_port_after(
+    stdout: tokio::process::ChildStdout,
+    marker: &str,
+) -> Option<(u16, tokio::task::JoinHandle<()>)> {
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
 
     while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some((_, after)) = line.split_once("bound_addr=") {
+        if let Some((_, after)) = line.split_once(marker) {
             let addr_str = after.trim();
             if let Some(port_str) = addr_str.split(':').next_back() {
                 if let Ok(port) = port_str.parse::<u16>() {
@@ -1526,6 +1534,30 @@ mod tests {
         let stdout = child.stdout.take().unwrap();
 
         let result = parse_bound_port(stdout).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_parse_port_after_reads_a_third_party_marker() {
+        // geckodriver's announcement, tab-separated after a millisecond clock.
+        let mut child = spawn_piped(
+            "printf",
+            &["1792324339384\tgeckodriver\tINFO\tListening on 127.0.0.1:40861\n"],
+        )
+        .await;
+        let stdout = child.stdout.take().unwrap();
+
+        let (port, drain) = parse_port_after(stdout, "Listening on ").await.unwrap();
+        assert_eq!(port, 40861);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn test_parse_port_after_ignores_another_marker() {
+        let mut child = spawn_piped("echo", &["Bound rp server bound_addr=127.0.0.1:9999"]).await;
+        let stdout = child.stdout.take().unwrap();
+
+        let result = parse_port_after(stdout, "Listening on ").await;
         assert!(result.is_none());
     }
 
