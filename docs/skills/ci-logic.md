@@ -60,11 +60,15 @@ tools/rusty-photon-ci/
   `bazel test //...` runs it on every PR. The files it reads are the unit
   test's `data` in `BUILD.bazel`. It finds them from `CARGO_MANIFEST_DIR`:
   Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
-  relative to the runfiles root.
+  relative to the runfiles root. It reads a YAML file with the parser
+  (`saphyr`), never line by line: R6's guard started line by line, and
+  each review of it found YAML it misread.
 - **The shell it replaces goes in the same PR**, with every mention of it
   (ADR-022): search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the
-  command line, `thiserror` for the errors.
+  command line, `thiserror` for the errors, and for the tests `saphyr`, a
+  YAML parser that keeps each node's line, with `saphyr-parser`, whose
+  events keep every tag.
 - **CI runs the crate's tests, not its tools, yet.** The Linux pool
   template has no Cargo until the plan's T1, so a workflow step that does
   what a tool does stays YAML, and the tool's source names the step to
