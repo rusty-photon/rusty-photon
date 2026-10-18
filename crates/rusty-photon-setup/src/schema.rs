@@ -67,9 +67,19 @@ pub struct FieldSpec {
     section: String,
     label: String,
     kind: FieldKind,
+    default: Option<Value>,
 }
 
 impl FieldSpec {
+    /// The schema's `default` for the field, if it states one: what an input
+    /// shows when the config has no value at the field's pointer — the
+    /// fields of a tagged enum's unchosen variant, so a switch to it starts
+    /// from the defaults rather than from blanks.
+    #[must_use]
+    pub const fn default_value(&self) -> Option<&Value> {
+        self.default.as_ref()
+    }
+
     /// Dotted path (`serial.port`) — the form control's `name`.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -124,6 +134,24 @@ impl FieldSpec {
     pub const fn is_editable_scalar(&self) -> bool {
         !matches!(self.kind, FieldKind::Variants { .. } | FieldKind::FileOnly)
     }
+
+    /// For a [`FieldKind::Variants`] leaf: the chosen variant's field at
+    /// `pointer`, relative to the enum (`/port`), where `value` is the enum's
+    /// node in the config (the object carrying the tag). `None` for any other
+    /// kind, a tag no variant has, or a pointer no field of that variant has.
+    #[must_use]
+    pub fn variant_field(&self, value: &Value, pointer: &str) -> Option<&Self> {
+        let FieldKind::Variants { tag, variants } = &self.kind else {
+            return None;
+        };
+        let chosen = value.get(tag).and_then(Value::as_str)?;
+        variants
+            .iter()
+            .find(|v| v.name == chosen)?
+            .fields
+            .iter()
+            .find(|f| f.pointer == pointer)
+    }
 }
 
 /// The ordered fields of a config schema.
@@ -152,16 +180,13 @@ impl FieldModel {
         Self { fields }
     }
 
-    /// Mark every string leaf at one of `pointers` as a [`FieldKind::Secret`].
-    /// A pointer segment may be the wildcard `*`, matching any one segment.
+    /// Mark every string leaf at one of `pointers` as a [`FieldKind::Secret`],
+    /// the fields a tagged enum's variants carry included. A pointer segment
+    /// may be the wildcard `*`, matching any one segment.
     #[must_use]
     pub fn with_secrets(mut self, pointers: &[&str]) -> Self {
         for field in &mut self.fields {
-            if matches!(field.kind, FieldKind::Str { .. })
-                && pointers.iter().any(|p| pointer_matches(p, &field.pointer))
-            {
-                field.kind = FieldKind::Secret;
-            }
+            mark_secret(field, "", pointers);
         }
         self
     }
@@ -203,6 +228,26 @@ impl FieldModel {
             }
         }
         out
+    }
+}
+
+/// Mark `field` a secret when a pattern names it. A variant's field carries
+/// a pointer relative to its enum's node, so `base` is the enum's own
+/// pointer, and the enum's variants are reached into.
+fn mark_secret(field: &mut FieldSpec, base: &str, pointers: &[&str]) {
+    let absolute = format!("{base}{}", field.pointer);
+    if let FieldKind::Variants { variants, .. } = &mut field.kind {
+        for variant in variants {
+            for inner in &mut variant.fields {
+                mark_secret(inner, &absolute, pointers);
+            }
+        }
+        return;
+    }
+    if matches!(field.kind, FieldKind::Str { .. })
+        && pointers.iter().any(|p| pointer_matches(p, &absolute))
+    {
+        field.kind = FieldKind::Secret;
     }
 }
 
@@ -408,7 +453,9 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             if prefix.is_empty() {
                 return;
             }
-            out.push(field_spec(prefix, FieldKind::IntSet { options }));
+            let mut spec = field_spec(prefix, FieldKind::IntSet { options });
+            spec.default = resolved.get("default").cloned();
+            out.push(spec);
         }
         Shape::Tagged { tag, branches } => {
             if prefix.is_empty() {
@@ -469,7 +516,9 @@ fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec
         // "string" and any unexpected base fall back to a text field.
         _ => FieldKind::Str { nullable },
     };
-    field_spec(name, kind)
+    let mut spec = field_spec(name, kind);
+    spec.default = node.get("default").cloned();
+    spec
 }
 
 fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
@@ -483,6 +532,7 @@ fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
         section,
         label: humanize(&sub),
         kind,
+        default: None,
     }
 }
 
@@ -846,6 +896,11 @@ mod tests {
             ]
         );
         assert_eq!(usb.fields[0].section(), "transport");
+        assert_eq!(
+            usb.fields[0].default_value(),
+            None,
+            "a field without a schema default has none"
+        );
         let udp = &variants[1];
         assert_eq!(
             udp.fields[1].kind(),
@@ -854,6 +909,154 @@ mod tests {
                 min: Some(0),
                 max: Some(65535)
             }
+        );
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "kind", rename_all = "lowercase")]
+    #[allow(dead_code)]
+    enum Link {
+        Serial { port: String },
+        Network { host: String, password: String },
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    struct WithLink {
+        link: Link,
+        follow: Follow,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    struct Follow {
+        password: String,
+    }
+
+    #[test]
+    fn with_secrets_reaches_the_fields_a_variant_carries() {
+        // A secret pointer names the field by its config path; the field
+        // lives under the enum's node, where the walker's relative pointer
+        // alone would never match it.
+        let schema = serde_json::to_value(schema_for!(WithLink)).unwrap();
+        let model =
+            FieldModel::from_schema(&schema).with_secrets(&["/link/password", "/follow/password"]);
+        let FieldKind::Variants { variants, .. } = model.field("link").unwrap().kind() else {
+            panic!("link must be a Variants leaf");
+        };
+        let network = variants.iter().find(|v| v.name == "network").unwrap();
+        let kind_of = |name: &str| {
+            network
+                .fields
+                .iter()
+                .find(|f| f.name() == name)
+                .unwrap_or_else(|| panic!("no field {name}"))
+                .kind()
+                .clone()
+        };
+        assert_eq!(kind_of("link:network.password"), FieldKind::Secret);
+        assert_eq!(
+            kind_of("link:network.host"),
+            FieldKind::Str { nullable: false }
+        );
+        let serial = variants.iter().find(|v| v.name == "serial").unwrap();
+        assert_eq!(
+            serial.fields[0].kind(),
+            &FieldKind::Str { nullable: false },
+            "the other variant's string is not the secret"
+        );
+        assert_eq!(
+            model.field("follow.password").unwrap().kind(),
+            &FieldKind::Secret,
+            "a plain field is still marked"
+        );
+    }
+
+    #[test]
+    fn variant_field_finds_the_chosen_variants_field_by_its_relative_pointer() {
+        let schema = serde_json::to_value(schema_for!(WithLink)).unwrap();
+        let model = FieldModel::from_schema(&schema);
+        let link = model.field("link").unwrap();
+        let network = json!({ "kind": "network", "host": "h" });
+        assert_eq!(
+            link.variant_field(&network, "/host").map(FieldSpec::name),
+            Some("link:network.host")
+        );
+        assert_eq!(
+            link.variant_field(&network, "/port").map(FieldSpec::name),
+            None,
+            "the other variant's field is not the chosen one's"
+        );
+        let serial = json!({ "kind": "serial", "port": "/dev/a" });
+        assert_eq!(
+            link.variant_field(&serial, "/port").map(FieldSpec::name),
+            Some("link:serial.port")
+        );
+        assert!(link
+            .variant_field(&json!({ "kind": "bluetooth" }), "/port")
+            .is_none());
+        assert!(link.variant_field(&json!(null), "/port").is_none());
+        assert!(
+            model
+                .field("follow.password")
+                .unwrap()
+                .variant_field(&serial, "/port")
+                .is_none(),
+            "only a Variants leaf has variant fields"
+        );
+    }
+
+    #[test]
+    fn a_fields_schema_default_is_kept() {
+        // `serde(default = …)` on a variant's field lands in the schema as
+        // `default`; the unchosen variant's inputs start from it.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "transport": { "oneOf": [
+                    { "type": "object", "properties": {
+                        "kind": { "const": "usb" },
+                        "baud_rate": { "type": "integer", "default": 115_200 },
+                        "port": { "type": "string" },
+                    } },
+                    { "type": "object", "properties": {
+                        "kind": { "const": "udp" },
+                        "timeout": { "type": "string", "default": "2s" },
+                    } },
+                ] },
+                "cooling": { "type": "object", "properties": {
+                    "targets": { "type": "array", "items": { "type": "integer", "enum": [-10, 0] }, "default": [0] },
+                } },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        let FieldKind::Variants { variants, .. } = model.field("transport").unwrap().kind() else {
+            panic!("transport must be a Variants leaf");
+        };
+        let default_of = |variant: &str, name: &str| {
+            variants
+                .iter()
+                .find(|v| v.name == variant)
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name() == name)
+                .unwrap()
+                .default_value()
+                .cloned()
+        };
+        assert_eq!(
+            default_of("usb", "transport:usb.baud_rate"),
+            Some(json!(115_200))
+        );
+        assert_eq!(default_of("usb", "transport:usb.port"), None);
+        assert_eq!(
+            default_of("udp", "transport:udp.timeout"),
+            Some(json!("2s"))
+        );
+        assert_eq!(
+            model.field("cooling.targets").unwrap().default_value(),
+            Some(&json!([0]))
         );
     }
 

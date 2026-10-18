@@ -7606,3 +7606,39 @@ async fn an_abort_during_a_never_confirmed_ra_stop_keeps_tracking_off() {
         "the slew's put-back undid the abort's Tracking off"
     );
 }
+
+// --- Setup pages ------------------------------------------------------
+
+fn get_request() -> ascom_alpaca::SetupRequest {
+    ascom_alpaca::SetupRequest {
+        method: axum::http::Method::GET,
+        headers: axum::http::HeaderMap::new(),
+        query: Vec::new(),
+        form: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn the_config_actions_are_gone_and_the_ap_park_actions_stay() {
+    let d = device();
+    assert_eq!(
+        d.supported_actions().await.unwrap(),
+        vec![
+            "SetUnparkFromApPosition",
+            "SetPreferredApPark",
+            "UnparkFromApPosition",
+        ]
+    );
+    let err = d
+        .action("config.get".to_string(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn a_device_without_pages_has_no_setup_page() {
+    let d = device();
+    let response = d.setup_request(get_request()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}

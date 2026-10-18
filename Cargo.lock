@@ -5452,6 +5452,7 @@ dependencies = [
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
  "schemars",

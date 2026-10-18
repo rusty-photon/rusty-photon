@@ -5,7 +5,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use rusty_photon_config::actions::FieldError;
 use serde_json::Value;
 
-use crate::form::{array_contains, bool_at, text_at};
+use crate::form::{array_has, text_of};
 use crate::schema::{FieldKind, FieldSpec};
 
 /// The stylesheet every page inlines.
@@ -14,14 +14,20 @@ const STYLESHEET: &str = include_str!("../assets/setup.css");
 /// How a field renders beyond its value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FieldState<'a> {
-    /// Pinned by a command-line override: disabled, with a note.
-    pub pinned: bool,
+    /// The controls a command-line override pins: disabled, with a note. A
+    /// tagged enum's own name pins its selector and every field inside it;
+    /// a field inside one is pinned by its own control name.
+    pub pinned: &'a [String],
     /// The errors a rejected save attached, by field name; a field shows
     /// its own, a variant's inner field included.
     pub errors: &'a [FieldError],
 }
 
 impl FieldState<'_> {
+    fn is_pinned(&self, name: &str) -> bool {
+        self.pinned.iter().any(|p| p == name)
+    }
+
     fn error_for(&self, name: &str) -> Option<&str> {
         self.errors
             .iter()
@@ -104,23 +110,41 @@ pub fn field(spec: &FieldSpec, config: &Value, state: FieldState<'_>) -> Markup 
     match spec.kind() {
         FieldKind::FileOnly => file_only(spec, config),
         FieldKind::Variants { tag, variants } => variants_field(spec, tag, variants, config, state),
-        _ => scalar_field(spec, spec.pointer(), config, state),
+        _ => scalar_field(
+            spec,
+            spec.pointer(),
+            config,
+            state,
+            state.is_pinned(spec.name()),
+        ),
     }
 }
 
 /// A scalar field reading its value at `pointer` (a variant's field reads
-/// under its enum's object).
-fn scalar_field(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldState<'_>) -> Markup {
+/// under its enum's object), `pinned` by a command-line override or not.
+fn scalar_field(
+    spec: &FieldSpec,
+    pointer: &str,
+    config: &Value,
+    state: FieldState<'_>,
+    pinned: bool,
+) -> Markup {
     let name = spec.name();
-    let disabled = state.pinned;
+    let disabled = pinned;
     let error = state.error_for(name);
+    // The config's value, else the schema's default: an unchosen variant's
+    // field has no value yet, and a switch to it starts from the defaults.
+    let value = config
+        .pointer(pointer)
+        .or_else(|| spec.default_value())
+        .unwrap_or(&Value::Null);
     html! {
         div.field.pinned[disabled].invalid[error.is_some()] {
             @match spec.kind() {
                 FieldKind::Bool => {
                     div.checkbox {
                         input type="checkbox" id=(name) name=(name)
-                            checked[bool_at(config, pointer)] disabled[disabled];
+                            checked[value.as_bool() == Some(true)] disabled[disabled];
                         label for=(name) { (spec.label()) }
                     }
                 }
@@ -134,7 +158,7 @@ fn scalar_field(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldSta
                             @let option_id = format!("{name}.{option}");
                             div.checkbox {
                                 input type="checkbox" id=(option_id) name=(name) value=(option)
-                                    checked[array_contains(config, pointer, *option)]
+                                    checked[array_has(value, *option)]
                                     disabled[disabled];
                                 label for=(option_id) { (option) }
                             }
@@ -150,11 +174,11 @@ fn scalar_field(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldSta
                 _ => {
                     label for=(name) { (spec.label()) }
                     input type=(spec.input_type()) id=(name) name=(name)
-                        value=(text_at(config, pointer)) disabled[disabled];
+                        value=(text_of(value)) disabled[disabled];
                 }
             }
             @if let Some(e) = error { div.error { (e) } }
-            @if state.pinned {
+            @if pinned {
                 div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
             }
         }
@@ -174,6 +198,8 @@ fn file_only(spec: &FieldSpec, config: &Value) -> Markup {
 }
 
 /// A tagged enum: one radio per variant, the chosen variant's fields shown.
+/// A pin on the enum disables the selector and every field; a pin on one
+/// field disables that field alone.
 fn variants_field(
     spec: &FieldSpec,
     tag: &str,
@@ -190,28 +216,32 @@ fn variants_field(
         .unwrap_or_default()
         .to_string();
     let chosen = |variant: &str| variant == current;
+    let pinned = state.is_pinned(name);
     let error = state.error_for(name);
     html! {
-        div.field.variants.invalid[error.is_some()] role="group" aria-label=(spec.label()) {
+        div.field.variants.pinned[pinned].invalid[error.is_some()] role="group" aria-label=(spec.label()) {
             span.group-label { (spec.label()) }
             @for variant in variants {
                 @let id = format!("{name}.{}", variant.name);
                 div.variant {
                     div.choice.checkbox {
                         input type="radio" id=(id) name=(name) value=(variant.name)
-                            checked[chosen(&variant.name)] disabled[state.pinned];
+                            checked[chosen(&variant.name)] disabled[pinned];
                         label for=(id) { (variant.name) }
                     }
                     div.variant-fields {
                         @for inner in &variant.fields {
                             @let pointer = format!("{enum_pointer}{}", inner.pointer());
                             @let shown = if chosen(&variant.name) { config } else { &Value::Null };
-                            (scalar_field(inner, &pointer, shown, state))
+                            (scalar_field(inner, &pointer, shown, state, pinned || state.is_pinned(inner.name())))
                         }
                     }
                 }
             }
             @if let Some(e) = error { div.error { (e) } }
+            @if pinned {
+                div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
+            }
         }
     }
 }
@@ -223,6 +253,9 @@ pub struct DeviceRow {
     pub device_type: String,
     pub device_number: u32,
     pub enabled: bool,
+    /// Whether a command-line override pins the section's `enabled`, so the
+    /// file is not where a disabled device is enabled again.
+    pub pinned: bool,
     /// The device page, relative to the server page.
     pub href: String,
 }
@@ -246,7 +279,11 @@ pub fn device_list(devices: &[DeviceRow]) -> Markup {
                             }
                             span.kind { (d.device_type) " " (d.device_number) }
                             @if !d.enabled {
-                                span.note { "Disabled: its page is not served; enable it in the configuration file." }
+                                @if d.pinned {
+                                    span.note { "Disabled by a command-line override: its page is not served; change the service's launch flags to serve it." }
+                                } @else {
+                                    span.note { "Disabled: its page is not served; enable it in the configuration file." }
+                                }
                             }
                         }
                     }
@@ -363,7 +400,7 @@ mod tests {
                     "tls": { "anyOf": [ { "type": "object", "properties": { "cert": { "type": "string" } } }, { "type": "null" } ] },
                 } },
                 "transport": { "oneOf": [
-                    { "type": "object", "properties": { "kind": { "const": "usb" }, "port": { "type": "string" } } },
+                    { "type": "object", "properties": { "kind": { "const": "usb" }, "port": { "type": "string" }, "baud_rate": { "type": "integer", "default": 115_200 } } },
                     { "type": "object", "properties": { "kind": { "const": "udp" }, "host": { "type": "string" } } },
                 ] },
             },
@@ -403,10 +440,11 @@ mod tests {
             "{markup}"
         );
         assert!(!markup.contains("disabled"), "{markup}");
+        let pins = ["serial.port".to_string()];
         let pinned = render(
             "serial.port",
             FieldState {
-                pinned: true,
+                pinned: &pins,
                 errors: &[],
             },
         );
@@ -424,7 +462,7 @@ mod tests {
         let markup = render(
             "serial.baud_rate",
             FieldState {
-                pinned: false,
+                pinned: &[],
                 errors: &errs,
             },
         );
@@ -494,10 +532,27 @@ mod tests {
             markup.contains(r#"name="transport:udp.host" value="mount.local""#),
             "{markup}"
         );
-        // The unchosen variant's field renders empty, not with the udp value.
+        // The unchosen variant's field renders empty, not with the udp value,
+        // unless its schema states a default, which a switch starts from.
         assert!(
             markup.contains(r#"name="transport:usb.port" value="""#),
             "{markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport:usb.baud_rate" value="115200""#),
+            "{markup}"
+        );
+        // The chosen variant shows its value, not its default.
+        let usb = json!({ "transport": { "kind": "usb", "port": "/dev/a", "baud_rate": 9600 } });
+        let chosen = field(
+            model().field("transport").unwrap(),
+            &usb,
+            FieldState::default(),
+        )
+        .into_string();
+        assert!(
+            chosen.contains(r#"name="transport:usb.baud_rate" value="9600""#),
+            "{chosen}"
         );
     }
 
@@ -507,7 +562,7 @@ mod tests {
         let markup = render(
             "transport",
             FieldState {
-                pinned: false,
+                pinned: &[],
                 errors: &errs,
             },
         );
@@ -519,7 +574,7 @@ mod tests {
         let markup = render(
             "transport",
             FieldState {
-                pinned: false,
+                pinned: &[],
                 errors: &errs,
             },
         );
@@ -534,6 +589,73 @@ mod tests {
     }
 
     #[test]
+    fn a_pin_on_a_variants_field_disables_that_field_alone() {
+        // `--port` pins the host of the chosen variant: that input is
+        // disabled with the note, the selector and the other inputs are not.
+        let pins = ["transport:udp.host".to_string()];
+        let markup = render(
+            "transport",
+            FieldState {
+                pinned: &pins,
+                errors: &[],
+            },
+        );
+        assert!(
+            markup.contains(r#"name="transport:udp.host" value="mount.local" disabled>"#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains(
+                r#"type="radio" id="transport.udp" name="transport" value="udp" checked>"#
+            ),
+            "the selector stays enabled: {markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport:usb.port" value="">"#),
+            "the other variant's field stays enabled: {markup}"
+        );
+        assert_eq!(
+            markup.matches("Pinned by a command-line override").count(),
+            1,
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn a_pin_on_the_enum_disables_the_selector_and_every_field() {
+        // `--transport` pins the whole block: the radios and every variant's
+        // inputs are disabled, and the group carries the note once.
+        let pins = ["transport".to_string()];
+        let markup = render(
+            "transport",
+            FieldState {
+                pinned: &pins,
+                errors: &[],
+            },
+        );
+        assert!(
+            markup.contains(r#"class="field variants pinned""#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport" value="udp" checked disabled>"#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport" value="usb" disabled>"#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport:udp.host" value="mount.local" disabled>"#),
+            "{markup}"
+        );
+        assert!(
+            markup.contains(r#"name="transport:usb.port" value="" disabled>"#),
+            "{markup}"
+        );
+    }
+
+    #[test]
     fn the_device_list_links_enabled_devices_and_notes_disabled_ones() {
         let devices = vec![
             DeviceRow {
@@ -541,6 +663,7 @@ mod tests {
                 device_type: "covercalibrator".to_string(),
                 device_number: 0,
                 enabled: true,
+                pinned: false,
                 href: "setup/v1/covercalibrator/0/setup".to_string(),
             },
             DeviceRow {
@@ -548,6 +671,7 @@ mod tests {
                 device_type: "switch".to_string(),
                 device_number: 0,
                 enabled: false,
+                pinned: false,
                 href: "setup/v1/switch/0/setup".to_string(),
             },
         ];
@@ -561,10 +685,34 @@ mod tests {
             "{markup}"
         );
         assert!(
-            markup.contains("Disabled: its page is not served"),
+            markup
+                .contains("Disabled: its page is not served; enable it in the configuration file."),
             "{markup}"
         );
         assert!(device_list(&[]).into_string().contains("serves no device"));
+    }
+
+    #[test]
+    fn a_device_a_flag_disables_is_noted_as_pinned_not_as_a_file_edit() {
+        // `--enable-switch false` over a file that says true: editing the
+        // file does nothing, so the note names the flags instead.
+        let devices = vec![DeviceRow {
+            name: "Heater".to_string(),
+            device_type: "switch".to_string(),
+            device_number: 0,
+            enabled: false,
+            pinned: true,
+            href: "setup/v1/switch/0/setup".to_string(),
+        }];
+        let markup = device_list(&devices).into_string();
+        assert!(
+            markup.contains("Disabled by a command-line override: its page is not served; change the service's launch flags to serve it."),
+            "{markup}"
+        );
+        assert!(
+            !markup.contains("enable it in the configuration file"),
+            "{markup}"
+        );
     }
 
     #[test]

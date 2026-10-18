@@ -635,6 +635,20 @@ macro_rules! setup_pages_steps {
                 .await;
         }
 
+        #[::cucumber::then(
+            expr = "after the reload the server setup page shows {string} as {string}"
+        )]
+        async fn setup_pages_server_after_reload(world: &mut $world, name: String, value: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            $crate::setup_pages::wait_until_input_shows(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                &name,
+                &value,
+            )
+            .await;
+        }
+
         #[::cucumber::then(expr = "the page answers 422 with the error {string} on {string}")]
         fn setup_pages_rejected(world: &mut $world, message: String, field: String) {
             use $crate::setup_pages::SetupPagesWorld as _;

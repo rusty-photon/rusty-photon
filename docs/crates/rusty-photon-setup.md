@@ -51,8 +51,10 @@ HTML document with its stylesheet inline (the dark theme and tokens of the
 3. **Devices**: one row per device section the config has, naming the
    device and linking to its page. A device whose section is disabled
    (`enabled: false`) is listed with a note that its page is not served
-   while it is disabled and that the file is where to enable it; the crate
-   it sits behind serves no page for a device it did not register.
+   while it is disabled and that the file is where to enable it — or,
+   when a command-line flag pins the section's `enabled`, that the flags
+   are; the crate it sits behind serves no page for a device it did not
+   register.
 
 **A device page** holds that device's section alone: its name,
 description, `enabled`, the settings only it has, and its `unique_id` under
@@ -66,7 +68,12 @@ has reloaded, and the base the next save overlays — read through the typed
 config so a field the file leaves at its default shows that default, with
 a field a command-line flag pins showing what the running service uses:
 disabled, with a note that says so, and never persisted by a save (see
-[Saving](#saving)). A service that restarts rather than reloads
+[Saving](#saving)). Which fields the flags pin is the driver's
+`ConfigurableDriver::pinned_paths(config, overrides)`, read against the
+running config because a flag can land on one field or another by the
+config's shape (the `GTi`'s `--port` is the serial path on a USB
+transport and the host on a UDP one); it defaults to the driver's
+`override_paths`. A service that restarts rather than reloads
 (`ApplyDisposition::Restart`) names, above the form, the saved fields
 still waiting for its restart. A file that cannot be read shows the
 running configuration instead.
@@ -87,7 +94,7 @@ key order so the rendered order is the same on every host:
 | a plain object | recursed | — |
 | `$ref` into `$defs` | resolved | — |
 | `Option<T>` where `T` is an object (`anyOf [T, null]`) | file-only (below) | — |
-| an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored |
+| an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property; `schemars` renders a newtype variant around a struct this way too) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS; an unchosen variant's fields start from their schema `default`s, so a switch to it is the selector plus the fields it requires | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored. A variant's field is a control named by the variant (`transport:usb.port`): a driver `validate` error naming it by its config path (`transport.port`) is shown beside that control; a pinned path inside the enum pins that control alone, a pinned enum pins the selector and every field; `secret_pointers` reach a variant's fields |
 | anything else (`allOf`, `enum`, `const`, arrays of objects, custom-serde types) | file-only | — |
 
 **File-only** is never silent: the page names the field, says it is edited
@@ -146,6 +153,13 @@ A `POST` to a page submits that page's fields. The handler:
    - when a device page disabled its device, that the device's page is no
      longer served, and the wait reopens the server page instead, which
      lists the device and names the file as the way to enable it again.
+     Both are read off the configuration the reloaded service runs, so a
+     device whose `enabled` a flag keeps on stays on its page whatever the
+     file says.
+
+One save at a time per service, from the file read to the persist: every
+page saves to the one file, and two saves interleaving would have the later
+one persist its stale copy of the other's section.
 
 Nothing a `GET` does changes state.
 
@@ -213,8 +227,10 @@ sorted order, `$ref` resolution, the tagged-enum detection against
 `schemars`'s own output), the coercion rules, the renderer (a control per
 kind, the pinned state, a file-only note, the Security section), the
 origin check, and the handler against a fake driver (the overlay onto one
-section, the skipped pinned field, the rejected save leaving the file
-untouched, the persisted file, the reload fired, the credential rules).
+section, the skipped pinned field — inside a tagged enum too — the
+rejected save leaving the file untouched, a `validate` error re-pointed at
+a variant's control, the persisted file, the reload fired, the credential
+rules, one save waiting for another).
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

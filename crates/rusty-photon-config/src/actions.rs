@@ -135,6 +135,18 @@ pub trait ConfigurableDriver {
     /// config a reloaded server would run.
     fn apply_overrides(config: &mut Self::Config, overrides: &Self::Overrides);
 
+    /// The dotted paths the CLI overrides pin, read against `config` for a
+    /// driver whose flag lands on one field or another by the config's
+    /// shape — the `GTi`'s `--port` is the serial path on a USB transport and
+    /// the host on a UDP one. The setup pages show these fields disabled and
+    /// never persist them. Defaults to [`override_paths`](Self::override_paths),
+    /// which every other driver's flags fit.
+    #[must_use]
+    fn pinned_paths(config: &Self::Config, overrides: &Self::Overrides) -> Vec<String> {
+        let _ = config;
+        Self::override_paths(overrides)
+    }
+
     /// Identity fields (e.g. a device `unique_id`) — read-only by default in the
     /// UI behind an explicit "unlock to edit" escape hatch.
     #[must_use]

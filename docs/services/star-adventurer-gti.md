@@ -149,7 +149,7 @@ hook, because a start is a no-client state too.
 
 It is unconditional rather than a replay of something this process
 recorded, because a start is precisely where nothing was recorded. A
-`config.apply` that needs a reload tears the old transport down and
+setup-page save that needs a reload tears the old transport down and
 builds a new one; if the link was already dead when the shutdown hook
 ran — the supervisor mid-reconnect, the USB link dropped — its halt went
 nowhere, and the flag that would have remembered it belonged to the
@@ -1755,7 +1755,7 @@ also flips on its own while tracking. Two fields:
   shape a presumed band both rejects reachable offsets and admits
   unreachable ones. Fail either condition and the auto-flip does not
   fire late, it never fires at all, so the config is refused at load
-  (and on a runtime `config.apply`) rather than leaving
+  (and on a setup-page save) rather than leaving
   `auto_flip.enabled = true` as a setting that does nothing. The
   rule spans two config blocks, so unlike the other invariants it is
   not a newtype — it lives in `MountConfig::auto_flip_offset_error`.
@@ -2428,9 +2428,8 @@ One rule resists that shape: the auto-flip offset must also name a
 point a flip can happen at, which the CW exclusion zone and the
 tracking-guard margin decide — two blocks a newtype on a third cannot
 see. It lives in `MountConfig::auto_flip_offset_error`, called from
-`load_config` at startup and from the config-actions `validate` hook
-so a runtime `config.apply` cannot install what startup would have
-refused.
+`load_config` at startup and from the setup pages' `validate` hook so a
+save cannot install what startup would have refused.
 Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
 `ServerConfig`, `MountConfig`, `AutoFlip`, and the `cw_exclusion_zone` wire
 shape) additionally rejects unknown keys at deserialize
@@ -2584,7 +2583,7 @@ Notes:
   past the meridian). Must be a finite hour angle naming a point a
   flip can happen at — `[−0.95, +0.90)` with the shipped defaults,
   derived from both zone bounds in the general case. Validated at load
-  and on `config.apply`; see [§Flip policy](#flip-policy).
+  and on a setup-page save; see [§Flip policy](#flip-policy).
 - Meridian flips themselves have no setting: they are always on.
   The `flip_policy` block that used to switch them was **removed**
   2026-10 (its auto-flip fields moved to `auto_flip`), as was its
@@ -2885,36 +2884,74 @@ service's own config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
 
-### Config actions
+Each override pins the field it sets on the setup pages: `--transport`
+the whole `transport` block (the selector and every field of either
+kind), `--port` the USB `transport.port` or the UDP `transport.address`,
+whichever kind is in effect, `--baud` the USB `transport.baud_rate` (it
+lands nowhere on UDP), `--server-port` `server.port`. A pinned field shows
+the running value, disabled, and a save never persists it
+(`CliOverrides::pinned_paths` in `config.rs`).
 
-The mount exposes its configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
-[`config-actions.md`](config-actions.md) — *alongside* its `SetPark` /
-`*ApPark*` vendor actions (the `action()` dispatch tries the `ApParkAction` set
-first, then falls through to the config actions). `config_actions.rs` supplies
-the driver-specific half (`ConfigurableDriver for StarAdvDriver`).
+### Setup pages
 
-- **Secret redacted / carried forward:** `/server/auth/password_hash`.
-- **Locked (identity) field:** `mount.unique_id`.
-- **Hard read-only fields:** the whole `transport` block (`transport.kind`,
-  `.port`, `.address`, `.baud_rate`, `.command_timeout`, `.polling_interval` —
-  the `usb`/`udp` enum is best edited in the config file), `server.port`, and
-  `mount.enabled`.
-- **Overrides:** `Overrides = ()`. The CLI overrides (`--transport`/`--port`/
-  `--baud`/`--server-port`) all target read-only fields, so there is nothing to
-  override-pin; the read-only tier is the practical equivalent.
+The driver configures itself through the HTML pages the Alpaca Management
+API defines, served by the driver itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
 
-The mount's parse-don't-validate config types self-validate at deserialize, so a
-malformed submission fails with `INVALID_VALUE` before `validate` runs; the only
-`status:"invalid"` path is an empty `mount.unique_id`. A `config.apply` that
-changes a field persists atomically, returns `status:"applying"`, and fires the
-in-process reload: `main.rs` runs under
-`ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads + re-
-applies the CLI overrides and rebuilds the server from the freshly-persisted file.
-The rebuilt server starts from what the old one kept — `AtPark` and a
-client-set `SlewSettleTime` — handed across the loop by `main.rs` as a
-`Handover`, as long as it drives the same mount; see
-[§What a reload keeps](#what-a-reload-keeps).
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `transport` section — a selector between `usb` and `udp` with the chosen kind's fields shown, the other kind's starting from their defaults, so a switch is the selector plus the fields that kind requires (a UDP address and bind address) — the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to the mount's page. |
+| `/setup/v1/telescope/0/setup` | The mount's page: the `mount` section alone — name, description, `enabled`, the site, the settle, the safety envelope's scalars (`tracking_guard_margin_hours`, `min_altitude_degrees`, `ra_pulse_edge_steps`, `auto_flip`), the park ticks, and `unique_id` under a collapsed Identity disclosure. `cw_exclusion_zone`, `tracking_rate`, `unpark_from_ap_position` and `preferred_ap_park` are named as file-only — a nullable object and string enums the custom serde spells differently from the derived schema, which the generic form cannot render — and a save leaves them as the file has them; the two AP-park fields stay editable at runtime through their `Set*` actions. |
+
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, which
+[`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes in full (what a page
+shows, the save, the in-process reload); this driver supplies only its
+config type, its validation and normalization, which section the mount's
+page edits (`device_sections` in `setup.rs`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags pin
+([§CLI arguments](#cli-arguments)). A save of one page never alters the
+other page's section. The pages work whether or not the mount is
+`Connected`.
+
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` lists the three `ApPark`
+actions alone, and every other `Action` answers `ACTION_NOT_IMPLEMENTED`.
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `transport.port` (USB) | non-empty (trimmed by `normalize`) |
+| `transport.baud_rate` (USB) | `> 0` |
+| `transport.command_timeout`, `transport.polling_interval` (either kind) | `> 0` |
+| `mount.unique_id` | non-empty (the device's stable ASCOM `UniqueID`) |
+| `mount.auto_flip.meridian_offset_hours` | names a point a flip can happen at — `MountConfig::auto_flip_offset_error`, the rule `load_config` applies ([§Flip policy](#flip-policy)) |
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+A rule on the chosen transport kind's field is shown beside that field,
+named by the kind (`transport:usb.port`). The mount's parse-don't-validate
+config types check their own ranges at the typed parse, before these rules
+run: a `tracking_guard_margin_hours` of 5, a UDP `address` that is not an
+IP address, an auto-flip offset outside `[−12, 12]` is refused with `422`
+and the type's message named above the form (the typed parse carries no
+field path), the file untouched.
+
+A save that changes a field persists atomically and fires the in-process
+reload: `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads
+the file, re-applies the CLI overrides and rebuilds the server from the
+freshly-persisted file. The rebuilt server starts from what the old one
+kept — `AtPark` and a client-set `SlewSettleTime` — handed across the loop
+by `main.rs` as a `Handover`, as long as it drives the same mount; a save
+that moves the transport or the identity names a different mount, and the
+next lifecycle starts from nothing (see
+[§What a reload keeps](#what-a-reload-keeps)). A `--port` that is a serial
+path no longer fits once the page has switched the transport to UDP: the
+reload fails to start with the flag named, and the operator drops the flag
+or edits the file over the shell — the same recovery as an unbindable
+`server.port` ([D3](../plans/driver-setup-pages.md#d3-saving)).
 
 ## Module Structure
 
@@ -2941,7 +2978,10 @@ property tests for round-trip invariants live in
 ```
 src/
   config.rs              — Config types (TransportConfig, ServerConfig,
-                           MountConfig); humantime-serde for durations
+                           MountConfig); humantime-serde for durations;
+                           `CliOverrides` (the flags, what they pin)
+  setup.rs               — `ConfigurableDriver` impl behind the setup
+                           pages (validation, the mount's section)
   error.rs               — StarAdvError + ASCOM-error mapping
   transport/
     mod.rs               — module entry point for the per-transport factories
@@ -3621,7 +3661,7 @@ Connected = false  → release the session. On the last client disconnect the
                      the same hook again on the fresh link.
 ```
 
-A reload (`config.apply` on a field that needs one) is a shutdown
+A reload (a setup-page save that changes a field) is a shutdown
 followed by a start, so the sequence runs twice: once on the way down,
 where it may land on nothing, and once on the way back up on the fresh
 conduit, where it is asserted whatever the way down managed.
@@ -3669,20 +3709,21 @@ target, `Tracking`, the guide rates, any pulse in flight, the park
 target and the frame anchor (the last two are re-derived on the next
 connect, as after any disconnect).
 
-A lifecycle with the mount disabled — reachable only by a `SIGHUP` (or
-Windows `ParamChange`) after a hand edit, since `mount.enabled` is
-read-only to `config.apply` — has no device to retire. It hands on
-unchanged what it was given, so a later reload that enables the mount
-again starts from what the last mounted lifecycle kept.
+A lifecycle with the mount disabled — the mount's page saved with
+`enabled` unticked, or a hand edit and a `SIGHUP` (or Windows
+`ParamChange`) — has no device to retire. It hands on unchanged what it
+was given, so a later reload that enables the mount again (a hand edit:
+the server serves no page for a device it did not register) starts from
+what the last mounted lifecycle kept.
 
 What a reload keeps belongs to the mount it was kept for. The hand-over
 carries that mount's identity as far as the config names it: the
 transport endpoint (the USB `port`, or the UDP `address` and `port`)
 and `mount.unique_id`. A lifecycle whose identity differs starts from
-nothing, as a fresh process does. `config.apply` cannot change any of
-these (the transport block is read-only to it, `mount.unique_id` is
-locked), so only a `SIGHUP` after a hand edit gets here, and then the
-mount on the other end may be another one. A new path to the same
+nothing, as a fresh process does. A setup-page save can change either —
+the server page edits the transport, the mount's page its identity under
+its Identity disclosure — as can a `SIGHUP` after a hand edit, and then
+the mount on the other end may be another one. A new path to the same
 device (`/dev/ttyACM0` to its `/dev/serial/by-id/` link) counts as a
 change too. That errs on the safe side: `AtPark` reads false and the
 next `Park()` runs the park again. The other side would be worse: a
