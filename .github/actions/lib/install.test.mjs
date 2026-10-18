@@ -342,12 +342,21 @@ test('unpack reads a .tar.gz built in memory, as the action tests build theirs',
   assert.equal(readFileSync(join(dir, 'out', 'top', 'file'), 'utf8'), 'x');
 });
 
-test('unpack fails on a damaged archive', async () => {
-  const dir = tempDir();
-  const file = join(dir, 'cut.zip');
-  writeFileSync(file, Buffer.from(ARCHIVES['.zip'], 'base64').subarray(0, 200));
-  await assert.rejects(unpack(file, join(dir, 'out')));
-});
+// Each archive is cut inside its last file. bsdtar reads a zip as a stream
+// of entries, so one that loses only its central directory, after the last
+// entry's data (byte 195 here), still unpacks whole and passes; unzip
+// refuses even that.
+for (const [format, cut] of [
+  ['.zip', 160],
+  ['.tar.gz', 100],
+]) {
+  test(`unpack fails on a ${format} cut short`, async () => {
+    const dir = tempDir();
+    const file = join(dir, `cut${format}`);
+    writeFileSync(file, Buffer.from(ARCHIVES[format], 'base64').subarray(0, cut));
+    await assert.rejects(unpack(file, join(dir, 'out')));
+  });
+}
 
 test('unpack refuses a file it has no tool for', async () => {
   await assert.rejects(unpack(join(tempDir(), 'tool.7z'), join(tempDir(), 'out')), {
