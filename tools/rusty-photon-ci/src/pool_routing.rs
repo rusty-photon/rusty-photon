@@ -526,9 +526,7 @@ fn check_route(value: &str, route: &Route) -> Result<(), String> {
         .branches
         .iter()
         .map(|(label, clause)| {
-            let matrix = label
-                .map(|label| format!("matrix.os == '{label}' && "))
-                .unwrap_or_default();
+            let matrix = label.map_or_default(|label| format!("matrix.os == '{label}' && "));
             format!("{matrix}{}", normalize(clause))
         })
         .collect();

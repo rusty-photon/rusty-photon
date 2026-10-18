@@ -1106,7 +1106,7 @@ impl Claims<'_> {
                 let facts = cameras.get(index);
                 ListingRow {
                     port: port.to_string(),
-                    model: facts.map(|f| f.model.clone()).unwrap_or_default(),
+                    model: facts.map_or_default(|f| f.model.clone()),
                     sdk_id: facts.and_then(|f| f.sdk_id.clone()),
                     usb_serial: self.record_on(port).and_then(|r| r.serial.clone()),
                     // Without a list a placed camera is served at its place in
@@ -1575,9 +1575,7 @@ pub fn devices_report<I>(
         // placeholder would hold: `usb-devices.resolve`'s verdicts, which
         // close it. A failed scan, the one thing that fails them, returned
         // above.
-        let resolve: Vec<Check> = list
-            .map(|list| claims.resolve_checks(list))
-            .unwrap_or_default();
+        let resolve: Vec<Check> = list.map_or_default(|list| claims.resolve_checks(list));
         if resolve.is_empty() {
             return (render_listing(&listing), 0);
         }

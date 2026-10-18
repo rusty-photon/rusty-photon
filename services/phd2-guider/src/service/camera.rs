@@ -239,8 +239,7 @@ impl Phd2Camera {
             .await
             .map_err(|e| not_connected(format!("cannot read PHD2's equipment: {}", phd2_text(&e))))?
             .camera
-            .map(|camera| camera.name)
-            .unwrap_or_default();
+            .map_or_default(|camera| camera.name);
         Ok(Geometry {
             width,
             height,
