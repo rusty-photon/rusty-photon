@@ -257,10 +257,13 @@ fn load(text: &str) -> Result<Node, String> {
         | Event::SequenceStart(_, Some(tag))
         | Event::MappingStart(_, Some(tag)) = event
         {
-            let tag = if tag.is_yaml_core_schema() {
-                format!("!!{}", tag.suffix)
-            } else {
-                tag.to_string()
+            // The parser stores a tag resolved, and its `Display` writes `!`
+            // as `!!` and `!<tag:x>` as `!tag:x`; these are YAML's spellings.
+            let tag = match (tag.handle.as_str(), tag.suffix.as_str()) {
+                _ if tag.is_yaml_core_schema() => format!("!!{}", tag.suffix),
+                ("!", suffix) => format!("!{suffix}"),
+                ("", "!") => "!".to_owned(),
+                (handle, suffix) => format!("!<{handle}{suffix}>"),
             };
             return Err(format!(
                 "{}: has the tag `{tag}`, where the test reads none",
@@ -908,6 +911,22 @@ fn load_refuses_a_core_schema_tag_on_a_list() {
     assert_eq!(
         load("a: !!str [x]\n").unwrap_err(),
         "1: has the tag `!!str`, where the test reads none"
+    );
+}
+
+#[test]
+fn load_names_the_tag_bang_as_written() {
+    assert_eq!(
+        load("a: ! x\n").unwrap_err(),
+        "1: has the tag `!`, where the test reads none"
+    );
+}
+
+#[test]
+fn load_names_a_verbatim_tag_as_written() {
+    assert_eq!(
+        load("a: !<tag:x> y\n").unwrap_err(),
+        "1: has the tag `!<tag:x>`, where the test reads none"
     );
 }
 
