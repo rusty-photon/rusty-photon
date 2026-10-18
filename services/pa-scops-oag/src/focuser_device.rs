@@ -310,4 +310,44 @@ mod tests {
         );
         session.close().await.unwrap();
     }
+
+    // --- Setup pages ------------------------------------------------------
+
+    /// A device built without its setup pages, as the focused tests do.
+    fn make_device() -> ScopsFocuserDevice {
+        let factory: Arc<dyn TransportFactory> = Arc::new(MockScopsTransportFactory::default());
+        let config = Config::default();
+        let manager = FocuserManager::new(&config, factory);
+        ScopsFocuserDevice::new(config.focuser, manager)
+    }
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let device = make_device();
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_device_without_pages_has_no_setup_page() {
+        let device = make_device();
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
 }

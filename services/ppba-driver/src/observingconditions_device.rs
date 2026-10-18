@@ -580,6 +580,38 @@ mod tests {
         assert!(!device.connected().await.unwrap());
     }
 
+    // --- Setup pages ------------------------------------------------------
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let device = make_device();
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_device_without_pages_has_no_setup_page() {
+        let device = make_device();
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
     // PpbaError → ASCOMError mapping tests moved to error.rs once the
     // canonical mapping landed there (centralised so both devices share
     // the same classification).

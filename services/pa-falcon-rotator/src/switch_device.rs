@@ -607,6 +607,38 @@ mod tests {
         let err = device.set_switch_value(99, 0.0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
+
+    // --- Setup pages ------------------------------------------------------
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let device = disconnected_device();
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_device_without_pages_has_no_setup_page() {
+        let device = disconnected_device();
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
 }
 
 /// Connected-device tests for the seven Switch getters. Gated on
