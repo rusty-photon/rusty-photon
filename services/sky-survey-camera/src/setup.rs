@@ -29,6 +29,10 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
+    /// The file's rules (`config::field_errors`, the ones `load_config`
+    /// applies: positive optics, timeouts and the follow-mode blocks) plus
+    /// one the file never needs: a save must not blank the `unique_id`,
+    /// which startup mints into a file that lacks it.
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut errors = Vec::new();
         if config.device.unique_id.trim().is_empty() {
@@ -37,43 +41,7 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
                 msg: "must not be empty (it is the device's stable ASCOM UniqueID)".to_string(),
             });
         }
-        if let Some(t) = &config.pointing.telescope {
-            if !t.offset_ra_arcsec.is_finite() {
-                errors.push(FieldError {
-                    path: "pointing.telescope.offset_ra_arcsec".to_string(),
-                    msg: "must be finite".to_string(),
-                });
-            }
-            if !t.offset_dec_arcsec.is_finite() {
-                errors.push(FieldError {
-                    path: "pointing.telescope.offset_dec_arcsec".to_string(),
-                    msg: "must be finite".to_string(),
-                });
-            }
-            if t.request_timeout.is_zero() {
-                errors.push(FieldError {
-                    path: "pointing.telescope.request_timeout".to_string(),
-                    msg: "must be greater than 0".to_string(),
-                });
-            }
-        }
-        // The rotator only feeds rotation inside follow mode; reject the orphan
-        // config rather than silently ignore it (mirrors `config::validate`).
-        if config.pointing.rotator.is_some() && config.pointing.telescope.is_none() {
-            errors.push(FieldError {
-                path: "pointing.rotator".to_string(),
-                msg: "requires pointing.telescope (rotator-driven rotation only applies in follow mode)"
-                    .to_string(),
-            });
-        }
-        if let Some(r) = &config.pointing.rotator {
-            if r.request_timeout.is_zero() {
-                errors.push(FieldError {
-                    path: "pointing.rotator.request_timeout".to_string(),
-                    msg: "must be greater than 0".to_string(),
-                });
-            }
-        }
+        errors.extend(crate::config::field_errors(config));
         errors
     }
 
@@ -178,6 +146,26 @@ mod tests {
         assert!(SkySurveyCameraDriver::validate(&c)
             .iter()
             .any(|e| e.path == "device.unique_id"));
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_focal_length_and_survey_timeout() {
+        let mut c = base();
+        c.optics.focal_length_mm = 0.0;
+        c.survey.request_timeout = Duration::ZERO;
+        assert_eq!(
+            SkySurveyCameraDriver::validate(&c),
+            vec![
+                FieldError {
+                    path: "optics.focal_length_mm".to_string(),
+                    msg: "must be greater than 0".to_string(),
+                },
+                FieldError {
+                    path: "survey.request_timeout".to_string(),
+                    msg: "must be greater than 0".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

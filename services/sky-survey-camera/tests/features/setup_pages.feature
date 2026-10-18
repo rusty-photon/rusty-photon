@@ -10,7 +10,9 @@ Feature: Setup pages
   server page names them as edited in the configuration file, and a save
   leaves them, and the client passwords they may carry, as the file has
   them. A value a control cannot hold, letters in a number, is refused beside
-  its field. The binary takes no command-line overrides, so no field is ever
+  its field, and so is a value the camera cannot work with: a focal length,
+  pixel size, sensor size or survey timeout of zero, the rules the file load
+  applies. The binary takes no command-line overrides, so no field is ever
   pinned. No password hash reaches a page. A POST that does not come from the
   page itself is refused with 403 and the file is untouched. With auth
   configured the pages answer 401 without a credential and render with one.
@@ -60,6 +62,15 @@ Feature: Setup pages
     When I submit the server setup page setting "optics.focal_length_mm" to "fast"
     Then the page answers 422 with the error "must be a number" on "optics.focal_length_mm"
     And the configuration file holds 1000.0 at "/optics/focal_length_mm"
+
+  Scenario: A zero focal length or survey timeout is refused beside its field
+    Given the service is running
+    When I submit the server setup page setting "optics.focal_length_mm" to "0"
+    Then the page answers 422 with the error "must be greater than 0" on "optics.focal_length_mm"
+    And the configuration file holds 1000.0 at "/optics/focal_length_mm"
+    When I submit the server setup page setting "survey.request_timeout" to "0s"
+    Then the page answers 422 with the error "must be greater than 0" on "survey.request_timeout"
+    And the configuration file holds "5s" at "/survey/request_timeout"
 
   Scenario: A save leaves the follow-mode block as the file has it
     The telescope block is edited in the file: the server page names it, and

@@ -118,7 +118,10 @@ Configuration sections:
 - **device** — ASCOM device metadata.
 - **optics** — Fixed simulated optical system. `focal_length_mm` plus
   `pixel_size_*_um` derive the plate scale; `sensor_*_px` set
-  `CameraXSize` / `CameraYSize`.
+  `CameraXSize` / `CameraYSize`. All five are validated `> 0` (the
+  numbers finite too): a zero focal length or pixel size has no plate
+  scale and a zero sensor has no frame, so the load refuses the file and
+  a setup-page save is refused beside the field.
 - **pointing** — Initial RA/Dec/rotation used until the runtime API
   overrides them. Stored as plain `f64` degrees in J2000. The optional
   `telescope` sub-block (next bullet) switches the camera into
@@ -192,7 +195,8 @@ Configuration sections:
   - The ASCOM `Position` property is read — the synced sky position
     angle of the field, the orientation the simulator renders.
 - **survey** — Backend selector + request timeout (humantime per the
-  `Duration` convention) + on-disk cache directory.
+  `Duration` convention, validated `> 0` — a zero timeout would time
+  out every fetch before it starts) + on-disk cache directory.
 - **server** — Listening port and bind address, plus optional `tls`
   (HTTPS via `rusty-photon-tls`) and `auth` (HTTP Basic Auth via `rp-auth`).
 
@@ -299,11 +303,14 @@ so `Overrides = ()` and no field is ever pinned. The `config.get` /
   The follow-mode blocks are not rendered, so those two passwords reach no
   page today; a save leaves the blocks, passwords included, as the file
   has them.
-- **Validation** on every save mirrors load-time `config::validate`
-  (`device.unique_id` non-empty, telescope offsets finite, request
-  timeouts > 0, rotator-requires-telescope) as field-level errors; a rule
-  on a field the page does not show is named above the form with its
-  path.
+- **Validation** on every save applies the load-time rules, the one list
+  `config::field_errors` behind `config::validate` (optics `> 0` and
+  finite, `survey.request_timeout` `> 0`, telescope offsets finite,
+  follow-mode request timeouts `> 0`, rotator-requires-telescope), plus
+  one the file never needs: `device.unique_id` non-empty, since startup
+  mints a missing id into the file but a save must not blank one. Each
+  is a field-level error beside its control; a rule on a field the page
+  does not show is named above the form with its path.
 
 A save that changes a field persists atomically, answers that the service
 is reloading, and fires the in-process reload after the response has
