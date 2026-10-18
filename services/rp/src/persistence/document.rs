@@ -26,6 +26,10 @@ use serde_json::{Map, Value};
 
 use crate::error::{Result, RpError};
 
+/// The version of `rp` this build is: what a capture records as its
+/// document's `rp_version`.
+pub const RP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// A captured exposure plus any sections tools have written against it.
 ///
 /// `sections` is an open map keyed by tool/plugin name (`image_analysis`,
@@ -64,6 +68,11 @@ pub struct ExposureDocument {
     /// camera is outside every train or its train names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telescope: Option<String>,
+    /// That train's devices in optical order, objective side first, as
+    /// the config stood at capture time — `get_train_info`'s `devices`.
+    /// Omitted for a camera outside every train.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_devices: Option<Vec<ExposureTrainDevice>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -90,6 +99,14 @@ pub struct ExposureDocument {
     /// `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// The wheel's zero-based `Position` from the read that named
+    /// `filter`; present exactly when `filter` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_position: Option<u32>,
+    /// That slot's configured `wavelength_nm` at capture time. Omitted
+    /// with `filter`, and when the slot's entry carries no wavelength.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_wavelength_nm: Option<f64>,
     /// The camera's ASCOM `Gain`, read on every capture. Omitted when
     /// the driver does not implement it or the read failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,13 +139,24 @@ pub struct ExposureDocument {
     /// failed. The FITS header's `RA`/`DEC`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointing: Option<MountPointing>,
-    /// Optical-train geometry resolved at capture time. Carries both the raw
-    /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
-    /// derived pixel scale and FOV, so a consumer, such as a caller
-    /// passing `plate_solve`'s `fov_hint_deg`, need not re-derive them
-    /// from the FITS header.
-    /// Omitted when any input was missing or unusable (a pixel size of
-    /// 0, say) — see `docs/services/rp.md` §"Core Fields".
+    /// The configured observer site at capture time — the FITS
+    /// header's `SITELAT`/`SITELONG`. Omitted when no site is
+    /// configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<ExposureSite>,
+    /// The version of `rp` that captured the frame — the FITS header's
+    /// `SWCREATE`. Present on every frame this version captures; a
+    /// later `rp` rewriting the sidecar keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rp_version: Option<String>,
+    /// Optical-train geometry resolved at capture time: the train's
+    /// configured facts, the camera's connect-time reads and the
+    /// terminal focuser's step size, each recorded on its own when it
+    /// is usable, plus the pixel scale and FOV derived from them, so a
+    /// consumer, such as a caller passing `plate_solve`'s
+    /// `fov_hint_deg`, need not re-derive them from the FITS header.
+    /// Omitted only when nothing in it is known — see
+    /// `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optics: Option<Optics>,
     /// The sky target this frame belongs to (Decision 11), resolved by
@@ -176,6 +204,30 @@ pub struct MountPointing {
     pub dec_degrees: f64,
 }
 
+/// One entry of the exposure document's `train_devices`: a roster id
+/// and the kind it resolved to, spelled as `get_train_info` spells it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposureTrainDevice {
+    pub id: String,
+    pub kind: String,
+}
+
+/// The exposure document's `site` field: the configured observer site.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExposureSite {
+    pub latitude_degrees: f64,
+    pub longitude_degrees: f64,
+}
+
+impl From<&rp_ephemeris::Site> for ExposureSite {
+    fn from(site: &rp_ephemeris::Site) -> Self {
+        Self {
+            latitude_degrees: site.latitude_degrees,
+            longitude_degrees: site.longitude_degrees,
+        }
+    }
+}
+
 impl From<&rp_targets::Target> for ExposureTarget {
     fn from(t: &rp_targets::Target) -> Self {
         Self {
@@ -190,98 +242,170 @@ impl From<&rp_targets::Target> for ExposureTarget {
 /// Optical-train geometry persisted on the exposure document at capture
 /// time.
 ///
-/// See [`ExposureDocument::optics`] and `docs/services/rp.md`
-/// §"Core Fields" for the derivation, the failure modes, and the
-/// `plate_solve` consumer contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Every field is recorded on its own: an input when it is known and
+/// usable, a derived value when all its inputs are and it is itself
+/// usable. See [`ExposureDocument::optics`] and `docs/services/rp.md`
+/// §"Core Fields" for the sources, the rules, and the `plate_solve`
+/// consumer contract.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Optics {
     /// Operator-supplied effective focal length of the optical train,
     /// in millimetres, copied at capture time from the camera's train
     /// (`equipment.optical_trains[].focal_length_mm`).
-    pub focal_length_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focal_length_mm: Option<f64>,
+    /// The same train's clear aperture in millimetres
+    /// (`optical_trains[].aperture_mm`); with the focal length, the
+    /// frame's focal ratio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aperture_mm: Option<f64>,
     /// Raw Alpaca `PixelSizeX` reading, in microns, read when the camera
     /// session was established and cached for the connection.
-    pub pixel_size_x_um: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_size_x_um: Option<f64>,
     /// Raw Alpaca `PixelSizeY` reading, in microns, cached like
     /// `pixel_size_x_um`.
-    pub pixel_size_y_um: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_size_y_um: Option<f64>,
     /// Raw Alpaca `CameraXSize` reading, in pixels, cached like
     /// `pixel_size_x_um`.
-    pub sensor_width_px: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_width_px: Option<u32>,
     /// Raw Alpaca `CameraYSize` reading, in pixels, cached like
     /// `pixel_size_x_um`.
-    pub sensor_height_px: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_height_px: Option<u32>,
+    /// The image-plane travel of one step of the train's terminal
+    /// focuser, in microns: its configured `microns_per_step`, else the
+    /// driver's `StepSize` (rp.md § Train optics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microns_per_step: Option<f64>,
     /// Derived: `206.265 × pixel_size_x_um / focal_length_mm`.
-    pub pixel_scale_x_arcsec_per_pixel: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_scale_x_arcsec_per_pixel: Option<f64>,
     /// Derived: `206.265 × pixel_size_y_um / focal_length_mm`.
-    pub pixel_scale_y_arcsec_per_pixel: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_scale_y_arcsec_per_pixel: Option<f64>,
     /// Derived: `pixel_scale_x_arcsec_per_pixel × sensor_width_px / 3600`.
-    pub fov_width_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fov_width_deg: Option<f64>,
     /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
     /// Matches ASTAP's `-fov` semantics ("image height in degrees"), so
     /// it is the source rp.md §"Ground rules" names for `plate_solve`'s
     /// `fov_hint_deg`.
-    pub fov_height_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fov_height_deg: Option<f64>,
 }
 
-/// The raw inputs [`Optics::from_camera_geometry`] derives from: the
-/// operator-supplied focal length plus the camera-reported pixel size
-/// and sensor dimensions.
-#[derive(Clone, Copy, Debug)]
-pub struct CameraGeometry {
-    pub focal_length_mm: f64,
-    pub pixel_size_x_um: f64,
-    pub pixel_size_y_um: f64,
-    pub sensor_width_px: u32,
-    pub sensor_height_px: u32,
+/// The raw inputs [`Optics::from_inputs`] records and derives from.
+///
+/// The train's configured facts, the camera-reported pixel size and
+/// sensor dimensions, and the terminal focuser's step size, each
+/// `None` when unknown.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpticsInputs {
+    pub focal_length_mm: Option<f64>,
+    pub aperture_mm: Option<f64>,
+    pub pixel_size_x_um: Option<f64>,
+    pub pixel_size_y_um: Option<f64>,
+    pub sensor_width_px: Option<u32>,
+    pub sensor_height_px: Option<u32>,
+    pub microns_per_step: Option<f64>,
 }
+
+/// Arcseconds per radian over a thousand, so that microns over
+/// millimetres come out in arcseconds.
+const ARCSEC_PER_MM_PER_UM: f64 = 206.265;
 
 impl Optics {
-    /// Compute pixel scale + FOV from the camera geometry. Returns
-    /// `None` when any input — or any derived value — is non-finite or
-    /// non-positive. Callers log at `debug!` and persist the document
-    /// without an `optics` block.
+    /// Record each usable input and derive what the usable inputs
+    /// allow. A real is usable when it is finite and positive, a pixel
+    /// count when it is above zero; anything else is left out without
+    /// taking the other fields with it. `None` when nothing is left.
     ///
-    /// Derived values are validated because `serde_json` rejects
+    /// Derived values are validated too because `serde_json` rejects
     /// non-finite floats: a sub-normal `focal_length_mm` could push the
     /// pixel scale to `inf`, which would then fail the *entire* sidecar
     /// write — breaking capture's persistence contract for an auxiliary
     /// metadata block. Defense in depth keeps the failure scoped to the
-    /// `optics` field.
+    /// one derived field.
     #[must_use]
-    pub fn from_camera_geometry(geometry: CameraGeometry) -> Option<Self> {
-        let positive = |v: f64| v.is_finite() && v > 0.0;
-        if !positive(geometry.focal_length_mm)
-            || !positive(geometry.pixel_size_x_um)
-            || !positive(geometry.pixel_size_y_um)
-            || geometry.sensor_width_px == 0
-            || geometry.sensor_height_px == 0
-        {
-            return None;
-        }
-        let pixel_scale_x = 206.265 * geometry.pixel_size_x_um / geometry.focal_length_mm;
-        let pixel_scale_y = 206.265 * geometry.pixel_size_y_um / geometry.focal_length_mm;
-        let fov_width_deg = pixel_scale_x * f64::from(geometry.sensor_width_px) / 3600.0;
-        let fov_height_deg = pixel_scale_y * f64::from(geometry.sensor_height_px) / 3600.0;
-        if !positive(pixel_scale_x)
-            || !positive(pixel_scale_y)
-            || !positive(fov_width_deg)
-            || !positive(fov_height_deg)
-        {
-            return None;
-        }
-        Some(Self {
-            focal_length_mm: geometry.focal_length_mm,
-            pixel_size_x_um: geometry.pixel_size_x_um,
-            pixel_size_y_um: geometry.pixel_size_y_um,
-            sensor_width_px: geometry.sensor_width_px,
-            sensor_height_px: geometry.sensor_height_px,
-            pixel_scale_x_arcsec_per_pixel: pixel_scale_x,
-            pixel_scale_y_arcsec_per_pixel: pixel_scale_y,
-            fov_width_deg,
-            fov_height_deg,
-        })
+    pub fn from_inputs(inputs: OpticsInputs) -> Option<Self> {
+        let focal_length_mm = usable(inputs.focal_length_mm);
+        let width = AxisOptics::new(
+            inputs.pixel_size_x_um,
+            inputs.sensor_width_px,
+            focal_length_mm,
+        );
+        let height = AxisOptics::new(
+            inputs.pixel_size_y_um,
+            inputs.sensor_height_px,
+            focal_length_mm,
+        );
+        let optics = Self {
+            focal_length_mm,
+            aperture_mm: usable(inputs.aperture_mm),
+            pixel_size_x_um: width.pixel_size_um,
+            pixel_size_y_um: height.pixel_size_um,
+            sensor_width_px: width.sensor_px,
+            sensor_height_px: height.sensor_px,
+            microns_per_step: usable(inputs.microns_per_step),
+            pixel_scale_x_arcsec_per_pixel: width.pixel_scale,
+            pixel_scale_y_arcsec_per_pixel: height.pixel_scale,
+            fov_width_deg: width.fov_deg,
+            fov_height_deg: height.fov_deg,
+        };
+        (optics != Self::default()).then_some(optics)
     }
+
+    /// The frame's focal ratio, `focal_length_mm / aperture_mm`, as
+    /// `get_train_info` derives it; `None` unless both are recorded.
+    #[must_use]
+    pub fn focal_ratio(&self) -> Option<f64> {
+        match (self.focal_length_mm, self.aperture_mm) {
+            (Some(focal_length), Some(aperture)) => usable(Some(focal_length / aperture)),
+            _ => None,
+        }
+    }
+}
+
+/// One sensor axis of the optics block: its usable pixel size and
+/// sensor size, and what they derive with the focal length.
+struct AxisOptics {
+    pixel_size_um: Option<f64>,
+    sensor_px: Option<u32>,
+    pixel_scale: Option<f64>,
+    fov_deg: Option<f64>,
+}
+
+impl AxisOptics {
+    fn new(
+        pixel_size_um: Option<f64>,
+        sensor_px: Option<u32>,
+        focal_length_mm: Option<f64>,
+    ) -> Self {
+        let pixel_size_um = usable(pixel_size_um);
+        let sensor_px = sensor_px.filter(|px| *px > 0);
+        let pixel_scale = match (pixel_size_um, focal_length_mm) {
+            (Some(um), Some(mm)) => usable(Some(ARCSEC_PER_MM_PER_UM * um / mm)),
+            _ => None,
+        };
+        let fov_deg = match (pixel_scale, sensor_px) {
+            (Some(scale), Some(px)) => usable(Some(scale * f64::from(px) / 3600.0)),
+            _ => None,
+        };
+        Self {
+            pixel_size_um,
+            sensor_px,
+            pixel_scale,
+            fov_deg,
+        }
+    }
+}
+
+/// A real the optics block can record: finite and positive.
+fn usable(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite() && *v > 0.0)
 }
 
 impl ExposureDocument {
@@ -674,27 +798,24 @@ mod tests {
         );
     }
 
-    fn geometry(
-        focal_length_mm: f64,
-        pixel_um_x: f64,
-        pixel_um_y: f64,
-        width_px: u32,
-        height_px: u32,
-    ) -> CameraGeometry {
-        CameraGeometry {
-            focal_length_mm,
-            pixel_size_x_um: pixel_um_x,
-            pixel_size_y_um: pixel_um_y,
-            sensor_width_px: width_px,
-            sensor_height_px: height_px,
+    /// A complete set of inputs: 1000 mm at 200 mm aperture, 3.76 µm
+    /// pixels on an IMX455-class sensor, a 2.5 µm focuser step.
+    const fn inputs() -> OpticsInputs {
+        OpticsInputs {
+            focal_length_mm: Some(1000.0),
+            aperture_mm: Some(200.0),
+            pixel_size_x_um: Some(3.76),
+            pixel_size_y_um: Some(3.76),
+            sensor_width_px: Some(9576),
+            sensor_height_px: Some(6388),
+            microns_per_step: Some(2.5),
         }
     }
 
     #[test]
     fn optics_round_trips_through_json() {
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
-        let optics =
-            Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 9576, 6388)).unwrap();
+        let optics = Optics::from_inputs(inputs()).unwrap();
         doc.optics = Some(optics.clone());
         let body = serde_json::to_string(&doc).unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
@@ -702,33 +823,67 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_optics_block_without_the_newer_fields_still_parses() {
+        let body = serde_json::json!({
+            "focal_length_mm": 1000.0,
+            "pixel_size_x_um": 3.76,
+            "pixel_size_y_um": 3.76,
+            "sensor_width_px": 9576,
+            "sensor_height_px": 6388,
+            "pixel_scale_x_arcsec_per_pixel": 0.7756,
+            "pixel_scale_y_arcsec_per_pixel": 0.7756,
+            "fov_width_deg": 2.063,
+            "fov_height_deg": 1.3762
+        });
+        let optics: Optics = serde_json::from_value(body).unwrap();
+        assert_eq!(optics.focal_length_mm, Some(1000.0));
+        assert_eq!(optics.fov_height_deg, Some(1.3762));
+        assert_eq!(optics.aperture_mm, None);
+        assert_eq!(optics.microns_per_step, None);
+    }
+
+    #[test]
+    fn optics_records_the_inputs_as_given() {
+        let optics = Optics::from_inputs(inputs()).unwrap();
+        assert_eq!(optics.focal_length_mm, Some(1000.0));
+        assert_eq!(optics.aperture_mm, Some(200.0));
+        assert_eq!(optics.pixel_size_x_um, Some(3.76));
+        assert_eq!(optics.pixel_size_y_um, Some(3.76));
+        assert_eq!(optics.sensor_width_px, Some(9576));
+        assert_eq!(optics.sensor_height_px, Some(6388));
+        assert_eq!(optics.microns_per_step, Some(2.5));
+    }
+
+    #[test]
     fn optics_derives_pixel_scale_and_fov() {
-        // 1000 mm focal length, 3.76 µm pixels, IMX455-class sensor.
         // Pixel scale = 206.265 × 3.76 / 1000  ≈ 0.775_556_4 arcsec/px
         // Width FOV   = 0.775_556_4 × 9576 / 3600 ≈ 2.062_980 deg
         // Height FOV  = 0.775_556_4 × 6388 / 3600 ≈ 1.376_181 deg
-        let optics =
-            Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 9576, 6388)).unwrap();
+        let optics = Optics::from_inputs(inputs()).unwrap();
+        let scale_x = optics.pixel_scale_x_arcsec_per_pixel.unwrap();
+        let fov_width = optics.fov_width_deg.unwrap();
+        let fov_height = optics.fov_height_deg.unwrap();
+        assert!((scale_x - 0.775_556_4).abs() < 1e-6, "scale x = {scale_x}");
         assert!(
-            (optics.pixel_scale_x_arcsec_per_pixel - 0.775_556_4).abs() < 1e-6,
-            "pixel_scale_x_arcsec_per_pixel = {}",
-            optics.pixel_scale_x_arcsec_per_pixel
+            (fov_width - 2.062_980).abs() < 1e-5,
+            "fov width = {fov_width}"
         );
         assert!(
-            (optics.fov_width_deg - 2.062_980).abs() < 1e-5,
-            "fov_width_deg = {}",
-            optics.fov_width_deg
-        );
-        assert!(
-            (optics.fov_height_deg - 1.376_181).abs() < 1e-5,
-            "fov_height_deg = {}",
-            optics.fov_height_deg
+            (fov_height - 1.376_181).abs() < 1e-5,
+            "fov height = {fov_height}"
         );
     }
 
     #[test]
     fn optics_supports_anisotropic_pixels() {
-        let optics = Optics::from_camera_geometry(geometry(1000.0, 4.0, 5.0, 100, 100)).unwrap();
+        let optics = Optics::from_inputs(OpticsInputs {
+            pixel_size_x_um: Some(4.0),
+            pixel_size_y_um: Some(5.0),
+            sensor_width_px: Some(100),
+            sensor_height_px: Some(100),
+            ..inputs()
+        })
+        .unwrap();
         assert!(
             optics.pixel_scale_x_arcsec_per_pixel < optics.pixel_scale_y_arcsec_per_pixel,
             "wider pixels in y must produce a larger y pixel scale"
@@ -737,44 +892,162 @@ mod tests {
     }
 
     #[test]
-    fn optics_rejects_non_positive_inputs() {
-        assert!(Optics::from_camera_geometry(geometry(0.0, 3.76, 3.76, 1024, 1024)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(-1.0, 3.76, 3.76, 1024, 1024)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(1000.0, 0.0, 3.76, 1024, 1024)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, -3.76, 1024, 1024)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 0, 1024)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 1024, 0)).is_none());
-        assert!(Optics::from_camera_geometry(geometry(f64::NAN, 3.76, 3.76, 1024, 1024)).is_none());
-        assert!(
-            Optics::from_camera_geometry(geometry(f64::INFINITY, 3.76, 3.76, 1024, 1024)).is_none()
+    fn an_unusable_pixel_size_drops_only_that_axis() {
+        let optics = Optics::from_inputs(OpticsInputs {
+            pixel_size_x_um: Some(0.0),
+            ..inputs()
+        })
+        .unwrap();
+        assert_eq!(optics.pixel_size_x_um, None);
+        assert_eq!(optics.pixel_scale_x_arcsec_per_pixel, None);
+        assert_eq!(optics.fov_width_deg, None);
+        assert_eq!(optics.focal_length_mm, Some(1000.0));
+        assert_eq!(optics.sensor_width_px, Some(9576));
+        assert_eq!(optics.pixel_size_y_um, Some(3.76));
+        assert!(optics.fov_height_deg.is_some());
+    }
+
+    #[test]
+    fn without_a_focal_length_the_camera_geometry_is_kept_and_nothing_derived() {
+        let optics = Optics::from_inputs(OpticsInputs {
+            focal_length_mm: None,
+            aperture_mm: None,
+            microns_per_step: None,
+            ..inputs()
+        })
+        .unwrap();
+        assert_eq!(
+            optics,
+            Optics {
+                pixel_size_x_um: Some(3.76),
+                pixel_size_y_um: Some(3.76),
+                sensor_width_px: Some(9576),
+                sensor_height_px: Some(6388),
+                ..Optics::default()
+            }
         );
     }
 
     #[test]
-    fn optics_rejects_when_derived_overflows_to_infinity() {
+    fn a_missing_sensor_size_keeps_the_pixel_scale_and_drops_the_fov() {
+        let optics = Optics::from_inputs(OpticsInputs {
+            sensor_height_px: Some(0),
+            ..inputs()
+        })
+        .unwrap();
+        assert_eq!(optics.sensor_height_px, None);
+        assert_eq!(optics.fov_height_deg, None);
+        assert!(optics.pixel_scale_y_arcsec_per_pixel.is_some());
+        assert!(optics.fov_width_deg.is_some());
+    }
+
+    #[test]
+    fn each_unusable_real_is_left_out() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let optics = Optics::from_inputs(OpticsInputs {
+                focal_length_mm: Some(bad),
+                aperture_mm: Some(bad),
+                pixel_size_x_um: Some(bad),
+                pixel_size_y_um: Some(bad),
+                microns_per_step: Some(bad),
+                ..inputs()
+            })
+            .unwrap();
+            assert_eq!(
+                optics,
+                Optics {
+                    sensor_width_px: Some(9576),
+                    sensor_height_px: Some(6388),
+                    ..Optics::default()
+                },
+                "for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_known_gives_no_block() {
+        assert_eq!(Optics::from_inputs(OpticsInputs::default()), None);
+        let all_unusable = OpticsInputs {
+            focal_length_mm: Some(0.0),
+            sensor_width_px: Some(0),
+            ..OpticsInputs::default()
+        };
+        assert_eq!(Optics::from_inputs(all_unusable), None);
+    }
+
+    #[test]
+    fn a_derivation_that_overflows_is_left_out() {
         // A sub-normal focal length passes the input filter (it's finite
         // and > 0) but pushes the derived pixel scale and FOV to `inf`.
         // `serde_json` rejects non-finite floats, so persisting this in
         // the sidecar would fail the entire exposure-document write —
         // breaking capture's persistence contract for an auxiliary block.
-        // The constructor must guard against it and return `None`.
-        let optics =
-            Optics::from_camera_geometry(geometry(f64::MIN_POSITIVE, 3.76, 3.76, 1024, 1024));
-        assert!(
-            optics.is_none(),
-            "derivation must reject inputs that overflow to infinity, got: {optics:?}"
+        let optics = Optics::from_inputs(OpticsInputs {
+            focal_length_mm: Some(f64::MIN_POSITIVE),
+            ..inputs()
+        })
+        .unwrap();
+        assert_eq!(optics.focal_length_mm, Some(f64::MIN_POSITIVE));
+        assert_eq!(optics.pixel_scale_x_arcsec_per_pixel, None);
+        assert_eq!(optics.pixel_scale_y_arcsec_per_pixel, None);
+        assert_eq!(optics.fov_width_deg, None);
+        assert_eq!(optics.fov_height_deg, None);
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.optics = Some(optics);
+        serde_json::to_string(&doc).expect("doc must serialize when a derivation is left out");
+    }
+
+    #[test]
+    fn a_partial_block_serializes_without_nulls() {
+        let optics = Optics::from_inputs(OpticsInputs {
+            pixel_size_x_um: Some(3.76),
+            ..OpticsInputs::default()
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&optics).unwrap(),
+            serde_json::json!({ "pixel_size_x_um": 3.76 })
         );
     }
 
     #[test]
-    fn optics_with_overflow_inputs_does_not_break_sidecar_serialization() {
-        // Smoke test: even when a hypothetical buggy mock returned wild
-        // values, building the document and serializing must succeed —
-        // because `from_camera_geometry` returns `None` and the doc's
-        // `optics` field is `skip_serializing_if = Option::is_none`.
+    fn the_focal_ratio_needs_both_focal_length_and_aperture() {
+        let optics = Optics::from_inputs(inputs()).unwrap();
+        assert_eq!(optics.focal_ratio(), Some(5.0));
+        let no_aperture = Optics {
+            aperture_mm: None,
+            ..optics
+        };
+        assert_eq!(no_aperture.focal_ratio(), None);
+    }
+
+    #[test]
+    fn the_train_and_site_facts_round_trip_through_json() {
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
-        doc.optics = Optics::from_camera_geometry(geometry(f64::MIN_POSITIVE, 1.0, 1.0, 1, 1));
-        assert!(doc.optics.is_none());
-        serde_json::to_string(&doc).expect("doc must serialize when optics derivation declined");
+        doc.train_devices = Some(vec![
+            ExposureTrainDevice {
+                id: "main-fw".to_string(),
+                kind: "filter wheel".to_string(),
+            },
+            ExposureTrainDevice {
+                id: "main-cam".to_string(),
+                kind: "camera".to_string(),
+            },
+        ]);
+        doc.filter_position = Some(3);
+        doc.filter_wavelength_nm = Some(656.3);
+        doc.site = Some(ExposureSite {
+            latitude_degrees: 51.0786,
+            longitude_degrees: -0.2944,
+        });
+        doc.rp_version = Some(RP_VERSION.to_string());
+        let body = serde_json::to_string(&doc).unwrap();
+        let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.train_devices, doc.train_devices);
+        assert_eq!(parsed.filter_position, Some(3));
+        assert_eq!(parsed.filter_wavelength_nm, Some(656.3));
+        assert_eq!(parsed.site, doc.site);
+        assert_eq!(parsed.rp_version.as_deref(), Some(RP_VERSION));
     }
 }

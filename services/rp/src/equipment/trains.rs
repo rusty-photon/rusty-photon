@@ -573,14 +573,6 @@ impl TrainModel {
             .find(|t| t.camera_id() == Some(camera_id))
     }
 
-    /// The effective focal length of `camera_id`'s light path, feeding
-    /// the exposure document's `optics` block. `None` when the camera
-    /// terminates no train or its train omits `focal_length_mm`.
-    #[must_use]
-    pub fn focal_length_for_camera(&self, camera_id: &str) -> Option<f64> {
-        self.train_for_camera(camera_id)?.focal_length_mm
-    }
-
     /// The focuser that focuses `camera_id`: the last focuser in its
     /// train's list.
     #[must_use]
@@ -1005,8 +997,18 @@ mod tests {
         assert_eq!(model.focuser_for_camera("guide-cam"), Some("scops-focuser"));
 
         // Pixel-scale input.
-        assert_eq!(model.focal_length_for_camera("main-cam"), Some(360.0));
-        assert_eq!(model.focal_length_for_camera("unknown-cam"), None);
+        assert_eq!(
+            model
+                .train_for_camera("main-cam")
+                .and_then(|t| t.focal_length_mm),
+            Some(360.0)
+        );
+        assert_eq!(
+            model
+                .train_for_camera("unknown-cam")
+                .and_then(|t| t.focal_length_mm),
+            None
+        );
 
         // What does moving focuser F invalidate? Every train containing F.
         let invalidated: Vec<&str> = model
@@ -1204,7 +1206,10 @@ mod tests {
         let model = TrainModel::try_from_equipment(&config).unwrap();
         let trains = model.trains();
         assert!(trains.is_empty(), "{trains:?}");
-        assert!(model.focal_length_for_camera("main-cam").is_none());
+        assert!(model
+            .train_for_camera("main-cam")
+            .and_then(|t| t.focal_length_mm)
+            .is_none());
     }
 
     #[test]
@@ -1216,7 +1221,12 @@ mod tests {
             ]
         }));
         let model = TrainModel::try_from_equipment(&config).unwrap();
-        assert_eq!(model.focal_length_for_camera("main-cam"), Some(1000.0));
+        assert_eq!(
+            model
+                .train_for_camera("main-cam")
+                .and_then(|t| t.focal_length_mm),
+            Some(1000.0)
+        );
         assert!(model.focuser_for_camera("main-cam").is_none());
         assert_eq!(model.af_sequence("main").unwrap(), vec![]);
     }

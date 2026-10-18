@@ -149,6 +149,15 @@ impl FilterWheelConfig {
         self.filters.get(position).map(FilterEntry::name)
     }
 
+    /// The configured wavelength of slot `position`, if its entry
+    /// carries one.
+    #[must_use]
+    pub fn filter_wavelength_at(&self, position: usize) -> Option<f64> {
+        self.filters
+            .get(position)
+            .and_then(FilterEntry::wavelength_nm)
+    }
+
     /// The slot a configured name sits in.
     #[must_use]
     pub fn filter_position(&self, name: &str) -> Option<usize> {

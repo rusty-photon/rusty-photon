@@ -458,6 +458,33 @@ fn document_body_lacks_field(world: &mut RpWorld, field: String) {
     );
 }
 
+/// The document's counterpart of the tool-result pointer step: any
+/// JSON value, addressed by an RFC-6901 pointer into the fetched
+/// document.
+#[then(regex = r#"^the document at "([^"]+)" should be the JSON (.+)$"#)]
+fn document_at_is_json(world: &mut RpWorld, pointer: String, expected: String) {
+    let expected: Value = serde_json::from_str(&expected).expect("the expected value must be JSON");
+    let body = document_body(world);
+    let actual = body
+        .pointer(&pointer)
+        .unwrap_or_else(|| panic!("no value at {pointer} in the document: {body}"));
+    assert!(
+        json_values_match(actual, &expected),
+        "expected {pointer} to be {expected}, got {actual} (document: {body})"
+    );
+}
+
+/// Absent, not `null`: the document leaves an unknown field out.
+#[then(expr = "the document should have no value at {string}")]
+fn document_has_no_value_at(world: &mut RpWorld, pointer: String) {
+    let body = document_body(world);
+    assert!(
+        body.pointer(&pointer).is_none(),
+        "expected nothing at {pointer}, got {:?} (document: {body})",
+        body.pointer(&pointer)
+    );
+}
+
 #[then(expr = "the document optics focal length should be {float}")]
 fn document_optics_focal_length(world: &mut RpWorld, expected: f64) {
     let optics = document_optics(world);

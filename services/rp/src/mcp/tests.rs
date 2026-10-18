@@ -2652,7 +2652,14 @@ async fn a_templated_capture_waits_a_slow_wheel_out() {
         )
         .await
         .unwrap();
-    assert_eq!(read, Some(("Lum".to_string(), 0)));
+    assert_eq!(
+        read,
+        Some(super::internals::FilterInBeam {
+            name: "Lum".to_string(),
+            position: 0,
+            wavelength_nm: None,
+        })
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -3276,40 +3283,48 @@ async fn test_capture_persists_optics_when_focal_length_configured() {
     let registry = camera_registry(Arc::new(cam));
     let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
     let optics = doc.optics.expect("optics block should be present");
-    assert_eq!(optics.focal_length_mm, 1000.0);
-    assert_eq!(optics.pixel_size_x_um, 3.76);
-    assert_eq!(optics.pixel_size_y_um, 3.76);
-    assert_eq!(optics.sensor_width_px, 1024);
-    assert_eq!(optics.sensor_height_px, 1024);
+    assert_eq!(optics.focal_length_mm, Some(1000.0));
+    assert_eq!(optics.pixel_size_x_um, Some(3.76));
+    assert_eq!(optics.pixel_size_y_um, Some(3.76));
+    assert_eq!(optics.sensor_width_px, Some(1024));
+    assert_eq!(optics.sensor_height_px, Some(1024));
+    let pixel_scale_x = optics.pixel_scale_x_arcsec_per_pixel.unwrap();
+    let fov_height = optics.fov_height_deg.unwrap();
     assert!(
-        (optics.pixel_scale_x_arcsec_per_pixel - 0.775_556_4).abs() < 1e-6,
-        "pixel_scale_x = {}",
-        optics.pixel_scale_x_arcsec_per_pixel
+        (pixel_scale_x - 0.775_556_4).abs() < 1e-6,
+        "pixel_scale_x = {pixel_scale_x}"
     );
     assert!(
-        (optics.fov_height_deg - 0.220_603).abs() < 1e-4,
-        "fov_height_deg = {}",
-        optics.fov_height_deg
+        (fov_height - 0.220_603).abs() < 1e-4,
+        "fov_height_deg = {fov_height}"
     );
 }
 
 #[tokio::test]
-async fn test_capture_omits_optics_when_focal_length_missing() {
+async fn test_capture_outside_a_train_records_the_camera_geometry_and_nothing_derived() {
     let cam = MockCamera::default();
     let registry = camera_registry(Arc::new(cam));
     let doc =
         capture_and_read_sidecar(registry, crate::equipment::trains::TrainModel::default()).await;
-    assert!(
-        doc.optics.is_none(),
-        "optics must be omitted when focal_length_mm is not configured"
+    let optics = doc.optics.expect("the camera's geometry is still known");
+    assert_eq!(
+        optics,
+        persistence::Optics {
+            pixel_size_x_um: Some(MOCK_CAMERA_PIXEL_SIZE_UM),
+            pixel_size_y_um: Some(MOCK_CAMERA_PIXEL_SIZE_UM),
+            sensor_width_px: Some(MOCK_CAMERA_SENSOR_PX),
+            sensor_height_px: Some(MOCK_CAMERA_SENSOR_PX),
+            ..persistence::Optics::default()
+        }
     );
+    assert_eq!(doc.train_devices, None);
 }
 
 #[tokio::test]
-async fn test_capture_omits_optics_when_pixel_size_unavailable() {
+async fn test_capture_without_a_pixel_size_keeps_the_focal_length_and_sensor_size() {
     // Models a camera whose connect-time `pixel_size_*` read failed:
-    // `CameraEntry.pixel_size_*_um` is None, so the optics block has no
-    // pixel pitch to combine with `focal_length_mm` and must be omitted.
+    // `CameraEntry.pixel_size_*_um` is None, so nothing derived from a
+    // pixel pitch is recorded, but the other inputs are.
     let cam = MockCamera::default();
     let registry = camera_registry_with_meta(
         Arc::new(cam),
@@ -3320,14 +3335,16 @@ async fn test_capture_omits_optics_when_pixel_size_unavailable() {
         },
     );
     let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
-    assert!(
-        doc.optics.is_none(),
-        "optics must be omitted when cached pixel_size is None"
-    );
+    let optics = doc.optics.expect("the focal length is still known");
+    assert_eq!(optics.focal_length_mm, Some(1000.0));
+    assert_eq!(optics.sensor_width_px, Some(MOCK_CAMERA_SENSOR_PX));
+    assert_eq!(optics.pixel_size_x_um, None);
+    assert_eq!(optics.pixel_scale_x_arcsec_per_pixel, None);
+    assert_eq!(optics.fov_width_deg, None);
 }
 
 #[tokio::test]
-async fn test_capture_omits_optics_when_sensor_size_unavailable() {
+async fn test_capture_without_a_sensor_size_keeps_the_pixel_scale() {
     // Same shape as the pixel_size case: models a camera whose connect-
     // time `camera_*_size` read failed.
     let cam = MockCamera::default();
@@ -3340,10 +3357,39 @@ async fn test_capture_omits_optics_when_sensor_size_unavailable() {
         },
     );
     let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
-    assert!(
-        doc.optics.is_none(),
-        "optics must be omitted when cached sensor size is None"
+    let optics = doc
+        .optics
+        .expect("the focal length and pixel size are still known");
+    assert_eq!(optics.sensor_height_px, None);
+    assert_eq!(optics.fov_height_deg, None);
+    assert!(optics.pixel_scale_y_arcsec_per_pixel.is_some());
+}
+
+#[tokio::test]
+async fn test_capture_with_a_zero_pixel_size_records_and_exports_the_rest() {
+    // A driver reporting a pixel size of 0: the sidecar leaves that one
+    // value out, keeps the focal length beside it, and the header
+    // follows the sidecar rather than the driver's read.
+    use rp_fits::writer::KeywordValue;
+    let registry = camera_registry_with_meta(
+        Arc::new(MockCamera::default()),
+        CachedCameraMeta {
+            pixel_size_x_um: Some(0.0),
+            ..CachedCameraMeta::default()
+        },
     );
+    let temp = tempfile::tempdir().unwrap();
+    let doc = capture_into(temp.path(), registry, cam_trains(1000.0)).await;
+    let optics = doc.optics.as_ref().expect("optics block should be present");
+    assert_eq!(optics.pixel_size_x_um, None);
+    assert_eq!(optics.focal_length_mm, Some(1000.0));
+    let card = |key| fits_header_card(&doc.file_path, key);
+    assert_eq!(card("XPIXSZ"), None);
+    assert_eq!(
+        card("YPIXSZ"),
+        Some(KeywordValue::Float(MOCK_CAMERA_PIXEL_SIZE_UM))
+    );
+    assert_eq!(card("FOCALLEN"), Some(KeywordValue::Float(1000.0)));
 }
 
 #[tokio::test]
@@ -3367,9 +3413,9 @@ async fn test_capture_does_not_call_invariant_metadata_methods_on_device() {
     let optics = doc.optics.expect(
         "optics block should be present (cached pixel/sensor + configured focal_length_mm)",
     );
-    assert_eq!(optics.focal_length_mm, 1000.0);
-    assert_eq!(optics.pixel_size_x_um, MOCK_CAMERA_PIXEL_SIZE_UM);
-    assert_eq!(optics.sensor_width_px, MOCK_CAMERA_SENSOR_PX);
+    assert_eq!(optics.focal_length_mm, Some(1000.0));
+    assert_eq!(optics.pixel_size_x_um, Some(MOCK_CAMERA_PIXEL_SIZE_UM));
+    assert_eq!(optics.sensor_width_px, Some(MOCK_CAMERA_SENSOR_PX));
 }
 
 // -----------------------------------------------------------------------

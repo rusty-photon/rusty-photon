@@ -256,14 +256,18 @@ Feature: Optical trains configuration
     And the document optics focal length should be 1000.0
     And the document optics pixel scale should equal 206.265 times pixel size over focal length
 
-  Scenario: Capture through a camera outside any train carries no optics block
+  # Each optics input is recorded on its own: a camera outside any train
+  # has no focal length, so nothing derived from one, but its pixel and
+  # sensor size are still facts about the frame.
+  Scenario: Capture through a camera outside any train records the camera's geometry and nothing derived
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     And I fetch the document for the captured document_id
     Then the document response status should be 200
-    And the document body should not contain "optics"
+    And the document at "/optics" should be the JSON {"pixel_size_x_um": 5.6, "pixel_size_y_um": 5.6, "sensor_width_px": 800, "sensor_height_px": 600}
+    And the document body should not contain "train_devices"
 
   # A field whose shape is wrong (missing, out of range) fails at parse
   # with 400; a well-formed field that the train's purpose rejects fails
@@ -456,6 +460,35 @@ Feature: Optical trains configuration
     And the tool result at "/optics/microns_per_step" should be the JSON 2.5
     And the tool result at "/filters" should be the JSON ["Luminance", "Red", "Green", "Blue"]
     And the tool result at "/filter_wavelengths_nm" should be the JSON {"Luminance": null, "Red": null, "Green": null, "Blue": 450.0}
+
+  # The sidecar copies the train's facts in at capture, so a past frame
+  # keeps the values in force when it was taken (rp.md, Core Fields).
+  Scenario: A capture records its train's devices and optics and the slot and wavelength of its filter
+    Given a running Alpaca simulator
+    And the focuser is configured with microns_per_step 2.5
+    And the filter wheel's "Blue" filter is configured at 450.0 nm
+    And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Blue"
+    And the MCP client calls "capture" with camera "main-cam" for 1000 ms
+    And I fetch the document for the captured document_id
+    Then the document response status should be 200
+    And the document at "/train_devices" should be the JSON [{"id": "main-focuser", "kind": "focuser"}, {"id": "main-fw", "kind": "filter wheel"}, {"id": "main-cam", "kind": "camera"}]
+    And the document at "/filter" should be the JSON "Blue"
+    And the document at "/filter_position" should be the JSON 3
+    And the document at "/filter_wavelength_nm" should be the JSON 450.0
+    And the document at "/optics/focal_length_mm" should be the JSON 1000.0
+    And the document at "/optics/aperture_mm" should be the JSON 200.0
+    And the document at "/optics/microns_per_step" should be the JSON 2.5
+
+  Scenario: A capture records the driver's StepSize when the config omits microns_per_step
+    Given a running Alpaca simulator
+    And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
+    And I fetch the document for the captured document_id
+    Then the document response status should be 200
+    And the document at "/optics/microns_per_step" should be the JSON 20.0
 
   Scenario: microns_per_step falls back to the driver's StepSize when the config omits it
     Given a running Alpaca simulator

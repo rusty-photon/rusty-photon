@@ -66,9 +66,11 @@ pub struct McpHandler {
     /// `GuidingConfig`.
     pub guider_defaults: crate::config::GuiderDefaults,
     /// The derived optical-train model (rp.md § Optical Trains).
-    /// `do_capture` resolves each camera's `focal_length_mm` through
-    /// it for the exposure document's `optics` block. The default
-    /// (no trains) is the pre-train behavior — no optics block.
+    /// `do_capture` resolves each camera's train through it, for the
+    /// exposure document's train facts and the light path in its
+    /// `optics` block. The default (no trains) is the pre-train
+    /// behavior — no train facts, and an `optics` block of the
+    /// camera's own geometry alone.
     pub trains: crate::equipment::trains::TrainModel,
     /// The mount motion gate (rp.md § Mount Motion Gate). Behind an
     /// `Arc` so every clone of the handler — rmcp clones it per MCP
@@ -284,7 +286,7 @@ impl McpHandler {
 
     /// Wire the derived optical-train model. The lib.rs build path
     /// calls this with the model built from `equipment.optical_trains`;
-    /// tests without trains keep the empty default (no optics block).
+    /// tests without trains keep the empty default (no train facts).
     #[must_use]
     pub fn with_trains(mut self, trains: crate::equipment::trains::TrainModel) -> Self {
         self.trains = trains;
