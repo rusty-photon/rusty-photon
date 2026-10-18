@@ -178,10 +178,11 @@ fn repo_root() -> PathBuf {
 
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
 /// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
-/// not. Every other line inside the list must be a comment or blank, and
-/// once its comment and quotes are gone a label must be plain (letters,
-/// digits, `.`, `_`, `-`): the scan does not guess at another spelling,
-/// which actionlint might read differently, and refuses it.
+/// not. The list ends at the next key indented no deeper than `labels:`,
+/// and every other line before it must be a comment or blank. Once its
+/// comment and quotes are gone a label must be plain (letters, digits, `.`,
+/// `_`, `-`): the scan does not guess at another spelling, which actionlint
+/// might read differently, and refuses it.
 fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
@@ -220,10 +221,11 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
                 ));
             }
             labels.push(label.to_owned());
-        } else if body.starts_with('-') || indent(line) > key {
+        } else if body.starts_with('-') || indent(line) > key || !is_key(body) {
             // YAML may read this line as part of the list (a dash and a tab,
-            // a bare dash, a label folded onto the next line): ending the
-            // list here would drop every label after it.
+            // a bare dash, a label folded onto the next line), or the file
+            // is not YAML: ending the list here would drop every label
+            // after it.
             return Err(format!(
                 "has `{body}` under `labels:`, which the test does not read as a `- label` entry"
             ));
@@ -235,6 +237,12 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
         return Err("lists no labels under `self-hosted-runner:`".to_owned());
     }
     Ok(labels)
+}
+
+/// Whether a YAML line is a key, `name:` or `name: value`, after its comment.
+fn is_key(body: &str) -> bool {
+    let text = without_comment(body).trim_end();
+    text.ends_with(':') || text.contains(": ")
 }
 
 /// `text` without a trailing YAML comment: from a `#` that follows a space
@@ -669,6 +677,15 @@ fn actionlint_labels_refuses_a_dash_and_a_tab() {
 }
 
 #[test]
+fn actionlint_labels_refuses_a_dash_and_a_tab_before_a_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  -\tgpu: x\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-\tgpu: x` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
 fn actionlint_labels_refuses_a_bare_dash() {
     let text = "self-hosted-runner:\n  labels:\n    - pool\n    -\n      pi\n";
     assert_eq!(
@@ -683,6 +700,41 @@ fn actionlint_labels_refuses_a_folded_label() {
     assert_eq!(
         actionlint_labels(text).unwrap_err(),
         "has `gpu` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_key_inside_the_list() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n    other: x\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `other: x` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_line_at_the_key_s_indent_that_is_not_a_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool-\n  gpu\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `gpu` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn is_key_reads_a_key_with_or_without_a_value_or_a_comment() {
+    let lines = [
+        "other:",
+        "other: x",
+        "other:\t# c",
+        "other: x  # c",
+        "gpu",
+        "http://x",
+        "gpu # a: b",
+    ];
+    assert_eq!(
+        lines.map(is_key),
+        [true, true, true, true, false, false, false]
     );
 }
 
