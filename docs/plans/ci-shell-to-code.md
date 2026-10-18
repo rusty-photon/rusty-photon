@@ -108,7 +108,7 @@ first in their columns.
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
-| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | In review (#1544) |
+| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
@@ -752,6 +752,9 @@ the tools crate. They are in S1's list.
 
 ### R6 — Pool routing copies stay identical
 
+Done in #1544, as a test in `tools/rusty-photon-ci`; #1547 made it read
+the labels in `.github/actionlint.yaml` exactly.
+
 The pool's `runs-on` routing expression is copied into bazel.yml,
 bazel-coverage.yml, repin-bazel.yml and check.yml. ADR-020 makes it a
 security boundary, and until R6 only a comment kept the copies in step.
@@ -777,7 +780,11 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   so a new runner label goes there and nowhere else. A label there may be
   quoted and carry a trailing comment; once those are gone it must be plain
   (letters, digits, `.`, `_`, `-`), or the test fails naming it, rather
-  than guess at a spelling actionlint might read differently. Labels are
+  than guess at a spelling actionlint might read differently. Every other
+  line inside the list must be a comment or blank: a line YAML may read as
+  part of it, such as a dash and a tab, a bare dash or a label folded onto
+  the next line, fails the test too, where the scan would otherwise end
+  the list there and drop every label after it. Labels are
   matched in any case, as GitHub matches them, and only as whole
   labels, so a file name such as `raspberry-pi-runner.md` is not one. A
   value runs on over the lines indented deeper than its key, without blank
@@ -831,7 +838,11 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - actionlint.yaml without its `self-hosted-runner` list;
   - in actionlint.yaml: a new label in double or single quotes, or before
     a tab and a comment, then routed as test.yml's `runs-on`; a label with
-    `#` inside its quotes, and one spelled with an escape.
+    `#` inside its quotes, and one spelled with an escape;
+  - in actionlint.yaml: a dash and a tab, a bare dash, or a label folded
+    onto the next line, ahead of the last label, with that label routed
+    as test.yml's `runs-on`. The first passed the test before the list
+    rule.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.

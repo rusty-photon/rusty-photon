@@ -178,9 +178,10 @@ fn repo_root() -> PathBuf {
 
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
 /// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
-/// not. Once its comment and quotes are gone a label must be plain
-/// (letters, digits, `.`, `_`, `-`): the scan does not guess at another
-/// spelling, which actionlint might read differently, and refuses it.
+/// not. Every other line inside the list must be a comment or blank, and
+/// once its comment and quotes are gone a label must be plain (letters,
+/// digits, `.`, `_`, `-`): the scan does not guess at another spelling,
+/// which actionlint might read differently, and refuses it.
 fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
@@ -188,7 +189,8 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
         .position(|line| line.trim_end() == "self-hosted-runner:")
         .ok_or("has no `self-hosted-runner:` key")?;
     let mut labels = Vec::new();
-    let mut in_labels = false;
+    // The indent of `labels:`, while the scan reads its list.
+    let mut list = None;
     for line in lines.get(at.saturating_add(1)..).unwrap_or_default() {
         let body = line.trim();
         if body.is_empty() || body.starts_with('#') {
@@ -198,8 +200,13 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
             break;
         }
         if body == "labels:" {
-            in_labels = true;
-        } else if let Some(item) = body.strip_prefix("- ").filter(|_| in_labels) {
+            list = Some(indent(line));
+            continue;
+        }
+        let Some(key) = list else {
+            continue;
+        };
+        if let Some(item) = body.strip_prefix("- ") {
             let item = without_comment(item).trim();
             // YAML may quote a label; actionlint reads it without the quotes.
             let label = ['"', '\'']
@@ -213,8 +220,15 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
                 ));
             }
             labels.push(label.to_owned());
+        } else if body.starts_with('-') || indent(line) > key {
+            // YAML may read this line as part of the list (a dash and a tab,
+            // a bare dash, a label folded onto the next line): ending the
+            // list here would drop every label after it.
+            return Err(format!(
+                "has `{body}` under `labels:`, which the test does not read as a `- label` entry"
+            ));
         } else {
-            in_labels = false;
+            list = None;
         }
     }
     if labels.is_empty() {
@@ -637,6 +651,39 @@ fn actionlint_labels_refuses_an_empty_label() {
     assert!(actionlint_labels(text)
         .unwrap_err()
         .starts_with("lists `\"\"`"));
+}
+
+#[test]
+fn actionlint_labels_ends_the_list_at_the_next_key() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  - pi\n  other:\n  - x\n";
+    assert_eq!(actionlint_labels(text).unwrap(), ["pool", "pi"]);
+}
+
+#[test]
+fn actionlint_labels_refuses_a_dash_and_a_tab() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  -\tpi\n  - gpu\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-\tpi` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_bare_dash() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n    -\n      pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `-` under `labels:`, which the test does not read as a `- label` entry"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_folded_label() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool-\n      gpu\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `gpu` under `labels:`, which the test does not read as a `- label` entry"
+    );
 }
 
 #[test]

@@ -809,8 +809,9 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 #    the flag adds to the raw report all sit under tests/, which
 #    tools/coverage/filter_lcov.py strips before the upload.
 #  * --combined_report=lcov -- single merged lcov at
-#    $(bazel info output_path)/_coverage/_coverage_report.dat, split per package
-#    by tools/coverage/split_lcov.py before the per-flag Codecov upload.
+#    $(bazel info output_path)/_coverage/_coverage_report.dat. bazel-coverage.yml
+#    uploads it to Coveralls through tools/coverage/filter_lcov.py, and splits
+#    it per package with tools/coverage/split_lcov.py for its lcov artifact.
 #
 # The rc value below, `--test_tag_filters=-requires-cargo,-conformu`, governs
 # a local `bazel coverage --config=coverage`. bazel-coverage.yml pins
