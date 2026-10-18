@@ -20,6 +20,14 @@ Feature: FITS header on captured frames
   coordinates. DATE-OBS is the exposure start, the document's
   `exposure_started_at`.
 
+  The header does not export every fact the sidecar records. What the
+  camera reports about its sensor and readout is recorded in the sidecar
+  only: the sensor type and Bayer offsets, read once per connection, and
+  the readout mode, electrons per ADU and cooler power, read on every
+  capture. The simulator camera is a monochrome sensor with one readout
+  mode, "Default", and 0.8 electrons per ADU, and it reports cooler
+  power, 0 % while its cooler is off.
+
   In the tables, `{version}` stands for rp's own version and
   `{document_id}` for the capture's document id.
 
@@ -82,6 +90,19 @@ Feature: FITS header on captured frames
     And the captured FITS header DATE-OBS should be the document's exposure_started_at
     And the document's exposure_started_at should not be later than its captured_at
     And the captured FITS header RA and DEC should be the document's pointing in degrees
+
+  Scenario: The sidecar records what the camera reports about its sensor and readout
+    Given rp is running with a fully equipped capture rig on the simulator
+    When the MCP client calls "capture" with camera "main-cam" for 100 ms
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the document field "sensor_type" should be "Monochrome"
+    And the document should have no value at "/bayer_offset_x"
+    And the document should have no value at "/bayer_offset_y"
+    And the document at "/readout_mode" should be the JSON 0
+    And the document field "readout_mode_name" should be "Default"
+    And the document at "/electrons_per_adu" should be the JSON 0.8
+    And the document at "/cooler_power_pct" should be the JSON 0.0
 
   Scenario Outline: Calibration frames name their type and carry no object keywords
     Given rp is running with a fully equipped capture rig on the simulator
