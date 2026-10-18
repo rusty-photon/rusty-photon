@@ -122,6 +122,15 @@ struct MockCamera {
     /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
     /// a transport blip on a camera that does have the property.
     fail_gain: bool,
+    /// `Some` ⇒ `readout_mode()` answers it; `None` ⇒ `NOT_IMPLEMENTED`.
+    readout_mode: Option<usize>,
+    /// `Some` ⇒ `electrons_per_adu()` answers it; `None` ⇒
+    /// `NOT_IMPLEMENTED`.
+    electrons_per_adu: Option<f64>,
+    /// `Some` ⇒ `cooler_power()` answers it, whatever the cached
+    /// `CanGetCoolerPower` says — as `OmniSim` answers 0 with it false;
+    /// `None` ⇒ `NOT_IMPLEMENTED`.
+    cooler_power: Option<f64>,
     /// `Some` ⇒ `last_exposure_start_time()` answers it, whenever the
     /// exposure ran — a stale or skewed driver clock.
     last_exposure_start: Option<std::time::SystemTime>,
@@ -416,6 +425,18 @@ impl ascom_alpaca::api::Camera for MockCamera {
         self.offset.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
+    async fn readout_mode(&self) -> ascom_alpaca::ASCOMResult<usize> {
+        self.readout_mode.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn electrons_per_adu(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.electrons_per_adu.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn cooler_power(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.cooler_power.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
     async fn last_exposure_start_time(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
         if self.exposure_start_lead.is_some() {
             return self
@@ -479,6 +500,28 @@ impl ascom_alpaca::api::Camera for MockCameraNoMetadata {
 
     async fn camera_y_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
         panic!("do_capture must read camera_y_size from CameraEntry cache, not the device")
+    }
+
+    async fn sensor_type(
+        &self,
+    ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::SensorType> {
+        panic!("do_capture must read sensor_type from CameraEntry cache, not the device")
+    }
+
+    async fn bayer_offset_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        panic!("do_capture must read bayer_offset_x from CameraEntry cache, not the device")
+    }
+
+    async fn bayer_offset_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        panic!("do_capture must read bayer_offset_y from CameraEntry cache, not the device")
+    }
+
+    async fn readout_modes(&self) -> ascom_alpaca::ASCOMResult<Vec<String>> {
+        panic!("do_capture must read readout_modes from CameraEntry cache, not the device")
+    }
+
+    async fn can_get_cooler_power(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        panic!("do_capture must read can_get_cooler_power from CameraEntry cache, not the device")
     }
 
     async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
@@ -1253,6 +1296,11 @@ struct CachedCameraMeta {
     max_bin_x: Option<u8>,
     max_bin_y: Option<u8>,
     can_asymmetric_bin: Option<bool>,
+    sensor_type: Option<ascom_alpaca::api::camera::SensorType>,
+    bayer_offset_x: Option<u8>,
+    bayer_offset_y: Option<u8>,
+    readout_modes: Option<&'static [&'static str]>,
+    can_get_cooler_power: Option<bool>,
 }
 
 impl Default for CachedCameraMeta {
@@ -1266,6 +1314,11 @@ impl Default for CachedCameraMeta {
             max_bin_x: Some(4),
             max_bin_y: Some(4),
             can_asymmetric_bin: Some(true),
+            sensor_type: None,
+            bayer_offset_x: None,
+            bayer_offset_y: None,
+            readout_modes: None,
+            can_get_cooler_power: Some(false),
         }
     }
 }
@@ -1321,6 +1374,13 @@ fn camera_registry_with_meta(
                     pixel_size_y_um: meta.pixel_size_y_um,
                     sensor_width_px: meta.sensor_width_px,
                     sensor_height_px: meta.sensor_height_px,
+                    sensor_type: meta.sensor_type,
+                    bayer_offset_x: meta.bayer_offset_x,
+                    bayer_offset_y: meta.bayer_offset_y,
+                    readout_modes: meta
+                        .readout_modes
+                        .map(|modes| modes.iter().map(ToString::to_string).collect()),
+                    can_get_cooler_power: meta.can_get_cooler_power,
                 },
             ),
         )],
@@ -3280,6 +3340,146 @@ async fn test_capture_omits_gain_when_its_read_fails() {
     .await;
     assert_eq!(doc.gain, None);
     assert_eq!(doc.offset, Some(30));
+}
+
+/// A colour camera's connect-time facts and its per-capture readout and
+/// cooler reads all reach the sidecar.
+#[tokio::test]
+async fn capture_records_the_cameras_sensor_readout_and_cooler_facts() {
+    let cam = MockCamera {
+        readout_mode: Some(1),
+        electrons_per_adu: Some(1.6),
+        cooler_power: Some(38.5),
+        ..Default::default()
+    };
+    let meta = CachedCameraMeta {
+        sensor_type: Some(ascom_alpaca::api::camera::SensorType::RGGB),
+        bayer_offset_x: Some(1),
+        bayer_offset_y: Some(0),
+        readout_modes: Some(&["Normal", "High Gain"]),
+        can_get_cooler_power: Some(true),
+        ..CachedCameraMeta::default()
+    };
+    let doc = capture_and_read_sidecar(
+        camera_registry_with_meta(Arc::new(cam), meta),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.sensor_type, Some(persistence::SensorType::Rggb));
+    assert_eq!(doc.bayer_offset_x, Some(1));
+    assert_eq!(doc.bayer_offset_y, Some(0));
+    assert_eq!(doc.readout_mode, Some(1));
+    assert_eq!(doc.readout_mode_name.as_deref(), Some("High Gain"));
+    assert_eq!(doc.electrons_per_adu, Some(1.6));
+    assert_eq!(doc.cooler_power_pct, Some(38.5));
+}
+
+#[tokio::test]
+async fn capture_omits_camera_facts_the_driver_lacks() {
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(MockCamera::default())),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.sensor_type, None);
+    assert_eq!(doc.bayer_offset_x, None);
+    assert_eq!(doc.bayer_offset_y, None);
+    assert_eq!(doc.readout_mode, None);
+    assert_eq!(doc.readout_mode_name, None);
+    assert_eq!(doc.electrons_per_adu, None);
+    assert_eq!(doc.cooler_power_pct, None);
+}
+
+/// A driver that cannot report its cooler power may still answer the
+/// read; only a `CanGetCoolerPower` read as true lets it be recorded.
+#[tokio::test]
+async fn capture_records_no_cooler_power_unless_the_camera_can_report_it() {
+    for can_get_cooler_power in [Some(false), None] {
+        let cam = MockCamera {
+            cooler_power: Some(0.0),
+            ..Default::default()
+        };
+        let meta = CachedCameraMeta {
+            can_get_cooler_power,
+            ..CachedCameraMeta::default()
+        };
+        let doc = capture_and_read_sidecar(
+            camera_registry_with_meta(Arc::new(cam), meta),
+            crate::equipment::trains::TrainModel::default(),
+        )
+        .await;
+        assert_eq!(doc.cooler_power_pct, None, "{can_get_cooler_power:?}");
+    }
+}
+
+#[tokio::test]
+async fn capture_records_a_readout_mode_outside_the_list_without_a_name() {
+    let cam = MockCamera {
+        readout_mode: Some(2),
+        ..Default::default()
+    };
+    let meta = CachedCameraMeta {
+        readout_modes: Some(&["Normal", "High Gain"]),
+        ..CachedCameraMeta::default()
+    };
+    let doc = capture_and_read_sidecar(
+        camera_registry_with_meta(Arc::new(cam), meta),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.readout_mode, Some(2));
+    assert_eq!(doc.readout_mode_name, None);
+}
+
+#[tokio::test]
+async fn capture_records_a_readout_mode_without_a_name_when_the_list_is_unknown() {
+    let cam = MockCamera {
+        readout_mode: Some(0),
+        ..Default::default()
+    };
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(cam)),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.readout_mode, Some(0));
+    assert_eq!(doc.readout_mode_name, None);
+}
+
+#[tokio::test]
+async fn capture_drops_an_electrons_per_adu_that_is_not_positive_and_finite() {
+    for electrons_per_adu in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let cam = MockCamera {
+            electrons_per_adu: Some(electrons_per_adu),
+            ..Default::default()
+        };
+        let doc = capture_and_read_sidecar(
+            camera_registry(Arc::new(cam)),
+            crate::equipment::trains::TrainModel::default(),
+        )
+        .await;
+        assert_eq!(doc.electrons_per_adu, None, "{electrons_per_adu}");
+    }
+}
+
+#[tokio::test]
+async fn capture_drops_a_cooler_power_that_is_not_finite() {
+    for cooler_power in [f64::NAN, f64::INFINITY] {
+        let cam = MockCamera {
+            cooler_power: Some(cooler_power),
+            ..Default::default()
+        };
+        let meta = CachedCameraMeta {
+            can_get_cooler_power: Some(true),
+            ..CachedCameraMeta::default()
+        };
+        let doc = capture_and_read_sidecar(
+            camera_registry_with_meta(Arc::new(cam), meta),
+            crate::equipment::trains::TrainModel::default(),
+        )
+        .await;
+        assert_eq!(doc.cooler_power_pct, None, "{cooler_power}");
+    }
 }
 
 /// The document's exposure start, parsed back.
@@ -7504,6 +7704,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                     pixel_size_y_um: Some(3.76),
                     sensor_width_px: Some(200),
                     sensor_height_px: Some(200),
+                    ..Default::default()
                 },
             ),
         )],
@@ -12087,6 +12288,7 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
                     pixel_size_y_um: Some(pixel_size_x_um),
                     sensor_width_px: None,
                     sensor_height_px: None,
+                    ..Default::default()
                 },
             ),
         )

@@ -204,10 +204,6 @@ line with the rules, each tracked by its own issue:
     `fits_path`. A frame whose pairs were copied to a new directory is
     solved, measured and written at its old copy; one whose pairs were
     moved fails, although the lookup found it.
-- Camera facts the sidecar does not record: `SensorType` and the
-  Bayer offsets, so the record cannot tell a one-shot-colour frame
-  from a mono one; `ReadoutMode`; `ElectronsPerADU`; and
-  `CoolerPower` ([#1495](https://github.com/rusty-photon/rusty-photon/issues/1495)).
 - Rig state the sidecar does not record: the focuser's position and
   temperature, the rotator's angle and the position angle the frame
   was meant to be taken at, the mount's pier side and tracking state,
@@ -259,6 +255,8 @@ line with the rules, each tracked by its own issue:
   "filter_wavelength_nm": 656.3,
   "gain": 26,
   "offset": 30,
+  "readout_mode": 1,
+  "readout_mode_name": "High Gain Mode 16BIT",
   "exposure_time_secs": 300,
   "planned_at": "2026-03-02T01:15:00Z",
   "exposure_started_at": "2026-03-02T01:15:00.412+00:00",
@@ -267,8 +265,10 @@ line with the rules, each tracked by its own issue:
   "session_id": "session-2026-03-01",
   "sequence_number": 42,
   "max_adu": 65535,
+  "sensor_type": "Monochrome",
   "cooler_setpoint_c": -10,
   "sensor_temperature_c": -9.8,
+  "cooler_power_pct": 38.0,
   "pointing": {
     "ra_hours": 0.7121,
     "dec_degrees": 41.2702
@@ -455,6 +455,63 @@ sidecar is the record ([Ground rules](#ground-rules)).
   on every frame this version captures. It names the frame's writer: a
   later `rp` that rewrites the sidecar to add a section keeps it as it
   is.
+
+**Camera facts** record what the camera reports about its sensor and
+its state for the frame. They follow the acquisition facts' rules: each
+is auxiliary, a read that fails or that the driver does not implement
+drops that one field (logged at `debug!`), never the capture or the
+other fields, and an unavailable field is omitted (absent, not `null`).
+Whether a fact can change while the camera is connected decides when it
+is read. One that cannot is read once per connection, when the session
+is established, with `max_adu` and the sensor geometry, and every frame
+of that session records the value read then. One that can is read on
+every capture, with `gain` and `offset`: once the frame is ready, while
+the capture still holds the camera, each read bounded at 3 s. The FITS
+header does not export these facts ([FITS header](#fits-header)).
+
+- `sensor_type` is the camera's ASCOM `SensorType`, spelled as ASCOM
+  names it: `Monochrome`; `Color`, a sensor that delivers several
+  colour planes; or a single-plane colour mosaic, `RGGB`, `CMYG`,
+  `CMYG2` or `LRGB`. It tells a one-shot-colour frame from a mono one.
+  It is read once per connection. It describes the camera model: ASCOM
+  asks clients to read it once connected, when the driver knows which
+  camera it drives, and ties it to no setting a client can change.
+- `bayer_offset_x` and `bayer_offset_y` are ASCOM `BayerOffsetX` and
+  `BayerOffsetY`: the column and row offsets of the mosaic that
+  `sensor_type` names. ASCOM defines them relative to the sensor's
+  pixel (0, 0) and does not change them for a subframe, so they are
+  read once per connection. A monochrome camera has no mosaic, and
+  ASCOM has its driver refuse the read. So they are not read from a
+  camera whose `sensor_type` is `Monochrome`, and a mono frame records
+  neither. Like `optics`, they describe the unbinned sensor, not the
+  frame: what is left of the mosaic on a binned frame depends on how
+  the camera bins.
+- `readout_mode` is ASCOM `ReadoutMode`, the index into the camera's
+  `ReadoutModes`. It is read on every capture, because a client can set
+  it at any time, and on a CMOS camera a mode often fixes a combination
+  of gain, offset and bit depth. It is recorded as the driver reports
+  it, like `gain`.
+- `readout_mode_name` is that index's entry in `ReadoutModes`. The list
+  is read once per connection: ASCOM has a driver make it known only
+  once the camera connects, because it belongs to the camera model.
+  The name is recorded because an index means nothing once the frame
+  has left the rig. It is omitted with `readout_mode`, when the list
+  read failed, and when the index lies outside the list.
+- `electrons_per_adu` is ASCOM `ElectronsPerADU`, the gain in
+  photoelectrons per ADU. It converts ADU to electrons. It is read on
+  every capture, because ASCOM has a driver change it at once when a
+  change of binning, `Gain`, `Offset` or `ReadoutMode` changes it. It
+  is recorded only when positive and finite.
+- `cooler_power_pct` is ASCOM `CoolerPower`, the cooler's power in
+  percent. It is read on every capture, at the same moment as
+  `sensor_temperature_c`, and with `cooler_setpoint_c` it shows whether
+  the setpoint was held, and with how much headroom
+  ([Camera Cooling](#camera-cooling)). It is read only from a camera
+  whose `CanGetCoolerPower` is true, read once per connection: a driver
+  that cannot report power may still answer the read, as ASCOM's
+  reference simulator (OmniSim) answers 0. ASCOM has a cooler that is
+  off report 0, and the field records that 0. It is recorded when
+  finite.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
@@ -727,7 +784,10 @@ document alone (the table gives each card's field), so the header
 carries no fact the sidecar lacks. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
-promise that every fact in the document reaches the header.
+promise that every fact in the document reaches the header: the camera
+facts (`sensor_type`, the Bayer offsets, the readout mode,
+`electrons_per_adu` and `cooler_power_pct`) are recorded in the
+sidecar only.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -1897,7 +1957,8 @@ same value becomes the document's `filter` field and the header's
 a templated capture rather than mis-filing the frame — and a templated
 capture waits a slow wheel out rather than time it; for a capture that
 renders no filename the read is bounded at 3 s and a failure only drops
-the `filter`, `filter_position` and `filter_wavelength_nm` fields.
+the filter fields (`filter`, `filter_position` and
+`filter_wavelength_nm`).
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
@@ -4723,7 +4784,7 @@ re-selects.
 
 ### Per-frame recording
 
-`capture` stamps two fields on every exposure document (see
+`capture` stamps three fields on every exposure document (see
 [Exposure Document](#exposure-document)):
 
 - `cooler_setpoint_c` — the rung currently commanded for the capturing
@@ -4732,6 +4793,10 @@ re-selects.
 - `sensor_temperature_c` — a best-effort `CCDTemperature` read at
   capture time; absent when the read fails or the camera does not
   implement it. Read for every camera, ladder or not.
+- `cooler_power_pct` — `CoolerPower`, read at the same moment from a
+  camera whose `CanGetCoolerPower` is true, ladder or not; absent
+  otherwise, or when the read fails. A rung held near full power had
+  little headroom left on that frame.
 
 A night where selection failed is thereby identifiable frame by frame
 instead of silently polluting stacks.

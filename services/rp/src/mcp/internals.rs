@@ -561,8 +561,11 @@ struct CaptureConditions {
     exposure_started_at: DateTime<Utc>,
     cooler_setpoint_c: Option<i32>,
     sensor_temperature_c: Option<f64>,
+    cooler_power_pct: Option<f64>,
     gain: Option<i32>,
     offset: Option<i32>,
+    readout_mode: Option<u32>,
+    electrons_per_adu: Option<f64>,
 }
 
 /// What a capture knows about its frame once the image is downloaded:
@@ -955,6 +958,42 @@ pub(crate) fn validate_binning(
         ));
     }
     Ok(())
+}
+
+/// A camera reading the sidecar records only when `usable` accepts it
+/// (rp.md § Core Fields); one it rejects is dropped and logged.
+fn recordable(
+    camera_id: &str,
+    field: &str,
+    reading: Option<f64>,
+    usable: impl Fn(f64) -> bool,
+) -> Option<f64> {
+    let reading = reading?;
+    if usable(reading) {
+        Some(reading)
+    } else {
+        debug!(
+            camera_id,
+            field, reading, "camera reading is unusable; the frame omits it"
+        );
+        None
+    }
+}
+
+/// The sidecar's `readout_mode_name` (rp.md § Core Fields): the
+/// capture's `ReadoutMode` index looked up in the `ReadoutModes` read when
+/// the session was established. `None` when either is unknown or the
+/// index lies outside the list.
+fn readout_mode_name(
+    readout_mode: Option<u32>,
+    readout_modes: Option<&[String]>,
+) -> Option<String> {
+    let index = usize::try_from(readout_mode?).ok()?;
+    let name = readout_modes?.get(index).cloned();
+    if name.is_none() {
+        debug!(readout_mode = index, ?readout_modes, "readout mode lies outside the camera's ReadoutModes; the frame omits readout_mode_name");
+    }
+    name
 }
 
 /// The sidecar's `optics` block (rp.md § Core Fields): the camera's
@@ -1471,9 +1510,10 @@ impl McpHandler {
             // stuck behind an unbounded read still releases the camera at
             // the reads' deadline; on a tie the reads win (`biased`).
             let deadline = auxiliary_read_deadline();
+            let reads_cooler_power = invariants.can_get_cooler_power == Some(true);
             let (pointing, conditions, filter_read) = tokio::select! {
                 biased;
-                reads = self.ready_frame_reads(&req, &cam, window, pointing_read, deadline) => reads,
+                reads = self.ready_frame_reads(&req, &cam, window, pointing_read, reads_cooler_power, deadline) => reads,
                 () = cancelled_past_read_bound(cancel, deadline) => return Err(cancel.error()),
             };
 
@@ -1605,6 +1645,10 @@ impl McpHandler {
                 (None, None, None)
             }
         };
+        let readout_mode_name = readout_mode_name(
+            frame.conditions.readout_mode,
+            frame.invariants.readout_modes.as_deref(),
+        );
         let train_devices = train.map(|train| {
             train
                 .devices
@@ -1637,9 +1681,19 @@ impl McpHandler {
             filter_wavelength_nm,
             gain: frame.conditions.gain,
             offset: frame.conditions.offset,
+            readout_mode: frame.conditions.readout_mode,
+            readout_mode_name,
+            electrons_per_adu: frame.conditions.electrons_per_adu,
             max_adu: captured_max_adu,
+            sensor_type: frame
+                .invariants
+                .sensor_type
+                .map(persistence::SensorType::from),
+            bayer_offset_x: frame.invariants.bayer_offset_x,
+            bayer_offset_y: frame.invariants.bayer_offset_y,
             cooler_setpoint_c: frame.conditions.cooler_setpoint_c,
             sensor_temperature_c: frame.conditions.sensor_temperature_c,
+            cooler_power_pct: frame.conditions.cooler_power_pct,
             pointing: frame.pointing,
             site: self.site.as_ref().map(persistence::ExposureSite::from),
             rp_version: Some(persistence::RP_VERSION.to_string()),
@@ -1788,9 +1842,11 @@ impl McpHandler {
     /// while the capture still holds the camera — before the next
     /// capture's `StartExposure` could overwrite `LastExposureStartTime`.
     /// Cooling metadata (rp.md § Camera Cooling): the rung the
-    /// controller currently holds for this camera and a best-effort
-    /// post-readout temperature; `Gain`/`Offset`, read live because they
-    /// are operator-mutable; and the exposure start (rp.md § Core
+    /// controller currently holds for this camera, a best-effort
+    /// post-readout temperature, and the cooler power when
+    /// `reads_cooler_power`; `Gain`, `Offset`, `ReadoutMode` and
+    /// `ElectronsPerADU`, read live because a client can change them; and
+    /// the exposure start (rp.md § Core
     /// Fields). All auxiliary — a failed read only drops its field, never
     /// the capture — and issued together, so they cost one round-trip of
     /// latency. Read after the exposure completes (rather than after the
@@ -1799,8 +1855,8 @@ impl McpHandler {
     /// before the FITS write happens. `captured_at` is the window's
     /// `ready` instant — once, reused both for `{night_date}` and the
     /// document's `captured_at` field — rather than read twice a few
-    /// hundred milliseconds apart. The gain, offset and start-time reads
-    /// are each bounded by `deadline`; the temperature read, which a
+    /// hundred milliseconds apart. Every read but the temperature is
+    /// bounded by `deadline`; the temperature read, which a
     /// `{sensor_temp}` filename can depend on, is not.
     async fn capture_conditions(
         &self,
@@ -1808,20 +1864,67 @@ impl McpHandler {
         cam: &Arc<dyn Camera>,
         window: ExposureWindow,
         exposure: Duration,
+        reads_cooler_power: bool,
         deadline: tokio::time::Instant,
     ) -> CaptureConditions {
         let cooler_setpoint_c = self
             .cooling
             .as_ref()
             .and_then(|cooling| cooling.rung_for(camera_id));
-        let (temperature, gain, offset, driver_start) = tokio::join!(
+        let cooler_power = async {
+            if reads_cooler_power {
+                Some(bounded_read(deadline, cam.cooler_power()).await)
+            } else {
+                None
+            }
+        };
+        let (
+            temperature,
+            cooler_power,
+            gain,
+            offset,
+            readout_mode,
+            electrons_per_adu,
+            driver_start,
+        ) = tokio::join!(
             cam.ccd_temperature(),
+            cooler_power,
             bounded_read(deadline, cam.gain()),
             bounded_read(deadline, cam.offset()),
+            bounded_read(deadline, cam.readout_mode()),
+            bounded_read(deadline, cam.electrons_per_adu()),
             bounded_read(deadline, cam.last_exposure_start_time()),
+        );
+        let cooler_power_pct = recordable(
+            camera_id,
+            "cooler_power_pct",
+            cooler_power.and_then(|read| {
+                optional_read(
+                    read,
+                    camera_id,
+                    "cooler power unavailable; the frame omits it",
+                )
+            }),
+            f64::is_finite,
         );
         let gain = optional_read(gain, camera_id, "gain unavailable; the frame omits it");
         let offset = optional_read(offset, camera_id, "offset unavailable; the frame omits it");
+        let readout_mode = optional_read(
+            readout_mode,
+            camera_id,
+            "readout mode unavailable; the frame omits it",
+        )
+        .and_then(|mode| u32::try_from(mode).ok());
+        let electrons_per_adu = recordable(
+            camera_id,
+            "electrons_per_adu",
+            optional_read(
+                electrons_per_adu,
+                camera_id,
+                "electrons per ADU unavailable; the frame omits it",
+            ),
+            |e_per_adu| e_per_adu.is_finite() && e_per_adu > 0.0,
+        );
         let driver_start = optional_read(
             driver_start,
             camera_id,
@@ -1833,8 +1936,11 @@ impl McpHandler {
             exposure_started_at: exposure_start(driver_start, window, exposure),
             cooler_setpoint_c,
             sensor_temperature_c: temperature.ok(),
+            cooler_power_pct,
             gain,
             offset,
+            readout_mode,
+            electrons_per_adu,
         }
     }
 
@@ -1852,11 +1958,19 @@ impl McpHandler {
         cam: &Arc<dyn Camera>,
         window: ExposureWindow,
         pointing_read: Option<PointingRead>,
+        reads_cooler_power: bool,
         deadline: tokio::time::Instant,
     ) -> (Option<MountPointing>, CaptureConditions, FilterRead) {
         tokio::join!(
             finished_pointing(pointing_read),
-            self.capture_conditions(req.camera_id, cam, window, req.duration, deadline),
+            self.capture_conditions(
+                req.camera_id,
+                cam,
+                window,
+                req.duration,
+                reads_cooler_power,
+                deadline
+            ),
             self.capture_filter(req.camera_id, req.frame_type, deadline),
         )
     }

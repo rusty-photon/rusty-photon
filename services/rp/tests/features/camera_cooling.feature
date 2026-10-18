@@ -24,7 +24,8 @@ Feature: Camera cooling selects and holds a dark-library setpoint
   its own — not at startup, not on a safety transition.
 
   Every capture stamps cooler_setpoint_c and sensor_temperature_c on its
-  exposure document. Cameras with an empty ladder are never touched.
+  exposure document, and cooler_power_pct from a camera that can report
+  its cooler power. Cameras with an empty ladder are never touched.
 
   The simulator profile shipped by bdd-infra models ambient +10 °C with a
   maximum cooler delta of 40 °C: rungs above -30 stabilize with power
@@ -65,7 +66,7 @@ Feature: Camera cooling selects and holds a dark-library setpoint
     And the "cooler_unreachable" event payload field "warmest_target_c" should be the number -30
     And the camera cooler should be off
 
-  Scenario: Captured frames stamp the chosen setpoint and the sensor temperature
+  Scenario: Captured frames stamp the chosen setpoint, the sensor temperature and the cooler power
     Given a test webhook receiver subscribed to "cooler_stabilized"
     And rp is running with a camera with cooler targets "-10" on the simulator
     And an MCP client connected to rp
@@ -75,6 +76,7 @@ Feature: Camera cooling selects and holds a dark-library setpoint
     And I fetch the document for the captured document_id
     Then the document field "cooler_setpoint_c" should be the number -10
     And the document should carry a numeric "sensor_temperature_c"
+    And the document should carry a numeric "cooler_power_pct"
 
   Scenario: A second start_cooldown adopts the held rung without re-selecting
     Given a test webhook receiver subscribed to "cooler_stabilized"

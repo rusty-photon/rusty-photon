@@ -114,6 +114,22 @@ pub struct ExposureDocument {
     /// The camera's ASCOM `Offset`, under the same rule as `gain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<i32>,
+    /// The camera's ASCOM `ReadoutMode`, the index into its
+    /// `ReadoutModes`, read on every capture. Omitted when the driver
+    /// does not implement it or the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readout_mode: Option<u32>,
+    /// `readout_mode`'s entry in the `ReadoutModes` read when the
+    /// camera's session was established. Omitted with `readout_mode`,
+    /// when that list read failed, and when the index lies outside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readout_mode_name: Option<String>,
+    /// The camera's ASCOM `ElectronsPerADU`, read on every capture: a
+    /// driver changes it with binning, gain, offset or readout mode.
+    /// Omitted when the driver does not implement it, the read failed,
+    /// or the value is not positive and finite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub electrons_per_adu: Option<f64>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it
     /// forward so a disk-fallback rehydration of the image cache can
     /// pick the correct `CachedPixels` variant without needing the
@@ -122,6 +138,20 @@ pub struct ExposureDocument {
     /// Document Cache section of `docs/services/rp.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_adu: Option<u32>,
+    /// The camera's ASCOM `SensorType`, read once per connection: mono,
+    /// multi-plane colour, or which single-plane colour mosaic. Omitted
+    /// when the connect-time read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_type: Option<SensorType>,
+    /// The camera's ASCOM `BayerOffsetX`, the column offset of the
+    /// mosaic `sensor_type` names, read once per connection. Omitted for
+    /// a monochrome camera and when the connect-time read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bayer_offset_x: Option<u8>,
+    /// The camera's ASCOM `BayerOffsetY`, under the same rule as
+    /// `bayer_offset_x`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bayer_offset_y: Option<u8>,
     /// The dark-library rung rp was regulating the capturing camera at
     /// (rp.md § Camera Cooling). Omitted when rp was not cooling it —
     /// empty ladder, cooling skipped or unreachable, or a warm-up in
@@ -134,6 +164,12 @@ pub struct ExposureDocument {
     /// misbehaved identifiable frame by frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensor_temperature_c: Option<f64>,
+    /// The camera's ASCOM `CoolerPower` in percent, read at the same
+    /// moment as `sensor_temperature_c` from a camera whose
+    /// `CanGetCoolerPower` is true. Omitted otherwise, when the read
+    /// failed, or when the value is not finite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooler_power_pct: Option<f64>,
     /// Where the mount pointed during the exposure, read once as the
     /// exposure started. Omitted when no mount is connected or the read
     /// failed. The FITS header's `RA`/`DEC`.
@@ -230,6 +266,42 @@ pub struct MountPointing {
 pub struct ExposureTrainDevice {
     pub id: String,
     pub kind: String,
+}
+
+/// The exposure document's `sensor_type` field: the camera's ASCOM
+/// `SensorType`, spelled as ASCOM names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SensorType {
+    /// A single-plane monochrome sensor.
+    Monochrome,
+    /// A sensor that delivers several colour planes.
+    Color,
+    /// A single-plane RGGB Bayer mosaic.
+    #[serde(rename = "RGGB")]
+    Rggb,
+    /// A single-plane CMYG mosaic.
+    #[serde(rename = "CMYG")]
+    Cmyg,
+    /// A single-plane CMYG2 mosaic.
+    #[serde(rename = "CMYG2")]
+    Cmyg2,
+    /// A single-plane LRGB mosaic.
+    #[serde(rename = "LRGB")]
+    Lrgb,
+}
+
+impl From<ascom_alpaca::api::camera::SensorType> for SensorType {
+    fn from(sensor_type: ascom_alpaca::api::camera::SensorType) -> Self {
+        use ascom_alpaca::api::camera::SensorType as Ascom;
+        match sensor_type {
+            Ascom::Monochrome => Self::Monochrome,
+            Ascom::Color => Self::Color,
+            Ascom::RGGB => Self::Rggb,
+            Ascom::CMYG => Self::Cmyg,
+            Ascom::CMYG2 => Self::Cmyg2,
+            Ascom::LRGB => Self::Lrgb,
+        }
+    }
 }
 
 /// The exposure document's `site` field: the configured observer site.
@@ -1087,5 +1159,69 @@ mod tests {
         assert_eq!(parsed.filter_wavelength_nm, Some(656.3));
         assert_eq!(parsed.site, doc.site);
         assert_eq!(parsed.rp_version.as_deref(), Some(RP_VERSION));
+    }
+
+    #[test]
+    fn the_camera_facts_round_trip_through_json() {
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.sensor_type = Some(SensorType::Rggb);
+        doc.bayer_offset_x = Some(1);
+        doc.bayer_offset_y = Some(0);
+        doc.readout_mode = Some(1);
+        doc.readout_mode_name = Some("High Gain Mode 16BIT".to_string());
+        doc.electrons_per_adu = Some(0.8);
+        doc.cooler_power_pct = Some(38.5);
+        let body = serde_json::to_string(&doc).unwrap();
+        let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.sensor_type, Some(SensorType::Rggb));
+        assert_eq!(parsed.bayer_offset_x, Some(1));
+        assert_eq!(parsed.bayer_offset_y, Some(0));
+        assert_eq!(parsed.readout_mode, Some(1));
+        assert_eq!(
+            parsed.readout_mode_name.as_deref(),
+            Some("High Gain Mode 16BIT")
+        );
+        assert_eq!(parsed.electrons_per_adu, Some(0.8));
+        assert_eq!(parsed.cooler_power_pct, Some(38.5));
+    }
+
+    #[test]
+    fn serialization_skips_unknown_camera_facts() {
+        let body = serde_json::to_value(doc_with_path("doc-1", "/tmp/x.fits")).unwrap();
+        for field in [
+            "sensor_type",
+            "bayer_offset_x",
+            "bayer_offset_y",
+            "readout_mode",
+            "readout_mode_name",
+            "electrons_per_adu",
+            "cooler_power_pct",
+        ] {
+            assert!(body.get(field).is_none(), "{field} in {body}");
+        }
+    }
+
+    /// The sidecar spells each ASCOM `SensorType` as ASCOM names it.
+    #[test]
+    fn sensor_types_are_spelled_as_ascom_names_them() {
+        use ascom_alpaca::api::camera::SensorType as Ascom;
+        for (ascom, spelled) in [
+            (Ascom::Monochrome, "Monochrome"),
+            (Ascom::Color, "Color"),
+            (Ascom::RGGB, "RGGB"),
+            (Ascom::CMYG, "CMYG"),
+            (Ascom::CMYG2, "CMYG2"),
+            (Ascom::LRGB, "LRGB"),
+        ] {
+            let sensor_type = SensorType::from(ascom);
+            assert_eq!(
+                serde_json::to_value(sensor_type).unwrap(),
+                Value::String(spelled.to_string())
+            );
+            assert_eq!(
+                serde_json::from_value::<SensorType>(Value::String(spelled.to_string())).unwrap(),
+                sensor_type
+            );
+        }
     }
 }

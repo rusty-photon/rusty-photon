@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ascom_alpaca::api::camera::SensorType;
 use ascom_alpaca::api::Camera;
 use tracing::{debug, error};
 
@@ -54,6 +55,22 @@ pub struct CameraInvariants {
     /// `CanAsymmetricBin` — whether the camera accepts `x != y`.
     /// `None` under the same rule as `max_bin_x`.
     pub can_asymmetric_bin: Option<bool>,
+    /// `SensorType` — mono, multi-plane colour, or which colour mosaic.
+    /// Persisted as the sidecar's `sensor_type`.
+    pub sensor_type: Option<SensorType>,
+    /// `BayerOffsetX`, the column offset of the mosaic `sensor_type`
+    /// names. Not read from a camera that reports itself monochrome,
+    /// whose driver refuses it.
+    pub bayer_offset_x: Option<u8>,
+    /// `BayerOffsetY`, under the same rule as `bayer_offset_x`.
+    pub bayer_offset_y: Option<u8>,
+    /// `ReadoutModes` — the names a capture's `ReadoutMode` index is
+    /// looked up in for the sidecar's `readout_mode_name`.
+    pub readout_modes: Option<Vec<String>>,
+    /// `CanGetCoolerPower` — whether a capture reads `CoolerPower`. A
+    /// driver that cannot report power may still answer that read, so
+    /// `None` (the connect-time read failed) skips it as `false` does.
+    pub can_get_cooler_power: Option<bool>,
 }
 
 /// Per-camera runtime state held by the equipment registry.
@@ -186,14 +203,23 @@ pub(super) async fn establish_camera(
     let cam = establish_listed(config, ca_cert_path).await?;
 
     // The Alpaca device is now Connected — the driver name and the
-    // eight physical-sensor properties below are invariant for the life
-    // of the session, so
+    // camera-model properties below are invariant for the life of the
+    // session, so
     // they are read exactly once here and served from the cache to
     // every subsequent `do_capture`. Each read is independent: a
     // failure on one property only drops *that* field, not the whole
     // session. The reads intentionally happen after `set_connected`
     // succeeds because some Alpaca drivers reject property reads on
     // disconnected devices.
+    let sensor_type = optional_read(cam.sensor_type().await, &config.id, "sensor_type unavailable at session-establish time; downstream captures will omit sensor_type");
+    let (bayer_offset_x, bayer_offset_y) = if sensor_type == Some(SensorType::Monochrome) {
+        (None, None)
+    } else {
+        (
+            optional_read(cam.bayer_offset_x().await, &config.id, "bayer_offset_x unavailable at session-establish time; downstream captures will omit bayer_offset_x"),
+            optional_read(cam.bayer_offset_y().await, &config.id, "bayer_offset_y unavailable at session-establish time; downstream captures will omit bayer_offset_y"),
+        )
+    };
     let invariants = CameraInvariants {
         name: optional_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
         max_adu: optional_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
@@ -204,6 +230,11 @@ pub(super) async fn establish_camera(
         max_bin_x: optional_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
         max_bin_y: optional_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
         can_asymmetric_bin: optional_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
+        sensor_type,
+        bayer_offset_x,
+        bayer_offset_y,
+        readout_modes: optional_read(cam.readout_modes().await, &config.id, "readout_modes unavailable at session-establish time; downstream captures will omit readout_mode_name"),
+        can_get_cooler_power: optional_read(cam.can_get_cooler_power().await, &config.id, "can_get_cooler_power unavailable at session-establish time; downstream captures will not read cooler_power_pct"),
     };
     Ok((cam, invariants))
 }
@@ -227,6 +258,11 @@ pub(super) async fn connect_camera(
                 max_bin_x = ?invariants.max_bin_x,
                 max_bin_y = ?invariants.max_bin_y,
                 can_asymmetric_bin = ?invariants.can_asymmetric_bin,
+                sensor_type = ?invariants.sensor_type,
+                bayer_offset_x = ?invariants.bayer_offset_x,
+                bayer_offset_y = ?invariants.bayer_offset_y,
+                readout_modes = ?invariants.readout_modes,
+                can_get_cooler_power = ?invariants.can_get_cooler_power,
                 "camera connected successfully; cached invariant sensor metadata"
             );
             CameraEntry::new(
@@ -463,6 +499,122 @@ mod tests {
         assert_eq!(inv.pixel_size_y_um, Some(3.76));
         assert_eq!(inv.sensor_width_px, Some(1024));
         assert_eq!(inv.sensor_height_px, Some(1024));
+    }
+
+    /// Stub server that advertises one Camera at index 0, accepts
+    /// `set_connected(true)`, and answers each listed property read with
+    /// its value. Any other read gets a 404, which drops its field.
+    fn camera_answering(properties: &[(&'static str, serde_json::Value)]) -> Router {
+        let mut app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "Camera 0",
+                            "DeviceType": "Camera",
+                            "DeviceNumber": 0,
+                            "UniqueID": "test-camera-uid"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            );
+        for (property, value) in properties {
+            let value = value.clone();
+            app = app.route(
+                &format!("/api/v1/camera/0/{property}"),
+                get(move || {
+                    let value = value.clone();
+                    async move {
+                        Json(serde_json::json!({
+                            "Value": value,
+                            "ErrorNumber": 0,
+                            "ErrorMessage": ""
+                        }))
+                    }
+                }),
+            );
+        }
+        app
+    }
+
+    #[tokio::test]
+    async fn connect_camera_caches_a_colour_cameras_sensor_type_and_bayer_offsets() {
+        let stub = spawn_stub(camera_answering(&[
+            ("sensortype", serde_json::json!(2)),
+            ("bayeroffsetx", serde_json::json!(1)),
+            ("bayeroffsety", serde_json::json!(0)),
+        ]))
+        .await;
+        let inv = connect_camera(&camera_config_for(&stub.url()), None)
+            .await
+            .invariants();
+        assert_eq!(inv.sensor_type, Some(SensorType::RGGB));
+        assert_eq!(inv.bayer_offset_x, Some(1));
+        assert_eq!(inv.bayer_offset_y, Some(0));
+    }
+
+    /// A mono camera's driver refuses the Bayer offsets, so they are not
+    /// read. The stub answers them anyway, so a read would show.
+    #[tokio::test]
+    async fn connect_camera_reads_no_bayer_offsets_from_a_monochrome_camera() {
+        let stub = spawn_stub(camera_answering(&[
+            ("sensortype", serde_json::json!(0)),
+            ("bayeroffsetx", serde_json::json!(1)),
+            ("bayeroffsety", serde_json::json!(1)),
+        ]))
+        .await;
+        let inv = connect_camera(&camera_config_for(&stub.url()), None)
+            .await
+            .invariants();
+        assert_eq!(inv.sensor_type, Some(SensorType::Monochrome));
+        assert_eq!(inv.bayer_offset_x, None);
+        assert_eq!(inv.bayer_offset_y, None);
+    }
+
+    /// A camera whose sensor type is unknown may still have a mosaic, so
+    /// its offsets are read.
+    #[tokio::test]
+    async fn connect_camera_reads_the_bayer_offsets_when_the_sensor_type_is_unknown() {
+        let stub = spawn_stub(camera_answering(&[
+            ("bayeroffsetx", serde_json::json!(0)),
+            ("bayeroffsety", serde_json::json!(1)),
+        ]))
+        .await;
+        let inv = connect_camera(&camera_config_for(&stub.url()), None)
+            .await
+            .invariants();
+        assert_eq!(inv.sensor_type, None);
+        assert_eq!(inv.bayer_offset_x, Some(0));
+        assert_eq!(inv.bayer_offset_y, Some(1));
+    }
+
+    #[tokio::test]
+    async fn connect_camera_caches_the_readout_modes_and_whether_cooler_power_is_readable() {
+        let stub = spawn_stub(camera_answering(&[
+            ("readoutmodes", serde_json::json!(["Normal", "High Gain"])),
+            ("cangetcoolerpower", serde_json::json!(true)),
+        ]))
+        .await;
+        let inv = connect_camera(&camera_config_for(&stub.url()), None)
+            .await
+            .invariants();
+        assert_eq!(
+            inv.readout_modes,
+            Some(vec!["Normal".to_string(), "High Gain".to_string()])
+        );
+        assert_eq!(inv.can_get_cooler_power, Some(true));
     }
 
     /// A malformed `alpaca_url` makes `build_alpaca_client` fail before

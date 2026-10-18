@@ -20,7 +20,7 @@ pub mod fits_header;
 pub use cache::{CachedImage, CachedPixels, ImageCache};
 pub use document::{
     ExposureDocument, ExposureSite, ExposureTarget, ExposureTrainDevice, LightSource,
-    MountPointing, Optics, OpticsInputs, RP_VERSION,
+    MountPointing, Optics, OpticsInputs, SensorType, RP_VERSION,
 };
 pub use fits::{
     read_fits_array, read_fits_doc_id, read_fits_pixels, write_fits_i32, write_fits_u16,

@@ -769,20 +769,25 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
   the same "nobody is there" answer and leaves nothing behind.
 
 Where a bind-and-release probe does survive, it is
-`bdd_infra::ephemeral_ports::<N>()` (or `ephemeral_ports_async`), for a child
-told its port after the probe: Pebble's harness and geckodriver use it, each
-paired with a retry on the lost race. A child that binds port 0 and prints the
-port it got needs neither, which is why OmniSim's harness moved to that
-([§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)):
-the retry fires only on a lost race the readiness check notices, and another
-process's server of the same kind answering at the port is one it does not.
-Where a probed port cannot be avoided, keep the pairing — and note that the
-retry is worth exactly as much as the readiness check that fires it. Verify
-**every** endpoint the child was
-handed a port for, not just the one easiest to poll: a child that survives a
-lost bind, serving its other listeners as if nothing happened, otherwise sails
-through readiness and fails in the middle of a scenario, long past the point
-where picking another port was still possible.
+`bdd_infra::ephemeral_ports::<N>()`, for a child that cannot bind port 0 and
+report the port it got, and so must be told its port after the probe. Pebble's
+harness is the one caller: Pebble and `pebble-challtestsrv` both log the address
+they were configured with, `127.0.0.1:0` included, never the port they bound.
+Every other child binds port 0 and prints its port — our services, OmniSim,
+geckodriver (`--port 0`, from 0.34) — and that is the pattern to reach for
+([§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)).
+
+A probed port needs a retry on fresh ports for the lost race, and that retry is
+worth exactly as much as the readiness check that fires it. A check that asks
+only "does something answer?" is passed by another process's server of the
+same kind holding the port, so the retry never fires and the harness adopts a
+stranger. Each check has to ask for something only this start's child has —
+Pebble's are the model ([§5.6](#56-pebble-end-to-end-acme-scenarios-in-doctors-suite)).
+And it has to cover **every** endpoint the child was handed a port for, not
+just the one easiest to poll: a child that survives a lost bind, serving its
+other listeners as if nothing happened, otherwise sails through readiness and
+fails in the middle of a scenario, long past the point where picking another
+port was still possible.
 
 #### 5.2 Entry Point Structure
 
@@ -1047,23 +1052,47 @@ scenario spawns a private Pebble on dynamic ports with a
 points Pebble's validating resolver at the sidecar, and drives the
 doctor binary with `--directory-url`/`--acme-root`.
 
-Those ports are picked bind-and-drop (§5.1), so a start is provisional
-until proven: the harness polls all three endpoints a scenario will use —
-the ACME directory, the challtestsrv management API, and the sidecar's DNS
-listener — and gives up after 30 s to retry the whole start on fresh ports,
-three attempts before it panics with both children's logs.
+Neither binary can bind port 0 and report the port it got, so those ports
+are picked bind-and-drop (§5.1), and a start is provisional until proven.
+Any of them can be held by another process — another `@pebble` scenario's
+pair among them, since those scenarios are not `@serial` — so each of the
+three endpoints a scenario uses has to show something only this start's
+children have:
 
-The DNS probe is the one the other two cannot stand in for. challtestsrv
-does not exit when it loses a DNS bind: it logs
+- the ACME directory answers through a client that trusts only the CA
+  minted for this start;
+- the sidecar's DNS listener answers an A query, on both transports, with
+  an address minted for this start (challtestsrv's `-defaultIPv4`; doctor's
+  challenges are DNS-01, which ask only for TXT records, so nothing
+  connects to it);
+- a TXT record set through the challtestsrv management API comes back from
+  that DNS listener. The record goes under a name minted for this start
+  too: challtestsrv keeps every value set for a name and serves the oldest
+  first, so on a shared name another start that reached this sidecar's
+  management API first would shadow this start's own record.
+
+Pebble's own management listener is not configured at all: doctor never
+uses it, and without a `managementListenAddress` Pebble opens none. A
+sidecar check that gets an answer the sidecar never gives ends the attempt
+at once, since challtestsrv never retries a lost bind. Such an answer is a
+DNS port reply that is not DNS or carries another address, an HTTP error
+from the management port, or a record that port took but the DNS port
+does not serve. Anything else, such as a refused connection or silence,
+gets 30 s.
+Either way the harness retries the whole start on fresh ports, three
+attempts before it panics with both children's logs.
+
+The sidecar's two checks are the ones the directory cannot stand in for.
+challtestsrv does not exit when it loses a bind, DNS or management: it logs
 `listen tcp 127.0.0.1:<port>: bind: address already in use` and goes on
-serving management, so an HTTP-only readiness check calls the pair ready
-and the loss surfaces instead as an ACME failure mid-scenario —
-`Error retrieving TXT records for DNS challenge ("dial tcp 127.0.0.1:<port>:
-i/o timeout")`, an `unauthorized` order error whose port number means
-nothing to a reader looking at the ACME code. The probe is a real DNS query
-on **both** transports, because TCP and UDP are separate port spaces and
-the sidecar binds one listener on each: a TCP squatter leaves the UDP half
-answering perfectly.
+serving the other listener. An HTTP-only readiness check then calls the
+pair ready, and a lost DNS bind surfaces instead as an ACME failure
+mid-scenario — `Error retrieving TXT records for DNS challenge ("dial tcp
+127.0.0.1:<port>: i/o timeout")`, an `unauthorized` order error whose port
+number means nothing to a reader looking at the ACME code. The DNS check is
+a real query on **both** transports, because TCP and UDP are separate port
+spaces and the sidecar binds one listener on each: a TCP squatter leaves
+the UDP half answering perfectly.
 
 Two environment variables locate the binaries, mirroring
 `OMNISIM_PATH`: **`PEBBLE_PATH`** and **`PEBBLE_CHALLTESTSRV_PATH`**
@@ -1514,7 +1543,10 @@ ran two `rp:bdd` shards against one OmniSim this way. The cure is the
 pattern every service binary here already follows: the child binds port
 0 and prints the port it got, and the harness reads it back —
 `bound_addr=` for our services, Kestrel's `Now listening on:` line for
-OmniSim.
+OmniSim, geckodriver's `Listening on` line for the browser harness
+(`bdd_infra::parse_port_after`). A child that cannot report its port,
+like Pebble and its sidecar, is told one, and then its readiness check
+must prove that what answers is that child (§5.1, §5.6).
 
 ---
 

@@ -3,9 +3,11 @@
 //!
 //! geckodriver is treated as an external **system tool** (like OmniSim/ConformU):
 //! discovered via `GECKODRIVER_BINARY`, else `geckodriver` on `PATH`. It is
-//! spawned on an ephemeral port (no 4444 collisions), in **its own process
-//! group** (`process_group(0)`), with `kill_on_drop`, then a headless Firefox is
-//! connected through [`thirtyfour`]. Firefox is likewise discovered via
+//! spawned with `--port 0` (0.34 or later), so it binds a port the OS picks and
+//! prints it, and the harness reads that port back: no 4444 collisions, and no
+//! other process's geckodriver can stand in for this one. It runs in **its own
+//! process group** (`process_group(0)`), with `kill_on_drop`, then a headless
+//! Firefox is connected through [`thirtyfour`]. Firefox is likewise discovered via
 //! `FIREFOX_BINARY` when set, else geckodriver auto-detects the system browser.
 //!
 //! The process group is load-bearing for teardown (plan §9 Tier 0 step 4 / §10):
@@ -55,18 +57,19 @@ impl std::fmt::Debug for BrowserSession {
 }
 
 impl BrowserSession {
-    /// Spawn geckodriver on an ephemeral port and connect a headless Firefox.
+    /// Spawn geckodriver on a port it picks itself and connect a headless
+    /// Firefox.
     pub async fn start() -> Self {
         let gecko_bin =
             std::env::var("GECKODRIVER_BINARY").unwrap_or_else(|_| "geckodriver".to_string());
-        // The probe and the spawn below each take the lock every spawn in
-        // this test process takes (`bdd_infra::with_spawn_lock_async`).
-        let [port] = bdd_infra::ephemeral_ports_async::<1>().await;
         let mut command = Command::new(&gecko_bin);
         command
+            // Port 0: geckodriver binds a port the OS picks and announces it
+            // on stdout, so the port this session talks to is one its own
+            // geckodriver holds (docs/skills/testing.md §5.12).
             .arg("--port")
-            .arg(port.to_string())
-            .stdout(std::process::Stdio::null())
+            .arg("0")
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         // Lead a new process group (pgid == geckodriver's pid): Firefox and its
@@ -74,6 +77,7 @@ impl BrowserSession {
         // and the orphan check is scoped to this group (plan §9 step 4 / §10).
         #[cfg(unix)]
         command.process_group(0);
+        // Under the lock every spawn in this test process takes.
         let mut geckodriver = bdd_infra::with_spawn_lock_async(|| command.spawn())
             .await
             .unwrap_or_else(|e| panic!("failed to spawn geckodriver ({gecko_bin:?}): {e}"));
@@ -82,10 +86,10 @@ impl BrowserSession {
             .expect("geckodriver has no pid immediately after spawn");
 
         // Drain geckodriver's stderr into a shared buffer so (a) a startup failure
-        // (incompatible Firefox, port already bound, etc.) is reported in the
-        // readiness-timeout panic instead of being silently swallowed, and (b) a
-        // continuously-read pipe can never fill and block geckodriver mid-test.
-        // The task ends at EOF when geckodriver is killed during teardown.
+        // (incompatible Firefox, a version too old for `--port 0`, etc.) is
+        // reported in the readiness panic instead of being silently swallowed, and
+        // (b) a continuously-read pipe can never fill and block geckodriver
+        // mid-test. The task ends at EOF when geckodriver is killed during teardown.
         let stderr_log = Arc::new(Mutex::new(String::new()));
         if let Some(stderr) = geckodriver.stderr.take() {
             let sink = Arc::clone(&stderr_log);
@@ -100,20 +104,39 @@ impl BrowserSession {
             });
         }
 
+        let stdout = geckodriver
+            .stdout
+            .take()
+            .expect("geckodriver's stdout is piped");
+        // The rest of stdout is drained in the background until geckodriver
+        // exits, so the pipe never fills and blocks it.
+        let announced = tokio::time::timeout(
+            Duration::from_secs(10),
+            bdd_infra::parse_port_after(stdout, "Listening on "),
+        )
+        .await;
+        let port = match announced {
+            Ok(Some((port, _stdout_drain))) if port != 0 => port,
+            Ok(Some(_)) => panic!(
+                "geckodriver announced port 0: `--port 0` needs geckodriver 0.34 or later; {}",
+                stderr_detail(&stderr_log)
+            ),
+            Ok(None) => panic!(
+                "geckodriver exited without announcing its port; {}",
+                stderr_detail(&stderr_log)
+            ),
+            Err(elapsed) => panic!(
+                "geckodriver did not announce its port within 10s ({elapsed}); {}",
+                stderr_detail(&stderr_log)
+            ),
+        };
+
         let server = format!("http://127.0.0.1:{port}");
-        if !wait_for_geckodriver(&server).await {
-            // Snapshot the captured stderr (drop the guard before panicking, so a
-            // poisoned lock just yields no detail rather than masking the cause).
-            let captured = stderr_log
-                .lock()
-                .map_or_default(|buf| buf.trim_end().to_string());
-            let detail = if captured.is_empty() {
-                "(geckodriver produced no stderr)".to_string()
-            } else {
-                format!("geckodriver stderr:\n{captured}")
-            };
-            panic!("geckodriver did not become ready at {server} within 10s; {detail}");
-        }
+        assert!(
+            wait_for_geckodriver(&server).await,
+            "geckodriver did not become ready at {server} within 10s; {}",
+            stderr_detail(&stderr_log)
+        );
 
         let mut caps = DesiredCapabilities::firefox();
         caps.set_headless().expect("enable Firefox headless");
@@ -467,8 +490,24 @@ pub fn bff_profraw_flushed(coverage_dir: &OsStr) -> bool {
     })
 }
 
+/// geckodriver's captured stderr, for a startup panic. The guard is dropped
+/// before the caller panics, so a poisoned lock just yields no detail rather
+/// than masking the cause.
+fn stderr_detail(stderr_log: &Mutex<String>) -> String {
+    let captured = stderr_log
+        .lock()
+        .map_or_default(|buf| buf.trim_end().to_string());
+    if captured.is_empty() {
+        "(geckodriver produced no stderr)".to_string()
+    } else {
+        format!("geckodriver stderr:\n{captured}")
+    }
+}
+
 /// Poll geckodriver's `/status` until it reports ready (bounded ~10s); returns
-/// whether it became ready. The caller surfaces captured stderr on `false`.
+/// whether it became ready. `server` is the port this session's geckodriver
+/// announced, so whatever answers there is that geckodriver. The caller
+/// surfaces captured stderr on `false`.
 async fn wait_for_geckodriver(server: &str) -> bool {
     let status_url = format!("{server}/status");
     for _ in 0..100 {
