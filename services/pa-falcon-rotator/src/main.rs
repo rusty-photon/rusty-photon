@@ -118,8 +118,8 @@ fn main() -> ServiceResult {
         args.config, args.port, args.server_port, args.log_level
     );
 
-    // CLI overrides are tracked (not just applied) so config.apply keeps them
-    // out of the persisted file — a transient `--port` is never baked in.
+    // CLI overrides are tracked (not just applied) so a setup-page save keeps
+    // them out of the persisted file — a transient `--port` is never baked in.
     let overrides = CliOverrides {
         serial_port: args.port.clone(),
         server_port: args.server_port,
@@ -143,8 +143,8 @@ fn main() -> ServiceResult {
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
 
-    // Reload loop: a `config.apply` that changes a field fires the reload signal
-    // (from either device), which breaks `start()` out via the combined stop
+    // Reload loop: a setup-page save that changes a field fires the reload
+    // signal, which breaks `start()` out via the combined stop
     // future; the loop re-reads the freshly-persisted config and rebuilds the
     // server. Awaiting `start()` to completion lets the old server drain HTTP and
     // release the serial port before the rebuilt one binds.

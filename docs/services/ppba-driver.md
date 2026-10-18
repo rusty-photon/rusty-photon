@@ -194,7 +194,7 @@ Two things to know about the shape:
 
 Three rules, all enforced when the config is **deserialized** rather than by a
 separate validation pass, so a bad map fails at startup — and fails a
-`config.apply` — with the offending entry named:
+reload — with the offending entry named:
 
 1. **Only ids 0-4 may be labelled**: the quad 12 V output, the adjustable
    output, the two dew heaters and the USB hub. Those are the switches an
@@ -215,8 +215,11 @@ physical output, so it stays identifiable after the name is replaced:
 switch 0 labelled `Mount and camera rail` still describes itself as
 "Controls the quad 12V power output".
 
-Labels are an ordinary config field, so `config.apply` edits them and the
-service reloads onto the new names. `SetSwitchName` stays `NOT_IMPLEMENTED`:
+Labels are a map, which the setup pages cannot edit: the switch's page
+names `switch.labels` as edited in the configuration file, and a save leaves
+the map as the file has it. Edit the file and reload the service (`SIGHUP`,
+or SCM `ParamChange` on Windows), and it comes up on the new names.
+`SetSwitchName` stays `NOT_IMPLEMENTED`:
 a name written over the wire would not survive a restart, and the config file
 is the one place the mapping is recorded.
 
@@ -386,13 +389,13 @@ while `AveragePeriod` read back the value they never used. The
 seconds-to-`Duration` conversion underneath is fallible too, so no path
 through this code can panic.
 
-All three checks — the device, the manager, and the `config.apply` bound
+All three checks — the device, the manager, and the setup page's bound
 below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
 `manager.rs`, so the runtime range and the persisted range cannot drift
 apart.
 
-`config.apply` validates `averaging_period` against the same bounds the device
-enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
+A setup-page save validates `averaging_period` against the same bounds the
+device enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
 hour ceiling, which is ASCOM's. The two must agree — a period a client can
 select at runtime but not persist, or persist but not select, is a trap either
 way.
@@ -400,29 +403,48 @@ way.
 The rolling-mean implementation is shared with `upbv2-driver` and lives in
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
 
-### Config actions
+### Setup pages
 
-Both devices expose the configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
-[`config-actions.md`](config-actions.md), implemented generically in
-`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
-half (`ConfigurableDriver for PpbaDriver`) **and** the shared `dispatch` both
-`switch_device.rs` and `observingconditions_device.rs` delegate to, so an apply
-on either device operates on the one full driver config and fires the one reload
-(`ReloadSignal::notify` coalesces).
+The driver configures itself through the HTML pages the Alpaca Management
+API defines, served by the driver itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
 
-- **Secret redacted / carried forward:** `/server/auth/password_hash`.
-- **Locked (identity) fields:** `switch.unique_id`, `observingconditions.unique_id`.
-- **Hard read-only fields:** `server.port`, `switch.enabled`,
-  `observingconditions.enabled` (disabling a device tears down the endpoint the
-  config actions live on).
-- **CLI-override-pinned:** `serial.port` (`--port`), `server.port`
-  (`--server-port`), `switch.enabled` (`--enable-switch`),
-  `observingconditions.enabled` (`--enable-observingconditions`) — reported in
-  `config.get`'s `overrides[]` and never persisted by `config.apply`.
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `serial` section, the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to each device's page. |
+| `/setup/v1/switch/0/setup` | The switch's page: the `switch` section alone — name, description, `enabled`, `unique_id` under a collapsed Identity disclosure, and `labels` named as edited in the configuration file ([Operator labels](#operator-labels)). |
+| `/setup/v1/observingconditions/0/setup` | The observing conditions' page: the `observingconditions` section alone — name, description, `enabled`, `averaging_period`, and `unique_id` under the Identity disclosure. |
 
-A `config.apply` that changes a field persists atomically, returns
-`status:"applying"`, and fires the in-process reload; `main.rs` runs under
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, which
+[`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes in full (what a page
+shows, the save, the in-process reload); this driver supplies only its
+config type, its validation and normalization, which section each device
+edits (`device_sections` in `setup.rs`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags pin
+(`serial.port` by `--port`, `server.port` by `--server-port`, `switch.enabled` by `--enable-switch`, `observingconditions.enabled` by `--enable-observingconditions`). A pinned field shows the running value, disabled, and a save
+never persists it. A save of one page never alters another page's
+section. The pages work whether or not a device is `Connected`.
+
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` is empty on every device and
+every `Action` answers `ACTION_NOT_IMPLEMENTED`.
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `serial.port` | non-empty (trimmed by `normalize`) |
+| `serial.baud_rate` | `> 0` |
+| `serial.polling_interval` | `> 0` |
+| `serial.timeout` | `> 0` |
+| `observingconditions.averaging_period` | `<= 24h`, the ASCOM `AveragePeriod` ceiling; zero allowed |
+| `switch.unique_id`, `observingconditions.unique_id` | non-empty (each device's stable ASCOM `UniqueID`) |
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+A save that changes a field persists atomically and fires the one in-process
+reload, whichever page it came from; `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, which tears the old server
 down (releasing the shared serial port) and rebuilds from the freshly-persisted
 file, rebinding the same port.
@@ -527,8 +549,9 @@ ppba-driver/
 │   ├── main.rs                       # CLI entry point; lifecycle owned by rusty-photon-service-lifecycle::ServiceRunner
 │   ├── config.rs                     # Configuration types
 │   ├── error.rs                      # Error types
-│   ├── switch_device.rs              # ASCOM Switch implementation
-│   ├── observingconditions_device.rs # ASCOM ObservingConditions implementation
+│   ├── setup.rs                      # ConfigurableDriver impl behind the setup pages (validation, device_sections)
+│   ├── switch_device.rs              # ASCOM Switch implementation + its setup page
+│   ├── observingconditions_device.rs # ASCOM ObservingConditions implementation + its setup page
 │   ├── manager.rs                    # PpbaManager (cached state + hooks for SharedTransport)
 │   ├── codec.rs                      # PpbaCodec (Codec impl for rusty-photon-shared-transport)
 │   ├── protocol.rs                   # PPBA command/response handling

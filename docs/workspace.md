@@ -235,7 +235,7 @@ struct names are the one spelling valid across the whole range
 
 ```
 config.rs         — Configuration types and JSON loading
-config_actions.rs — `config.get` / `config.apply` / `config.schema` action handlers
+setup.rs          — `ConfigurableDriver` impl behind the setup pages (validation, `device_sections`); `config_actions.rs` on a driver still carrying the actions
 error.rs          — Service-specific error enum (thiserror)
 serial.rs         — `TransportFactory` over the shared `open_serial_port` (wraps the port in a `SerialFrameTransport`)
 codec.rs          — `Codec` adapter: device wire frames ⇄ `SharedTransport`

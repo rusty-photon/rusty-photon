@@ -45,7 +45,6 @@
 
 pub mod codec;
 pub mod config;
-pub mod config_actions;
 pub mod doctor;
 pub mod error;
 pub mod focuser_device;
@@ -57,6 +56,7 @@ pub mod manager;
 pub mod mock;
 pub mod protocol;
 pub mod serial;
+pub mod setup;
 
 pub use codec::{ScopsCodec, ScopsCodecError, ScopsResponse};
 pub use config::{load_config, AlpacaServerConfig, Config, FocuserConfig, SerialConfig};
@@ -76,22 +76,23 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::TransportFactory;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
 
 use crate::config::CliOverrides;
-use crate::config_actions::ScopsFocuserDriver;
+use crate::setup::ScopsFocuserDriver;
 
 /// Builder for the ASCOM Alpaca server.
 #[derive(Default)]
 pub struct ServerBuilder {
     config: Config,
     factory: Option<Arc<dyn TransportFactory>>,
-    /// Where `config.apply` persists + which fields are CLI-pinned. `Some`
-    /// enables the config actions on the registered device.
+    /// Where a setup-page save persists + which fields are CLI-pinned.
+    /// `Some` enables the setup pages (together with `reload`).
     config_source: Option<(PathBuf, CliOverrides)>,
-    /// In-process reload trigger handed to the device's `config.apply` handler.
+    /// Reload trigger the pages fire after a save's response has flushed.
     reload: Option<ReloadSignal>,
 }
 
@@ -113,17 +114,18 @@ impl ServerBuilder {
         self
     }
 
-    /// Wire the config-action source (persist path + CLI overrides) so the
-    /// registered focuser device advertises `config.get` / `config.apply` /
-    /// `config.schema`.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], this enables
+    /// config editing.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_source = Some((path, overrides));
         self
     }
 
-    /// Hand the device the in-process reload trigger fired after a `config.apply`
-    /// that needs a reload.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables config
+    /// editing.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -174,23 +176,33 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
+            // The setup pages: one handler behind the server page and the
+            // device page, present when the builder was given a config source
+            // and a reload signal (the normal path through `main`).
+            let pages = match (self.config_source.clone(), self.reload.clone()) {
+                (Some((path, overrides)), Some(reload)) => Some(Arc::new(
+                    SetupPages::<ScopsFocuserDriver>::new(
+                        "pa-scops-oag",
+                        self.config.clone(),
+                        path,
+                        overrides,
+                    )
+                    .with_reload(reload)
+                    .with_https(self.config.server.tls.is_some()),
+                )),
+                _ => None,
+            };
+            if let Some(pages) = &pages {
+                server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                    pages,
+                ))));
+            }
+
             if self.config.focuser.enabled {
                 let mut focuser_device =
                     ScopsFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
-                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<ScopsFocuserDriver>> =
-                    match (self.config_source.clone(), self.reload.clone()) {
-                        (Some((path, overrides)), Some(reload)) => {
-                            Some(rusty_photon_driver::ConfigActionCtx {
-                                effective: self.config.clone(),
-                                path,
-                                overrides,
-                                reload,
-                            })
-                        }
-                        _ => None,
-                    };
-                if let Some(ctx) = config_ctx {
-                    focuser_device = focuser_device.with_config_actions(ctx);
+                if let Some(pages) = &pages {
+                    focuser_device = focuser_device.with_setup_pages(Arc::clone(pages));
                 }
                 server.devices.register(focuser_device);
                 info!("Registered Focuser device: {}", self.config.focuser.name);

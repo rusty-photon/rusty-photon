@@ -117,8 +117,8 @@ fn main() -> ServiceResult {
         args.config, args.port, args.server_port, args.log_level
     );
 
-    // CLI overrides are tracked (not just applied) so config.apply can keep them
-    // out of the persisted file — a transient `--port` is never baked in.
+    // CLI overrides are tracked (not just applied) so a setup-page save can keep
+    // them out of the persisted file — a transient `--port` is never baked in.
     let overrides = CliOverrides {
         serial_port: args.port.clone(),
         server_port: args.server_port,
@@ -140,7 +140,7 @@ fn main() -> ServiceResult {
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
 
-    // Reload loop: a `config.apply` that changes a field fires the reload signal,
+    // Reload loop: a setup-page save that changes a field fires the reload signal,
     // which breaks `start()` out via the combined stop future; the loop then
     // re-reads the freshly-persisted config and rebuilds the server.
     ServiceRunner::new("pa-scops-oag")

@@ -8,18 +8,18 @@
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::ScopsCodec;
 use crate::config::FocuserConfig;
-use crate::config_actions::ScopsFocuserDriver;
 use crate::error::ScopsOagError;
 use crate::manager::FocuserManager;
+use crate::setup::{ScopsFocuserDriver, DEVICE_TYPE};
 
 /// Guard macro that returns `NOT_CONNECTED` if the device is not connected.
 macro_rules! ensure_connected {
@@ -41,10 +41,12 @@ pub struct ScopsFocuserDevice {
     session: Arc<RwLock<Option<Session<ScopsCodec>>>>,
     #[debug(skip)]
     manager: Arc<FocuserManager>,
-    /// `Some` when built through `ServerBuilder` with a config source (the
-    /// normal path); `None` for focused unit-test devices.
+    /// The setup pages behind `/setup/v1/focuser/0/setup`: `Some` when the
+    /// driver was built with a config source (the normal path through
+    /// `ServerBuilder`); `None` for focused unit-test devices that don't
+    /// exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<ScopsFocuserDriver>>,
+    pages: Option<Arc<SetupPages<ScopsFocuserDriver>>>,
 }
 
 impl ScopsFocuserDevice {
@@ -54,15 +56,15 @@ impl ScopsFocuserDevice {
             config,
             session: Arc::new(RwLock::new(None)),
             manager,
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the config-action context, enabling `config.get` / `config.apply`
-    /// / `config.schema` on this device.
+    /// Attach the shared setup pages, so the device's setup page renders and
+    /// saves the `focuser` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<ScopsFocuserDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<ScopsFocuserDriver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 
@@ -142,13 +144,34 @@ impl Device for ScopsFocuserDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    /// No actions: the configuration lives on the setup pages. An unknown
+    /// action is `ActionNotImplemented`, not the generic `NotImplemented`
+    /// the crate defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<ScopsFocuserDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The device's setup page, `/setup/v1/focuser/0/setup`, for `GET` and
+    /// `POST`, through the shared handler. A device built without the pages
+    /// (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 

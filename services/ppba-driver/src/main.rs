@@ -185,9 +185,9 @@ fn main() -> ServiceResult {
     )?;
     tracing::debug!("Resolved configuration path: {:?}", config_path);
 
-    // CLI overrides are tracked (not just applied) so config.apply keeps them
-    // out of the persisted file — a transient `--port` / `--enable-switch` is
-    // never baked in.
+    // CLI overrides are tracked (not just applied) so a setup-page save keeps
+    // them out of the persisted file — a transient `--port` / `--enable-switch`
+    // is never baked in.
     let overrides = CliOverrides {
         serial_port: args.port.clone(),
         server_port: args.server_port,

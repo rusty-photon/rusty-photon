@@ -310,15 +310,17 @@ fn classify(node: &Value, root: &Value) -> Shape {
             base: t.to_string(),
             nullable,
         },
-        Some("object") => Shape::Object,
+        // An object with properties is recursed into, whether or not its def
+        // spells `type` out. One without them — a map such as a driver's
+        // switch labels, `additionalProperties` and nothing else — would walk
+        // to no field at all, so it falls through to a named file-only leaf.
+        Some("object") | None if node.get("properties").is_some() => Shape::Object,
         // The one renderable array shape: items are an integer enum
         // (e.g. rp's `cooler_targets_c` grid) — a checkbox group. All
         // other arrays (objects, `$ref` items, un-enumerated scalars)
         // are file-only.
         Some("array") => int_enum_options(node, root)
             .map_or(Shape::FileOnly, |options| Shape::IntEnumArray { options }),
-        // An object def may omit `type` but carry `properties`.
-        None if node.get("properties").is_some() => Shape::Object,
         _ => Shape::FileOnly,
     }
 }
@@ -708,6 +710,33 @@ mod tests {
             },
             "options must carry the schema enum in its declared order"
         );
+    }
+
+    #[test]
+    fn a_map_is_a_named_file_only_leaf() {
+        // `additionalProperties` and no `properties`: a `BTreeMap`-style
+        // field (the Pegasus drivers' switch labels). Never silently
+        // absent from the page.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "switch": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "labels": {
+                            "type": "object",
+                            "additionalProperties": { "type": "string" },
+                        },
+                    },
+                },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        assert_eq!(names(&model), vec!["switch.labels", "switch.name"]);
+        let labels = model.field("switch.labels").unwrap();
+        assert_eq!(labels.kind(), &FieldKind::FileOnly);
+        assert_eq!(labels.pointer(), "/switch/labels");
     }
 
     #[test]

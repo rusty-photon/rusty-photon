@@ -1,21 +1,28 @@
-//! upbv2-driver's [`ConfigurableDriver`] implementation.
+//! upbv2-driver's [`ConfigurableDriver`] implementation — the driver-specific
+//! half behind its setup pages.
 //!
 //! The driver registers **two** ASCOM devices (Switch + `ObservingConditions`)
-//! backed by one config file. The generic `config.get` / `config.apply` /
-//! `config.schema` action dispatch both devices delegate to lives in
-//! [`rusty_photon_driver`]; this module supplies only what varies for the UPBv2 —
-//! its `Config`, validation, secrets, CLI overrides, and editability tiers. See
-//! [`docs/services/upbv2-driver.md`] "Config actions".
+//! backed by one config file, each with its own setup page. The pages
+//! themselves (the render, the save, the origin check, the Security section,
+//! the reload) are `rusty-photon-setup`'s; this module supplies only what
+//! varies for the UPBv2: its `Config` type, normalization, validation, its one
+//! secret, its command-line overrides, and which config section each device's
+//! page edits. See [`docs/services/upbv2-driver.md`] "Setup pages".
 //!
 //! [`docs/services/upbv2-driver.md`]: ../../../docs/services/upbv2-driver.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
 use crate::manager::MAX_AVERAGING_PERIOD;
 
-/// Driver marker wiring the UPBv2's full `Config` into the generic protocol.
+/// The switch's device type in its Alpaca path spelling.
+pub const SWITCH_DEVICE_TYPE: &str = "switch";
+/// The observing-conditions device's type in its Alpaca path spelling.
+pub const OBSERVING_CONDITIONS_DEVICE_TYPE: &str = "observingconditions";
+
+/// Driver marker wiring the UPBv2's full `Config` into the shared setup pages.
 pub struct Upbv2Driver;
 
 impl ConfigurableDriver for Upbv2Driver {
@@ -84,6 +91,8 @@ impl ConfigurableDriver for Upbv2Driver {
         errors
     }
 
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -96,15 +105,25 @@ impl ConfigurableDriver for Upbv2Driver {
         overrides.apply(config);
     }
 
-    fn locked_paths() -> &'static [&'static str] {
-        &["switch.unique_id", "observingconditions.unique_id"]
-    }
-
-    fn read_only_paths() -> &'static [&'static str] {
-        &[
-            "server.port",
-            "switch.enabled",
-            "observingconditions.enabled",
+    /// The switch's page edits the `switch` section and the observing
+    /// conditions' page the `observingconditions` section; the server page
+    /// holds `serial` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![
+            DeviceSection {
+                device_type: SWITCH_DEVICE_TYPE.to_string(),
+                device_number: 0,
+                pointer: "/switch".to_string(),
+                name: config.switch.name.clone(),
+                enabled: config.switch.enabled,
+            },
+            DeviceSection {
+                device_type: OBSERVING_CONDITIONS_DEVICE_TYPE.to_string(),
+                device_number: 0,
+                pointer: "/observingconditions".to_string(),
+                name: config.observingconditions.name.clone(),
+                enabled: config.observingconditions.enabled,
+            },
         ]
     }
 }
@@ -134,7 +153,7 @@ mod tests {
     fn validate_accepts_populated_config() {
         assert_eq!(
             Upbv2Driver::validate(&valid_config()),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -145,10 +164,7 @@ mod tests {
         // could never persist.
         let mut config = valid_config();
         config.observingconditions.averaging_period = Duration::ZERO;
-        assert_eq!(
-            Upbv2Driver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
-        );
+        assert_eq!(Upbv2Driver::validate(&config), Vec::<FieldError>::new());
     }
 
     #[test]
@@ -169,10 +185,7 @@ mod tests {
     fn validate_accepts_an_averaging_period_at_the_ascom_ceiling() {
         let mut config = valid_config();
         config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD;
-        assert_eq!(
-            Upbv2Driver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
-        );
+        assert_eq!(Upbv2Driver::validate(&config), Vec::<FieldError>::new());
     }
 
     #[test]
@@ -198,18 +211,36 @@ mod tests {
     }
 
     #[test]
-    fn editability_tiers_cover_both_devices() {
+    fn each_device_page_edits_its_own_section() {
+        let mut config = valid_config();
+        config.switch.name = "Power box".to_string();
+        config.observingconditions.enabled = false;
         assert_eq!(
-            Upbv2Driver::locked_paths(),
-            &["switch.unique_id", "observingconditions.unique_id"]
-        );
-        assert_eq!(
-            Upbv2Driver::read_only_paths(),
-            &[
-                "server.port",
-                "switch.enabled",
-                "observingconditions.enabled"
+            Upbv2Driver::device_sections(&config),
+            vec![
+                DeviceSection {
+                    device_type: "switch".to_string(),
+                    device_number: 0,
+                    pointer: "/switch".to_string(),
+                    name: "Power box".to_string(),
+                    enabled: true,
+                },
+                DeviceSection {
+                    device_type: "observingconditions".to_string(),
+                    device_number: 0,
+                    pointer: "/observingconditions".to_string(),
+                    name: config.observingconditions.name.clone(),
+                    enabled: false,
+                },
             ]
+        );
+    }
+
+    #[test]
+    fn the_pages_secret_is_the_auth_hash_alone() {
+        assert_eq!(
+            Upbv2Driver::secret_pointers(),
+            &["/server/auth/password_hash"]
         );
     }
 }

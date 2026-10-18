@@ -350,27 +350,50 @@ own config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
 
-### Config actions
+### Setup pages
 
-Both devices expose the configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
-[`config-actions.md`](config-actions.md), implemented generically in
-`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
-half (`ConfigurableDriver for FalconRotatorDriver`) **and** the shared `dispatch`
-both `rotator_device.rs` and `switch_device.rs` delegate to, so an apply on
-either device operates on the one full driver config and fires the one reload
-(`ReloadSignal::notify` coalesces).
+The driver configures itself through the HTML pages the Alpaca Management
+API defines, served by the driver itself behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)):
 
-- **Secret redacted / carried forward:** `/server/auth/password_hash`.
-- **Locked (identity) fields:** `rotator.unique_id`, `switch.unique_id`.
-- **Hard read-only fields:** `server.port`, `rotator.enabled`, `switch.enabled`.
-- **CLI-override-pinned:** `serial.port` (`--port`), `server.port` (`--server-port`).
+| Path | Holds |
+|------|-------|
+| `/setup` | The server page: the `serial` section, the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to each device's page. |
+| `/setup/v1/rotator/0/setup` | The rotator's page: the `rotator` section alone — name, description, `enabled`, and `unique_id` under a collapsed Identity disclosure. |
+| `/setup/v1/switch/0/setup` | The status switch's page: the `switch` section alone, the same fields. |
 
-A `config.apply` that changes a field persists atomically, returns
-`status:"applying"`, and fires the in-process reload; `main.rs` runs under
+Both answer `GET` with the form and `POST` with the save. The pages are
+rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, which
+[`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes in full (what a page
+shows, the save, the in-process reload); this driver supplies only its
+config type, its validation and normalization, which section each device
+edits (`device_sections` in `setup.rs`), its one secret
+(`server.auth.password_hash`), and which fields its command-line flags pin
+(`serial.port` by `--port`, `server.port` by `--server-port`). A pinned field shows the running value, disabled, and a save
+never persists it. A save of one page never alters another page's
+section. The pages work whether or not a device is `Connected`.
+
+The `config.get` / `config.apply` / `config.schema` actions this driver
+used to expose are gone: `SupportedActions` is empty on every device and
+every `Action` answers `ACTION_NOT_IMPLEMENTED`.
+
+#### Validation rules
+
+| Field | Rule |
+|-------|------|
+| `serial.port` | non-empty (trimmed by `normalize`) |
+| `serial.baud_rate` | `> 0` |
+| `serial.timeout` | `> 0` |
+| `rotator.unique_id`, `switch.unique_id` | non-empty (each device's stable ASCOM `UniqueID`) |
+| `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+A save that changes a field persists atomically and fires the one in-process
+reload, whichever page it came from; `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, which tears the old server
 down (releasing the shared serial port) and rebuilds from the freshly-persisted
-file.
+file. The BDD suite runs the server in-process, which cannot reload itself,
+so `setup_pages.feature` spawns the mock-feature binary instead.
 
 ## Module Structure
 
@@ -381,8 +404,9 @@ services/pa-falcon-rotator/
 │   ├── main.rs             # CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner`
 │   ├── config.rs           # Config types + JSON loading
 │   ├── error.rs            # FalconRotatorError (via rusty_photon_driver::driver_error!)
-│   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl
-│   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit)
+│   ├── setup.rs            # ConfigurableDriver impl behind the setup pages (validation, device_sections)
+│   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl + its setup page
+│   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit) + its setup page
 │   ├── codec.rs            # FalconCodec + FalconResponse + FalconCodecError
 │   ├── serial.rs           # FalconTransportFactory (TransportFactory over open_serial_port)
 │   ├── mock.rs             # MockFalconTransportFactory (feature = "mock")

@@ -184,9 +184,9 @@ pub fn load_config(
 
 /// CLI overrides layered over the file config.
 ///
-/// Tracks which fields are pinned by a command-line flag so the config actions
-/// can distinguish file vs. override layers (see
-/// `docs/services/ppba-driver.md` "Config Actions").
+/// Tracks which fields are pinned by a command-line flag so the setup pages
+/// can show a pinned field and never persist it (see
+/// `docs/services/ppba-driver.md` "Setup pages").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.
