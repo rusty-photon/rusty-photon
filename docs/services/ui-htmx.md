@@ -1076,7 +1076,9 @@ to prove the one thing server-output layers cannot: that the vendored
 behind `UI_BROWSER_TESTS=1`** (an env var, not a cargo feature, so browser flake
 never enters the `--all-features` required gate) and run on a single environment —
 the P1/P2 server-bytes layers carry the cross-OS guarantee. geckodriver is an
-external system tool (`GECKODRIVER_BINARY`, like `OMNISIM_PATH`); teardown quits
+external system tool (`GECKODRIVER_BINARY`, like `OMNISIM_PATH`), 0.34 or later:
+the harness starts it with `--port 0` and reads back the port it announces on
+stdout, so no other process's geckodriver can stand in for it; teardown quits
 the browser before the BFF/driver stop. Run them under Bazel via the standalone
 `--config=browser` (it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and
 forwards `FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
