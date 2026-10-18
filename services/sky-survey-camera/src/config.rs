@@ -553,7 +553,7 @@ mod persisted_config_shape {
     /// There is no `Config::default()` (the optics fields are mandatory), so
     /// the subject is a minimal operator-written file: every optional field
     /// is left out, which is exactly the state that must not come back as a
-    /// null when `config.apply` persists it.
+    /// null when a setup-page save persists it.
     #[test]
     fn a_minimal_config_persists_no_explicit_nulls() {
         let minimal = r#"{

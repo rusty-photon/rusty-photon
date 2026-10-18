@@ -661,6 +661,37 @@ macro_rules! setup_pages_steps {
             );
         }
 
+        #[::cucumber::then(
+            expr = "the page reports the submitted values were rejected naming {string}"
+        )]
+        fn setup_pages_rejected_naming(world: &mut $world, needle: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(422), "{}", state.last_body);
+            assert!(
+                $crate::setup_pages::dom::text_contains(&state.last_body, "#rejected", &needle),
+                "no rejection banner naming {needle:?}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(expr = "the page names {string} as edited in the configuration file")]
+        fn setup_pages_names_file_only(world: &mut $world, name: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            let css = format!(r#"div.file-only[id="{name}"]"#);
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, &css),
+                "{name} is not named as file-only:\n{}",
+                state.last_body
+            );
+            assert!(
+                $crate::setup_pages::dom::input(&state.last_body, &name).is_none(),
+                "{name} is offered as an input:\n{}",
+                state.last_body
+            );
+        }
+
         #[::cucumber::then(expr = "the response status is {int}")]
         fn setup_pages_status(world: &mut $world, status: u16) {
             use $crate::setup_pages::SetupPagesWorld as _;

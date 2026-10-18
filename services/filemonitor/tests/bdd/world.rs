@@ -1,5 +1,7 @@
 use ascom_alpaca::api::{SafetyMonitor, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
+use bdd_infra::tls_auth::TlsAuthState;
 use cucumber::World;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -44,13 +46,24 @@ pub struct FilemonitorWorld {
     // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
     pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
-    // Config actions test state
-    pub last_response: Option<Value>,
+    // The device's (now empty) action list
     pub last_supported_actions: Option<Vec<String>>,
     pub last_ascom_error: Option<ascom_alpaca::ASCOMError>,
 
+    /// State for the shared TLS + auth fixture, which the setup pages'
+    /// credential scenario starts the service through.
+    pub tls_auth: TlsAuthState,
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
+
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl SetupPagesWorld for FilemonitorWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
+    }
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for FilemonitorWorld {
@@ -133,7 +146,8 @@ impl FilemonitorWorld {
         })
     }
 
-    /// Write config to temp dir, start the binary, acquire typed client.
+    /// Write config to temp dir, start the binary, acquire typed client, and
+    /// hand the setup-page steps the service's address and config file.
     pub async fn start_filemonitor(&mut self) {
         let config_json = self.build_config_json();
         let dir = self
@@ -145,7 +159,28 @@ impl FilemonitorWorld {
         let handle =
             ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
         self.monitor = Some(monitor);
+        self.filemonitor = Some(handle);
+    }
+
+    /// Spawn the binary through the shared TLS + auth fixture, so the setup
+    /// pages sit behind the credential; the config is the suite's usual one
+    /// under the fixture's `server` block.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.build_config_json();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
         self.filemonitor = Some(handle);
     }
 
@@ -166,6 +201,7 @@ impl FilemonitorWorld {
         let handle =
             ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
     }
@@ -184,86 +220,4 @@ impl FilemonitorWorld {
         }
         panic!("filemonitor did not become healthy within 30 seconds");
     }
-
-    /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
-        self.filemonitor.as_ref().expect("service not started").port
-    }
-
-    /// Call `config.get`, stash the parsed response, and return the `config`
-    /// object (so a When step can edit a field and re-`config.apply` it).
-    pub async fn current_config(&mut self) -> Value {
-        let monitor = Arc::clone(self.monitor());
-        let body = monitor
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.get` and stash the parsed response.
-    pub async fn call_config_get(&mut self) {
-        self.current_config().await;
-    }
-
-    /// Call `config.schema` and stash the parsed response.
-    pub async fn call_config_schema(&mut self) {
-        let monitor = Arc::clone(self.monitor());
-        let body = monitor
-            .action("config.schema".to_string(), String::new())
-            .await
-            .expect("config.schema failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.schema returned invalid JSON"));
-    }
-
-    /// Call `config.apply` with `params` and stash the parsed response.
-    pub async fn call_config_apply(&mut self, params: Value) {
-        let monitor = Arc::clone(self.monitor());
-        let body = monitor
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-    }
-
-    /// Poll `config.get` on a fresh client until `file.polling_interval` equals
-    /// `expected`, panicking after ~20 s. A fresh client is used each attempt so
-    /// a connection dropped by the reload doesn't wedge the poll, and the loop
-    /// tolerates the brief blip while the server tears down and rebinds.
-    pub async fn wait_for_config_polling_interval(&self, expected: &str) {
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
-        for _ in 0..80 {
-            if try_get_polling_interval(addr).await.as_deref() == Some(expected) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("reloaded service did not report polling_interval {expected} within 20s");
-    }
-}
-
-/// Read `file.polling_interval` via a fresh client, returning `None` on any
-/// transport/parse failure (e.g. mid-reload).
-async fn try_get_polling_interval(addr: SocketAddr) -> Option<String> {
-    let client = AlpacaClient::new_from_addr(addr);
-    let mut devices = client.get_devices().await.ok()?;
-    if let Some(TypedDevice::SafetyMonitor(monitor)) = devices.next() {
-        let body = monitor
-            .action("config.get".to_string(), String::new())
-            .await
-            .ok()?;
-        let parsed: Value = serde_json::from_str(&body).ok()?;
-        return parsed["config"]["file"]["polling_interval"]
-            .as_str()
-            .map(str::to_string);
-    }
-    None
 }

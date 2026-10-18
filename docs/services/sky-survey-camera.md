@@ -268,29 +268,49 @@ fov_y_deg = plate_scale_y_arcsec_per_px * sensor_height_px / 3600
 
 These are computed once at construction and exposed via debug logging.
 
-### Config actions
+### Setup pages
 
-The camera exposes its configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
-[`config-actions.md`](config-actions.md), implemented generically in
-`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
-half (`ConfigurableDriver for SkySurveyCameraDriver`, `Overrides = ()` — the
-binary has no CLI overrides) plus the `dispatch` the camera device delegates to.
+The camera configures itself on the two HTML pages the Alpaca Management
+API defines, served by the service itself behind its own TLS and Basic
+Auth: `/setup` for the whole server and `/setup/v1/camera/0/setup` for the
+camera. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section and the
+reload wait — and `setup.rs` supplies the driver-specific half
+(`ConfigurableDriver for SkySurveyCameraDriver`): its `Config`,
+validation, its secrets, and which section the camera's page edits. The
+binary has no command-line overrides beyond `--config` / `--log-level`,
+so `Overrides = ()` and no field is ever pinned. The `config.get` /
+`config.apply` / `config.schema` actions are gone: the camera's
+`SupportedActions` is empty, and any `Action` answers
+`ActionNotImplemented`.
 
-- **Secrets redacted / carried forward:** the follow-mode client passwords
-  `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`,
-  plus the inbound `/server/auth/password_hash`.
-- **Locked (identity) field:** `device.unique_id`.
-- **Hard read-only field:** `server.port`.
-- **Validation** mirrors load-time `config::validate` (telescope offsets finite,
-  request timeouts > 0, rotator-requires-telescope) as field-level errors.
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `optics` | `focal_length_mm`, `pixel_size_x_um`, `pixel_size_y_um` (numbers), `sensor_width_px`, `sensor_height_px` (whole numbers) |
+| | `pointing` | `initial_ra_deg`, `initial_dec_deg`, `initial_rotation_deg`; the optional `telescope` and `rotator` blocks are named as edited in the configuration file — an optional object is not a form control — so follow mode is switched on and off in the file |
+| | `survey` | `name`, `request_timeout` (a humantime string), `cache_dir`, `endpoint` |
+| | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| `/setup/v1/camera/0/setup` | `device` | `name`, `description`, and `unique_id` under the Identity disclosure |
 
-Because the config has mandatory `optics` fields and no `Config::default()`, the
-shared `config_apply` seeds its file-read fallback from the running config rather
-than a default. A `config.apply` that changes a field persists atomically,
-returns `status:"applying"`, and fires the in-process reload: `main.rs` runs
-under `ServiceRunner::with_reload().run_with_reload(...)`, whose loop
-(`run_reloadable`) rebuilds the server from the freshly-persisted file.
+- **Secrets:** the inbound `/server/auth/password_hash`, edited through the
+  Security section and never shown, and the follow-mode client passwords
+  `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`.
+  The follow-mode blocks are not rendered, so those two passwords reach no
+  page today; a save leaves the blocks, passwords included, as the file
+  has them.
+- **Validation** on every save mirrors load-time `config::validate`
+  (`device.unique_id` non-empty, telescope offsets finite, request
+  timeouts > 0, rotator-requires-telescope) as field-level errors; a rule
+  on a field the page does not show is named above the form with its
+  path.
+
+A save that changes a field persists atomically, answers that the service
+is reloading, and fires the in-process reload after the response has
+flushed: `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, whose loop
+(`run_reloadable`) rebuilds the server from the freshly-persisted file. A
+save that changes nothing says so and fires no reload.
 
 ## Operation
 
@@ -890,7 +910,11 @@ split, or rename modules so long as the BDD scenarios pass.
    Returns `(Vec<i32>, width, height)` for SkyView responses. The
    workspace's FITS surface lives in `crates/rp-fits` per ADR-001
    Amendment A.
-9. **`camera.rs`** — `Device` + `Camera` trait impl.
+9. **`camera.rs`** — `Device` + `Camera` trait impl, the camera's setup
+   page (`setup_request`) included.
+   - **`setup.rs`** — the `ConfigurableDriver` impl behind the setup
+     pages: validation, the secrets, and the `device` section the
+     camera's page edits.
 10. **`routes.rs`** — Axum router for the `/sky-survey/*` endpoints,
     composed with the ASCOM server's router.
 11. **`lib.rs`** — `run` / `run_with_client` entry points and the

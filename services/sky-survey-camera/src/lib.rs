@@ -40,7 +40,6 @@
 mod alpaca;
 pub mod camera;
 pub mod config;
-pub mod config_actions;
 pub mod doctor;
 pub mod error;
 pub mod fits;
@@ -50,6 +49,7 @@ pub mod mount;
 pub mod pointing;
 pub mod rotator;
 pub mod routes;
+pub mod setup;
 pub mod survey;
 
 pub use config::{load_config, Config};
@@ -66,8 +66,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::config_actions::SkySurveyCameraDriver;
-use rusty_photon_driver::ConfigActionCtx;
+use crate::setup::SkySurveyCameraDriver;
+use rusty_photon_setup::SetupPages;
 
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
@@ -117,11 +117,10 @@ pub async fn run(
 /// Reload-aware entry point used by `main`: materialize the identity
 /// once, then serve in a config-reload loop.
 ///
-/// Each cycle loads the config, serves until shutdown OR a
-/// `config.apply`-fired reload breaks out, and on reload rebuilds from
-/// the freshly-persisted file. Awaiting the serve to completion lets
-/// the old server's graceful shutdown drain before the rebuilt one
-/// binds.
+/// Each cycle loads the config, serves until shutdown OR the reload a
+/// setup-page save fires breaks out, and on reload rebuilds from the
+/// freshly-persisted file. Awaiting the serve to completion lets the old
+/// server's graceful shutdown drain before the rebuilt one binds.
 ///
 /// # Errors
 ///
@@ -147,14 +146,20 @@ pub async fn run_reloadable(
     loop {
         let config = load_config(config_path).await?;
         let survey_client = build_survey_client(&config)?;
-        let ctx: ConfigActionCtx<SkySurveyCameraDriver> = ConfigActionCtx {
-            effective: config.clone(),
-            path: config_path.to_path_buf(),
-            overrides: (),
-            reload: reload.clone(),
-        };
+        // The setup pages: one handler behind the server page and the
+        // camera's page, saving to the file this cycle loaded.
+        let pages = Arc::new(
+            SetupPages::<SkySurveyCameraDriver>::new(
+                "sky-survey-camera",
+                config.clone(),
+                config_path.to_path_buf(),
+                (),
+            )
+            .with_reload(reload.clone())
+            .with_https(config.server.tls.is_some()),
+        );
 
-        // Stop on shutdown OR a config.apply-fired reload, recording which fired.
+        // Stop on shutdown OR a setup-page save's reload, recording which fired.
         let reloaded = Arc::new(AtomicBool::new(false));
         let stop = {
             let reloaded = Arc::clone(&reloaded);
@@ -167,7 +172,7 @@ pub async fn run_reloadable(
                 }
             }
         };
-        run_with_client_ctx(config, survey_client, Some(ctx), stop).await?;
+        run_with_client_pages(config, survey_client, Some(pages), stop).await?;
 
         if reloaded.load(Ordering::SeqCst) {
             tracing::debug!("reloading sky-survey-camera configuration");
@@ -189,31 +194,37 @@ pub async fn run_with_client(
     survey_client: Arc<dyn SurveyClient>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
-    run_with_client_ctx(config, survey_client, None, shutdown).await
+    run_with_client_pages(config, survey_client, None, shutdown).await
 }
 
-/// As [`run_with_client`], but attaches an optional config-action context to the
-/// registered camera device so it advertises `config.get`/`apply`/`schema`.
+/// As [`run_with_client`], but serves the setup pages.
+///
+/// The server page behind `/setup` and the camera's page behind its device
+/// share the one handler. Without one, the server answers both with the
+/// crate's defaults.
 ///
 /// # Errors
 ///
 /// Returns [`run_with_client`]'s device build, bind, and serve
 /// failures.
-pub async fn run_with_client_ctx(
+pub async fn run_with_client_pages(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
-    config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
+    pages: Option<Arc<SetupPages<SkySurveyCameraDriver>>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
     let device = build_device(config.clone(), survey_client)?;
-    let device = match config_ctx {
-        Some(ctx) => device.with_config_actions(ctx),
+    let device = match &pages {
+        Some(pages) => device.with_setup_pages(Arc::clone(pages)),
         None => device,
     };
     let shared_state = device.shared_state();
 
     let mut server = Server::new(CargoServerInfo!());
     server.listen_addr = config.server.socket_addr();
+    if let Some(pages) = pages {
+        server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(pages)));
+    }
     server.devices.register(device);
 
     let alpaca_service = server.into_service();

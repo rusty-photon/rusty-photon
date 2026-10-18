@@ -24,8 +24,8 @@
     )
 )]
 
-pub mod config_actions;
 pub mod doctor;
+pub mod setup;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -33,9 +33,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server, SetupRequest, SetupResponse};
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -43,8 +44,7 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::config_actions::FileMonitorDriver;
-use rusty_photon_driver::ConfigActionCtx;
+use crate::setup::{FileMonitorDriver, DEVICE_TYPE};
 
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
@@ -190,11 +190,12 @@ pub struct FileMonitorDevice {
     connected: Arc<RwLock<bool>>,
     last_content: Arc<Mutex<Option<String>>>,
     polling_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    /// `Some` when the driver was built with a config source (the normal path
-    /// through `ServerBuilder`); `None` for focused unit-test devices that
-    /// don't exercise config actions.
+    /// The setup pages behind `/setup/v1/safetymonitor/0/setup`: `Some` when
+    /// the driver was built with a config source (the normal path through
+    /// `ServerBuilder`); `None` for focused unit-test devices that don't
+    /// exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<FileMonitorDriver>>,
+    pages: Option<Arc<SetupPages<FileMonitorDriver>>>,
 }
 
 impl FileMonitorDevice {
@@ -205,14 +206,15 @@ impl FileMonitorDevice {
             connected: Arc::new(RwLock::new(false)),
             last_content: Arc::new(Mutex::new(None)),
             polling_handle: Arc::new(Mutex::new(None)),
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the config-action context, enabling `config.get` / `config.apply`.
+    /// Attach the shared setup pages, so the device's setup page renders and
+    /// saves the `device` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FileMonitorDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<FileMonitorDriver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 
@@ -351,13 +353,39 @@ impl Device for FileMonitorDevice {
         Ok("0.1.0".to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<FileMonitorDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The device's setup page, `/setup/v1/safetymonitor/0/setup`, for `GET`
+    /// and `POST`, through the shared handler. A device built without the
+    /// pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -393,10 +421,10 @@ pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Se
 /// before calling `start()`.
 pub struct ServerBuilder {
     config: Config,
-    /// Where `config.apply` persists and reload re-reads. `Some` enables the
-    /// config actions (together with `reload`).
+    /// Where a setup-page save persists and reload re-reads. `Some` enables
+    /// the setup pages (together with `reload`).
     config_path: Option<PathBuf>,
-    /// Reload trigger handed to the device for fire-after-response reload.
+    /// Reload trigger a setup-page save fires after its response flushes.
     reload: Option<ReloadSignal>,
 }
 
@@ -410,18 +438,17 @@ impl ServerBuilder {
         }
     }
 
-    /// Set the config source (persist path) for the `config.get` /
-    /// `config.apply` actions. Together with [`Self::with_reload_signal`],
-    /// this enables config editing.
+    /// Set the config source (persist path) the setup pages save to. Together
+    /// with [`Self::with_reload_signal`], this enables the pages.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response
-    /// flushes. Together with [`Self::with_config_source`], this enables
-    /// config editing.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables the
+    /// pages.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -436,23 +463,27 @@ impl ServerBuilder {
     /// read, or if the config opts into Alpaca discovery and the
     /// responder's UDP port cannot be bound.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        let mut device = FileMonitorDevice::new(self.config.clone());
-        let config_ctx: Option<ConfigActionCtx<FileMonitorDriver>> =
-            match (self.config_path.clone(), self.reload.clone()) {
-                (Some(path), Some(reload)) => Some(ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides: (),
-                    reload,
-                }),
-                _ => None,
-            };
-        if let Some(ctx) = config_ctx {
-            device = device.with_config_actions(ctx);
-        }
-
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
+
+        // The setup pages: one handler behind the server page and the device
+        // page, present when the builder was given a config source and a
+        // reload signal (the normal path through `run_server_loop`).
+        let pages = match (self.config_path.clone(), self.reload.clone()) {
+            (Some(path), Some(reload)) => Some(Arc::new(
+                SetupPages::<FileMonitorDriver>::new("filemonitor", self.config.clone(), path, ())
+                    .with_reload(reload)
+                    .with_https(self.config.server.tls.is_some()),
+            )),
+            _ => None,
+        };
+        let mut device = FileMonitorDevice::new(self.config.clone());
+        if let Some(pages) = &pages {
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                pages,
+            ))));
+            device = device.with_setup_pages(Arc::clone(pages));
+        }
         server.devices.register(device);
 
         info!(
@@ -585,7 +616,7 @@ pub async fn start_server(
 /// Run filemonitor's server in a config-reload loop until `shutdown`
 /// fires.
 ///
-/// Both `shutdown` and a `config.apply`-fired `reload` are fed into the
+/// Both `shutdown` and the `reload` a setup-page save fires are fed into the
 /// *same* stop future passed to `bound.start()`, so either one drives
 /// the inner `serve_plain`/`serve_tls` call's graceful shutdown —
 /// draining in-flight requests and closing keep-alive connections —
@@ -637,7 +668,7 @@ pub async fn run_server_loop(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod device_config_action_tests {
+mod device_setup_page_tests {
     use super::*;
 
     fn test_config() -> Config {
@@ -663,203 +694,151 @@ mod device_config_action_tests {
         }
     }
 
-    /// Build a device wired with a config-action context backed by a temp file
-    /// pre-seeded with `effective`. Returns the reload handle (clone) so tests
-    /// can assert the fire-after-response reload, and the `TempDir`/path.
-    fn device_with_config_actions(
+    /// Build a device wired with the setup pages over a temp file pre-seeded
+    /// with `effective`. Returns the reload handle (clone) so tests can assert
+    /// the fire-after-response reload, and the `TempDir`/path.
+    fn device_with_setup_pages(
         effective: Config,
     ) -> (FileMonitorDevice, ReloadSignal, tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("filemonitor.json");
         std::fs::write(&path, serde_json::to_string(&effective).unwrap()).unwrap();
         let reload = ReloadSignal::new();
-        let device =
-            FileMonitorDevice::new(effective.clone()).with_config_actions(ConfigActionCtx {
-                effective,
-                path: path.clone(),
-                overrides: (),
-                reload: reload.clone(),
-            });
+        let pages = SetupPages::<FileMonitorDriver>::new(
+            "filemonitor",
+            effective.clone(),
+            path.clone(),
+            (),
+        )
+        .with_reload(reload.clone());
+        let device = FileMonitorDevice::new(effective).with_setup_pages(Arc::new(pages));
         (device, reload, dir, path)
     }
 
-    #[tokio::test]
-    async fn supported_actions_lists_config_actions_when_configured() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let actions = device.supported_actions().await.unwrap();
-        assert!(actions.contains(&"config.get".to_string()));
-        assert!(actions.contains(&"config.apply".to_string()));
-        assert!(actions.contains(&"config.schema".to_string()));
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    /// A `POST` of the device page's form, from the page itself.
+    fn post_request(form: &[(&str, &str)]) -> SetupRequest {
+        let mut headers = axum::http::HeaderMap::new();
+        _ = headers.insert(
+            "sec-fetch-site",
+            axum::http::HeaderValue::from_static("same-origin"),
+        );
+        SetupRequest {
+            method: axum::http::Method::POST,
+            headers,
+            query: Vec::new(),
+            form: form
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
     }
 
     #[tokio::test]
-    async fn supported_actions_empty_without_config_ctx() {
-        let device = FileMonitorDevice::new(test_config());
+    async fn the_config_actions_are_gone() {
+        let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert_eq!(
             device.supported_actions().await.unwrap(),
             Vec::<String>::new()
         );
+        let err = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
-    async fn config_get_returns_effective_config_and_overrides() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        // Config actions must work while disconnected.
+    async fn the_device_page_renders_the_device_section_while_disconnected() {
+        let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert!(!device.connected().await.unwrap());
-        let body = device
-            .action("config.get".to_string(), String::new())
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            value
-                .pointer("/config/device/unique_id")
-                .and_then(|v| v.as_str()),
-            Some("filemonitor-test-id")
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.body();
+        assert!(
+            body.contains(r#"name="device.unique_id" value="filemonitor-test-id""#),
+            "{body}"
         );
-        assert_eq!(
-            value
-                .get("overrides")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .as_slice(),
-            Vec::<serde_json::Value>::new()
-        );
+        assert!(!body.contains(r#"name="file.path""#), "{body}");
     }
 
     #[tokio::test]
-    async fn config_get_redacts_password_hash() {
-        let mut effective = test_config();
-        effective.server.auth = Some(rp_auth::config::AuthConfig {
-            username: "obs".to_string(),
-            password_hash: "$argon2id$v=19$real".to_string(),
-        });
-        let (device, _reload, _dir, _path) = device_with_config_actions(effective);
-        let body = device
-            .action("config.get".to_string(), String::new())
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    #[cfg_attr(miri, ignore)] // the save fsyncs the config's parent directory, which Miri cannot open
+    async fn a_device_page_save_persists_the_device_section_alone_and_fires_the_reload() {
+        let (device, reload, _dir, path) = device_with_setup_pages(test_config());
+        let response = device
+            .setup_request(post_request(&[
+                ("device.name", "Roof monitor"),
+                ("device.unique_id", "filemonitor-test-id"),
+                ("device.description", "Test"),
+            ]))
+            .await;
         assert_eq!(
-            value
-                .pointer("/config/server/auth/password_hash")
-                .and_then(|v| v.as_str()),
-            Some(config_actions::REDACTED)
+            response.status(),
+            axum::http::StatusCode::OK,
+            "{}",
+            response.body()
         );
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
-    async fn config_apply_persists_and_fires_reload() {
-        let (device, reload, _dir, path) = device_with_config_actions(test_config());
-        let mut changed = test_config();
-        changed.file.polling_interval = Duration::from_mins(2);
-        let params = serde_json::to_string(&changed).unwrap();
-
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            value.get("status").and_then(|v| v.as_str()),
-            Some("applying")
-        );
-        let reload_paths = value.get("reload").and_then(|v| v.as_array()).unwrap();
-        assert!(reload_paths
-            .iter()
-            .any(|p| p.as_str() == Some("file.polling_interval")));
-
-        // Persisted to disk with the new value (humantime_serde normalizes
-        // "120s" to "2m").
         let persisted: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(persisted.pointer("/file/polling_interval").unwrap(), "2m");
-
-        // The reload is fired after the response — it must arrive.
-        tokio::time::timeout(std::time::Duration::from_secs(2), reload.recv())
+        assert_eq!(
+            persisted
+                .pointer("/device/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Roof monitor")
+        );
+        // humantime spells the minute the test config holds as "1m".
+        assert_eq!(
+            persisted
+                .pointer("/file/polling_interval")
+                .and_then(serde_json::Value::as_str),
+            Some("1m")
+        );
+        tokio::time::timeout(Duration::from_secs(2), reload.recv())
             .await
-            .expect("config.apply should fire the reload");
+            .expect("a changed save fires the reload");
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
-    async fn config_apply_persists_port_and_interval_together() {
-        let (device, _reload, _dir, path) = device_with_config_actions(test_config());
-        let mut changed = test_config();
-        changed.server.port = 12345;
-        changed.file.polling_interval = Duration::from_secs(45);
-        let params = serde_json::to_string(&changed).unwrap();
-
-        device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(persisted.pointer("/server/port").unwrap(), 12345);
-        assert_eq!(persisted.pointer("/file/polling_interval").unwrap(), "45s");
-    }
-
-    #[tokio::test]
-    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
-    async fn config_apply_without_change_returns_ok() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let params = serde_json::to_string(&test_config()).unwrap();
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value.get("status").and_then(|v| v.as_str()), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn config_apply_invalid_leaves_file_unchanged() {
-        let (device, _reload, _dir, path) = device_with_config_actions(test_config());
+    async fn a_rejected_device_page_save_names_the_field_and_leaves_the_file() {
+        let (device, _reload, _dir, path) = device_with_setup_pages(test_config());
         let before = std::fs::read_to_string(&path).unwrap();
-        let mut bad = test_config();
-        bad.device.unique_id = String::new(); // fails validation
-        let params = serde_json::to_string(&bad).unwrap();
-
-        let body = device
-            .action("config.apply".to_string(), params)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let response = device
+            .setup_request(post_request(&[
+                ("device.name", "Roof monitor"),
+                ("device.unique_id", ""),
+                ("device.description", "Test"),
+            ]))
+            .await;
         assert_eq!(
-            value.get("status").and_then(|v| v.as_str()),
-            Some("invalid")
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            response.body()
         );
-        assert_ne!(
-            value
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .as_slice(),
-            Vec::<serde_json::Value>::new()
+        assert!(
+            response
+                .body()
+                .contains("must not be empty (it is the device"),
+            "{}",
+            response.body()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
     #[tokio::test]
-    async fn config_apply_rejects_non_json() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let err = device
-            .action("config.apply".to_string(), "not json".to_string())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-    }
-
-    #[tokio::test]
-    async fn unknown_action_returns_action_not_implemented() {
-        let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
-        let err = device
-            .action("config.frobnicate".to_string(), String::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    async fn a_device_without_pages_has_no_setup_page() {
+        let device = FileMonitorDevice::new(test_config());
+        let response = device.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }
 

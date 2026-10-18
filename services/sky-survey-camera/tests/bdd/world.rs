@@ -6,6 +6,7 @@
 
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -121,12 +122,13 @@ pub struct SkySurveyCameraWorld {
     /// Path to the config.json the service was started with.
     pub config_path: Option<PathBuf>,
 
-    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
-    pub last_response: Option<Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
-    /// ASCOM error code (raw) from the last config action that failed.
+    /// ASCOM error code (raw) from the last named action that failed.
     pub last_action_error_code: Option<u16>,
+
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
 
     /// Optics config under construction by Given steps.
     pub focal_length_mm: Option<f64>,
@@ -212,6 +214,12 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for SkySurveyCameraWorld {
         );
         config["server"] = serde_json::json!({ "port": 0 });
         config
+    }
+}
+
+impl SetupPagesWorld for SkySurveyCameraWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 
@@ -508,7 +516,8 @@ impl SkySurveyCameraWorld {
     }
 
     /// Write the accumulated config to `<temp_dir>/config.json` and
-    /// spawn the service binary. Stores the handle on the world.
+    /// spawn the service binary. Stores the handle on the world and hands
+    /// the setup-page steps the service's address and config file.
     pub async fn start_service(&mut self) {
         let config = self.build_config_json();
         let config_path = {
@@ -521,7 +530,28 @@ impl SkySurveyCameraWorld {
             .to_str()
             .expect("temp config path must be valid UTF-8 for ServiceHandle::start");
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path_str).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.clone());
         self.config_path = Some(config_path);
+        self.service = Some(handle);
+    }
+
+    /// Spawn the binary through the shared TLS + auth fixture, so the setup
+    /// pages sit behind the credential. The `SkyView` stub the scenario's
+    /// Given spawned is the survey endpoint, as on the plain start.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.build_config_json();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
         self.service = Some(handle);
     }
 
@@ -549,47 +579,6 @@ impl SkySurveyCameraWorld {
             }
         }
         panic!("sky-survey-camera did not advertise a Camera within 15s");
-    }
-
-    /// Call `config.get`, stash the parsed response, and return the `config`
-    /// object so a When step can edit it and re-apply.
-    pub async fn current_config(&mut self) -> Value {
-        let camera = self.acquire_camera().await;
-        let body = camera
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.apply` with `params`, stashing the parsed response.
-    pub async fn call_config_apply(&mut self, params: Value) {
-        let camera = self.acquire_camera().await;
-        let body = camera
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-    }
-
-    /// Poll `config.get` via a fresh client until `device.description` equals
-    /// `expected`, tolerating the brief blip while the server rebinds.
-    pub async fn wait_for_config_description(&self, expected: &str) {
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
-        for _ in 0..80 {
-            if try_get_description(addr).await.as_deref() == Some(expected) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("reloaded service did not report description {expected} within 20s");
     }
 
     /// PUT /api/v1/camera/0/connected — toggle ASCOM Connected.
@@ -964,22 +953,4 @@ async fn handle_rotator_position(
             "ErrorMessage": "simulated rotator read failure"
         })),
     }
-}
-
-/// Read `device.description` from `config.get` via a fresh client, returning
-/// `None` on any transport/parse failure (e.g. mid-reload).
-async fn try_get_description(addr: std::net::SocketAddr) -> Option<String> {
-    let client = AlpacaClient::new_from_addr(addr);
-    let mut devices = client.get_devices().await.ok()?;
-    if let Some(TypedDevice::Camera(c)) = devices.next() {
-        let body = c
-            .action("config.get".to_string(), String::new())
-            .await
-            .ok()?;
-        let parsed: Value = serde_json::from_str(&body).ok()?;
-        return parsed["config"]["device"]["description"]
-            .as_str()
-            .map(str::to_string);
-    }
-    None
 }

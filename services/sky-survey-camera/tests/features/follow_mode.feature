@@ -50,7 +50,7 @@ Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7, F8)
     And the camera is configured to follow that mount
     And the camera is started and connected in follow mode
     When I POST RA 1 Dec 2 to the position endpoint
-    Then the response status is 204
+    Then the position response status is 204
     Then after a successful exposure, the position endpoint reports RA approximately 1.0 Dec approximately 2.0
     Then after another successful exposure, the position endpoint reports RA approximately 150.0 Dec approximately 30.0
 

@@ -1,31 +1,30 @@
-//! sky-survey-camera's [`ConfigurableDriver`] implementation.
+//! sky-survey-camera's [`ConfigurableDriver`] implementation — the
+//! driver-specific half behind its setup pages.
 //!
-//! The generic `config.get` / `config.apply` / `config.schema` action dispatch
-//! the camera device delegates to lives in [`rusty_photon_driver`]; this module
-//! supplies only what varies for the camera — its `Config`, validation, secrets,
-//! and editability tiers.
-//!
-//! Single ASCOM device (the camera); follow-mode telescope/rotator blocks are
-//! *client* config, so their plaintext credentials are treated as secrets
-//! (redacted on read, carried forward on apply). The driver has no CLI
-//! overrides, so `Overrides = ()`. See [`docs/services/sky-survey-camera.md`]
-//! "Config Actions".
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the reload) are `rusty-photon-setup`'s; this module
+//! supplies only what varies for the camera: its `Config` type, validation,
+//! its secrets, and which config section the camera's page edits. The
+//! binary has no command-line overrides beyond `--config` and `--log-level`,
+//! so `Overrides = ()` and no field is ever pinned. See
+//! [`docs/services/sky-survey-camera.md`] "Setup pages".
 //!
 //! [`docs/services/sky-survey-camera.md`]: ../../../docs/services/sky-survey-camera.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::Config;
 
-/// Re-exported so the camera and tests can name the redaction sentinel.
-pub use rusty_photon_config::actions::REDACTED;
+/// The camera's device type in its Alpaca path spelling.
+pub const DEVICE_TYPE: &str = "camera";
 
-/// Driver marker wiring the camera's `Config` into the generic protocol.
+/// Driver marker wiring the camera's `Config` into the shared setup pages.
 pub struct SkySurveyCameraDriver;
 
 impl ConfigurableDriver for SkySurveyCameraDriver {
     type Config = Config;
-    /// No CLI overrides — the binary only takes `--config` / `--log-level`.
+    /// No command-line overrides — the binary only takes `--config` /
+    /// `--log-level`.
     type Overrides = ();
 
     fn normalize(_config: &mut Config) {}
@@ -78,10 +77,12 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
         errors
     }
 
-    /// Follow-mode client credentials are plaintext passwords and the inbound
-    /// Basic-Auth credential is a hash; redact them on read and carry them
-    /// forward on apply so a round-tripped form never blanks them. Absent
-    /// (`None`) blocks are simply skipped by the redaction.
+    /// The inbound Basic-Auth hash, which the pages' Security section edits
+    /// and never shows, and the follow-mode client passwords. The follow-mode
+    /// blocks (`pointing.telescope`, `pointing.rotator`) are optional
+    /// objects, which the pages name as edited in the file rather than
+    /// render, so those two passwords reach no page today; the pointers
+    /// stay so a page that one day renders the blocks hides them.
     fn secret_pointers() -> &'static [&'static str] {
         &[
             "/pointing/telescope/auth/password",
@@ -90,18 +91,22 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
         ]
     }
 
-    fn override_paths(_overrides: &()) -> Vec<String> {
+    fn override_paths((): &()) -> Vec<String> {
         Vec::new()
     }
 
-    fn apply_overrides(_config: &mut Config, _overrides: &()) {}
+    fn apply_overrides(_config: &mut Config, (): &()) {}
 
-    fn locked_paths() -> &'static [&'static str] {
-        &["device.unique_id"]
-    }
-
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port"]
+    /// The camera's page edits the `device` section; the server page holds
+    /// `optics`, `pointing`, `survey` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![DeviceSection {
+            device_type: DEVICE_TYPE.to_string(),
+            device_number: 0,
+            pointer: "/device".to_string(),
+            name: config.device.name.clone(),
+            enabled: true,
+        }]
     }
 }
 
@@ -162,7 +167,7 @@ mod tests {
     fn validate_accepts_static_mode() {
         assert_eq!(
             SkySurveyCameraDriver::validate(&base()),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -198,9 +203,23 @@ mod tests {
     }
 
     #[test]
-    fn editability_tiers_and_secrets() {
-        assert_eq!(SkySurveyCameraDriver::locked_paths(), &["device.unique_id"]);
-        assert_eq!(SkySurveyCameraDriver::read_only_paths(), &["server.port"]);
+    fn the_cameras_page_edits_the_device_section() {
+        let mut config = base();
+        config.device.name = "Survey camera".to_string();
+        assert_eq!(
+            SkySurveyCameraDriver::device_sections(&config),
+            vec![DeviceSection {
+                device_type: "camera".to_string(),
+                device_number: 0,
+                pointer: "/device".to_string(),
+                name: "Survey camera".to_string(),
+                enabled: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_secrets_are_the_auth_hash_and_the_follow_mode_passwords() {
         assert_eq!(
             SkySurveyCameraDriver::secret_pointers(),
             &[
@@ -208,6 +227,10 @@ mod tests {
                 "/pointing/rotator/auth/password",
                 "/server/auth/password_hash"
             ]
+        );
+        assert_eq!(
+            SkySurveyCameraDriver::pinned_paths(&base(), &()),
+            Vec::<String>::new()
         );
     }
 }
