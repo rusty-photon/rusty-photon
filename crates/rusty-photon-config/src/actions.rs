@@ -135,6 +135,30 @@ pub trait ConfigurableDriver {
     /// config a reloaded server would run.
     fn apply_overrides(config: &mut Self::Config, overrides: &Self::Overrides);
 
+    /// The dotted paths the CLI overrides pin, read against `config` for a
+    /// driver whose flag lands on one field or another by the config's
+    /// shape — the `GTi`'s `--port` is the serial path on a USB transport and
+    /// the host on a UDP one. The setup pages show these fields disabled and
+    /// never persist them. Defaults to [`override_paths`](Self::override_paths),
+    /// which every other driver's flags fit.
+    #[must_use]
+    fn pinned_paths(config: &Self::Config, overrides: &Self::Overrides) -> Vec<String> {
+        let _ = config;
+        Self::override_paths(overrides)
+    }
+
+    /// RFC-6901 JSON pointers to fields the service writes at runtime — a
+    /// mount's park position, captured by `SetPark`, and its AP-park
+    /// choices, set by their actions. A setup page names such a field as
+    /// edited in the configuration file instead of rendering an input for
+    /// it: a form filled before the runtime write would otherwise carry the
+    /// old value back on its next save. A pointer segment may be the
+    /// wildcard `*`. Empty for a service that writes nothing at runtime.
+    #[must_use]
+    fn file_only_pointers() -> &'static [&'static str] {
+        &[]
+    }
+
     /// Identity fields (e.g. a device `unique_id`) — read-only by default in the
     /// UI behind an explicit "unlock to edit" escape hatch.
     #[must_use]

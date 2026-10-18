@@ -13,8 +13,8 @@ Feature: Connection lifecycle
   driver halts the mount on the way up for the reason it halts it on the
   way down.
 
-  A reload (a config.apply that needs one) rebuilds the driver, not the
-  mount. To a client it looks like a disconnect, and it keeps what a
+  A reload (a setup-page save that changes a field) rebuilds the driver,
+  not the mount. To a client it looks like a disconnect, and it keeps what a
   disconnect keeps: AtPark, because the encoders have not moved, and a
   SlewSettleTime the client set. Everything else starts afresh. A process
   restart keeps nothing.
@@ -76,7 +76,7 @@ Feature: Connection lifecycle
     cannot land its own, and nothing in the new lifecycle remembers that
     it did not. See issue #1251.
     Given a running star-adventurer service
-    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    When the mount's setup page saves the description "Reloaded Mount"
     Then the reloaded service serves mount description "Reloaded Mount"
     And the mount should have been initialised and halted a second time
 
@@ -86,7 +86,7 @@ Feature: Connection lifecycle
     still refuses to start tracking.
     Given a running star-adventurer service
     And the device is parked
-    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    When the mount's setup page saves the description "Reloaded Mount"
     And the reloaded service serves mount description "Reloaded Mount"
     And I connect the device
     Then AtPark should be true
@@ -99,7 +99,7 @@ Feature: Connection lifecycle
     Given a running star-adventurer service
     When I connect the device
     And I set SlewSettleTime to 7 seconds
-    And config.apply pins the bound port, sets the mount description to "Reloaded Mount" and the post-slew settle to 4 seconds
+    And the mount's setup page saves the description "Reloaded Mount" and a post-slew settle of 4 seconds
     And the reloaded service serves mount description "Reloaded Mount"
     And I connect the device
     Then SlewSettleTime should be 7 seconds
@@ -114,7 +114,7 @@ Feature: Connection lifecycle
     When I connect the device
     And I start parking the mount
     Then Slewing should be true
-    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    When the mount's setup page saves the description "Reloaded Mount"
     And the reloaded service serves mount description "Reloaded Mount"
     And I connect the device
     Then AtPark should stay false for 5 seconds

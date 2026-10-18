@@ -12,7 +12,7 @@
 //!   (`SetUnparkFromApPosition`, `SetPreferredApPark`,
 //!   `UnparkFromApPosition`) dispatched from `device`'s `action`.
 //! - [`device`] — `impl Device for MountDevice` (connect/description,
-//!   `SupportedActions` + `Action` dispatch).
+//!   `SupportedActions` + `Action` dispatch, the mount's setup page).
 //! - [`telescope`] — `impl Telescope for MountDevice` (the ASCOM
 //!   surface: coordinate reads, slew/sync/park, side-of-pier,
 //!   pulse-guide).
@@ -38,16 +38,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::telescope::PierSide;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use rusty_photon_driver::ConfigActionCtx;
-
 use crate::codec::SkywatcherCodec;
 use crate::config::{ApPark, MountConfig};
-use crate::config_actions::StarAdvDriver;
 use crate::manager::MountManager;
+use crate::setup::StarAdvDriver;
 
 mod actions;
 mod device;
@@ -358,11 +357,12 @@ pub struct MountDevice {
     live_rate_refused: Arc<AtomicBool>,
     #[debug(skip)]
     manager: Arc<MountManager>,
-    /// Config-action context; `Some` enables `config.get` / `config.apply` /
-    /// `config.schema` on this device (alongside the `ApPark` vendor actions).
-    /// `None` for focused unit-test devices.
+    /// The setup pages behind `/setup/v1/telescope/0/setup`: `Some` when
+    /// the driver was built with a config file and a reload signal (the
+    /// normal path through `ServerBuilder`); `None` for focused unit-test
+    /// devices that don't exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<StarAdvDriver>>,
+    pages: Option<Arc<SetupPages<StarAdvDriver>>>,
 }
 
 impl MountDevice {
@@ -389,14 +389,15 @@ impl MountDevice {
             axis_ownership: Arc::new(tokio::sync::Mutex::new(())),
             live_rate_refused: Arc::new(AtomicBool::new(false)),
             manager,
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the config-action context, enabling the config vendor actions.
+    /// Attach the shared setup pages, so the mount's setup page renders and
+    /// saves the `mount` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<StarAdvDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<StarAdvDriver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 

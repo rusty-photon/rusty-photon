@@ -10,7 +10,7 @@
 use std::sync::atomic::Ordering;
 
 use ascom_alpaca::api::Device;
-use ascom_alpaca::ASCOMResult;
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
 use skywatcher_motor_protocol::Axis;
 use strum::VariantArray;
@@ -18,7 +18,7 @@ use tracing::debug;
 
 use super::actions::ApParkAction;
 use super::MountDevice;
-use crate::config_actions::StarAdvDriver;
+use crate::setup::DEVICE_TYPE;
 
 #[async_trait]
 impl Device for MountDevice {
@@ -159,24 +159,22 @@ impl Device for MountDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// The driver-specific vendor Actions. See [`super::actions`] and
+    /// The driver-specific vendor Actions, and nothing else: the
+    /// configuration moved to the setup pages. See [`super::actions`] and
     /// the design doc's
     /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        let mut names: Vec<String> = ApParkAction::VARIANTS
+        Ok(ApParkAction::VARIANTS
             .iter()
             .map(|action| action.name().to_string())
-            .collect();
-        // Append the config vendor actions when this instance was built with a
-        // config-action context (the normal path through `ServerBuilder`).
-        names.extend(rusty_photon_driver::supported_actions(&self.config_ctx));
-        Ok(names)
+            .collect())
     }
 
     /// Dispatch a vendor `Action`. Each handler takes the single
     /// `parameters` string as an `ap_park_0..ap_park_5` token. An
     /// unrecognised name returns `ACTION_NOT_IMPLEMENTED` per the ASCOM
-    /// `Action` contract.
+    /// `Action` contract, not the generic `NotImplemented` the crate
+    /// defaults to.
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
         match ApParkAction::from_name(&action) {
             Some(ApParkAction::SetUnparkFromApPosition) => {
@@ -188,12 +186,30 @@ impl Device for MountDevice {
             Some(ApParkAction::UnparkFromApPosition) => {
                 self.handle_unpark_from_ap_position(&parameters).await
             }
-            // Not an ApPark action — try the config vendor actions. A truly
-            // unknown name surfaces as ACTION_NOT_IMPLEMENTED from there too.
-            None => {
-                rusty_photon_driver::dispatch::<StarAdvDriver>(&self.config_ctx, action, parameters)
-                    .await
+            None => Err(ASCOMError::new(
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                format!("this device has no action {action:?}"),
+            )),
+        }
+    }
+
+    /// The mount's setup page, `/setup/v1/telescope/0/setup`, for `GET`
+    /// and `POST`, through the shared handler. A device built without the
+    /// pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
             }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
         }
     }
 }

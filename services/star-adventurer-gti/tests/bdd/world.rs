@@ -16,6 +16,7 @@ use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::TypedDevice;
 use ascom_alpaca::ASCOMError;
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -132,8 +133,6 @@ pub struct StarAdventurerWorld {
     /// always carries the latest desired state.
     pub pending_seed: serde_json::Map<String, serde_json::Value>,
 
-    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
-    pub last_response: Option<Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
@@ -142,7 +141,13 @@ pub struct StarAdventurerWorld {
     /// otherwise applies. See [`REFERENCE_LST_HOURS`].
     pub site_longitude_pinned: bool,
 
-    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    /// State for the shared setup-page steps (`setup_pages.feature`, and
+    /// the reloads `connection_lifecycle.feature` drives through a save).
+    pub setup_pages: SetupPagesState,
+
+    /// State for the shared TLS + auth smoke steps (`auth.feature`), and
+    /// the fixture the setup-page credential scenario starts the service
+    /// through.
     pub tls_auth: TlsAuthState,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
@@ -159,6 +164,12 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
     /// service's own `deny_unknown_fields` load accepts.
     fn valid_config(&self) -> serde_json::Value {
         self.base_test_config()
+    }
+}
+
+impl SetupPagesWorld for StarAdventurerWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 
@@ -214,6 +225,12 @@ impl StarAdventurerWorld {
     }
 
     pub async fn start_service(&mut self) {
+        self.start_service_with_flags(&[]).await;
+    }
+
+    /// As [`Self::start_service`], with extra command-line flags: the
+    /// overrides the setup-page scenarios pin fields with.
+    pub async fn start_service_with_flags(&mut self, flags: &[&str]) {
         let mut cfg = self.config.clone().unwrap_or_else(default_test_config);
         if !self.site_longitude_pinned {
             cfg.mount.site_longitude_deg = longitude_for_reference_lst();
@@ -227,12 +244,35 @@ impl StarAdventurerWorld {
         std::fs::write(&config_path, json).expect("write config");
         let path_str = config_path.to_str().expect("UTF-8 temp path").to_string();
 
-        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &path_str).await;
+        let mut args: Vec<&str> = vec!["--config", &path_str];
+        args.extend_from_slice(flags);
+        let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
         let mount = acquire_mount(&handle).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
         self.config = Some(cfg);
         self.mount = Some(mount);
         self.service_handle = Some(handle);
         self.apply_pending_seed().await;
+    }
+
+    /// Spawn the binary through the TLS + auth fixture, so the setup pages
+    /// sit behind the credential. No device client is acquired: the
+    /// scenario speaks to the pages alone.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.base_test_config();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.service_handle = Some(handle);
     }
 
     /// The OS-assigned port the spawned service bound.
@@ -241,47 +281,6 @@ impl StarAdventurerWorld {
             .as_ref()
             .expect("service not started")
             .port
-    }
-
-    /// Call `config.get`, stash the parsed response, and return the `config`
-    /// object so a When step can edit it and re-apply.
-    pub async fn current_config(&mut self) -> Value {
-        let mount = Arc::clone(self.mount());
-        let body = mount
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.apply` with `params`, stashing the parsed response.
-    pub async fn call_config_apply(&mut self, params: Value) {
-        let mount = Arc::clone(self.mount());
-        let body = mount
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-    }
-
-    /// Poll `config.get` via a fresh client until `mount.description` equals
-    /// `expected`, tolerating the brief blip while the server rebinds.
-    pub async fn wait_for_config_description(&self, expected: &str) {
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
-        for _ in 0..80 {
-            if try_get_mount_description(addr).await.as_deref() == Some(expected) {
-                return;
-            }
-            sleep(std::time::Duration::from_millis(250)).await;
-        }
-        panic!("reloaded service did not report description {expected} within 20s");
     }
 
     /// POST the queued state seed to `/debug/v1/mock-state`. No-op when
@@ -462,7 +461,7 @@ impl StarAdventurerWorld {
     ///
     /// *Most recent*, not first, and that is the whole point of finding
     /// the boundary in the log rather than counting frames at
-    /// `start_service`. A `config.apply` reload is a second startup on
+    /// `start_service`. A setup-page save's reload is a second startup on
     /// the same mock mount: it runs the shutdown halt, then another
     /// handshake, then another `:L1`/`:L2`/`:K1`. A fixed offset leaves
     /// all of that sitting in what a scenario reads as its own traffic,
@@ -620,22 +619,4 @@ async fn acquire_mount(handle: &ServiceHandle) -> Arc<dyn Telescope> {
         }
     }
     panic!("star-adventurer-gti did not become healthy within 30 seconds");
-}
-
-/// Read `mount.description` from `config.get` via a fresh client, returning
-/// `None` on any transport/parse failure (e.g. mid-reload).
-async fn try_get_mount_description(addr: SocketAddr) -> Option<String> {
-    let client = AlpacaClient::new_from_addr(addr);
-    let mut devices = client.get_devices().await.ok()?;
-    if let Some(TypedDevice::Telescope(mount)) = devices.next() {
-        let body = mount
-            .action("config.get".to_string(), String::new())
-            .await
-            .ok()?;
-        let parsed: Value = serde_json::from_str(&body).ok()?;
-        return parsed["config"]["mount"]["description"]
-            .as_str()
-            .map(str::to_string);
-    }
-    None
 }

@@ -69,7 +69,24 @@ pub fn overlay_field(
     form: &FormValues,
     errors: &mut Vec<FieldError>,
 ) {
-    overlay_at(config, spec.pointer(), spec, form, errors);
+    overlay_field_except(config, spec, form, &[], errors);
+}
+
+/// [`overlay_field`], leaving every control named in `skipped` as the config
+/// has it.
+///
+/// A tagged enum's field that a command-line override pins is what
+/// `skipped` names: the enum's overlay would otherwise write it from the
+/// form. A pinned field outside an enum is simply not overlaid; this
+/// reaches the ones inside.
+pub fn overlay_field_except(
+    config: &mut Value,
+    spec: &FieldSpec,
+    form: &FormValues,
+    skipped: &[String],
+    errors: &mut Vec<FieldError>,
+) {
+    overlay_at(config, spec.pointer(), spec, form, skipped, errors);
 }
 
 /// [`overlay_field`] at an explicit pointer — a variant's field writes under
@@ -79,6 +96,7 @@ fn overlay_at(
     pointer: &str,
     spec: &FieldSpec,
     form: &FormValues,
+    skipped: &[String],
     errors: &mut Vec<FieldError>,
 ) {
     let name = spec.name();
@@ -171,7 +189,7 @@ fn overlay_at(
             }
         }
         FieldKind::Variants { tag, variants } => {
-            overlay_variants(config, pointer, name, tag, variants, form, errors);
+            overlay_variants(config, pointer, name, tag, variants, form, skipped, errors);
         }
         FieldKind::FileOnly => {}
     }
@@ -179,7 +197,11 @@ fn overlay_at(
 
 /// The chosen variant's fields, under its tag; a variant change replaces
 /// the whole object so the other variant's fields do not linger beside the
-/// new tag.
+/// new tag. A field named in `skipped` keeps what the object has.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enum's overlay carries the config, the pointer, the control name, the tag, the variants, the form, the pinned controls and the errors; bundling them would be a struct for one call site"
+)]
 fn overlay_variants(
     config: &mut Value,
     pointer: &str,
@@ -187,6 +209,7 @@ fn overlay_variants(
     tag: &str,
     variants: &[crate::schema::Variant],
     form: &FormValues,
+    skipped: &[String],
     errors: &mut Vec<FieldError>,
 ) {
     let Some(chosen) = form.get(name) else {
@@ -215,7 +238,10 @@ fn overlay_variants(
         Value::String(chosen.to_string()),
     );
     for field in &variant.fields {
-        overlay_at(&mut object, field.pointer(), field, form, errors);
+        if skipped.iter().any(|s| s == field.name()) {
+            continue;
+        }
+        overlay_at(&mut object, field.pointer(), field, form, skipped, errors);
     }
     set_pointer(config, pointer, object);
 }
@@ -257,10 +283,17 @@ pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
 /// empty.
 #[must_use]
 pub fn text_at(config: &Value, pointer: &str) -> String {
-    match config.pointer(pointer) {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::Bool(b)) => b.to_string(),
+    config.pointer(pointer).map_or_else(String::new, text_of)
+}
+
+/// The text an input renders for `value`: a string as is, a number or bool
+/// spelled out, anything else (null, composite) empty.
+#[must_use]
+pub fn text_of(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
         _ => String::new(),
     }
 }
@@ -280,7 +313,14 @@ pub fn bool_at(config: &Value, pointer: &str) -> bool {
 pub fn array_contains(config: &Value, pointer: &str, value: i64) -> bool {
     config
         .pointer(pointer)
-        .and_then(Value::as_array)
+        .is_some_and(|items| array_has(items, value))
+}
+
+/// Whether `items` is an array containing the integer `value`.
+#[must_use]
+pub fn array_has(items: &Value, value: i64) -> bool {
+    items
+        .as_array()
         .is_some_and(|items| items.iter().any(|v| v.as_i64() == Some(value)))
 }
 
@@ -634,6 +674,35 @@ mod tests {
     }
 
     #[test]
+    fn a_skipped_variant_field_keeps_what_the_file_has() {
+        // A command-line override pins `transport.port`: the form still
+        // carries the control, and the enum's overlay must leave it alone
+        // while writing the variant's other fields.
+        let model = transport_model();
+        let spec = model.field("transport").unwrap();
+        let mut config =
+            json!({ "transport": { "kind": "usb", "port": "/dev/file", "baud_rate": 9600 } });
+        let form = form_from(&[
+            ("transport", "usb"),
+            ("transport:usb.port", "/dev/tampered"),
+            ("transport:usb.baud_rate", "4800"),
+        ]);
+        let mut errors = Vec::new();
+        overlay_field_except(
+            &mut config,
+            spec,
+            &form,
+            &["transport:usb.port".to_string()],
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            config["transport"],
+            json!({ "kind": "usb", "port": "/dev/file", "baud_rate": 4800 })
+        );
+    }
+
+    #[test]
     fn a_file_only_leaf_is_never_overlaid() {
         let schema = json!({
             "type": "object",
@@ -666,6 +735,10 @@ mod tests {
         assert!(!bool_at(&config, "/a/s"));
         assert!(array_contains(&config, "/a/arr", 2));
         assert!(!array_contains(&config, "/a/arr", 5));
+        assert_eq!(text_of(&json!(1.5)), "1.5");
+        assert_eq!(text_of(&Value::Null), "");
+        assert!(array_has(&json!([1, 2]), 1));
+        assert!(!array_has(&json!("not an array"), 1));
     }
 
     #[test]
