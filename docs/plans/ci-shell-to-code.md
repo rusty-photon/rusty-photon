@@ -786,7 +786,10 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   test too, where the scan would otherwise end the list there and drop
   every label after it. That covers a line YAML may read as part of the
   list, such as a dash and a tab, a bare dash or a label folded onto the
-  next line, and a line that is not YAML at all. Labels are
+  next line, and a line that is not YAML at all. No entry goes unread
+  either: under `self-hosted-runner:`, a `- ` entry outside the list
+  fails the test, and so does a line at column 0 that is not a key, such
+  as an entry outdented there. Labels are
   matched in any case, as GitHub matches them, and only as whole
   labels, so a file name such as `raspberry-pi-runner.md` is not one. A
   value runs on over the lines indented deeper than its key, without blank
@@ -843,10 +846,12 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     `#` inside its quotes, and one spelled with an escape;
   - in actionlint.yaml, ahead of the last label, with that label routed
     as test.yml's `runs-on`: a dash and a tab, a bare dash, and a label
-    folded onto the next line, indented under `labels:` or level with it.
-    The dash and the tab passed the test on the reader #1547 left; the
-    label folded level with `labels:` passed while any line there ended
-    the list.
+    folded onto the next line, indented under `labels:` or level with it;
+    an entry outdented to column 0; a key between two entries. Each
+    passed the test on an earlier reader: the dash and the tab on the one
+    #1547 left, the label folded level with `labels:` while any line there
+    ended the list, and the last two while the reader skipped entries it
+    had stopped reading.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
   lines after it.

@@ -179,16 +179,23 @@ fn repo_root() -> PathBuf {
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
 /// `self-hosted-runner:` and `labels:`, one `- label` per line, quoted or
 /// not. The list ends at the next key indented no deeper than `labels:`,
-/// and every other line before it must be a comment or blank. Once its
-/// comment and quotes are gone a label must be plain (letters, digits, `.`,
-/// `_`, `-`): the scan does not guess at another spelling, which actionlint
-/// might read differently, and refuses it.
+/// and every other line before it must be a comment or blank. No entry
+/// goes unread: an entry outside the list, or a line at column 0 that is
+/// not a key, fails the test too. Once its comment and quotes are gone a
+/// label must be plain (letters, digits, `.`, `_`, `-`): the scan does not
+/// guess at another spelling, which actionlint might read differently, and
+/// refuses it.
 fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
         .iter()
         .position(|line| line.trim_end() == "self-hosted-runner:")
         .ok_or("has no `self-hosted-runner:` key")?;
+    let unread = |body: &str| {
+        format!(
+            "has `{body}` where the test reads only a key, or a `- label` entry under `labels:`"
+        )
+    };
     let mut labels = Vec::new();
     // The indent of `labels:`, while the scan reads its list.
     let mut list = None;
@@ -198,13 +205,21 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if indent(line) == 0 {
-            break;
+            // The next top-level key ends `self-hosted-runner:`.
+            if is_key(body) {
+                break;
+            }
+            return Err(unread(body));
         }
         if body == "labels:" {
             list = Some(indent(line));
             continue;
         }
         let Some(key) = list else {
+            // An entry before the list, or after a key ended it.
+            if body.starts_with('-') {
+                return Err(unread(body));
+            }
             continue;
         };
         if let Some(item) = body.strip_prefix("- ") {
@@ -663,8 +678,26 @@ fn actionlint_labels_refuses_an_empty_label() {
 
 #[test]
 fn actionlint_labels_ends_the_list_at_the_next_key() {
-    let text = "self-hosted-runner:\n  labels:\n  - pool\n  - pi\n  other:\n  - x\n";
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  - pi\n  other:\n    x: y\n";
     assert_eq!(actionlint_labels(text).unwrap(), ["pool", "pi"]);
+}
+
+#[test]
+fn actionlint_labels_refuses_an_entry_after_the_list() {
+    let text = "self-hosted-runner:\n  labels:\n  - pool\n  other: x\n  - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `- pi` where the test reads only a key, or a `- label` entry under `labels:`"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_an_entry_at_column_0() {
+    let text = "self-hosted-runner:\n  labels:\n    - pool\n- gpu\n    - pi\n";
+    assert_eq!(
+        actionlint_labels(text).unwrap_err(),
+        "has `- gpu` where the test reads only a key, or a `- label` entry under `labels:`"
+    );
 }
 
 #[test]
