@@ -49,8 +49,8 @@ store location is not redirectable per-process on Windows
 `XDG_CONFIG_HOME` on other Unixes only; a shared store on macOS CI leaked
 one suite's persisted telescope site into another's scenarios). Without
 the flag and variable, behavior is exactly upstream's.
-`bdd_infra::rp_harness::OmniSimHandle` always spawns with both, plus a
-dynamically chosen `--urls` port, giving every BDD test process (including
+`bdd_infra::rp_harness::OmniSimHandle` always spawns with both, plus
+`--urls` on port 0 (§ "Binding port 0"), giving every BDD test process (including
 every Bazel shard of `rp:bdd`) a private simulator. The `@serial` feature
 tag still serializes scenarios *within* one test process, which share that
 process's instance.
@@ -65,6 +65,36 @@ OmniSim is an ASP.NET Core app. Default port is **32323**. Override via either:
 Under upstream's single-instance guard a port override is moot if another
 OmniSim is already running (the mutex blocks before the bind); with our
 fork's `--multi-instance` it's how concurrent instances coexist.
+
+### Binding port 0
+
+`--urls=http://127.0.0.1:0` makes Kestrel bind an ephemeral port, and
+OmniSim then prints the address it got on stdout:
+
+```text
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://127.0.0.1:37915
+```
+
+That line rides on the `Microsoft.Hosting.Lifetime` category, which the
+fork release's `appsettings.json` logs at `Information` on Linux, macOS
+and Windows alike. `bdd_infra::rp_harness` spawns every instance this
+way and reads the port from that line — the same pick-and-print pattern
+every service binary here follows with its `bound_addr=` line. The
+listener holds its port from the moment it exists, so no other process
+can be answering there.
+
+The harness used to probe a port free instead (bind `127.0.0.1:0`, read
+the port, release it) and hand the number to OmniSim. Two OmniSims
+cannot listen on one address — the second exits with `Failed to bind to
+address http://127.0.0.1:<port>: address already in use` — but another
+test process could draw the same port in the gap and bind it first, and
+until the losing child exited, the winner answered its readiness probe
+like any healthy OmniSim. In
+[#1499](https://github.com/rusty-photon/rusty-photon/issues/1499), two
+`rp:bdd` shards ran against one instance this way: one shard's
+per-scenario device resets put the filter wheel back on slot 0 and
+disconnected it in the middle of the other's `set_filter` moves.
 
 ## State persistence
 

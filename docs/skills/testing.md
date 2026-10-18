@@ -545,8 +545,10 @@ isolate its full lifecycle from the merged stream.
 test spawns `rp` alongside OmniSim and/or an event plugin:
 
 - `OmniSimHandle` — per-test-process Alpaca simulator shared across that
-  process's scenarios. Spawned with the fork's `--multi-instance` flag on a
-  dynamically chosen port with a private settings dir (the fork's
+  process's scenarios. Spawned with the fork's `--multi-instance` flag on
+  port 0 — OmniSim picks its own port and the harness reads it from
+  Kestrel's `Now listening on:` line (`docs/references/omnisim.md`
+  § "Binding port 0") — with a private settings dir (the fork's
   `OMNISIM_SETTINGS_DIR` env var — works on every OS, unlike
   `XDG_CONFIG_HOME`, which .NET ignores on macOS), so concurrent test
   processes (parallel Bazel suites, `rp:bdd` shards, a dev OmniSim on the
@@ -768,10 +770,15 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
 Where a bind-and-release probe does survive, it is
 `bdd_infra::ephemeral_ports::<N>()` (or `ephemeral_ports_async`), for a child
-told its port after the probe: OmniSim's and Pebble's harnesses and
-geckodriver use it, each paired with a retry on the lost race. Keep that
-pairing if you add another — and note that the retry is worth exactly as much
-as the readiness check that fires it. Verify **every** endpoint the child was
+told its port after the probe: Pebble's harness and geckodriver use it, each
+paired with a retry on the lost race. A child that binds port 0 and prints the
+port it got needs neither, which is why OmniSim's harness moved to that
+([§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)):
+the retry fires only on a lost race the readiness check notices, and another
+process's server of the same kind answering at the port is one it does not.
+Where a probed port cannot be avoided, keep the pairing — and note that the
+retry is worth exactly as much as the readiness check that fires it. Verify
+**every** endpoint the child was
 handed a port for, not just the one easiest to poll: a child that survives a
 lost bind, serving its other listeners as if nothing happened, otherwise sails
 through readiness and fails in the middle of a scenario, long past the point
@@ -989,7 +996,7 @@ restart PUTs are serialized process-wide; see #431.)
 
 **Parallelism comes from processes, not from dropping `@serial`.**
 Since #467 every BDD test process owns a private OmniSim
-(`--multi-instance` + dynamic port + per-instance settings dir), so
+(`--multi-instance` + a port it picks itself + per-instance settings dir), so
 the wall-clock lever is more processes, each with its own simulator:
 the four OmniSim suites run concurrently under Bazel on Linux/macOS,
 and `rp:bdd` is additionally split into parallel shard processes via
@@ -1160,7 +1167,7 @@ worker) can still be inherited on macOS: std's `Command` does not expose
 bdd-infra closes that window.
 
 Three spawns stay on the loop, each rare, taking the lock's async form:
-OmniSim's `spawn_on_port` (once per test process), ConformU (run by plain
+OmniSim's `spawn_once` (once per test process), ConformU (run by plain
 `#[tokio::test]`s, not by cucumber), and ui-htmx's geckodriver (once per
 `@browser` scenario, in an opt-in suite of four). OmniSim must stay: it is spawned with Linux's
 `PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
@@ -1497,6 +1504,17 @@ and [#852](https://github.com/rusty-photon/rusty-photon/issues/852) were
 the *dead-port* shape — bind `:0`, read the port, drop the listener, and
 race a foreign server into the freed port. Here the listener is never
 released; what is unguarded is the other address family.
+
+A fourth variant needs no stub: a harness that hands a child it spawns a
+port drawn the dead-port way. Another process's server of the same kind
+can take the port first, and a readiness probe that asks only "is
+something healthy there?" adopts it before the child fails its bind and
+exits. [#1499](https://github.com/rusty-photon/rusty-photon/issues/1499)
+ran two `rp:bdd` shards against one OmniSim this way. The cure is the
+pattern every service binary here already follows: the child binds port
+0 and prints the port it got, and the harness reads it back —
+`bound_addr=` for our services, Kestrel's `Now listening on:` line for
+OmniSim.
 
 ---
 

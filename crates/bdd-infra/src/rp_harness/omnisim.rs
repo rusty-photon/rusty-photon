@@ -2,7 +2,7 @@
 //!
 //! A single `OmniSim` process is shared across all scenarios in a test binary
 //! via a [`tokio::sync::OnceCell`]. Each test process spawns its **own**
-//! instance on a **dynamically chosen port**, passing `--multi-instance` —
+//! instance on a **port the instance picks itself**, passing `--multi-instance` —
 //! the flag added to our `OmniSim` fork (`ivonnyssen/ASCOM.Alpaca.Simulators`,
 //! release `v0.5.0-467.1`) that skips upstream's machine-global
 //! single-instance guard (a named Mutex keyed on a fixed GUID, backed by a
@@ -26,6 +26,18 @@
 //! bypasses the platform lookup entirely, so isolation is deterministic on
 //! every OS and the Bazel `omnisim` pool runs parallel everywhere.
 //!
+//! The port follows the pick-and-print pattern every service binary here
+//! uses with its `bound_addr=` line: `OmniSim` binds port 0
+//! (`--urls=http://127.0.0.1:0`), so its listener holds a free port from
+//! the moment it exists, and the harness reads that port from the
+//! `Now listening on:` line Kestrel prints on the child's stdout (see
+//! [`OmniSimProcess::tee_stdout`]). A port the harness probed free and
+//! released instead could be drawn by another test process in the gap,
+//! whose `OmniSim` then answered at this spawn's URL until the child
+//! failed its bind and exited — and a harness that took that answer ran
+//! its scenarios against a simulator another process resets and moves
+//! under them.
+//!
 //! Two more spawn-time defences keep a host's environment from turning
 //! into a wall of downstream assertion failures: the .NET culture is
 //! pinned (`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`) so the seeded
@@ -34,16 +46,22 @@
 //! it advertises — see [`OmniSimProcess::command`] and
 //! [`OmniSimProcess::check_device_roster`].
 
+use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::sync::OnceCell;
 
-/// Attempts to spawn `OmniSim` before giving up. Each attempt picks a fresh
-/// ephemeral port, so a lost bind race (another process grabbed the port
-/// between our probe and `OmniSim`'s bind) just costs one retry.
+/// Attempts to spawn `OmniSim` before giving up. A startup that exits or
+/// stalls, or a roster probe that fails in transit, costs one retry.
 const SPAWN_ATTEMPTS: u32 = 3;
+
+/// What precedes the bound URL on the line Kestrel prints once `OmniSim`'s
+/// listener is up (`      Now listening on: http://127.0.0.1:37915`). It
+/// rides on the `Microsoft.Hosting.Lifetime` category, which the release's
+/// `appsettings.json` logs at `Information` on every platform.
+const LISTENING_ON: &str = "Now listening on: ";
 
 /// How long one `/restart` PUT may take before we stop waiting on it.
 ///
@@ -993,14 +1011,14 @@ fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
     text
 }
 
-/// Why one [`OmniSimProcess::spawn_on_port`] attempt failed — decides
-/// whether [`OmniSimProcess::get_or_spawn`] tries again on a fresh port
-/// or gives up on the spot.
+/// Why one [`OmniSimProcess::spawn_once`] attempt failed — decides
+/// whether [`OmniSimProcess::get_or_spawn`] tries again or gives up on
+/// the spot.
 #[derive(Debug)]
 enum SpawnFailure {
-    /// The child never came up (lost the port-bind race, pre-fork
-    /// binary, unhealthy past the window), or a probe of it failed in
-    /// transit. A fresh port may fix it.
+    /// The child never came up (pre-fork binary, a startup crash,
+    /// unhealthy past the window), or a probe of it failed in transit.
+    /// A fresh attempt may fix it.
     Retry(String),
     /// The child came up but its device roster is unusable (see
     /// [`OmniSimProcess::check_device_roster`]). That is deterministic
@@ -1014,11 +1032,7 @@ impl OmniSimProcess {
         let binary = Self::find_binary();
         let mut last_failure = String::new();
         for _ in 0..SPAWN_ATTEMPTS {
-            // Another process can take the port before OmniSim binds it: that
-            // lost race surfaces as an early child exit in `wait_healthy`, and
-            // costs one more attempt here.
-            let [port] = crate::ephemeral_ports_async::<1>().await;
-            match Self::spawn_on_port(&binary, port).await {
+            match Self::spawn_once(&binary).await {
                 Ok(process) => return process,
                 Err(SpawnFailure::Retry(failure)) => last_failure = failure,
                 Err(SpawnFailure::Fatal(diagnostic)) => panic!("{diagnostic}"),
@@ -1034,38 +1048,47 @@ impl OmniSimProcess {
         );
     }
 
-    /// One spawn attempt: launch `OmniSim` on `port`, wait for it to become
-    /// healthy, then check that the device roster it advertises is one rp
-    /// can actually consume. `Retry` when the child exits early (lost the
-    /// port-bind race, or the binary predates `--multi-instance`) or never
-    /// turns healthy — the caller retries on a fresh port; `Fatal` when it
-    /// came up with an unusable roster.
-    async fn spawn_on_port(binary: &str, port: u16) -> Result<Self, SpawnFailure> {
-        let base_url = format!("http://127.0.0.1:{port}");
+    /// One spawn attempt: launch `OmniSim` on a port of its own choosing,
+    /// read that port from its stdout and wait for it to answer healthy
+    /// there, then check that the device roster it advertises is one rp
+    /// can actually consume. `Retry` when the child exits early (the
+    /// binary predates `--multi-instance`, or crashed) or never turns
+    /// healthy — the caller tries again; `Fatal` when it came up with an
+    /// unusable roster.
+    async fn spawn_once(binary: &str) -> Result<Self, SpawnFailure> {
+        static SPAWNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let spawn = SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // Capture OmniSim's stdout/stderr to per-run log files under the
         // cargo target tree. The previous `Stdio::null()` dropped every
         // line OmniSim emitted, which left CI failures with no insight
         // into what the simulator was doing — see #171 for the
-        // diagnostic gap. Failures here fall back to `Stdio::null` so a
+        // diagnostic gap. A log that can't be opened is skipped, so a
         // log-write problem can't stop the test suite from running.
-        let (stdout_target, stderr_target) = Self::open_log_files(port);
+        let (stdout_log, stderr_target) = Self::open_log_files(spawn);
 
-        let mut cmd = Self::command(binary, &base_url, Self::prepare_settings_dir());
-        cmd.stdout(stdout_target).stderr(stderr_target);
+        let mut cmd = Self::command(binary, Self::prepare_settings_dir());
+        cmd.stdout(Stdio::piped()).stderr(stderr_target);
 
         // On the poll loop (see `crate::off_loop` on `PR_SET_PDEATHSIG`),
         // but under the lock every other spawn in this process takes.
         let mut child = crate::with_spawn_lock_async(|| cmd.spawn())
             .await
             .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
+        let stdout = child.stdout.take().expect("OmniSim's stdout is piped");
+        let bound_port = Self::tee_stdout(stdout, stdout_log);
 
-        let outcome = match Self::wait_healthy(&mut child, &base_url).await {
-            Ok(()) => Self::check_device_roster(&base_url, port).await,
+        let outcome = match Self::wait_healthy(&mut child, bound_port).await {
+            Ok(port) => {
+                let base_url = format!("http://127.0.0.1:{port}");
+                Self::check_device_roster(&base_url, spawn)
+                    .await
+                    .map(|()| (base_url, port))
+            }
             Err(e) => Err(SpawnFailure::Retry(e)),
         };
         match outcome {
-            Ok(()) => Ok(Self {
+            Ok((base_url, port)) => Ok(Self {
                 _child: child,
                 base_url,
                 port,
@@ -1082,10 +1105,11 @@ impl OmniSimProcess {
     /// the spawn except where its stdout/stderr go.
     ///
     /// `--multi-instance` (our fork's flag) skips `OmniSim`'s machine-global
-    /// single-instance guard; `--urls` pins the Kestrel listener to the
-    /// port we probed as free. The sanitizer-related env vars are cleared
-    /// so the .NET runtime isn't broken by `LD_PRELOAD` injection from
-    /// ASAN/LSAN.
+    /// single-instance guard; `--urls` binds the Kestrel listener to port 0
+    /// on the loopback address, so the kernel picks the port and the child
+    /// holds it from the start (the module docs say why that matters). The
+    /// sanitizer-related env vars are cleared so the .NET runtime isn't
+    /// broken by `LD_PRELOAD` injection from ASAN/LSAN.
     ///
     /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` pins the .NET runtime to
     /// the invariant culture. `OmniSim` parses its profile values with the
@@ -1106,10 +1130,10 @@ impl OmniSimProcess {
     /// (467.2) re-roots the profile store on every platform —
     /// `XDG_CONFIG_HOME` would cover Linux only (.NET ignores it on macOS,
     /// and Windows never honored it).
-    fn command(binary: &str, base_url: &str, settings_dir: PathBuf) -> std::process::Command {
+    fn command(binary: &str, settings_dir: PathBuf) -> std::process::Command {
         let mut cmd = std::process::Command::new(binary);
         cmd.arg("--multi-instance")
-            .arg(format!("--urls={base_url}"))
+            .arg("--urls=http://127.0.0.1:0")
             .env_remove("LD_PRELOAD")
             .env_remove("ASAN_OPTIONS")
             .env_remove("LSAN_OPTIONS")
@@ -1150,7 +1174,9 @@ impl OmniSimProcess {
     /// A transport or JSON failure on the probe itself is `Retry` — the
     /// health probe just answered, so that is a fresh anomaly rather than
     /// a verdict on the roster.
-    async fn check_device_roster(base_url: &str, port: u16) -> Result<(), SpawnFailure> {
+    ///
+    /// `spawn` is the attempt's number, which names its startup log.
+    async fn check_device_roster(base_url: &str, spawn: u64) -> Result<(), SpawnFailure> {
         let roster = Self::fetch_device_roster(base_url)
             .await
             .map_err(SpawnFailure::Retry)?;
@@ -1159,7 +1185,7 @@ impl OmniSimProcess {
             return Ok(());
         }
         Err(SpawnFailure::Fatal(Self::roster_diagnostic(
-            base_url, &offenders, port,
+            base_url, &offenders, spawn,
         )))
     }
 
@@ -1232,8 +1258,8 @@ impl OmniSimProcess {
     }
 
     /// What `OmniSim`'s captured startup log has to say about the failure.
-    fn startup_log_evidence(port: u16) -> String {
-        let Some(log) = Self::stdout_log_path(port) else {
+    fn startup_log_evidence(spawn: u64) -> String {
+        let Some(log) = Self::stdout_log_path(spawn) else {
             return "OmniSim's startup log was not captured (no writable log dir).".to_string();
         };
         let Some(lines) = Self::exception_lines_from_log(&log) else {
@@ -1248,8 +1274,8 @@ impl OmniSimProcess {
     /// The panic text for an unusable roster: the offending entries, why
     /// that would sink every device on the instance, the usual cause, and
     /// whatever `Exception` lines `OmniSim` logged at startup.
-    fn roster_diagnostic(base_url: &str, offenders: &[String], port: u16) -> String {
-        let evidence = Self::startup_log_evidence(port);
+    fn roster_diagnostic(base_url: &str, offenders: &[String], spawn: u64) -> String {
+        let evidence = Self::startup_log_evidence(spawn);
         format!(
             "OmniSim at {base_url} came up advertising device(s) rp cannot use: {}. \
              rp's discovery needs a UniqueID on every configureddevices entry, so this \
@@ -1459,44 +1485,44 @@ impl OmniSimProcess {
         Some(dest)
     }
 
-    /// Where this process files `OmniSim`'s stdout for the instance on
-    /// `port` — `omnisim.<pid>.<port>.stdout.log` under [`Self::log_dir`].
-    /// `OmniSim` logs its startup device-construction exceptions there,
-    /// which is why [`Self::roster_diagnostic`] reads it back. `None`
-    /// when there is no writable log dir.
-    fn stdout_log_path(port: u16) -> Option<PathBuf> {
-        Self::log_dir().map(|dir| Self::stdout_log_path_in(&dir, port))
+    /// Where this process files `OmniSim`'s stdout for spawn attempt
+    /// `spawn` — `omnisim.<pid>.<spawn>.stdout.log` under
+    /// [`Self::log_dir`]. `OmniSim` logs its startup device-construction
+    /// exceptions there, which is why [`Self::roster_diagnostic`] reads it
+    /// back. `None` when there is no writable log dir.
+    fn stdout_log_path(spawn: u64) -> Option<PathBuf> {
+        Self::log_dir().map(|dir| Self::stdout_log_path_in(&dir, spawn))
     }
 
-    /// The stdout log file name for `port` inside an already-resolved
-    /// log `dir` — the one place the `omnisim.<pid>.<port>.stdout.log`
+    /// The stdout log file name for `spawn` inside an already-resolved
+    /// log `dir` — the one place the `omnisim.<pid>.<spawn>.stdout.log`
     /// shape is spelled, so the spawn's writer and the diagnostic's
     /// reader can't drift apart.
-    fn stdout_log_path_in(dir: &Path, port: u16) -> PathBuf {
+    fn stdout_log_path_in(dir: &Path, spawn: u64) -> PathBuf {
         let pid = std::process::id();
-        dir.join(format!("omnisim.{pid}.{port}.stdout.log"))
+        dir.join(format!("omnisim.{pid}.{spawn}.stdout.log"))
     }
 
     /// Open fresh (truncating) log files for `OmniSim`'s stdout and
-    /// stderr, returning `Stdio` handles ready to attach to the
-    /// `Command`. Falls back to `Stdio::null()` for either stream
-    /// individually if its file can't be opened.
+    /// stderr: the stdout file for [`Self::tee_stdout`] to copy the piped
+    /// stream into, and the stderr target as a `Stdio` ready to attach to
+    /// the `Command`. Either is skipped (`None`, `Stdio::null()`) on its
+    /// own if its file can't be opened.
     ///
     /// File names embed the BDD test binary's PID so concurrent runs
     /// (e.g. `cargo test --workspace --test bdd`, where each package's
     /// BDD binary is a separate process sharing one `CARGO_TARGET_DIR`)
     /// don't truncate each other's logs. On Windows, file-locking on a
     /// shared name would also fail one of the spawns outright; the PID
-    /// suffix avoids that. The port distinguishes retried spawn attempts
-    /// within one process, so a failed attempt's log (the bind-race /
-    /// old-binary evidence) survives the retry.
-    fn open_log_files(port: u16) -> (Stdio, Stdio) {
+    /// suffix avoids that. The spawn number distinguishes retried attempts
+    /// within one process, so a failed attempt's log (the old-binary or
+    /// crash evidence) survives the retry.
+    fn open_log_files(spawn: u64) -> (Option<std::fs::File>, Stdio) {
         let dir = Self::log_dir();
         let pid = std::process::id();
         let stdout = dir
             .as_ref()
-            .and_then(|d| std::fs::File::create(Self::stdout_log_path_in(d, port)).ok())
-            .map_or_else(Stdio::null, Stdio::from);
+            .and_then(|d| std::fs::File::create(Self::stdout_log_path_in(d, spawn)).ok());
         // Under Bazel, inherit OmniSim's stderr into the test process so a
         // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
         // OmniSim cascades) shows up in the failed test output (`--test_output=errors`)
@@ -1508,11 +1534,50 @@ impl OmniSimProcess {
         } else {
             dir.as_ref()
                 .and_then(|d| {
-                    std::fs::File::create(d.join(format!("omnisim.{pid}.{port}.stderr.log"))).ok()
+                    std::fs::File::create(d.join(format!("omnisim.{pid}.{spawn}.stderr.log"))).ok()
                 })
                 .map_or_else(Stdio::null, Stdio::from)
         };
         (stdout, stderr)
+    }
+
+    /// Copy `OmniSim`'s piped stdout into `log`, line by line, on a thread
+    /// of its own, and hand over the port from Kestrel's
+    /// [`LISTENING_ON`] line when it passes. The thread drains the pipe
+    /// until `OmniSim` exits, so the child never blocks on a full pipe
+    /// buffer. Lines are decoded lossily: a stray byte that is not UTF-8
+    /// must not end the drain.
+    ///
+    /// A thread rather than a task: the instance outlives the scenario
+    /// that spawned it, and the drain must not depend on whichever
+    /// runtime that scenario ran on.
+    fn tee_stdout(
+        stdout: impl std::io::Read + Send + 'static,
+        mut log: Option<std::fs::File>,
+    ) -> std::sync::mpsc::Receiver<u16> {
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            while reader.read_until(b'\n', &mut bytes).unwrap_or(0) > 0 {
+                let line = String::from_utf8_lossy(&bytes);
+                if let Some(log) = log.as_mut() {
+                    let _ = log.write_all(line.as_bytes());
+                }
+                if let Some(port) = Self::listening_port(&line) {
+                    let _ = port_tx.send(port);
+                }
+                bytes.clear();
+            }
+        });
+        port_rx
+    }
+
+    /// The port in Kestrel's `Now listening on: http://<host>:<port>` line,
+    /// or `None` for any other line.
+    fn listening_port(line: &str) -> Option<u16> {
+        let (_, url) = line.split_once(LISTENING_ON)?;
+        url.trim().rsplit(':').next()?.parse().ok()
     }
 
     fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
@@ -1558,25 +1623,40 @@ impl OmniSimProcess {
         matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
     }
 
-    /// Poll `base_url` until `OmniSim` answers, watching the child so an
-    /// early exit (lost port-bind race; a pre-`--multi-instance` binary
-    /// deferring to another running instance) fails fast with its exit
-    /// status instead of burning the full 30-second health window.
-    async fn wait_healthy(child: &mut std::process::Child, base_url: &str) -> Result<(), String> {
+    /// Wait for the child to report the port it bound on `bound_port` (see
+    /// [`Self::tee_stdout`]) and to answer healthy there, and return the
+    /// port. The child is watched throughout, so an early exit (a
+    /// pre-`--multi-instance` binary deferring to another running
+    /// instance, a startup crash) fails fast with its exit status instead
+    /// of burning the full 30-second health window.
+    async fn wait_healthy(
+        child: &mut std::process::Child,
+        bound_port: std::sync::mpsc::Receiver<u16>,
+    ) -> Result<u16, String> {
+        let mut port = None;
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!(
-                    "OmniSim exited during startup ({status}) — lost the port-bind \
-                     race, or the binary does not support --multi-instance"
+                    "OmniSim exited during startup ({status}) — the binary may not \
+                     support --multi-instance"
                 ));
             }
-            if Self::is_healthy(base_url).await {
-                return Ok(());
+            if port.is_none() {
+                port = bound_port.try_recv().ok();
+                if let Some(port) = port {
+                    tracing::debug!(port, "OmniSim reported the port it bound");
+                }
+            }
+            if let Some(port) = port {
+                if Self::is_healthy(&format!("http://127.0.0.1:{port}")).await {
+                    return Ok(port);
+                }
             }
         }
         Err(format!(
-            "OmniSim did not become healthy at {base_url} within 30 seconds"
+            "OmniSim did not answer healthy within 30 seconds (the port it reported \
+             binding: {port:?}; Kestrel prints it on a `{LISTENING_ON}` line)"
         ))
     }
 }
@@ -2257,7 +2337,7 @@ mod tests {
 
     /// A PATH-resolvable binary that exits quickly (with an error) when
     /// handed `OmniSim`'s `--multi-instance --urls=...` args — a stand-in
-    /// for a pre-fork `OmniSim` losing the port-bind race or bailing out.
+    /// for a pre-fork `OmniSim` bailing out at startup.
     fn quick_fail_binary() -> &'static str {
         if cfg!(windows) {
             // whoami rejects unknown arguments and exits fast.
@@ -2309,7 +2389,7 @@ mod tests {
     async fn wait_healthy_fails_fast_when_the_child_exits() {
         // Portable quick-exit child: the health wait must report the exit
         // (with the --multi-instance hint) instead of burning the full
-        // 30-second window against a port nothing listens on.
+        // 30-second window waiting for a port it will never report.
         let mut child = if cfg!(windows) {
             std::process::Command::new("cmd")
                 .args(["/C", "exit 0"])
@@ -2321,20 +2401,124 @@ mod tests {
                 .spawn()
                 .unwrap()
         };
-        let err = OmniSimProcess::wait_healthy(&mut child, "http://127.0.0.1:9")
+        let (_report, bound_port) = std::sync::mpsc::channel::<u16>();
+        let err = OmniSimProcess::wait_healthy(&mut child, bound_port)
             .await
             .expect_err("an exited child must fail the health wait");
         assert!(err.contains("exited during startup"), "{err}");
         assert!(err.contains("--multi-instance"), "{err}");
     }
 
+    /// A child that stays alive for about `seconds`, then exits: the
+    /// stand-in for an `OmniSim` that is still starting.
+    fn child_living_for(seconds: u32) -> std::process::Child {
+        if cfg!(windows) {
+            // ping waits one second between its echoes.
+            std::process::Command::new("ping")
+                .args(["-n", &seconds.saturating_add(1).to_string(), "127.0.0.1"])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", &format!("sleep {seconds}")])
+                .spawn()
+                .unwrap()
+        }
+    }
+
     #[tokio::test]
-    async fn spawn_on_port_reports_early_exit_and_reaps_the_child() {
-        let [port] = crate::ephemeral_ports_async::<1>().await;
-        let err = OmniSimProcess::spawn_on_port(quick_fail_binary(), port)
+    async fn wait_healthy_returns_the_port_the_child_reported_once_it_answers() {
+        let (base_url, shutdown) = spawn_stub(StatusCode::OK).await;
+        let port: u16 = base_url.rsplit(':').next().unwrap().parse().unwrap();
+        let (report, bound_port) = std::sync::mpsc::channel();
+        report.send(port).unwrap();
+        let mut child = child_living_for(30);
+        let waited = OmniSimProcess::wait_healthy(&mut child, bound_port).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = shutdown.send(());
+        assert_eq!(waited.unwrap(), port);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_healthy_times_out_naming_the_line_the_child_never_printed() {
+        // A live child that never reports a port probes nothing, and the
+        // timeout says what it was waiting for — the line a changed
+        // Kestrel format would stop matching.
+        let (_report, bound_port) = std::sync::mpsc::channel::<u16>();
+        let mut child = child_living_for(30);
+        let waited = OmniSimProcess::wait_healthy(&mut child, bound_port).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        let err = waited.expect_err("a child that never reports a port must time out");
+        assert!(err.contains("within 30 seconds"), "{err}");
+        assert!(err.contains("binding: None"), "{err}");
+        assert!(err.contains(LISTENING_ON), "{err}");
+    }
+
+    #[test]
+    fn tee_stdout_reports_the_listening_port_and_files_every_line() {
+        let stdout: &[u8] = b"Starting Discovery on port: 32227\n\
+            info: Microsoft.Hosting.Lifetime[14]\n\
+            \x20     Now listening on: http://127.0.0.1:37915\n\
+            a stray \xff byte\n\
+            after the listening line\n";
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("omnisim.stdout.log");
+        let log = std::fs::File::create(&log_path).unwrap();
+
+        let bound_port = OmniSimProcess::tee_stdout(stdout, Some(log));
+
+        assert_eq!(
+            bound_port.recv_timeout(Duration::from_secs(5)),
+            Ok(37915),
+            "the port on Kestrel's line, not the discovery port"
+        );
+        // The sender drops when the drain reaches end of stream, so the
+        // log is complete once this disconnects.
+        assert_eq!(
+            bound_port.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
+        let logged = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            logged.contains("Starting Discovery on port: 32227\n"),
+            "{logged}"
+        );
+        assert!(logged.contains("a stray \u{FFFD} byte\n"), "{logged}");
+        assert!(logged.ends_with("after the listening line\n"), "{logged}");
+    }
+
+    #[test]
+    fn tee_stdout_reports_the_port_without_a_log() {
+        let stdout: &[u8] = b"      Now listening on: http://127.0.0.1:41000\n";
+        let bound_port = OmniSimProcess::tee_stdout(stdout, None);
+        assert_eq!(bound_port.recv_timeout(Duration::from_secs(5)), Ok(41000));
+    }
+
+    #[test]
+    fn listening_port_reads_only_kestrels_listening_line() {
+        assert_eq!(
+            OmniSimProcess::listening_port("      Now listening on: http://127.0.0.1:37915\r\n"),
+            Some(37915)
+        );
+        assert_eq!(
+            OmniSimProcess::listening_port("Starting Discovery on port: 32227"),
+            None
+        );
+        assert_eq!(
+            OmniSimProcess::listening_port("      Now listening on: http://127.0.0.1:port"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_once_reports_early_exit_and_reaps_the_child() {
+        let err = OmniSimProcess::spawn_once(quick_fail_binary())
             .await
             .expect_err("a binary that exits at startup must not yield an instance");
-        // An early exit is the lost-port-race shape: retryable, not fatal.
+        // An early exit is retryable, not fatal.
         let SpawnFailure::Retry(message) = err else {
             panic!("an early exit must be retryable, got {err:?}");
         };
@@ -2343,14 +2527,11 @@ mod tests {
 
     #[test]
     fn command_pins_invariant_culture_and_scrubs_sanitizer_env() {
-        let cmd = OmniSimProcess::command(
-            "omnisim-binary",
-            "http://127.0.0.1:4242",
-            PathBuf::from("/settings/dir"),
-        );
+        let cmd = OmniSimProcess::command("omnisim-binary", PathBuf::from("/settings/dir"));
 
+        // Port 0: the instance picks its own port and prints it.
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args, ["--multi-instance", "--urls=http://127.0.0.1:4242"]);
+        assert_eq!(args, ["--multi-instance", "--urls=http://127.0.0.1:0"]);
 
         let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = cmd.get_envs().collect();
         let env = |key: &str| {
@@ -2612,12 +2793,12 @@ mod tests {
     }
 
     #[test]
-    fn roster_diagnostic_quotes_the_startup_log_for_that_port() {
-        // The diagnostic reads the same per-port stdout log the spawn
+    fn roster_diagnostic_quotes_the_startup_log_for_that_spawn() {
+        // The diagnostic reads the same per-spawn stdout log the spawn
         // wrote, so the exception OmniSim printed while constructing the
         // device lands in the panic text.
-        let port = 65006;
-        let log = OmniSimProcess::stdout_log_path(port).expect("a writable log dir");
+        let spawn = 65006;
+        let log = OmniSimProcess::stdout_log_path(spawn).expect("a writable log dir");
         std::fs::write(
             &log,
             "CoverCalibrator 0 - Exception while creating CoverCalibrator simulator: \n\
@@ -2627,7 +2808,7 @@ mod tests {
         let diagnostic = OmniSimProcess::roster_diagnostic(
             "http://127.0.0.1:65006",
             &["CoverCalibrator 0".to_string()],
-            port,
+            spawn,
         );
         let _ = std::fs::remove_file(&log);
         assert!(diagnostic.contains("CoverCalibrator 0"), "{diagnostic}");
@@ -2639,13 +2820,13 @@ mod tests {
 
     #[test]
     fn roster_diagnostic_points_at_the_log_when_it_has_no_exception() {
-        let port = 65007;
-        let log = OmniSimProcess::stdout_log_path(port).expect("a writable log dir");
+        let spawn = 65007;
+        let log = OmniSimProcess::stdout_log_path(spawn).expect("a writable log dir");
         std::fs::write(&log, "info: nothing to see\n").unwrap();
         let diagnostic = OmniSimProcess::roster_diagnostic(
             "http://127.0.0.1:65007",
             &["Telescope 0".to_string()],
-            port,
+            spawn,
         );
         let _ = std::fs::remove_file(&log);
         assert!(

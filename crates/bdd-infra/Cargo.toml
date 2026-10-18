@@ -81,3 +81,8 @@ rusty-photon-tls = { workspace = true, optional = true }
 # Only pulled in when the setup-pages feature is enabled.
 scraper = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
+
+[dev-dependencies]
+# test-util: unlocks paused tokio time (start_paused), so the OmniSim health
+# wait's 30-second deadline is tested without waiting it out.
+tokio = { workspace = true, features = ["test-util"] }
