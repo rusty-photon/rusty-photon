@@ -66,6 +66,32 @@ Under upstream's single-instance guard a port override is moot if another
 OmniSim is already running (the mutex blocks before the bind); with our
 fork's `--multi-instance` it's how concurrent instances coexist.
 
+### Two instances drawn onto one port
+
+Two OmniSims cannot listen on one address: the second exits with
+`Failed to bind to address http://127.0.0.1:<port>: address already in
+use`. But `bdd_infra::rp_harness` probes its port free (bind
+`127.0.0.1:0`, read the port, release it) before OmniSim binds it, so
+another test process can draw the same port in that gap and bind it
+first. Until the losing child exits, the winner answers at the loser's
+URL like any healthy OmniSim, and a readiness probe that only asks "is
+something healthy there?" adopts it. Both processes then run their
+scenarios against one simulator, and each one's per-scenario device
+resets land in the middle of the other's scenarios. In
+[#1499](https://github.com/rusty-photon/rusty-photon/issues/1499), two
+`rp:bdd` shards shared one instance this way: the other shard's resets
+put the filter wheel back on slot 0 and disconnected it mid-move, so
+`set_filter` never reached its slot.
+
+So the harness names each spawn. It writes a token as `Location` into
+the instance's private server profile
+(`ascom-alpaca-simulator/server/v1/instance-0.xml`, which the seed tree
+does not otherwise carry). OmniSim serves that value in
+`GET /management/v1/description`, and the harness accepts the instance
+only once the description carries its own token. A stranger's answer
+keeps it waiting until its own child exits on the failed bind, and the
+spawn moves to a fresh port.
+
 ## State persistence
 
 OmniSim writes per-device settings to XDG config:

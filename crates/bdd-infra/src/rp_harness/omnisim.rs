@@ -26,6 +26,18 @@
 //! bypasses the platform lookup entirely, so isolation is deterministic on
 //! every OS and the Bazel `omnisim` pool runs parallel everywhere.
 //!
+//! A private instance is only private if the harness talks to it. The port
+//! is probed free and released before the child binds it, so another test
+//! process can draw the same port and bind it first: the child then fails
+//! its bind and exits, but until it does, the other process's `OmniSim`
+//! answers at the child's URL exactly as the child would, and a harness
+//! that took that answer would run its scenarios against a simulator
+//! another process resets and moves under them. So every spawn names
+//! itself — [`OmniSimProcess::stamp_instance_token`] writes a token into
+//! the instance's private server profile, `OmniSim` serves it as the
+//! `Location` in `/management/v1/description`, and
+//! [`OmniSimProcess::wait_healthy`] accepts only an answer that carries it.
+//!
 //! Two more spawn-time defences keep a host's environment from turning
 //! into a wall of downstream assertion failures: the .NET culture is
 //! pinned (`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`) so the seeded
@@ -1014,9 +1026,10 @@ impl OmniSimProcess {
         let binary = Self::find_binary();
         let mut last_failure = String::new();
         for _ in 0..SPAWN_ATTEMPTS {
-            // Another process can take the port before OmniSim binds it: that
-            // lost race surfaces as an early child exit in `wait_healthy`, and
-            // costs one more attempt here.
+            // Another process can take the port before OmniSim binds it. Its
+            // answers do not carry this spawn's token, so `wait_healthy` keeps
+            // waiting until the child exits on its failed bind, and the lost
+            // race costs one more attempt here.
             let [port] = crate::ephemeral_ports_async::<1>().await;
             match Self::spawn_on_port(&binary, port).await {
                 Ok(process) => return process,
@@ -1035,10 +1048,11 @@ impl OmniSimProcess {
     }
 
     /// One spawn attempt: launch `OmniSim` on `port`, wait for it to become
-    /// healthy, then check that the device roster it advertises is one rp
-    /// can actually consume. `Retry` when the child exits early (lost the
-    /// port-bind race, or the binary predates `--multi-instance`) or never
-    /// turns healthy — the caller retries on a fresh port; `Fatal` when it
+    /// healthy as itself, then check that the device roster it advertises
+    /// is one rp can actually consume. `Retry` when the child exits early
+    /// (lost the port-bind race, or the binary predates `--multi-instance`)
+    /// or never turns healthy — the caller retries on a fresh port;
+    /// `Fatal` when its settings dir cannot take the instance token, or it
     /// came up with an unusable roster.
     async fn spawn_on_port(binary: &str, port: u16) -> Result<Self, SpawnFailure> {
         let base_url = format!("http://127.0.0.1:{port}");
@@ -1051,7 +1065,9 @@ impl OmniSimProcess {
         // log-write problem can't stop the test suite from running.
         let (stdout_target, stderr_target) = Self::open_log_files(port);
 
-        let mut cmd = Self::command(binary, &base_url, Self::prepare_settings_dir());
+        let settings_dir = Self::prepare_settings_dir();
+        let token = Self::stamp_instance_token(&settings_dir).map_err(SpawnFailure::Fatal)?;
+        let mut cmd = Self::command(binary, &base_url, settings_dir);
         cmd.stdout(stdout_target).stderr(stderr_target);
 
         // On the poll loop (see `crate::off_loop` on `PR_SET_PDEATHSIG`),
@@ -1060,7 +1076,7 @@ impl OmniSimProcess {
             .await
             .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
 
-        let outcome = match Self::wait_healthy(&mut child, &base_url).await {
+        let outcome = match Self::wait_healthy(&mut child, &base_url, &token).await {
             Ok(()) => Self::check_device_roster(&base_url, port).await,
             Err(e) => Err(SpawnFailure::Retry(e)),
         };
@@ -1354,6 +1370,53 @@ impl OmniSimProcess {
         dest
     }
 
+    /// Name one spawn in its own settings dir, and return the name: write
+    /// a server profile (`ascom-alpaca-simulator/server/v1/instance-0.xml`,
+    /// the seed tree's casing) whose `Location` is a token no other
+    /// instance on the host carries. `OmniSim` reads `Location` from that
+    /// profile and serves it in `/management/v1/description`, which is how
+    /// [`Self::wait_healthy`] tells the child from another process's
+    /// `OmniSim` answering at the same URL.
+    ///
+    /// The token joins the PID, a process-wide counter, and the wall clock:
+    /// the first two separate live spawns on one host, and the clock
+    /// separates them from a spawn in another PID namespace that drew the
+    /// same PID. It is plain ASCII, so it needs no XML escaping.
+    ///
+    /// The seed tree carries no server profile, so this writes the whole
+    /// file; `OmniSim` falls back to its defaults for every other server
+    /// setting, as it does with an empty profile.
+    fn stamp_instance_token(settings_dir: &Path) -> Result<String, String> {
+        static STAMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = STAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let token = format!("bdd-infra-omnisim-{}-{stamp}-{nanos}", std::process::id());
+        let dir = settings_dir
+            .join("ascom-alpaca-simulator")
+            .join("server")
+            .join("v1");
+        let profile = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+             <ArrayOfSettingsPair xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
+             xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n  \
+             <SettingsPair>\n    <Key>Location</Key>\n    <Value>{token}</Value>\n  </SettingsPair>\n\
+             </ArrayOfSettingsPair>\n"
+        );
+        std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(dir.join("instance-0.xml"), profile))
+            .map_err(|e| {
+                format!(
+                    "bdd-infra: failed to write the OmniSim instance token into {}: {e} — \
+                     without it the spawn cannot tell its own OmniSim from another \
+                     process's answering at the same port",
+                    dir.display()
+                )
+            })?;
+        Ok(token)
+    }
+
     /// Locate the checked-in `omnisim-config` seed tree.
     ///
     /// 1. `env!("CARGO_MANIFEST_DIR")/omnisim-config` — resolves under
@@ -1558,11 +1621,48 @@ impl OmniSimProcess {
         matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
     }
 
-    /// Poll `base_url` until `OmniSim` answers, watching the child so an
-    /// early exit (lost port-bind race; a pre-`--multi-instance` binary
-    /// deferring to another running instance) fails fast with its exit
-    /// status instead of burning the full 30-second health window.
-    async fn wait_healthy(child: &mut std::process::Child, base_url: &str) -> Result<(), String> {
+    /// The `Location` the instance at `base_url` serves in
+    /// `/management/v1/description`, or `None` when the request fails or
+    /// the body carries none.
+    async fn served_location(base_url: &str) -> Option<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("failed to build reqwest client");
+        let url = format!("{base_url}/management/v1/description");
+        let body = client
+            .get(&url)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json::<serde_json::Value>()
+            .await
+            .ok()?;
+        body.get("Value")?
+            .get("Location")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// Poll `base_url` until the child answers there: healthy, and serving
+    /// the `token` [`Self::stamp_instance_token`] put in its profile.
+    ///
+    /// A healthy answer without the token comes from another process's
+    /// `OmniSim` holding the port, which the child then fails to bind. It
+    /// is never taken for the child's: the wait goes on watching the
+    /// child, whose exit ends the attempt with its status, so
+    /// [`Self::get_or_spawn`] moves to a fresh port. The same watch fails
+    /// fast on an early exit for any other reason (a pre-`--multi-instance`
+    /// binary deferring to another running instance) instead of burning
+    /// the full 30-second health window.
+    async fn wait_healthy(
+        child: &mut std::process::Child,
+        base_url: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        let mut stranger_seen = false;
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(Some(status)) = child.try_wait() {
@@ -1571,8 +1671,20 @@ impl OmniSimProcess {
                      race, or the binary does not support --multi-instance"
                 ));
             }
-            if Self::is_healthy(base_url).await {
-                return Ok(());
+            if !Self::is_healthy(base_url).await {
+                continue;
+            }
+            match Self::served_location(base_url).await {
+                Some(location) if location == token => return Ok(()),
+                Some(location) if !stranger_seen => {
+                    tracing::debug!(
+                        base_url,
+                        %location,
+                        "another OmniSim answers at this spawn's URL; waiting for the child"
+                    );
+                    stranger_seen = true;
+                }
+                Some(_) | None => {}
             }
         }
         Err(format!(
@@ -2321,11 +2433,142 @@ mod tests {
                 .spawn()
                 .unwrap()
         };
-        let err = OmniSimProcess::wait_healthy(&mut child, "http://127.0.0.1:9")
+        let err = OmniSimProcess::wait_healthy(&mut child, "http://127.0.0.1:9", "token")
             .await
             .expect_err("an exited child must fail the health wait");
         assert!(err.contains("exited during startup"), "{err}");
         assert!(err.contains("--multi-instance"), "{err}");
+    }
+
+    /// A child that stays alive for about `seconds`, then exits: the stand-in
+    /// for an `OmniSim` that is still starting, and then fails its bind.
+    fn child_living_for(seconds: u32) -> std::process::Child {
+        if cfg!(windows) {
+            // ping waits one second between its echoes.
+            std::process::Command::new("ping")
+                .args(["-n", &seconds.saturating_add(1).to_string(), "127.0.0.1"])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", &format!("sleep {seconds}")])
+                .spawn()
+                .unwrap()
+        }
+    }
+
+    /// Stub `OmniSim` that answers the health probe, and serves
+    /// `location` in `/management/v1/description` — or has no
+    /// description route when `location` is `None`.
+    async fn spawn_description_stub(
+        location: Option<&'static str>,
+    ) -> (String, tokio::sync::oneshot::Sender<()>) {
+        let mut app = Router::new().route(
+            "/api/v1/camera/0/connected",
+            get(|| async { StatusCode::OK }),
+        );
+        if let Some(location) = location {
+            app = app.route(
+                "/management/v1/description",
+                get(move || async move {
+                    axum::Json(serde_json::json!({
+                        "Value": {"ServerName": "ASCOM Alpaca Simulators", "Location": location},
+                        "ErrorNumber": 0,
+                        "ErrorMessage": "",
+                    }))
+                }),
+            );
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{port}"), tx)
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_accepts_the_instance_serving_its_token() {
+        let (base_url, shutdown) = spawn_description_stub(Some("this-spawn")).await;
+        let mut child = child_living_for(30);
+        let waited = OmniSimProcess::wait_healthy(&mut child, &base_url, "this-spawn").await;
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = shutdown.send(());
+        waited.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_never_takes_another_instance_for_its_child() {
+        // Another process's OmniSim holds the port and answers healthy;
+        // the child is still starting, then exits on its failed bind. The
+        // wait must end on that exit, not on the stranger's answer.
+        let (base_url, shutdown) = spawn_description_stub(Some("another-spawn")).await;
+        let mut child = child_living_for(1);
+        let waited = OmniSimProcess::wait_healthy(&mut child, &base_url, "this-spawn").await;
+        let _ = shutdown.send(());
+        let err = waited.expect_err("a stranger's answer must not pass for the child's");
+        assert!(err.contains("exited during startup"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_keeps_waiting_while_the_description_is_unreadable() {
+        let (base_url, shutdown) = spawn_description_stub(None).await;
+        let mut child = child_living_for(1);
+        let waited = OmniSimProcess::wait_healthy(&mut child, &base_url, "this-spawn").await;
+        let _ = shutdown.send(());
+        let err = waited.expect_err("an instance that cannot show its token must not pass");
+        assert!(err.contains("exited during startup"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_keeps_waiting_while_nothing_answers() {
+        // Port 1: see `is_healthy_returns_false_when_connection_refused`.
+        let mut child = child_living_for(1);
+        let err = OmniSimProcess::wait_healthy(&mut child, "http://127.0.0.1:1", "this-spawn")
+            .await
+            .expect_err("a child that exits before answering must fail the wait");
+        assert!(err.contains("exited during startup"), "{err}");
+    }
+
+    #[test]
+    fn stamp_instance_token_names_each_spawn_in_its_server_profile() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let first = OmniSimProcess::stamp_instance_token(first_dir.path()).unwrap();
+        let second = OmniSimProcess::stamp_instance_token(second_dir.path()).unwrap();
+        assert_ne!(first, second, "two spawns must not share a token");
+
+        let profile = std::fs::read_to_string(
+            first_dir
+                .path()
+                .join("ascom-alpaca-simulator")
+                .join("server")
+                .join("v1")
+                .join("instance-0.xml"),
+        )
+        .unwrap();
+        assert!(
+            profile.contains(&format!("<Key>Location</Key>\n    <Value>{first}</Value>")),
+            "{profile}"
+        );
+    }
+
+    #[test]
+    fn stamp_instance_token_fails_when_the_settings_dir_cannot_hold_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("settings");
+        std::fs::write(&not_a_dir, "a file where the settings dir should be").unwrap();
+        let err = OmniSimProcess::stamp_instance_token(&not_a_dir)
+            .expect_err("a settings dir that is a file cannot take the token");
+        assert!(err.contains("instance token"), "{err}");
     }
 
     #[tokio::test]

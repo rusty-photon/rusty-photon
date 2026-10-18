@@ -551,7 +551,11 @@ test spawns `rp` alongside OmniSim and/or an event plugin:
   `XDG_CONFIG_HOME`, which .NET ignores on macOS), so concurrent test
   processes (parallel Bazel suites, `rp:bdd` shards, a dev OmniSim on the
   default port) never contend for one simulator or leak persisted profile
-  settings into each other. The spawn also pins the .NET culture
+  settings into each other. The spawn is accepted only once the instance
+  at its URL serves back a token written into its private profile, so
+  another process's OmniSim that bound the probed port first is never
+  taken for the spawn's own (`docs/references/omnisim.md` § "Two
+  instances drawn onto one port"). The spawn also pins the .NET culture
   (`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`) so the seeded profile parses
   the same on a comma-decimal host as on an `en_US` runner, and gates on
   the device roster once OmniSim is healthy: an entry without a `UniqueID`
@@ -1497,6 +1501,16 @@ and [#852](https://github.com/rusty-photon/rusty-photon/issues/852) were
 the *dead-port* shape — bind `:0`, read the port, drop the listener, and
 race a foreign server into the freed port. Here the listener is never
 released; what is unguarded is the other address family.
+
+A fourth variant needs no stub: a harness waiting for a child it spawned
+on a port drawn the dead-port way. Another process's server of the same
+kind can take the port first, and a readiness probe that asks only "is
+something healthy there?" adopts it before the child fails its bind and
+exits. [#1499](https://github.com/rusty-photon/rusty-photon/issues/1499)
+ran two `rp:bdd` shards against one OmniSim this way. The probe has to
+ask for something only its own child can answer: `OmniSimHandle` writes
+a per-spawn token into the instance's private profile and accepts only a
+description that serves it back.
 
 ---
 
