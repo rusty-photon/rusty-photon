@@ -2053,6 +2053,16 @@ async fn test_golden_sky_flat_points_at_the_zenith_and_rescales_every_frame() {
     assert_ne!(durations[1], durations[0], "frame 2 must be rescaled");
     assert_ne!(durations[2], json!("1s"), "R must inherit L's duration");
 
+    // Every frame says the sky lights it: rp refuses it while
+    // conditions are unsafe and records the light source.
+    let light_sources: Vec<Value> = tools
+        .calls()
+        .into_iter()
+        .filter(|(name, _)| name == "capture")
+        .map(|(_, args)| args["light_source"].clone())
+        .collect();
+    assert_eq!(light_sources, vec![json!("sky"); 3]);
+
     assert_eq!(session["report"]["total_frames"], json!(3.0));
     assert_eq!(session["report"]["window_over"], json!(false));
     assert_eq!(session["filter_index"], json!(2.0));

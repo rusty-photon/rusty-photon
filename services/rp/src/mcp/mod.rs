@@ -199,8 +199,14 @@ impl rmcp::handler::server::ServerHandler for McpHandler {
         mut context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         // An unknown tool has no class; leave it to the router's own
-        // "tool not found" answer rather than registering it.
-        let class = self.classes.class_of(&request.name);
+        // "tool not found" answer rather than registering it. The class
+        // is the call's: a capture is gated for a frame that needs the
+        // sky, so one reading decides both the refusal below and the
+        // unsafe transition's sweep.
+        let class = self
+            .classes
+            .class_of(&request.name)
+            .map(|class| gate::call_class(&request.name, class, request.arguments.as_ref()));
         let _guard = class.map(|class| {
             let (guard, cancel) =
                 self.in_flight
@@ -213,7 +219,7 @@ impl rmcp::handler::server::ServerHandler for McpHandler {
             tracing::debug!(
                 tool = %request.name,
                 monitor = monitor.as_deref().unwrap_or("<none>"),
-                "gated tool refused: conditions are unsafe"
+                "gated call refused: conditions are unsafe"
             );
             return Err(gate::safety_unsafe_error(monitor.as_deref()));
         }

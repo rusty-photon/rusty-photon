@@ -10,7 +10,6 @@ use tracing::debug;
 
 use rp_vocabulary::FrameType;
 
-use super::super::gate;
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
 use super::super::internals::CaptureRequest;
@@ -58,13 +57,15 @@ pub struct CaptureParams {
     /// Capture Tool Details.
     #[serde(default)]
     pub frame_type: Option<rp_vocabulary::FrameType>,
-    /// What lights the frame: `panel` (a flat panel or another light
-    /// source behind closed optics) or `sky` (a twilight flat). It
-    /// tells a panel flat from a sky flat; accepted on a `Flat` or an
-    /// untyped capture, an error on a `Light`, `Dark` or `Bias`, and
-    /// recorded on the exposure document. While conditions are unsafe
-    /// only a `Dark`, a `Bias` or a `panel` capture is taken — see
-    /// docs/services/rp.md § Capture Tool Details, *Light source*.
+    /// What lights the frame: `panel` (a light source that moves with
+    /// the optics, such as a flat panel on the dew shield) or `sky` (a
+    /// twilight flat). It tells a panel flat from a sky flat; accepted
+    /// on a `Flat` or an untyped capture, an error on a `Light`, `Dark`
+    /// or `Bias`, and recorded on the exposure document. While
+    /// conditions are unsafe only a `Dark`, a `Bias` or a `panel`
+    /// capture is taken, and only those run on through the unsafe
+    /// transition — see docs/services/rp.md § Capture Tool Details,
+    /// *Light source*.
     #[serde(default)]
     pub light_source: Option<LightSource>,
     /// A held train lease to capture under (docs/services/rp.md § Train
@@ -121,7 +122,8 @@ impl McpHandler {
                         (panel/sky, with a Flat or an untyped capture) says what lights the \
                         frame. While conditions are unsafe only a Dark, a Bias or a \
                         light_source panel capture is taken; any other is refused with the \
-                        SafetyUnsafe error"
+                        SafetyUnsafe error, and is cancelled (\"cancelled: safety\") when \
+                        conditions turn unsafe while it exposes"
     )]
     pub(crate) async fn capture(
         &self,
@@ -146,23 +148,11 @@ impl McpHandler {
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // A frame that needs the sky never gets here while unsafe: the
+        // dispatch classes the call from these same arguments and
+        // refuses it (`gate::call_class`).
         if let Some(error) = misplaced_light_source(params.frame_type, params.light_source) {
             return Ok(tool_error!("{}", error));
-        }
-        // The call is already registered (`ServerHandler::call_tool`), so
-        // a transition after this check cancels it like every capture in
-        // flight (rp.md § In-Flight Tool Calls).
-        if gate::capture_needs_the_sky(params.frame_type, params.light_source)
-            && !self.safety.is_safe()
-        {
-            let monitor = self.safety.unsafe_monitor();
-            debug!(
-                frame_type = ?params.frame_type,
-                light_source = ?params.light_source,
-                monitor = monitor.as_deref().unwrap_or("<none>"),
-                "capture refused: the frame needs the sky and conditions are unsafe"
-            );
-            return Err(gate::safety_unsafe_error(monitor.as_deref()));
         }
         let camera_id = match self.resolve_camera_addressing(
             "capture",

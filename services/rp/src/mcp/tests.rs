@@ -3135,116 +3135,34 @@ fn sidecar_of(result: &CallToolResult) -> ExposureDocument {
 }
 
 // -----------------------------------------------------------------------
-// capture — the light source, and the frames it takes while unsafe
+// capture — the light source
 // -----------------------------------------------------------------------
 
-/// An untyped 100 ms capture through camera "cam".
-fn capture_params() -> CaptureParams {
-    CaptureParams {
-        binning: None,
-        target: None,
-        frame_type: None,
-        light_source: None,
-        camera_id: Some("cam".into()),
-        train_id: None,
-        duration: Duration::from_millis(100),
-        lease_id: None,
-    }
-}
-
-/// A handler writing into `data_directory` whose safety state reads
-/// unsafe, monitor "weather-watcher" naming the cause.
-fn unsafe_handler(
-    data_directory: &std::path::Path,
-    registry: crate::equipment::EquipmentRegistry,
-) -> McpHandler {
-    let handler = McpHandler::new(
-        Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
-        SessionConfig {
-            data_directory: data_directory.to_string_lossy().to_string(),
-        },
-        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
-        None,
-    );
-    handler.safety.record_monitor("weather-watcher", false);
-    handler.safety.set_overall(false);
-    handler
-}
-
 #[tokio::test]
-async fn test_capture_refuses_a_frame_that_needs_the_sky_while_unsafe() {
+async fn test_capture_records_the_light_source_it_was_given() {
     use persistence::LightSource;
     use rp_vocabulary::FrameType;
-    // A camera that cannot start an exposure: a capture that reached it
-    // would answer "failed to start exposure", so the SafetyUnsafe
-    // error proves rp refused first.
-    let cam = MockCamera {
-        fail_start_exposure: true,
-        ..Default::default()
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let handler = unsafe_handler(temp.path(), camera_registry(Arc::new(cam)));
-    let sky_frames = [
-        (Some(FrameType::Light), None),
-        (Some(FrameType::Flat), None),
-        (Some(FrameType::Flat), Some(LightSource::Sky)),
-        (None, None),
-        (None, Some(LightSource::Sky)),
-    ];
-    for (frame_type, light_source) in sky_frames {
-        let error = handler
-            .capture_inner(
-                CaptureParams {
-                    frame_type,
-                    light_source,
-                    ..capture_params()
-                },
-                None,
-                &Cancel::never(),
-            )
-            .await
-            .expect_err("a frame that needs the sky is refused while unsafe");
-        assert_eq!(
-            error.code,
-            super::gate::SAFETY_UNSAFE_CODE,
-            "{frame_type:?}/{light_source:?}: {error:?}"
-        );
-        assert_eq!(
-            error.data.expect("the refusal carries data")["monitor"],
-            "weather-watcher"
-        );
-    }
-}
-
-#[tokio::test]
-async fn test_capture_takes_darks_bias_and_panel_lit_frames_while_unsafe() {
-    use persistence::LightSource;
-    use rp_vocabulary::FrameType;
-    let temp = tempfile::tempdir().unwrap();
-    let handler = unsafe_handler(
-        temp.path(),
-        camera_registry(Arc::new(MockCamera::default())),
-    );
-    let indoor_frames = [
-        (Some(FrameType::Dark), None),
-        (Some(FrameType::Bias), None),
+    let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
+    let frames = [
         (Some(FrameType::Flat), Some(LightSource::Panel)),
+        (Some(FrameType::Flat), Some(LightSource::Sky)),
         (None, Some(LightSource::Panel)),
+        (None, Some(LightSource::Sky)),
+        (Some(FrameType::Dark), None),
     ];
-    for (frame_type, light_source) in indoor_frames {
+    for (frame_type, light_source) in frames {
         let result = handler
             .capture_inner(
                 CaptureParams {
                     frame_type,
                     light_source,
-                    ..capture_params()
+                    ..plain_capture_params()
                 },
                 None,
                 &Cancel::never(),
             )
             .await
-            .unwrap_or_else(|e| panic!("{frame_type:?}/{light_source:?} was refused: {e:?}"));
+            .unwrap_or_else(|e| panic!("{frame_type:?}/{light_source:?} failed: {e:?}"));
         let doc = sidecar_of(&result);
         assert_eq!(doc.frame_type, frame_type);
         assert_eq!(doc.light_source, light_source);
@@ -3262,7 +3180,7 @@ async fn test_capture_refuses_a_light_source_on_a_light_dark_or_bias_frame() {
                 CaptureParams {
                     frame_type: Some(frame_type),
                     light_source: Some(LightSource::Panel),
-                    ..capture_params()
+                    ..plain_capture_params()
                 },
                 None,
                 &Cancel::never(),
@@ -11419,6 +11337,58 @@ fn capture_request(camera_id: &str, binning: u8) -> CaptureRequest<'_> {
         frame_type: None,
         light_source: None,
         lease_id: None,
+    }
+}
+
+/// A dark, a bias or a panel flat holds its camera's indoor slot while
+/// it exposes, which keeps the unsafe transition's exposure abort off
+/// it; a frame that needs the sky leaves the slot free (rp.md
+/// § `SafetyMonitor` Polling, step 3).
+#[tokio::test(start_paused = true)]
+async fn only_a_frame_that_needs_no_sky_holds_the_indoor_slot_while_it_exposes() {
+    use persistence::LightSource;
+    use rp_vocabulary::FrameType;
+    let frames = [
+        (Some(FrameType::Dark), None, true),
+        (Some(FrameType::Bias), None, true),
+        (Some(FrameType::Flat), Some(LightSource::Panel), true),
+        (None, Some(LightSource::Panel), true),
+        (Some(FrameType::Flat), Some(LightSource::Sky), false),
+        (Some(FrameType::Light), None, false),
+        (None, None, false),
+    ];
+    for (frame_type, light_source, holds) in frames {
+        let cam = Arc::new(MockCamera {
+            never_ready: true,
+            ..Default::default()
+        });
+        let (handler, _tmp) = capture_handler(cam.clone());
+        let capture = {
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let request = CaptureRequest {
+                    frame_type,
+                    light_source,
+                    ..capture_request("cam", 1)
+                };
+                handler.do_capture(request, None, &Cancel::never()).await
+            })
+        };
+        while calls(&cam.start_exposure_calls) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let entry = handler.equipment.find_camera("cam").unwrap();
+        assert_eq!(
+            entry.try_indoor_slot().is_none(),
+            holds,
+            "{frame_type:?}/{light_source:?}"
+        );
+        capture.abort();
+        let _ = capture.await;
+        assert!(
+            entry.try_indoor_slot().is_some(),
+            "{frame_type:?}/{light_source:?}: the indoor slot outlived its capture"
+        );
     }
 }
 

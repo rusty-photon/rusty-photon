@@ -36,6 +36,7 @@ use crate::persistence::fits_header;
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, MountPointing};
 use crate::train_lease::{CallKind, LeaseCall};
 
+use super::gate;
 use super::handler::McpHandler;
 use super::inflight::Cancel;
 use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
@@ -587,7 +588,9 @@ struct FrameRecord<'a> {
 /// train's camera — the shared motion-gate permit (§ Mount Motion
 /// Gate). A capture under a train lease holds the lease's slot for the
 /// camera and the call under the lease instead, and no permit of its
-/// own: the lease holds one (§ Train Lease).
+/// own: the lease holds one (§ Train Lease). A capture of a frame that
+/// needs no sky also holds the camera's indoor slot, which keeps the
+/// unsafe transition's exposure abort off it (§ `SafetyMonitor` Polling).
 ///
 /// The handle and the invariants come out of the session slot
 /// together, so an exposure always runs against metadata read from the
@@ -600,6 +603,7 @@ struct CameraClaim {
     slot: SlotGuard,
     motion_permit: Option<OwnedRwLockReadGuard<()>>,
     lease_call: Option<LeaseCall>,
+    indoor_slot: Option<SlotGuard>,
 }
 
 /// How often a cancelled capture's wind-down reads its camera's state.
@@ -1381,7 +1385,15 @@ impl McpHandler {
             slot: camera_slot,
             mut motion_permit,
             mut lease_call,
-        } = self.claim_camera(camera_id, req.lease_id, cancel).await?;
+            indoor_slot: _indoor_slot,
+        } = self
+            .claim_camera(
+                camera_id,
+                req.lease_id,
+                gate::capture_needs_the_sky(req.frame_type, req.light_source),
+                cancel,
+            )
+            .await?;
 
         // Frame geometry is written before `exposure_started` is
         // emitted: a rejected `binning` or an unreachable camera then
@@ -1901,6 +1913,13 @@ impl McpHandler {
     /// Without one, a capture through a camera a lease reserves waits
     /// for the lease to end before it takes the slot.
     ///
+    /// A frame that does not `need_the_sky` (a dark, a bias, a panel
+    /// flat) then takes the camera's indoor slot and holds it until the
+    /// capture ends: the unsafe transition does not abort a camera whose
+    /// indoor slot is held, so the frame runs on through the transition
+    /// (rp.md § `SafetyMonitor` Polling, step 3). It waits only while that
+    /// abort is under way, so the exposure cannot start into it.
+    ///
     /// The snapshot follows the waits: the connected camera handle, the
     /// train-derived focal length, and the invariant physical-sensor
     /// properties (plus the driver name) cached at connect time, cloned
@@ -1921,6 +1940,7 @@ impl McpHandler {
         &self,
         camera_id: &str,
         lease_id: Option<&str>,
+        needs_the_sky: bool,
         cancel: &Cancel,
     ) -> std::result::Result<CameraClaim, String> {
         let cam_entry = self
@@ -1950,6 +1970,15 @@ impl McpHandler {
             };
             (slot, self.train_permit(camera_id, cancel).await?)
         };
+        let indoor_slot = if needs_the_sky {
+            None
+        } else {
+            Some(tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                slot = cam_entry.indoor_slot() => slot,
+            })
+        };
         let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
         Ok(CameraClaim {
             cam,
@@ -1961,6 +1990,7 @@ impl McpHandler {
             slot,
             motion_permit,
             lease_call,
+            indoor_slot,
         })
     }
 

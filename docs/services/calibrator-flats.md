@@ -105,10 +105,13 @@ like. Nothing in the provider reads safety state.
 
 Every `capture` the provider makes — the [exposure
 search](#exposure-search)'s probe exposures and the flats themselves —
-names `light_source: "panel"`. That is what lets `rp` take it while
-conditions are unsafe: `rp` refuses a capture that names no light
-source as a frame that needs the sky (`rp.md` § Capture Tool Details,
-*Light source*). The flats also carry `frame_type: "Flat"`; a probe
+names `light_source: "panel"`: the provider drives a cover
+calibrator, whose panel moves with the optics. That is what lets `rp`
+take it while conditions are unsafe, and lets one in flight run on
+through the unsafe transition: `rp` refuses, and cancels in flight, a
+capture that names no light source as a frame that needs the sky
+(`rp.md` § Capture Tool Details, *Light source*). The flats also carry
+`frame_type: "Flat"`; a probe
 carries no frame type, so it stays a plain, unfiled capture.
 
 Every tool takes a `train_id`. The provider resolves the train through
@@ -265,9 +268,11 @@ warning; an `open_cover` failure is a warning; and an `open_cover`
 **refused by `rp`'s safety gate** (the night turned unsafe while the
 flats ran — JSON-RPC error `-32010`) is a warning that says the cover
 correctly stays closed — never a failure of the flats. If the unsafe
-transition lands *during* an exposure, `rp` aborts that exposure, the
-provider's `capture` fails, cleanup runs, and the tool returns `rp`'s
-error: the same thing that happens to lights or darks.
+transition lands *during* an exposure, the exposure runs to its end:
+`rp` neither cancels a panel-lit capture nor aborts its camera
+(`rp.md` § SafetyMonitor Polling), so `train_flats` and `take_flats`
+carry on through the transition, and only that closing `open_cover`
+is refused.
 
 A client cancellation (a stopped document, an operator cancel, the
 caller's connection dropping) reaches the provider as
