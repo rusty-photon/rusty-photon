@@ -821,8 +821,10 @@ configured, since the ratio is then undefined and such a train has no
 derived sweep anyway); `pixel_size_um` is the
 camera's x pixel size, the one the pixel-scale derivation already uses.
 `get_focuser_position` reports `min_position`, `max_position` and the
-`backlash` block beside the position (each null when the config sets
-none), so the provider can clamp a grid, refuse an out-of-range
+`backlash` block beside the position (the bounds fall back to the
+driver's `0` to `MaxStep` where the config sets none, and `backlash`
+is null where it sets no block), so the provider can clamp a grid,
+refuse an out-of-range
 prediction and walk the grid in the approach direction, the way `rp`'s
 own sweep does. Nothing here actuates; `StepSize` is a property read.
 

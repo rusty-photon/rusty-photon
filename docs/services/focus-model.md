@@ -757,8 +757,11 @@ The first attempt found the OAG at 0, the bottom of its travel. `rp`'s
 config sets no travel bounds for it, so the provider did not clamp its
 grid, and the driver refused the first sample at −40. The run failed
 and put the OAG back, and the probe started the next run at 200. That
-gap is older than the training run and applies to every train:
-[#1529](https://github.com/rusty-photon/rusty-photon/issues/1529).
+gap was older than the training run and applied to every train
+([#1529](https://github.com/rusty-photon/rusty-photon/issues/1529)):
+`rp` now reports a focuser's driver travel, `0` to `MaxStep`, as its
+bounds where the config sets none, so the provider clamps such a grid
+at `0`.
 
 ### Errors
 

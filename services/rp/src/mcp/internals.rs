@@ -2378,20 +2378,16 @@ impl McpHandler {
             .equipment
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
-        let foc = foc_entry
-            .device()
+        let (foc, bounds) = foc_entry
+            .device_with_travel_bounds()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
         let rate = foc_entry.config.steps_per_sec.value();
         let current = foc
             .position()
             .await
             .map_err(|e| format!("failed to read focuser position: {e}"))?;
-        let (positions, backlash_compensated) = plan_focuser_legs(
-            current,
-            target,
-            foc_entry.config.backlash.as_ref(),
-            (foc_entry.config.min_position, foc_entry.config.max_position),
-        );
+        let (positions, backlash_compensated) =
+            plan_focuser_legs(current, target, foc_entry.config.backlash.as_ref(), bounds);
         // Each leg is bounded like a single move: its own hop over the
         // rate, with the headroom and the floor. A leg that stalls to
         // its deadline therefore leaves the next one a full budget
@@ -2442,9 +2438,9 @@ impl McpHandler {
         })
     }
 
-    /// Resolve a focuser, validate the requested `position` against the
-    /// operator-supplied `min_position`/`max_position` bounds, issue the
-    /// Alpaca move (as an overshoot-then-target pair when the focuser's
+    /// Resolve a focuser, validate the requested `position` against its
+    /// travel bounds ([`crate::equipment::FocuserEntry::device_with_travel_bounds`]),
+    /// issue the Alpaca move (as an overshoot-then-target pair when the focuser's
     /// `backlash` block asks for it), poll until the focuser has settled
     /// on each leg (bounded by a predicted deadline; see
     /// [`Self::plan_focuser_move`]), and return the focuser's reported
@@ -2630,18 +2626,18 @@ impl McpHandler {
             .equipment
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
-        let foc = foc_entry
-            .device()
+        let (foc, (min_position, max_position)) = foc_entry
+            .device_with_travel_bounds()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
-        if let Some(min) = foc_entry.config.min_position {
+        if let Some(min) = min_position {
             if position < min {
                 return Err(format!(
                     "position out of range: {position} < min_position {min}"
                 ));
             }
         }
-        if let Some(max) = foc_entry.config.max_position {
+        if let Some(max) = max_position {
             if position > max {
                 return Err(format!(
                     "position out of range: {position} > max_position {max}"

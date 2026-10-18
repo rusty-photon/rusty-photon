@@ -1368,7 +1368,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
-| `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
+| `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
 | `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. Moves through one rotator run one at a time, and one of a rotator a [train lease](#train-lease) holds still waits for the lease to end. See [Rotator Tool Details](#rotator-tool-details) |
 | `get_rotator_position` | Ungated | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
@@ -2012,9 +2012,9 @@ rotation of a rotator a lease reserves waits for the lease to end.
 #### Focuser Tool Details
 
 `move_focuser` moves an absolute focuser to `position`, validated
-against the operator-supplied `min_position` / `max_position` bounds
-before any motion — an out-of-range target errors without touching
-the device. The tool then polls `IsMoving` every 100 ms and treats
+against the focuser's travel bounds (below) before any motion — an
+out-of-range target errors without touching the device. The tool
+then polls `IsMoving` every 100 ms and treats
 the move as **settled** only when the device reports idle **and**
 its read-back `Position` equals the target. A driver whose status
 lags the command — reporting idle for a moment right after `Move`,
@@ -2042,11 +2042,36 @@ the focuser stopped. A [train lease](#train-lease) takes the slot of
 every focuser it moves or holds still: a move that names the lease runs
 under it, and one that names none waits for the lease to end.
 
+**Travel bounds.** Every move rp makes through a focuser stays inside
+its travel bounds. ASCOM fixes an absolute focuser's travel: "The
+focuser can step between 0 and MaxStep". rp reads `MaxStep` once when
+the focuser session is established — at startup and on every
+re-establish, cached on the entry like `StepSize` (see
+[Train optics](#train-optics)); a property read, nothing moves. The
+focuser's config narrows that travel with `min_position` /
+`max_position`:
+
+- `min_position` is the configured value raised to `0`, or `0` when
+  the config sets none.
+- `max_position` is the configured value lowered to `MaxStep`, or
+  `MaxStep` when the config sets none.
+- A `MaxStep` read that fails (the property is mandatory, so this is a
+  driver or transport error) leaves the ceiling to the config alone:
+  the configured `max_position` as written, or none. The floor of `0`
+  does not depend on a read and always applies.
+
+A focuser configured with no bounds at all is therefore bounded by its
+driver's travel, so neither a sweep grid nor a backlash overshoot asks
+for a position the driver would refuse. A configured `min_position`
+above `MaxStep` leaves no travel, and every move is refused.
+
 `get_focuser_position` reports those same bounds beside `position` —
 `min_position` and `max_position` — together with the focuser's
-`backlash` block as `{ "approach", "steps" }`; each of the three is
-`null` when the config sets none. A caller planning a series of moves
-(a sweep grid, a predicted start position) can therefore keep every
+`backlash` block as `{ "approach", "steps" }`, `null` when the config
+sets none. `max_position` is `null` only when there is no ceiling (the
+config sets none and `MaxStep` could not be read); `min_position` never
+is. A caller planning a series of moves (a sweep grid, a predicted
+start position) can therefore keep every
 target inside the travel `move_focuser` enforces instead of
 discovering a bound through a rejected move, and order the moves
 along `approach` so each one arrives from the direction
@@ -2083,9 +2108,9 @@ With the block present, a move whose direction opposes `approach`
 runs as **two legs**: first to `target − steps` (for `"out"`;
 `target + steps` for `"in"`), then to `target`, so the final leg
 travels in the `approach` direction. Each leg uses the settle rule
-above. The overshoot leg is clamped to `min_position` /
-`max_position`; when the clamp leaves no room on the far side of
-the target (the target sits on the bound), the overshoot is skipped
+above. The overshoot leg is clamped to the travel bounds; when the
+clamp leaves no room on the far side of the target (the target sits
+on the bound), the overshoot is skipped
 and the move runs as a single leg. A move already travelling in the
 `approach` direction, or a zero-distance move, is a single leg.
 `move_focuser_started` is emitted once per call with
@@ -4856,7 +4881,10 @@ without having to know the focus algorithm.
 - `half_width` — required, positive integer. The sweep covers
   `[current_position − half_width, current_position + half_width]`
   in `step_size` increments. The grid is then clamped to the
-  focuser's `min_position`/`max_position` from the `FocuserConfig`.
+  focuser's travel bounds `min_position`/`max_position` — the
+  configured bounds narrowed to the driver's `0` to `MaxStep`, which
+  stand in where the config sets none (see
+  [Focuser Tool Details](#focuser-tool-details)).
   The grid is walked ascending unless the focuser's `backlash`
   block says `approach: "in"`, in which case it is walked
   descending — every sample is then approached from the same side
@@ -5062,8 +5090,8 @@ without having to know the focus algorithm.
       `half_width` — per call or from the train's block — is wider
       than it needs to be.
 6. Move the focuser to `best_position` (already inside the sweep
-   range by construction, so the operator-supplied
-   `min_position`/`max_position` bounds are guaranteed to hold).
+   range by construction, so the focuser's travel bounds
+   `min_position`/`max_position` are guaranteed to hold).
    This move travels back against the sweep direction, so with a
    `backlash` block it is the overshoot-then-approach pair: the
    focuser ends at `best_position` arriving from the same side as

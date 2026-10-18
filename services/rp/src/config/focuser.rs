@@ -184,12 +184,14 @@ pub struct FocuserConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub unique_id: Option<super::UniqueIdPin>,
-    /// Operator-supplied lower bound for `move_focuser` validation. The
-    /// device-reported `max_step` is the hardware ceiling; these fields
-    /// let the operator enforce a tighter safe-travel range.
+    /// Operator-supplied lower bound for every focuser move. The driver's
+    /// travel, `0` to `MaxStep`, is the hardware range and stands in for
+    /// a bound left unset; these fields let the operator enforce a
+    /// tighter safe-travel range inside it (rp.md § Focuser Tool
+    /// Details).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_position: Option<i32>,
-    /// Operator-supplied upper bound for `move_focuser` validation.
+    /// Operator-supplied upper bound for every focuser move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_position: Option<i32>,
     /// Assumed focuser step rate (steps/sec) used to size the predictive

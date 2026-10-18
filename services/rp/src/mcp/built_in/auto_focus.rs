@@ -739,8 +739,8 @@ impl McpHandler {
             .equipment
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
-        let foc = foc_entry
-            .device()
+        let (foc, bounds) = foc_entry
+            .device_with_travel_bounds()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
         // Read the current focuser position + temperature exactly once
@@ -770,7 +770,6 @@ impl McpHandler {
             }),
         ));
 
-        let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
         // The walk order is the focuser's property, not the caller's:
         // every sample must be reached from the backlash approach side.
         let af_params = imaging::tools::auto_focus::AutoFocusParams {
@@ -1105,10 +1104,9 @@ impl McpHandler {
             .equipment
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
-        let foc = foc_entry
-            .device()
+        let (foc, bounds) = foc_entry
+            .device_with_travel_bounds()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
-        let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
 
         let starting_position = foc
             .position()

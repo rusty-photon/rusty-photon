@@ -17,16 +17,20 @@ pub struct FocuserInvariants {
     /// `None` when the driver does not implement it or reports a
     /// non-positive or non-finite value.
     pub step_size_um: Option<f64>,
+    /// The driver's `MaxStep` — the top of an absolute focuser's
+    /// travel, whose bottom ASCOM fixes at `0` (rp.md § Focuser Tool
+    /// Details). `None` when the read failed.
+    pub max_step: Option<i32>,
 }
 
 pub struct FocuserEntry {
     pub id: String,
     pub config: config::FocuserConfig,
     /// The handle and the connect-time reads of the same session,
-    /// installed together by [`DeviceSession`]. No reader here wants
-    /// both halves — the temperature watch takes the handle, the train
-    /// optics take the step size — so the entry exposes no paired
-    /// accessor of its own.
+    /// installed together by [`DeviceSession`]. The temperature watch
+    /// takes the handle alone and the train optics the step size alone;
+    /// a move takes the handle and the travel ceiling together, through
+    /// [`Self::device_with_travel_bounds`].
     pub session: DeviceSession<dyn Focuser, FocuserInvariants>,
 
     /// One move through the focuser at a time (rp.md § Focuser Tool
@@ -49,6 +53,55 @@ impl FocuserEntry {
     #[must_use]
     pub fn invariants(&self) -> FocuserInvariants {
         self.session.metadata()
+    }
+
+    /// The handle of the current session together with the `(min, max)`
+    /// travel every move through it stays inside: the configured bounds
+    /// narrowed to the driver's travel, which stands in where the config
+    /// sets none (rp.md § Focuser Tool Details). One
+    /// [`DeviceSession::snapshot`], so a target checked against these
+    /// bounds is commanded through the driver whose `MaxStep` set them.
+    #[must_use]
+    pub fn device_with_travel_bounds(&self) -> Option<(Arc<dyn Focuser>, TravelBounds)> {
+        self.session.snapshot().map(|(device, invariants)| {
+            let bounds = travel_bounds(
+                (self.config.min_position, self.config.max_position),
+                invariants.max_step,
+            );
+            (device, bounds)
+        })
+    }
+}
+
+/// A focuser's `(min, max)` travel bounds; `None` is no bound on that
+/// side.
+pub type TravelBounds = (Option<i32>, Option<i32>);
+
+/// The configured bounds narrowed to `0`..`max_step`. The floor is the
+/// ASCOM spec's, so it holds without a read; the ceiling is `None` only
+/// when neither the config nor the `MaxStep` read supplies one.
+fn travel_bounds(configured: TravelBounds, max_step: Option<i32>) -> TravelBounds {
+    let min = configured.0.map_or(0, |min| min.max(0));
+    let max = match (configured.1, max_step) {
+        (Some(max), Some(ceiling)) => Some(max.min(ceiling)),
+        (max, ceiling) => max.or(ceiling),
+    };
+    (Some(min), max)
+}
+
+/// The `MaxStep` read as the cached fact. A `Position` is an `i32`, so a
+/// ceiling above `i32::MAX` is no ceiling a move could reach.
+fn max_step_read(focuser_id: &str, read: ascom_alpaca::ASCOMResult<u32>) -> Option<i32> {
+    match read {
+        Ok(steps) => Some(i32::try_from(steps).unwrap_or(i32::MAX)),
+        Err(e) => {
+            debug!(
+                focuser_id,
+                error = %e,
+                "MaxStep unavailable at session-establish time; the travel ceiling is the configured max_position alone"
+            );
+            None
+        }
     }
 }
 
@@ -86,13 +139,15 @@ pub(super) async fn establish_focuser(
 ) -> Result<(Arc<dyn Focuser>, FocuserInvariants), EstablishError> {
     let foc = establish_listed(config, ca_cert_path).await?;
 
-    // `StepSize` is a property of the mechanism, invariant for the life
-    // of the session: read once here, after `set_connected` (some
-    // drivers reject property reads on a disconnected device), and
-    // served from the entry to every `get_train_info`. A property read
-    // — nothing moves.
+    // `StepSize` and `MaxStep` are properties of the mechanism,
+    // invariant for the life of the session: read once here, after
+    // `set_connected` (some drivers reject property reads on a
+    // disconnected device), and served from the entry — the step size to
+    // every `get_train_info`, the ceiling to every move's travel bounds.
+    // Property reads — nothing moves.
     let invariants = FocuserInvariants {
         step_size_um: step_size_read(&config.id, foc.step_size().await),
+        max_step: max_step_read(&config.id, foc.max_step().await),
     };
     Ok((foc, invariants))
 }
@@ -108,7 +163,8 @@ pub(super) async fn connect_focuser(
             debug!(
                 focuser_id = %config.id,
                 step_size_um = ?invariants.step_size_um,
-                "focuser connected successfully; cached its step size"
+                max_step = ?invariants.max_step,
+                "focuser connected successfully; cached its step size and max step"
             );
             FocuserEntry {
                 id: config.id.clone(),
@@ -337,15 +393,39 @@ mod tests {
         }
     }
 
+    fn travel_bounds_of(entry: &FocuserEntry) -> TravelBounds {
+        entry
+            .device_with_travel_bounds()
+            .expect("a connected entry has a session")
+            .1
+    }
+
+    /// Add a `MaxStep` answer to a focuser router.
+    fn with_max_step(router: Router, max_step: u32) -> Router {
+        router.route(
+            "/api/v1/focuser/0/maxstep",
+            get(move || async move {
+                Json(serde_json::json!({
+                    "Value": max_step,
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        )
+    }
+
     fn ok_focuser_router() -> Router {
-        focuser_router_with_step_size(Some(serde_json::json!(2.5)))
+        with_max_step(
+            focuser_router_with_step_size(Some(serde_json::json!(2.5))),
+            22_000,
+        )
     }
 
     /// Server advertises a focuser at index 0 and accepts `set_connected`,
     /// exercising the `Ok(())` arm of `connect_focuser` plus the device
     /// iteration `Some(_)` match arm — the success path that doesn't run
     /// in any of the failure-branch tests above. The driver's `StepSize`
-    /// is read once and cached on the entry.
+    /// and `MaxStep` are read once and cached on the entry.
     #[tokio::test]
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;
@@ -354,6 +434,95 @@ mod tests {
         assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "main-focuser");
         assert_eq!(entry.invariants().step_size_um, Some(2.5));
+        assert_eq!(entry.invariants().max_step, Some(22_000));
+    }
+
+    /// A focuser configured without bounds is bounded by the driver's
+    /// travel once connected: `0` to the `MaxStep` it read.
+    #[tokio::test]
+    async fn a_connected_focuser_without_configured_bounds_is_bounded_by_its_driver() {
+        let stub = spawn_stub(ok_focuser_router()).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
+        assert_eq!(travel_bounds_of(&entry), (Some(0), Some(22_000)));
+    }
+
+    /// A `MaxStep` read that fails (the stub answers 404, the client an
+    /// error) leaves the ceiling unknown; the session itself is
+    /// unaffected, and the floor still holds.
+    #[tokio::test]
+    async fn connect_focuser_leaves_the_max_step_unknown_when_the_read_fails() {
+        let stub = spawn_stub(focuser_router_with_step_size(None)).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
+        assert!(entry.is_connected(), "expected a connected entry");
+        assert_eq!(entry.invariants().max_step, None);
+        assert_eq!(travel_bounds_of(&entry), (Some(0), None));
+    }
+
+    #[test]
+    fn max_step_read_saturates_a_ceiling_no_position_can_reach() {
+        assert_eq!(max_step_read("foc", Ok(u32::MAX)), Some(i32::MAX));
+    }
+
+    #[test]
+    fn max_step_read_keeps_a_ceiling_inside_the_position_range() {
+        assert_eq!(max_step_read("foc", Ok(60_000)), Some(60_000));
+    }
+
+    #[test]
+    fn travel_bounds_fall_back_to_the_driver_travel_when_the_config_sets_none() {
+        assert_eq!(
+            travel_bounds((None, None), Some(22_000)),
+            (Some(0), Some(22_000))
+        );
+    }
+
+    #[test]
+    fn travel_bounds_keep_the_floor_when_the_max_step_is_unknown() {
+        assert_eq!(travel_bounds((None, None), None), (Some(0), None));
+    }
+
+    #[test]
+    fn travel_bounds_keep_configured_bounds_inside_the_driver_travel() {
+        assert_eq!(
+            travel_bounds((Some(1000), Some(9000)), Some(22_000)),
+            (Some(1000), Some(9000))
+        );
+    }
+
+    #[test]
+    fn travel_bounds_raise_a_negative_configured_minimum_to_zero() {
+        assert_eq!(
+            travel_bounds((Some(-500), Some(9000)), Some(22_000)),
+            (Some(0), Some(9000))
+        );
+    }
+
+    #[test]
+    fn travel_bounds_lower_a_configured_maximum_beyond_max_step_to_it() {
+        assert_eq!(
+            travel_bounds((Some(1000), Some(60_000)), Some(22_000)),
+            (Some(1000), Some(22_000))
+        );
+    }
+
+    #[test]
+    fn travel_bounds_fill_each_unset_side_on_its_own() {
+        assert_eq!(
+            travel_bounds((Some(1000), None), Some(22_000)),
+            (Some(1000), Some(22_000))
+        );
+        assert_eq!(
+            travel_bounds((None, Some(9000)), Some(22_000)),
+            (Some(0), Some(9000))
+        );
+    }
+
+    #[test]
+    fn travel_bounds_leave_the_configured_maximum_as_written_when_the_max_step_is_unknown() {
+        assert_eq!(
+            travel_bounds((None, Some(60_000)), None),
+            (Some(0), Some(60_000))
+        );
     }
 
     /// A driver without `StepSize` (the stub answers 404, the client an
@@ -389,7 +558,11 @@ mod tests {
         let entry = connect_focuser(&focuser_config_for(&first.url()), None).await;
         assert_eq!(entry.invariants().step_size_um, Some(2.5));
 
-        let second = spawn_stub(focuser_router_with_step_size(Some(serde_json::json!(20.0)))).await;
+        let second = spawn_stub(with_max_step(
+            focuser_router_with_step_size(Some(serde_json::json!(20.0))),
+            30_000,
+        ))
+        .await;
         let fresh = connect_focuser(&focuser_config_for(&second.url()), None).await;
         entry.session.install(
             fresh
@@ -398,6 +571,7 @@ mod tests {
             fresh.invariants(),
         );
         assert_eq!(entry.invariants().step_size_um, Some(20.0));
+        assert_eq!(travel_bounds_of(&entry), (Some(0), Some(30_000)));
     }
 
     /// `EquipmentRegistry::new` with a focuser entry, plus `status()` and

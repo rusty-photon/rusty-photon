@@ -70,20 +70,23 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read the current absolute position of the focuser, its configured travel bounds (min_position / max_position) and its configured backlash block (approach and steps); each is null when the config sets none"
+        description = "Read the current absolute position of the focuser, its travel bounds (min_position / max_position: the configured bounds narrowed to the driver's 0..MaxStep, which stands in where the config sets none; max_position is null only when no ceiling is known) and its configured backlash block (approach and steps; null when the config sets none)"
     )]
     pub(crate) async fn get_focuser_position(
         &self,
         Parameters(params): Parameters<FocuserIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
+        let Some(entry) = self.equipment.find_focuser(&params.focuser_id) else {
+            return Ok(tool_error!("focuser not found: {}", params.focuser_id));
+        };
+        let Some((foc, (min_position, max_position))) = entry.device_with_travel_bounds() else {
+            return Ok(tool_error!("focuser not connected: {}", params.focuser_id));
+        };
 
         let position = match foc.position().await {
             Ok(p) => p,
             Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
         };
-        let min_position = entry.config.min_position;
-        let max_position = entry.config.max_position;
         let backlash = entry.config.backlash;
         debug!(
             focuser_id = %params.focuser_id,

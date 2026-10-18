@@ -25,10 +25,12 @@ Feature: Auto-focus compound tool
   reports the fit's weighted R² (fit_r_squared), the confirmation
   frame, and final_position / final_hfr — where the focuser ended and
   what was measured there — beside the fitted best_position /
-  best_hfr. The sweep grid is clamped to the operator-supplied
-  min_position / max_position bounds — points outside the bounds are
-  dropped, not coerced. The tool errors before any motion when input
-  parameters are missing or invalid (min_star_fraction outside
+  best_hfr. The sweep grid is clamped to the focuser's travel bounds
+  — the configured min_position / max_position narrowed to the
+  driver's 0 to MaxStep, which stand in where the config sets none;
+  points outside the bounds are dropped, not coerced. The tool errors
+  before any motion when input parameters are missing or invalid
+  (min_star_fraction outside
   [0, 1) and a negative confirmation_tolerance included), when the
   requested sweep would exceed the safety cap on grid size, when
   devices are unreachable, or when the clamped grid has fewer than
