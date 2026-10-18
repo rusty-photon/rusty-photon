@@ -1,7 +1,8 @@
 // Test fixtures every action's tests share: reading what the helpers print,
 // a loopback HTTP server to stand in for an API, a store or a download
-// server, and environment variables set for one test. Imported only by tests
-// (docs/skills/ci-logic.md §Tests).
+// server, environment variables set for one test, and tar archives built in
+// memory, which need no system `tar` and can be ones no packager would
+// write. Imported only by tests (docs/skills/ci-logic.md §Tests).
 
 import { createServer } from 'node:http';
 
@@ -75,4 +76,95 @@ export async function withEnv(vars, fn) {
   } finally {
     assign(saved);
   }
+}
+
+// --- Tar archives ---------------------------------------------------------------
+
+const BLOCK = 512;
+
+function field(header, start, length, value, encoding = 'utf8') {
+  header.write(value, start, length, encoding);
+}
+
+function octal(value, width) {
+  return `${value.toString(8).padStart(width - 1, '0')}\0`;
+}
+
+/**
+ * One tar header. `magic` is GNU's 'ustar  \0' (what `cargo package` writes)
+ * or POSIX's 'ustar\0', which comes with the version '00' and a `prefix`.
+ */
+export function tarHeader({ name, size = 0, type = '0', mode = 0o644, mtime = 0, magic = 'gnu', prefix = '', checksum }) {
+  const header = Buffer.alloc(BLOCK);
+  field(header, 0, 100, name);
+  field(header, 100, 8, octal(mode, 8), 'latin1');
+  field(header, 108, 8, octal(0, 8), 'latin1');
+  field(header, 116, 8, octal(0, 8), 'latin1');
+  field(header, 124, 12, octal(size, 12), 'latin1');
+  field(header, 136, 12, octal(mtime, 12), 'latin1');
+  field(header, 156, 1, type, 'latin1');
+  if (magic === 'gnu') {
+    field(header, 257, 8, 'ustar  \0', 'latin1');
+  } else {
+    field(header, 257, 6, 'ustar\0', 'latin1');
+    field(header, 263, 2, '00', 'latin1');
+    field(header, 345, 155, prefix);
+  }
+  return seal(header, checksum);
+}
+
+/**
+ * Writes `header`'s checksum, the sum of its bytes with the field read as
+ * spaces, or `checksum` in its place. For a test that edits a header.
+ */
+export function seal(header, checksum) {
+  header.fill(0x20, 148, 156);
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  field(header, 148, 8, `${(checksum ?? sum).toString(8).padStart(6, '0')}\0 `, 'latin1');
+  return header;
+}
+
+function padded(data) {
+  const size = Math.ceil(data.length / BLOCK) * BLOCK;
+  return Buffer.concat([data, Buffer.alloc(size - data.length)]);
+}
+
+/**
+ * An uncompressed tar archive of `entries`: `{ path, data, type, mode, mtime }`,
+ * or `{ raw }` for bytes placed as they are. A path over 100 bytes gets the
+ * GNU long-name entry `cargo package` writes. The end-of-archive blocks
+ * close it unless `end` is false.
+ */
+export function tar(entries, { end = true } = {}) {
+  const parts = [];
+  for (const entry of entries) {
+    if (entry.raw) {
+      parts.push(entry.raw);
+      continue;
+    }
+    const data = Buffer.from(entry.data ?? '');
+    let name = entry.path;
+    if (Buffer.byteLength(name) > 100) {
+      const long = Buffer.from(`${name}\0`);
+      parts.push(tarHeader({ name: '././@LongLink', size: long.length, type: 'L' }), padded(long));
+      name = name.slice(0, 100);
+    }
+    parts.push(
+      tarHeader({ name, size: data.length, type: entry.type ?? '0', mode: entry.mode ?? 0o644, mtime: entry.mtime ?? 0 }),
+      padded(data),
+    );
+  }
+  if (end) parts.push(Buffer.alloc(2 * BLOCK));
+  return Buffer.concat(parts);
+}
+
+/** A pax extended header record, "<length> <key>=<value>\n". */
+export function paxRecord(key, value) {
+  const body = ` ${key}=${value}\n`;
+  let length = Buffer.byteLength(body);
+  while (String(length).length + Buffer.byteLength(body) !== length) {
+    length = String(length).length + Buffer.byteLength(body);
+  }
+  return `${length}${body}`;
 }

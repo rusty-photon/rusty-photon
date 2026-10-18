@@ -12,7 +12,6 @@
 // credential is, or be saved back for every later pull request. A cache that
 // is missing, down, slow or wrong is a cold build, never a failed step.
 
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, openAsBlob } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
@@ -22,6 +21,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import {
+  command,
   describe,
   fetchWithRetry,
   getState,
@@ -42,30 +42,6 @@ const ARCHIVE = /^(target|git)\.tar(\.zst)?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 // --- Processes ------------------------------------------------------------------
-
-/**
- * Runs `cmd` with `args` and resolves to what it prints, or rejects with the
- * last line of its stderr when it exits other than 0, and with the spawn
- * error (ENOENT) when it cannot start.
- */
-export function command(cmd, args, { cwd, env } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: env ? { ...process.env, ...env } : process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [];
-    const err = [];
-    child.stdout.on('data', (chunk) => out.push(chunk));
-    child.stderr.on('data', (chunk) => err.push(chunk));
-    child.on('error', reject);
-    child.on('close', (code, signal) => {
-      if (code === 0) {
-        resolve(Buffer.concat(out).toString('utf8'));
-        return;
-      }
-      const last = Buffer.concat(err).toString('utf8').trim().split('\n').pop();
-      reject(new Error(`${cmd} ${code === null ? `was stopped by ${signal}` : `exited with ${code}`}${last ? `: ${last}` : ''}`));
-    });
-  });
-}
 
 /** Whether `cmd --version` runs: a tool the runner may lack. */
 export async function available(cmd) {

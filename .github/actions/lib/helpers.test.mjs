@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { EOL, tmpdir } from 'node:os';
 import { delimiter as PATH_DELIMITER, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -8,6 +8,7 @@ import { inspect } from 'node:util';
 
 import {
   addPath,
+  command,
   describe,
   exportVariable,
   fail,
@@ -832,6 +833,36 @@ test('requestFailure gives a status or error codes, never a message that may hol
   assert.equal(requestFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), 'no answer in time');
   assert.equal(requestFailure(new RangeError('something at 10.9.8.7')), 'RangeError');
   assert.equal(requestFailure(new HttpError('GET', 'http://10.9.8.7/cas/x', 503, 'Service Unavailable')), 'HTTP 503');
+});
+
+// --- Processes ----------------------------------------------------------------
+
+// The one program every OS and Bazel's sandbox are sure to have: this Node.
+const node = (script) => command(process.execPath, ['-e', script]);
+
+test('command resolves to what the program prints', async () => {
+  assert.equal(await node("process.stdout.write('out'); process.stderr.write('err')"), 'out');
+});
+
+test('command runs in `cwd`, with `env` added to the environment', async () => {
+  const dir = mkdtempSync(join(process.env.TEST_TMPDIR ?? tmpdir(), 'command-'));
+  const out = await command(process.execPath, ['-e', 'process.stdout.write(process.cwd() + "|" + process.env.RP_TEST + "|" + Boolean(process.env.PATH))'], {
+    cwd: dir,
+    env: { RP_TEST: 'set' },
+  });
+  const [cwd, ...rest] = out.split('|');
+  assert.equal(realpathSync(cwd), realpathSync(dir));
+  assert.deepEqual(rest, ['set', 'true']);
+});
+
+test('command rejects with the exit code and the last line of stderr', async () => {
+  await assert.rejects(node("console.error('first'); console.error('last'); process.exit(3)"), {
+    message: `${process.execPath} exited with 3: last`,
+  });
+});
+
+test('command rejects a program that cannot start', async () => {
+  await assert.rejects(command('rp-no-such-program', []), { code: 'ENOENT' });
 });
 
 // --- Hashing ------------------------------------------------------------------
