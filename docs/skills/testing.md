@@ -1066,12 +1066,17 @@ children have:
   challenges are DNS-01, which ask only for TXT records, so nothing
   connects to it);
 - a TXT record set through the challtestsrv management API comes back from
-  that DNS listener.
+  that DNS listener. The record goes under a name minted for this start
+  too: challtestsrv keeps every value set for a name and serves the oldest
+  first, so on a shared name another start that reached this sidecar's
+  management API first would shadow this start's own record.
 
 Pebble's own management listener is not configured at all: doctor never
-uses it, and without a `managementListenAddress` Pebble opens none. The
-harness gives up after 30 s to retry the whole start on fresh ports, three
-attempts before it panics with both children's logs.
+uses it, and without a `managementListenAddress` Pebble opens none. A
+sidecar check that finds another process's server ends the attempt at
+once, since challtestsrv never retries a lost bind; any other shortfall
+gets 30 s. Either way the harness retries the whole start on fresh ports,
+three attempts before it panics with both children's logs.
 
 The sidecar's two checks are the ones the directory cannot stand in for.
 challtestsrv does not exit when it loses a bind, DNS or management: it logs
