@@ -92,6 +92,20 @@ impl ConfigurableDriver for StarAdvDriver {
         &["/server/auth/password_hash"]
     }
 
+    /// The fields the mount writes at runtime: the park position `SetPark`
+    /// captures, and the AP-park choices `SetUnparkFromApPosition` and
+    /// `SetPreferredApPark` set. The mount's page names them as edited in
+    /// the file rather than carrying inputs, which a form filled before
+    /// such a write would send back over the device's own write.
+    fn file_only_pointers() -> &'static [&'static str] {
+        &[
+            "/mount/park_ra_ticks",
+            "/mount/park_dec_ticks",
+            "/mount/unpark_from_ap_position",
+            "/mount/preferred_ap_park",
+        ]
+    }
+
     /// Without a config the transport's kind is unknown, so this names
     /// what the flags pin on the default (USB) transport; the pages read
     /// [`pinned_paths`](Self::pinned_paths), which knows the kind.
@@ -315,6 +329,21 @@ mod tests {
         StarAdvDriver::apply_overrides(&mut udp, &overrides);
         assert_eq!(udp.server.port, 4247);
         assert!(matches!(udp.transport, TransportConfig::Udp(_)));
+    }
+
+    #[test]
+    fn the_runtime_written_fields_are_file_only_on_the_page() {
+        // What `SetPark` and the two AP-park actions write; a page must not
+        // carry inputs for them.
+        assert_eq!(
+            StarAdvDriver::file_only_pointers(),
+            &[
+                "/mount/park_ra_ticks",
+                "/mount/park_dec_ticks",
+                "/mount/unpark_from_ap_position",
+                "/mount/preferred_ap_park",
+            ]
+        );
     }
 
     #[test]

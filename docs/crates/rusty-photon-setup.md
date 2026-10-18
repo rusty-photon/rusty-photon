@@ -32,6 +32,7 @@ and back; a plain HTTP service calls the handler from its own router.
 What it leaves to the service: the config type and its validation
 (`ConfigurableDriver` in `rusty-photon-config`), which config section each
 device edits (`device_sections`), which fields a command-line flag pins,
+which fields the service itself writes at runtime (`file_only_pointers`),
 and where the file lives.
 
 ## The pages
@@ -98,9 +99,13 @@ key order so the rendered order is the same on every host:
 | anything else (`allOf`, `enum`, `const`, arrays of objects, custom-serde types) | file-only | — |
 
 **File-only** is never silent: the page names the field, says it is edited
-in the configuration file, and the save leaves it as the file has it.
+in the configuration file, and the save leaves it as the file has it. A
+rule a rejected save attaches to such a field is shown in its note.
 `server.tls` (certificate and key paths) is file-only on every driver;
-doctor writes it.
+doctor writes it. A service also names the fields it writes itself at
+runtime (`file_only_pointers`: a mount's park position, captured by
+`SetPark`), whatever the schema made of them: a form filled before such a
+write would otherwise carry the old value back on its next save.
 
 Labels are humanised from the path's last segments (`max_brightness` →
 "Max brightness").
@@ -138,7 +143,11 @@ A `POST` to a page submits that page's fields. The handler:
 5. answers with a page that says what was saved, and
    - for a service that reloads in process (`ApplyDisposition::Reload`),
      that it is reloading: the reload is fired after the response has
-     flushed, and the page waits for the listener to come back. A few
+     flushed, and the page waits for the listener to come back. Whether
+     anything changed is judged against the file as it was read (with the
+     overrides applied), not the running configuration: a runtime writer
+     (a mount's `SetPark`) may have moved the file on since the start, and
+     a save that changes nothing must not reload for it. A few
      lines of script poll the page's own URL until any HTTP answer arrives
      — a `401` after a credential change included — then navigate to it
      (a `no-cors` probe, since after a port change the URL is another

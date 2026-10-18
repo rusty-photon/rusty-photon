@@ -198,7 +198,10 @@ fn overlay_at(
 /// The chosen variant's fields, under its tag; a variant change replaces
 /// the whole object so the other variant's fields do not linger beside the
 /// new tag. A field named in `skipped` keeps what the object has.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enum's overlay carries the config, the pointer, the control name, the tag, the variants, the form, the pinned controls and the errors; bundling them would be a struct for one call site"
+)]
 fn overlay_variants(
     config: &mut Value,
     pointer: &str,

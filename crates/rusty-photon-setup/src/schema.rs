@@ -191,6 +191,20 @@ impl FieldModel {
         self
     }
 
+    /// Name every field at one of `pointers` as [`FieldKind::FileOnly`],
+    /// whatever the schema made of it: a field the service writes at
+    /// runtime (a mount's park position, captured by `SetPark`), which a
+    /// form filled before such a write must not carry back. The page names
+    /// it as edited in the configuration file. A pointer segment may be the
+    /// wildcard `*`; a pointer naming a tagged enum's field reaches into it.
+    #[must_use]
+    pub fn with_file_only(mut self, pointers: &[&str]) -> Self {
+        for field in &mut self.fields {
+            mark_file_only(field, "", pointers);
+        }
+        self
+    }
+
     /// The ordered fields.
     #[must_use]
     pub fn fields(&self) -> &[FieldSpec] {
@@ -248,6 +262,24 @@ fn mark_secret(field: &mut FieldSpec, base: &str, pointers: &[&str]) {
         && pointers.iter().any(|p| pointer_matches(p, &absolute))
     {
         field.kind = FieldKind::Secret;
+    }
+}
+
+/// Name `field` file-only when a pattern names it, reaching into a tagged
+/// enum's variants as [`mark_secret`] does. A pattern naming the enum
+/// itself makes the whole enum file-only.
+fn mark_file_only(field: &mut FieldSpec, base: &str, pointers: &[&str]) {
+    let absolute = format!("{base}{}", field.pointer);
+    if pointers.iter().any(|p| pointer_matches(p, &absolute)) {
+        field.kind = FieldKind::FileOnly;
+        return;
+    }
+    if let FieldKind::Variants { variants, .. } = &mut field.kind {
+        for variant in variants {
+            for inner in &mut variant.fields {
+                mark_file_only(inner, &absolute, pointers);
+            }
+        }
     }
 }
 
@@ -970,6 +1002,58 @@ mod tests {
             &FieldKind::Secret,
             "a plain field is still marked"
         );
+    }
+
+    #[test]
+    fn with_file_only_names_a_renderable_field_as_file_only_inside_a_variant_too() {
+        // A field the service writes at runtime is kept off the form
+        // whatever the schema made of it — a plain integer, or a string
+        // inside a tagged enum's variant.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mount": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "park_ra_ticks": { "type": ["integer", "null"] },
+                } },
+                "link": { "oneOf": [
+                    { "type": "object", "properties": { "kind": { "const": "serial" }, "port": { "type": "string" } } },
+                    { "type": "object", "properties": { "kind": { "const": "network" }, "host": { "type": "string" }, "lease": { "type": "string" } } },
+                ] },
+            },
+        });
+        let model = FieldModel::from_schema(&schema)
+            .with_file_only(&["/mount/park_ra_ticks", "/link/lease"]);
+        assert_eq!(
+            model.field("mount.park_ra_ticks").unwrap().kind(),
+            &FieldKind::FileOnly
+        );
+        assert_eq!(
+            model.field("mount.name").unwrap().kind(),
+            &FieldKind::Str { nullable: false },
+            "a field no pointer names is untouched"
+        );
+        let FieldKind::Variants { variants, .. } = model.field("link").unwrap().kind() else {
+            panic!("link must be a Variants leaf");
+        };
+        let network = variants.iter().find(|v| v.name == "network").unwrap();
+        let kind_of = |name: &str| {
+            network
+                .fields
+                .iter()
+                .find(|f| f.name() == name)
+                .unwrap()
+                .kind()
+                .clone()
+        };
+        assert_eq!(kind_of("link:network.lease"), FieldKind::FileOnly);
+        assert_eq!(
+            kind_of("link:network.host"),
+            FieldKind::Str { nullable: false }
+        );
+        // Naming the enum itself keeps the whole selector off the form.
+        let whole = FieldModel::from_schema(&schema).with_file_only(&["/link"]);
+        assert_eq!(whole.field("link").unwrap().kind(), &FieldKind::FileOnly);
     }
 
     #[test]

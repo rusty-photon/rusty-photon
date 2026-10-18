@@ -159,6 +159,22 @@ fn transport_pinned(world: &mut StarAdventurerWorld, kind: String) {
     );
 }
 
+#[then(expr = "the page names {string} as edited in the configuration file")]
+fn names_file_only(world: &mut StarAdventurerWorld, name: String) {
+    let state = world.setup_pages();
+    let css = format!(r#"div.file-only[id="{name}"]"#);
+    assert!(
+        dom::matches(&state.last_body, &css),
+        "{name} is not named as file-only:\n{}",
+        state.last_body
+    );
+    assert!(
+        dom::input(&state.last_body, &name).is_none(),
+        "{name} is offered as an input:\n{}",
+        state.last_body
+    );
+}
+
 #[then(expr = "the page reports the submitted values were rejected naming {string}")]
 fn rejected_naming(world: &mut StarAdventurerWorld, needle: String) {
     let state = world.setup_pages();

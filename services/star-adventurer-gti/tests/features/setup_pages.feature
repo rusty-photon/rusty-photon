@@ -12,8 +12,11 @@ Feature: Setup pages
   pinned by a command-line override is shown disabled and never persisted:
   the transport flag pins the whole block, the port flag the field it lands
   on. A value the mount's own config types refuse at the typed parse is
-  rejected with the rule named above the form. No password hash reaches a
-  page. A POST that does not come from the page itself is refused with 403.
+  rejected with the rule named above the form. The fields the mount writes
+  at runtime (the park position, the AP-park choices) are named on its
+  page as edited in the file, not offered as inputs. No password hash
+  reaches a page. A POST that does not come from the page itself is
+  refused with 403.
   With auth configured the pages answer 401 without a credential and
   render with one. The config.get, config.apply and config.schema actions
   are gone: SupportedActions lists the three ApPark actions alone.
@@ -29,11 +32,16 @@ Feature: Setup pages
     And the page shows no input named "mount.site_latitude_deg"
     And the page links to the setup page of device "telescope" 0
 
-  Scenario: The mount's page shows only its own section
+  Scenario: The mount's page shows only its own section, and names what the mount writes itself
+    The park position SetPark captures is written by the driver at runtime:
+    the page names it rather than carrying an input a stale form would send
+    back over the device's own write.
     Given a running star-adventurer service
     When I open the setup page of device "telescope" 0
     Then the page shows an input named "mount.description" with value "Sky-Watcher Star Adventurer GTi German Equatorial Mount"
     And the page shows an input named "mount.auto_flip.meridian_offset_hours" with value "0.0"
+    And the page names "mount.park_ra_ticks" as edited in the configuration file
+    And the page names "mount.preferred_ap_park" as edited in the configuration file
     And the page shows no input named "transport:usb.port"
 
   Scenario: A valid save is persisted, reloaded, and served back after the wait

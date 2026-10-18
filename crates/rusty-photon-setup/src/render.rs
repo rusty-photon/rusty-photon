@@ -108,7 +108,7 @@ pub fn rejected_banner(errors: &[FieldError], placed: &[&str]) -> Markup {
 #[must_use]
 pub fn field(spec: &FieldSpec, config: &Value, state: FieldState<'_>) -> Markup {
     match spec.kind() {
-        FieldKind::FileOnly => file_only(spec, config),
+        FieldKind::FileOnly => file_only(spec, spec.pointer(), config, state),
         FieldKind::Variants { tag, variants } => variants_field(spec, tag, variants, config, state),
         _ => scalar_field(
             spec,
@@ -185,14 +185,19 @@ fn scalar_field(
     }
 }
 
-/// A leaf the form cannot edit, named as file-only with whether it is set.
-fn file_only(spec: &FieldSpec, config: &Value) -> Markup {
-    let set = config.pointer(spec.pointer()).is_some_and(|v| !v.is_null());
+/// A leaf the form does not edit, named as file-only with whether it is
+/// set at `pointer` (a variant's field reads under its enum's object), and
+/// with its error when a rejected save attached one: a rule on such a
+/// field is still the operator's to read.
+fn file_only(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldState<'_>) -> Markup {
+    let set = config.pointer(pointer).is_some_and(|v| !v.is_null());
+    let error = state.error_for(spec.name());
     html! {
-        div.file-only id=(spec.name()) {
+        div.file-only.invalid[error.is_some()] id=(spec.name()) {
             code { (spec.name()) }
             " is edited in the configuration file; it is "
             @if set { "set." } @else { "not set." }
+            @if let Some(e) = error { div.error { (e) } }
         }
     }
 }
@@ -233,7 +238,11 @@ fn variants_field(
                         @for inner in &variant.fields {
                             @let pointer = format!("{enum_pointer}{}", inner.pointer());
                             @let shown = if chosen(&variant.name) { config } else { &Value::Null };
-                            (scalar_field(inner, &pointer, shown, state, pinned || state.is_pinned(inner.name())))
+                            @if matches!(inner.kind(), FieldKind::FileOnly) {
+                                (file_only(inner, &pointer, shown, state))
+                            } @else {
+                                (scalar_field(inner, &pointer, shown, state, pinned || state.is_pinned(inner.name())))
+                            }
                         }
                     }
                 }
@@ -513,6 +522,54 @@ mod tests {
         )
         .into_string();
         assert!(set.contains("it is set."), "{set}");
+        // A rule on a file-only field is shown in its note, not dropped.
+        let errs = errors(&[("server.tls", "the certificate file does not exist")]);
+        let rejected = field(
+            model().field("server.tls").unwrap(),
+            &json!({ "server": { "tls": { "cert": "x" } } }),
+            FieldState {
+                pinned: &[],
+                errors: &errs,
+            },
+        )
+        .into_string();
+        assert!(
+            rejected.contains(r#"class="file-only invalid""#),
+            "{rejected}"
+        );
+        assert!(
+            rejected.contains(r#"<div class="error">the certificate file does not exist</div>"#),
+            "{rejected}"
+        );
+    }
+
+    #[test]
+    fn a_file_only_field_inside_a_variant_is_named_not_rendered_as_an_input() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "link": { "oneOf": [
+                    { "type": "object", "properties": { "kind": { "const": "serial" }, "port": { "type": "string" } } },
+                    { "type": "object", "properties": { "kind": { "const": "network" }, "host": { "type": "string" }, "lease": { "type": "string" } } },
+                ] },
+            },
+        });
+        let model = FieldModel::from_schema(&schema).with_file_only(&["/link/lease"]);
+        let markup = field(
+            model.field("link").unwrap(),
+            &json!({ "link": { "kind": "network", "host": "h", "lease": "abc" } }),
+            FieldState::default(),
+        )
+        .into_string();
+        assert!(
+            markup.contains(r#"<div class="file-only" id="link:network.lease"><code>link:network.lease</code> is edited in the configuration file; it is set.</div>"#),
+            "{markup}"
+        );
+        assert!(!markup.contains(r#"name="link:network.lease""#), "{markup}");
+        assert!(
+            markup.contains(r#"name="link:network.host" value="h""#),
+            "{markup}"
+        );
     }
 
     #[test]

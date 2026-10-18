@@ -723,7 +723,13 @@ service, from the file read to the persist; and the redirect after a
 device page disables its device, like the server page's note under a
 disabled device, reads the configuration the reloaded service runs, so a
 device an `--enable-*` flag keeps on stays on its page and one the flag
-keeps off is noted as the flag's doing, not the file's.
+keeps off is noted as the flag's doing, not the file's. From the `GTi`'s
+own review: a driver names the fields it writes at runtime
+(`file_only_pointers` — the park position `SetPark` captures, the AP-park
+choices) and the page names them as file-only rather than carrying inputs
+a stale form would write back over the device's write; and whether a save
+changed anything is judged against the file as it was read, so a runtime
+write since the start does not make a save that changes nothing reload.
 
 P1 comes first and depends on no decision: it makes what we ship
 compliant before anything new is built on it. P2 is the proof: one
