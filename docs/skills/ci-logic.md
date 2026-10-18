@@ -67,7 +67,8 @@ tools/rusty-photon-ci/
   (ADR-022): search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the
   command line, `thiserror` for the errors, and for the tests `saphyr`, a
-  YAML parser that keeps each node's line.
+  YAML parser that keeps each node's line, with `saphyr-parser`, whose
+  events keep every tag.
 - **CI runs the crate's tests, not its tools, yet.** The Linux pool
   template has no Cargo until the plan's T1, so a workflow step that does
   what a tool does stays YAML, and the tool's source names the step to

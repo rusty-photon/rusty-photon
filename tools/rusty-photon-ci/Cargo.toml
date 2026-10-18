@@ -18,3 +18,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 saphyr = { workspace = true }
+saphyr-parser = { workspace = true }

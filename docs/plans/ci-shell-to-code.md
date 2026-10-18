@@ -779,10 +779,11 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   escapes, folding, block scalars, comments and aliases read as they do
   for GitHub. It reads a file as GitHub does or not at all. What it would
   read otherwise fails the test, naming its line:
+  - a tag of any kind, which no workflow needs: the parser drops some,
+    such as `!!str` on a list, so the test could not say how it reads one;
   - a key that is not a string;
   - two keys that differ only in case, a pair GitHub refuses;
   - a `<<` key, a key to GitHub and a merge to actionlint's parser;
-  - a tag outside YAML's core schema;
   - other than one document.
 
   A job's `runs-on` names a self-hosted runner when a string in it
@@ -792,7 +793,10 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   `.github/actionlint.yaml`, the list actionlint checks `runs-on` against,
   so a new runner label goes there and nowhere else. Each must be a plain
   string (letters, digits, `.`, `_`, `-`), or the test fails naming it.
-  Labels are matched in any case, as GitHub matches them, and only as
+  Nor may one be a label that YAML reads as other than a string where a
+  workflow writes it unquoted, in any case: `2024`, or `tRUE` written
+  `true`. The test reads only a workflow's strings, so it would not see
+  one. Labels are matched in any case, as GitHub matches them, and only as
   whole labels, so a file name such as `raspberry-pi-runner.md` is not
   one. Keys are matched in any case too, so the test reads at least the
   keys GitHub does.
@@ -813,9 +817,13 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     so a matrix cannot carry one into `matrix.os`. That includes a block
     scalar's text, a string spelled with an escape, an anchor's value, and
     a job's name: the Pi nightly's job is `pi / linux / arm64 / stable` for
-    that reason. Comments are not read.
+    that reason. Comments are not read. The message names the line of the
+    file that names the label, or the line its string starts on when only
+    an escape spells it.
   - **What it does not read fails it:** a file that does not parse, the
-    refusals above, and a copy that is not one `${{ }}` expression.
+    refusals above, and a copy that is not one `${{ }}` expression. A
+    workflow it does not read fails with that message alone: the runners
+    `RUNNERS` lists in it are not reported missing.
 - **Under Bazel** the workflows and `.github/actionlint.yaml` are the
   unit test's `data` (`//:workflows`, a glob in the root package, and the
   file the root package exports, since neither directory has a BUILD file;
@@ -828,7 +836,9 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   maintained and keeps a line for every node, which the test's messages
   name. Like YamlDotNet, the parser in GitHub's runner, it reads `on` as a
   string, an alias as its anchor's value, `<<` as a key, and a duplicate
-  key as an error.
+  key as an error. Its event parser, `saphyr-parser`, is a dev-dependency
+  under the same pin: its events carry every tag, where the nodes `saphyr`
+  builds keep only some.
 - **Proven locally.** Each of these edits to the real files failed the
   test under Cargo, each file restored after its run:
   - the copies: dropping the same-repo test from check.yml; a pool-label
@@ -840,19 +850,22 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     a second; generic self-hosted labels; a label list;
     `[Self-Hosted, Proxmox-Ephemeral]`; `raspberry-pi` alone;
     `group: Default`; `self-hosted` spelled with a YAML escape; the same
-    under a `Runs-On` key;
+    under a `Runs-On` key; `!!seq` on a label list;
   - check.yml's `msrv` job on an alias of `clippy`'s `runs-on`;
   - a quoted `runs-on` key in check.yml, with the same-repo test dropped;
-    a custom tag before check.yml's block indicator; `runs-on` and
-    `Runs-On` in one job; a second document in test.yml;
+    a custom tag, or `!!str`, before check.yml's block indicator, the
+    custom tag failing with its refusal alone; `runs-on` and `Runs-On` in
+    one job; a second document in test.yml;
   - in bazel.yml's matrix: `self-hosted`, `Self-Hosted`, `raspberry-pi`,
     and a line starting with `#` that names a label; in test.yml's `env`,
-    a label on a line starting with `#` inside a multi-line quoted string;
+    a label on a line starting with `#` inside a multi-line quoted string,
+    and one on a block scalar's third line, named at that line;
   - a `pull_request` trigger in pi-nightly.yml;
   - in actionlint.yaml: no `self-hosted-runner` key; a new label, plain, in
     double or single quotes, before a tab and a comment, or spelled with an
     escape, then routed as test.yml's `runs-on` or put in bazel.yml's
-    matrix; a label with `#` inside its quotes; a `<<` key;
+    matrix; a label with `#` inside its quotes; a `<<` key; the labels
+    `"2024"`, `tRUE` and `0X10`;
   - in actionlint.yaml, ahead of the last label, with that label routed as
     test.yml's `runs-on`, the spellings reviews of the line-by-line reader
     found: a dash and a tab, a bare dash, a folded label, a line at
@@ -860,9 +873,8 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
     a key between two entries.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
-  lines after it, a quoted `runs-on` key, and `!!str` before its block
-  indicator: GitHub reads each the same. Breaking each rule of the reader
-  in turn failed a unit test each time.
+  lines after it and a quoted `runs-on` key: GitHub reads each the same.
+  Breaking each rule of the reader in turn failed a unit test each time.
 - **Not guarded.** The test catches a copy that drifts and a new route,
   in review; a route disguised on purpose gets past it. Against a fork's
   pull request the defence remains the approval its workflows wait for
@@ -876,8 +888,9 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   - a runner chosen by a value from outside the workflow file, such as a
     variable or a script's output.
 
-  The only difference found between the two parsers goes the safe way: `saphyr` reads a dash followed by a tab as a list entry,
-  where YamlDotNet refuses the file.
+  The only difference found between the two parsers goes the safe way:
+  `saphyr` reads a dash followed by a tab as a list entry, where YamlDotNet
+  refuses the file.
 - **Done when** the test runs on both Bazel legs of a PR, a workflow that
   differs from what it reviews fails it, and the workflows' comments name
   it.

@@ -220,6 +220,8 @@ thiserror = "2.0.18"
 # that read the workflows and .github/actionlint.yaml. Pinned exactly: its 0.x
 # API still changes in minor releases (0.2.0 made a duplicate key an error).
 saphyr = { version = "=0.2.2", default-features = false }
+# saphyr's parser, whose events keep the tags saphyr drops; the same pin.
+saphyr-parser = { version = "=0.2.2", default-features = false }
 base64 = "0.23.0"
 mockall = "0.15.0"
 # The Servo html5ever/selectors stack: CSS-selector assertions on rendered

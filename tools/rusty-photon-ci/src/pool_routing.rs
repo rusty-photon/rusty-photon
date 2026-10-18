@@ -33,7 +33,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use saphyr::{LoadableYamlNode, MarkedYaml, Scalar, YamlData};
+use saphyr::{LoadableYamlNode, MarkedYaml, Scalar, ScanError, YamlData};
+use saphyr_parser::{Event, Parser};
 
 /// The Linux pool, as reviewed: its kill switch, the trusted-event test (a
 /// push, or a pull request from this repository) and its labels.
@@ -208,7 +209,9 @@ struct Read {
     /// the line of its `runs-on` and the value.
     runners: Vec<(String, usize, RunsOn)>,
     /// Each other string, key or value, that names one of the labels: the
-    /// line it starts on, and its line of text that names one.
+    /// line of the file that names one, and the string's line of text that
+    /// does. When only an escape spells the label, the line is the one the
+    /// string starts on.
     stray: Vec<(usize, String)>,
 }
 
@@ -231,21 +234,41 @@ fn repo_root() -> PathBuf {
 /// an alias reads as a copy of its anchor's node. The tests read a file as
 /// GitHub does or not at all, so what they would read otherwise fails,
 /// naming its line:
+/// - a tag of any kind, which no workflow needs. The parser drops some, such
+///   as `!!str` on a list, so the tests could not say how they read it;
 /// - a key that is not a string;
 /// - two keys of a mapping that differ only in case, which GitHub refuses
 ///   (the parser refuses an exact pair itself);
 /// - a `<<` key, which GitHub reads as a key and actionlint's parser as a
 ///   merge;
-/// - a tag outside the core schema, or a value its tag does not fit;
 /// - no document, or more than one.
 fn load(text: &str) -> Result<Node, String> {
-    let mut documents = Node::load_from_str(text).map_err(|e| {
+    let unparsed = |e: ScanError| {
         format!(
             "{}: does not parse as YAML: {}",
             e.marker().line(),
             e.info()
         )
-    })?;
+    };
+    // The parser's events carry every tag; the node it builds keeps some.
+    for event in Parser::new_from_str(text) {
+        let (event, span) = event.map_err(unparsed)?;
+        if let Event::Scalar(.., Some(tag))
+        | Event::SequenceStart(_, Some(tag))
+        | Event::MappingStart(_, Some(tag)) = event
+        {
+            let tag = if tag.is_yaml_core_schema() {
+                format!("!!{}", tag.suffix)
+            } else {
+                tag.to_string()
+            };
+            return Err(format!(
+                "{}: has the tag `{tag}`, where the test reads none",
+                span.start.line()
+            ));
+        }
+    }
+    let mut documents = Node::load_from_str(text).map_err(unparsed)?;
     if let Some(second) = documents.get(1) {
         return Err(at(
             second,
@@ -299,14 +322,12 @@ fn refuse(node: &Node) -> Result<(), String> {
             }
             Ok(())
         }
-        YamlData::Tagged(tag, _) => Err(at(
-            node,
-            format_args!("has the tag `{tag}`, outside YAML's core schema"),
-        )),
-        YamlData::Representation(..) | YamlData::Alias(_) | YamlData::BadValue => Err(at(
-            node,
-            "has a value the test does not read, such as one its tag does not fit",
-        )),
+        // Not reached: `load` refuses every tag first, and the parser reads
+        // an alias as its anchor's node. Should that change, the test fails.
+        YamlData::Tagged(..)
+        | YamlData::Representation(..)
+        | YamlData::Alias(_)
+        | YamlData::BadValue => Err(at(node, "has a value the test does not read")),
     }
 }
 
@@ -368,7 +389,10 @@ fn render(node: &Node) -> String {
 /// Our runners' own labels, as `.github/actionlint.yaml` lists them under
 /// `self-hosted-runner` and `labels`. Each must be a plain string (letters,
 /// digits, `.`, `_`, `-`), the characters `has_word` reads as part of a
-/// label; anything else fails, naming its line.
+/// label. Nor may one be a label that YAML reads as other than a string
+/// where a workflow writes it unquoted, in any case, as GitHub matches it:
+/// `2024`, or `tRUE` written `true`. The tests read only a workflow's
+/// strings, so they would not see it. Anything else fails, naming its line.
 fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     let document = load(text)?;
     let (key, runner) = get(&document, "self-hosted-runner")
@@ -394,9 +418,8 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
     items
         .iter()
         .map(|item| {
-            string(item)
+            let label = string(item)
                 .filter(|label| is_plain_label(label))
-                .map(str::to_owned)
                 .ok_or_else(|| {
                     at(
                         item,
@@ -406,7 +429,24 @@ fn actionlint_labels(text: &str) -> Result<Vec<String>, String> {
                             render(item)
                         ),
                     )
-                })
+                })?;
+            // YAML's spellings of a number, a boolean or null each have a
+            // lowercase form, such as `true` for `TRUE` and `0x1f` for `0X1F`.
+            let lower = label.to_lowercase();
+            if !matches!(
+                Scalar::parse_from_cow(lower.as_str().into()),
+                Scalar::String(_)
+            ) {
+                return Err(at(
+                    item,
+                    format_args!(
+                        "lists `{label}`, which YAML reads as other than a string where a \
+                         workflow writes it unquoted as `{lower}`, so the test would not \
+                         see it there"
+                    ),
+                ));
+            }
+            Ok(label.to_owned())
         })
         .collect()
 }
@@ -448,12 +488,16 @@ fn review(
 ) -> Vec<String> {
     let mut problems = Vec::new();
     let mut found: Vec<(&str, String)> = Vec::new();
+    // The workflows the test does not read: their listed runners are not
+    // missing, only unread.
+    let mut unread: Vec<&str> = Vec::new();
     for workflow in workflows {
         let name = workflow.name.as_str();
         let read = match read(&workflow.text, labels) {
             Ok(read) => read,
             Err(e) => {
                 problems.push(format!("{name}:{e}"));
+                unread.push(name);
                 continue;
             }
         };
@@ -486,7 +530,7 @@ fn review(
         }
     }
     for (file, job, _) in reviewed {
-        if !found.iter().any(|(name, id)| name == file && id == job) {
+        if !unread.contains(file) && !found.iter().any(|(name, id)| name == file && id == job) {
             problems.push(format!(
                 "RUNNERS lists job `{job}` in {file}, where the test found no `runs-on` \
                  that names a self-hosted runner.\n{MOVED}"
@@ -503,25 +547,31 @@ fn read(text: &str, labels: &Labels) -> Result<Read, String> {
         triggers: get(&document, "on").and_then(|(_, on)| events(on)),
         ..Read::default()
     };
-    walk(&document, &mut Vec::new(), labels, &mut read);
+    walk(&document, &mut Vec::new(), text, labels, &mut read);
     Ok(read)
 }
 
-/// Reads `node` into `read`. `path` holds the keys above it, `None` for a
-/// list's item, so that a job's `runs-on` is the one under `jobs` and the
-/// job's id.
-fn walk<'a>(node: &'a Node, path: &mut Vec<Option<&'a str>>, labels: &Labels, read: &mut Read) {
+/// Reads `node`, a node of the file `text`, into `read`. `path` holds the
+/// keys above it, `None` for a list's item, so that a job's `runs-on` is the
+/// one under `jobs` and the job's id.
+fn walk<'a>(
+    node: &'a Node,
+    path: &mut Vec<Option<&'a str>>,
+    text: &str,
+    labels: &Labels,
+    read: &mut Read,
+) {
     match &node.data {
         YamlData::Sequence(items) => {
             for item in items {
                 path.push(None);
-                walk(item, path, labels, read);
+                walk(item, path, text, labels, read);
                 path.pop();
             }
         }
         YamlData::Mapping(map) => {
             for (key, value) in map {
-                walk(key, path, labels, read);
+                walk(key, path, text, labels, read);
                 let name = string(key);
                 let job = job_of(path, name).filter(|_| names_self_hosted(value, labels));
                 if let Some(job) = job {
@@ -530,17 +580,33 @@ fn walk<'a>(node: &'a Node, path: &mut Vec<Option<&'a str>>, labels: &Labels, re
                     continue;
                 }
                 path.push(name);
-                walk(value, path, labels, read);
+                walk(value, path, text, labels, read);
                 path.pop();
             }
         }
         _ => {
-            let named = string(node).and_then(|text| text.lines().find(|l| labels.named_in(l)));
+            let named = string(node).and_then(|value| value.lines().find(|l| labels.named_in(l)));
             if let Some(named) = named {
-                read.stray.push((line(node), named.trim().to_owned()));
+                read.stray
+                    .push((line_naming(node, text, labels), named.trim().to_owned()));
             }
         }
     }
+}
+
+/// The line of the file `text` where `node` names one of the `labels`, or
+/// the line `node` starts on if no line of it does, as when an escape spells
+/// the label.
+fn line_naming(node: &Node, text: &str, labels: &Labels) -> usize {
+    let (start, end) = (node.span.start, node.span.end);
+    // The parser places a node in characters, not bytes.
+    let source: String = text
+        .chars()
+        .skip(start.index())
+        .take(end.index().saturating_sub(start.index()))
+        .collect();
+    let offset = source.lines().position(|l| labels.named_in(l));
+    start.line().saturating_add(offset.unwrap_or_default())
 }
 
 /// The job's id, if `path` and `key` place a value at a job's `runs-on`:
@@ -788,6 +854,15 @@ fn load_refuses_two_keys_that_differ_only_in_case() {
 }
 
 #[test]
+fn load_refuses_two_keys_that_differ_only_in_case_in_a_list() {
+    assert_eq!(
+        load("steps:\n  - name: x\n    Name: y\n").unwrap_err(),
+        "3: has the key `Name`, which differs only in case from `name` on line 2: \
+         GitHub refuses the pair"
+    );
+}
+
+#[test]
 fn load_refuses_an_exact_pair_of_keys() {
     let err = load("on: push\n\"on\": pull_request\n").unwrap_err();
     assert!(
@@ -813,10 +888,10 @@ fn load_refuses_a_merge_key() {
 }
 
 #[test]
-fn load_refuses_a_tag_outside_the_core_schema() {
+fn load_refuses_a_tag() {
     assert_eq!(
         load("a: !pool x\n").unwrap_err(),
-        "1: has the tag `!pool`, outside YAML's core schema"
+        "1: has the tag `!pool`, where the test reads none"
     );
 }
 
@@ -824,15 +899,31 @@ fn load_refuses_a_tag_outside_the_core_schema() {
 fn load_refuses_a_tag_inside_a_list() {
     assert_eq!(
         load("a:\n  - x\n  - !pool y\n").unwrap_err(),
-        "3: has the tag `!pool`, outside YAML's core schema"
+        "3: has the tag `!pool`, where the test reads none"
     );
 }
 
 #[test]
-fn load_refuses_a_value_its_tag_does_not_fit() {
+fn load_refuses_a_core_schema_tag_on_a_list() {
     assert_eq!(
-        load("a: !!int x\n").unwrap_err(),
-        "1: has a value the test does not read, such as one its tag does not fit"
+        load("a: !!str [x]\n").unwrap_err(),
+        "1: has the tag `!!str`, where the test reads none"
+    );
+}
+
+#[test]
+fn load_refuses_a_tag_on_a_mapping() {
+    assert_eq!(
+        load("a: !!map {b: 1}\n").unwrap_err(),
+        "1: has the tag `!!map`, where the test reads none"
+    );
+}
+
+#[test]
+fn refuse_refuses_a_value_the_parser_could_not_type() {
+    assert_eq!(
+        refuse(&Node::from_bare_yaml(saphyr::Yaml::BadValue)).unwrap_err(),
+        "0: has a value the test does not read"
     );
 }
 
@@ -897,6 +988,24 @@ fn actionlint_labels_refuses_a_label_that_is_not_a_string() {
         actionlint_labels("self-hosted-runner:\n  labels:\n    - 1\n").unwrap_err(),
         "3: lists `1`, which the test does not read as a plain label \
          (letters, digits, `.`, `_`, `-`)"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_label_yaml_reads_as_a_number() {
+    assert_eq!(
+        actionlint_labels("self-hosted-runner:\n  labels:\n    - \"2024\"\n").unwrap_err(),
+        "3: lists `2024`, which YAML reads as other than a string where a workflow writes \
+         it unquoted as `2024`, so the test would not see it there"
+    );
+}
+
+#[test]
+fn actionlint_labels_refuses_a_label_yaml_reads_as_a_boolean_in_lowercase() {
+    assert_eq!(
+        actionlint_labels("self-hosted-runner:\n  labels:\n    - tRUE\n").unwrap_err(),
+        "3: lists `tRUE`, which YAML reads as other than a string where a workflow writes \
+         it unquoted as `true`, so the test would not see it there"
     );
 }
 
@@ -1046,7 +1155,16 @@ fn read_reports_a_block_scalar_s_line_that_names_a_label() {
     let text = "run: |\n  echo hi\n  # runs on self-hosted\n";
     assert_eq!(
         read(text, &labels()).unwrap().stray,
-        [(2, "# runs on self-hosted".to_owned())]
+        [(3, "# runs on self-hosted".to_owned())]
+    );
+}
+
+#[test]
+fn read_reports_a_quoted_string_s_line_that_names_a_label() {
+    let text = "a: [pool, \"x\n  y pool\"]\n";
+    assert_eq!(
+        read(text, &labels()).unwrap().stray,
+        [(1, "pool".to_owned()), (2, "x y pool".to_owned())]
     );
 }
 
@@ -1179,7 +1297,23 @@ fn review_names_a_workflow_it_does_not_read() {
     }];
     assert_eq!(
         review(&workflows, &[], &labels()),
-        ["w.yml:2: has the tag `!pool`, outside YAML's core schema"]
+        ["w.yml:2: has the tag `!pool`, where the test reads none"]
+    );
+}
+
+#[test]
+fn review_does_not_look_for_the_runners_of_a_workflow_it_does_not_read() {
+    let workflows = [Workflow {
+        name: "w.yml".to_owned(),
+        text: "jobs:\n  a: !pool x\n".to_owned(),
+    }];
+    assert_eq!(
+        review(
+            &workflows,
+            &[("w.yml", "a", Runner::Labels(&["self-hosted"]))],
+            &labels()
+        ),
+        ["w.yml:2: has the tag `!pool`, where the test reads none"]
     );
 }
 

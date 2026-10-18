@@ -4757,6 +4757,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "saphyr",
+ "saphyr-parser",
  "thiserror 2.0.21",
 ]
 
