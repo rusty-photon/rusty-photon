@@ -153,23 +153,23 @@ impl McpHandler {
         let Some(cam_entry) = self.equipment.find_camera(&params.camera_id) else {
             return Ok(tool_error!("camera not found: {}", params.camera_id));
         };
-        // `max_adu` and the sensor dimensions are invariant physical-sensor
-        // properties cached on `CameraEntry` at connect time — no live
-        // Alpaca round-trip per call. `None` here means the connect-time
-        // read failed; surface as a tool_error so consumers can't mistake
-        // an absent value for a successful zero. `bin` and `exposure_range`
-        // stay live: binning is operator-mutable and exposure range can
-        // shift on driver reconfig, so neither belongs in the connect-time
+        // The sensor dimensions are invariant physical-sensor properties
+        // cached on `CameraEntry` at connect time — no live Alpaca
+        // round-trip per call. `None` here means the connect-time read
+        // failed; surface as a tool_error so consumers can't mistake an
+        // absent value for a successful zero. `max_adu`, `bin` and
+        // `exposure_range` stay live: a driver may tie `MaxADU` to the
+        // readout mode, binning is operator-mutable and exposure range can
+        // shift on driver reconfig, so none belongs in the connect-time
         // cache. The handle comes out of the session slot paired with the
         // cache, so the live reads below cannot describe a session the
         // cached values never belonged to.
         let Some((cam, invariants)) = cam_entry.snapshot() else {
             return Ok(tool_error!("camera not connected: {}", params.camera_id));
         };
-        let Some(max_adu) = invariants.max_adu else {
-            return Ok(tool_error!(
-                "max_adu unavailable for this camera (connect-time read failed)"
-            ));
+        let max_adu = match cam.max_adu().await {
+            Ok(max_adu) => max_adu,
+            Err(e) => return Ok(tool_error!("failed to read max_adu: {}", e)),
         };
 
         let (Some(sensor_x), Some(sensor_y)) =

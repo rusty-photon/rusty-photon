@@ -410,7 +410,7 @@ mod tests {
         /// How many probes have parked on `hang_connected`.
         hung_probes: AtomicU32,
         set_connected_calls: AtomicU32,
-        max_adu: AtomicU32,
+        width: AtomicU32,
         /// When set, the listing names another device at number 0 — a
         /// driver that came back with its devices reordered — while
         /// `Connected` keeps its own state.
@@ -821,12 +821,12 @@ mod tests {
     #[tokio::test]
     async fn pass_rereads_camera_invariants_on_reestablish() {
         let state = Arc::new(StubState::default());
-        state.max_adu.store(65535, Ordering::SeqCst);
+        state.width.store(6248, Ordering::SeqCst);
 
         let devices_state = state.clone();
         let connected_get_state = state.clone();
         let connected_put_state = state.clone();
-        let maxadu_state = state.clone();
+        let width_state = state.clone();
         let router = Router::new()
             .route(
                 "/management/v1/configureddevices",
@@ -839,7 +839,7 @@ mod tests {
                         // carries the `UniqueID` it was enumerated
                         // with, which is what lets the assertions tell
                         // the two handles apart.
-                        let unique_id = if state.max_adu.load(Ordering::SeqCst) == 65535 {
+                        let unique_id = if state.width.load(Ordering::SeqCst) == 6248 {
                             "cam-0"
                         } else {
                             "cam-1"
@@ -868,11 +868,11 @@ mod tests {
                 }),
             )
             .route(
-                "/api/v1/camera/0/maxadu",
+                "/api/v1/camera/0/cameraxsize",
                 get(move || {
-                    let state = maxadu_state.clone();
+                    let state = width_state.clone();
                     async move {
-                        alpaca_ok(serde_json::json!(state.max_adu.load(Ordering::SeqCst)))
+                        alpaca_ok(serde_json::json!(state.width.load(Ordering::SeqCst)))
                     }
                 }),
             );
@@ -892,7 +892,7 @@ mod tests {
             auth: None,
         };
         let entry = crate::equipment::camera::connect_camera(&camera_config, None).await;
-        assert_eq!(entry.invariants().max_adu, Some(65535));
+        assert_eq!(entry.invariants().sensor_width_px, Some(6248));
         let dead_handle = entry
             .device()
             .expect("the first connect must yield a handle");
@@ -900,7 +900,7 @@ mod tests {
 
         // Restart with a different sensor behind the same config entry.
         state.connected.store(false, Ordering::SeqCst);
-        state.max_adu.store(4095, Ordering::SeqCst);
+        state.width.store(3096, Ordering::SeqCst);
 
         let equipment = Arc::new(EquipmentRegistry {
             cameras: vec![entry],
@@ -912,13 +912,13 @@ mod tests {
         let entry = &supervisor.equipment.cameras[0];
         assert!(entry.is_connected());
         assert_eq!(
-            entry.invariants().max_adu,
-            Some(4095),
+            entry.invariants().sensor_width_px,
+            Some(3096),
             "invariants must be re-read from the fresh session, not assumed"
         );
         // The pair, not just its metadata half: fresh invariants beside
         // the dead session's handle is exactly the tear this change
-        // exists to prevent, and an assertion on `max_adu` alone would
+        // exists to prevent, and an assertion on the width alone would
         // pass on it.
         let (handle, paired) = entry
             .snapshot()
@@ -929,8 +929,8 @@ mod tests {
             "the snapshot must hold the handle this pass enumerated, not the dead session's"
         );
         assert_eq!(
-            paired.max_adu,
-            Some(4095),
+            paired.sensor_width_px,
+            Some(3096),
             "the handle and its invariants install together, so a snapshot pairs the fresh two"
         );
     }
