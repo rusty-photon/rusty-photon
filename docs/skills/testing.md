@@ -770,10 +770,15 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
 Where a bind-and-release probe does survive, it is
 `bdd_infra::ephemeral_ports::<N>()` (or `ephemeral_ports_async`), for a child
-told its port after the probe: OmniSim's and Pebble's harnesses and
-geckodriver use it, each paired with a retry on the lost race. Keep that
-pairing if you add another — and note that the retry is worth exactly as much
-as the readiness check that fires it. Verify **every** endpoint the child was
+told its port after the probe: Pebble's harness and geckodriver use it, each
+paired with a retry on the lost race. A child that binds port 0 and prints the
+port it got needs neither, which is why OmniSim's harness moved to that
+([§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)):
+the retry fires only on a lost race the readiness check notices, and another
+process's server of the same kind answering at the port is one it does not.
+Where a probed port cannot be avoided, keep the pairing — and note that the
+retry is worth exactly as much as the readiness check that fires it. Verify
+**every** endpoint the child was
 handed a port for, not just the one easiest to poll: a child that survives a
 lost bind, serving its other listeners as if nothing happened, otherwise sails
 through readiness and fails in the middle of a scenario, long past the point
@@ -1162,7 +1167,7 @@ worker) can still be inherited on macOS: std's `Command` does not expose
 bdd-infra closes that window.
 
 Three spawns stay on the loop, each rare, taking the lock's async form:
-OmniSim's `spawn_on_port` (once per test process), ConformU (run by plain
+OmniSim's `spawn_once` (once per test process), ConformU (run by plain
 `#[tokio::test]`s, not by cucumber), and ui-htmx's geckodriver (once per
 `@browser` scenario, in an opt-in suite of four). OmniSim must stay: it is spawned with Linux's
 `PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
