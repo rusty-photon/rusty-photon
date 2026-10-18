@@ -752,8 +752,10 @@ the tools crate. They are in S1's list.
 
 ### R6 — Pool routing copies stay identical
 
-Done in #1544, as a test in `tools/rusty-photon-ci`; #1547 made it read
-the labels in `.github/actionlint.yaml` exactly.
+Done in #1544, as a test in `tools/rusty-photon-ci`. It reads the
+workflows and `.github/actionlint.yaml` with a YAML parser. It started by
+reading them line by line, and every review of that reader, in #1547 and
+#1548 too, found YAML it read otherwise than GitHub.
 
 The pool's `runs-on` routing expression is copied into bazel.yml,
 bazel-coverage.yml, repin-bazel.yml and check.yml. ADR-020 makes it a
@@ -766,111 +768,116 @@ as the fallback, while the others are standalone and end in
 too, in the same diff the reviewer reads. Raised by the review of #1505.
 
 - **The guard:** `tools/rusty-photon-ci/src/pool_routing.rs`, a module
-  only the crate's tests compile. Its `RUNNERS` lists every `runs-on` that
-  names a self-hosted runner:
+  only the crate's tests compile. Its `RUNNERS` lists every job whose
+  `runs-on` names a self-hosted runner, by workflow and job id:
   - the four copies, each with its reviewed branches (the kill-switch
     variable, the trusted-event test and the pool labels, behind a
     `matrix.os` label in bazel.yml) and its hosted fallback;
   - the three label lists, in pi-nightly.yml and proxmox-runner-test.yml.
-- **What it checks.** It reads every workflow. A `runs-on` names a
-  self-hosted runner when it mentions `RP_POOL_` or one of the labels:
+- **What it checks.** It reads every workflow and
+  `.github/actionlint.yaml` with a YAML 1.2 parser (`saphyr`), so quoting,
+  escapes, folding, block scalars, comments and aliases read as they do
+  for GitHub. It reads a file as GitHub does or not at all. What it would
+  read otherwise fails the test, naming its line:
+  - a key that is not a string;
+  - two keys that differ only in case, a pair GitHub refuses;
+  - a `<<` key, a key to GitHub and a merge to actionlint's parser;
+  - a tag outside YAML's core schema;
+  - other than one document.
+
+  A job's `runs-on` names a self-hosted runner when a string in it
+  mentions `RP_POOL_`, picks a runner group or names one of the labels:
   `self-hosted`, and our runners' own (the pool's two and the Raspberry
   Pi's `raspberry-pi`). It reads our runners' labels from
   `.github/actionlint.yaml`, the list actionlint checks `runs-on` against,
-  so a new runner label goes there and nowhere else. A label there may be
-  quoted and carry a trailing comment; once those are gone it must be plain
-  (letters, digits, `.`, `_`, `-`), or the test fails naming it, rather
-  than guess at a spelling actionlint might read differently. The list
-  ends only at a key indented no deeper than `labels:`, and every other
-  line before it must be a comment or blank. Any other line fails the
-  test too, where the scan would otherwise end the list there and drop
-  every label after it. That covers a line YAML may read as part of the
-  list, such as a dash and a tab, a bare dash or a label folded onto the
-  next line, and a line that is not YAML at all. No entry goes unread
-  either: under `self-hosted-runner:`, a `- ` entry outside the list
-  fails the test, and so does a line at column 0 that is not a key, such
-  as an entry outdented there. Labels are
-  matched in any case, as GitHub matches them, and only as whole
-  labels, so a file name such as `raspberry-pi-runner.md` is not one. A
-  value runs on over the lines indented deeper than its key, without blank
-  lines. Comment lines are left out too, except inside a block scalar
-  (`>-`, `|`), where a line starting with `#` is text.
+  so a new runner label goes there and nowhere else. Each must be a plain
+  string (letters, digits, `.`, `_`, `-`), or the test fails naming it.
+  Labels are matched in any case, as GitHub matches them, and only as
+  whole labels, so a file name such as `raspberry-pi-runner.md` is not
+  one. Keys are matched in any case too, so the test reads at least the
+  keys GitHub does.
   - **Each copy** is split at its top-level `||` into pool branches and a
     fallback, and each must equal the reviewed one. Whitespace is collapsed
     first, so a reflowed copy still matches. The fallback is checked too,
     which the plan had left out: a copy that fell back to a pool label
     would send every falsy branch to the pool, a fork PR among them.
-  - **Each label list** must equal the reviewed one, in a workflow that
-    only a schedule or a dispatch starts; another trigger fails the test.
-  - **A new `runs-on` that names a self-hosted runner**, in any workflow,
-    fails the test until it is listed. A `runs-on` that picks a runner
-    group (`group:`) counts as one: this organization's only group is the
-    default one, which holds the pool's runners.
-  - **A self-hosted label anywhere else**, outside comments, fails it, so
-    a matrix cannot carry one into `matrix.os`. That includes a block
-    scalar's text, and a job's name: the Pi nightly's job is
-    `pi / linux / arm64 / stable` for that reason.
-  - **What the scan does not read fails it:** a mention of `runs-on` that
-    is not a plain `runs-on:` key, such as a quoted one, and a copy that is
-    not one `${{ }}` expression.
+  - **Each label list** must equal the reviewed one, label for label, in a
+    workflow that only a schedule or a dispatch starts; another trigger
+    fails the test.
+  - **A new `runs-on` that names a self-hosted runner**, in any job of any
+    workflow, fails the test until `RUNNERS` lists it by workflow and job
+    id. A `runs-on` that picks a runner group (`group:`) counts as one:
+    this organization's only group is the default one, which holds the
+    pool's runners.
+  - **A self-hosted label anywhere else**, in any key or value, fails it,
+    so a matrix cannot carry one into `matrix.os`. That includes a block
+    scalar's text, a string spelled with an escape, an anchor's value, and
+    a job's name: the Pi nightly's job is `pi / linux / arm64 / stable` for
+    that reason. Comments are not read.
+  - **What it does not read fails it:** a file that does not parse, the
+    refusals above, and a copy that is not one `${{ }}` expression.
 - **Under Bazel** the workflows and `.github/actionlint.yaml` are the
   unit test's `data` (`//:workflows`, a glob in the root package, and the
   file the root package exports, since neither directory has a BUILD file;
   F1 took `.github` out of `.bazelignore`). The BUILD file sets
   `CARGO_MANIFEST_DIR` for the test, relative to the runfiles root; Cargo
   sets it when it runs a test.
-- **Proven locally.** Each of these edits to a real workflow failed the
-  test under Cargo, and the first also under Bazel:
-  - dropping the same-repo test from check.yml;
-  - a pool-label fallback in repin-bazel.yml;
-  - the Windows kill switch in bazel-coverage.yml;
-  - bazel.yml's Windows leg trusting every pull request;
-  - its Windows leg behind `macos-latest`;
-  - in test.yml: a new pool-routed job, one continued on a second line,
-    one asking only for generic self-hosted labels, and a label list;
-  - a quoted `runs-on` key in check.yml;
-  - a self-hosted label in bazel.yml's matrix;
-  - a `pull_request` trigger in pi-nightly.yml;
-  - `Self-Hosted` in bazel.yml's matrix, and `[Self-Hosted,
-    Proxmox-Ephemeral]` in test.yml;
-  - a line starting with `#` inside bazel.yml's matrix block, and inside
+- **The parser** is a dev-dependency of the tools crate, so only its tests
+  build it, and its version is pinned exactly: its 0.x API still changes
+  in minor releases. Of the Rust YAML crates compared, it alone is both
+  maintained and keeps a line for every node, which the test's messages
+  name. Like YamlDotNet, the parser in GitHub's runner, it reads `on` as a
+  string, an alias as its anchor's value, `<<` as a key, and a duplicate
+  key as an error.
+- **Proven locally.** Each of these edits to the real files failed the
+  test under Cargo, each file restored after its run:
+  - the copies: dropping the same-repo test from check.yml; a pool-label
+    fallback in repin-bazel.yml; the Windows kill switch in
+    bazel-coverage.yml; bazel.yml's Windows leg trusting every pull
+    request, and behind `macos-latest`; a line starting with `#` inside
     check.yml's copy;
-  - `raspberry-pi` alone, as test.yml's `runs-on` and in bazel.yml's
-    matrix;
-  - `group: Default` as test.yml's `runs-on`;
-  - a label added to actionlint.yaml alone, then routed as test.yml's
-    `runs-on` or put in bazel.yml's matrix;
-  - actionlint.yaml without its `self-hosted-runner` list;
-  - in actionlint.yaml: a new label in double or single quotes, or before
-    a tab and a comment, then routed as test.yml's `runs-on`; a label with
-    `#` inside its quotes, and one spelled with an escape;
-  - in actionlint.yaml, ahead of the last label, with that label routed
-    as test.yml's `runs-on`: a dash and a tab, a bare dash, and a label
-    folded onto the next line, indented under `labels:` or level with it;
-    an entry outdented to column 0; a key between two entries. Each
-    passed the test on an earlier reader: the dash and the tab on the one
-    #1547 left, the label folded level with `labels:` while any line there
-    ended the list, and the last two while the reader skipped entries it
-    had stopped reading.
+  - as test.yml's `runs-on`: a new pool route, on one line or continued on
+    a second; generic self-hosted labels; a label list;
+    `[Self-Hosted, Proxmox-Ephemeral]`; `raspberry-pi` alone;
+    `group: Default`; `self-hosted` spelled with a YAML escape; the same
+    under a `Runs-On` key;
+  - check.yml's `msrv` job on an alias of `clippy`'s `runs-on`;
+  - a quoted `runs-on` key in check.yml, with the same-repo test dropped;
+    a custom tag before check.yml's block indicator; `runs-on` and
+    `Runs-On` in one job; a second document in test.yml;
+  - in bazel.yml's matrix: `self-hosted`, `Self-Hosted`, `raspberry-pi`,
+    and a line starting with `#` that names a label; in test.yml's `env`,
+    a label on a line starting with `#` inside a multi-line quoted string;
+  - a `pull_request` trigger in pi-nightly.yml;
+  - in actionlint.yaml: no `self-hosted-runner` key; a new label, plain, in
+    double or single quotes, before a tab and a comment, or spelled with an
+    escape, then routed as test.yml's `runs-on` or put in bazel.yml's
+    matrix; a label with `#` inside its quotes; a `<<` key;
+  - in actionlint.yaml, ahead of the last label, with that label routed as
+    test.yml's `runs-on`, the spellings reviews of the line-by-line reader
+    found: a dash and a tab, a bare dash, a folded label, a line at
+    `labels:`'s indent, an entry at column 0 with or without a colon, and
+    a key between two entries.
 
   Reflowing check.yml's copy onto fewer lines passed, and so did blank
-  lines after it.
-- **Not guarded.** The test reads the workflows as text, line by line.
-  It catches a copy that drifts and a new route written the plain way, in
-  review; a route disguised on purpose gets past it. Against a fork's pull
-  request the defence remains the approval its workflows wait for (ADR-020
-  layer 2). What gets past it:
+  lines after it, a quoted `runs-on` key, and `!!str` before its block
+  indicator: GitHub reads each the same. Breaking each rule of the reader
+  in turn failed a unit test each time.
+- **Not guarded.** The test catches a copy that drifts and a new route,
+  in review; a route disguised on purpose gets past it. Against a fork's
+  pull request the defence remains the approval its workflows wait for
+  (ADR-020 layer 2). What gets past it:
   - a runner chosen without naming one of those labels, since a
     self-hosted runner also carries `Linux` and `X64`;
   - a label or runner group that reaches `runs-on` through a matrix or
     another value without naming one of those labels;
   - a label built at runtime, by `format()` or `join()`, or spelled with an
-    escape: YAML's `\u0073`, or JSON's inside `fromJSON`;
-  - YAML that hides a line from a line-by-line reading: a line starting
-    with `#` inside a multi-line quoted string, or a tag or anchor before a
-    block indicator (`!!str >-`);
+    escape inside an expression's string, such as JSON's inside `fromJSON`;
   - a runner chosen by a value from outside the workflow file, such as a
-    script's output.
+    variable or a script's output.
+
+  The only difference found between the two parsers goes the safe way: `saphyr` reads a dash followed by a tab as a list entry,
+  where YamlDotNet refuses the file.
 - **Done when** the test runs on both Bazel legs of a PR, a workflow that
   differs from what it reviews fails it, and the workflows' comments name
   it.

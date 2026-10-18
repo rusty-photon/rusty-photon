@@ -216,6 +216,10 @@ ndarray = "0.17"
 ndarray-ndimage = "0.6.0"
 rmpfit = "2.0"
 thiserror = "2.0.18"
+# A YAML 1.2 parser that keeps each node's line, for rusty-photon-ci's tests
+# that read the workflows and .github/actionlint.yaml. Pinned exactly: its 0.x
+# API still changes in minor releases (0.2.0 made a duplicate key an error).
+saphyr = { version = "=0.2.2", default-features = false }
 base64 = "0.23.0"
 mockall = "0.15.0"
 # The Servo html5ever/selectors stack: CSS-selector assertions on rendered

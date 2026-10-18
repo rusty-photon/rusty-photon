@@ -15,3 +15,6 @@ workspace = true
 [dependencies]
 clap = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+saphyr = { workspace = true }
