@@ -277,7 +277,11 @@ above.
   rolling download is fetched again each week.
 - **`download`** retries a failed request, a body cut short, a transfer
   that stalls (no data for 30 s) and a SHA-256 mismatch, as one unit with
-  its check, and leaves no file unless every check passed.
+  its check, and leaves no file unless every check passed. For a server
+  that crawls rather than fails, such as a SourceForge mirror, a caller
+  can also set a floor on the rate (`minBytesPerSecond`, measured over the
+  stall time) and a time after which no attempt starts (`retryForMs`), as
+  `install-astap` does for its 100 MB database.
 - **`unpack`** runs each OS's own tool, since Node's built-ins read no
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
@@ -292,6 +296,13 @@ above.
 - **The release lives in the module**, beside the pins it is pinned to,
   not in an `action.yml` input: a new version needs new pins, and the
   developer's install below reads the same constants.
+- **A table that a workflow rewrites is JSON**, in a file beside the
+  module that reads it: `install-astap`'s `assets.json`, whose pins
+  `refresh-astap-shas.yml` reads and rewrites through the action's `pin`
+  and `repin` steps. Both read and write it whole, as JSON, so neither
+  depends on how the file is laid out, and a test checks the file keeps
+  the one layout the rewrite writes, so a refresh's diff is the pins
+  alone.
 
 ### A developer's install
 

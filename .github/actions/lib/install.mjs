@@ -118,9 +118,10 @@ export class ChecksumError extends Error {
   }
 }
 
-// Streams `url` into `file`, aborting when no data comes for `stallMs`, and
-// resolves to the SHA-256 of what it wrote.
-async function fetchTo(url, file, { stallMs, timeoutMs }) {
+// Streams `url` into `file`, aborting when no data comes for `stallMs`, or,
+// with a `minBytesPerSecond`, when a stretch of `stallMs` brings fewer bytes
+// than that rate would, and resolves to the SHA-256 of what it wrote.
+async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs }) {
   const stall = new AbortController();
   let timer;
   const wait = () => {
@@ -128,6 +129,19 @@ async function fetchTo(url, file, { stallMs, timeoutMs }) {
     timer = setTimeout(() => stall.abort(new DOMException(`no data for ${stallMs} ms`, 'TimeoutError')), stallMs);
   };
   wait();
+  // The rate is measured over each stretch of `stallMs` in turn, from the
+  // request on, so a transfer that slows part way through is caught within
+  // two of them.
+  let received = 0;
+  const floor = (minBytesPerSecond * stallMs) / 1000;
+  const slow =
+    minBytesPerSecond > 0 &&
+    setInterval(() => {
+      if (received < floor) {
+        stall.abort(new DOMException(`slower than ${minBytesPerSecond} bytes/s for ${stallMs} ms`, 'TimeoutError'));
+      }
+      received = 0;
+    }, stallMs);
   try {
     // fetch decodes a body the server sent with a Content-Encoding, where
     // curl keeps the bytes as they came: asking for none keeps the hash on
@@ -144,6 +158,7 @@ async function fetchTo(url, file, { stallMs, timeoutMs }) {
       new Transform({
         transform(chunk, _encoding, done) {
           wait();
+          received += chunk.length;
           hash.update(chunk);
           done(null, chunk);
         },
@@ -153,6 +168,7 @@ async function fetchTo(url, file, { stallMs, timeoutMs }) {
     return hash.digest('hex');
   } finally {
     clearTimeout(timer);
+    clearInterval(slow);
   }
 }
 
@@ -175,12 +191,20 @@ function check(asset, digest) {
 
 /**
  * Downloads `asset` ({ name, url, pin }) to `file` and checks it against its
- * pin. A download that fails, stalls for `stallMs` or does not match is tried
- * again, up to `attempts` times in all, as one unit with its check; a body cut
- * short fails its attempt, as fetch refuses it. Nothing is left at `file`
- * unless every check passed: the bytes land beside it first.
+ * pin. A download that fails, stalls for `stallMs`, runs slower than
+ * `minBytesPerSecond` over `stallMs` (0, the default, sets no floor), takes
+ * longer than `timeoutMs` or does not match is tried again, up to `attempts`
+ * times in all, as one unit with its check; a body cut short fails its
+ * attempt, as fetch refuses it. With `retryForMs`, no attempt starts once
+ * that long has passed since the first began, though one under way runs on,
+ * as curl's --retry-max-time works. Nothing is left at `file` unless every
+ * check passed: the bytes land beside it first.
  */
-export async function download(asset, file, { attempts = 3, delayMs = 2_000, stallMs = 30_000, timeoutMs = 600_000 } = {}) {
+export async function download(
+  asset,
+  file,
+  { attempts = 3, delayMs = 2_000, stallMs = 30_000, minBytesPerSecond = 0, timeoutMs = 600_000, retryForMs } = {},
+) {
   pinKey(asset.pin);
   await mkdir(path.dirname(file), { recursive: true });
   const part = `${file}.part`;
@@ -188,13 +212,16 @@ export async function download(asset, file, { attempts = 3, delayMs = 2_000, sta
     await retry(
       async () => {
         io.stdout(`Downloading ${asset.url}\n`);
-        check(asset, await fetchTo(asset.url, part, { stallMs, timeoutMs }));
+        check(asset, await fetchTo(asset.url, part, { stallMs, minBytesPerSecond, timeoutMs }));
       },
       {
         attempts,
         delayMs,
         label: `download ${asset.name}`,
         isRetryable: (err) => err instanceof ChecksumError || isTransient(err),
+        // retry starts no attempt once this aborts; the fetch under way does
+        // not see it.
+        signal: retryForMs === undefined ? undefined : AbortSignal.timeout(retryForMs),
       },
     );
     await rename(part, file);

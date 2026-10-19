@@ -27,7 +27,8 @@ index database is bundled.
 ASTAP is operator-supplied. The
 [`install-astap`](../../.github/actions/install-astap/action.yml) GitHub
 action is the canonical install recipe — operators can follow the same
-per-OS table by hand:
+per-OS table ([`assets.json`](../../.github/actions/install-astap/assets.json))
+by hand:
 
 - Linux: download `astap_command-line_version_Linux_*.zip` from
   SourceForge, place `astap_cli` somewhere in `$PATH`.

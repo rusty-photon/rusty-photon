@@ -70,9 +70,9 @@ first in their columns.
   ADRs and AGENTS.md (rule 2).
 - **Find every reader and writer of what moves.** Pins and URLs are
   parsed and rewritten in place by other files:
-  - `refresh-astap-shas.yml` reads install-astap's SHA table from its
-    `action.yml` ("Extract current SHA pin") and rewrites it there
-    ("Patch action.yml with new SHAs");
+  - `refresh-astap-shas.yml` reads install-astap's SHA table, which J4
+    moved into `install-astap/assets.json`, through the action's `pin`
+    step, and rewrites it through its `repin` step;
   - `scripts/check-pkg-assets.sh` reads the ZWO and SVBony `ref`
     defaults and the ZWO Windows URLs from their `action.yml`, to check
     the packages link what CI links;

@@ -74,6 +74,21 @@ node_test(
     ],
 )
 
+# install-astap: the ASTAP CLI and its D05 star database from SourceForge, and
+# the table of pins refresh-astap-shas.yml reads and rewrites.
+node_test(
+    name = "install_astap_test",
+    size = "small",
+    srcs = ["install-astap/astap.test.mjs"],
+    data = [
+        "install-astap/assets.json",
+        "install-astap/astap.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # A developer's install of a tool CI installs, by the install-* action's own
 # module: `bazel run //.github/actions:install -- <tool> [--prefix DIR]`.
 node_binary(

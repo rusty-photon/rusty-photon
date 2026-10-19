@@ -1,0 +1,12 @@
+name: Resolve ASTAP
+description: >-
+  The first step of install-astap: the cache keys of the ASTAP CLI archive this
+  runner takes and of the D05 star database, each carrying its pin.
+outputs:
+  cli-key:
+    description: The cache key of the CLI install.
+  database-key:
+    description: The cache key of the database install.
+runs:
+  using: node24
+  main: index.mjs

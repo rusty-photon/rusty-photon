@@ -1,10 +1,12 @@
 // Test fixtures every action's tests share: reading what the helpers print,
 // a loopback HTTP server to stand in for an API, a store or a download
-// server, environment variables set for one test, and tar archives built in
-// memory, which need no system `tar` and can be ones no packager would
-// write. Imported only by tests (docs/skills/ci-logic.md §Tests).
+// server, environment variables set for one test, and tar and zip archives
+// built in memory, which need no system `tar` or `zip` and can be ones no
+// packager would write. Imported only by tests (docs/skills/ci-logic.md
+// §Tests).
 
 import { createServer } from 'node:http';
+import { crc32 } from 'node:zlib';
 
 import { io } from './helpers.mjs';
 
@@ -167,4 +169,54 @@ export function paxRecord(key, value) {
     length = String(length).length + Buffer.byteLength(body);
   }
   return `${length}${body}`;
+}
+
+// --- Zip archives ---------------------------------------------------------------
+
+/**
+ * A zip archive of `entries`, `{ path, data, mode }`, each stored
+ * uncompressed; a path ending in '/' is a directory. Each records its Unix
+ * `mode`, as Info-ZIP's zip does, so an unpacker that keeps modes keeps it.
+ */
+export function zip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.path);
+    const data = Buffer.from(entry.data ?? '');
+    const directory = entry.path.endsWith('/');
+    const mode = (directory ? 0o040000 : 0o100000) | (entry.mode ?? (directory ? 0o755 : 0o644));
+    const crc = crc32(data);
+    // The fields both headers share, from "version needed" on: version 1.0,
+    // no flags, stored, midnight on 1980-01-01 (the earliest date a zip can
+    // hold), the CRC-32 and both sizes.
+    const shared = Buffer.alloc(26);
+    shared.writeUInt16LE(10, 0);
+    shared.writeUInt16LE((1 << 5) | 1, 8);
+    shared.writeUInt32LE(crc, 10);
+    shared.writeUInt32LE(data.length, 14);
+    shared.writeUInt32LE(data.length, 18);
+    shared.writeUInt16LE(name.length, 22);
+    const local = Buffer.alloc(4);
+    local.writeUInt32LE(0x04034b50, 0);
+    locals.push(local, shared, name, data);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    // Made by Unix (3), version 3.0, so the mode below is read as one.
+    central.writeUInt16LE((3 << 8) | 30, 4);
+    shared.copy(central, 6);
+    central.writeUInt32LE(((mode << 16) | (directory ? 0x10 : 0)) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+    offset += 30 + name.length + data.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
 }

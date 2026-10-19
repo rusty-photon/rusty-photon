@@ -292,6 +292,151 @@ test('download lets a slow transfer run on while data keeps coming', async () =>
   }
 });
 
+// A server whose first answer dribbles `PAYLOAD`, 10 bytes every 50 ms, a
+// rate of 200 bytes/s, and whose later answers send it whole.
+async function dribbleFirst() {
+  return serve((req, res, n) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    if (n > 1) {
+      res.end(PAYLOAD);
+      return;
+    }
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent, sent + 10));
+      sent += 10;
+    }, 50);
+    res.on('close', () => clearInterval(timer));
+  });
+}
+
+test('download abandons a transfer slower than its floor, and tries again', async () => {
+  const server = await dribbleFirst();
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    const { stdout } = await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, stallMs: 500, minBytesPerSecond: 1_000 }),
+    );
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(slower than 1000 bytes\/s for 500 ms\)/);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download catches a transfer that slows part way through', async () => {
+  // Half the payload at once, then 200 bytes/s for as long as the client
+  // listens.
+  const server = await serve((req, res, n) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    if (n > 1) {
+      res.end(PAYLOAD);
+      return;
+    }
+    let sent = PAYLOAD.length / 2;
+    res.write(PAYLOAD.subarray(0, sent));
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent, sent + 10));
+      sent += 10;
+    }, 50);
+    res.on('close', () => clearInterval(timer));
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    // The fast start counts for its own stretch of 500 ms only; the time
+    // limit ends the attempt if nothing else does.
+    const { stdout } = await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, {
+        ...fast,
+        stallMs: 500,
+        minBytesPerSecond: 1_000,
+        timeoutMs: 3_000,
+      }),
+    );
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(slower than 1000 bytes\/s for 500 ms\)/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download sets no floor unless asked, so a dribble that keeps coming finishes', async () => {
+  // 300 bytes at 200 bytes/s take 1.5 s, three times the stall timeout,
+  // with data never more than 50 ms apart.
+  const body = PAYLOAD.subarray(0, 300);
+  const server = await serve((req, res) => {
+    res.writeHead(200, { 'content-length': body.length });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(body.subarray(sent, sent + 10));
+      sent += 10;
+      if (sent >= body.length) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 50);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    await capture(() => download(asset(server, { sha256: sha(body) }), file, { ...fast, stallMs: 500 }));
+    assert.equal(server.requests.length, 1);
+    assert.deepEqual(readFileSync(file), body);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download lets a transfer above its floor run on', async () => {
+  const chunks = 15;
+  const size = Math.ceil(PAYLOAD.length / chunks);
+  const server = await serve((req, res) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent * size, (sent + 1) * size));
+      sent += 1;
+      if (sent === chunks) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 100);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    // About 6,700 bytes/s for 1.5 s, three stretches of 500 ms, against a
+    // floor of 1,000.
+    await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, stallMs: 500, minBytesPerSecond: 1_000 }),
+    );
+    assert.equal(server.requests.length, 1);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download starts no attempt once retryForMs has passed', async () => {
+  // Each answer is a 503 that takes 100 ms to come.
+  const server = await serve((req, res) => {
+    setTimeout(() => {
+      res.statusCode = 503;
+      res.end('busy');
+    }, 100);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    await capture(() =>
+      assert.rejects(download(asset(server, { sha256: sha(PAYLOAD) }), file, { attempts: 8, delayMs: 1, retryForMs: 250 })),
+    );
+    // Three attempts fit in 250 ms; all eight take about a second.
+    assert.ok(server.requests.length >= 2 && server.requests.length <= 5, `${server.requests.length} requests`);
+    assert.deepEqual(readdirSync(join(file, '..')), []);
+  } finally {
+    await server.close();
+  }
+});
+
 test('download does not try a 404 again', async () => {
   const server = await serve((req, res) => {
     res.statusCode = 404;

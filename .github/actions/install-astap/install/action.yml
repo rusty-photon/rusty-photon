@@ -1,0 +1,32 @@
+name: Install ASTAP from SourceForge
+description: >-
+  The last step of install-astap: downloads the ASTAP CLI archive into
+  <workspace>/astap, and the D05 star database into <workspace>/astap-db when
+  asked, checks each against its SHA-256 and unpacks it, unless the cache
+  restored it; then puts the CLI's directory on PATH and exports ASTAP_BINARY,
+  and ASTAP_DB_DIR with the database.
+inputs:
+  download-database:
+    description: Whether to install the D05 star database too.
+    required: false
+    default: "false"
+  download-stagger-seconds:
+    description: Seconds to wait before downloading the database, only when the cache missed it.
+    required: false
+    default: "0"
+  cli-cache-hit:
+    description: The CLI cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+  database-cache-hit:
+    description: The database cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+outputs:
+  astap-binary:
+    description: Absolute path to the astap_cli binary.
+  astap-db-dir:
+    description: Absolute path to the database's directory, or empty without it.
+runs:
+  using: node24
+  main: index.mjs
