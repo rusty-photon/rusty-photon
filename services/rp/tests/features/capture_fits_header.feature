@@ -21,9 +21,10 @@ Feature: FITS header on captured frames
   `exposure_started_at`.
 
   The header does not export every fact the sidecar records. READOUTM is
-  the readout mode's name and EGAIN the electrons per ADU; the cooler power
-  is recorded in the sidecar only. A colour mosaic is exported as BAYERPAT
-  on an unbinned frame only, and a monochrome frame carries no Bayer cards.
+  the readout mode's name. The electrons per ADU and the cooler power are
+  recorded in the sidecar only: no frame carries EGAIN, because a driver's
+  ADU need not be the file's. A colour mosaic is exported as BAYERPAT on an
+  unbinned frame only, and a monochrome frame carries no Bayer cards.
   The simulator camera is a monochrome sensor with one readout mode,
   "Default", and 0.8 electrons per ADU, and it reports cooler power, 0 %
   while its cooler is off. Every frame says its rows run top-down: ROWORDER
@@ -48,7 +49,6 @@ Feature: FITS header on captured frames
       | TELESCOP | string  | Takahashi FSQ-106EDX4     |
       | FILTER   | string  | Luminance                 |
       | READOUTM | string  | Default                   |
-      | EGAIN    | real    | 0.8                       |
       | CCD-TEMP | real    | 10                        |
       | XBINNING | integer | 1                         |
       | YBINNING | integer | 1                         |
@@ -67,6 +67,7 @@ Feature: FITS header on captured frames
       | GAIN     |
       | OFFSET   |
       | SET-TEMP |
+      | EGAIN    |
       | BAYERPAT |
       | XBAYROFF |
       | YBAYROFF |

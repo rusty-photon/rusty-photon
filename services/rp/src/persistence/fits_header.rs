@@ -93,7 +93,8 @@ pub fn header_keywords(doc: &ExposureDocument) -> Vec<Keyword> {
         doc.readout_mode_name.as_deref(),
         "camera readout mode",
     );
-    cards.real("EGAIN", doc.electrons_per_adu, "[e-/ADU] electrons per ADU");
+    // No `EGAIN`: `electrons_per_adu` counts the driver's ADU, which need
+    // not be the file's (rp.md §"FITS header").
     cards.real(
         "CCD-TEMP",
         doc.sensor_temperature_c,
@@ -448,8 +449,8 @@ mod tests {
             [
                 "ROWORDER", "DATE-OBS", "EXPTIME", "IMAGETYP", "OBJECT", "OBJCTRA", "OBJCTDEC",
                 "RA", "DEC", "INSTRUME", "TELESCOP", "FILTER", "GAIN", "OFFSET", "READOUTM",
-                "EGAIN", "CCD-TEMP", "SET-TEMP", "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ",
-                "FOCALLEN", "APTDIA", "FOCRATIO", "SITELAT", "SITELONG", "SWCREATE",
+                "CCD-TEMP", "SET-TEMP", "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ", "FOCALLEN",
+                "APTDIA", "FOCRATIO", "SITELAT", "SITELONG", "SWCREATE",
             ]
         );
     }
@@ -477,7 +478,6 @@ mod tests {
             ("GAIN", KeywordValue::Int(26)),
             ("OFFSET", KeywordValue::Int(30)),
             ("READOUTM", KeywordValue::Str("High Gain Mode 16BIT".into())),
-            ("EGAIN", KeywordValue::Float(0.8)),
             ("CCD-TEMP", KeywordValue::Float(-9.8)),
             ("SET-TEMP", KeywordValue::Float(-10.0)),
             ("XBINNING", KeywordValue::Int(2)),

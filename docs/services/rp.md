@@ -473,8 +473,8 @@ is established, with the sensor geometry, and every frame of that
 session records the value read then. One that can is read on every
 capture, with `gain`, `offset` and `max_adu`: once the frame is ready,
 while the capture still holds the camera, each read bounded at 3 s. The FITS
-header exports the mosaic of an unbinned frame, the readout mode's name and
-`electrons_per_adu`; `cooler_power_pct` is recorded in the sidecar only
+header exports the mosaic of an unbinned frame and the readout mode's name;
+`electrons_per_adu` and `cooler_power_pct` are recorded in the sidecar only
 ([FITS header](#fits-header)).
 
 - `sensor_type` is the camera's ASCOM `SensorType`, spelled as ASCOM
@@ -515,7 +515,11 @@ header exports the mosaic of an unbinned frame, the readout mode's name and
   photoelectrons per ADU. It converts ADU to electrons. It is read on
   every capture, because ASCOM has a driver change it at once when a
   change of binning, `Gain`, `Offset` or `ReadoutMode` changes it. It
-  is recorded only when positive and finite.
+  is recorded only when positive and finite, as the driver reports it.
+  The ADU it counts are the driver's, which need not be the frame's
+  pixel values: `zwo-camera` reports its ADC's, and a Raw16 frame from
+  a 12-bit sensor carries each value shifted left 4 bits, 16 times
+  larger ([zwo-camera ST2, ST3](zwo-camera.md#sensor-type--signal)).
 - `cooler_power_pct` is ASCOM `CoolerPower`, the cooler's power in
   percent. It is read on every capture, at the same moment as
   `sensor_temperature_c`, and with `cooler_setpoint_c` it shows whether
@@ -800,9 +804,10 @@ which describes how the file lays out its pixel array, not the
 exposure. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
-promise that every fact in the document reaches the header:
+promise that every fact in the document reaches the header.
 `cooler_power_pct` is recorded in the sidecar only, because no card for
-it is in common use, and a binned frame carries no Bayer pattern.
+it is in common use; so is `electrons_per_adu`, because its ADU need
+not be the file's (below); and a binned frame carries no Bayer pattern.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -820,7 +825,6 @@ it is in common use, and a binned frame carries no Bayer pattern.
 | `GAIN` | integer | `gain` | `gain` present |
 | `OFFSET` | integer | `offset` | `offset` present |
 | `READOUTM` | string | `readout_mode_name` | `readout_mode_name` present |
-| `EGAIN` | real | `electrons_per_adu`, e⁻/ADU | `electrons_per_adu` present |
 | `CCD-TEMP` | real | `sensor_temperature_c`, °C | `sensor_temperature_c` present |
 | `SET-TEMP` | real | `cooler_setpoint_c`, °C | `cooler_setpoint_c` present |
 | `XBINNING` / `YBINNING` | integer | `binning` factors | always |
@@ -867,6 +871,16 @@ Rules the table does not show:
   ([Core Fields](#core-fields-owned-by-rp)), so no rule `rp` can
   apply from what the camera reports would be right for all three. The
   sidecar still records the sensor type, the offsets and the binning.
+- **No `EGAIN`.** The card gives electrons per ADU of the file's pixel
+  values, and `electrons_per_adu` counts the driver's ADU, which need
+  not be those ([Core Fields](#core-fields-owned-by-rp)). On a 12-bit
+  ZWO sensor's Raw16 frame the driver's figure is 16 times the file's,
+  and binning changes it again: in Raw16 the ASI120MC-S averages the
+  four photosites it bins, and in Raw8 it sums them
+  ([zwo-camera B2](zwo-camera.md#geometry-binning-roi)). Converting
+  the figure would take both facts, how the driver's ADU sit in the
+  file and how the camera combined its photosites, and ASCOM reports
+  neither, so the figure is recorded in the sidecar only.
 - **`XPIXSZ`/`YPIXSZ` are the binned pixel.** The long-standing
   convention (MaxIm DL, followed by NINA and read that way by ASTAP)
   is the pixel size *after* binning, and plate solvers derive the
