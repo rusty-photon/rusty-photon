@@ -14,7 +14,10 @@ Feature: Flat-field tools served through rp
   when its median leaves the tolerance band. Both put the cover back
   the way they found it and turn the panel off on every exit — success,
   error and cancellation alike — and a reopen that rp refuses for
-  safety is a warning, not a failure.
+  safety is a warning, not a failure. Every capture the provider makes,
+  a search probe or a flat, names "panel" as its light_source, so rp
+  takes it while conditions are unsafe: flats are what an unsafe hour
+  is for.
 
   These scenarios start all three processes (OmniSim, calibrator-flats,
   rp with the provider registered) and call the tools through rp's
@@ -192,5 +195,27 @@ Feature: Flat-field tools served through rp
     And the tool result "/trained" should have 1 entries
     And the tool result "/cover_restored" should be false
     And the tool result "/warnings" should contain an entry mentioning "open_cover"
+    And the calibrator panel should be off
+    And the cover should be closed
+
+  # rp refuses a capture that needs the sky while unsafe and takes one
+  # that names the panel as its light source (rp.md § Capture Tool
+  # Details, *Light source*). The search's probes and the flats both
+  # name it, so training and taking flats both work behind the closed
+  # cover.
+  Scenario: Flats are trained and taken while conditions are unsafe
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And the flats provider is configured with tolerance "1.0"
+    And rp is running with an imaging train on the simulator and calibrator-flats registered as a tool provider
+    And an MCP client connected to rp
+    When the safety monitor reports unsafe
+    And the safety status reports overall "unsafe" within 5 seconds
+    And the MCP client calls "train_flats" with {"train_id": "main", "filters": ["Luminance"]}
+    Then the tool call should succeed
+    And the tool result "/trained" should have 1 entries
+    When the MCP client calls "take_flats" with {"train_id": "main", "count": 1, "filters": ["Luminance"]}
+    Then the tool call should succeed
+    And the tool result "/total_frames" should be 1
     And the calibrator panel should be off
     And the cover should be closed

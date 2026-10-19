@@ -712,16 +712,26 @@ Resume behavior — on every in-process resume (a safety pause lifting,
 ## Safety Behavior
 
 On an unsafe transition `rp` — not `session-runner` — cancels the run's
-in-flight tool call (a gated call such as `slew` aborts its motion, a
-`capture` aborts its exposure, and either answers the tool error
-`cancelled: safety`), stops guiding, parks the mount, and answers the
-run's further *gated* calls with the `SafetyUnsafe` JSON-RPC error
-while conditions stay unsafe (per `rp.md` § Safety; ungated calls —
-reads, `park`, `close_cover`, a dark-frame `capture` — keep answering).
+in-flight *gated* tool call (a `slew` aborts its motion, a `capture` of
+a frame that needs the sky aborts its exposure, and either answers the
+tool error `cancelled: safety`), stops guiding, parks the mount, and
+answers the run's further gated calls with the `SafetyUnsafe` JSON-RPC
+error while conditions stay unsafe. A `capture` of a frame that needs
+the sky is gated for its call: a `Light`, and a `Flat` or an untyped
+capture that names no panel as its `light_source` (per `rp.md`
+§ Safety and § Capture Tool Details). Ungated calls — reads, `park`,
+`close_cover`, a dark-frame or panel-flat `capture` — keep answering,
+and one in flight runs to its end, so a run of darks or panel flats
+carries on through the transition.
 There is no MCP session to terminate — the transport is session-less
 (ADR-021) — so the engine sees a safety stop as two signals: the
 in-flight call fails with `cancelled: safety`, and its next gated call
-fails with the safety error. Both are the engine's **safety pause**.
+or sky capture fails with the safety error. Both are the engine's
+**safety pause**. Because `rp` refuses the next sky capture, a run
+pauses wherever the transition lands, between two frames as well as
+during one: `deep_sky.json`'s capture loop calls only ungated tools
+between frames and still pauses at its next frame, and so does
+`sky_flat.json`'s.
 
 The engine's error posture is three-way (mcp-sessionless D9), pinned in
 the MCP client's error mapping:
@@ -1404,6 +1414,12 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   software selects by the report, not the engine). Either way the next
   duration is `clamp(duration × target/median, exp_min, exp_max)` —
   with the `median == 0 ? duration × 2` guard from the flats port.
+- **Every frame names the sky.** Each `capture` sends
+  `light_source: "sky"`, which `rp` records on the frame's exposure
+  document (`rp.md` § Capture Tool Details, *Light source*). It sends
+  no `frame_type`, so the frame keeps the flat `<uuid8>.fits` name and
+  gets no `IMAGETYP`. Named or not, a sky flat is refused while unsafe
+  and cancelled in flight.
 - **The twilight window closes; the document notices when a frame
   captured *at* a rail is still out of band.** The window checks run
   **before** the rescale, so `session.duration` still holds the

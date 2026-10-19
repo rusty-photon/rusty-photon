@@ -5,15 +5,20 @@ Feature: Safety enforcement
   reports safe; a monitor that cannot be read counts as unsafe. On an
   unsafe transition every in-flight gated tool call — one that moves
   the mount towards the sky or exposes the optics — is cancelled and
-  answers the tool error "cancelled: safety", an in-flight capture is
-  cancelled the same way (the transition aborts its exposure), and
-  every other ungated call already in flight (a park, a filter move)
-  runs to completion. While conditions stay unsafe the
-  safety gate sits in the tool dispatch: a gated tool is refused with
-  the SafetyUnsafe JSON-RPC error — code -32010, data.reason "safety",
-  data.monitor naming the unsafe monitor — and never dispatched, while
-  every ungated tool (a read, park, close_cover, a capture, a filter or
-  focuser move, a panel lamp) keeps answering. Nothing at
+  answers the tool error "cancelled: safety", and every ungated call
+  already in flight (a park, a filter move) runs to completion. While
+  conditions stay unsafe the safety gate sits in the tool dispatch: a
+  gated tool is refused with the SafetyUnsafe JSON-RPC error — code
+  -32010, data.reason "safety", data.monitor naming the unsafe monitor
+  — and never dispatched, while every ungated tool (a read, park,
+  close_cover, a filter or focuser move, a panel lamp) keeps answering.
+  capture is classed call by call from its own arguments: a Dark, a
+  Bias or a capture whose light_source is "panel" is ungated, taken
+  while unsafe and run on through the transition, its exposure left
+  alone; every other — a Light, a sky flat, a capture that names no
+  light source — is gated, refused with the same SafetyUnsafe refusal
+  so an orchestrator pauses at its next sky frame wherever the
+  transition lands, and cancelled in flight. Nothing at
   the HTTP layer is gated: the MCP transport keeps serving every
   request (it is session-less — mcp_transport.feature) and the REST
   surface answers. The built-in classes are a default: safety.gate in
@@ -21,7 +26,8 @@ Feature: Safety enforcement
   the catalog fails startup. get_safety_status reports the state the
   gate acts on (overall, per-monitor readings, the effective gated
   list). The unsafe transition also stops the
-  hardware, best-effort: in-progress exposures are aborted, guiding is
+  hardware, best-effort: in-progress exposures are aborted except a
+  dark, a bias or a panel flat that rp is taking, guiding is
   stopped through the configured guider service (emitting
   "guide_stopped" with reason "safety"), and the mount is parked. The
   safe transition opens the gate and does nothing else: rp keeps no
@@ -113,15 +119,46 @@ Feature: Safety enforcement
     And the safety status should list "slew" as gated
     And the mount should report parked on the simulator within 10 seconds
     And each of these ungated tools should answer:
-      | tool               | arguments                                                              |
-      | get_mount_position | {}                                                                     |
-      | get_park_state     | {}                                                                     |
-      | park               | {}                                                                     |
-      | close_cover        | {"calibrator_id": "flat-panel"}                                        |
-      | calibrator_on      | {"calibrator_id": "flat-panel", "brightness": 1}                       |
-      | set_filter         | {"filter_wheel_id": "main-fw", "filter_name": "Red"}                   |
-      | move_focuser       | {"focuser_id": "main-focuser", "position": 5000}                       |
-      | capture            | {"camera_id": "main-cam", "duration": "100ms"}                         |
+      | tool               | arguments                                                               |
+      | get_mount_position | {}                                                                      |
+      | get_park_state     | {}                                                                      |
+      | park               | {}                                                                      |
+      | close_cover        | {"calibrator_id": "flat-panel"}                                         |
+      | calibrator_on      | {"calibrator_id": "flat-panel", "brightness": 1}                        |
+      | set_filter         | {"filter_wheel_id": "main-fw", "filter_name": "Red"}                    |
+      | move_focuser       | {"focuser_id": "main-focuser", "position": 5000}                        |
+      | capture            | {"camera_id": "main-cam", "duration": "100ms", "light_source": "panel"} |
+
+  # rp.md § Capture Tool Details, *Light source*. The Light row names a
+  # target the store does not have: the refusal comes before rp looks
+  # the target up or touches the camera. The rig keeps the flat
+  # <uuid8>.fits name, so a typed frame needs no naming pattern.
+  Scenario: While unsafe, rp takes darks, bias and panel-lit frames and refuses every capture that needs the sky
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And rp is running with a capture rig and no naming templates configured
+    And an MCP client connected to rp
+    When the safety monitor reports unsafe
+    And the safety status reports overall "unsafe" within 5 seconds
+    Then each of these captures should be taken:
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Dark"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Bias"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "panel"} |
+      | {"camera_id": "main-cam", "duration": "100ms", "light_source": "panel"}                      |
+    And each of these captures should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Light", "target": "m31"}       |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "sky"}  |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat"}                         |
+      | {"camera_id": "main-cam", "duration": "100ms", "light_source": "sky"}                        |
+      | {"camera_id": "main-cam", "duration": "100ms"}                                               |
+    When the safety monitor reports safe again
+    And the safety status reports overall "safe" within 5 seconds
+    Then each of these captures should be taken:
+      | arguments                                                                                    |
+      | {"camera_id": "main-cam", "duration": "100ms"}                                               |
+      | {"camera_id": "main-cam", "duration": "100ms", "frame_type": "Flat", "light_source": "sky"}  |
 
   Scenario: A config override moves a tool across the gate
     Given a running Alpaca simulator
@@ -180,6 +217,44 @@ Feature: Safety enforcement
     Then the background "park" call should succeed
     And the test webhook receiver should receive a "park_complete" event
     And the mount should report parked on the simulator within 10 seconds
+
+  # rp.md § SafetyMonitor Polling, step 2: a capture that names no
+  # light source needs the sky, so it is gated for its call. The 2 s
+  # budget is the slew's: the poll, one 100 ms tick and the abort.
+  Scenario: An unsafe transition cancels an in-flight capture that needs the sky
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And a test webhook receiver subscribed to the events "exposure_started"
+    And rp is running with a camera on the simulator
+    When a second MCP client starts a "10s" capture of camera "main-cam" in the background
+    And the test webhook receiver has received an "exposure_started" event
+    And the safety monitor reports unsafe
+    Then the background "capture" call should fail with "cancelled: safety" within 2 seconds
+    And the simulator camera should report idle within 2 seconds
+
+  # rp.md § SafetyMonitor Polling, step 3. The park is the barrier: the
+  # transition parks only after its exposure abort, so a camera still
+  # exposing once the mount reports parked is one the abort left
+  # alone. The 5 s frame leaves the transition (a 250 ms poll, then a
+  # park from the reset pose) a wide margin.
+  Scenario Outline: An unsafe transition lets an in-flight <frame> finish and save its frame
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And a test webhook receiver subscribed to the events "exposure_started"
+    And rp is running with a mount and a capture rig and no naming templates configured
+    And the mount is unparked
+    When a second MCP client starts a "5s" <frame> capture of camera "main-cam" in the background
+    And the test webhook receiver has received an "exposure_started" event
+    And the safety monitor reports unsafe
+    Then the mount should report parked on the simulator within 10 seconds
+    And the simulator camera should still be exposing
+    And the background "capture" call should succeed
+    And the background capture should have saved a frame
+
+    Examples:
+      | frame          |
+      | Dark           |
+      | panel-lit Flat |
 
   Scenario: A client that disconnects mid-capture has its exposure aborted
     Given a running Alpaca simulator

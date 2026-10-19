@@ -45,6 +45,14 @@ async fn rp_running_with_capture_rig(world: &mut RpWorld) {
 
 #[given("rp is running with a capture rig and no naming templates configured")]
 async fn rp_running_with_capture_rig_no_templates(world: &mut RpWorld) {
+    capture_rig_without_templates(world).await;
+    crate::steps::tool_steps::start_rp(world).await;
+}
+
+/// A train of camera and filter wheel, a site, and no file naming
+/// pattern, so every frame keeps the flat `<uuid8>.fits` name. rp is
+/// not started.
+pub async fn capture_rig_without_templates(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     add_camera(world);
     add_filter_wheel(world);
@@ -63,7 +71,6 @@ async fn rp_running_with_capture_rig_no_templates(world: &mut RpWorld) {
     // unconditionally (most scenarios *want* that) — this scenario
     // needs it genuinely absent, so force-clear it.
     world.clear_file_naming_pattern = true;
-    crate::steps::tool_steps::start_rp(world).await;
 }
 
 #[given("rp is running with a filter-wheel-less capture rig and naming templates configured")]
@@ -117,6 +124,48 @@ async fn mcp_call_capture_frame_type(
             "camera_id": camera_id,
             "duration": format!("{}ms", duration_ms),
             "frame_type": frame_type,
+        }),
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"capture\" with camera {string} for {int} ms, frame_type {string}, and light_source {string}"
+)]
+async fn mcp_call_capture_frame_type_light_source(
+    world: &mut RpWorld,
+    camera_id: String,
+    duration_ms: i32,
+    frame_type: String,
+    light_source: String,
+) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "camera_id": camera_id,
+            "duration": format!("{}ms", duration_ms),
+            "frame_type": frame_type,
+            "light_source": light_source,
+        }),
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"capture\" with camera {string} for {int} ms and light_source {string}"
+)]
+async fn mcp_call_capture_light_source(
+    world: &mut RpWorld,
+    camera_id: String,
+    duration_ms: i32,
+    light_source: String,
+) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "camera_id": camera_id,
+            "duration": format!("{}ms", duration_ms),
+            "light_source": light_source,
         }),
     )
     .await;

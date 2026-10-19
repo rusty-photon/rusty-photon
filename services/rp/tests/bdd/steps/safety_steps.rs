@@ -64,6 +64,18 @@ async fn rp_with_full_indoor_rig(world: &mut RpWorld) {
     start_rp(world).await;
 }
 
+/// The capture rig (a train of camera and filter wheel, flat
+/// `<uuid8>.fits` names) plus a mount for the unsafe transition to park.
+#[given("rp is running with a mount and a capture rig and no naming templates configured")]
+async fn rp_with_mount_and_capture_rig(world: &mut RpWorld) {
+    crate::steps::capture_target_linkage_steps::capture_rig_without_templates(world).await;
+    add_mount(world);
+    // OmniSim's mount site: rp refuses to start on a mount whose site
+    // disagrees with the configured one.
+    world.site = Some((51.0786, -0.2944));
+    start_rp(world).await;
+}
+
 fn add_mount(world: &mut RpWorld) {
     if world.mount.is_none() {
         world.mount = Some(MountConfig {
@@ -221,9 +233,41 @@ fn tool_rows(step: &Step) -> Vec<(String, Value)> {
     .collect()
 }
 
-/// Every row is refused before dispatch: the harness renders
-/// `McpCallError::SafetyStopped` naming the JSON-RPC code and the
-/// monitor rp put in `data.monitor`.
+/// The `| arguments |` rows of a step table, each the JSON object a
+/// `capture` is called with.
+fn capture_rows(step: &Step) -> Vec<Value> {
+    let table = step
+        .table
+        .as_ref()
+        .expect("this step takes an | arguments | table");
+    let mut rows = table.rows.iter();
+    let header = rows.next().expect("table header row");
+    assert_eq!(header, &["arguments".to_string()]);
+    rows.map(|row| {
+        serde_json::from_str(&row[0])
+            .unwrap_or_else(|e| panic!("row {row:?}: arguments are not JSON: {e}"))
+    })
+    .collect()
+}
+
+/// The harness renders `McpCallError::SafetyStopped` naming the
+/// JSON-RPC code and the monitor rp put in `data.monitor`.
+fn assert_safety_refusal(call: &str, result: &Result<Value, String>, monitor: &str) {
+    let message = result
+        .as_ref()
+        .err()
+        .unwrap_or_else(|| panic!("{call} was not refused while unsafe: {result:?}"));
+    assert!(
+        message.contains("-32010") && message.contains("safety"),
+        "{call} failed, but not with the SafetyUnsafe refusal: {message}"
+    );
+    assert!(
+        message.contains(monitor),
+        "{call}'s refusal does not name monitor {monitor:?}: {message}"
+    );
+}
+
+/// Every row is refused before dispatch.
 #[then(
     expr = "each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor {string}:"
 )]
@@ -231,17 +275,39 @@ async fn gated_tools_are_refused(world: &mut RpWorld, monitor: String, step: &St
     ensure_mcp_client(world).await;
     for (tool, arguments) in tool_rows(step) {
         let result = world.mcp().call_tool(&tool, arguments).await;
-        let message = result
-            .as_ref()
-            .err()
-            .unwrap_or_else(|| panic!("{tool} was not refused while unsafe: {result:?}"));
+        assert_safety_refusal(&tool, &result, &monitor);
+    }
+}
+
+/// Every row is a `capture` refused with the gated tools' refusal,
+/// although `capture` is ungated: its arguments ask for a frame that
+/// needs the sky.
+#[then(
+    expr = "each of these captures should be refused with SafetyUnsafe code -32010 naming monitor {string}:"
+)]
+async fn sky_captures_are_refused(world: &mut RpWorld, monitor: String, step: &Step) {
+    ensure_mcp_client(world).await;
+    for arguments in capture_rows(step) {
+        let call = format!("capture {arguments}");
+        let result = world.mcp().call_tool("capture", arguments).await;
+        assert_safety_refusal(&call, &result, &monitor);
+    }
+}
+
+/// Every row is a `capture` that succeeds and saves a frame.
+#[then("each of these captures should be taken:")]
+async fn captures_are_taken(world: &mut RpWorld, step: &Step) {
+    ensure_mcp_client(world).await;
+    for arguments in capture_rows(step) {
+        let call = format!("capture {arguments}");
+        let result = world
+            .mcp()
+            .call_tool("capture", arguments)
+            .await
+            .unwrap_or_else(|message| panic!("{call} was not taken: {message}"));
         assert!(
-            message.contains("-32010") && message.contains("safety"),
-            "{tool} failed, but not with the SafetyUnsafe refusal: {message}"
-        );
-        assert!(
-            message.contains(&monitor),
-            "{tool}'s refusal does not name monitor {monitor:?}: {message}"
+            result.get("document_id").and_then(Value::as_str).is_some(),
+            "{call} answered without a document_id: {result}"
         );
     }
 }
@@ -269,6 +335,27 @@ async fn start_slew_in_background(world: &mut RpWorld, ra: String, dec: String) 
         serde_json::json!({ "ra": ra, "dec": dec }),
     )
     .await;
+}
+
+/// A frame that needs no sky, started on a second session; follow it
+/// with the `exposure_started` barrier (`spawn_background_call`).
+#[when(
+    regex = r#"^a second MCP client starts a "([^"]+)" (Dark|panel-lit Flat) capture of camera "([^"]+)" in the background$"#
+)]
+async fn start_indoor_capture_in_background(
+    world: &mut RpWorld,
+    duration: String,
+    frame: String,
+    camera_id: String,
+) {
+    let mut arguments = serde_json::json!({ "camera_id": camera_id, "duration": duration });
+    if frame == "Dark" {
+        arguments["frame_type"] = "Dark".into();
+    } else {
+        arguments["frame_type"] = "Flat".into();
+        arguments["light_source"] = "panel".into();
+    }
+    crate::steps::motion_gate_steps::spawn_background_call(world, "capture", arguments).await;
 }
 
 #[when("a second MCP client starts a park in the background")]
@@ -327,28 +414,32 @@ async fn background_call_fails_with(
     );
 }
 
-/// Read `CameraState` straight from `OmniSim`'s Alpaca API (`0` is
-/// `Idle`): the aborted exposure must leave the simulator camera idle,
-/// not exposing into the void for the rest of its 10 s.
+/// `CameraState` read straight from `OmniSim`'s Alpaca API (`0` is
+/// `Idle`, `2` is `Exposing`); `None` when the read fails.
+async fn simulator_camera_state(world: &RpWorld) -> Option<i64> {
+    let url = format!("{}/api/v1/camera/0/camerastate", world.omnisim_url());
+    match reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    {
+        Ok(resp) => resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|body| body.get("Value").and_then(serde_json::Value::as_i64)),
+        Err(_) => None,
+    }
+}
+
+/// The aborted exposure must leave the simulator camera idle, not
+/// exposing into the void for the rest of its 10 s.
 #[then(expr = "the simulator camera should report idle within {int} seconds")]
 async fn simulator_camera_idle(world: &mut RpWorld, seconds: u64) {
-    let url = format!("{}/api/v1/camera/0/camerastate", world.omnisim_url());
-    let client = reqwest::Client::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
     loop {
-        let state = match client
-            .get(&url)
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await
-        {
-            Ok(resp) => resp
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|body| body.get("Value").and_then(serde_json::Value::as_i64)),
-            Err(_) => None,
-        };
+        let state = simulator_camera_state(world).await;
         if state == Some(0) {
             return;
         }
@@ -358,4 +449,26 @@ async fn simulator_camera_idle(world: &mut RpWorld, seconds: u64) {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The frame is still exposing: nothing has aborted it.
+#[then("the simulator camera should still be exposing")]
+async fn simulator_camera_still_exposing(world: &mut RpWorld) {
+    let state = simulator_camera_state(world).await;
+    assert_eq!(
+        state,
+        Some(2),
+        "the simulator camera is not exposing (CameraState {state:?})"
+    );
+}
+
+#[then("the background capture should have saved a frame")]
+fn background_capture_saved_a_frame(world: &mut RpWorld) {
+    let result = world.last_background_result.as_ref().expect(
+        "no background call joined yet — add 'the background \"capture\" call should succeed' first",
+    );
+    assert!(
+        result.get("document_id").and_then(Value::as_str).is_some(),
+        "the background capture answered without a document_id: {result}"
+    );
 }

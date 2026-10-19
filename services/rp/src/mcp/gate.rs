@@ -7,12 +7,14 @@
 //! refuses with [`safety_unsafe_error`] while conditions are unsafe
 //! (checked at dispatch in `ServerHandler::call_tool`), and which
 //! in-flight calls the unsafe transition cancels
-//! ([`super::inflight::InFlight::cancel_for_safety`], see
-//! [`cancelled_on_unsafe`]). A tool that stops or secures (`park`,
-//! `abort_slew`, `close_cover`, ...) is never gated, because it is what
-//! the transition itself does, and every indoor actuator stays
-//! available so an unsafe hour can still go to darks, bias, panel flats
-//! and cooling (tenet 1).
+//! ([`super::inflight::InFlight::cancel_for_safety`]). Both read the
+//! class of the call, [`call_class`]: the tool's class, except that
+//! `capture` is classed by its arguments, gated for a call whose frame
+//! needs the sky ([`capture_needs_the_sky`]). A tool that stops or
+//! secures (`park`, `abort_slew`, `close_cover`, ...) is never gated,
+//! because it is what the transition itself does, and every indoor
+//! actuator stays available so an unsafe hour can still go to darks,
+//! bias, panel flats and cooling (tenet 1).
 //!
 //! There is no default class: [`class_of`] returns `None` for a name
 //! that is in neither list, and the unit test below walks the merged
@@ -30,10 +32,14 @@
 
 use std::collections::BTreeMap;
 
-use rmcp::model::{ErrorCode, ErrorData};
+use rmcp::model::{ErrorCode, ErrorData, JsonObject};
+use rp_vocabulary::FrameType;
 use rusty_photon_config::actions::FieldError;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 
 use crate::config::GateOverrides;
+use crate::persistence::LightSource;
 
 /// Whether a tool call is refused while unsafe and cancelled by the
 /// unsafe transition.
@@ -167,18 +173,71 @@ pub fn class_of(tool: &str) -> Option<ToolClass> {
     }
 }
 
-/// Whether an in-flight call of `tool` is cancelled by the unsafe
-/// transition.
+/// The class of one call of `tool`, whose class in the table is
+/// `class`.
 ///
-/// Every gated call is, plus `capture`: that is the transition's
-/// abort-exposure step delivered through the body, so the caller learns
-/// its frame died for safety (`cancelled: safety`) rather than seeing a
-/// bare "exposure aborted" hardware error. `capture` itself stays
-/// ungated — darks and bias while unsafe are tenet 1. Every other
-/// ungated body runs to completion.
+/// The table's class, except for `capture`: ungated as a tool, it is
+/// gated for a call whose frame needs the sky (rp.md § Capture Tool
+/// Details, *Light source*). Such a call is refused while unsafe, so an
+/// orchestrator pauses at its next sky frame wherever the unsafe
+/// transition lands, and cancelled by the transition when it is in
+/// flight, so the caller learns its frame died for safety. A dark, a
+/// bias or a panel-lit frame is taken whatever the conditions and runs
+/// on through the transition. The dispatch reads this once, before it
+/// registers the call, so the refusal and the cancellation cannot
+/// disagree.
 #[must_use]
-pub fn cancelled_on_unsafe(tool: &str, class: ToolClass) -> bool {
-    class == ToolClass::Gated || tool == "capture"
+pub fn call_class(tool: &str, class: ToolClass, arguments: Option<&JsonObject>) -> ToolClass {
+    if class == ToolClass::Ungated && tool == "capture" && capture_arguments_need_the_sky(arguments)
+    {
+        ToolClass::Gated
+    } else {
+        class
+    }
+}
+
+/// [`capture_needs_the_sky`] read from a capture's raw arguments. A
+/// `frame_type` or `light_source` that does not parse counts as needing
+/// the sky: rp cannot tell what the frame is, and the tool router
+/// refuses the call as invalid params once it is dispatched.
+fn capture_arguments_need_the_sky(arguments: Option<&JsonObject>) -> bool {
+    match (
+        argument::<FrameType>(arguments, "frame_type"),
+        argument::<LightSource>(arguments, "light_source"),
+    ) {
+        (Ok(frame_type), Ok(light_source)) => capture_needs_the_sky(frame_type, light_source),
+        _ => true,
+    }
+}
+
+/// One optional argument, read as the tool router reads it: absent and
+/// `null` are both `None`.
+fn argument<T: DeserializeOwned>(
+    arguments: Option<&JsonObject>,
+    name: &str,
+) -> Result<Option<T>, serde_json::Error> {
+    arguments
+        .and_then(|arguments| arguments.get(name))
+        .map_or(Ok(None), Option::<T>::deserialize)
+}
+
+/// Whether a `capture` asks for a frame that needs the sky.
+///
+/// A `Dark` or `Bias` needs no light and a frame the panel lights needs
+/// no sky; a `Light`, a sky flat and a capture that does not say what
+/// lights it all do. A caller that never names its light source is
+/// refused, not trusted. [`call_class`] gates such a capture.
+#[must_use]
+pub const fn capture_needs_the_sky(
+    frame_type: Option<FrameType>,
+    light_source: Option<LightSource>,
+) -> bool {
+    match (frame_type, light_source) {
+        (Some(FrameType::Dark | FrameType::Bias), _)
+        | (Some(FrameType::Flat) | None, Some(LightSource::Panel)) => false,
+        (Some(FrameType::Light), _)
+        | (Some(FrameType::Flat) | None, Some(LightSource::Sky) | None) => true,
+    }
 }
 
 /// The JSON-RPC error code of a safety refusal (`SafetyUnsafe`).
@@ -443,12 +502,115 @@ mod tests {
         assert_eq!(gated, expected);
     }
 
+    fn capture_call(arguments: &serde_json::Value) -> ToolClass {
+        call_class("capture", ToolClass::Ungated, arguments.as_object())
+    }
+
+    /// rp.md § Capture Tool Details, *Light source*, read from the
+    /// call's own arguments: a capture is gated for a call whose frame
+    /// needs the sky.
     #[test]
-    fn the_unsafe_transition_cancels_gated_calls_and_captures_only() {
-        assert!(cancelled_on_unsafe("slew", ToolClass::Gated));
-        assert!(cancelled_on_unsafe("capture", ToolClass::Ungated));
-        assert!(!cancelled_on_unsafe("park", ToolClass::Ungated));
-        assert!(!cancelled_on_unsafe("set_filter", ToolClass::Ungated));
+    fn a_capture_is_gated_for_a_call_whose_frame_needs_the_sky() {
+        use serde_json::json;
+        use ToolClass::{Gated, Ungated};
+        let cases = [
+            (json!({ "frame_type": "Dark" }), Ungated),
+            (json!({ "frame_type": "Bias" }), Ungated),
+            (
+                json!({ "frame_type": "Flat", "light_source": "panel" }),
+                Ungated,
+            ),
+            (json!({ "light_source": "panel" }), Ungated),
+            (
+                json!({ "frame_type": "Dark", "light_source": null }),
+                Ungated,
+            ),
+            (json!({ "frame_type": "Light", "target": "m31" }), Gated),
+            (
+                json!({ "frame_type": "Flat", "light_source": "sky" }),
+                Gated,
+            ),
+            (json!({ "frame_type": "Flat" }), Gated),
+            (json!({ "light_source": "sky" }), Gated),
+            (json!({ "frame_type": null, "light_source": null }), Gated),
+            (json!({ "camera_id": "cam", "duration": "1s" }), Gated),
+        ];
+        for (arguments, class) in cases {
+            assert_eq!(capture_call(&arguments), class, "capture {arguments}");
+        }
+        assert_eq!(call_class("capture", Ungated, None), Gated);
+    }
+
+    /// A frame rp cannot read is not trusted to need no sky.
+    #[test]
+    fn a_capture_whose_frame_does_not_parse_needs_the_sky() {
+        use serde_json::json;
+        for arguments in [
+            json!({ "frame_type": "dark" }),
+            json!({ "frame_type": 3 }),
+            json!({ "frame_type": "Flat", "light_source": "Panel" }),
+            json!({ "frame_type": "Dark", "light_source": "lamp" }),
+        ] {
+            assert_eq!(
+                capture_call(&arguments),
+                ToolClass::Gated,
+                "capture {arguments}"
+            );
+        }
+    }
+
+    /// Only `capture` reads its arguments, and only when its class is
+    /// ungated: an operator who gates `capture` gates every capture.
+    #[test]
+    fn every_other_call_keeps_its_tools_class() {
+        let dark = serde_json::json!({ "frame_type": "Dark" });
+        let light = serde_json::json!({ "frame_type": "Light" });
+        assert_eq!(
+            call_class("capture", ToolClass::Gated, dark.as_object()),
+            ToolClass::Gated
+        );
+        assert_eq!(call_class("slew", ToolClass::Gated, None), ToolClass::Gated);
+        assert_eq!(
+            call_class("park", ToolClass::Ungated, None),
+            ToolClass::Ungated
+        );
+        assert_eq!(
+            call_class("set_filter", ToolClass::Ungated, light.as_object()),
+            ToolClass::Ungated
+        );
+    }
+
+    /// rp.md § Capture Tool Details, *Light source*: the while-unsafe
+    /// table, every frame type (untyped included) against every light
+    /// source.
+    #[test]
+    fn only_darks_bias_and_panel_lit_frames_need_no_sky() {
+        use FrameType::{Bias, Dark, Flat, Light};
+        use LightSource::{Panel, Sky};
+        let cases = [
+            (Some(Dark), None, false),
+            (Some(Dark), Some(Panel), false),
+            (Some(Dark), Some(Sky), false),
+            (Some(Bias), None, false),
+            (Some(Bias), Some(Panel), false),
+            (Some(Bias), Some(Sky), false),
+            (Some(Flat), Some(Panel), false),
+            (None, Some(Panel), false),
+            (Some(Flat), None, true),
+            (Some(Flat), Some(Sky), true),
+            (None, None, true),
+            (None, Some(Sky), true),
+            (Some(Light), None, true),
+            (Some(Light), Some(Panel), true),
+            (Some(Light), Some(Sky), true),
+        ];
+        for (frame_type, light_source, needs_the_sky) in cases {
+            assert_eq!(
+                capture_needs_the_sky(frame_type, light_source),
+                needs_the_sky,
+                "frame_type {frame_type:?}, light_source {light_source:?}"
+            );
+        }
     }
 
     #[test]

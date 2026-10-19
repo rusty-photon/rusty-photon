@@ -86,6 +86,14 @@ pub struct CameraEntry {
     /// cancelled capture until its camera is idle, and by a train lease
     /// that holds the camera (§ Train Lease).
     capture_slot: super::DeviceSlot,
+    /// Held by a capture of a frame that needs no sky (a dark, a bias, a
+    /// panel flat) from the moment it holds the camera until the
+    /// capture ends, and by the unsafe transition while it aborts this
+    /// camera's exposure (rp.md § `SafetyMonitor` Polling, step 3). The
+    /// transition skips a camera whose indoor slot is held, so such a
+    /// frame runs on, and a capture of one that starts during the abort
+    /// waits for the abort rather than starting into it.
+    indoor_slot: super::DeviceSlot,
 }
 
 impl CameraEntry {
@@ -100,6 +108,7 @@ impl CameraEntry {
             config,
             session,
             capture_slot: super::DeviceSlot::default(),
+            indoor_slot: super::DeviceSlot::default(),
         }
     }
 
@@ -108,6 +117,21 @@ impl CameraEntry {
     /// next waiter.
     pub async fn capture_slot(&self) -> super::SlotGuard {
         self.capture_slot.take("camera", &self.id).await
+    }
+
+    /// Wait for this camera's indoor slot, for an exposure of a frame
+    /// that needs no sky. Only the unsafe transition's abort of this
+    /// camera holds it against such a capture, and only for one device
+    /// call.
+    pub async fn indoor_slot(&self) -> super::SlotGuard {
+        self.indoor_slot.take("camera indoor slot", &self.id).await
+    }
+
+    /// The indoor slot if no frame that needs no sky is exposing on this
+    /// camera; `None` while one is.
+    #[must_use]
+    pub fn try_indoor_slot(&self) -> Option<super::SlotGuard> {
+        self.indoor_slot.try_take()
     }
 
     /// The registered-but-unconnected entry every failed connect path

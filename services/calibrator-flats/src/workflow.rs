@@ -26,7 +26,7 @@ use crate::store::{CameraFacts, FlatRecord, FlatStore};
 // ---------------------------------------------------------------------------
 
 /// What a capture is for: a throwaway search exposure, or a flat filed
-/// as `frame_type: "Flat"`.
+/// as `frame_type: "Flat"`. Both are lit by the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
     Probe,

@@ -318,6 +318,7 @@ impl imaging::tools::center_on_target::CaptureOps for CenterOnTargetAdapter<'_> 
                     binning: self.binning,
                     target: None,
                     frame_type: None,
+                    light_source: None,
                     lease_id: None,
                 },
                 self.emitter(),

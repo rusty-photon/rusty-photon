@@ -1657,6 +1657,7 @@ impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
                     binning: self.binning,
                     target: None,
                     frame_type: None,
+                    light_source: None,
                     lease_id: None,
                 },
                 self.emitter(),

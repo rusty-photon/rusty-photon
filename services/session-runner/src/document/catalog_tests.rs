@@ -339,7 +339,8 @@ fn test_golden_sky_flat_passes_against_a_matching_catalog() {
             "capture",
             object_schema(
                 json!({ "camera_id": { "type": "string" },
-                         "duration": { "type": "string" } }),
+                         "duration": { "type": "string" },
+                         "light_source": { "type": "string", "enum": ["panel", "sky"] } }),
                 &["camera_id", "duration"],
             ),
         ),

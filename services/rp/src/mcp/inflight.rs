@@ -4,7 +4,8 @@
 //! Every `tools/call` is registered for its lifetime by the
 //! `ServerHandler::call_tool` wrapper in [`super`] — keyed by an
 //! rp-internal serial, because JSON-RPC request ids are only unique per
-//! client — together with the tool's [`ToolClass`] and a
+//! client — together with the call's [`ToolClass`]
+//! ([`super::gate::call_class`]) and a
 //! [`Cancel`] handle derived from the request's own rmcp token. Tool
 //! bodies pull the handle back out of the request context
 //! ([`Cancel::from_context`]) and race their poll loops against it.
@@ -12,9 +13,8 @@
 //! Two things cancel a call:
 //!
 //! - the safety enforcer's unsafe transition, which cancels every
-//!   **gated** entry and every in-flight `capture`
-//!   ([`super::gate::cancelled_on_unsafe`]) through
-//!   [`InFlight::cancel_for_safety`] and waits up to
+//!   **gated** entry, a capture of a frame that needs the sky among
+//!   them, through [`InFlight::cancel_for_safety`] and waits up to
 //!   [`CANCEL_ACK_TIMEOUT`] for those bodies to unregister, so a
 //!   cancelled slew's `AbortSlew` cannot land on the park that follows;
 //! - the request's parent token, which rmcp cancels when the client's
@@ -38,7 +38,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::gate::{self, ToolClass};
+use super::gate::ToolClass;
 
 /// How long [`InFlight::cancel_for_safety`] waits for the cancelled
 /// bodies to unregister before the caller proceeds regardless.
@@ -226,18 +226,18 @@ impl InFlight {
         self.len() == 0
     }
 
-    /// The unsafe transition: cancel every entry
-    /// [`gate::cancelled_on_unsafe`] selects — the gated calls and any
-    /// in-flight `capture` — with [`CancelReason::Safety`], then wait,
-    /// bounded by [`CANCEL_ACK_TIMEOUT`], for those bodies to
-    /// unregister. Returns how many were cancelled. Every other entry
-    /// is untouched.
+    /// The unsafe transition: cancel every gated entry — a capture of
+    /// a frame that needs the sky among them — with
+    /// [`CancelReason::Safety`], then wait, bounded by
+    /// [`CANCEL_ACK_TIMEOUT`], for those bodies to unregister. Returns
+    /// how many were cancelled. Every other entry is untouched: a dark,
+    /// a bias or a panel flat in flight runs on.
     pub async fn cancel_for_safety(&self) -> usize {
         let cancelled: Vec<u64> = {
             let entries = self.lock();
             entries
                 .iter()
-                .filter(|(_, entry)| gate::cancelled_on_unsafe(&entry.tool, entry.class))
+                .filter(|(_, entry)| entry.class == ToolClass::Gated)
                 .map(|(key, entry)| {
                     warn!(
                         request_id = %entry.request_id,
@@ -370,25 +370,24 @@ mod tests {
         assert_eq!(registry.len(), 1, "only the cancelled slew unregistered");
     }
 
-    /// `capture` is ungated but its in-flight body is cancelled too —
-    /// the abort-exposure step delivered through the body.
+    /// A capture registers with its call's class: gated for a frame
+    /// that needs the sky, which the transition cancels, ungated for a
+    /// dark, which runs on (`gate::call_class`).
     #[tokio::test]
-    async fn cancel_for_safety_cancels_an_in_flight_capture() {
+    async fn cancel_for_safety_cancels_a_sky_capture_and_spares_a_dark() {
         let registry = registry();
         let parent = CancellationToken::new();
-        let (capture_guard, capture) =
-            registry.register(&id(1), "capture", ToolClass::Ungated, &parent);
-        let (_filter_guard, filter) =
-            registry.register(&id(2), "set_filter", ToolClass::Ungated, &parent);
+        let (light_guard, light) = registry.register(&id(1), "capture", ToolClass::Gated, &parent);
+        let (_dark_guard, dark) = registry.register(&id(2), "capture", ToolClass::Ungated, &parent);
         let ack = tokio::spawn(async move {
-            capture.cancelled().await;
-            let error = capture.error();
-            drop(capture_guard);
+            light.cancelled().await;
+            let error = light.error();
+            drop(light_guard);
             error
         });
         assert_eq!(registry.cancel_for_safety().await, 1);
         assert_eq!(ack.await.unwrap(), "cancelled: safety");
-        assert!(!filter.is_cancelled(), "the filter move must keep running");
+        assert!(!dark.is_cancelled(), "the dark must keep exposing");
     }
 
     #[tokio::test]

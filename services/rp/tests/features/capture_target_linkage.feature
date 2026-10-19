@@ -36,6 +36,12 @@ Feature: Capture threads target identity into the file-naming template (Decision
   frame type falls back to the same `"NA"`/`0` when the train has no
   filter wheel at all.
 
+  `light_source` (`panel`/`sky`) says what lit the frame. It tells a
+  panel flat from a sky flat, which are both `Flat`; it is accepted on
+  a `Flat` and on an untyped capture, recorded on the document verbatim
+  and refused as a tool error on a `Light`, `Dark` or `Bias`. What it
+  changes while conditions are unsafe is safety.feature's.
+
   See docs/services/rp.md § Capture Tool Details and
   docs/crates/rp-targets.md § File-naming template for the full
   contract.
@@ -57,6 +63,7 @@ Feature: Capture threads target identity into the file-naming template (Decision
     And the captured image_path should be a flat uuid8-named .fits file
     And the document field "frame_type" should be "Dark"
     And the document's target slug should be "dark"
+    And the document body should not contain "light_source"
 
   Scenario: A Light frame requires a target
     Given rp is running with a capture rig and naming templates configured
@@ -115,3 +122,32 @@ Feature: Capture threads target identity into the file-naming template (Decision
     When the MCP client calls "capture" with camera "main-cam" for 1000 ms and frame_type "Dark"
     Then the tool call should succeed
     And the captured image_path should contain "_0002_"
+
+  Scenario: A panel flat records its light source on the document
+    Given rp is running with a capture rig and no naming templates configured
+    When the MCP client calls "capture" with camera "main-cam" for 100 ms, frame_type "Flat", and light_source "panel"
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the document field "frame_type" should be "Flat"
+    And the document field "light_source" should be "panel"
+
+  Scenario: An untyped capture records its light source and keeps its flat filename
+    Given rp is running with a capture rig and naming templates configured
+    When the MCP client calls "capture" with camera "main-cam" for 100 ms and light_source "sky"
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the captured image_path should be a flat uuid8-named .fits file
+    And the document field "light_source" should be "sky"
+    And the document body should not contain "frame_type"
+
+  Scenario Outline: A light source is refused on a <frame_type> frame
+    Given rp is running with a capture rig and no naming templates configured
+    When the MCP client calls "capture" with camera "main-cam" for 100 ms, frame_type "<frame_type>", and light_source "panel"
+    Then the tool call should return an error
+    And the error message should contain "light_source"
+
+    Examples:
+      | frame_type |
+      | Light      |
+      | Dark       |
+      | Bias       |

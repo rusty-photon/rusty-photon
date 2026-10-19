@@ -306,6 +306,16 @@ without an explicit `target`). Both fields are omitted (absent, not
 `null`) when `frame_type` was omitted — today's flat `<doc_uuid_8>.fits`
 capture path.
 
+`light_source` is `capture`'s `light_source` parameter, verbatim: what
+lit the frame, `"panel"` (a light source that moves with the optics,
+such as a flat panel on the dew shield) or `"sky"` (a twilight flat).
+It is recorded on a `Flat` or an untyped capture whenever the caller
+supplied it, and omitted otherwise. A `Light` is lit by the sky and a
+`Dark` or `Bias` by nothing, so neither takes one (see [Capture Tool
+Details](#capture-tool-details), *Light source*). The FITS header has
+no card for it: a panel flat and a sky flat both export
+`IMAGETYP = 'Flat Field'`, which is what stackers recognize as a flat.
+
 `max_adu` is the camera's `MaxADU` at the time of capture, the largest
 pixel value it delivers. It is read on every capture, with `gain` and
 `offset`, because it is not a fixed property of the sensor: on
@@ -1453,8 +1463,11 @@ safety and compound tables below carry it as a column; every compute,
 planner, target-store and schema tool is ungated. The class decides
 only what happens while conditions are unsafe: a gated tool is refused
 with the `SafetyUnsafe` error and cancelled by the unsafe transition,
-an ungated one answers and runs to completion. Operators can move any
-tool across the line with `safety.gate` (§ Configuration).
+an ungated one answers and runs to completion. `capture` is the one
+ungated tool that also looks at what it is asked for: it refuses a
+frame that needs the sky, and the transition cancels it in flight.
+Operators can move any tool across the line with `safety.gate`
+(§ Configuration).
 
 ### Built-in Tools
 
@@ -1462,7 +1475,7 @@ tool across the line with `safety.gate` (§ Configuration).
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
+| `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
@@ -1781,7 +1794,9 @@ Captures through different cameras never wait for each other.
   caller disconnected, or the unsafe transition swept it — leaves the
   queue at once with `cancelled: <reason>` and never touches the
   camera. Stop-class commands never take the slot: the safety
-  enforcer's `AbortExposure` goes straight to the device.
+  enforcer's `AbortExposure` goes straight to the device, except to a
+  camera exposing a dark, a bias or a panel flat, which it leaves
+  alone (§ [SafetyMonitor Polling](#safetymonitor-polling), step 3).
 - **Kept while a cancelled exposure winds down.** A capture cancelled
   mid-exposure sends `AbortExposure`, gives its motion-gate permit
   back at once, and answers its caller at once with
@@ -1885,6 +1900,52 @@ lowercased frame type** (`"dark"`/`"flat"`/`"bias"`) — a single shared
 bucket per calibration type, `target` on the document carrying just
 that slug (`display_name`/`ra_hours`/`dec_degrees` stay `None`, since
 it names no real target-store row).
+
+*Light source.* `light_source` says what lights the frame: `panel`
+for a light source that moves with the optics, such as a flat panel
+on the dew shield or a flip-flat's lamp, and `sky` for a twilight
+flat. It is what tells a panel flat from a sky flat,
+which `frame_type` cannot: both are `Flat`, are filed together and
+calibrate the same way. The frame category stays `Flat` and the light
+source qualifies it, as N.I.N.A. and Ekos keep a sky flat a flat and
+ESO writes `FLAT,SKY` beside `FLAT,LAMP`. It is accepted on a `Flat`
+and on an untyped capture (a flat-timing probe exposure, for one); on
+a `Light`, `Dark` or `Bias` it is a tool error naming the parameter,
+since a `Light` is lit by the sky and a `Dark` or `Bias` by nothing.
+It is recorded on the exposure document (§ Core Fields) and has no
+FITS card.
+
+The panel has to move with the optics because the unsafe transition
+parks the mount (§ [SafetyMonitor Polling](#safetymonitor-polling)): a
+frame lit by a wall or dome screen is spoiled when the park turns the
+telescope away from it. Such a flat names no light source, and counts
+as needing the sky.
+
+`capture` is classed call by call (§ [In-Flight Tool
+Calls](#in-flight-tool-calls)): the dispatch reads `frame_type` and
+`light_source` from the call's arguments, and a capture of a frame
+that needs the sky is gated for that call.
+
+| `frame_type` | `light_source` | Class of the call | While unsafe | In flight when conditions turn unsafe |
+|---|---|---|---|---|
+| `Dark`, `Bias` | — | ungated | taken | runs to its end |
+| `Flat` or omitted | `panel` | ungated | taken | runs to its end |
+| `Flat` or omitted | `sky` or omitted | gated | refused | cancelled |
+| `Light` | — | gated | refused | cancelled |
+
+A refused capture is answered with the `SafetyUnsafe` JSON-RPC error
+before `rp` touches the camera, and a cancelled one with the tool
+error `cancelled: safety`. So an orchestrator pauses at its next sky
+frame wherever the unsafe transition lands, between two captures as
+well as during one, rather than taking light frames on a parked mount.
+A dark, a bias or a panel flat in flight saves its frame: the park
+cannot spoil it, and the transition's exposure abort leaves its
+camera alone. An omitted `light_source` counts as needing the sky: a
+caller that never says what lights its frame is refused rather than
+trusted. So does a `frame_type` or `light_source` that does not parse,
+which the tool router then refuses as invalid params. `capture`'s
+class in the table stays ungated, so `safety.gate.ungated` cannot
+lift this rule; `safety.gate.gated` can still gate every capture.
 
 *Filter resolution.* `{filter}`/`{filter_position}` need a live read
 from the resolved camera's train filter wheel, but a train may have no
@@ -3292,10 +3353,12 @@ in the catalog. Safety is enforced at the tool level, universally:
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error
   `cancelled: safety` — and every gated tool called while conditions
-  remain unsafe is refused with the `SafetyUnsafe` JSON-RPC error.
-  Ungated calls already in flight complete, except a `capture`, whose
-  exposure the transition aborts through the same path, and ungated
-  tools keep answering throughout. `rp` ends nothing and resumes
+  remain unsafe is refused with the `SafetyUnsafe` JSON-RPC error. A
+  `capture` of a frame that needs the sky is gated for its call, so
+  both apply to it ([Capture Tool Details](#capture-tool-details),
+  *Light source*). Ungated calls already in flight complete, a dark, a
+  bias or a panel flat among them, and ungated tools keep answering
+  throughout. `rp` ends nothing and resumes
   nobody: on the safe transition it lifts the gate and emits
   `safety_changed`, and the orchestrator resumes its own run (see
   § Safety).
@@ -4079,7 +4142,7 @@ Exemptions — operations that deliberately bypass the gate:
   that a dither or slew mid-exposure would trail, so it waits for a
   mount motion in flight like any other train's capture.
 - **`park`.** Parking is a terminal or emergency action: the safety
-  enforcer (which aborts in-flight exposures *first*, then parks
+  enforcer (which aborts in-flight sky exposures *first*, then parks
   directly against the device registry rather than through the MCP
   tools) and an operator's park must never queue behind a
   multi-minute sub. A park mid-exposure abandons the sub by intent.
@@ -4821,12 +4884,13 @@ the format and engine are specified in
 - **Event bus** — emits events to webhook subscribers and the real-time
   stream.
 - **Safety enforcement** — polls SafetyMonitors. On an unsafe
-  transition, `rp` cancels every in-flight gated call, aborts
-  exposures, stops guiding, parks the mount, and refuses gated tools
-  until conditions are safe again. The orchestrator cannot prevent or
-  delay this; it learns of it from the `cancelled: safety` tool error,
-  the `SafetyUnsafe` refusal and the `safety_changed` event
-  (see [Safety](#safety)).
+  transition, `rp` cancels every in-flight gated call, a capture that
+  needs the sky among them, aborts any other exposure but a dark, a
+  bias or a panel flat, stops guiding, parks the mount, and refuses
+  gated tools and captures that need the sky until conditions are safe
+  again. The orchestrator cannot prevent or delay this; it learns of
+  it from the `cancelled: safety` tool error, the `SafetyUnsafe`
+  refusal and the `safety_changed` event (see [Safety](#safety)).
 - **Progress** — derived from the frames on disk, so no client has to
   persist a count and a restart resumes at the true count rather than
   at zero.
@@ -4864,8 +4928,9 @@ An operator (or a scheduler) starts a run at the orchestrator
   → rp emits events as tools execute (exposure_started, slew_complete, etc.)
 
 Safety event (unsafe transition)
-  → rp cancels in-flight gated calls ("cancelled: safety"), aborts
-    exposures, stops guiding, parks the mount, and closes the gate
+  → rp cancels in-flight gated calls and sky captures ("cancelled:
+    safety"), aborts other exposures but darks, bias and panel flats,
+    stops guiding, parks the mount, and closes the gate
   → the orchestrator pauses its run and waits (session-runner: state
     "paused", reason "safety"); its own persisted state survives
   → on the safe transition rp opens the gate and emits safety_changed;
@@ -6922,10 +6987,13 @@ On the overall safe → unsafe transition:
    the remaining monitors are read — a device read that hangs to its
    timeout must not keep gated tools dispatching while an unsafe
    reading is already in hand; the steps below run once the pass
-   completes. Nothing else is refused — every ungated tool keeps answering, so a
-   waiting client can observe state (`get_safety_status`), secure
-   hardware, and spend the hour on darks, bias, panel flats and
-   cooling. There is no session to close — the transport is
+   completes. A `capture` of a frame that needs the sky is gated for
+   its call — a `Light`, a `Flat` that names no panel, or an untyped
+   capture that names none ([Capture Tool
+   Details](#capture-tool-details), *Light source*). Every ungated call
+   keeps answering, so a waiting client can observe state
+   (`get_safety_status`), secure hardware, and spend the hour on darks,
+   bias, panel flats and cooling. There is no session to close — the transport is
    session-less (§ [MCP Server](#mcp-server)) and `rp` keeps no record
    of who is driving; a client's next gated call is refused, and an
    orchestrator such as `session-runner` pauses its run in-process and
@@ -6936,22 +7004,30 @@ On the overall safe → unsafe transition:
    that follows: no further call under it is admitted, and it gives
    its gate permit back once no capture under it that was not
    cancelled is in flight. Then cancel every in-flight **gated** tool
-   call, and every in-flight
-   `capture`, through the in-flight registry (§ [In-Flight Tool
+   call, a `capture` of a frame that needs the sky among them, through
+   the in-flight registry (§ [In-Flight Tool
    Calls](#in-flight-tool-calls)): each cancelled body issues its
    stop-class counterpart (a slew aborts, an exposure aborts, an opening
    cover halts) and answers its caller with the tool error
    `cancelled: safety` — except a `capture` whose exposure had already
    finished, which keeps its frame (§ [In-Flight Tool
-   Calls](#in-flight-tool-calls)). Every other ungated body already in flight — a
-   `park`, a `close_cover`, a `set_filter` — runs to completion. `rp`
+   Calls](#in-flight-tool-calls)). Every ungated body already in
+   flight — a dark, a bias or a panel flat, a `park`, a `close_cover`,
+   a `set_filter` — runs to completion. `rp`
    waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
    acknowledge before the hardware steps below run, so a cancelled
    slew's `AbortSlew` cannot land on top of the park.
-3. Abort in-progress exposures on all connected cameras (best-effort).
-   Step 2 already aborted every exposure a registered `capture` was
-   driving; this catches a camera left exposing with no body to answer
-   for it, since the park that follows would ruin the frame either way.
+3. Abort in-progress exposures on all connected cameras (best-effort),
+   but not a dark, a bias or a panel flat that `rp` is taking. Step 2
+   already aborted every exposure a cancelled `capture` was driving;
+   this catches a camera left exposing with no body to answer for it,
+   such as an `auto_focus` sweep's or another client's, since the park
+   that follows would ruin a sky frame either way. A capture of a frame
+   that needs no sky holds its camera's *indoor slot* from the moment
+   it holds the camera until it ends, and this step skips a camera
+   whose indoor slot is held. It holds the slot itself while it sends
+   a camera's abort, so such a capture starting meanwhile waits for
+   the abort to be answered instead of starting into it.
 4. Stop guiding through the configured guider service (best-effort;
    a confirmed stop emits `guide_stopped` with `reason: "safety"`, a
    failed one is logged and skipped so the park below still runs).
@@ -6961,8 +7037,9 @@ On the overall safe → unsafe transition:
    there).
 
 The hardware steps run in that order deliberately: the mount must not
-move under an exposing camera or an active guide loop, and a cancelled
-body's abort must not land on the park that follows.
+move under a sky frame or an active guide loop, and a cancelled body's
+abort must not land on the park that follows. A dark, a bias or a
+panel flat goes on exposing through the park, which cannot spoil it.
 
 On the overall unsafe → safe transition:
 
@@ -6985,7 +7062,7 @@ every resume, and its re-entrancy contract makes resume idempotent).
 
 Every `tools/call` is entered in an in-flight registry for the lifetime
 of the call — keyed by an `rp`-internal serial, because JSON-RPC request
-ids are only unique per client — together with the tool's **class** and
+ids are only unique per client — together with the call's **class** and
 a cancellation handle derived from the request's own rmcp token. rmcp
 cancels that token when the caller's HTTP request goes away before its
 response (the connection dropped) or the caller sends
@@ -7011,16 +7088,22 @@ so the sequence fails at its first step.
 | Gated | `slew`, `center_on_target`, `unpark`, `set_tracking`, `dither`, `start_guiding`, `resume_guiding`, `open_cover` |
 | Ungated | every other tool in the catalog |
 
-The class drives exactly two behaviours, and nothing finer: which
-calls the safety gate refuses while conditions are unsafe
-(§ SafetyMonitor Polling, step 1), and which in-flight calls the unsafe
-transition cancels (step 2) — plus `capture`, which stays ungated
-(darks and bias while unsafe are tenet 1) but whose in-flight body is
-cancelled on the transition all the same: that is the abort-exposure
-step delivered through the body, so the caller learns its frame died
-for safety rather than seeing a bare hardware error. A compound ungated
-tool with an exposure in flight (`auto_focus`, `refocus_train`) sees
-that hardware error instead (step 4) and fails with it.
+The class drives exactly two behaviours: which calls the safety gate
+refuses while conditions are unsafe (§ SafetyMonitor Polling, step 1),
+and which in-flight calls the unsafe transition cancels (step 2). Both
+read the class of the **call**, which is the tool's class except for
+`capture`: ungated in the table, because darks, bias and panel flats
+while unsafe are tenet 1, it is gated for a call whose frame needs the
+sky ([Capture Tool Details](#capture-tool-details), *Light source*).
+The dispatch reads `frame_type` and `light_source` from the call's
+arguments once, before it registers the call, so the refusal and the
+cancellation follow the same rule. A sky capture in flight is
+cancelled through its body, which aborts its exposure, so the caller
+learns its frame died for safety rather than seeing a bare hardware
+error; a dark, a bias or a panel flat in flight runs to its end, and
+step 3's exposure abort leaves its camera alone. A compound ungated
+tool with a sky exposure in flight (`auto_focus`, `refocus_train`)
+sees that abort's hardware error instead (step 3) and fails with it.
 
 **The safety gate.** The class is checked at tool dispatch, *after*
 the call is registered — the registration is what the unsafe
@@ -7048,7 +7131,10 @@ named). Every MCP client library surfaces this as a structured error,
 and `rp-mcp-client` maps it to `McpCallError::SafetyStopped`. An
 ungated tool is dispatched as usual whatever the conditions, and a name
 that is not in the catalog is left to the router's own "tool not found"
-answer. There is no HTTP-level gate: `/mcp` accepts every request,
+answer. A `capture` of a frame that needs the sky is a gated call
+([Capture Tool Details](#capture-tool-details), *Light source*), so it
+meets the gate here like any other, before its body runs or the camera
+is touched. There is no HTTP-level gate: `/mcp` accepts every request,
 `server/discover` and `tools/list` work while unsafe, and the REST
 surface is never gated. Plugin-provided tools are gated unless their
 registration says otherwise (§ [Tool Provider
@@ -7095,7 +7181,10 @@ tool reports the state the gate is acting on:
 `since` is when that reading last changed (process start until it
 does); a monitor whose read failed reports `unsafe` like any other
 unsafe reading. With no monitors configured `overall` is `safe` and
-`monitors` is empty. The `safety_changed` event stays the push signal.
+`monitors` is empty. `gated` lists tools by their class in the table,
+so `capture` is not on it unless an override gates it; its calls are
+classed one by one ([Capture Tool Details](#capture-tool-details),
+*Light source*). The `safety_changed` event stays the push signal.
 
 **Cancellation contract.** A cancelled body stops within one poll tick
 (100 ms), issues its stop-class counterpart where one exists, and
@@ -8043,7 +8132,9 @@ Testing follows the conventions in `docs/skills/testing.md`.
   correct target/filter selection. Pure function, easy to test exhaustively.
 - **Safety enforcement**: Assert correct behavior on unsafe transitions
   (transition detection, in-flight cancellation, the per-tool safety
-  gate and its `SafetyUnsafe` error).
+  gate and its `SafetyUnsafe` error, the class of a `capture` call read
+  from its arguments, the indoor slot a dark, a bias or a panel flat
+  holds and the exposure abort that skips its camera).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: Missing tools, conflicting plugins, circular
@@ -8061,7 +8152,9 @@ Testing follows the conventions in `docs/skills/testing.md`.
 Behavioral specifications for `rp`'s responsibilities:
 
 - Safety override (unsafe cancels in-flight gated work and gates the
-  tools; safe lifts the gate — the end-to-end pause and resume of a
+  tools; a sky capture in flight is cancelled while a dark or a panel
+  flat in flight goes on exposing through the park and saves its
+  frame; safe lifts the gate — the end-to-end pause and resume of a
   run against a real engine lives in
   `services/session-runner/tests/features/recovery.feature`)
 - Config rejection of the removed orchestrator surface (D11)

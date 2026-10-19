@@ -209,9 +209,13 @@ impl FlatsRig for McpClient {
         duration: Duration,
         frame: Frame,
     ) -> Result<CaptureResult> {
+        // Every frame here is lit by the panel behind the closed cover,
+        // which is what lets rp take it while conditions are unsafe
+        // (rp.md § Capture Tool Details, *Light source*).
         let mut args = serde_json::json!({
             "camera_id": camera_id,
             "duration": humantime::format_duration(duration).to_string(),
+            "light_source": "panel",
         });
         if let (Frame::Flat, Some(map)) = (frame, args.as_object_mut()) {
             // rp files the frame under the flats directory and stamps

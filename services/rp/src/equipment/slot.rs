@@ -29,11 +29,17 @@ impl DeviceSlot {
     /// Wait for the slot. Tokio's mutex queues waiters in arrival order.
     /// The caller races this against its own cancellation.
     pub async fn take(&self, kind: &str, id: &str) -> SlotGuard {
-        if let Ok(slot) = self.0.clone().try_lock_owned() {
+        if let Some(slot) = self.try_take() {
             return slot;
         }
         debug!(kind, id, "device busy: queued behind the call in flight");
         self.0.clone().lock_owned().await
+    }
+
+    /// The slot if it is free now; `None` while something holds it.
+    #[must_use]
+    pub fn try_take(&self) -> Option<SlotGuard> {
+        self.0.clone().try_lock_owned().ok()
     }
 }
 
@@ -56,5 +62,14 @@ mod tests {
         let _second = tokio::time::timeout(Duration::from_secs(1), slot.take("focuser", "f"))
             .await
             .expect("the slot was not handed on once the first guard dropped");
+    }
+
+    #[tokio::test]
+    async fn try_take_answers_none_while_the_slot_is_held() {
+        let slot = DeviceSlot::default();
+        let held = slot.try_take().expect("a free slot is taken at once");
+        assert!(slot.try_take().is_none(), "the slot was handed out twice");
+        drop(held);
+        assert!(slot.try_take().is_some(), "the slot was not handed back");
     }
 }

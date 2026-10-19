@@ -1611,6 +1611,7 @@ async fn test_capture_start_exposure_fails() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1636,6 +1637,7 @@ async fn test_capture_image_ready_error() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1661,6 +1663,7 @@ async fn test_capture_image_array_fails() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1696,6 +1699,7 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1730,6 +1734,7 @@ async fn test_capture_times_out_when_camera_never_ready() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1762,6 +1767,7 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1797,6 +1803,7 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2398,6 +2405,7 @@ async fn test_capture_write_fits_fails() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2444,6 +2452,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2507,6 +2516,7 @@ fn plain_capture_params() -> CaptureParams {
         binning: None,
         target: None,
         frame_type: None,
+        light_source: None,
         camera_id: Some("cam".into()),
         train_id: None,
         duration: Duration::from_millis(100),
@@ -2601,6 +2611,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2806,6 +2817,7 @@ async fn capture_addressed_by_train_resolves_the_terminal_camera() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: None,
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
@@ -2831,6 +2843,7 @@ async fn capture_rejects_both_camera_and_train_addressing() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
@@ -2855,6 +2868,7 @@ async fn capture_with_neither_address_names_both_alternatives() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: None,
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2876,6 +2890,7 @@ async fn capture_through_an_unknown_train_is_rejected() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: None,
                 train_id: Some("nope".into()),
                 duration: Duration::from_millis(100),
@@ -3135,6 +3150,7 @@ async fn capture_into(
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -3145,6 +3161,16 @@ async fn capture_into(
         )
         .await
         .unwrap();
+    sidecar_of(&result)
+}
+
+/// The sidecar a successful `capture` wrote, read from the
+/// `image_path` its result names.
+fn sidecar_of(result: &CallToolResult) -> ExposureDocument {
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "capture failed: {result:?}"
+    );
     let text = result
         .content
         .first()
@@ -3155,6 +3181,62 @@ async fn capture_into(
     let image_path = json["image_path"].as_str().unwrap().to_string();
     let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
     persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap()
+}
+
+// -----------------------------------------------------------------------
+// capture — the light source
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_capture_records_the_light_source_it_was_given() {
+    use persistence::LightSource;
+    use rp_vocabulary::FrameType;
+    let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
+    let frames = [
+        (Some(FrameType::Flat), Some(LightSource::Panel)),
+        (Some(FrameType::Flat), Some(LightSource::Sky)),
+        (None, Some(LightSource::Panel)),
+        (None, Some(LightSource::Sky)),
+        (Some(FrameType::Dark), None),
+    ];
+    for (frame_type, light_source) in frames {
+        let result = handler
+            .capture_inner(
+                CaptureParams {
+                    frame_type,
+                    light_source,
+                    ..plain_capture_params()
+                },
+                None,
+                &Cancel::never(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{frame_type:?}/{light_source:?} failed: {e:?}"));
+        let doc = sidecar_of(&result);
+        assert_eq!(doc.frame_type, frame_type);
+        assert_eq!(doc.light_source, light_source);
+    }
+}
+
+#[tokio::test]
+async fn test_capture_refuses_a_light_source_on_a_light_dark_or_bias_frame() {
+    use persistence::LightSource;
+    use rp_vocabulary::FrameType;
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    for frame_type in [FrameType::Light, FrameType::Dark, FrameType::Bias] {
+        let result = handler
+            .capture_inner(
+                CaptureParams {
+                    frame_type: Some(frame_type),
+                    light_source: Some(LightSource::Panel),
+                    ..plain_capture_params()
+                },
+                None,
+                &Cancel::never(),
+            )
+            .await;
+        assert_tool_error(result, &format!("not to a {frame_type} frame"));
+    }
 }
 
 /// One card from a captured frame's FITS header.
@@ -9507,6 +9589,7 @@ async fn do_capture_emits_progress_during_readout_wait() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             Some(&emitter),
@@ -9583,6 +9666,7 @@ async fn do_capture_emits_exposing_phase_before_readout() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             Some(&emitter),
@@ -10562,6 +10646,7 @@ async fn capture_with_binning(
                 binning: binning.map(|b| b.parse().expect("test binning")),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10632,6 +10717,7 @@ async fn capture_records_the_binning_the_camera_reports() {
                 binning: rp_vocabulary::Binning { x: 2, y: 2 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             None,
@@ -10662,6 +10748,7 @@ async fn a_binning_above_the_cameras_maximum_is_rejected_before_any_write() {
                 binning: Some("5x5".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10702,6 +10789,7 @@ async fn an_asymmetric_binning_is_rejected_on_a_camera_that_cannot_do_it() {
                 binning: Some("2x1".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10752,6 +10840,7 @@ async fn an_unreadable_binning_envelope_leaves_the_driver_as_the_backstop() {
                 binning: Some("5x5".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10789,6 +10878,7 @@ async fn a_sensor_size_missing_from_the_cache_is_re_read_rather_than_skipped() {
                 binning: Some("2x2".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10825,6 +10915,7 @@ async fn a_sensor_size_neither_cached_nor_readable_fails_the_capture() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10857,6 +10948,7 @@ async fn a_camera_that_lands_on_a_different_binning_fails_the_capture() {
                 binning: Some("2x2".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10892,6 +10984,7 @@ async fn only_the_axis_whose_limit_failed_to_read_loses_its_check() {
                 binning: Some("5x1".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10921,6 +11014,7 @@ async fn a_camera_that_refuses_the_binning_write_fails_the_capture_without_event
                 binning: Some("2x2".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -10957,6 +11051,7 @@ async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
                 binning: Some("2x2".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -11007,6 +11102,7 @@ async fn a_capture_cancelled_before_the_geometry_writes_never_touches_the_camera
                 binning: Some("2x2".parse().unwrap()),
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(10),
@@ -11073,6 +11169,7 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             None,
@@ -11118,6 +11215,7 @@ async fn capture_failure_emits_exposure_failed() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             None,
@@ -11423,6 +11521,7 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
                         binning: None,
                         target: None,
                         frame_type: None,
+                        light_source: None,
                         camera_id: Some("cam".into()),
                         train_id: None,
                         duration: Duration::from_millis(100),
@@ -11461,6 +11560,7 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
                 binning: None,
                 target: None,
                 frame_type: None,
+                light_source: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -11506,7 +11606,60 @@ fn capture_request(camera_id: &str, binning: u8) -> CaptureRequest<'_> {
         },
         target: None,
         frame_type: None,
+        light_source: None,
         lease_id: None,
+    }
+}
+
+/// A dark, a bias or a panel flat holds its camera's indoor slot while
+/// it exposes, which keeps the unsafe transition's exposure abort off
+/// it; a frame that needs the sky leaves the slot free (rp.md
+/// § `SafetyMonitor` Polling, step 3).
+#[tokio::test(start_paused = true)]
+async fn only_a_frame_that_needs_no_sky_holds_the_indoor_slot_while_it_exposes() {
+    use persistence::LightSource;
+    use rp_vocabulary::FrameType;
+    let frames = [
+        (Some(FrameType::Dark), None, true),
+        (Some(FrameType::Bias), None, true),
+        (Some(FrameType::Flat), Some(LightSource::Panel), true),
+        (None, Some(LightSource::Panel), true),
+        (Some(FrameType::Flat), Some(LightSource::Sky), false),
+        (Some(FrameType::Light), None, false),
+        (None, None, false),
+    ];
+    for (frame_type, light_source, holds) in frames {
+        let cam = Arc::new(MockCamera {
+            never_ready: true,
+            ..Default::default()
+        });
+        let (handler, _tmp) = capture_handler(cam.clone());
+        let capture = {
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let request = CaptureRequest {
+                    frame_type,
+                    light_source,
+                    ..capture_request("cam", 1)
+                };
+                handler.do_capture(request, None, &Cancel::never()).await
+            })
+        };
+        while calls(&cam.start_exposure_calls) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let entry = handler.equipment.find_camera("cam").unwrap();
+        assert_eq!(
+            entry.try_indoor_slot().is_none(),
+            holds,
+            "{frame_type:?}/{light_source:?}"
+        );
+        capture.abort();
+        let _ = capture.await;
+        assert!(
+            entry.try_indoor_slot().is_some(),
+            "{frame_type:?}/{light_source:?}: the indoor slot outlived its capture"
+        );
     }
 }
 
@@ -11666,6 +11819,7 @@ async fn capture_cancelled_behind_a_wedged_wheel_leaves_within_the_read_bound() 
 
     let request = CaptureRequest {
         frame_type: Some(rp_vocabulary::FrameType::Flat),
+        light_source: None,
         ..capture_request("cam", 1)
     };
     let err = handler
@@ -12710,6 +12864,7 @@ async fn do_capture_cancelled_aborts_the_exposure_within_one_tick() {
                 binning: rp_vocabulary::Binning { x: 1, y: 1 },
                 target: None,
                 frame_type: None,
+                light_source: None,
                 lease_id: None,
             },
             None,
@@ -13314,6 +13469,7 @@ fn lease_capture(lease_id: Option<&str>) -> CaptureParams {
         binning: None,
         target: None,
         frame_type: None,
+        light_source: None,
         camera_id: Some("cam".into()),
         train_id: None,
         duration: Duration::from_millis(100),

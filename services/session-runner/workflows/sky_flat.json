@@ -108,7 +108,8 @@
                     "tool": "capture",
                     "args": {
                       "camera_id": { "$expr": "params.camera_id" },
-                      "duration": { "$expr": "humantime(session.duration)" }
+                      "duration": { "$expr": "humantime(session.duration)" },
+                      "light_source": "sky"
                     }
                   },
                   {

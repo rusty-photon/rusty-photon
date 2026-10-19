@@ -3,15 +3,15 @@
 //! Polls every configured ASCOM
 //! `SafetyMonitor`, and on the overall safe → unsafe transition closes
 //! the safety gate (the [`SafetyStatus`] the MCP dispatch reads to
-//! refuse gated tools with `SafetyUnsafe`), cancels every in-flight
-//! *gated* tool call and every in-flight `capture` through the
-//! in-flight registry (rp.md § Safety → In-Flight Tool Calls — a slew
-//! aborts, an exposure aborts, both answer `cancelled: safety`; an
-//! in-flight park completes), interrupts the active session, aborts any
-//! exposure left without a body, stops guiding (emitting `guide_stopped`
-//! with `reason: "safety"`), and parks the mount. On unsafe → safe,
-//! opens the gate and resumes the interrupted session by re-invoking
-//! the orchestrator with recovery context.
+//! refuse gated calls with `SafetyUnsafe`), cancels every in-flight
+//! *gated* tool call, a capture of a frame that needs the sky among
+//! them, through the in-flight registry (rp.md § Safety → In-Flight
+//! Tool Calls — a slew aborts, an exposure aborts, both answer
+//! `cancelled: safety`; an in-flight park, dark or panel flat
+//! completes), aborts any exposure left without a body but a frame that
+//! needs no sky, stops guiding (emitting `guide_stopped` with
+//! `reason: "safety"`), and parks the mount. On unsafe → safe, opens
+//! the gate and nothing else: an orchestrator resumes its own run.
 //!
 //! Readings are **fail-unsafe**: a monitor that is disconnected or
 //! errors counts as unsafe, and conditions are safe only while *all*
@@ -369,13 +369,15 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     /// idempotent backstop) so nothing gated gets in — the dispatch
     /// registers before it checks the gate, so a call racing the close
     /// is either refused there or swept below. Cancel the in-flight
-    /// gated tool calls and captures and wait for them to acknowledge
-    /// (a cancelled slew's abort must not land on the park below), then
-    /// stop the hardware — abort any exposure left without a body, stop
-    /// guiding, park the mount, in that order (the mount must not move
-    /// under an exposing camera or an active guide loop).
+    /// gated tool calls, the captures of frames that need the sky among
+    /// them, and wait for them to acknowledge (a cancelled slew's abort
+    /// must not land on the park below), then stop the hardware — abort
+    /// any exposure left without a body, stop guiding, park the mount,
+    /// in that order (the mount must not move under a sky frame or an
+    /// active guide loop). A dark, a bias or a panel flat in flight is
+    /// neither cancelled nor aborted: the park cannot spoil it.
     async fn on_unsafe(&self) {
-        warn!("conditions unsafe; cancelling in-flight gated work");
+        warn!("conditions unsafe; cancelling in-flight work that needs the sky");
         self.status.set_overall(false);
         // End every train lease first, so none admits another call while
         // the sweep below runs, and each gives its gate permit back once
@@ -403,15 +405,25 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     }
 }
 
-/// Best-effort `AbortExposure` on every connected camera. The registry
-/// already cancelled every registered `capture` (each aborted its own
+/// Best-effort `AbortExposure` on every connected camera that is not
+/// exposing a frame that needs no sky. The registry already cancelled
+/// every capture of a frame that needs the sky (each aborted its own
 /// exposure and answered `cancelled: safety`); this catches a camera
 /// left exposing with no body to answer for it, since the park that
 /// follows would ruin the frame either way and a camera left exposing
 /// would keep going into the (unsafe) night.
+///
+/// A dark, a bias or a panel flat holds its camera's indoor slot for
+/// its whole capture, and that camera is skipped. The abort holds the
+/// slot itself while it is sent, so such a capture starting meanwhile
+/// waits for the abort instead of starting into it.
 async fn abort_exposures(equipment: &EquipmentRegistry) {
     for camera in &equipment.cameras {
         let Some(device) = camera.device() else {
+            continue;
+        };
+        let Some(_indoor_slot) = camera.try_indoor_slot() else {
+            debug!(camera = %camera.id, "exposing a frame that needs no sky; not aborted");
             continue;
         };
         match device.abort_exposure().await {
@@ -591,9 +603,10 @@ mod tests {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         let mut events = enforcer.event_bus.subscribe();
 
-        // Three in-flight calls: the gated slew and the ungated capture
-        // must be cancelled with the safety reason, the ungated park
-        // left alone.
+        // Four in-flight calls: the gated slew and a capture of a frame
+        // that needs the sky (gated for its call) must be cancelled
+        // with the safety reason, the ungated park and a dark (an
+        // ungated capture) left alone.
         let parent = CancellationToken::new();
         let (slew_guard, slew) =
             enforcer
@@ -605,6 +618,12 @@ mod tests {
                 .register(&RequestId::Number(2), "park", ToolClass::Ungated, &parent);
         let (capture_guard, capture) = enforcer.in_flight.register(
             &RequestId::Number(3),
+            "capture",
+            ToolClass::Gated,
+            &parent,
+        );
+        let (_dark_guard, dark) = enforcer.in_flight.register(
+            &RequestId::Number(4),
             "capture",
             ToolClass::Ungated,
             &parent,
@@ -637,10 +656,11 @@ mod tests {
         assert_eq!(slew_body.await.unwrap(), "cancelled: safety");
         assert_eq!(capture_body.await.unwrap(), "cancelled: safety");
         assert!(!park.is_cancelled(), "the ungated park must keep running");
+        assert!(!dark.is_cancelled(), "the dark must keep exposing");
         assert_eq!(
             enforcer.in_flight.len(),
-            1,
-            "only the park is still in flight"
+            2,
+            "only the park and the dark are still in flight"
         );
 
         // The safety transition is the only event.
@@ -1153,26 +1173,26 @@ mod tests {
     /// The registry also carries cameras so the unsafe transition's
     /// exposure abort covers all three arms: abort acknowledged, abort
     /// rejected (no exposure in progress), and camera not connected.
+    fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
+        crate::config::CameraConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            alpaca_url: url.to_string(),
+            device_type: String::new(),
+            device_number,
+            unique_id: None,
+            cooler_targets_c: Vec::new(),
+            gain: None,
+            offset: None,
+            readout_time_estimate: None,
+            auth: None,
+        }
+    }
+
     #[tokio::test]
     async fn alpaca_probe_reads_issafe_and_unsafe_aborts_exposures() {
         use axum::routing::{get, put};
         use axum::{Json, Router};
-
-        fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
-            crate::config::CameraConfig {
-                id: id.to_string(),
-                name: id.to_string(),
-                alpaca_url: url.to_string(),
-                device_type: String::new(),
-                device_number,
-                unique_id: None,
-                cooler_targets_c: Vec::new(),
-                gain: None,
-                offset: None,
-                readout_time_estimate: None,
-                auth: None,
-            }
-        }
 
         let app = Router::new()
             .route(
@@ -1294,5 +1314,108 @@ mod tests {
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.payload["monitor"], "never-connected");
         assert_eq!(changed.payload["new_state"], "unsafe");
+    }
+
+    /// rp.md § `SafetyMonitor` Polling, step 3: the exposure abort skips a
+    /// camera whose indoor slot a dark, a bias or a panel flat holds,
+    /// and holds the slot of every camera it aborts while the abort is
+    /// out, so such a capture cannot start into it.
+    #[tokio::test]
+    async fn the_exposure_abort_spares_a_frame_that_needs_no_sky() {
+        use axum::routing::{get, put};
+        use axum::{Json, Router};
+
+        let aborted = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let ok = || async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) };
+        let indoor_abort = {
+            let (aborted, entered, release) = (aborted.clone(), entered.clone(), release.clone());
+            move || {
+                let (aborted, entered, release) =
+                    (aborted.clone(), entered.clone(), release.clone());
+                async move {
+                    aborted.lock().unwrap().push(0);
+                    entered.notify_one();
+                    release.notified().await;
+                    Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
+                }
+            }
+        };
+        let sky_abort = {
+            let aborted = aborted.clone();
+            move || {
+                let aborted = aborted.clone();
+                async move {
+                    aborted.lock().unwrap().push(1);
+                    Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
+                }
+            }
+        };
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [
+                            {
+                                "DeviceName": "Camera 0",
+                                "DeviceType": "Camera",
+                                "DeviceNumber": 0,
+                                "UniqueID": "test-cam-0"
+                            },
+                            {
+                                "DeviceName": "Camera 1",
+                                "DeviceType": "Camera",
+                                "DeviceNumber": 1,
+                                "UniqueID": "test-cam-1"
+                            }
+                        ],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route("/api/v1/camera/0/connected", put(ok))
+            .route("/api/v1/camera/1/connected", put(ok))
+            .route("/api/v1/camera/0/abortexposure", put(indoor_abort))
+            .route("/api/v1/camera/1/abortexposure", put(sky_abort));
+        let stub = crate::equipment::test_support::spawn_stub(app).await;
+        let equipment_cfg = crate::config::EquipmentConfig {
+            cameras: vec![
+                camera_cfg("dark-cam", &stub.url(), 0),
+                camera_cfg("sky-cam", &stub.url(), 1),
+            ],
+            ..Default::default()
+        };
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
+
+        // A dark exposing on the first camera holds its indoor slot.
+        let dark = equipment.cameras[0]
+            .try_indoor_slot()
+            .expect("nothing holds the indoor slot yet");
+        abort_exposures(&equipment).await;
+        assert_eq!(
+            *aborted.lock().unwrap(),
+            vec![1],
+            "only the sky camera is aborted"
+        );
+
+        // The dark is done: the abort reaches both cameras, and holds the
+        // first one's indoor slot until its abort is answered.
+        drop(dark);
+        let transition = tokio::spawn({
+            let equipment = equipment.clone();
+            async move { abort_exposures(&equipment).await }
+        });
+        entered.notified().await;
+        assert!(
+            equipment.cameras[0].try_indoor_slot().is_none(),
+            "a dark could start into the abort"
+        );
+        release.notify_one();
+        transition.await.unwrap();
+        assert_eq!(*aborted.lock().unwrap(), vec![1, 0, 1]);
+        assert!(equipment.cameras[0].try_indoor_slot().is_some());
     }
 }
