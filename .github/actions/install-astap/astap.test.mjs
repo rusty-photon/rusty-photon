@@ -300,7 +300,12 @@ test('install refuses an archive that does not match its pin, and leaves nothing
   const { server, cli } = await sourceForge(undefined, { [TABLE.cli[RUNNER].archive]: '1'.repeat(64) });
   const workspace = tempDir();
   try {
-    await inStep(() => assert.rejects(install({ workspace, cli, download: fast }), /SHA-256 mismatch: expected 1{64}/));
+    await inStep(() =>
+      assert.rejects(
+        install({ workspace, cli, download: fast }),
+        /SHA-256 mismatch: expected 1{64}.* refresh-astap-shas\.yml opens a pull request .*install-astap\/assets\.json/,
+      ),
+    );
     assert.equal(server.requests.length, CLI_DOWNLOAD.attempts);
     assert.deepEqual(readdirSync(workspace), []);
   } finally {

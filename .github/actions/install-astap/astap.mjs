@@ -21,7 +21,7 @@ import { setTimeout as sleepFor } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { addPath, exportVariable, io, setOutput, warning } from '../lib/helpers.mjs';
-import { cacheKey, download, forRunner, unpack, withWorkDir } from '../lib/install.mjs';
+import { cacheKey, ChecksumError, download, forRunner, unpack, withWorkDir } from '../lib/install.mjs';
 
 /** The table of what each runner downloads, and its pins. */
 export const TABLE_FILE = fileURLToPath(new URL('./assets.json', import.meta.url));
@@ -154,12 +154,24 @@ export function staggerSeconds(text) {
 
 // --- Installing --------------------------------------------------------------------
 
+// What to do when a pin no longer matches: SourceForge serves each release
+// under the same name, so a mismatch is most likely a new one.
+const ROTATED =
+  'If upstream released a new one, refresh-astap-shas.yml opens a pull request with the new pin; ' +
+  'the pins are in .github/actions/install-astap/assets.json, and ADR-005 §"Pinned SHA-256 + refresh procedure" ' +
+  'has the manual steps.';
+
 // Downloads, checks and unpacks `asset` into `dir`, replacing what is there,
 // once `check` accepts the unpacked directory.
 async function unpackInto(asset, dir, options, check) {
   await withWorkDir(dir, async (work) => {
     const archive = path.join(work, asset.name);
-    await download(asset, archive, options);
+    try {
+      await download(asset, archive, options);
+    } catch (err) {
+      if (err instanceof ChecksumError) throw new ChecksumError(`${err.message} ${ROTATED}`);
+      throw err;
+    }
     const unpacked = path.join(work, 'unpacked');
     await unpack(archive, unpacked);
     check(unpacked);

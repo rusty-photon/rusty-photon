@@ -441,7 +441,11 @@ over 30 s, about 190 times below a healthy mirror, and starts no attempt
 after 10 minutes. The dropped connection is the case that mattered
 when the action ran `curl`: its bare `--retry` did not count one,
 `curl: (56)`, as transient, and only `--retry-all-errors` did.
-`install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason.
+`install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason. The
+download runs on Node's own HTTP client, not `fetch`: on Node 24, `fetch`
+crashes the process, past any retry, when a mirror closes the connection
+while the body is paused
+([nodejs/undici#5360](https://github.com/nodejs/undici/issues/5360)).
 
 **The D05 cache cannot be relied on to hide any of this.** The repo's
 Actions cache sits at GitHub's 10 GB per-repo ceiling, dominated by

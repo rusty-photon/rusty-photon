@@ -142,6 +142,7 @@ parsers, which its comments name.
 | `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
 | `command` | Runs a program with its arguments, never through a shell, and resolves to what it prints. An exit other than 0 rejects with the last line of its stderr, and a program that cannot start with its spawn error (`ENOENT`). |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
+| `parseRetryAfter` | The wait a Retry-After header asks for, in ms: its seconds, or its HTTP date measured against the server's clock. For a request made without `fetchWithRetry`, as `lib/install.mjs`'s download is. |
 | `io` | Where the helpers write. Tests swap it out (below). |
 
 A helper goes into `lib/helpers.mjs` once two actions need it; until then
@@ -277,7 +278,15 @@ above.
   rolling download is fetched again each week.
 - **`download`** retries a failed request, a body cut short, a transfer
   that stalls (no data for 30 s) and a SHA-256 mismatch, as one unit with
-  its check, and leaves no file unless every check passed. For a server
+  its check, and leaves no file unless every check passed. It fetches with
+  Node's own HTTP client (`get`), not `fetch`: Node 24's `fetch` (undici 7)
+  crashes the process, past any `catch`, when a server closes the
+  connection while the reader has paused the body
+  ([nodejs/undici#5360](https://github.com/nodejs/undici/issues/5360),
+  fixed in undici 8 only). A SourceForge mirror answers
+  `Connection: close`, and two of three legs of a `plate-solver-smoke` run
+  crashed so. `get` follows redirects, refuses one from https to http, and
+  throws an `HttpError` for an answer outside 2xx. For a server
   that crawls rather than fails, such as a SourceForge mirror, a caller
   can also set a floor on the rate (`minBytesPerSecond`, measured over the
   stall time) and a time after which no attempt starts (`retryForMs`), as

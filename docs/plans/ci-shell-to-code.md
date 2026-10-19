@@ -453,7 +453,11 @@ not:
   keeps the file in the one layout `repin` writes. The curl flags became
   `download` options; the D05's rate floor (`minBytesPerSecond`) and its
   bound on retries (`retryForMs`) are new in `lib/install.mjs`, off by
-  default. The smoke also runs on a change to `.github/actions/lib`, which
+  default. The download moved off `fetch` onto Node's own HTTP client:
+  Node 24's `fetch` crashed the process on two of three legs of the PR's
+  `plate-solver-smoke` run, when a SourceForge mirror closed the
+  connection under a paused body (nodejs/undici#5360). The smoke and
+  `plate-solver-smoke` also run on a change to `.github/actions/lib`, which
   the action runs. The macOS quarantine step went, as J2's did. ASTAP
   joins no developer install: Amendment A names J5 and J6 for that. The
   workflow's own D05 download, with its copy of the pin, stays for J8.

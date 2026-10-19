@@ -283,7 +283,7 @@ export class HttpError extends Error {
 
 // Retry-After holds seconds or an HTTP date (RFC 9110, section 10.2.3).
 // A date is measured against `now`, the server's clock.
-function parseRetryAfter(header, now) {
+export function parseRetryAfter(header, now) {
   if (header === null) return undefined;
   const text = header.trim();
   if (/^\d+$/.test(text)) return Number(text) * 1000;

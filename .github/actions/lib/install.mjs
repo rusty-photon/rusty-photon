@@ -22,11 +22,13 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { command, fetchWithRetry, io, isTransient, retry } from './helpers.mjs';
+import { command, HttpError, io, isTransient, parseRetryAfter, retry } from './helpers.mjs';
 
 // --- Choosing the asset ---------------------------------------------------------
 
@@ -118,6 +120,65 @@ export class ChecksumError extends Error {
   }
 }
 
+// The statuses that send a GET on to the URL in their Location header.
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+
+// As many redirects as fetch follows.
+const MAX_REDIRECTS = 20;
+
+// One GET of `target`, resolving to its response, whatever its status.
+function request(target, { headers, signal }) {
+  const client = { 'https:': https, 'http:': http }[target.protocol];
+  if (client === undefined) return Promise.reject(new TypeError(`GET ${target.origin}: only http and https are fetched`));
+  return new Promise((resolve, reject) => {
+    client.get(target, { headers, signal }, resolve).on('error', reject);
+  });
+}
+
+/**
+ * Where a redirect from `from` to `location` goes: `location` read against
+ * `from`, unless it would take an https request to plain http, which drops
+ * the transport's checks.
+ */
+export function redirectTarget(from, location) {
+  const next = new URL(location, from);
+  if (from.protocol === 'https:' && next.protocol !== 'https:') {
+    throw new TypeError(`GET ${from.origin}: refused a redirect from https to ${next.protocol}`);
+  }
+  return next;
+}
+
+/**
+ * The response to a GET of `url` by Node's own HTTP client, once one answers
+ * 2xx after following redirects; any other answer throws an HttpError. Not
+ * fetch: Node 24's (undici 7) crashes the process, beyond any catch, when a
+ * server closes the connection while the reader has paused the body
+ * (nodejs/undici#5360, fixed in undici 8 only). A SourceForge mirror answers
+ * `Connection: close`, and a disk slower than the network pauses the body, so
+ * between them every large download risked it.
+ */
+export async function get(url, { headers = {}, signal } = {}) {
+  let target = new URL(url);
+  for (let hops = 0; ; hops++) {
+    const response = await request(target, { headers, signal });
+    const { statusCode: status, headers: answer } = response;
+    if (REDIRECTS.has(status) && answer.location) {
+      response.resume();
+      if (hops === MAX_REDIRECTS) throw new TypeError(`GET ${target.origin}: more than ${MAX_REDIRECTS} redirects`);
+      target = redirectTarget(target, answer.location);
+      continue;
+    }
+    if (status < 200 || status > 299) {
+      response.resume();
+      const now = Date.parse(answer.date ?? '');
+      throw new HttpError('GET', target, status, response.statusMessage ?? '', {
+        retryAfterMs: parseRetryAfter(answer['retry-after'] ?? null, Number.isNaN(now) ? Date.now() : now),
+      });
+    }
+    return response;
+  }
+}
+
 // Streams `url` into `file`, aborting when no data comes for `stallMs`, or,
 // with a `minBytesPerSecond`, when a stretch of `stallMs` brings fewer bytes
 // than that rate would, and resolves to the SHA-256 of what it wrote.
@@ -142,19 +203,17 @@ async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs }) {
       }
       received = 0;
     }, stallMs);
+  const signal = AbortSignal.any([stall.signal, AbortSignal.timeout(timeoutMs)]);
   try {
-    // fetch decodes a body the server sent with a Content-Encoding, where
-    // curl keeps the bytes as they came: asking for none keeps the hash on
-    // the file the server holds.
-    const response = await fetchWithRetry(url, {
-      attempts: 1,
-      timeoutMs,
-      signal: stall.signal,
-      headers: { 'accept-encoding': 'identity' },
+    // Asking for no Content-Encoding keeps the hash on the file the server
+    // holds.
+    const response = await get(url, {
+      signal,
+      headers: { 'accept-encoding': 'identity', 'user-agent': 'rusty-photon-install' },
     });
     const hash = createHash('sha256');
     await pipeline(
-      response.body ? Readable.fromWeb(response.body) : Readable.from([]),
+      response,
       new Transform({
         transform(chunk, _encoding, done) {
           wait();
@@ -166,6 +225,14 @@ async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs }) {
       createWriteStream(file),
     );
     return hash.digest('hex');
+  } catch (err) {
+    // What the request was aborted for, a stall or the time limit, rather
+    // than Node's AbortError; and a failure of the connection in the shape
+    // fetch gives one, a TypeError whose cause carries the code, which
+    // isTransient reads.
+    if (signal.aborted) throw signal.reason;
+    if (err instanceof HttpError || err instanceof TypeError || typeof err?.code !== 'string') throw err;
+    throw new TypeError(`download failed: ${err.message}`, { cause: err });
   } finally {
     clearTimeout(timer);
     clearInterval(slow);

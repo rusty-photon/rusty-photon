@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -15,12 +16,14 @@ import {
   ChecksumError,
   download,
   forRunner,
+  get,
   hostKey,
   INSTALLED,
   isoWeek,
   markInstalled,
   onlyDirectory,
   pinKey,
+  redirectTarget,
   runnerKey,
   tarProgram,
   unpack,
@@ -174,6 +177,105 @@ test('cacheKey of a rolling download moves with the ISO week', () => {
 });
 
 // --- Downloading ------------------------------------------------------------------
+
+// --- Fetching ----------------------------------------------------------------------
+
+// A server speaking raw HTTP/1.1, which answers every request with `answer`
+// and closes its side, as a SourceForge mirror's nginx does after
+// `Connection: close`.
+async function rawServer(answer) {
+  const server = createServer((socket) => {
+    socket.once('data', () => {
+      socket.write(answer);
+      socket.end();
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((done) => server.close(done)) };
+}
+
+test('get hands over a body whole when the server closed before it was read', async () => {
+  // The case that crashes Node 24's fetch (nodejs/undici#5360): a body of a
+  // full stream buffer, 64 KiB, paused unread when the server's FIN comes.
+  const body = Buffer.alloc(64 * 1024, 0x61);
+  const server = await rawServer(
+    Buffer.concat([Buffer.from(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`), body]),
+  );
+  try {
+    const response = await get(`${server.url}/asset.bin`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), body);
+  } finally {
+    await server.close();
+  }
+});
+
+test('get follows redirects, relative and absolute, to the answer', async () => {
+  const server = await serve((req, res) => {
+    if (req.url === '/download') {
+      res.writeHead(302, { location: '/mirror/asset.bin' });
+      res.end('moved');
+    } else if (req.url === '/mirror/asset.bin') {
+      res.writeHead(307, { location: `http://${req.headers.host}/final` });
+      res.end();
+    } else {
+      res.end(PAYLOAD);
+    }
+  });
+  try {
+    const response = await get(`${server.url}/download`, { headers: { 'user-agent': 'test' } });
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), PAYLOAD);
+    assert.deepEqual(server.requests.map(({ url }) => url), ['/download', '/mirror/asset.bin', '/final']);
+    // Each hop carries the request's headers.
+    assert.ok(server.requests.every(({ headers }) => headers['user-agent'] === 'test'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('get gives up after 20 redirects', async () => {
+  const server = await serve((req, res) => {
+    res.writeHead(302, { location: '/again' });
+    res.end();
+  });
+  try {
+    await assert.rejects(get(`${server.url}/start`), /more than 20 redirects/);
+    assert.equal(server.requests.length, 21);
+  } finally {
+    await server.close();
+  }
+});
+
+test('get throws an HttpError for an answer outside 2xx, with the wait it asks for', async () => {
+  const server = await serve((req, res) => {
+    res.writeHead(503, { 'retry-after': '7' });
+    res.end('busy');
+  });
+  try {
+    await assert.rejects(get(`${server.url}/asset.bin?token=secret`), (err) => {
+      assert.ok(err instanceof HttpError);
+      assert.equal(err.status, 503);
+      assert.equal(err.retryAfterMs, 7_000);
+      assert.doesNotMatch(err.message, /secret/);
+      return true;
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('redirectTarget reads a Location against the URL it came from, and refuses https to http', () => {
+  const from = new URL('https://sourceforge.net/projects/x/files/a.zip/download');
+  assert.equal(redirectTarget(from, '/project/x/a.zip').href, 'https://sourceforge.net/project/x/a.zip');
+  assert.equal(redirectTarget(from, 'https://mirror.example/a.zip').href, 'https://mirror.example/a.zip');
+  assert.throws(() => redirectTarget(from, 'http://mirror.example/a.zip'), /refused a redirect from https to http:/);
+  assert.equal(redirectTarget(new URL('http://127.0.0.1:1/a'), 'http://127.0.0.1:1/b').href, 'http://127.0.0.1:1/b');
+});
 
 test('download writes an asset that matches its SHA-256, and says so', async () => {
   const server = await serve((req, res) => res.end(PAYLOAD));
