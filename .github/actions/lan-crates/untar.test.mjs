@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { paxRecord, seal, tar, tarHeader } from './fixtures.mjs';
+import { paxRecord, seal, tar, tarHeader } from '../lib/testing.mjs';
 import { untar } from './untar.mjs';
 
 const summary = (entries) => entries.map(({ path, type, mode, data }) => ({ path, type, mode, data: data.toString() }));

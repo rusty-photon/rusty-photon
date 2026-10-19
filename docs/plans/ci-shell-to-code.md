@@ -90,7 +90,7 @@ first in their columns.
 | F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#1508) |
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Done (#1541) |
 | J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Done (#1534) |
-| J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
+| J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Done (#1564) |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Not started |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
@@ -372,6 +372,14 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   cache there, never a failed step.
 
 ### J2 — Shared download-verify-extract module, first used by `install-omnisim`
+
+Done in #1564. The module is `.github/actions/lib/install.mjs`, and
+[ci-logic.md](../skills/ci-logic.md#an-action-that-installs-a-tool) says
+how an action uses it. A zip on Linux takes `unzip`, as the shell did,
+rather than a zip reader of our own. The fallback to the previous week's
+download, for a rolling pin, comes with J5, its first user.
+`install-omnisim`'s macOS quarantine step went: neither curl nor Node
+marks a download as quarantined.
 
 - One module for what all five `install-*` actions do: choose what to
   fetch for the OS and architecture, download it with retries and a stall
