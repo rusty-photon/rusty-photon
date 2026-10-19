@@ -8,10 +8,12 @@ Feature: Camera facade — PHD2's guide frames as an ASCOM Alpaca Camera
   for PHD2's SingleFrameComplete event naming that file, reads the file,
   deletes it, and serves the frame as the image.
 
-  Connecting only reads PHD2: its version, its camera's frame size and
-  its camera's name. The facade needs PHD2 2.6.14 or later, the first
+  Connecting reads PHD2: its version, its camera's frame size and its
+  camera's name. The facade needs PHD2 2.6.14 or later, the first
   release whose capture_single_frame saves to a named file and reports
-  the frame with an event.
+  the frame with an event. PHD2's Simulator and INDI cameras report 0 x 0
+  until their first frame; when PHD2 reports 0 x 0, the connect takes one
+  1 ms frame and reads the size PHD2 reports once it has taken it.
 
   The mock PHD2 here reports an 8 x 6 camera named "Mock Camera". Its
   frames are an unsigned 16-bit ramp in row-major order: the pixel at
@@ -46,6 +48,23 @@ Feature: Camera facade — PHD2's guide frames as an ASCOM Alpaca Camera
     And the guider service is running with the camera facade enabled
     When the client tries to connect the facade camera
     Then the facade call should fail with ASCOM error 0x407 mentioning "camera not connected"
+
+  Scenario: A camera PHD2 reports as 0 x 0 connects after one 1 ms frame
+    Given a mock PHD2 2.6.14 with an 8 x 6 camera that reports 0 x 0 until its first frame
+    And the guider service is running with the camera facade enabled
+    When the client connects the facade camera
+    Then the facade camera should report a sensor of 8 x 6 pixels named "Mock Camera"
+    And the mock PHD2 should have received a capture of 1 ms saved under image_dir as a phd2-guider FITS file
+    And image_dir should hold no phd2-guider file
+    And image_dir should hold no capture marker
+
+  Scenario: A connect whose 1 ms frame fails is refused with PHD2's error
+    Given a mock PHD2 2.6.14 with an 8 x 6 camera whose frames fail and that reports 0 x 0 until its first frame
+    And the guider service is running with the camera facade enabled
+    When the client tries to connect the facade camera
+    Then the facade call should fail with ASCOM error 0x407 mentioning "Mock camera error"
+    And the facade camera should not be connected
+    And image_dir should hold no capture marker
 
   Scenario: A light frame is captured by PHD2 into image_dir and served as the image
     Given a mock PHD2 2.6.14 with an 8 x 6 camera

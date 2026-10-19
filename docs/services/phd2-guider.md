@@ -1214,7 +1214,7 @@ return an earlier frame.
 | `MaxADU` | 65535 |
 | `ImageArray` | unsigned 16-bit values, sent as `UInt16` (ImageBytes `TransmissionElementType` 8): half the bytes of `Int32` |
 | `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
-| `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect |
+| `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect, after the connect's 1 ms frame when PHD2 reports 0 × 0 (see [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)) |
 | `PixelSizeX` / `PixelSizeY` | `camera.pixel_size_x_um` / `camera.pixel_size_y_um` |
 | `SensorType` | `Monochrome` (the facade serves PHD2's frame as written) |
 | `SensorName` | the camera name PHD2's `get_current_equipment` reports, read on connect |
@@ -1234,10 +1234,52 @@ comes from the `Version` event PHD2 sends first on every connection. A
 connect that arrives before this service has read that event waits up to
 2 s for it. It caches
 the frame size and the camera's name, and resets the subframe to the
-full frame. It writes nothing to PHD2: no exposure, no equipment
-connection, no profile change, and no stop (workspace tenet 3, *no
-actuation on connect*). A failed connect is `NotConnected`, naming what
-was missing.
+full frame. It sends PHD2 no equipment connection, no profile change and
+no stop (workspace tenet 3, *no actuation on connect*), and no exposure
+except the one frame [below](#a-frame-size-phd2-does-not-know-yet). A
+failed connect is `NotConnected`, naming what was missing.
+
+#### A frame size PHD2 does not know yet
+
+Some of PHD2's camera drivers learn the frame size only from a frame.
+PHD2 2.6.14's Simulator and INDI cameras report 0 × 0 until they have
+taken one; its QHY, ZWO, SVBony and ToupTek drivers, among others,
+report the size as soon as the camera connects. A size with a zero
+dimension is unknown. When PHD2 reports one, the facade takes one 1 ms
+frame exactly as `StartExposure` does (the capture slot, PHD2 `Stopped`,
+the restart marker, a random file name, the file deleted after), then
+reads the size PHD2 reports. The connect fails if the frame cannot start
+(a guiding operation in progress, PHD2 not `Stopped`), if PHD2 fails it
+or does not report it within `1 ms + capture_grace`, or if PHD2 still
+reports 0 × 0 after it.
+
+The frame is needed only until PHD2 has taken one with its current
+camera: a PHD2 that has looped or guided reports the size, and the
+connect takes no frame. On the Simulator the frame adds about 0.1 s to
+the connect (PHD2 reported a 1 ms frame 87 ms after the request,
+[above](#what-phd2-does-with-a-single-frame)). The facade keeps no size
+of its own: a size it remembered could go stale when PHD2 switches or
+rebins its camera, while PHD2's own answer after a frame cannot.
+
+The 1 ms frame is the only exposure a connect takes. The repo owner
+decided on 2026-10-19 that it is not actuation in tenet 3's sense. It
+moves no mount, focuser or filter. It changes none of PHD2's settings: a
+single frame never calls `set_exposure` and sends no binning or gain
+(see [Capturing a frame](#capturing-a-frame)). It is taken only from a
+`Stopped` PHD2.
+
+The one moving part it can touch is a mechanical shutter, and the owner
+accepted that on the record the same day. PHD2 never sets an INDI
+camera's frame type (`cam_indi.cpp:517` finds `CCD_FRAME_TYPE` and
+leaves it), so every frame PHD2 takes from INDI is a light frame. An
+INDI guide camera with a mechanical shutter therefore opens it for the
+1 ms frame. That happens on every connect that finds the size unknown,
+including rp's startup bind, its connect retries and its reconnect
+passes. It is the price of a connect that works unattended.
+
+The Simulator's shutter is simulated. SBIG opens its shutter on every
+light frame (`cam_sbig.cpp:497`) but reports its size on connect, so it
+never takes this frame.
 
 `Connected` reads back the state the client set. A PHD2 that goes away
 afterwards surfaces as errors from the calls that need it.
@@ -1602,7 +1644,7 @@ ASCOM errors from the Camera:
 
 | Condition | ASCOM error |
 |---|---|
-| Not connected; PHD2 unreachable; PHD2 older than 2.6.14 or its camera not connected (on connect) | `NotConnected` |
+| Not connected; PHD2 unreachable; on connect, PHD2 older than 2.6.14, its camera not connected, or its frame size unknown and the 1 ms frame that would read it failing | `NotConnected` |
 | `light = false`; a duration outside 1 ms–600 s; a subframe outside the sensor; a bin other than 1 | `InvalidValue` |
 | An exposure already in flight; a guiding operation in progress; PHD2 not `Stopped`; PHD2's own "capture is currently active" | `InvalidOperation` |
 | `ImageArray` with no image yet | `InvalidOperation` |
@@ -1651,8 +1693,8 @@ sweep lease is held return `camera_busy` (409), see
   while PHD2 loops and while a frame is in flight, guiding refused while
   it is held, and ended by a stop, a disconnect and its TTL. A frame
   under it went out as `UInt16`. PHD2's simulator reports a 0 × 0 frame
-  until it has taken one, which the connect does not refuse
-  ([#1518](https://github.com/rusty-photon/rusty-photon/issues/1518)).
+  until it has taken one, which the connect now handles (see
+  [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)).
   [Record](../validation/2026-10-14-phd2-guider-phd2-simulator-linux-sweep-lease/README.md).
 
 ### Not in this version

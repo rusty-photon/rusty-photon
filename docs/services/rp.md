@@ -3714,7 +3714,14 @@ Consequences and constraints:
 - **Tenet 3 applies to the reconnect path exactly as to first
   connect:** re-establishing a session re-*reads* state and never
   re-commands hardware. `Connected = true` is non-actuating by driver
-  contract.
+  contract, with one exception the repo owner accepted: phd2-guider's
+  camera facade. When PHD2 does not know its camera's frame size yet,
+  a facade connect takes one 1 ms frame, and that frame can open an
+  INDI guide camera's mechanical shutter
+  ([phd2-guider.md § A frame size PHD2 does not know yet](phd2-guider.md#a-frame-size-phd2-does-not-know-yet)).
+  Each attempt rp makes takes the frame again, whether a startup bind,
+  a connect retry or a reconnect pass, until PHD2 has taken a frame
+  with its camera.
 - **In-flight calls are unaffected.** A tool call holding the old
   session handle keeps using it, together with that session's cached
   properties (the transport is stateless HTTP). A disconnected entry
