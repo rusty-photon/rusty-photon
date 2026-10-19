@@ -189,12 +189,30 @@ fn stage_marker(world: &mut GuiderWorld, deadline: SystemTime) {
     world.marker_frame = Some(frame);
 }
 
-#[given(regex = r"^image_dir's phd2-guider-frame-size.json remembers (\d+) x (\d+)$")]
-fn image_dir_remembers_size(world: &mut GuiderWorld, width: u32, height: u32) {
-    let remembered = serde_json::json!({ "width": width, "height": height });
+/// The remembered frame sizes in `image_dir`, by camera name: an empty
+/// map when there is no file yet.
+fn remembered_sizes(world: &mut GuiderWorld) -> serde_json::Map<String, serde_json::Value> {
+    let path = world.image_dir().join("phd2-guider-frame-size.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} is not a JSON object: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => panic!("cannot read {}: {e}", path.display()),
+    }
+}
+
+#[given(
+    regex = r#"^image_dir's phd2-guider-frame-size.json remembers (\d+) x (\d+) for "([^"]*)"$"#
+)]
+fn image_dir_remembers_size(world: &mut GuiderWorld, width: u32, height: u32, camera: String) {
+    let mut remembered = remembered_sizes(world);
+    remembered.insert(
+        camera,
+        serde_json::json!({ "width": width, "height": height }),
+    );
     std::fs::write(
         world.image_dir().join("phd2-guider-frame-size.json"),
-        remembered.to_string(),
+        serde_json::Value::Object(remembered).to_string(),
     )
     .expect("stage the remembered frame size");
 }
@@ -659,15 +677,15 @@ fn still_holds(world: &mut GuiderWorld, name: String) {
     assert!(world.image_dir().join(&name).exists(), "{name} was removed");
 }
 
-#[then(regex = r"^image_dir's phd2-guider-frame-size.json should remember (\d+) x (\d+)$")]
-fn remembers_size(world: &mut GuiderWorld, width: u32, height: u32) {
-    let path = world.image_dir().join("phd2-guider-frame-size.json");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let remembered: serde_json::Value = serde_json::from_str(&text).unwrap();
+#[then(
+    regex = r#"^image_dir's phd2-guider-frame-size.json should remember (\d+) x (\d+) for "([^"]*)"$"#
+)]
+fn remembers_size(world: &mut GuiderWorld, width: u32, height: u32, camera: String) {
+    let remembered = remembered_sizes(world);
     assert_eq!(
-        remembered,
-        serde_json::json!({ "width": width, "height": height })
+        remembered.get(&camera),
+        Some(&serde_json::json!({ "width": width, "height": height })),
+        "remembered: {remembered:?}"
     );
 }
 

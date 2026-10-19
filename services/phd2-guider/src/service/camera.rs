@@ -46,7 +46,7 @@ const EXPOSURE_MAX: Duration = MAX_EXPOSURE;
 const EXPOSURE_RESOLUTION: Duration = Duration::from_millis(1);
 
 /// The frame a connect takes when PHD2 does not know its camera's frame
-/// size and none is remembered, in milliseconds: PHD2's shortest.
+/// size and none is remembered for it, in milliseconds: PHD2's shortest.
 const SIZE_FRAME_MS: u32 = 1;
 
 /// The first PHD2 release whose `capture_single_frame` saves to a named
@@ -223,10 +223,10 @@ impl Phd2Camera {
     }
 
     /// Read what a connect needs from PHD2. The frame size is PHD2's when
-    /// it knows it, else the one an earlier connect remembered, else the
-    /// one PHD2 reports after a 1 ms frame
+    /// it knows it, else the one an earlier connect remembered for this
+    /// camera, else the one PHD2 reports after a 1 ms frame
     /// ([`Self::frame_size_after_one_frame`]); the first and the last are
-    /// remembered.
+    /// remembered under the camera's name.
     async fn read_phd2_camera(&self) -> ASCOMResult<Geometry> {
         let client = &self.inner.client;
         if !client.is_connected().await {
@@ -250,21 +250,23 @@ impl Phd2Camera {
             .map_or_default(|camera| camera.name);
         let engine = &self.inner.engine;
         let size = if reported.is_known() {
-            engine.remember_frame_size(reported);
+            engine.remember_frame_size(&sensor_name, reported);
             reported
-        } else if let Some(remembered) = engine.remembered_frame_size() {
+        } else if let Some(remembered) = engine.remembered_frame_size(&sensor_name) {
             debug!(
+                camera = %sensor_name,
                 ?remembered,
-                "PHD2 does not know its camera's frame size yet; using the remembered one"
+                "PHD2 does not know its camera's frame size yet; using the one remembered for it"
             );
             remembered
         } else {
             debug!(
-                "PHD2 does not know its camera's frame size yet and none is remembered; \
+                camera = %sensor_name,
+                "PHD2 does not know its camera's frame size yet and none is remembered for it; \
                  taking a 1 ms frame"
             );
             let size = self.frame_size_after_one_frame().await?;
-            engine.remember_frame_size(size);
+            engine.remember_frame_size(&sensor_name, size);
             size
         };
         Ok(Geometry {
@@ -293,7 +295,7 @@ impl Phd2Camera {
         let engine = &self.inner.engine;
         let unknown = |why: String| {
             not_connected(format!(
-                "PHD2 does not know its camera's frame size and none is remembered: {why}"
+                "PHD2 does not know its camera's frame size and none is remembered for it: {why}"
             ))
         };
         let inflight = engine.start(SIZE_FRAME_MS).await.map_err(|e| {
@@ -685,7 +687,7 @@ impl Device for Phd2Camera {
     /// A connect reads PHD2: its version, its camera's frame size and
     /// name. No equipment connection, no stop (workspace tenet 3), and
     /// no exposure but the 1 ms frame that reads a frame size PHD2 does
-    /// not know when none is remembered.
+    /// not know when none is remembered for the camera.
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         let _transition = self.inner.lifecycle.lock().await;
         if connected {
