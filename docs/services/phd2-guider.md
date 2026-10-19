@@ -1262,11 +1262,24 @@ of its own: a size it remembered could go stale when PHD2 switches or
 rebins its camera, while PHD2's own answer after a frame cannot.
 
 The 1 ms frame is the only exposure a connect takes. The repo owner
-decided on 2026-10-19 that it is not actuation in tenet 3's sense: it
-moves nothing, it changes none of PHD2's settings (a single frame never
-calls `set_exposure` and sends no binning or gain, see
-[Capturing a frame](#capturing-a-frame)), and it is taken only from a
+decided on 2026-10-19 that it is not actuation in tenet 3's sense. It
+moves no mount, focuser or filter. It changes none of PHD2's settings: a
+single frame never calls `set_exposure` and sends no binning or gain
+(see [Capturing a frame](#capturing-a-frame)). It is taken only from a
 `Stopped` PHD2.
+
+The one moving part it can touch is a mechanical shutter, and the owner
+accepted that on the record the same day. PHD2 never sets an INDI
+camera's frame type (`cam_indi.cpp:517` finds `CCD_FRAME_TYPE` and
+leaves it), so every frame PHD2 takes from INDI is a light frame. An
+INDI guide camera with a mechanical shutter therefore opens it for the
+1 ms frame. That happens on every connect that finds the size unknown,
+including rp's startup bind, its connect retries and its reconnect
+passes. It is the price of a connect that works unattended.
+
+The Simulator's shutter is simulated. SBIG opens its shutter on every
+light frame (`cam_sbig.cpp:497`) but reports its size on connect, so it
+never takes this frame.
 
 `Connected` reads back the state the client set. A PHD2 that goes away
 afterwards surfaces as errors from the calls that need it.
