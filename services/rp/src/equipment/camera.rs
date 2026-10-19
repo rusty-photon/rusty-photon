@@ -10,16 +10,17 @@ use crate::config;
 
 /// Invariant physical-sensor properties, cached per established session.
 ///
-/// Read once, right after the device reports `Connected = true` (full-well
-/// depth, pixel pitch, array dimensions). They cannot change for the
-/// life of the connection, so `do_capture` consumes them from this
-/// cache instead of paying one Alpaca round-trip per property per
-/// exposure — per Tenet 1 ("don't re-fetch invariant data"). Each field
+/// Read once, right after the device reports `Connected = true` (pixel
+/// pitch, array dimensions, the camera model's facts). They cannot
+/// change for the life of the connection, so `do_capture` consumes them
+/// from this cache instead of paying one Alpaca round-trip per property
+/// per exposure — per Tenet 1 ("don't re-fetch invariant data").
+/// `MaxADU` is not among them: a driver may tie it to the readout mode,
+/// which any client can change, so a capture reads it live. Each field
 /// is `Option<...>` so a transient read failure at session-establish
-/// time simply drops that piece of metadata (downstream the
-/// `max_adu`-driven cache-variant choice and the document's `optics`
-/// block degrade gracefully) rather than refusing to register the
-/// camera. The reconnect supervisor re-reads the whole set on every
+/// time simply drops that piece of metadata (downstream the document's
+/// `optics` block degrades gracefully) rather than refusing to register
+/// the camera. The reconnect supervisor re-reads the whole set on every
 /// re-established session — a service restart may have put a different
 /// device behind the same config entry — and installs the fresh reads
 /// with the fresh handle in one step, so the two cannot be paired
@@ -30,10 +31,6 @@ pub struct CameraInvariants {
     /// sidecar's `camera_name` and the FITS header's `INSTRUME`. Not a
     /// sensor property, but just as fixed for the life of a session.
     pub name: Option<String>,
-    /// Camera's `MaxADU` capability. Drives the FITS bit-depth
-    /// (`u16` vs `i32`) and cache-variant selection in `do_capture`,
-    /// and is persisted to the sidecar's `max_adu` field.
-    pub max_adu: Option<u32>,
     /// `PixelSizeX` in microns. Fed into the sidecar's `optics` block
     /// alongside `pixel_size_y_um`.
     pub pixel_size_x_um: Option<f64>,
@@ -198,7 +195,6 @@ pub(super) async fn establish_camera(
     };
     let invariants = CameraInvariants {
         name: optional_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
-        max_adu: optional_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
         pixel_size_x_um: optional_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will record no x pixel size, pixel scale or FOV width, nor XPIXSZ"),
         pixel_size_y_um: optional_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will record no y pixel size, pixel scale or FOV height, nor YPIXSZ"),
         sensor_width_px: optional_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will record no sensor width or FOV width"),
@@ -226,7 +222,6 @@ pub(super) async fn connect_camera(
             debug!(
                 camera_id = %config.id,
                 name = ?invariants.name,
-                max_adu = ?invariants.max_adu,
                 pixel_size_x_um = ?invariants.pixel_size_x_um,
                 pixel_size_y_um = ?invariants.pixel_size_y_um,
                 sensor_width_px = ?invariants.sensor_width_px,
@@ -283,7 +278,7 @@ mod tests {
     }
 
     /// Stub server that advertises one Camera at index 0, accepts
-    /// `set_connected(true)`, and replies to all five invariant property
+    /// `set_connected(true)`, and replies to the four sensor-geometry
     /// reads. Verifies `connect_camera` populates the cache fields when
     /// every Alpaca call succeeds.
     #[tokio::test]
@@ -314,16 +309,6 @@ mod tests {
                 }),
             )
             .route(
-                "/api/v1/camera/0/maxadu",
-                get(|| async {
-                    Json(serde_json::json!({
-                        "Value": 65535,
-                        "ErrorNumber": 0,
-                        "ErrorMessage": ""
-                    }))
-                }),
-            )
-            .route(
                 "/api/v1/camera/0/pixelsizex",
                 get(|| async {
                     Json(serde_json::json!({
@@ -369,16 +354,16 @@ mod tests {
         assert!(entry.is_connected(), "expected entry to be connected");
         assert!(entry.device().is_some(), "expected entry to hold a device");
         let inv = entry.invariants();
-        assert_eq!(inv.max_adu, Some(65535));
         assert_eq!(inv.pixel_size_x_um, Some(3.76));
         assert_eq!(inv.pixel_size_y_um, Some(3.76));
         assert_eq!(inv.sensor_width_px, Some(1024));
         assert_eq!(inv.sensor_height_px, Some(1024));
     }
 
-    /// Connect-time read failures (here: `maxadu` returns an ASCOM error)
-    /// must scope to the single field. The entry is still connected; the
-    /// other four properties populate normally; only `max_adu` is `None`.
+    /// Connect-time read failures (here: `pixelsizex` returns an ASCOM
+    /// error) must scope to the single field. The entry is still
+    /// connected; the other three properties populate normally; only
+    /// `pixel_size_x_um` is `None`.
     /// Pins the "best-effort metadata" posture documented on
     /// `CameraInvariants`.
     #[tokio::test]
@@ -409,21 +394,11 @@ mod tests {
                 }),
             )
             .route(
-                "/api/v1/camera/0/maxadu",
-                get(|| async {
-                    Json(serde_json::json!({
-                        "ErrorNumber": 1024,
-                        "ErrorMessage": "simulated maxadu failure"
-                    }))
-                }),
-            )
-            .route(
                 "/api/v1/camera/0/pixelsizex",
                 get(|| async {
                     Json(serde_json::json!({
-                        "Value": 3.76,
-                        "ErrorNumber": 0,
-                        "ErrorMessage": ""
+                        "ErrorNumber": 1024,
+                        "ErrorMessage": "simulated pixelsizex failure"
                     }))
                 }),
             )
@@ -464,15 +439,14 @@ mod tests {
         assert!(entry.device().is_some(), "expected entry to hold a device");
         let inv = entry.invariants();
         assert_eq!(
-            inv.max_adu, None,
-            "max_adu must be None when the connect-time read fails"
+            inv.pixel_size_x_um, None,
+            "pixel_size_x must be None when the connect-time read fails"
         );
         assert_eq!(
-            inv.pixel_size_x_um,
+            inv.pixel_size_y_um,
             Some(3.76),
-            "pixel_size_x must still cache when its own read succeeds"
+            "pixel_size_y must still cache when its own read succeeds"
         );
-        assert_eq!(inv.pixel_size_y_um, Some(3.76));
         assert_eq!(inv.sensor_width_px, Some(1024));
         assert_eq!(inv.sensor_height_px, Some(1024));
     }
@@ -606,7 +580,6 @@ mod tests {
         );
         assert!(entry.device().is_none(), "no device should be held");
         let inv = entry.invariants();
-        assert_eq!(inv.max_adu, None);
         assert_eq!(inv.pixel_size_x_um, None);
         assert_eq!(inv.pixel_size_y_um, None);
         assert_eq!(inv.sensor_width_px, None);
@@ -649,7 +622,6 @@ mod tests {
         );
         assert!(entry.device().is_none(), "no device should be held");
         let inv = entry.invariants();
-        assert_eq!(inv.max_adu, None);
         assert_eq!(inv.pixel_size_x_um, None);
         assert_eq!(inv.pixel_size_y_um, None);
         assert_eq!(inv.sensor_width_px, None);
@@ -680,7 +652,6 @@ mod tests {
         );
         assert!(entry.device().is_none(), "no device should be held");
         let inv = entry.invariants();
-        assert_eq!(inv.max_adu, None);
         assert_eq!(inv.sensor_height_px, None);
     }
 
@@ -724,7 +695,6 @@ mod tests {
         );
         assert!(entry.device().is_none(), "no device should be held");
         let inv = entry.invariants();
-        assert_eq!(inv.max_adu, None);
         assert_eq!(inv.sensor_height_px, None);
     }
 
