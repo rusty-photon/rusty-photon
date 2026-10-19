@@ -15,7 +15,8 @@
 //!
 //! Tenet 3 holds on this path exactly as on first connect: everything
 //! here re-*reads* state; `Connected = true` is non-actuating by driver
-//! contract.
+//! contract, except phd2-guider's camera facade, whose connect may take
+//! a 1 ms frame (rp.md § Device Session Recovery).
 //!
 //! The same loop carries the tool-provider lane
 //! ([`crate::mcp::providers::Providers::pass`]): a provider's MCP
@@ -82,7 +83,9 @@ impl ReconnectSupervisor {
     /// many seconds in per-device connect retries, and rp's shutdown
     /// joins this task, so waiting the pass out would stall shutdown.
     /// Dropping the pass mid-await only abandons an in-flight read or
-    /// `Connected = true` request; nothing here actuates hardware.
+    /// `Connected = true` request; nothing here actuates hardware but the
+    /// 1 ms frame a phd2-guider facade connect may take (rp.md § Device
+    /// Session Recovery).
     pub async fn run(self, cancel: CancellationToken) {
         info!(interval = ?self.interval, "equipment reconnect supervisor started");
         loop {
