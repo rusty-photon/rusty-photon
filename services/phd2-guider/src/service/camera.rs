@@ -25,7 +25,9 @@ use crate::client::Phd2Client;
 use crate::config_actions::Phd2GuiderDriver;
 use crate::error::Phd2Error;
 
-use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, MAX_EXPOSURE};
+use super::capture::{
+    CaptureEngine, Frame, FrameEnd, FrameSize, StartError, ABORT_WAIT, MAX_EXPOSURE,
+};
 use super::guider::LOCKED_RPC_TIMEOUT;
 use super::lease::{self, LeaseAction, LeaseEnd, LeaseError};
 
@@ -42,6 +44,10 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 const EXPOSURE_MIN: Duration = Duration::from_millis(1);
 const EXPOSURE_MAX: Duration = MAX_EXPOSURE;
 const EXPOSURE_RESOLUTION: Duration = Duration::from_millis(1);
+
+/// The frame a connect takes when PHD2 does not know its camera's frame
+/// size and none is remembered, in milliseconds: PHD2's shortest.
+const SIZE_FRAME_MS: u32 = 1;
 
 /// The first PHD2 release whose `capture_single_frame` saves to a named
 /// file and reports the frame with `SingleFrameComplete`.
@@ -216,7 +222,11 @@ impl Phd2Camera {
             .ok_or_else(|| not_connected("the camera is not connected"))
     }
 
-    /// Read what a connect needs from PHD2, writing nothing to it.
+    /// Read what a connect needs from PHD2. The frame size is PHD2's when
+    /// it knows it, else the one an earlier connect remembered, else the
+    /// one PHD2 reports after a 1 ms frame
+    /// ([`Self::frame_size_after_one_frame`]); the first and the last are
+    /// remembered.
     async fn read_phd2_camera(&self) -> ASCOMResult<Geometry> {
         let client = &self.inner.client;
         if !client.is_connected().await {
@@ -231,20 +241,91 @@ impl Phd2Camera {
                 "PHD2 {version} is too old for the camera facade, which needs PHD2 2.6.14 or later"
             )));
         }
-        let (width, height) = client.get_camera_frame_size().await.map_err(|e| {
-            not_connected(format!("PHD2's camera is not available: {}", phd2_text(&e)))
-        })?;
+        let reported = self.phd2_frame_size().await?;
         let sensor_name = client
             .get_current_equipment()
             .await
             .map_err(|e| not_connected(format!("cannot read PHD2's equipment: {}", phd2_text(&e))))?
             .camera
             .map_or_default(|camera| camera.name);
+        let engine = &self.inner.engine;
+        let size = if reported.is_known() {
+            engine.remember_frame_size(reported);
+            reported
+        } else if let Some(remembered) = engine.remembered_frame_size() {
+            debug!(
+                ?remembered,
+                "PHD2 does not know its camera's frame size yet; using the remembered one"
+            );
+            remembered
+        } else {
+            debug!(
+                "PHD2 does not know its camera's frame size yet and none is remembered; \
+                 taking a 1 ms frame"
+            );
+            let size = self.frame_size_after_one_frame().await?;
+            engine.remember_frame_size(size);
+            size
+        };
         Ok(Geometry {
-            width,
-            height,
+            width: size.width,
+            height: size.height,
             sensor_name,
         })
+    }
+
+    async fn phd2_frame_size(&self) -> ASCOMResult<FrameSize> {
+        let (width, height) = self
+            .inner
+            .client
+            .get_camera_frame_size()
+            .await
+            .map_err(|e| {
+                not_connected(format!("PHD2's camera is not available: {}", phd2_text(&e)))
+            })?;
+        Ok(FrameSize { width, height })
+    }
+
+    /// Take one 1 ms frame exactly as `StartExposure` does, so PHD2
+    /// learns its camera's frame size, and return the size PHD2 then
+    /// reports. The frame is not read.
+    async fn frame_size_after_one_frame(&self) -> ASCOMResult<FrameSize> {
+        let engine = &self.inner.engine;
+        let unknown = |why: String| {
+            not_connected(format!(
+                "PHD2 does not know its camera's frame size and none is remembered: {why}"
+            ))
+        };
+        let inflight = engine.start(SIZE_FRAME_MS).await.map_err(|e| {
+            unknown(format!(
+                "the 1 ms frame that would read it did not start: {e}"
+            ))
+        })?;
+        let path = inflight.path.clone();
+        engine.sweep_orphans(&path).await;
+        match engine.wait(inflight).await {
+            FrameEnd::Saved => engine.discard(&path),
+            FrameEnd::Failed { message, .. } => {
+                engine.discard(&path);
+                return Err(unknown(format!(
+                    "PHD2 failed the 1 ms frame that would read it: {message}"
+                )));
+            }
+            FrameEnd::NotReported { waited } => {
+                return Err(unknown(format!(
+                    "PHD2 did not report the 1 ms frame that would read it within {}",
+                    humantime::format_duration(waited)
+                )));
+            }
+        }
+        let size = self.phd2_frame_size().await?;
+        if !size.is_known() {
+            return Err(unknown(format!(
+                "PHD2 still reports {} x {} after a 1 ms frame",
+                size.width, size.height
+            )));
+        }
+        Ok(size)
     }
 
     /// Mark the exposure in flight as aborted and return it, with the
@@ -601,9 +682,10 @@ impl Device for Phd2Camera {
         Ok(self.session().connected)
     }
 
-    /// A connect only reads PHD2: its version, its camera's frame size
-    /// and name. No exposure, no equipment connection, no stop
-    /// (workspace tenet 3).
+    /// A connect reads PHD2: its version, its camera's frame size and
+    /// name. No equipment connection, no stop (workspace tenet 3), and
+    /// no exposure but the 1 ms frame that reads a frame size PHD2 does
+    /// not know when none is remembered.
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         let _transition = self.inner.lifecycle.lock().await;
         if connected {

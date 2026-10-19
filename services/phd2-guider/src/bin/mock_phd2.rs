@@ -43,6 +43,11 @@
 //!   `MOCK_PHD2_FRAME_SIZE` - the camera's frame size as `<width>x<height>`
 //!     (default "640x480"): `get_camera_frame_size`'s answer and the size
 //!     of the frames `capture_single_frame` saves
+//!   `MOCK_PHD2_FRAME_SIZE_KNOWN` - when `get_camera_frame_size` knows it:
+//!     - "`at_connect`" (default): from the start, as PHD2's QHY and ZWO
+//!       drivers do
+//!     - "`after_first_frame`": `[0, 0]` until a frame has been saved, as
+//!       PHD2's Simulator and INDI cameras do
 //!   `MOCK_PHD2_CAMERA` - "disconnected" makes `get_camera_frame_size`
 //!     answer PHD2's "camera not connected" and `capture_single_frame`
 //!     answer with PHD2 2.6.14's reply carrying two `error` members
@@ -110,6 +115,10 @@ type AppState = Arc<Mutex<String>>;
 /// frame at a time across every connection. Setting the flag asks the
 /// frame's thread to end it early, as `stop_capture` does in PHD2.
 static FRAME_IN_FLIGHT: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Whether the camera has saved a frame, which tells a camera whose
+/// size is known only after its first frame what to answer.
+static FRAME_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// Every connected client's writer. PHD2 sends `SingleFrameComplete` to
 /// every event-server client, not only the one that asked for the frame.
@@ -460,6 +469,19 @@ fn camera_disconnected() -> bool {
     std::env::var("MOCK_PHD2_CAMERA").as_deref() == Ok("disconnected")
 }
 
+/// `get_camera_frame_size`'s answer: the camera's frame size, or
+/// `[0, 0]` before its first frame under
+/// `MOCK_PHD2_FRAME_SIZE_KNOWN=after_first_frame`.
+fn reported_frame_size() -> serde_json::Value {
+    let size_after_first_frame =
+        std::env::var("MOCK_PHD2_FRAME_SIZE_KNOWN").as_deref() == Ok("after_first_frame");
+    if size_after_first_frame && !FRAME_TAKEN.load(Ordering::Relaxed) {
+        return serde_json::json!([0, 0]);
+    }
+    let (width, height) = frame_size();
+    serde_json::json!([width, height])
+}
+
 /// The camera's frame size, from `MOCK_PHD2_FRAME_SIZE` (`<w>x<h>`),
 /// 640 x 480 by default.
 fn frame_size() -> (usize, usize) {
@@ -604,6 +626,9 @@ fn expose_frame(exposure_ms: u64, path: Option<String>, stop: &AtomicBool, app_s
             ),
         }
     };
+    if matches!(outcome, Some(Ok(()))) {
+        FRAME_TAKEN.store(true, Ordering::Relaxed);
+    }
     *FRAME_IN_FLIGHT.lock().unwrap() = None;
     *app_state.lock().unwrap() = "Stopped".to_string();
     let Some(outcome) = outcome else {
@@ -823,8 +848,7 @@ fn handle_request(
                     r#"{{"jsonrpc":"2.0","error":{{"code":1,"message":"camera not connected"}},"id":{id}}}"#
                 );
             }
-            let (width, height) = frame_size();
-            serde_json::json!([width, height])
+            reported_frame_size()
         }
         "capture_single_frame" => match capture_single_frame(&params, app_state) {
             Ok(result) => result,

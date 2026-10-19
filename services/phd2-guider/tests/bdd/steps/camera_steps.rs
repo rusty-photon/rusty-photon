@@ -20,19 +20,59 @@ const TEST_UNIQUE_ID: &str = "phd2-guider-facade-test-001";
 
 #[given(regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera$")]
 async fn mock_with_camera(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "completes").await;
+    start_camera_mock(world, &version, width, height, "completes", "at_connect").await;
 }
 
 #[given(regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera whose frames fail$")]
 async fn mock_failing_frames(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "fails").await;
+    start_camera_mock(world, &version, width, height, "fails", "at_connect").await;
 }
 
 #[given(
     regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera whose frames are never reported$"
 )]
 async fn mock_unreported_frames(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "never_reports").await;
+    start_camera_mock(
+        world,
+        &version,
+        width,
+        height,
+        "never_reports",
+        "at_connect",
+    )
+    .await;
+}
+
+#[given(
+    regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera that reports 0 x 0 until its first frame$"
+)]
+async fn mock_size_after_first_frame(
+    world: &mut GuiderWorld,
+    version: String,
+    width: u32,
+    height: u32,
+) {
+    start_camera_mock(
+        world,
+        &version,
+        width,
+        height,
+        "completes",
+        "after_first_frame",
+    )
+    .await;
+}
+
+#[given(
+    regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera whose frames fail and that reports 0 x 0 until its first frame$"
+)]
+async fn mock_failing_frames_size_after_first_frame(
+    world: &mut GuiderWorld,
+    version: String,
+    width: u32,
+    height: u32,
+) {
+    start_camera_mock(world, &version, width, height, "fails", "after_first_frame").await;
 }
 
 async fn start_camera_mock(
@@ -41,6 +81,7 @@ async fn start_camera_mock(
     width: u32,
     height: u32,
     mode: &str,
+    size_known: &str,
 ) {
     let size = format!("{width}x{height}");
     world
@@ -51,6 +92,7 @@ async fn start_camera_mock(
                 ("MOCK_PHD2_VERSION", version),
                 ("MOCK_PHD2_FRAME_SIZE", size.as_str()),
                 ("MOCK_PHD2_CAPTURE_MODE", mode),
+                ("MOCK_PHD2_FRAME_SIZE_KNOWN", size_known),
             ],
         )
         .await;
@@ -145,6 +187,16 @@ fn stage_marker(world: &mut GuiderWorld, deadline: SystemTime) {
     std::fs::write(dir.join("phd2-guider-capture.json"), marker.to_string())
         .expect("stage capture marker");
     world.marker_frame = Some(frame);
+}
+
+#[given(regex = r"^image_dir's phd2-guider-frame-size.json remembers (\d+) x (\d+)$")]
+fn image_dir_remembers_size(world: &mut GuiderWorld, width: u32, height: u32) {
+    let remembered = serde_json::json!({ "width": width, "height": height });
+    std::fs::write(
+        world.image_dir().join("phd2-guider-frame-size.json"),
+        remembered.to_string(),
+    )
+    .expect("stage the remembered frame size");
 }
 
 #[given(expr = "image_dir holds a capture marker whose deadline is {int} s away")]
@@ -605,6 +657,18 @@ fn no_frame_files(world: &mut GuiderWorld) {
 #[then(expr = "image_dir should still hold {string}")]
 fn still_holds(world: &mut GuiderWorld, name: String) {
     assert!(world.image_dir().join(&name).exists(), "{name} was removed");
+}
+
+#[then(regex = r"^image_dir's phd2-guider-frame-size.json should remember (\d+) x (\d+)$")]
+fn remembers_size(world: &mut GuiderWorld, width: u32, height: u32) {
+    let path = world.image_dir().join("phd2-guider-frame-size.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let remembered: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        remembered,
+        serde_json::json!({ "width": width, "height": height })
+    );
 }
 
 #[then("image_dir should hold no capture marker")]
