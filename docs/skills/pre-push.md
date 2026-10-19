@@ -178,11 +178,14 @@ job runs [`install-omnisim`](../../.github/actions/install-omnisim) and
 Nothing exports them on your machine, so `cargo test --test bdd` without them
 is **not** comparable to the workflow run — the OmniSim- and ACME-backed
 scenarios behave differently rather than failing loudly, which is the sort of
-green that means nothing. Point them at local installs before running it
-(`OMNISIM_DIR` is accepted in place of `OMNISIM_PATH`):
+green that means nothing. Install the releases CI pins, with the actions' own
+code, and set the variables each install prints (`OMNISIM_DIR` is accepted in
+place of `OMNISIM_PATH`):
 
 ```bash
-export OMNISIM_DIR=/opt/ascom.alpaca.simulators.linux-x64
+bazel run //.github/actions:install -- omnisim   # into ~/.local/opt/omnisim
+bazel run //.github/actions:install -- pebble    # into ~/.local/opt/pebble
+export OMNISIM_PATH=~/.local/opt/omnisim/ascom.alpaca.simulators
 export PEBBLE_PATH=~/.local/opt/pebble/pebble
 export PEBBLE_CHALLTESTSRV_PATH=~/.local/opt/pebble/pebble-challtestsrv
 ```

@@ -2,13 +2,6 @@ name: Resolve OmniSim
 description: >-
   The first step of install-omnisim: the cache key of the OmniSim release asset
   this runner takes, which carries the asset's pin.
-inputs:
-  repo:
-    description: The GitHub repo whose releases carry OmniSim.
-    required: true
-  version:
-    description: The OmniSim release tag.
-    required: true
 outputs:
   key:
     description: The cache key of the OmniSim install.

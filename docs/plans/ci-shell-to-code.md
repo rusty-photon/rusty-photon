@@ -440,11 +440,16 @@ not:
   and save are separate steps; the Windows download is the unpinned,
   weekly-cached one. `check-pkg-assets.sh` reads this action's `ref`
   default and Windows URLs, so they stay where it reads them or it
-  changes in the same PR.
+  changes in the same PR. The SDK also joins the developer's install
+  (ADR-022 Amendment A, `bazel run //.github/actions:install`), which
+  replaces the copy-paste block in `services/zwo-camera/README.md`.
 - **J6 `install-svbony-sdk`** (367 lines, bash and PowerShell). Windows
   downloads from the project's private mirror, against a SHA-256; Linux
   and macOS from the INDI repository, against a git ref.
-  `check-pkg-assets.sh` reads the `ref` default here too.
+  `check-pkg-assets.sh` reads the `ref` default here too. The INDI
+  downloads join the developer's install; the Windows one does not, since
+  it comes from the private mirror (ADR-018 §7), which developers are not
+  given.
 
 ### J7 — Nightly tracking-issue action
 

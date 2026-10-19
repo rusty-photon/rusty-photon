@@ -21,6 +21,7 @@ says how to write it there. Moving the existing shell is
 | One command (a `bazel`, `cargo` or similar invocation, with its flags), or a short fixed sequence of them with no control flow | The workflow YAML, as a `run:` step |
 | Anything else that only CI runs: installing tools, choosing flags, caches, the GitHub API, reading `cargo metadata` or `bazel query` output | A local JavaScript action |
 | A tool a developer also runs (AGENTS.md rules 4 and 10 name some) | The Rust tools crate, `tools/rusty-photon-ci`, run as `cargo ci <tool>` |
+| A developer's install of what an `install-*` action installs | That action's own module, which `bazel run //.github/actions:install` runs ([below](#a-developers-install)) |
 
 Shell stays for the one-command steps above and for what ADR-022 leaves
 out: host provisioning, the Python scripts, the git hooks. A reviewer may
@@ -81,13 +82,14 @@ tools/rusty-photon-ci/
 ```
 .github/actions/
   BUILD.bazel              the tests of every action, and the link check
-  node_test.bzl            node_test and node_link_test
+  node_test.bzl            node_test, node_link_test and node_binary
   link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
   lib/install.mjs          download, check and unpack, for the install-* actions
   lib/install.test.mjs
   lib/testing.mjs          test fixtures every action's tests share
+  local-install/           a developer's install, by the install-* modules
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
   <action>/index.mjs       the entry file: inputs in, outputs out
   <action>/<logic>.mjs     what the tests import
@@ -259,8 +261,9 @@ does.
 ### An action that installs a tool
 
 `lib/install.mjs` holds what every install action does, and
-`install-omnisim` is the example: `omnisim.mjs` keeps the asset table
-and its pins, `resolve/` and `install/` are steps 1 and 3 above.
+`install-omnisim` is the example: `omnisim.mjs` keeps the release, the
+asset table and its pins, `resolve/` and `install/` are steps 1 and 3
+above.
 
 - **A table keyed by runner**, `${RUNNER_OS}-${RUNNER_ARCH}`
   (`runnerKey`), read with `forRunner`, which names the runners the table
@@ -286,6 +289,35 @@ and its pins, `resolve/` and `install/` are steps 1 and 3 above.
 - **Each OS leg tests its own tools** on the formats its assets come in:
   `install_test` unpacks small archives made by GNU tar, xz and Info-ZIP's
   zip.
+- **The release lives in the module**, beside the pins it is pinned to,
+  not in an `action.yml` input: a new version needs new pins, and the
+  developer's install below reads the same constants.
+
+### A developer's install
+
+`bazel run //.github/actions:install -- <tool> [--prefix DIR]` installs a
+tool an `install-*` action installs, from the same release and URL,
+checked against the same pin, by that action's own module. It runs on the
+Node `MODULE.bazel` pins, through `node_binary`; ADR-022 makes this the
+exception to "a tool a developer also runs is Rust", since a Rust tool
+would be a second implementation of the module to keep in step.
+
+- **Each tool's module exports `installAt(dir, resolved, options)`**
+  beside `install`: it installs what `resolve` chose into a directory the
+  developer names and resolves to the variables that locate it, where
+  `install` exports them to the job. `local-install/local.mjs` lists the
+  tools in `TOOLS`.
+- **It never removes what it did not install.** A tool that installs a
+  directory whole replaces it only when it is empty or holds the tool
+  (`checkReplaceable`); one that installs single files replaces only those.
+- **It ships nothing.** It downloads on the developer's machine from
+  where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
+  nothing goes into a package, and nothing is mirrored for developers. A
+  tool whose CI download comes from the project's private mirror
+  (ADR-018 §7) gets no entry in `TOOLS`.
+- **Its launcher is tested as `bazel run` runs it**, from the runfiles
+  tree: `local_install_test` takes `:install` as data and runs it, so a
+  launcher that drops its arguments or its exit code fails the PR.
 
 ### Proving it
 

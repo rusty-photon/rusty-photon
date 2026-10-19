@@ -4,7 +4,8 @@
 // by runner, and runs as a composite of three steps (docs/skills/ci-logic.md
 // §An action that needs another action): resolve the asset and its cache key,
 // restore the cache with that key, then install on a miss and export the
-// paths either way.
+// paths either way. A developer installs the same release with the same code
+// through `bazel run //.github/actions:install` (local-install/).
 //
 // Every asset carries one of three kinds of pin:
 //
@@ -20,7 +21,7 @@
 
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -35,6 +36,22 @@ export function runnerKey({ os = process.env.RUNNER_OS, arch = process.env.RUNNE
     throw new Error('RUNNER_OS and RUNNER_ARCH are not set: this runs only as a GitHub Actions step');
   }
   return `${os}-${arch}`;
+}
+
+// RUNNER_OS and RUNNER_ARCH for each of Node's process.platform and
+// process.arch values a runner can have.
+const RUNNER_OS = { linux: 'Linux', darwin: 'macOS', win32: 'Windows' };
+const RUNNER_ARCH = { x64: 'X64', arm64: 'ARM64', ia32: 'X86', arm: 'ARM' };
+
+/**
+ * The key of a runner with this machine's OS and architecture, for an install
+ * a developer runs outside CI: Linux-X64 on an x86-64 Linux machine.
+ */
+export function hostKey({ platform = process.platform, arch = process.arch } = {}) {
+  if (!Object.hasOwn(RUNNER_OS, platform) || !Object.hasOwn(RUNNER_ARCH, arch)) {
+    throw new Error(`no GitHub runner has this machine's OS and architecture, ${platform} ${arch}`);
+  }
+  return `${RUNNER_OS[platform]}-${RUNNER_ARCH[arch]}`;
 }
 
 /** `table`'s entry for `runner`, or an error naming the runners it has one for. */
@@ -238,4 +255,40 @@ export async function onlyDirectory(dir) {
     throw new Error(`expected the archive to hold one directory at its top; it holds ${found}`);
   }
   return path.join(dir, entries[0].name);
+}
+
+// --- Placing the install ------------------------------------------------------------
+
+/**
+ * Runs `fn` with a new, empty directory beside `dir`, on the same file system,
+ * so what `fn` unpacks there can be renamed into `dir`. The directory is
+ * removed when `fn` ends, however it ends.
+ */
+export async function withWorkDir(dir, fn) {
+  const parent = path.dirname(dir);
+  await mkdir(parent, { recursive: true });
+  const work = await mkdtemp(path.join(parent, `.${path.basename(dir)}-download-`));
+  try {
+    return await fn(work);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Throws unless `dir` is missing, empty, or holds `file`, which an earlier
+ * install put there: the directories a developer's install may replace whole,
+ * so a mistyped prefix cannot take what else is there with it.
+ */
+export async function checkReplaceable(dir, file) {
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (entries.length > 0 && !entries.includes(file)) {
+    throw new Error(`${dir} holds other files and no ${file}, so it is not an earlier install to replace; choose another directory`);
+  }
 }

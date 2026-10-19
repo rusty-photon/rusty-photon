@@ -1,130 +1,31 @@
 name: Install Pebble
-description: >
+description: >-
   Download Pebble (Let's Encrypt's ACME test server) and its
-  pebble-challtestsrv DNS sidecar for doctor's end-to-end ACME BDD
-  scenarios (docs/skills/testing.md §5.6).
-
-inputs:
-  version:
-    description: Pebble release version
-    required: false
-    default: "v2.10.1"
+  pebble-challtestsrv DNS sidecar for doctor's end-to-end ACME BDD scenarios
+  (docs/skills/testing.md §5.6), and export PEBBLE_PATH and
+  PEBBLE_CHALLTESTSRV_PATH. The release, its asset table and their SHA-256 pins
+  are in pebble.mjs; the download, check and unpack are lib/install.mjs's (plan
+  item J3 in docs/plans/ci-shell-to-code.md).
 
 runs:
   using: composite
   steps:
-    # Per-OS table for both binaries. SHA-256 values are pinned against
-    # the letsencrypt/pebble release assets named below; bumping
-    # inputs.version requires refreshing the table — the verify step
-    # fails closed on any mismatch. Same shape and supply-chain
-    # reasoning as install-omnisim / install-astap.
-    - name: Determine asset names and pinned SHA-256
-      id: asset
-      shell: bash
-      run: |
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)
-            PLATFORM="linux-amd64"
-            PEBBLE_SHA="4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed"
-            CHALL_SHA="e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92"
-            ;;
-          Linux-ARM64)
-            PLATFORM="linux-arm64"
-            PEBBLE_SHA="b53fd072a69eb7692451de4e8b0667e0bdf5cccd7e36fc51b8eaf2fcc135ed9f"
-            CHALL_SHA="db8e1a79ccdb2195c489fbe4f40fddb7f30e86f9cd8a07912566ee5025094d6c"
-            ;;
-          macOS-ARM64)
-            PLATFORM="darwin-arm64"
-            PEBBLE_SHA="09a3a4e6ebed71e8d83294a26d361232262f45a7488f5de7bccb5887b395217f"
-            CHALL_SHA="59bf917fe39c96e2edca980fc2899f4f04aa1ce5485f28d419d18237b902cf82"
-            ;;
-          macOS-X64)
-            PLATFORM="darwin-amd64"
-            PEBBLE_SHA="e670ff869886022637e077502a62e7f23be693c45a5a6727ebd76da8fdce64dc"
-            CHALL_SHA="796bd923f2c595dd7bf15ae693096abfb1df962cb3673c7981ff306daa5c4a52"
-            ;;
-          Windows-X64)
-            PLATFORM="windows-amd64"
-            PEBBLE_SHA="3201b904957c8ad81a27ee879cd246d97e7a9c79b01d840b09ec478f065794b3"
-            CHALL_SHA="ba4a63d3edfbab639ec1c6fc5b1fe9d36f9d1a724790ef94556c80ead2636c25"
-            ;;
-          *)
-            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
-            exit 1
-            ;;
-        esac
-        {
-          echo "platform=$PLATFORM"
-          echo "pebble-sha=$PEBBLE_SHA"
-          echo "chall-sha=$CHALL_SHA"
-          # Pinned SHAs participate in the cache key so a bump
-          # invalidates any previously-cached download.
-          echo "cache-key=pebble-${{ inputs.version }}-$PLATFORM-$PEBBLE_SHA-$CHALL_SHA"
-        } >> "$GITHUB_OUTPUT"
+    - name: Resolve the Pebble assets
+      id: resolve
+      uses: ./.github/actions/install-pebble/resolve
 
     - name: Cache Pebble binaries
       id: cache
       uses: actions/cache@v5
       with:
         path: pebble
-        key: ${{ steps.asset.outputs.cache-key }}
-
-    - name: Download, verify, and extract Pebble
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        PLATFORM="${{ steps.asset.outputs.platform }}"
-        mkdir -p pebble pebble-extract
-        for PAIR in "pebble ${{ steps.asset.outputs.pebble-sha }}" \
-                    "pebble-challtestsrv ${{ steps.asset.outputs.chall-sha }}"; do
-          NAME="${PAIR%% *}"
-          EXPECTED="${PAIR##* }"
-          ASSET="$NAME-$PLATFORM.tar.gz"
-          URL="https://github.com/letsencrypt/pebble/releases/download/${{ inputs.version }}/$ASSET"
-          echo "Downloading $URL"
-          curl -fsSL -o "pebble-extract/$ASSET" "$URL"
-          if command -v sha256sum >/dev/null; then
-            ACTUAL=$(sha256sum "pebble-extract/$ASSET" | awk '{print $1}')
-          else
-            ACTUAL=$(shasum -a 256 "pebble-extract/$ASSET" | awk '{print $1}')
-          fi
-          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo "::error::SHA-256 mismatch for $ASSET"
-            echo "  expected: $EXPECTED"
-            echo "  actual:   $ACTUAL"
-            echo "Upstream may have rotated the asset (or inputs.version was bumped without refreshing the SHA table)."
-            exit 1
-          fi
-          echo "SHA-256 match for $ASSET: $ACTUAL"
-          tar xzf "pebble-extract/$ASSET" -C pebble-extract
-          # Tarballs unpack to <name>-<platform>/<os>/<arch>/<name>[.exe] — flatten.
-          BIN=$(find "pebble-extract/$NAME-$PLATFORM" -type f -name "$NAME*" | head -1)
-          mv "$BIN" pebble/
-        done
-        rm -rf pebble-extract
-
-    - name: Set permissions (Linux/macOS)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: chmod +x pebble/pebble pebble/pebble-challtestsrv
-
-    - name: Remove quarantine (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: xattr -d com.apple.quarantine pebble/pebble pebble/pebble-challtestsrv 2>/dev/null || true
+        key: ${{ steps.resolve.outputs.key }}
 
     # Absolute paths, consumed by doctor's BDD harness via Bazel's
     # `--test_env=PEBBLE_PATH` / `--test_env=PEBBLE_CHALLTESTSRV_PATH`
     # forwards in .bazelrc — pinned paths rather than a PATH entry, for
     # the same cache-key stability reasons as OMNISIM_PATH.
-    - name: Export PEBBLE_PATH and PEBBLE_CHALLTESTSRV_PATH
-      shell: bash
-      run: |
-        EXT=""
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          EXT=".exe"
-        fi
-        {
-          echo "PEBBLE_PATH=${{ github.workspace }}/pebble/pebble$EXT"
-          echo "PEBBLE_CHALLTESTSRV_PATH=${{ github.workspace }}/pebble/pebble-challtestsrv$EXT"
-        } >> "$GITHUB_ENV"
+    - name: Install Pebble
+      uses: ./.github/actions/install-pebble/install
+      with:
+        cache-hit: ${{ steps.cache.outputs.cache-hit }}

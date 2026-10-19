@@ -2,22 +2,25 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 
 import { HttpError } from './helpers.mjs';
 import {
   cacheKey,
+  checkReplaceable,
   ChecksumError,
   download,
   forRunner,
+  hostKey,
   isoWeek,
   onlyDirectory,
   pinKey,
   runnerKey,
   tarProgram,
   unpack,
+  withWorkDir,
 } from './install.mjs';
 import { capture, serve, tar, withEnv } from './testing.mjs';
 
@@ -82,6 +85,24 @@ test('runnerKey refuses to guess outside a runner', async () => {
   await withEnv({ RUNNER_OS: undefined, RUNNER_ARCH: 'X64' }, async () => {
     assert.throws(() => runnerKey(), /RUNNER_OS and RUNNER_ARCH are not set/);
   });
+});
+
+test('hostKey gives this machine the key a runner like it has', () => {
+  assert.equal(hostKey({ platform: 'linux', arch: 'x64' }), 'Linux-X64');
+  assert.equal(hostKey({ platform: 'linux', arch: 'arm64' }), 'Linux-ARM64');
+  assert.equal(hostKey({ platform: 'darwin', arch: 'arm64' }), 'macOS-ARM64');
+  assert.equal(hostKey({ platform: 'darwin', arch: 'x64' }), 'macOS-X64');
+  assert.equal(hostKey({ platform: 'win32', arch: 'x64' }), 'Windows-X64');
+  assert.equal(hostKey({ platform: 'win32', arch: 'ia32' }), 'Windows-X86');
+  assert.match(hostKey(), /^(Linux|macOS|Windows)-/);
+});
+
+test('hostKey refuses a machine no runner is like', () => {
+  assert.throws(() => hostKey({ platform: 'freebsd', arch: 'x64' }), {
+    message: "no GitHub runner has this machine's OS and architecture, freebsd x64",
+  });
+  assert.throws(() => hostKey({ platform: 'linux', arch: 'riscv64' }), /linux riscv64/);
+  assert.throws(() => hostKey({ platform: 'toString', arch: 'x64' }), /toString x64/);
 });
 
 test('forRunner picks the runner its table names, and names the others when it has none', () => {
@@ -381,4 +402,53 @@ test('onlyDirectory refuses an archive without exactly one folder at its top', a
   writeFileSync(join(file, 'tool'), '');
   await assert.rejects(onlyDirectory(file), /it holds tool$/);
   await assert.rejects(onlyDirectory(tempDir()), /it holds nothing$/);
+});
+
+// --- Placing the install ------------------------------------------------------------
+
+test('withWorkDir gives fn an empty directory beside dir, and removes it after', async () => {
+  const parent = tempDir();
+  const dir = join(parent, 'nested', 'tool');
+  let seen;
+  const value = await withWorkDir(dir, async (work) => {
+    seen = work;
+    assert.equal(dirname(work), join(parent, 'nested'));
+    assert.match(basename(work), /^\.tool-download-/);
+    assert.deepEqual(readdirSync(work), []);
+    writeFileSync(join(work, 'file'), '');
+    return 'done';
+  });
+  assert.equal(value, 'done');
+  assert.equal(existsSync(seen), false);
+  assert.deepEqual(readdirSync(join(parent, 'nested')), []);
+});
+
+test('withWorkDir removes its directory when fn fails', async () => {
+  const parent = tempDir();
+  await assert.rejects(
+    withWorkDir(join(parent, 'tool'), async (work) => {
+      writeFileSync(join(work, 'file'), '');
+      throw new Error('boom');
+    }),
+    { message: 'boom' },
+  );
+  assert.deepEqual(readdirSync(parent), []);
+});
+
+test('checkReplaceable takes a missing or empty directory, or an earlier install', async () => {
+  const dir = tempDir();
+  await checkReplaceable(join(dir, 'missing'), 'tool');
+  await checkReplaceable(dir, 'tool');
+  writeFileSync(join(dir, 'tool'), '');
+  writeFileSync(join(dir, 'lib.so'), '');
+  await checkReplaceable(dir, 'tool');
+});
+
+test('checkReplaceable refuses a directory holding other files, and a file', async () => {
+  const dir = tempDir();
+  writeFileSync(join(dir, 'notes.txt'), '');
+  await assert.rejects(checkReplaceable(dir, 'tool'), {
+    message: `${dir} holds other files and no tool, so it is not an earlier install to replace; choose another directory`,
+  });
+  await assert.rejects(checkReplaceable(join(dir, 'notes.txt'), 'tool'), /notes\.txt/);
 });

@@ -1,0 +1,168 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import * as omnisim from '../install-omnisim/omnisim.mjs';
+import * as pebble from '../install-pebble/pebble.mjs';
+import { hostKey } from '../lib/install.mjs';
+import { capture, withEnv } from '../lib/testing.mjs';
+import { main, parse, settings, TOOLS, usage, UsageError } from './local.mjs';
+
+// --- Fixtures -----------------------------------------------------------------
+
+const HOME = join('/', 'home', 'dev');
+const CWD = join('/', 'work', 'rusty-photon');
+
+// A tool that records what it was asked to do, and installs nothing.
+function fakeTools({ fail } = {}) {
+  const calls = [];
+  const tool = {
+    about: 'a tool that records its calls',
+    resolve: ({ runner }) => ({ runner }),
+    installAt: async (dir, resolved, options) => {
+      calls.push({ dir, resolved, options });
+      if (fail) throw new Error('fetch failed', { cause: new Error('connect ECONNREFUSED') });
+      return { TOOL_PATH: join(dir, 'tool'), TOOL_HOME: dir };
+    },
+  };
+  return { tools: { tool }, calls };
+}
+
+// --- The command line -----------------------------------------------------------
+
+test('parse installs a tool into ~/.local/opt/<tool> by default', () => {
+  assert.deepEqual(parse(['pebble'], { cwd: CWD, home: HOME }), { tool: 'pebble', dir: join(HOME, '.local', 'opt', 'pebble') });
+});
+
+test('parse takes --prefix, a relative one from where bazel ran', () => {
+  assert.deepEqual(parse(['omnisim', '--prefix', 'tools/omnisim'], { cwd: CWD, home: HOME }), {
+    tool: 'omnisim',
+    dir: join(CWD, 'tools', 'omnisim'),
+  });
+  const absolute = join('/', 'opt', 'pebble');
+  assert.deepEqual(parse([`--prefix=${absolute}`, 'pebble'], { cwd: CWD, home: HOME }).dir, absolute);
+});
+
+test('parse answers --help and -h', () => {
+  assert.deepEqual(parse(['--help'], { cwd: CWD, home: HOME }), { help: true });
+  assert.deepEqual(parse(['pebble', '-h'], { cwd: CWD, home: HOME }), { help: true });
+});
+
+test('parse refuses a command line it cannot run', () => {
+  const refused = [
+    [[], 'name the tool to install'],
+    [['pebble', 'omnisim'], 'one tool at a time; got pebble, omnisim'],
+    [['astap'], 'no tool named astap; there are omnisim, pebble'],
+    [['toString'], 'no tool named toString; there are omnisim, pebble'],
+    [['pebble', '--prefix'], /Option '--prefix <value>' argument missing/],
+    [['pebble', '--prefix='], '--prefix needs a directory'],
+    [['pebble', '--dir', 'x'], /Unknown option '--dir'/],
+  ];
+  for (const [args, message] of refused) {
+    assert.throws(() => parse(args, { cwd: CWD, home: HOME }), (err) => {
+      assert.ok(err instanceof UsageError, `${args.join(' ')}: ${err}`);
+      if (typeof message === 'string') assert.equal(err.message, message);
+      else assert.match(err.message, message);
+      return true;
+    });
+  }
+});
+
+test('settings writes a line a POSIX shell reads back as the same value', () => {
+  assert.deepEqual(settings({ A_PATH: "/home/o'brien/a b/a" }, 'linux'), [`export A_PATH='/home/o'\\''brien/a b/a'`]);
+  const sh = spawnSync('sh', ['-c', `${settings({ A_PATH: "/x/o'b $HOME/y" }, 'linux')[0]}; printf %s "$A_PATH"`], {
+    encoding: 'utf8',
+  });
+  if (!sh.error) assert.equal(sh.stdout, "/x/o'b $HOME/y");
+});
+
+test('settings writes setx lines on Windows', () => {
+  assert.deepEqual(settings({ A_PATH: 'C:\\Users\\dev\\a', B_PATH: 'C:\\b' }, 'win32'), [
+    'setx A_PATH "C:\\Users\\dev\\a"',
+    'setx B_PATH "C:\\b"',
+  ]);
+});
+
+test('TOOLS installs each tool by its install-* action module', () => {
+  assert.deepEqual(Object.keys(TOOLS), ['omnisim', 'pebble']);
+  assert.equal(TOOLS.omnisim.resolve, omnisim.resolve);
+  assert.equal(TOOLS.omnisim.installAt, omnisim.installAt);
+  assert.equal(TOOLS.pebble.resolve, pebble.resolve);
+  assert.equal(TOOLS.pebble.installAt, pebble.installAt);
+  assert.match(usage(), /\n {2}omnisim {3}ASCOM OmniSim/);
+  assert.match(usage(), /\n {2}pebble {4}Pebble and pebble-challtestsrv/);
+});
+
+// --- Running it -------------------------------------------------------------------
+
+test('main installs the tool for the runner given, and prints the variables to set', async () => {
+  const { tools, calls } = fakeTools();
+  const download = { delayMs: 1 };
+  const { value, stdout, stderr } = await capture(() =>
+    main(['tool', '--prefix', 'opt/tool'], { cwd: CWD, home: HOME, platform: 'linux', runner: 'Linux-ARM64', tools, download }),
+  );
+  assert.equal(value, 0);
+  assert.equal(stderr, '');
+  const dir = join(CWD, 'opt', 'tool');
+  assert.deepEqual(calls, [{ dir, resolved: { runner: 'Linux-ARM64' }, options: { download } }]);
+  assert.equal(
+    stdout,
+    `\ntool installed in ${dir}. Set these in your shell profile:\n\n` +
+      `  export TOOL_PATH='${join(dir, 'tool')}'\n  export TOOL_HOME='${dir}'\n`,
+  );
+});
+
+test('main resolves for this machine when no runner is given', async () => {
+  const { tools, calls } = fakeTools();
+  await capture(() => main(['tool'], { cwd: CWD, home: HOME, tools }));
+  assert.deepEqual(calls[0].resolved, { runner: hostKey() });
+  assert.equal(calls[0].dir, join(HOME, '.local', 'opt', 'tool'));
+});
+
+test('main takes a relative --prefix from BUILD_WORKING_DIRECTORY, where bazel run started', async () => {
+  const { tools, calls } = fakeTools();
+  await withEnv({ BUILD_WORKING_DIRECTORY: CWD }, () => capture(() => main(['tool', '--prefix', 'here'], { home: HOME, tools })));
+  assert.equal(calls[0].dir, join(CWD, 'here'));
+});
+
+test('main says why an install failed, with its causes, and exits 1', async () => {
+  const { tools } = fakeTools({ fail: true });
+  const { value, stdout, stderr } = await capture(() => main(['tool'], { cwd: CWD, home: HOME, tools }));
+  assert.equal(value, 1);
+  assert.equal(stdout, '');
+  assert.equal(stderr, 'tool was not installed: fetch failed: connect ECONNREFUSED\n');
+});
+
+test('main prints the usage for --help, and with the reason for a bad command line', async () => {
+  const { tools, calls } = fakeTools();
+  const help = await capture(() => main(['--help'], { cwd: CWD, home: HOME, tools }));
+  assert.equal(help.value, 0);
+  assert.equal(help.stdout, `${usage(tools)}\n`);
+  const bad = await capture(() => main(['nothing'], { cwd: CWD, home: HOME, tools }));
+  assert.equal(bad.value, 2);
+  assert.equal(bad.stderr, `no tool named nothing; there are tool\n\n${usage(tools)}\n`);
+  assert.deepEqual(calls, []);
+});
+
+// --- The launcher -----------------------------------------------------------------
+
+// The launcher `bazel run //.github/actions:install` starts, run from the
+// runfiles tree as bazel run does: what it is given after `--` reaches main,
+// and main's exit code comes back.
+function launch(args) {
+  const windows = process.platform === 'win32';
+  const launcher = join('.github', 'actions', windows ? 'install.bat' : 'install.sh');
+  assert.ok(existsSync(launcher), `${launcher} is not in the runfiles`);
+  return spawnSync(launcher, args, { encoding: 'utf8', shell: windows });
+}
+
+test('the launcher passes its arguments through to main', () => {
+  const help = launch(['--help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^usage: bazel run \/\/\.github\/actions:install -- <tool> \[--prefix DIR\]/);
+  const bad = launch(['pebble', '--dir']);
+  assert.equal(bad.status, 2, bad.stderr);
+  assert.match(bad.stderr, /Unknown option '--dir'/);
+});
