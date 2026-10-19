@@ -38,7 +38,16 @@ import { chmod, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { addPath, exportVariable, io, warning } from '../lib/helpers.mjs';
-import { cacheKey, checkReplaceable, download, forRunner, onlyDirectory, unpack, withWorkDir } from '../lib/install.mjs';
+import {
+  cacheKey,
+  checkReplaceable,
+  download,
+  forRunner,
+  markInstalled,
+  onlyDirectory,
+  unpack,
+  withWorkDir,
+} from '../lib/install.mjs';
 
 /** The GitHub repo, and its release, whose assets ASSETS pins. */
 export const REPO = 'ivonnyssen/ASCOM.Alpaca.Simulators';
@@ -127,12 +136,13 @@ export async function install({ asset, binary, workspace, cached, download: opti
 
 /**
  * A developer's install of what `resolve` chose into `dir`, which it replaces
- * only when it is empty or an earlier install. Resolves to the variables that
- * point the BDD suites at it.
+ * only when it is empty or an earlier install marked it. Resolves to the
+ * variables that point the BDD suites at it.
  */
 export async function installAt(dir, { asset, binary }, { download: options } = {}) {
-  await checkReplaceable(dir, binary);
+  await checkReplaceable(dir);
   await unpackInto({ asset, binary, dir, download: options });
+  await markInstalled(dir, `OmniSim ${VERSION}, ${asset.name}`);
   await makeRunnable(dir, binary);
   return { OMNISIM_PATH: path.join(dir, binary) };
 }

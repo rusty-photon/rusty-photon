@@ -20,8 +20,8 @@
 // The cache key carries the pin, so moving a pin misses the old cache.
 
 import { createHash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
+import { createWriteStream, rmSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -262,25 +262,45 @@ export async function onlyDirectory(dir) {
 /**
  * Runs `fn` with a new, empty directory beside `dir`, on the same file system,
  * so what `fn` unpacks there can be renamed into `dir`. The directory is
- * removed when `fn` ends, however it ends.
+ * removed when `fn` ends, however it ends, an interrupt (Ctrl-C) or a SIGTERM
+ * included.
  */
 export async function withWorkDir(dir, fn) {
   const parent = path.dirname(dir);
   await mkdir(parent, { recursive: true });
   const work = await mkdtemp(path.join(parent, `.${path.basename(dir)}-download-`));
+  // A signal ends the process without running `finally`: remove the
+  // directory, then raise the signal again, which now ends the process as it
+  // would have.
+  const interrupted = (signal) => {
+    rmSync(work, { recursive: true, force: true });
+    process.kill(process.pid, signal);
+  };
+  process.once('SIGINT', interrupted);
+  process.once('SIGTERM', interrupted);
   try {
     return await fn(work);
   } finally {
+    process.off('SIGINT', interrupted);
+    process.off('SIGTERM', interrupted);
     await rm(work, { recursive: true, force: true });
   }
 }
 
+/** The file a developer's install leaves in a directory it installed whole. */
+export const INSTALLED = '.installed-by-rusty-photon';
+
+/** Marks `dir` as one a developer's install of `what` put there whole. */
+export async function markInstalled(dir, what) {
+  await writeFile(path.join(dir, INSTALLED), `${what}\n`);
+}
+
 /**
- * Throws unless `dir` is missing, empty, or holds `file`, which an earlier
- * install put there: the directories a developer's install may replace whole,
+ * Throws unless `dir` is missing, empty, or marked by an earlier install
+ * (markInstalled): the directories a developer's install may replace whole,
  * so a mistyped prefix cannot take what else is there with it.
  */
-export async function checkReplaceable(dir, file) {
+export async function checkReplaceable(dir) {
   let entries;
   try {
     entries = await readdir(dir);
@@ -288,7 +308,10 @@ export async function checkReplaceable(dir, file) {
     if (err.code === 'ENOENT') return;
     throw err;
   }
-  if (entries.length > 0 && !entries.includes(file)) {
-    throw new Error(`${dir} holds other files and no ${file}, so it is not an earlier install to replace; choose another directory`);
+  if (entries.length > 0 && !entries.includes(INSTALLED)) {
+    throw new Error(
+      `${dir} holds files and no ${INSTALLED}, so no earlier install of ours made it, and it is not ours to replace; ` +
+        'choose another directory',
+    );
   }
 }

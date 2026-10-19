@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 
+import { INSTALLED } from '../lib/install.mjs';
 import { capture, serve, tar, withEnv } from '../lib/testing.mjs';
 import { ASSETS, install, installAt, REPO, resolve, VERSION } from './omnisim.mjs';
 
@@ -240,6 +241,7 @@ test('installAt installs into a new directory and gives OMNISIM_PATH, exporting 
     });
     assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the simulators');
     if (process.platform !== 'win32') assert.equal(statSync(join(dir, BINARY)).mode & 0o777, 0o755);
+    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'OmniSim v0.5.0-467.2, omnisim.tar.gz\n');
     assert.deepEqual(readdirSync(join(parent, 'opt')), ['omnisim']);
     assert.equal(out.env, '');
     assert.equal(out.path, '');
@@ -248,12 +250,13 @@ test('installAt installs into a new directory and gives OMNISIM_PATH, exporting 
   }
 });
 
-test('installAt replaces an earlier install', async () => {
+test('installAt replaces an earlier install, which it marked', async () => {
   const archive = release();
   const server = await releaseServer(archive);
   const dir = tempDir();
   writeFileSync(join(dir, BINARY), 'older');
   writeFileSync(join(dir, 'stale.dll'), '');
+  writeFileSync(join(dir, INSTALLED), 'OmniSim v0.5.0-467.1\n');
   try {
     await inStep(() => installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } }));
     assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the simulators');
@@ -263,27 +266,35 @@ test('installAt replaces an earlier install', async () => {
   }
 });
 
-test('installAt leaves a directory that is not an earlier install alone, and fetches nothing', async () => {
-  const archive = release();
-  const server = await releaseServer(archive);
-  const dir = tempDir();
-  writeFileSync(join(dir, 'notes.txt'), 'mine');
-  try {
-    await assert.rejects(
-      inStep(() => installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } })),
-      /holds other files and no ascom\.alpaca\.simulators/,
-    );
-    assert.equal(server.requests.length, 0);
-    assert.deepEqual(readdirSync(dir), ['notes.txt']);
-  } finally {
-    await server.close();
-  }
-});
+// A directory that holds OmniSim among other things, as ~/bin might, is not
+// one an install of ours made, whatever it holds.
+for (const [what, files] of [
+  ['other files', ['notes.txt']],
+  ['an OmniSim it did not install', [BINARY, 'notes.txt']],
+]) {
+  test(`installAt leaves a directory holding ${what} alone, and fetches nothing`, async () => {
+    const archive = release();
+    const server = await releaseServer(archive);
+    const dir = tempDir();
+    for (const file of files) writeFileSync(join(dir, file), 'mine');
+    try {
+      await assert.rejects(
+        inStep(() => installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } })),
+        /holds files and no \.installed-by-rusty-photon/,
+      );
+      assert.equal(server.requests.length, 0);
+      assert.deepEqual(readdirSync(dir).sort(), [...files].sort());
+    } finally {
+      await server.close();
+    }
+  });
+}
 
 test('installAt keeps an earlier install when the new one fails its check', async () => {
   const server = await releaseServer(release());
   const dir = tempDir();
   writeFileSync(join(dir, BINARY), 'older');
+  writeFileSync(join(dir, INSTALLED), 'OmniSim v0.5.0-467.1\n');
   try {
     const asset = { ...testAsset(server, release()), pin: { sha256: '0'.repeat(64) } };
     await assert.rejects(

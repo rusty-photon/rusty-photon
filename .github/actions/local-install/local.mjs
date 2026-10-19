@@ -82,15 +82,29 @@ export function parse(args, { cwd, home, tools = TOOLS }) {
     throw new UsageError(`no tool named ${tool}; there are ${Object.keys(tools).join(', ')}`);
   }
   if (values.prefix === '') throw new UsageError('--prefix needs a directory');
-  const dir = values.prefix === undefined ? path.join(home, '.local', 'opt', tool) : path.resolve(cwd, values.prefix);
-  return { tool, dir };
+  if (values.prefix === undefined) return { tool, dir: path.join(home, '.local', 'opt', tool) };
+  // A shell expands a leading ~ only in a word of its own, not in --prefix=~/x.
+  const prefix = values.prefix.replace(/^~(?=$|[\\/])/, () => home);
+  return { tool, dir: path.resolve(cwd, prefix) };
 }
 
-/** The lines that set `variables` in the developer's shell: POSIX sh, or cmd's setx on Windows. */
+/**
+ * What to do with `variables`, and the lines that do it: on Windows, setx
+ * lines to run once, which set them for every shell opened after; elsewhere,
+ * POSIX sh lines for the shell's profile.
+ */
 export function settings(variables, platform = process.platform) {
-  return Object.entries(variables).map(([name, value]) =>
-    platform === 'win32' ? `setx ${name} "${value}"` : `export ${name}='${value.replaceAll("'", "'\\''")}'`,
-  );
+  const entries = Object.entries(variables);
+  if (platform === 'win32') {
+    return {
+      how: 'Run these once, then open a new shell, which has them',
+      lines: entries.map(([name, value]) => `setx ${name} "${value}"`),
+    };
+  }
+  return {
+    how: 'Set these in your shell profile',
+    lines: entries.map(([name, value]) => `export ${name}='${value.replaceAll("'", "'\\''")}'`),
+  };
 }
 
 /**
@@ -124,8 +138,8 @@ export async function main(
   try {
     const tool = tools[request.tool];
     const variables = await tool.installAt(request.dir, tool.resolve({ runner: runner ?? hostKey() }), { download });
-    const lines = settings(variables, platform).map((line) => `  ${line}`);
-    io.stdout(`\n${request.tool} installed in ${request.dir}. Set these in your shell profile:\n\n${lines.join('\n')}\n`);
+    const { how, lines } = settings(variables, platform);
+    io.stdout(`\n${request.tool} installed in ${request.dir}. ${how}:\n\n${lines.map((line) => `  ${line}`).join('\n')}\n`);
     return 0;
   } catch (err) {
     io.stderr(`${request.tool} was not installed: ${describe(err)}\n`);

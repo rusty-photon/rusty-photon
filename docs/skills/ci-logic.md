@@ -308,8 +308,10 @@ would be a second implementation of the module to keep in step.
   `install` exports them to the job. `local-install/local.mjs` lists the
   tools in `TOOLS`.
 - **It never removes what it did not install.** A tool that installs a
-  directory whole replaces it only when it is empty or holds the tool
-  (`checkReplaceable`); one that installs single files replaces only those.
+  directory whole marks it (`markInstalled`), and replaces a directory
+  only when it is empty or holds that mark (`checkReplaceable`); one that
+  installs single files replaces only those. Its scratch directory goes
+  however the install ends, Ctrl-C included (`withWorkDir`).
 - **It ships nothing.** It downloads on the developer's machine from
   where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
   nothing goes into a package, and nothing is mirrored for developers. A

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -14,7 +16,9 @@ import {
   download,
   forRunner,
   hostKey,
+  INSTALLED,
   isoWeek,
+  markInstalled,
   onlyDirectory,
   pinKey,
   runnerKey,
@@ -409,6 +413,8 @@ test('onlyDirectory refuses an archive without exactly one folder at its top', a
 test('withWorkDir gives fn an empty directory beside dir, and removes it after', async () => {
   const parent = tempDir();
   const dir = join(parent, 'nested', 'tool');
+  const listening = () => ['SIGINT', 'SIGTERM'].map((signal) => process.listenerCount(signal));
+  const before = listening();
   let seen;
   const value = await withWorkDir(dir, async (work) => {
     seen = work;
@@ -421,6 +427,7 @@ test('withWorkDir gives fn an empty directory beside dir, and removes it after',
   assert.equal(value, 'done');
   assert.equal(existsSync(seen), false);
   assert.deepEqual(readdirSync(join(parent, 'nested')), []);
+  assert.deepEqual(listening(), before, 'withWorkDir leaves its signal listeners behind');
 });
 
 test('withWorkDir removes its directory when fn fails', async () => {
@@ -435,20 +442,60 @@ test('withWorkDir removes its directory when fn fails', async () => {
   assert.deepEqual(readdirSync(parent), []);
 });
 
-test('checkReplaceable takes a missing or empty directory, or an earlier install', async () => {
+// Runs withWorkDir in a process of its own, which prints the work directory
+// and waits; ends it with `signal`, and resolves to the directory and how the
+// process ended.
+async function interruptWorkDir(dir, signal) {
+  const script = [
+    `import { withWorkDir } from ${JSON.stringify(new URL('./install.mjs', import.meta.url).href)};`,
+    `await withWorkDir(${JSON.stringify(dir)}, async (work) => {`,
+    "  process.stdout.write(`${work}\\n`);",
+    '  await new Promise(() => setInterval(() => {}, 1000));',
+    '});',
+  ].join('\n');
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  for await (const chunk of child.stdout) {
+    out += chunk;
+    if (out.endsWith('\n')) break;
+  }
+  const work = out.trim();
+  assert.equal(existsSync(work), true, work);
+  child.kill(signal);
+  const [code, ended] = await once(child, 'exit');
+  return { work, code, ended };
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(`withWorkDir removes its directory when a ${signal} ends the process`, {
+    skip: process.platform === 'win32' && 'Windows has no signal one process can deliver to another',
+  }, async () => {
+    const parent = tempDir();
+    const { work, code, ended } = await interruptWorkDir(join(parent, 'tool'), signal);
+    assert.equal(ended, signal, `exit code ${code}`);
+    assert.equal(existsSync(work), false);
+    assert.deepEqual(readdirSync(parent), []);
+  });
+}
+
+test('checkReplaceable takes a missing or empty directory, or one an earlier install marked', async () => {
   const dir = tempDir();
-  await checkReplaceable(join(dir, 'missing'), 'tool');
-  await checkReplaceable(dir, 'tool');
+  await checkReplaceable(join(dir, 'missing'));
+  await checkReplaceable(dir);
   writeFileSync(join(dir, 'tool'), '');
-  writeFileSync(join(dir, 'lib.so'), '');
-  await checkReplaceable(dir, 'tool');
+  await markInstalled(dir, 'Tool 1.0');
+  assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'Tool 1.0\n');
+  await checkReplaceable(dir);
 });
 
-test('checkReplaceable refuses a directory holding other files, and a file', async () => {
+test('checkReplaceable refuses a directory no install of ours marked, even one holding the tool', async () => {
   const dir = tempDir();
+  writeFileSync(join(dir, 'tool'), '');
   writeFileSync(join(dir, 'notes.txt'), '');
-  await assert.rejects(checkReplaceable(dir, 'tool'), {
-    message: `${dir} holds other files and no tool, so it is not an earlier install to replace; choose another directory`,
+  await assert.rejects(checkReplaceable(dir), {
+    message:
+      `${dir} holds files and no .installed-by-rusty-photon, so no earlier install of ours made it, ` +
+      'and it is not ours to replace; choose another directory',
   });
-  await assert.rejects(checkReplaceable(join(dir, 'notes.txt'), 'tool'), /notes\.txt/);
+  await assert.rejects(checkReplaceable(join(dir, 'notes.txt')), /notes\.txt/);
 });

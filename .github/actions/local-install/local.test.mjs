@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import * as omnisim from '../install-omnisim/omnisim.mjs';
@@ -12,8 +12,9 @@ import { main, parse, settings, TOOLS, usage, UsageError } from './local.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 
-const HOME = join('/', 'home', 'dev');
-const CWD = join('/', 'work', 'rusty-photon');
+// Absolute on every OS: resolve gives them Windows' drive, as parse's does.
+const HOME = resolve('/', 'home', 'dev');
+const CWD = resolve('/', 'work', 'rusty-photon');
 
 // A tool that records what it was asked to do, and installs nothing.
 function fakeTools({ fail } = {}) {
@@ -41,8 +42,15 @@ test('parse takes --prefix, a relative one from where bazel ran', () => {
     tool: 'omnisim',
     dir: join(CWD, 'tools', 'omnisim'),
   });
-  const absolute = join('/', 'opt', 'pebble');
+  const absolute = resolve('/', 'opt', 'pebble');
   assert.deepEqual(parse([`--prefix=${absolute}`, 'pebble'], { cwd: CWD, home: HOME }).dir, absolute);
+});
+
+test('parse expands a leading ~ in --prefix=, which no shell expands there', () => {
+  assert.equal(parse(['pebble', '--prefix=~/tools/pebble'], { cwd: CWD, home: HOME }).dir, join(HOME, 'tools', 'pebble'));
+  assert.equal(parse(['pebble', '--prefix=~'], { cwd: CWD, home: HOME }).dir, HOME);
+  assert.equal(parse(['pebble', '--prefix=~dev/x'], { cwd: CWD, home: HOME }).dir, join(CWD, '~dev', 'x'));
+  assert.equal(parse(['pebble', '--prefix=a/~'], { cwd: CWD, home: HOME }).dir, join(CWD, 'a', '~'));
 });
 
 test('parse answers --help and -h', () => {
@@ -70,19 +78,22 @@ test('parse refuses a command line it cannot run', () => {
   }
 });
 
-test('settings writes a line a POSIX shell reads back as the same value', () => {
-  assert.deepEqual(settings({ A_PATH: "/home/o'brien/a b/a" }, 'linux'), [`export A_PATH='/home/o'\\''brien/a b/a'`]);
-  const sh = spawnSync('sh', ['-c', `${settings({ A_PATH: "/x/o'b $HOME/y" }, 'linux')[0]}; printf %s "$A_PATH"`], {
+test('settings writes lines for the shell profile that a POSIX shell reads back as the same value', () => {
+  assert.deepEqual(settings({ A_PATH: "/home/o'brien/a b/a" }, 'linux'), {
+    how: 'Set these in your shell profile',
+    lines: [`export A_PATH='/home/o'\\''brien/a b/a'`],
+  });
+  const sh = spawnSync('sh', ['-c', `${settings({ A_PATH: "/x/o'b $HOME/y" }, 'linux').lines[0]}; printf %s "$A_PATH"`], {
     encoding: 'utf8',
   });
   if (!sh.error) assert.equal(sh.stdout, "/x/o'b $HOME/y");
 });
 
-test('settings writes setx lines on Windows', () => {
-  assert.deepEqual(settings({ A_PATH: 'C:\\Users\\dev\\a', B_PATH: 'C:\\b' }, 'win32'), [
-    'setx A_PATH "C:\\Users\\dev\\a"',
-    'setx B_PATH "C:\\b"',
-  ]);
+test('settings writes setx lines on Windows, to run once before opening a new shell', () => {
+  assert.deepEqual(settings({ A_PATH: 'C:\\Users\\dev\\a', B_PATH: 'C:\\b' }, 'win32'), {
+    how: 'Run these once, then open a new shell, which has them',
+    lines: ['setx A_PATH "C:\\Users\\dev\\a"', 'setx B_PATH "C:\\b"'],
+  });
 });
 
 test('TOOLS installs each tool by its install-* action module', () => {
@@ -111,6 +122,18 @@ test('main installs the tool for the runner given, and prints the variables to s
     stdout,
     `\ntool installed in ${dir}. Set these in your shell profile:\n\n` +
       `  export TOOL_PATH='${join(dir, 'tool')}'\n  export TOOL_HOME='${dir}'\n`,
+  );
+});
+
+test('main tells a Windows developer to run the setx lines once and open a new shell', async () => {
+  const { tools } = fakeTools();
+  const { value, stdout } = await capture(() => main(['tool'], { cwd: CWD, home: HOME, platform: 'win32', tools }));
+  assert.equal(value, 0);
+  const dir = join(HOME, '.local', 'opt', 'tool');
+  assert.equal(
+    stdout,
+    `\ntool installed in ${dir}. Run these once, then open a new shell, which has them:\n\n` +
+      `  setx TOOL_PATH "${join(dir, 'tool')}"\n  setx TOOL_HOME "${dir}"\n`,
   );
 });
 
@@ -155,7 +178,11 @@ function launch(args) {
   const windows = process.platform === 'win32';
   const launcher = join('.github', 'actions', windows ? 'install.bat' : 'install.sh');
   assert.ok(existsSync(launcher), `${launcher} is not in the runfiles`);
-  return spawnSync(launcher, args, { encoding: 'utf8', shell: windows });
+  // cmd runs a batch file; the command line is built here, since Node warns
+  // that it joins a shell's arguments without quoting them.
+  return windows
+    ? spawnSync(`${launcher} ${args.join(' ')}`, { encoding: 'utf8', shell: true })
+    : spawnSync(launcher, args, { encoding: 'utf8' });
 }
 
 test('the launcher passes its arguments through to main', () => {
