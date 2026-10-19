@@ -473,7 +473,9 @@ is established, with the sensor geometry, and every frame of that
 session records the value read then. One that can is read on every
 capture, with `gain`, `offset` and `max_adu`: once the frame is ready,
 while the capture still holds the camera, each read bounded at 3 s. The FITS
-header does not export these facts ([FITS header](#fits-header)).
+header exports the mosaic of an unbinned frame and the readout mode's name;
+`electrons_per_adu` and `cooler_power_pct` are recorded in the sidecar only
+([FITS header](#fits-header)).
 
 - `sensor_type` is the camera's ASCOM `SensorType`, spelled as ASCOM
   names it: `Monochrome`; `Color`, a sensor that delivers several
@@ -491,7 +493,13 @@ header does not export these facts ([FITS header](#fits-header)).
   camera whose `sensor_type` is `Monochrome`, and a mono frame records
   neither. Like `optics`, they describe the unbinned sensor, not the
   frame: what is left of the mosaic on a binned frame depends on how
-  the camera bins.
+  the camera bins, which ASCOM does not report. Of the colour cameras
+  measured, the SV605CC and the ASI120MC-S add photosites of one
+  colour, so the mosaic survives, and the QHY5III715C adds neighbours,
+  which mixes the colours
+  ([svbony-camera](svbony-camera.md#roi--binning),
+  [zwo-camera](zwo-camera.md#geometry-binning-roi),
+  [qhy-camera](qhy-camera.md#geometry-binning-roi)).
 - `readout_mode` is ASCOM `ReadoutMode`, the index into the camera's
   `ReadoutModes`. It is read on every capture, because a client can set
   it at any time, and on a CMOS camera a mode often fixes a combination
@@ -507,7 +515,11 @@ header does not export these facts ([FITS header](#fits-header)).
   photoelectrons per ADU. It converts ADU to electrons. It is read on
   every capture, because ASCOM has a driver change it at once when a
   change of binning, `Gain`, `Offset` or `ReadoutMode` changes it. It
-  is recorded only when positive and finite.
+  is recorded only when positive and finite, as the driver reports it.
+  The ADU it counts are the driver's, which need not be the frame's
+  pixel values: `zwo-camera` reports its ADC's, and a Raw16 frame from
+  a 12-bit sensor carries each value shifted left 4 bits, 16 times
+  larger ([zwo-camera ST2, ST3](zwo-camera.md#sensor-type--signal)).
 - `cooler_power_pct` is ASCOM `CoolerPower`, the cooler's power in
   percent. It is read on every capture, at the same moment as
   `sensor_temperature_c`, and with `cooler_setpoint_c` it shows whether
@@ -787,13 +799,15 @@ leaves `rp` without its sidecar. The export goes one way
 the sidecar, from the same capture-time values, it may be lossy, and
 `rp` never reads a fact back from it. Every card is built from the
 document alone (the table gives each card's field), so the header
-carries no fact the sidecar lacks. The keyword set below is what `rp` writes
+carries no fact the sidecar lacks. The one exception is `ROWORDER`,
+which describes how the file lays out its pixel array, not the
+exposure. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
-promise that every fact in the document reaches the header: the camera
-facts (`sensor_type`, the Bayer offsets, the readout mode,
-`electrons_per_adu` and `cooler_power_pct`) are recorded in the
-sidecar only.
+promise that every fact in the document reaches the header.
+`cooler_power_pct` is recorded in the sidecar only, because no card for
+it is in common use; so is `electrons_per_adu`, because its ADU need
+not be the file's (below); and a binned frame carries no Bayer pattern.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -810,6 +824,7 @@ sidecar only.
 | `FILTER` | string | `filter` | `filter` present |
 | `GAIN` | integer | `gain` | `gain` present |
 | `OFFSET` | integer | `offset` | `offset` present |
+| `READOUTM` | string | `readout_mode_name` | `readout_mode_name` present |
 | `CCD-TEMP` | real | `sensor_temperature_c`, °C | `sensor_temperature_c` present |
 | `SET-TEMP` | real | `cooler_setpoint_c`, °C | `cooler_setpoint_c` present |
 | `XBINNING` / `YBINNING` | integer | `binning` factors | always |
@@ -817,13 +832,55 @@ sidecar only.
 | `FOCALLEN` | real | `optics.focal_length_mm`, mm | `optics.focal_length_mm` present |
 | `APTDIA` | real | `optics.aperture_mm`, mm | `optics.aperture_mm` present |
 | `FOCRATIO` | real | `optics.focal_length_mm / optics.aperture_mm`, as `get_train_info` derives it | both present |
+| `BAYERPAT` | string | the mosaic at the file's first pixel, read top-down: `'RGGB'`, `'GRBG'`, `'GBRG'` or `'BGGR'`, from `sensor_type` and the Bayer offsets | `sensor_type` is `RGGB`, both offsets present, and `binning` is 1×1 |
+| `XBAYROFF` / `YBAYROFF` | integer | `0`: `BAYERPAT` already starts at the first pixel | as `BAYERPAT` |
 | `SITELAT` | real | `site.latitude_degrees`, degrees north | `site` present |
 | `SITELONG` | real | `site.longitude_degrees`, degrees east | `site` present |
 | `SWCREATE` | string | `'rusty-photon rp <rp_version>'` | `rp_version` present (every frame this version captures) |
 | `DOC_ID` | string | the document's full UUID | always |
+| `ROWORDER` | string | `'TOP-DOWN'`: the file's first row is the top of the image | always |
 
 Rules the table does not show:
 
+- **The rows run top-down, and `BAYERPAT` is read that way.** `rp`
+  writes the sensor's row 0 as the file's first row
+  ([Pixel geometry](#capture-tool-details)), and ASCOM has `Y`
+  increase from top to bottom, so the first row is the top of the
+  image. FITS recommends the opposite order, and programs disagree on
+  which way up a file without the card is. A mosaic read from the
+  other end is flipped vertically, so RGGB becomes GBRG. `ROWORDER`
+  settles it for the programs that read it (Siril, PixInsight, ASTAP,
+  N.I.N.A., MaxIm DL among them), and N.I.N.A. writes it the same
+  way. It changes no plate solve: ASTAP solves a frame identically
+  with `ROWORDER` absent, `'TOP-DOWN'` or `'BOTTOM-UP'` (measured
+  2026-10-18 on `plate-solver`'s M101 fixture).
+- **`BAYERPAT` is the pattern at the first pixel, not ASCOM's matrix.**
+  ASCOM names the matrix (`RGGB`) and the offsets of its upper-left
+  corner from the sensor's pixel (0, 0); the card applies them, so the
+  ASI120MC-S, which reports `RGGB` with offsets (1, 0), writes
+  `'GRBG'`. `XBAYROFF` and `YBAYROFF` are written as 0 beside it, so a
+  program that applies them and one that ignores them read the same
+  pattern. `capture` always starts the frame at the sensor's (0, 0), so
+  no subframe offset enters. The other mosaics ASCOM names (`CMYG`,
+  `CMYG2`, `LRGB`) get no card, and neither does a `Color` sensor,
+  whose multi-plane frames `capture` refuses.
+- **A binned frame carries no `BAYERPAT`.** A binned frame keeps its
+  mosaic only when the camera adds photosites of one colour, and ASCOM
+  does not say whether it does. Measured, the SV605CC and the
+  ASI120MC-S keep it and the QHY5III715C mixes the colours
+  ([Core Fields](#core-fields-owned-by-rp)), so no rule `rp` can
+  apply from what the camera reports would be right for all three. The
+  sidecar still records the sensor type, the offsets and the binning.
+- **No `EGAIN`.** The card gives electrons per ADU of the file's pixel
+  values, and `electrons_per_adu` counts the driver's ADU, which need
+  not be those ([Core Fields](#core-fields-owned-by-rp)). On a 12-bit
+  ZWO sensor's Raw16 frame the driver's figure is 16 times the file's,
+  and binning changes it again: in Raw16 the ASI120MC-S averages the
+  four photosites it bins, and in Raw8 it sums them
+  ([zwo-camera B2](zwo-camera.md#geometry-binning-roi)). Converting
+  the figure would take both facts, how the driver's ADU sit in the
+  file and how the camera combined its photosites, and ASCOM reports
+  neither, so the figure is recorded in the sidecar only.
 - **`XPIXSZ`/`YPIXSZ` are the binned pixel.** The long-standing
   convention (MaxIm DL, followed by NINA and read that way by ASTAP)
   is the pixel size *after* binning, and plate solvers derive the
@@ -1668,6 +1725,8 @@ in-memory frame, the on-disk frame, and the disk-fallback re-read are
 the same picture in the same orientation. Every analysis tool works on
 that row-major frame: a star's `x` counts columns along `NAXIS1`
 (width) and `y` counts rows along `NAXIS2` (height), both 0-based.
+The file's first row is the camera's row 0, the top of the image, which
+its `ROWORDER = 'TOP-DOWN'` card declares ([FITS header](#fits-header)).
 `GET /api/images/{document_id}/pixels` transposes back, so the wire
 carries width-major pixels exactly as an Alpaca camera would. Only
 rank-2 (monochrome) arrays are supported: a rank-3 colour

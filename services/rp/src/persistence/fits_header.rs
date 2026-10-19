@@ -2,10 +2,11 @@
 //! header — `docs/services/rp.md` §"FITS header".
 //!
 //! The header is an export of the exposure document for other
-//! programs: every card below is projected from an [`ExposureDocument`]
-//! field and from nothing else, so the header carries no fact the
-//! sidecar lacks. The sidecar is the record, and `rp` never reads a
-//! fact back from the header (rp.md §"Ground rules").
+//! programs: every card below but `ROWORDER` is projected from an
+//! [`ExposureDocument`] field and from nothing else, so the header
+//! carries no fact the sidecar lacks. `ROWORDER` describes the file's
+//! pixel array, not the exposure. The sidecar is the record, and `rp`
+//! never reads a fact back from the header (rp.md §"Ground rules").
 //! A card whose source is absent is left out, never written as a
 //! placeholder. Free text has its typographic punctuation folded to
 //! ASCII; a value `rp-fits` still refuses (`Hα`, one longer than a
@@ -17,7 +18,7 @@ use rp_fits::writer::{fold_to_ascii, real_as_written, Keyword, KeywordValue};
 use rp_vocabulary::FrameType;
 use tracing::debug;
 
-use super::document::ExposureDocument;
+use super::document::{ExposureDocument, SensorType};
 
 /// The FITS form of `DATE-OBS` (UTC, millisecond precision, no zone).
 const FITS_TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f";
@@ -35,6 +36,13 @@ pub fn document_timestamp(at: DateTime<Utc>) -> String {
 pub fn header_keywords(doc: &ExposureDocument) -> Vec<Keyword> {
     let mut cards = Cards::default();
 
+    // `capture` writes the camera's row 0 first, and ASCOM has `Y` grow
+    // from top to bottom.
+    cards.string(
+        "ROWORDER",
+        Some("TOP-DOWN"),
+        "first row is the top of the image",
+    );
     if let Some(date_obs) = doc.exposure_started_at.as_deref().and_then(fits_timestamp) {
         cards.push(
             "DATE-OBS",
@@ -80,6 +88,13 @@ pub fn header_keywords(doc: &ExposureDocument) -> Vec<Keyword> {
     cards.string("FILTER", doc.filter.as_deref(), "filter");
     cards.integer("GAIN", doc.gain, "camera gain");
     cards.integer("OFFSET", doc.offset, "camera offset");
+    cards.string(
+        "READOUTM",
+        doc.readout_mode_name.as_deref(),
+        "camera readout mode",
+    );
+    // No `EGAIN`: `electrons_per_adu` counts the driver's ADU, which need
+    // not be the file's (rp.md §"FITS header").
     cards.real(
         "CCD-TEMP",
         doc.sensor_temperature_c,
@@ -91,6 +106,7 @@ pub fn header_keywords(doc: &ExposureDocument) -> Vec<Keyword> {
         "[degC] cooler setpoint",
     );
     cards.geometry(doc);
+    cards.mosaic(doc);
     if let Some(site) = doc.site {
         cards.real(
             "SITELAT",
@@ -161,6 +177,20 @@ impl Cards {
         );
     }
 
+    /// `BAYERPAT`, with `XBAYROFF`/`YBAYROFF` written as 0 beside it so a
+    /// reader that applies them and one that ignores them agree.
+    fn mosaic(&mut self, doc: &ExposureDocument) {
+        if let Some(pattern) = bayer_pattern(doc) {
+            self.string(
+                "BAYERPAT",
+                Some(pattern),
+                "Bayer pattern at the first pixel, top-down",
+            );
+            self.integer("XBAYROFF", Some(0), "[px] already applied to BAYERPAT");
+            self.integer("YBAYROFF", Some(0), "[px] already applied to BAYERPAT");
+        }
+    }
+
     fn push(&mut self, key: &'static str, value: KeywordValue, comment: &'static str) {
         match Keyword::new(key, value) {
             Ok(card) => self.0.push(card.with_comment(comment)),
@@ -188,6 +218,37 @@ impl Cards {
     ) {
         if let Some(value) = value {
             self.push(key, KeywordValue::Int(value.into()), comment);
+        }
+    }
+}
+
+/// The 2×2 pattern at the file's first pixel, read top-down. ASCOM names
+/// the `RGGB` matrix and puts its upper-left corner, the `R`, at the
+/// Bayer offsets from the sensor's pixel (0, 0); `capture` starts every
+/// frame at that pixel, so the offsets apply to the file directly.
+///
+/// `None` for any other sensor type, for offsets that are unknown or
+/// outside the 2×2 matrix, and for a binned frame: whether a binned frame
+/// keeps the mosaic depends on how the camera bins, which ASCOM does not
+/// report (rp.md §"FITS header").
+fn bayer_pattern(doc: &ExposureDocument) -> Option<&'static str> {
+    if doc.sensor_type != Some(SensorType::Rggb)
+        || doc.binning != Some(rp_vocabulary::Binning { x: 1, y: 1 })
+    {
+        return None;
+    }
+    match (doc.bayer_offset_x?, doc.bayer_offset_y?) {
+        (0, 0) => Some("RGGB"),
+        (1, 0) => Some("GRBG"),
+        (0, 1) => Some("GBRG"),
+        (1, 1) => Some("BGGR"),
+        (x, y) => {
+            debug!(
+                bayer_offset_x = x,
+                bayer_offset_y = y,
+                "Bayer offsets outside a 2x2 matrix; omitting BAYERPAT"
+            );
+            None
         }
     }
 }
@@ -339,6 +400,9 @@ mod tests {
             filter: Some("Luminance".to_string()),
             gain: Some(26),
             offset: Some(30),
+            readout_mode: Some(1),
+            readout_mode_name: Some("High Gain Mode 16BIT".to_string()),
+            electrons_per_adu: Some(0.8),
             max_adu: Some(65535),
             cooler_setpoint_c: Some(-10),
             sensor_temperature_c: Some(-9.8),
@@ -383,10 +447,10 @@ mod tests {
         assert_eq!(
             keys(&cards),
             [
-                "DATE-OBS", "EXPTIME", "IMAGETYP", "OBJECT", "OBJCTRA", "OBJCTDEC", "RA", "DEC",
-                "INSTRUME", "TELESCOP", "FILTER", "GAIN", "OFFSET", "CCD-TEMP", "SET-TEMP",
-                "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ", "FOCALLEN", "APTDIA", "FOCRATIO",
-                "SITELAT", "SITELONG", "SWCREATE",
+                "ROWORDER", "DATE-OBS", "EXPTIME", "IMAGETYP", "OBJECT", "OBJCTRA", "OBJCTDEC",
+                "RA", "DEC", "INSTRUME", "TELESCOP", "FILTER", "GAIN", "OFFSET", "READOUTM",
+                "CCD-TEMP", "SET-TEMP", "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ", "FOCALLEN",
+                "APTDIA", "FOCRATIO", "SITELAT", "SITELONG", "SWCREATE",
             ]
         );
     }
@@ -395,6 +459,7 @@ mod tests {
     fn values_mirror_the_document() {
         let cards = cards(&full_document());
         let expect = [
+            ("ROWORDER", KeywordValue::Str("TOP-DOWN".into())),
             (
                 "DATE-OBS",
                 KeywordValue::Str("2026-03-02T01:15:00.412".into()),
@@ -412,6 +477,7 @@ mod tests {
             ("FILTER", KeywordValue::Str("Luminance".into())),
             ("GAIN", KeywordValue::Int(26)),
             ("OFFSET", KeywordValue::Int(30)),
+            ("READOUTM", KeywordValue::Str("High Gain Mode 16BIT".into())),
             ("CCD-TEMP", KeywordValue::Float(-9.8)),
             ("SET-TEMP", KeywordValue::Float(-10.0)),
             ("XBINNING", KeywordValue::Int(2)),
@@ -512,9 +578,115 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_document_yields_no_card() {
+    fn a_bare_document_yields_only_the_row_order() {
         let cards = cards(&ExposureDocument::default());
-        assert_eq!(keys(&cards), Vec::<&str>::new());
+        assert_eq!(keys(&cards), ["ROWORDER"]);
+    }
+
+    /// An unbinned frame from an `RGGB`-type sensor with these offsets.
+    fn colour_document(bayer_offset_x: u8, bayer_offset_y: u8) -> ExposureDocument {
+        ExposureDocument {
+            sensor_type: Some(SensorType::Rggb),
+            bayer_offset_x: Some(bayer_offset_x),
+            bayer_offset_y: Some(bayer_offset_y),
+            binning: Some(rp_vocabulary::Binning { x: 1, y: 1 }),
+            ..full_document()
+        }
+    }
+
+    const BAYER_KEYS: [&str; 3] = ["BAYERPAT", "XBAYROFF", "YBAYROFF"];
+
+    #[test]
+    fn an_unbinned_mosaic_carries_the_pattern_at_its_first_pixel() {
+        // ASCOM's matrix with its `R` at the offsets; the ASI120MC-S
+        // reports (1, 0), which ZWO's SDK names GRBG.
+        for (x, y, want) in [
+            (0, 0, "RGGB"),
+            (1, 0, "GRBG"),
+            (0, 1, "GBRG"),
+            (1, 1, "BGGR"),
+        ] {
+            let cards = cards(&colour_document(x, y));
+            assert_eq!(
+                value_of(&cards, "BAYERPAT"),
+                Some(KeywordValue::Str(want.into())),
+                "offsets ({x}, {y})"
+            );
+            assert_eq!(value_of(&cards, "XBAYROFF"), Some(KeywordValue::Int(0)));
+            assert_eq!(value_of(&cards, "YBAYROFF"), Some(KeywordValue::Int(0)));
+        }
+    }
+
+    #[test]
+    fn the_bayer_cards_follow_the_pixel_geometry() {
+        let cards = cards(&colour_document(1, 0));
+        let keys = keys(&cards);
+        let at = keys.iter().position(|k| *k == "FOCRATIO").unwrap();
+        assert_eq!(keys[at + 1..at + 4], BAYER_KEYS);
+    }
+
+    #[test]
+    fn a_binned_mosaic_carries_no_bayer_cards() {
+        for binning in [
+            Some(rp_vocabulary::Binning { x: 2, y: 2 }),
+            Some(rp_vocabulary::Binning { x: 1, y: 2 }),
+            None,
+        ] {
+            let doc = ExposureDocument {
+                binning,
+                ..colour_document(1, 0)
+            };
+            let cards = cards(&doc);
+            for key in BAYER_KEYS {
+                assert_eq!(value_of(&cards, key), None, "{key} at {binning:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_rggb_type_sensor_carries_bayer_cards() {
+        for sensor_type in [
+            None,
+            Some(SensorType::Monochrome),
+            Some(SensorType::Color),
+            Some(SensorType::Cmyg),
+            Some(SensorType::Cmyg2),
+            Some(SensorType::Lrgb),
+        ] {
+            let doc = ExposureDocument {
+                sensor_type,
+                ..colour_document(0, 0)
+            };
+            let cards = cards(&doc);
+            for key in BAYER_KEYS {
+                assert_eq!(value_of(&cards, key), None, "{key} for {sensor_type:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_or_out_of_matrix_offsets_carry_no_bayer_cards() {
+        let mut missing_x = colour_document(0, 0);
+        missing_x.bayer_offset_x = None;
+        let mut missing_y = colour_document(0, 0);
+        missing_y.bayer_offset_y = None;
+        for doc in [
+            missing_x,
+            missing_y,
+            colour_document(2, 0),
+            colour_document(0, 3),
+        ] {
+            let cards = cards(&doc);
+            for key in BAYER_KEYS {
+                assert_eq!(
+                    value_of(&cards, key),
+                    None,
+                    "{key} for ({:?}, {:?})",
+                    doc.bayer_offset_x,
+                    doc.bayer_offset_y
+                );
+            }
+        }
     }
 
     #[test]

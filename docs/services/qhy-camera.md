@@ -1642,6 +1642,33 @@ which a list replaces with the declaration.
     neighbour binning would put it.
 
   The record's follow-up section has the detail.
+
+  **The QHY5III715C, a colour sensor, adds neighbours, so its binned frames
+  have no mosaic left.** It was measured on the field rig (2026-10-18, Linux
+  aarch64, nightly `g7bc4e72`) in its one readout mode, `STANDARD MODE`, with
+  two 5 s full frames at each bin and no light on the sensor. The method,
+  also used for the colour sensors in
+  [zwo-camera](zwo-camera.md#geometry-binning-roi) and
+  [svbony-camera](svbony-camera.md#roi--binning): each bin-1 pair is binned
+  in software two ways, from neighbours and by colour (binned index
+  `2·⌊i / 2n⌋ + (i mod 2)` on each axis, which keeps the mosaic), and each
+  result is compared with the camera's binned frames.
+  - **Where warm pixels land:** of 7,491 warm pixels whose two predicted
+    positions differ at bin 2, 6,911 are found only where neighbour binning
+    puts them and 12 only where binning by colour would; at bin 4, 2,148
+    against 3.
+  - **Whole frames:** after a high-pass that keeps only pixel-scale
+    structure, the camera's bin-2 frame matches the neighbour-binned frames
+    at r = 0.975 and the colour-binned ones at 0.30, where two bin-1 frames
+    match each other at 0.958; at bin 4, 0.930 against 0.214.
+  - **Sums:** the binned medians are 4.01 and 16.04 times bin 1's.
+
+  `BayerOffsetX/Y` read (0, 1) at every bin. The camera reports `MaxBinX` 4
+  but refuses bin 3 with `INVALID_VALUE`: its valid modes are bins 1, 2
+  and 4. The mono QHY600M above bins two apart, as a colour mosaic is
+  binned, so the layout belongs to the camera model, not to the SDK. `rp`
+  writes no `BAYERPAT` on any binned frame
+  ([rp.md § FITS header](rp.md#fits-header)).
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the

@@ -1845,6 +1845,28 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **B1.** `set_bin_x`/`set_bin_y` validate against `SupportedBins`;
   unsupported → `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`.
+
+  **On a colour sensor each binned pixel adds photosites of one colour, so
+  the binned frame keeps the mosaic.** It starts on the same colour as the
+  unbinned frame, and `BayerOffsetX/Y` read (1, 0) at every bin. This was
+  measured on the SV605CC on the field rig (2026-10-18, Linux aarch64,
+  nightly `g7bc4e72`), in Raw16 and Raw8, at bins 2, 3 and 4, with two 5 s
+  full frames per bin and no light on the sensor, the way
+  [qhy-camera.md's B1](qhy-camera.md#geometry-binning-roi) describes:
+  - **Raw16 warm pixels:** at bins 2, 3 and 4, of 4,341, 3,059 and 3,734
+    warm pixels whose predicted positions differ, 3,643, 1,440 and 971 are
+    found only where binning by colour puts them, and 2, 0 and 0 only where
+    neighbour binning would.
+  - **Raw16 whole frames:** after a high-pass that keeps only pixel-scale
+    structure, the camera's binned frames match the colour-binned frames
+    at r = 0.978–0.979 and the neighbour-binned ones at 0.13–0.36, where two
+    bin-1 frames match each other at 0.962.
+  - **Raw8:** 708, 520 and 678 warm pixels against none.
+
+  The binned pixels are sums (fit slope 0.98–0.99). `rp` still writes no
+  `BAYERPAT` on a binned frame, because ASCOM does not report the layout
+  and other cameras mix the colours
+  ([rp.md § FITS header](rp.md#fits-header)).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
   client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
   their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
