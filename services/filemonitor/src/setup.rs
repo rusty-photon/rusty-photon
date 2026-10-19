@@ -189,6 +189,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // the two multi-megabyte regex compiles run for over 20 minutes under Miri
     fn validate_compiles_the_regex_the_evaluation_runs() {
         // `[a-z]{60000}` fits the regex size limit as written. Under the
         // `(?i)` the evaluation adds when matching is case-insensitive the
