@@ -1214,7 +1214,7 @@ return an earlier frame.
 | `MaxADU` | 65535 |
 | `ImageArray` | unsigned 16-bit values, sent as `UInt16` (ImageBytes `TransmissionElementType` 8): half the bytes of `Int32` |
 | `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
-| `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect |
+| `CameraXSize` / `CameraYSize` | the frame size the connect settled on: PHD2's `get_camera_frame_size`, or the remembered size when PHD2 reports 0 × 0 (see [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)) |
 | `PixelSizeX` / `PixelSizeY` | `camera.pixel_size_x_um` / `camera.pixel_size_y_um` |
 | `SensorType` | `Monochrome` (the facade serves PHD2's frame as written) |
 | `SensorName` | the camera name PHD2's `get_current_equipment` reports, read on connect |
