@@ -1,28 +1,30 @@
 //! filemonitor's [`ConfigurableDriver`] implementation — the driver-specific
-//! half of the `config.get` / `config.apply` / `config.schema` protocol.
+//! half behind its setup pages.
 //!
-//! The generic machinery lives in [`rusty_photon_config::actions`]; this module
-//! supplies only what varies for filemonitor: its `Config` type, normalization,
-//! validation, secret location, and editability tiers. Single ASCOM device (the
-//! `SafetyMonitor`); the binary has no CLI overrides beyond `--config`, so
-//! `Overrides = ()`. See [`docs/services/filemonitor.md`] "Config actions".
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the reload) are `rusty-photon-setup`'s; this module
+//! supplies only what varies for filemonitor: its `Config` type, validation,
+//! its one secret, and which config section the safety monitor's page edits.
+//! The binary has no command-line overrides beyond `--config` and
+//! `--log-level`, so `Overrides = ()` and no field is ever pinned. See
+//! [`docs/services/filemonitor.md`] "Setup pages".
 //!
 //! [`docs/services/filemonitor.md`]: ../../../docs/services/filemonitor.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::{Config, RuleType};
 
-/// Re-exported so tests can name the redaction sentinel.
-pub use rusty_photon_config::actions::REDACTED;
+/// The safety monitor's device type in its Alpaca path spelling.
+pub const DEVICE_TYPE: &str = "safetymonitor";
 
-/// Driver marker wiring filemonitor's `Config` into the generic config-action
-/// protocol via [`rusty_photon_config::actions`].
+/// Driver marker wiring filemonitor's `Config` into the shared setup pages.
 pub struct FileMonitorDriver;
 
 impl ConfigurableDriver for FileMonitorDriver {
     type Config = Config;
-    /// No CLI overrides — the binary only takes `--config` / `--log-level`.
+    /// No command-line overrides — the binary only takes `--config` /
+    /// `--log-level`.
     type Overrides = ();
 
     fn normalize(_config: &mut Config) {}
@@ -50,7 +52,11 @@ impl ConfigurableDriver for FileMonitorDriver {
         // A rule whose pattern doesn't compile as a regex is otherwise a
         // silent no-match at evaluation time (see `evaluate_safety`) — reject
         // it at the config boundary instead so a typo doesn't quietly disable
-        // a safety rule.
+        // a safety rule. The load applies these rules too (`ConfigFile::check`),
+        // so such a file never starts the service; the rules are edited in
+        // the file, not on a page, so the page names the rule by its index
+        // above the form when a hand edit puts one into a running service's
+        // file.
         for (i, rule) in config.parsing.rules.iter().enumerate() {
             if matches!(rule.rule_type, RuleType::Regex) {
                 if let Err(e) = regex::Regex::new(&rule.pattern) {
@@ -64,29 +70,29 @@ impl ConfigurableDriver for FileMonitorDriver {
         errors
     }
 
-    /// filemonitor's one secret: the server-auth password hash. `TlsConfig`
-    /// stores file *paths*, not key material, so there is nothing to redact
-    /// there.
+    /// filemonitor's one secret: the server-auth password hash, which the
+    /// pages' Security section edits and never shows. `TlsConfig` stores
+    /// file *paths*, not key material, so there is nothing to hide there.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
 
-    fn override_paths(_overrides: &()) -> Vec<String> {
+    fn override_paths((): &()) -> Vec<String> {
         Vec::new()
     }
 
-    fn apply_overrides(_config: &mut Config, _overrides: &()) {}
+    fn apply_overrides(_config: &mut Config, (): &()) {}
 
-    /// The device owns its ASCOM `UniqueID`; editing it is an escape hatch for
-    /// a misbehaving driver, not routine configuration.
-    fn locked_paths() -> &'static [&'static str] {
-        &["device.unique_id"]
-    }
-
-    /// `server.port` is a self-lockout field: the BFF can't follow a rebind to
-    /// a new port.
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port"]
+    /// The safety monitor's page edits the `device` section; the server
+    /// page holds `file`, `parsing` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![DeviceSection {
+            device_type: DEVICE_TYPE.to_string(),
+            device_number: 0,
+            pointer: "/device".to_string(),
+            name: config.device.name.clone(),
+            enabled: true,
+        }]
     }
 }
 
@@ -125,7 +131,7 @@ mod tests {
     fn validate_accepts_populated_config() {
         assert_eq!(
             FileMonitorDriver::validate(&valid_config()),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -176,7 +182,7 @@ mod tests {
         });
         assert_eq!(
             FileMonitorDriver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -196,12 +202,31 @@ mod tests {
     }
 
     #[test]
-    fn editability_tiers_and_secrets() {
-        assert_eq!(FileMonitorDriver::locked_paths(), &["device.unique_id"]);
-        assert_eq!(FileMonitorDriver::read_only_paths(), &["server.port"]);
+    fn the_safety_monitors_page_edits_the_device_section() {
+        let mut config = valid_config();
+        config.device.name = "Roof monitor".to_string();
+        assert_eq!(
+            FileMonitorDriver::device_sections(&config),
+            vec![DeviceSection {
+                device_type: "safetymonitor".to_string(),
+                device_number: 0,
+                pointer: "/device".to_string(),
+                name: "Roof monitor".to_string(),
+                enabled: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_pages_secret_is_the_auth_hash_alone_and_nothing_is_pinned() {
         assert_eq!(
             FileMonitorDriver::secret_pointers(),
             &["/server/auth/password_hash"]
+        );
+        assert_eq!(FileMonitorDriver::override_paths(&()), Vec::<String>::new());
+        assert_eq!(
+            FileMonitorDriver::pinned_paths(&valid_config(), &()),
+            Vec::<String>::new()
         );
     }
 }

@@ -1,4 +1,5 @@
 use rp_auth::config::ClientAuthConfig;
+use rusty_photon_config::actions::FieldError;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -26,8 +27,8 @@ pub struct Config {
 }
 
 impl rusty_photon_config::ConfigFile for Config {
-    /// The follow-mode rules [`load_config`] applies, so the startup
-    /// bootstrap never writes a minted id into a file the load then refuses.
+    /// The rules [`load_config`] applies, so the startup bootstrap never
+    /// writes a minted id into a file the load then refuses.
     fn check(&self) -> Result<(), String> {
         validate(self)
     }
@@ -168,8 +169,8 @@ fn default_survey_endpoint() -> String {
 /// Returns [`SkySurveyCameraError::ConfigIo`] if the file cannot be
 /// read, [`SkySurveyCameraError::ConfigParse`] if it is not valid JSON
 /// for a [`Config`], and [`SkySurveyCameraError::ConfigInvalid`] for a
-/// value the validator rejects (a non-finite follow-mode offset
-/// included).
+/// value the validator rejects (a zero focal length, a zero survey
+/// timeout and a non-finite follow-mode offset included).
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
     let bytes = tokio::fs::read(path).await?;
     let config: Config = serde_json::from_slice(&bytes)?;
@@ -177,16 +178,56 @@ pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
     Ok(config)
 }
 
-fn validate(config: &Config) -> Result<(), String> {
+/// Every rule a configuration must satisfy beyond its shape, each as the
+/// dotted path of the offending field and the reason, in the spelling the
+/// setup pages show beside a field. [`validate`] refuses a file on the
+/// first of them; a setup-page save shows all of them.
+pub(crate) fn field_errors(config: &Config) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    let mut push = |path: &str, msg: &str| {
+        errors.push(FieldError {
+            path: path.to_string(),
+            msg: msg.to_string(),
+        });
+    };
+    // The plate scale divides by the focal length and multiplies by the
+    // pixel sizes, and the sensor size is what `CameraXSize` / `CameraYSize`
+    // report: none of them means anything at zero or below.
+    for (path, value) in [
+        ("optics.focal_length_mm", config.optics.focal_length_mm),
+        ("optics.pixel_size_x_um", config.optics.pixel_size_x_um),
+        ("optics.pixel_size_y_um", config.optics.pixel_size_y_um),
+    ] {
+        if !value.is_finite() {
+            push(path, "must be finite");
+        } else if value <= 0.0 {
+            push(path, "must be greater than 0");
+        }
+    }
+    for (path, value) in [
+        ("optics.sensor_width_px", config.optics.sensor_width_px),
+        ("optics.sensor_height_px", config.optics.sensor_height_px),
+    ] {
+        if value == 0 {
+            push(path, "must be greater than 0");
+        }
+    }
+    // A zero timeout makes every survey fetch time out before it starts.
+    if config.survey.request_timeout.is_zero() {
+        push("survey.request_timeout", "must be greater than 0");
+    }
     if let Some(t) = &config.pointing.telescope {
         if !t.offset_ra_arcsec.is_finite() {
-            return Err("pointing.telescope.offset_ra_arcsec must be finite".into());
+            push("pointing.telescope.offset_ra_arcsec", "must be finite");
         }
         if !t.offset_dec_arcsec.is_finite() {
-            return Err("pointing.telescope.offset_dec_arcsec must be finite".into());
+            push("pointing.telescope.offset_dec_arcsec", "must be finite");
         }
         if t.request_timeout.is_zero() {
-            return Err("pointing.telescope.request_timeout must be > 0".into());
+            push(
+                "pointing.telescope.request_timeout",
+                "must be greater than 0",
+            );
         }
     }
     // The rotator only feeds `rotation_deg` inside follow mode's
@@ -194,14 +235,24 @@ fn validate(config: &Config) -> Result<(), String> {
     // (rotation comes from the static value / POST). Reject the orphan
     // config rather than silently ignore it.
     if config.pointing.rotator.is_some() && config.pointing.telescope.is_none() {
-        return Err("pointing.rotator requires pointing.telescope (rotator-driven rotation only applies in follow mode)".into());
+        push(
+            "pointing.rotator",
+            "requires pointing.telescope (rotator-driven rotation only applies in follow mode)",
+        );
     }
     if let Some(r) = &config.pointing.rotator {
         if r.request_timeout.is_zero() {
-            return Err("pointing.rotator.request_timeout must be > 0".into());
+            push("pointing.rotator.request_timeout", "must be greater than 0");
         }
     }
-    Ok(())
+    errors
+}
+
+fn validate(config: &Config) -> Result<(), String> {
+    match field_errors(config).into_iter().next() {
+        Some(error) => Err(format!("{} {}", error.path, error.msg)),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +352,71 @@ mod tests {
         let mut t = telescope_config();
         t.request_timeout = Duration::ZERO;
         let err = validate(&base_config_with_telescope(Some(t))).unwrap_err();
-        assert!(err.contains("request_timeout"));
+        assert_eq!(
+            err,
+            "pointing.telescope.request_timeout must be greater than 0"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_focal_length() {
+        let mut config = base_config_with_telescope(None);
+        config.optics.focal_length_mm = 0.0;
+        let err = validate(&config).unwrap_err();
+        assert_eq!(err, "optics.focal_length_mm must be greater than 0");
+    }
+
+    #[test]
+    fn validate_rejects_a_negative_or_non_finite_pixel_size() {
+        let mut config = base_config_with_telescope(None);
+        config.optics.pixel_size_x_um = -3.76;
+        config.optics.pixel_size_y_um = f64::INFINITY;
+        let errors = field_errors(&config);
+        assert_eq!(
+            errors,
+            vec![
+                FieldError {
+                    path: "optics.pixel_size_x_um".to_string(),
+                    msg: "must be greater than 0".to_string(),
+                },
+                FieldError {
+                    path: "optics.pixel_size_y_um".to_string(),
+                    msg: "must be finite".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_sensor_size() {
+        let mut config = base_config_with_telescope(None);
+        config.optics.sensor_height_px = 0;
+        let err = validate(&config).unwrap_err();
+        assert_eq!(err, "optics.sensor_height_px must be greater than 0");
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_survey_timeout() {
+        let mut config = base_config_with_telescope(None);
+        config.survey.request_timeout = Duration::ZERO;
+        let err = validate(&config).unwrap_err();
+        assert_eq!(err, "survey.request_timeout must be greater than 0");
+    }
+
+    #[test]
+    fn field_errors_lists_every_violation_in_field_order() {
+        let mut config = base_config_with_telescope(None);
+        config.optics.focal_length_mm = 0.0;
+        config.survey.request_timeout = Duration::ZERO;
+        let paths: Vec<String> = field_errors(&config).into_iter().map(|e| e.path).collect();
+        assert_eq!(
+            paths,
+            vec!["optics.focal_length_mm", "survey.request_timeout"]
+        );
+        assert_eq!(
+            validate(&config).unwrap_err(),
+            "optics.focal_length_mm must be greater than 0"
+        );
     }
 
     #[test]
@@ -553,7 +668,7 @@ mod persisted_config_shape {
     /// There is no `Config::default()` (the optics fields are mandatory), so
     /// the subject is a minimal operator-written file: every optional field
     /// is left out, which is exactly the state that must not come back as a
-    /// null when `config.apply` persists it.
+    /// null when a setup-page save persists it.
     #[test]
     fn a_minimal_config_persists_no_explicit_nulls() {
         let minimal = r#"{

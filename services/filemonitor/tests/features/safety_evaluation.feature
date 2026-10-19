@@ -90,14 +90,6 @@ Feature: Safety evaluation rules
     When I connect the device
     Then is_safe should return true
 
-  Scenario: Invalid regex pattern defaults to unsafe
-    Given case-insensitive matching
-    And a regex rule with pattern "invalid_bracket" that evaluates to safe
-    And a monitoring file containing "any content"
-    And filemonitor is running with these rules
-    When I connect the device
-    Then is_safe should return false
-
   Scenario: Connected device with matching content reports safe via is_safe
     Given a monitoring file containing "Status: OPEN"
     And a contains rule with pattern "OPEN" that evaluates to safe

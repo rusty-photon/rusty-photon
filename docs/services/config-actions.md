@@ -5,9 +5,10 @@
 > specification defines, served by each driver itself and rendered by the
 > shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate.
 > `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`,
-> `upbv2-driver` and `star-adventurer-gti` have made the move and no
-> longer carry the actions; the other drivers follow family by family, and
-> this document goes with the last of them.
+> `upbv2-driver`, `star-adventurer-gti`, `filemonitor` and
+> `sky-survey-camera` have made the move and no longer carry the actions;
+> the other drivers follow family by family, and this document goes with
+> the last of them.
 
 Every rusty-photon Alpaca driver not yet on its setup pages exposes its own configuration over HTTP as three
 **vendor ASCOM `Action`s** — `config.get`, `config.apply`, and `config.schema` —
@@ -199,8 +200,6 @@ locked so the UI can't edit away its own reachability.
 | Driver | Devices | Secrets | Notes |
 |--------|---------|---------|-------|
 | `qhy-focuser` | Focuser | auth password hash | single device; the BFF's BDD vehicle, so it keeps the actions until P4 retires the BFF's config pages |
-| `sky-survey-camera` | Camera | follow-mode client passwords | `Overrides = ()`; cross-field validation |
-| `filemonitor` | SafetyMonitor | auth password hash | `Overrides = ()`; regex parsing-rule patterns validated at apply time |
 | `rp` | — (REST transport) | per-device `auth` passwords across the equipment arrays (wildcards) + server auth hash | `ApplyDisposition::Restart` — no reload; `server.port` read-only |
 
 ## The web UI
@@ -211,12 +210,12 @@ reusing the `rusty_photon_config::actions` wire types. See `ui-htmx.md` for the
 rendering and multi-driver routing. The schema walker and the form coercion it
 renders with are `rusty-photon-setup`'s, shared with the drivers' own pages.
 
-`dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`
-and `star-adventurer-gti` no longer carry the actions: their
-`SupportedActions` list no `config.*` (the mount keeps its `ApPark`
-actions) and they configure themselves on their own setup pages
-([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the BFF's
-roster links there.
+`dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`,
+`star-adventurer-gti`, `filemonitor` and `sky-survey-camera` no longer carry
+the actions: their `SupportedActions` list no `config.*` (the mount keeps
+its `ApPark` actions) and they configure themselves on their own setup
+pages ([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the
+BFF's roster links there.
 
 ## References
 

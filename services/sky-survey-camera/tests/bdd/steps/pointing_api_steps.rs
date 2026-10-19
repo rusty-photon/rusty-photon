@@ -84,7 +84,7 @@ async fn get_position(world: &mut SkySurveyCameraWorld) {
     world.last_http_body = Some(response.text().await.unwrap_or_default());
 }
 
-#[then(expr = "the response status is {int}")]
+#[then(expr = "the position response status is {int}")]
 fn response_status(world: &mut SkySurveyCameraWorld, status: u16) {
     let actual = world
         .last_http_status

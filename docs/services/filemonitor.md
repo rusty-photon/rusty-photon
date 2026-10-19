@@ -80,35 +80,57 @@ The parsing rules are evaluated in order, with the first match determining safet
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
-## Config actions
+The load then applies the rules the setup page's save applies (`ConfigFile::check`, the one `FileMonitorDriver::validate` behind both): `device.unique_id` and `file.path` non-empty, `file.polling_interval` greater than zero, and every `regex`-type rule's `pattern` compiling. A file that breaks one does not start the service, is refused by a reload, and is named by `doctor` with the rule — the same answer the page gives a save of it. The first-start scaffold (`Config::default()`) is held to the same rules before it is written.
 
-filemonitor exposes its configuration over HTTP as the vendor ASCOM actions
-`config.get` / `config.apply` / `config.schema` on the SafetyMonitor device —
-the cross-driver protocol in [`config-actions.md`](config-actions.md),
-implemented generically in `rusty_photon_config::actions`. `config_actions.rs`
-supplies the driver-specific half (`ConfigurableDriver for FileMonitorDriver`,
-`Overrides = ()` — the binary has no CLI overrides beyond `--config` /
-`--log-level`) plus the `dispatch` the device delegates to.
+## Setup pages
 
-- **Secret redacted / carried forward:** `/server/auth/password_hash`.
-- **Locked (identity) field:** `device.unique_id`.
-- **Hard read-only field:** `server.port`.
-- **Validation:** `device.unique_id` and `file.path` must be non-empty,
-  `file.polling_interval` must be greater than zero, and every `regex`-type
-  parsing rule's `pattern` must compile — a bad pattern otherwise fails
-  silently as a non-match at evaluation time (see [Operation](#operation)),
-  so `config.apply` rejects it at the config boundary instead.
+filemonitor configures itself on the two HTML pages the Alpaca Management
+API defines, served by the service itself behind its own TLS and Basic
+Auth: `/setup` for the whole server and
+`/setup/v1/safetymonitor/0/setup` for the device. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section and the
+reload wait — and `setup.rs` supplies the driver-specific half
+(`ConfigurableDriver for FileMonitorDriver`): its `Config`, validation,
+its one secret, and which section the device's page edits. The binary has
+no command-line overrides beyond `--config` / `--log-level`, so
+`Overrides = ()` and no field is ever pinned. The `config.get` /
+`config.apply` / `config.schema` actions are gone: the device's
+`SupportedActions` is empty, and any `Action` answers
+`ActionNotImplemented`.
 
-A `config.apply` that changes a field persists atomically, returns
-`status:"applying"`, and fires the in-process reload: `main.rs` runs under
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `file` | `path`, `polling_interval` (a humantime string, shown as humantime spells it: the file's `60s` as `1m`) |
+| | `parsing` | `case_sensitive`; the `rules` list is named as edited in the configuration file — a list of objects is not a form control |
+| | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| `/setup/v1/safetymonitor/0/setup` | `device` | `name`, `description`, and `unique_id` under the Identity disclosure |
+
+- **Secret:** `/server/auth/password_hash` — edited through the Security
+  section, never shown.
+- **Validation** on every save, of the whole file as the save would leave
+  it: `device.unique_id` and `file.path` must be non-empty,
+  `file.polling_interval` must be greater than zero, and every
+  `regex`-type parsing rule's `pattern` must compile — a bad pattern
+  otherwise fails silently as a non-match at evaluation time (see
+  [Operation](#operation)). These are the load's rules too (above), so a
+  file the page would refuse never starts the service. The rules are
+  edited in the file, so a rule that does not compile, put into a running
+  service's file by hand, refuses every save, named by its index above the
+  form (`parsing.rules.0.pattern`), until the file is fixed by hand.
+
+A save that changes a field persists atomically, answers that the service
+is reloading, and fires the in-process reload after the response has
+flushed: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop
-(`run_server_loop`) rebuilds the server from the freshly-persisted file. Both
-the shutdown signal and a `config.apply`-fired reload drive the *same*
+(`run_server_loop`) rebuilds the server from the freshly-persisted file.
+Both the shutdown signal and a save-fired reload drive the *same*
 graceful-shutdown future passed to the running server, so a reload drains
 in-flight requests and closes keep-alive connections before rebinding — a
-client's persistent connection reconnects and observes the new configuration
-rather than continuing to talk to the torn-down server's stale in-memory
-state.
+client's persistent connection reconnects and observes the new
+configuration rather than continuing to talk to the torn-down server's
+stale in-memory state. A save that changes nothing says so and fires no
+reload.
 
 ## Operation
 

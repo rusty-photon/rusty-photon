@@ -1,8 +1,9 @@
 use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use ndarray::Array2;
 use parking_lot::Mutex;
+use rusty_photon_setup::SetupPages;
 use std::num::{NonZeroU32, NonZeroU8};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -10,11 +11,10 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 use crate::config::Config;
-use crate::config_actions::SkySurveyCameraDriver;
 use crate::fits::parse_primary_hdu;
 use crate::pointing::{PointingSource, PointingState, SharedPointing};
+use crate::setup::{SkySurveyCameraDriver, DEVICE_TYPE};
 use crate::survey::{try_cache_load, try_cache_store, SurveyClient, SurveyError, SurveyRequest};
-use rusty_photon_driver::ConfigActionCtx;
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
 /// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
@@ -193,14 +193,11 @@ pub struct DeviceState {
 #[derive(Clone, derive_more::Debug)]
 pub struct SkySurveyCamera {
     state: Arc<DeviceState>,
-    /// `Some` when built through the reload loop with a config source; `None`
-    /// for focused unit-test devices that don't exercise config actions.
-    ///
-    /// Skipped from `Debug`: the shared `ConfigActionCtx<D>` has no `Debug` impl.
-    /// (The follow-mode credentials its effective `Config` carries are redacted
-    /// at the leaf regardless — see [`rp_auth::config::ClientAuthConfig`].)
+    /// The setup pages behind `/setup/v1/camera/0/setup`: `Some` when built
+    /// through the reload loop with a config source; `None` for focused
+    /// unit-test devices that don't exercise the page.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
+    pages: Option<Arc<SetupPages<SkySurveyCameraDriver>>>,
 }
 
 impl SkySurveyCamera {
@@ -261,15 +258,15 @@ impl SkySurveyCamera {
         };
         Self {
             state: Arc::new(state),
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach the config-action context, enabling `config.get` / `config.apply`
-    /// / `config.schema` on this device.
+    /// Attach the shared setup pages, so the camera's setup page renders and
+    /// saves the `device` section.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<SkySurveyCameraDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<SkySurveyCameraDriver>>) -> Self {
+        self.pages = Some(pages);
         self
     }
 
@@ -711,13 +708,39 @@ impl Device for SkySurveyCamera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<SkySurveyCameraDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The camera's setup page, `/setup/v1/camera/0/setup`, for `GET` and
+    /// `POST`, through the shared handler. A camera built without the pages
+    /// (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -1311,6 +1334,125 @@ mod tests {
         async fn fetch(&self, _request: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
             Err(SurveyError::Http("stub: fetch not implemented".into()))
         }
+    }
+
+    // --- Setup pages ------------------------------------------------------
+
+    /// A camera wired with the setup pages over a temp file pre-seeded with
+    /// [`fake_config`]. Returns the reload handle (clone) so tests can assert
+    /// the fire-after-response reload, and the `TempDir`/path.
+    fn camera_with_setup_pages() -> (
+        SkySurveyCamera,
+        rusty_photon_service_lifecycle::ReloadSignal,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let config = fake_config();
+        let dir = tempfile::tempdir().expect("a scratch directory for the config file");
+        let path = dir.path().join("sky-survey-camera.json");
+        std::fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
+        let reload = rusty_photon_service_lifecycle::ReloadSignal::new();
+        let pages = SetupPages::<SkySurveyCameraDriver>::new(
+            "sky-survey-camera",
+            config.clone(),
+            path.clone(),
+            (),
+        )
+        .with_reload(reload.clone());
+        let camera = SkySurveyCamera::new_static(config, Arc::new(StubSurveyClient))
+            .with_setup_pages(Arc::new(pages));
+        (camera, reload, dir, path)
+    }
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let (cam, _reload, _dir, _path) = camera_with_setup_pages();
+        assert_eq!(cam.supported_actions().await.unwrap(), Vec::<String>::new());
+        let err = cam
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn the_cameras_page_renders_the_device_section_while_disconnected() {
+        let (cam, _reload, _dir, _path) = camera_with_setup_pages();
+        assert!(!cam.is_connected());
+        let response = cam.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.body();
+        assert!(
+            body.contains(r#"name="device.unique_id" value="uid-001""#),
+            "{body}"
+        );
+        assert!(!body.contains(r#"name="optics.focal_length_mm""#), "{body}");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the save fsyncs the config's parent directory, which Miri cannot open
+    async fn a_camera_page_save_persists_the_device_section_alone_and_fires_the_reload() {
+        let (cam, reload, _dir, path) = camera_with_setup_pages();
+        let mut headers = axum::http::HeaderMap::new();
+        _ = headers.insert(
+            "sec-fetch-site",
+            axum::http::HeaderValue::from_static("same-origin"),
+        );
+        let form = [
+            ("device.name", "Survey camera"),
+            ("device.unique_id", "uid-001"),
+            ("device.description", "test"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+        let response = cam
+            .setup_request(SetupRequest {
+                method: axum::http::Method::POST,
+                headers,
+                query: Vec::new(),
+                form,
+            })
+            .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "{}",
+            response.body()
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted
+                .pointer("/device/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Survey camera")
+        );
+        assert_eq!(
+            persisted
+                .pointer("/optics/sensor_width_px")
+                .and_then(serde_json::Value::as_u64),
+            Some(640)
+        );
+        tokio::time::timeout(Duration::from_secs(2), reload.recv())
+            .await
+            .expect("a changed save fires the reload");
+    }
+
+    #[tokio::test]
+    async fn a_camera_without_pages_has_no_setup_page() {
+        let cam = fake_camera();
+        let response = cam.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     /// A client whose `health_check` parks until a test releases it, so a

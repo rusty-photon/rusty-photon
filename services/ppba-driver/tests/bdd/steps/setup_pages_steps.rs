@@ -1,11 +1,9 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
-//! `bdd-infra`, plus the Whens that start this service in each shape, the
-//! file-only check for the switch labels, and the steps on its (now empty)
-//! action lists.
+//! `bdd-infra`, plus the Whens that start this service in each shape and
+//! the steps on its (now empty) action lists.
 
 use std::sync::Arc;
 
-use bdd_infra::setup_pages::dom;
 use cucumber::{then, when};
 
 use crate::world::PpbaWorld;
@@ -22,16 +20,6 @@ async fn start_with_serial_override(world: &mut PpbaWorld, port: String) {
 #[when("I start the PPBA server with TLS and auth")]
 async fn start_with_tls_and_auth(world: &mut PpbaWorld) {
     world.start_ppba_with_tls_and_auth().await;
-}
-
-#[then(expr = "the page names {string} as edited in the configuration file")]
-fn assert_named_file_only(world: &mut PpbaWorld, field: String) {
-    let html = &world.setup_pages.last_body;
-    let css = format!("div.file-only[id=\"{field}\"]");
-    assert!(
-        dom::text_contains(html, &css, "is edited in the configuration file"),
-        "no file-only note for {field} in:\n{html}"
-    );
 }
 
 #[when("the supported actions are queried on the switch device")]

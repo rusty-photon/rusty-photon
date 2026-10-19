@@ -8,13 +8,13 @@ Feature: Runtime pointing API
   Scenario: GET returns the initial pointing
     Given the camera is connected with initial pointing RA 83.8221 Dec -5.3911
     When I GET the position endpoint
-    Then the response status is 200
+    Then the position response status is 200
     And the position response reports RA 83.8221 Dec -5.3911
 
   Scenario: POST updates pointing while connected
     Given the camera is connected with initial pointing RA 0.0 Dec 0.0
     When I POST RA 10.5 Dec 41.2 to the position endpoint
-    Then the response status is 204
+    Then the position response status is 204
     When I GET the position endpoint
     Then the position response reports RA 10.5 Dec 41.2
 
@@ -28,7 +28,7 @@ Feature: Runtime pointing API
   Scenario Outline: Out-of-range coordinates are rejected
     Given the camera is connected with initial pointing RA 0.0 Dec 0.0
     When I POST RA <ra> Dec <dec> to the position endpoint
-    Then the response status is 400
+    Then the position response status is 400
 
     Examples:
       | ra     | dec   |
@@ -41,9 +41,9 @@ Feature: Runtime pointing API
   Scenario: Malformed JSON body is rejected
     Given the camera is connected with initial pointing RA 0.0 Dec 0.0
     When I POST a malformed JSON body to the position endpoint
-    Then the response status is 400
+    Then the position response status is 400
 
   Scenario: POST while disconnected returns 409
     Given the camera is started but not connected
     When I POST RA 10.0 Dec 20.0 to the position endpoint
-    Then the response status is 409
+    Then the position response status is 409

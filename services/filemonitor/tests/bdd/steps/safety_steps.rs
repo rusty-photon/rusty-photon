@@ -34,7 +34,6 @@ fn resolve_regex_pattern(name: &str) -> String {
     match name {
         "safe_or_ok" => r"Status:\s*(SAFE|OK)".to_string(),
         "danger_or_error" => r"Status:\s*(DANGER|ERROR)".to_string(),
-        "invalid_bracket" => "[invalid(".to_string(),
         other => other.to_string(),
     }
 }

@@ -172,8 +172,9 @@ constructs a fresh future that observes the same cancellation.
 
 ## Reload (SIGHUP / SCM ParamChange)
 
-Reload-capable services (filemonitor and the `config.apply` drivers)
-enable it with `.with_reload()` and use `run_with_reload`:
+Reload-capable services (the drivers whose setup pages reload them, and
+the `config.apply` drivers) enable it with `.with_reload()` and use
+`run_with_reload`:
 
 ```rust
 ServiceRunner::new("my-service")
