@@ -91,7 +91,7 @@ first in their columns.
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Done (#1541) |
 | J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Done (#1534) |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Done (#1564) |
-| J3  | `install-pebble` on the module | `install-pebble` | J2 | Not started |
+| J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
@@ -424,6 +424,16 @@ not:
 - **J3 `install-pebble`** (130 lines). `scripts/install-pebble.sh` mirrors
   its pin table for developers; after this item there is one table both
   read, or the script goes.
+
+  Done in #1566. The script went, and with it the second table: a
+  developer runs `bazel run //.github/actions:install -- <tool>`, which
+  runs the actions' own modules on the Node `MODULE.bazel` pins
+  (ADR-022 Amendment A, chosen over a Rust `cargo ci install` that would
+  have reimplemented `lib/install.mjs`). It installs Pebble and OmniSim,
+  which had no developer installer; J5 and J6 add the SDKs. It ships
+  nothing and offers nothing from the private mirror.
+  `install-omnisim`'s `repo` and `version` inputs moved into
+  `omnisim.mjs`, beside their pins; no workflow set them.
 - **J4 `install-astap`** (283 lines). The D05 star database as a second
   asset, and SourceForge mirrors: today's curl flags re-roll a stalled
   mirror (the step's comments explain the numbers), which the module's
