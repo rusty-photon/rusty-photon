@@ -1,0 +1,13 @@
+name: Install Pebble from its release
+description: >-
+  The last step of install-pebble: downloads pebble and pebble-challtestsrv into
+  <workspace>/pebble, checks each against its SHA-256 and unpacks it, unless the
+  cache restored them; then exports PEBBLE_PATH and PEBBLE_CHALLTESTSRV_PATH.
+inputs:
+  cache-hit:
+    description: The cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: index.mjs

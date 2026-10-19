@@ -83,13 +83,15 @@ bdd_infra::bdd_main! {
             "RUSTY_PHOTON_REQUIRE_PEBBLE is set but PEBBLE_PATH and/or \
              PEBBLE_CHALLTESTSRV_PATH are not — this run would silently drop \
              {dropped} @pebble scenarios. Provision Pebble (see \
-             .github/actions/install-pebble, or scripts/install-pebble.sh) \
-             or clear RUSTY_PHOTON_REQUIRE_PEBBLE."
+             .github/actions/install-pebble, or run `bazel run \
+             //.github/actions:install -- pebble`) or clear \
+             RUSTY_PHOTON_REQUIRE_PEBBLE."
         );
         eprintln!(
             "skipping {dropped} @pebble scenarios: PEBBLE_PATH and/or \
              PEBBLE_CHALLTESTSRV_PATH are not set (docs/skills/testing.md \
-             section 5.6 — run scripts/install-pebble.sh to get them locally)"
+             section 5.6 — `bazel run //.github/actions:install -- pebble` \
+             installs them locally)"
         );
     }
 

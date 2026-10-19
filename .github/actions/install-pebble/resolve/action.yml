@@ -1,0 +1,10 @@
+name: Resolve Pebble
+description: >-
+  The first step of install-pebble: the cache key of the Pebble release assets
+  this runner takes, which carries their pins.
+outputs:
+  key:
+    description: The cache key of the Pebble install.
+runs:
+  using: node24
+  main: index.mjs

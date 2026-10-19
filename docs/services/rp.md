@@ -8102,13 +8102,14 @@ binary. The test harness discovers the binary in this order:
 2. `OMNISIM_DIR` env var — directory containing the binary
 3. `ascom.alpaca.simulators` on `PATH`
 
-To install locally, download the appropriate release binary for your
-platform, extract it, and either add its directory to `PATH` or set one
-of the environment variables above. In CI, the
-`.github/actions/install-omnisim` composite action handles this
-automatically.
+To install locally, run `bazel run //.github/actions:install -- omnisim`:
+it installs the release CI pins into `~/.local/opt/omnisim` (`--prefix`
+to choose elsewhere) and prints the `OMNISIM_PATH` to set. In CI, the
+`.github/actions/install-omnisim` composite action does the same install
+and exports `OMNISIM_PATH`.
 
-**CI pins a patched fork**, not upstream: the action defaults to
+**CI pins a patched fork**, not upstream: `REPO` and `VERSION` in
+`.github/actions/install-omnisim/omnisim.mjs` name
 [`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.2`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.2).
 The `467.x` releases (issue #467) add the `--multi-instance` flag (467.1,
 skips upstream's machine-global single-instance mutex) and the
@@ -8135,8 +8136,8 @@ the slew never finishes and `IsSlewing` stays `true` forever.
 for the `RA < 180` off-target row at certain sidereal times (hence the
 intermittent CI flake). 326.4 makes `DoSlew` take the limit-avoiding
 rotation to the *same* target (pier side unchanged, so ConformU stays
-clean) and adds a no-progress guard. Reverting the action's `repo` and
-`version` inputs to upstream
+clean) and adds a no-progress guard. Reverting `REPO` and `VERSION` to
+upstream
 [`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
 is no longer a one-line change: upstream has no `--multi-instance`, so
 the `bdd-infra` spawn path (and the parallel/sharded BDD scheduling

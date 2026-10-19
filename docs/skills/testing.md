@@ -1114,11 +1114,12 @@ install step breaks, a workflow forgets it, or a new runner can't fetch
 the release, which is exactly when a skip notice in a green log would go
 unread.
 
-To run them locally: **`scripts/install-pebble.sh`** downloads and
-SHA-verifies the same pinned release into `~/.local/opt/pebble`
+To run them locally: **`bazel run //.github/actions:install -- pebble`**
+downloads and SHA-verifies the same pinned release into `~/.local/opt/pebble`
 (`--prefix` to choose elsewhere) and prints the two exports to add to your
-shell profile. Bumping the version means updating the table in both the
-script and the CI action — both fail closed on a mismatch.
+shell profile. It runs the CI action's own module, so the version and its
+pins live in one table, `.github/actions/install-pebble/pebble.mjs`, and a
+mismatch fails closed for both.
 
 #### 5.7 Never block in a step — the whole suite shares one poll loop
 

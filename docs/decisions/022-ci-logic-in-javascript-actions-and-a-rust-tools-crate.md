@@ -5,7 +5,10 @@
 Accepted (2026-10-13). The migration is tracked in
 [`docs/plans/ci-shell-to-code.md`](../plans/ci-shell-to-code.md). Until an
 item there lands, the shell it replaces stays authoritative; new CI logic
-follows this decision from now on.
+follows this decision from now on. Amended 2026-10-18
+([Amendment A](#amendment-a--2026-10-18-a-developers-install-runs-the-install-actions-module)):
+a developer's install of what an `install-*` action installs is that
+action's JavaScript, not Rust.
 
 ## Context
 
@@ -93,7 +96,8 @@ Each piece of CI logic goes to exactly one of three homes.
 JavaScript, even when it reads the workspace: `cargo metadata` and
 `bazel query` print JSON and text that JavaScript reads as well as Rust
 does, and a CI job then compiles nothing first. A tool a developer also
-runs is Rust.
+runs is Rust, except a developer's install of what an `install-*` action
+installs (Amendment A).
 
 Three kinds of code are outside this decision:
 
@@ -114,8 +118,9 @@ Three kinds of code are outside this decision:
 
 - One shared JavaScript module replaces the five install copies and their
   PowerShell twins, and the logic can be tested before it reaches CI.
-- The repo gains a Node toolchain in `MODULE.bazel`, for tests only;
-  actions still run on the runner's own Node.
+- The repo gains a Node toolchain in `MODULE.bazel`, for tests and, since
+  Amendment A, a developer's install; actions still run on the runner's
+  own Node.
 - `.github` had been in `.bazelignore` since Bazel arrived (#82). The
   plan's F1 took it out: the helper module and every action's tests live
   under `.github/actions`, in one Bazel package
@@ -137,3 +142,34 @@ Three kinds of code are outside this decision:
 - Shell is no longer the default for new CI logic: a reviewer may ask for
   a new shell block of more than a few lines to move to one of the two
   homes above.
+
+## Amendments
+
+### Amendment A — 2026-10-18: a developer's install runs the install action's module
+
+Plan item J3 had to decide what replaces `scripts/install-pebble.sh`, the
+one developer installer the repository had, which kept a second copy of
+`install-pebble`'s pin table. The Decision above would make it a Rust
+tool. Its siblings showed the cost: OmniSim had no developer installer at
+all, and the ZWO SDK's README carried a copy-paste block with a second copy
+of its action's pin. A Rust installer for each would reimplement, in a second
+language, what `.github/actions/lib/install.mjs` already does: choose the
+asset, download it, check its pin, unpack it.
+
+**Decision.** A developer installs what an `install-*` action installs
+with `bazel run //.github/actions:install -- <tool>`, which runs that
+action's own module on the Node `MODULE.bazel` pins (`node_binary`, beside
+`node_test`). The pins, the download and the unpacking stay in one place
+and one language, tested once. Nothing else moves: a developer tool that
+is not an install stays Rust.
+
+**What it may install.** It downloads on the developer's machine, from
+where CI downloads, the posture ADR-013 and ADR-018 take for the operator
+helpers; it ships nothing, and nothing is mirrored for developers. A tool
+whose CI download comes from the project's private mirror (ADR-018 §7,
+SVBony's Windows SDK) is not offered to developers.
+
+**Consequences.** `bazel run` works only from a checkout with Bazel, which
+every developer of this repository has (AGENTS.md rule 4's gate runs it).
+J3 brings OmniSim and Pebble; J5 and J6 add the ZWO and SVBony SDKs'
+public downloads, retiring the READMEs' copy-paste blocks.

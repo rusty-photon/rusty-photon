@@ -6,7 +6,7 @@
 # `link_test` covers every file (node_link_test refuses a BUILD file below
 # this one). Conventions: docs/skills/ci-logic.md.
 
-load(":node_test.bzl", "node_link_test", "node_test")
+load(":node_test.bzl", "node_binary", "node_link_test", "node_test")
 
 # The helper module every action imports.
 node_test(
@@ -57,6 +57,50 @@ node_test(
         "lib/helpers.mjs",
         "lib/install.mjs",
         "lib/testing.mjs",
+    ],
+)
+
+# install-pebble: Pebble and pebble-challtestsrv, for doctor's @pebble BDD
+# scenarios.
+node_test(
+    name = "install_pebble_test",
+    size = "small",
+    srcs = ["install-pebble/pebble.test.mjs"],
+    data = [
+        "install-pebble/pebble.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
+# A developer's install of a tool CI installs, by the install-* action's own
+# module: `bazel run //.github/actions:install -- <tool> [--prefix DIR]`.
+node_binary(
+    name = "install",
+    src = "local-install/index.mjs",
+    data = [
+        "install-omnisim/omnisim.mjs",
+        "install-pebble/pebble.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "local-install/local.mjs",
+    ],
+)
+
+# The install's command line, and its launcher, run as `bazel run` runs it.
+node_test(
+    name = "local_install_test",
+    size = "small",
+    srcs = ["local-install/local.test.mjs"],
+    data = [
+        "install-omnisim/omnisim.mjs",
+        "install-pebble/pebble.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+        "local-install/local.mjs",
+        ":install",
     ],
 )
 

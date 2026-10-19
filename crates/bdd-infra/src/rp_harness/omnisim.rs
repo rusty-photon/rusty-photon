@@ -1044,7 +1044,9 @@ impl OmniSimProcess {
              OMNISIM_SETTINGS_DIR, which need the patched fork \
              (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.2 or \
              newer) — an older binary exits at startup when any other \
-             OmniSim instance is running on the host."
+             OmniSim instance is running on the host. `bazel run \
+             //.github/actions:install -- omnisim` installs the release CI \
+             pins."
         );
     }
 

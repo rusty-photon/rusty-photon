@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { EOL, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 
+import { INSTALLED } from '../lib/install.mjs';
 import { capture, serve, tar, withEnv } from '../lib/testing.mjs';
-import { ASSETS, install, resolve } from './omnisim.mjs';
+import { ASSETS, install, installAt, REPO, resolve, VERSION } from './omnisim.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 
@@ -16,9 +17,6 @@ function tempDir() {
 }
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
-
-const REPO = 'ivonnyssen/ASCOM.Alpaca.Simulators';
-const VERSION = 'v0.5.0-467.2';
 
 // The binary each OS runs, under the name install() is given.
 const BINARY = process.platform === 'win32' ? 'ascom.alpaca.simulators.exe' : 'ascom.alpaca.simulators';
@@ -74,7 +72,7 @@ test('resolve gives each runner its own release asset, URL and pin', () => {
   };
   assert.deepEqual(Object.keys(ASSETS).sort(), Object.keys(expected).sort());
   for (const [runner, name] of Object.entries(expected)) {
-    const { asset } = resolve({ repo: REPO, version: VERSION, runner });
+    const { asset } = resolve({ runner });
     assert.equal(asset.name, name, runner);
     assert.equal(asset.url, `https://github.com/${REPO}/releases/download/${VERSION}/${name}`, runner);
     assert.deepEqual(asset.pin, { sha256: ASSETS[runner].sha256 }, runner);
@@ -82,31 +80,20 @@ test('resolve gives each runner its own release asset, URL and pin', () => {
 });
 
 test('resolve names the binary each OS runs', () => {
-  assert.equal(resolve({ repo: REPO, version: VERSION, runner: 'Windows-X64' }).binary, 'ascom.alpaca.simulators.exe');
-  assert.equal(resolve({ repo: REPO, version: VERSION, runner: 'Linux-ARM64' }).binary, 'ascom.alpaca.simulators');
-  assert.equal(resolve({ repo: REPO, version: VERSION, runner: 'macOS-ARM64' }).binary, 'ascom.alpaca.simulators');
+  assert.equal(resolve({ runner: 'Windows-X64' }).binary, 'ascom.alpaca.simulators.exe');
+  assert.equal(resolve({ runner: 'Linux-ARM64' }).binary, 'ascom.alpaca.simulators');
+  assert.equal(resolve({ runner: 'macOS-ARM64' }).binary, 'ascom.alpaca.simulators');
 });
 
 test('resolve keys the cache on the version, the asset and its SHA-256', () => {
-  const { key } = resolve({ repo: REPO, version: VERSION, runner: 'Linux-X64' });
+  const { key } = resolve({ runner: 'Linux-X64' });
   assert.equal(key, `install-omnisim-${VERSION}-ascom.alpaca.simulators.linux-x64.tar.xz-${ASSETS['Linux-X64'].sha256}`);
 });
 
 test('resolve refuses a runner OmniSim has no build for', () => {
-  assert.throws(() => resolve({ repo: REPO, version: VERSION, runner: 'Windows-ARM64' }), {
+  assert.throws(() => resolve({ runner: 'Windows-ARM64' }), {
     message: 'OmniSim has no asset for Windows-ARM64; it has one for Linux-X64, Linux-ARM64, macOS-ARM64, macOS-X64, Windows-X64',
   });
-});
-
-test('resolve refuses a repo or version that would change the URL', () => {
-  assert.throws(() => resolve({ repo: 'owner', version: VERSION, runner: 'Linux-X64' }), /not a GitHub owner\/name/);
-  assert.throws(() => resolve({ repo: 'a/b/c', version: VERSION, runner: 'Linux-X64' }), /not a GitHub owner\/name/);
-  assert.throws(() => resolve({ repo: REPO, version: 'v1/../x', runner: 'Linux-X64' }), /not a release tag/);
-  assert.throws(() => resolve({ repo: REPO, version: '', runner: 'Linux-X64' }), /not a release tag/);
-  assert.throws(() => resolve({ repo: REPO, version: '..', runner: 'Linux-X64' }), /not a release tag/);
-  assert.throws(() => resolve({ repo: 'owner/..', version: VERSION, runner: 'Linux-X64' }), /not a GitHub owner\/name/);
-  assert.throws(() => resolve({ repo: './name', version: VERSION, runner: 'Linux-X64' }), /not a GitHub owner\/name/);
-  assert.equal(resolve({ repo: 'a.b/.c..d', version: '.v..1', runner: 'Linux-X64' }).asset.url.includes('/a.b/.c..d/'), true);
 });
 
 // --- Installing -------------------------------------------------------------------
@@ -122,7 +109,7 @@ test('install downloads, checks and unpacks the release into omnisim/, and expor
     assert.equal(server.requests.length, 1);
     assert.equal(readFileSync(join(workspace, 'omnisim', BINARY), 'utf8'), 'the simulators');
     assert.equal(existsSync(join(workspace, 'omnisim', 'appsettings.json')), true);
-    assert.equal(existsSync(join(workspace, 'omnisim-download')), false);
+    assert.deepEqual(readdirSync(workspace), ['omnisim']);
     if (process.platform !== 'win32') {
       assert.equal(statSync(join(workspace, 'omnisim', BINARY)).mode & 0o777, 0o755);
     }
@@ -235,6 +222,86 @@ test('install refuses a release that does not unpack into one folder', async () 
       /expected the archive to hold one directory at its top/,
     );
     assert.equal(existsSync(join(workspace, 'omnisim')), false);
+  } finally {
+    await server.close();
+  }
+});
+
+// --- A developer's install --------------------------------------------------------
+
+test('installAt installs into a new directory and gives OMNISIM_PATH, exporting nothing', async () => {
+  const archive = release();
+  const server = await releaseServer(archive);
+  const parent = tempDir();
+  const dir = join(parent, 'opt', 'omnisim');
+  try {
+    const out = await inStep(async () => {
+      const variables = await installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } });
+      assert.deepEqual(variables, { OMNISIM_PATH: join(dir, BINARY) });
+    });
+    assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the simulators');
+    if (process.platform !== 'win32') assert.equal(statSync(join(dir, BINARY)).mode & 0o777, 0o755);
+    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'OmniSim v0.5.0-467.2, omnisim.tar.gz\n');
+    assert.deepEqual(readdirSync(join(parent, 'opt')), ['omnisim']);
+    assert.equal(out.env, '');
+    assert.equal(out.path, '');
+  } finally {
+    await server.close();
+  }
+});
+
+test('installAt replaces an earlier install, which it marked', async () => {
+  const archive = release();
+  const server = await releaseServer(archive);
+  const dir = tempDir();
+  writeFileSync(join(dir, BINARY), 'older');
+  writeFileSync(join(dir, 'stale.dll'), '');
+  writeFileSync(join(dir, INSTALLED), 'OmniSim v0.5.0-467.1\n');
+  try {
+    await inStep(() => installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } }));
+    assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the simulators');
+    assert.equal(existsSync(join(dir, 'stale.dll')), false);
+  } finally {
+    await server.close();
+  }
+});
+
+// A directory that holds OmniSim among other things, as ~/bin might, is not
+// one an install of ours made, whatever it holds.
+for (const [what, files] of [
+  ['other files', ['notes.txt']],
+  ['an OmniSim it did not install', [BINARY, 'notes.txt']],
+]) {
+  test(`installAt leaves a directory holding ${what} alone, and fetches nothing`, async () => {
+    const archive = release();
+    const server = await releaseServer(archive);
+    const dir = tempDir();
+    for (const file of files) writeFileSync(join(dir, file), 'mine');
+    try {
+      await assert.rejects(
+        inStep(() => installAt(dir, { asset: testAsset(server, archive), binary: BINARY }, { download: { delayMs: 1 } })),
+        /holds files and no \.installed-by-rusty-photon/,
+      );
+      assert.equal(server.requests.length, 0);
+      assert.deepEqual(readdirSync(dir).sort(), [...files].sort());
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test('installAt keeps an earlier install when the new one fails its check', async () => {
+  const server = await releaseServer(release());
+  const dir = tempDir();
+  writeFileSync(join(dir, BINARY), 'older');
+  writeFileSync(join(dir, INSTALLED), 'OmniSim v0.5.0-467.1\n');
+  try {
+    const asset = { ...testAsset(server, release()), pin: { sha256: '0'.repeat(64) } };
+    await assert.rejects(
+      inStep(() => installAt(dir, { asset, binary: BINARY }, { download: { delayMs: 1 } })),
+      /SHA-256 mismatch/,
+    );
+    assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'older');
   } finally {
     await server.close();
   }

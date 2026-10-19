@@ -5,10 +5,6 @@ import { install, resolve } from '../omnisim.mjs';
 await run(async () => {
   const workspace = process.env.GITHUB_WORKSPACE;
   if (!workspace) throw new Error('GITHUB_WORKSPACE is not set: this runs only as a GitHub Actions step');
-  const { asset, binary } = resolve({
-    repo: getInput('repo', { required: true }),
-    version: getInput('version', { required: true }),
-    runner: runnerKey(),
-  });
+  const { asset, binary } = resolve({ runner: runnerKey() });
   await install({ asset, binary, workspace, cached: getInput('cache-hit') === 'true' });
 });

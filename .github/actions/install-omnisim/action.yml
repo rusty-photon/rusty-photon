@@ -2,22 +2,9 @@ name: Install ASCOM OmniSim
 description: >-
   Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests: puts
   <workspace>/omnisim on PATH and exports OMNISIM_PATH, the binary's path. The
-  asset table and its SHA-256 pins are in omnisim.mjs; the download, check and
-  unpack are lib/install.mjs's (plan item J2 in
+  release, its asset table and their SHA-256 pins are in omnisim.mjs; the
+  download, check and unpack are lib/install.mjs's (plan item J2 in
   docs/plans/ci-shell-to-code.md).
-
-inputs:
-  repo:
-    description: GitHub repo to download OmniSim release assets from
-    required: false
-    # Patched fork carrying the issue #326 TelescopeHardware locking fixes
-    # and the issue #467 --multi-instance flag.
-    # Set to "ASCOMInitiative/ASCOM.Alpaca.Simulators" to revert to upstream.
-    default: "ivonnyssen/ASCOM.Alpaca.Simulators"
-  version:
-    description: OmniSim release version
-    required: false
-    default: "v0.5.0-467.2"
 
 runs:
   using: composite
@@ -25,9 +12,6 @@ runs:
     - name: Resolve the OmniSim asset
       id: resolve
       uses: ./.github/actions/install-omnisim/resolve
-      with:
-        repo: ${{ inputs.repo }}
-        version: ${{ inputs.version }}
 
     - name: Cache OmniSim binary
       id: cache
@@ -53,6 +37,4 @@ runs:
     - name: Install OmniSim
       uses: ./.github/actions/install-omnisim/install
       with:
-        repo: ${{ inputs.repo }}
-        version: ${{ inputs.version }}
         cache-hit: ${{ steps.cache.outputs.cache-hit }}
