@@ -80,8 +80,12 @@ struct MockCamera {
     fail_pixel_size: bool,
     fail_exposure_range: bool,
     /// `0` ⇒ default 65535. Any other value is returned verbatim — set
-    /// to `> u16::MAX` to exercise the I32 cache-insert path.
-    max_adu_value: u32,
+    /// to `> u16::MAX` to exercise the I32 cache-insert path. Atomic so
+    /// a test can switch it mid-session, as a readout-mode change does.
+    max_adu_value: std::sync::atomic::AtomicU32,
+    /// When set, `max_adu` answers 0, which `max_adu_value` cannot
+    /// spell.
+    report_zero_max_adu: bool,
     /// When set, `image_ready` reports `false` forever — simulating a
     /// camera that never completes (a failed or wedged exposure).
     never_ready: bool,
@@ -300,11 +304,15 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_max_adu {
             return Err(ASCOMError::invalid_operation("not available"));
         }
-        Ok(if self.max_adu_value == 0 {
-            65535
-        } else {
-            self.max_adu_value
-        })
+        if self.report_zero_max_adu {
+            return Ok(0);
+        }
+        Ok(
+            match self.max_adu_value.load(std::sync::atomic::Ordering::SeqCst) {
+                0 => 65535,
+                max_adu => max_adu,
+            },
+        )
     }
 
     async fn camera_x_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
@@ -454,7 +462,9 @@ impl ascom_alpaca::api::Camera for MockCamera {
 // reads are gone". Implements only the exposure path; every invariant-
 // sensor property method panics if called. Pins the `do_capture` ↔
 // `CameraEntry`-cache contract: with the cache populated, capture must
-// not touch `max_adu`, `pixel_size_*`, or `camera_*_size` on the device.
+// not touch `pixel_size_*` or `camera_*_size` on the device. `max_adu`
+// is not among them: a driver may tie it to the readout mode, so a
+// capture reads it live.
 // -----------------------------------------------------------------------
 
 #[derive(Default)]
@@ -483,7 +493,7 @@ impl ascom_alpaca::api::Camera for MockCameraNoMetadata {
     }
 
     async fn max_adu(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        panic!("do_capture must read max_adu from CameraEntry cache, not the device")
+        Ok(MOCK_CAMERA_MAX_ADU)
     }
 
     async fn pixel_size_x(&self) -> ascom_alpaca::ASCOMResult<f64> {
@@ -1268,8 +1278,8 @@ fn assert_tool_error(result: Result<CallToolResult, rmcp::ErrorData>, expected_s
 // -----------------------------------------------------------------------
 
 /// Pre-populated cache values for the `MockCamera` defaults: the mock
-/// reports `max_adu = 65535`, `pixel_size_* = 3.76 µm`, and `camera_*_
-/// size = 1024 px`. Test helpers stamp the same values onto the
+/// reports `pixel_size_* = 3.76 µm` and `camera_*_size = 1024 px`
+/// (and `max_adu = 65535`, which a capture reads live). Test helpers stamp the same values onto the
 /// `CameraEntry` cache so `do_capture` sees what `connect_camera` would
 /// have populated against the real driver — without paying connect-time
 /// Alpaca calls in unit tests.
@@ -1284,11 +1294,9 @@ const MOCK_CAMERA_NAME: &str = "Mock Camera";
 /// `CameraEntry`. Defaults mirror `MockCamera`'s static reads so tests
 /// that don't care about metadata get the same shape `connect_camera`
 /// would have produced. Tests that want to model a connect-time read
-/// failure (or a scientific camera with `max_adu > u16::MAX`) override
-/// the relevant field.
+/// failure override the relevant field.
 #[derive(Clone, Copy)]
 struct CachedCameraMeta {
-    max_adu: Option<u32>,
     pixel_size_x_um: Option<f64>,
     pixel_size_y_um: Option<f64>,
     sensor_width_px: Option<u32>,
@@ -1306,7 +1314,6 @@ struct CachedCameraMeta {
 impl Default for CachedCameraMeta {
     fn default() -> Self {
         Self {
-            max_adu: Some(MOCK_CAMERA_MAX_ADU),
             pixel_size_x_um: Some(MOCK_CAMERA_PIXEL_SIZE_UM),
             pixel_size_y_um: Some(MOCK_CAMERA_PIXEL_SIZE_UM),
             sensor_width_px: Some(MOCK_CAMERA_SENSOR_PX),
@@ -1369,7 +1376,6 @@ fn camera_registry_with_meta(
                     max_bin_x: meta.max_bin_x,
                     max_bin_y: meta.max_bin_y,
                     can_asymmetric_bin: meta.can_asymmetric_bin,
-                    max_adu: meta.max_adu,
                     pixel_size_x_um: meta.pixel_size_x_um,
                     pixel_size_y_um: meta.pixel_size_y_um,
                     sensor_width_px: meta.sensor_width_px,
@@ -1815,44 +1821,38 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_get_camera_info_max_adu_unavailable_when_cache_none() {
-    // `max_adu` moved to a connect-time cache on `CameraEntry`. A connect-
-    // time read failure leaves `max_adu = None`; `get_camera_info` must
-    // surface that as a tool_error so consumers don't mistake "absent"
-    // for "zero". This replaces the old live-read failure test.
-    let registry = camera_registry_with_meta(
-        Arc::new(MockCamera::default()),
-        CachedCameraMeta {
-            max_adu: None,
-            ..CachedCameraMeta::default()
-        },
-    );
+async fn test_get_camera_info_max_adu_read_failure_is_a_tool_error() {
+    // `max_adu` is read live; a failed read must surface as a tool_error
+    // so consumers don't mistake "absent" for "zero".
+    let registry = camera_registry(Arc::new(MockCamera {
+        fail_max_adu: true,
+        ..Default::default()
+    }));
     let handler = test_handler(registry);
     let result = handler
         .get_camera_info(Parameters(CameraIdParams {
             camera_id: "cam".into(),
         }))
         .await;
-    assert_tool_error(result, "max_adu unavailable");
+    assert_tool_error(result, "failed to read max_adu");
 }
 
 #[tokio::test]
-async fn test_get_camera_info_reads_max_adu_and_sensor_from_cache_not_live() {
-    // Pin the contract that `max_adu` and the sensor dimensions come from
-    // `CameraEntry`'s connect-time cache, NOT from per-call Alpaca reads.
-    // We rig the MockCamera so its `max_adu` and `camera_size` methods
-    // would fail if invoked, then seed the cache with distinctive values.
-    // `get_camera_info` must succeed and report the cached values — proving
-    // the live reads aren't happening on the hot path.
+async fn test_get_camera_info_reads_max_adu_live_and_sensor_from_cache() {
+    // Pin the contract that the sensor dimensions come from
+    // `CameraEntry`'s connect-time cache, NOT from per-call Alpaca reads,
+    // while `max_adu`, which a readout-mode change can change, is read
+    // live. We rig the MockCamera so its `camera_size` methods would fail
+    // if invoked and report a distinctive `max_adu`, then seed the cache
+    // with distinctive sizes.
     let cam = MockCamera {
-        fail_max_adu: true,
+        max_adu_value: std::sync::atomic::AtomicU32::new(4242),
         fail_camera_size: true,
         ..Default::default()
     };
     let registry = camera_registry_with_meta(
         Arc::new(cam),
         CachedCameraMeta {
-            max_adu: Some(4242),
             sensor_width_px: Some(3000),
             sensor_height_px: Some(2000),
             ..CachedCameraMeta::default()
@@ -2430,19 +2430,11 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     // capture invariant: a successful capture leaves the embedded
     // document accessible through the cache entry (now the single
     // source of truth) with the matching `max_adu`.
-    //
-    // The 20-bit max_adu lives on the cached `CameraEntry` rather than
-    // on the MockCamera: `do_capture` reads max_adu from the cache (see
-    // `CameraEntry` docs) so the live `cam.max_adu()` flag on MockCamera
-    // is irrelevant for capture-time semantics.
-    let cam = MockCamera::default();
-    let registry = camera_registry_with_meta(
-        Arc::new(cam),
-        CachedCameraMeta {
-            max_adu: Some(1 << 20),
-            ..CachedCameraMeta::default()
-        },
-    );
+    let cam = MockCamera {
+        max_adu_value: std::sync::atomic::AtomicU32::new(1 << 20),
+        ..Default::default()
+    };
+    let registry = camera_registry(Arc::new(cam));
     let temp = tempfile::tempdir().unwrap();
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
@@ -2497,17 +2489,14 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
 // capture — the Alpaca array is transposed into FITS / cache order
 // -----------------------------------------------------------------------
 
-/// Build a capture handler over `cam` with a 16-bit `max_adu` and a
-/// fresh data directory; returns the handler, its cache, and the
-/// tempdir keeping the directory alive.
-fn u16_capture_handler(cam: MockCamera) -> (McpHandler, ImageCache, tempfile::TempDir) {
-    let registry = camera_registry_with_meta(
-        Arc::new(cam),
-        CachedCameraMeta {
-            max_adu: Some(65535),
-            ..CachedCameraMeta::default()
-        },
-    );
+/// Build a capture handler over `cam` (a 16-bit `max_adu` unless the
+/// test sets another) and a fresh data directory; returns the handler,
+/// its cache, and the tempdir keeping the directory alive.
+fn u16_capture_handler(
+    cam: impl Into<Arc<MockCamera>>,
+) -> (McpHandler, ImageCache, tempfile::TempDir) {
+    let cam: Arc<MockCamera> = cam.into();
+    let registry = camera_registry(cam);
     let temp = tempfile::tempdir().unwrap();
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
@@ -3480,6 +3469,88 @@ async fn capture_drops_a_cooler_power_that_is_not_finite() {
         .await;
         assert_eq!(doc.cooler_power_pct, None, "{cooler_power}");
     }
+}
+
+/// One untyped capture through `handler`'s camera, returning the frame's
+/// FITS path and the sidecar it wrote.
+async fn capture_frame(handler: &McpHandler) -> (String, ExposureDocument) {
+    let result = handler
+        .capture_inner(plain_capture_params(), None, &Cancel::never())
+        .await
+        .unwrap();
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.clone())
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let image_path = json["image_path"].as_str().unwrap().to_string();
+    let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
+    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
+    (image_path, doc)
+}
+
+/// A camera switched from an 8-bit readout mode to a 16-bit one while
+/// rp stays connected: the 16-bit frame keeps its pixels and records
+/// the ceiling the camera reports for it, not the one it reported
+/// earlier in the session.
+#[tokio::test]
+async fn capture_follows_a_max_adu_the_camera_changes_mid_session() {
+    let cam = Arc::new(MockCamera {
+        max_adu_value: std::sync::atomic::AtomicU32::new(255),
+        frame: Some(ndarray::Array3::from_elem((2, 2, 1), 40000)),
+        ..MockCamera::default()
+    });
+    let (handler, _cache, _temp) = u16_capture_handler(cam.clone());
+
+    let (_, doc) = capture_frame(&handler).await;
+    assert_eq!(doc.max_adu, Some(255));
+
+    cam.max_adu_value
+        .store(65535, std::sync::atomic::Ordering::SeqCst);
+    let (image_path, doc) = capture_frame(&handler).await;
+    assert_eq!(doc.max_adu, Some(65535));
+    let (pixels, _, _) = persistence::read_fits_pixels(&image_path).unwrap();
+    assert_eq!(pixels, vec![40000; 4], "no pixel may be clamped to 255");
+}
+
+/// A frame whose `MaxADU` read fails keeps every pixel as delivered in a
+/// 32-bit FITS, records no `max_adu`, and is not cached.
+#[tokio::test]
+async fn capture_writes_an_i32_fits_without_max_adu_when_the_read_fails() {
+    let (handler, cache, _temp) = u16_capture_handler(MockCamera {
+        fail_max_adu: true,
+        frame: Some(ndarray::Array3::from_elem((2, 2, 1), 70000)),
+        ..MockCamera::default()
+    });
+    let (image_path, doc) = capture_frame(&handler).await;
+    assert_eq!(doc.max_adu, None);
+    assert_eq!(
+        fits_header_card(&image_path, "BITPIX"),
+        Some(rp_fits::writer::KeywordValue::Int(32))
+    );
+    let (pixels, _, _) = persistence::read_fits_pixels(&image_path).unwrap();
+    assert_eq!(pixels, vec![70000; 4]);
+    assert!(
+        cache.get(&doc.id).is_none(),
+        "an unknown max_adu skips the cache"
+    );
+}
+
+/// A `MaxADU` of 0 would clamp every pixel to 0; the frame treats it as
+/// unknown.
+#[tokio::test]
+async fn capture_drops_a_max_adu_of_zero() {
+    let (handler, _cache, _temp) = u16_capture_handler(MockCamera {
+        report_zero_max_adu: true,
+        frame: Some(ndarray::Array3::from_elem((2, 2, 1), 1234)),
+        ..MockCamera::default()
+    });
+    let (image_path, doc) = capture_frame(&handler).await;
+    assert_eq!(doc.max_adu, None);
+    let (pixels, _, _) = persistence::read_fits_pixels(&image_path).unwrap();
+    assert_eq!(pixels, vec![1234; 4]);
 }
 
 /// The document's exposure start, parsed back.
@@ -7688,7 +7759,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 readout_time_estimate: None,
                 auth: None,
             },
-            // FixtureCamera reports max_adu=65535, pixel_size=3.76 µm,
+            // FixtureCamera reports pixel_size=3.76 µm and
             // sensor_*_size=200 px (see its impl); mirror those values
             // here so `do_capture` (which consumes the cache rather than
             // calling the device) behaves identically to a real connect.
@@ -7699,7 +7770,6 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),
-                    max_adu: Some(65535),
                     pixel_size_x_um: Some(3.76),
                     pixel_size_y_um: Some(3.76),
                     sensor_width_px: Some(200),
@@ -12283,7 +12353,6 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),
-                    max_adu: None,
                     pixel_size_x_um: Some(pixel_size_x_um),
                     pixel_size_y_um: Some(pixel_size_x_um),
                     sensor_width_px: None,

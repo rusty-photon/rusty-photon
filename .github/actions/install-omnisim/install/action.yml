@@ -1,0 +1,19 @@
+name: Install OmniSim from its release
+description: >-
+  The last step of install-omnisim: downloads the OmniSim release asset into
+  <workspace>/omnisim, checks it against its SHA-256 and unpacks it, unless the
+  cache restored it; then puts that directory on PATH and exports OMNISIM_PATH.
+inputs:
+  repo:
+    description: The GitHub repo whose releases carry OmniSim.
+    required: true
+  version:
+    description: The OmniSim release tag.
+    required: true
+  cache-hit:
+    description: The cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: index.mjs

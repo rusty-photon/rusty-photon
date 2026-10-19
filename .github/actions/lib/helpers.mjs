@@ -11,6 +11,7 @@
 // GITHUB_OUTPUT, GITHUB_ENV and GITHUB_PATH name. Conventions:
 // docs/skills/ci-logic.md.
 
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { EOL } from 'node:os';
@@ -74,7 +75,7 @@ function escapeData(text) {
   return String(text).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 }
 
-function command(name, data) {
+function workflowCommand(name, data) {
   io.stdout(`::${name}::${escapeData(data)}\n`);
 }
 
@@ -84,17 +85,17 @@ function command(name, data) {
  * value on its own.
  */
 export function setSecret(secret) {
-  command('add-mask', secret);
+  workflowCommand('add-mask', secret);
 }
 
 /** A warning annotation on the run, and a line in the log. */
 export function warning(message) {
-  command('warning', message);
+  workflowCommand('warning', message);
 }
 
 /** Runs `fn` inside a collapsible log group, closing the group however it ends. */
 export async function group(name, fn) {
-  command('group', name);
+  workflowCommand('group', name);
   try {
     return await fn();
   } finally {
@@ -104,7 +105,7 @@ export async function group(name, fn) {
 
 /** Fails the step with `message` as an error annotation, once the process exits. */
 export function fail(message) {
-  command('error', message);
+  workflowCommand('error', message);
   process.exitCode = 1;
 }
 
@@ -545,6 +546,32 @@ export function requestFailure(err) {
     else if (e.name === 'TimeoutError') codes.push('no answer in time');
   }
   return codes.length > 0 ? codes.join(': ') : (err?.name ?? 'an unknown error');
+}
+
+// --- Processes ----------------------------------------------------------------
+
+/**
+ * Runs `cmd` with `args` and resolves to what it prints, or rejects with the
+ * last line of its stderr when it exits other than 0, and with the spawn
+ * error (ENOENT) when it cannot start.
+ */
+export function command(cmd, args, { cwd, env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, env: env ? { ...process.env, ...env } : process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const out = [];
+    const err = [];
+    child.stdout.on('data', (chunk) => out.push(chunk));
+    child.stderr.on('data', (chunk) => err.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve(Buffer.concat(out).toString('utf8'));
+        return;
+      }
+      const last = Buffer.concat(err).toString('utf8').trim().split('\n').pop();
+      reject(new Error(`${cmd} ${code === null ? `was stopped by ${signal}` : `exited with ${code}`}${last ? `: ${last}` : ''}`));
+    });
+  });
 }
 
 // --- Hashing ------------------------------------------------------------------

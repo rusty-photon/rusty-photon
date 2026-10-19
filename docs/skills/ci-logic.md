@@ -85,6 +85,8 @@ tools/rusty-photon-ci/
   link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
+  lib/install.mjs          download, check and unpack, for the install-* actions
+  lib/install.test.mjs
   lib/testing.mjs          test fixtures every action's tests share
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
   <action>/index.mjs       the entry file: inputs in, outputs out
@@ -136,6 +138,7 @@ parsers, which its comments name.
 | `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. Give a `fetchWithRetry` inside it `attempts: 1`, or the two retry counts multiply (3 × 3 requests). `attempts` must be a whole number of 1 or more. The default `isRetryable` is `isTransient`, which retries no bug in the callback. A Retry-After over two minutes is never waited out, whatever `isRetryable` says. An abort during a wait throws an AbortError whose cause is the error being retried. |
 | `maskUrl` | Mask a URL that is the operator's own, such as the LAN cache's: the URL, its host and its hostname. Returns it without trailing slashes; one that does not parse throws without showing it. |
 | `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
+| `command` | Runs a program with its arguments, never through a shell, and resolves to what it prints. An exit other than 0 rejects with the last line of its stderr, and a program that cannot start with its spawn error (`ENOENT`). |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `io` | Where the helpers write. Tests swap it out (below). |
 
@@ -152,10 +155,12 @@ it stays in the action.
   node_test(
       name = "install_omnisim_test",
       size = "small",
-      srcs = ["install-omnisim/plan.test.mjs"],
+      srcs = ["install-omnisim/omnisim.test.mjs"],
       data = [
-          "install-omnisim/plan.mjs",
+          "install-omnisim/omnisim.mjs",
           "lib/helpers.mjs",
+          "lib/install.mjs",
+          "lib/testing.mjs",
       ],
   )
   ```
@@ -190,7 +195,9 @@ it stays in the action.
   server on `127.0.0.1`, port 0: `serve` in `lib/testing.mjs`, which
   records each request with its body. Command
   files are temp files under `TEST_TMPDIR`. An environment variable a test
-  sets is put back when it ends (`withEnv` in `lib/testing.mjs`).
+  sets is put back when it ends (`withEnv` in `lib/testing.mjs`). A tar
+  archive is built in memory (`tar` in `lib/testing.mjs`), so a test needs
+  no system `tar` to make one and can make one no packager would.
 - Show that a test which guards a behaviour fails with the behaviour
   broken: break it on purpose and watch the test go red.
 - There is no JavaScript formatter or linter (ADR-022). Match
@@ -248,6 +255,37 @@ or another version; only a JavaScript action runs on the runner's own
 Node. A `./` path resolves against the checkout, so the workflow checks the
 repository out first, as every workflow that uses a local action already
 does.
+
+### An action that installs a tool
+
+`lib/install.mjs` holds what every install action does, and
+`install-omnisim` is the example: `omnisim.mjs` keeps the asset table
+and its pins, `resolve/` and `install/` are steps 1 and 3 above.
+
+- **A table keyed by runner**, `${RUNNER_OS}-${RUNNER_ARCH}`
+  (`runnerKey`), read with `forRunner`, which names the runners the table
+  has when it lacks this one.
+- **Every asset carries a pin**, of one of three kinds: `{ sha256 }`,
+  checked against the download; `{ ref }`, a git commit's full SHA that
+  the URL names, for the blobs the INDI repository vendors, which have no
+  hash of their own; `{ rolling: true }`, for a vendor's "latest" link,
+  which has none. `cacheKey` carries each asset's name and pin, and a
+  rolling pin's ISO week, so moving a pin misses the old cache and a
+  rolling download is fetched again each week.
+- **`download`** retries a failed request, a body cut short, a transfer
+  that stalls (no data for 30 s) and a SHA-256 mismatch, as one unit with
+  its check, and leaves no file unless every check passed.
+- **`unpack`** runs each OS's own tool, since Node's built-ins read no
+  archive format and have no xz decoder: on Linux GNU tar, and `unzip`
+  for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
+  which reads both. Windows' is `%SystemRoot%\System32\tar.exe`, run by
+  that path: Git for Windows' GNU tar can come first on PATH. A zip on
+  Linux takes `unzip` rather than a zip reader of our own, which is what
+  the shell ran before. `onlyDirectory` finds the folder an archive
+  unpacked into.
+- **Each OS leg tests its own tools** on the formats its assets come in:
+  `install_test` unpacks small archives made by GNU tar, xz and Info-ZIP's
+  zip.
 
 ### Proving it
 

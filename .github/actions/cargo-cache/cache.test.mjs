@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { HttpError } from '../lib/helpers.mjs';
+import { command, HttpError } from '../lib/helpers.mjs';
 import { capture, serve, withEnv } from '../lib/testing.mjs';
-import { cacheKey, command, main, parsePointer, pointerBody, post, removeWorkspaceOutputs, restore, save } from './cache.mjs';
+import { cacheKey, main, parsePointer, pointerBody, post, removeWorkspaceOutputs, restore, save } from './cache.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 

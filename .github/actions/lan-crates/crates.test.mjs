@@ -6,9 +6,9 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-import { capture, serve } from '../lib/testing.mjs';
+import { capture, serve, tar } from '../lib/testing.mjs';
 import { CRATES_IO, lanCrates, parseLock, replaceCratesIo, unpack } from './crates.mjs';
-import { crateFile, lockfile, sha256Hex, tar } from './fixtures.mjs';
+import { crateFile, lockfile, sha256Hex } from './fixtures.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 

@@ -1,5 +1,10 @@
 name: Install ASCOM OmniSim
-description: Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests
+description: >-
+  Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests: puts
+  <workspace>/omnisim on PATH and exports OMNISIM_PATH, the binary's path. The
+  asset table and its SHA-256 pins are in omnisim.mjs; the download, check and
+  unpack are lib/install.mjs's (plan item J2 in
+  docs/plans/ci-shell-to-code.md).
 
 inputs:
   repo:
@@ -17,142 +22,19 @@ inputs:
 runs:
   using: composite
   steps:
-    # Per-OS table. SHA-256 values are pinned against the OmniSim
-    # release assets named below. They currently point at the patched
-    # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
-    # tag v0.5.0-467.2 = v0.5.0-326.4 + --multi-instance + OMNISIM_SETTINGS_DIR).
-    #
-    # 467.x (rusty-photon #467) enables one private OmniSim per test process
-    # — the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
-    # 467.1 adds `--multi-instance` (skips upstream's machine-global
-    # single-instance guard: named Mutex + named-pipe command server);
-    # 467.2 adds the OMNISIM_SETTINGS_DIR env var (re-roots the profile
-    # store — the default location is not redirectable on Windows or macOS,
-    # where concurrent instances otherwise share one store and leak
-    # persisted settings across suites; that took down 4 of 8 rp:bdd shards
-    # on macOS CI). bdd-infra ALWAYS passes both now, so this pin is a hard
-    # floor: an older binary exits at startup whenever another instance is
-    # running, or silently shares the profile store.
-    #
-    # The carried 326.x series fixes TelescopeHardware slew bugs behind the
-    # center_on_target hang/flake (rusty-photon/rusty-photon #326, #319):
-    # 326.1 locked the slew-engine writers + IsSlewing/RA/Dec readers;
-    # 326.2 adds the AtPark/SlewState readers (closes the park-poll hang);
-    # 326.3 disposes the prior slew timer on Init() and resets the slew
-    # state under hardwareLock; 326.4 closes the center_on_target IsSlewing
-    # wedge proper (issue #319). ConformU-clean vs upstream.
-    #
-    # Reverting to upstream (repo=ASCOMInitiative/..., version=v0.5.0) is no
-    # longer SHA-refresh-only: upstream has no --multi-instance, so the
-    # bdd-infra spawn path would have to be reverted too. Bumping either
-    # input requires refreshing the SHAs — the verify step fails closed on
-    # any mismatch. Same shape and supply-chain reasoning as install-astap.
-    - name: Determine asset name and pinned SHA-256
-      id: asset
-      shell: bash
-      run: |
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)
-            ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="238cc7aa301b2d6cb3ad3ea07de8e55fa190007b086d49291eccd608741f834b"
-            ;;
-          Linux-ARM64)
-            ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="22706e0f52d3ac46ab2c8612c4f231bb6e8c01a9eb814b3325f350ed5239ff49"
-            ;;
-          macOS-ARM64)
-            ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="8abc316ae14b9f40e860ff2423b377c32e6b348cd8d8b12dee4f4b37654aa4c3"
-            ;;
-          macOS-X64)
-            ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="9f08339510ac72c14c073fc7e1d5cb7b14133d83564a5bbd1a95d7c3838d33e0"
-            ;;
-          Windows-X64)
-            ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="dc5dc71c7149b66ad9b5cc728d3a3c384d0b12587dc6f3b3d405f28fcf5f46ba"
-            ;;
-          *)
-            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
-            exit 1
-            ;;
-        esac
-        {
-          echo "asset=$ASSET"
-          echo "sha256=$SHA256"
-          # Pinned SHA participates in the cache key so a SHA bump
-          # invalidates any previously-cached download.
-          echo "cache-key=omnisim-${{ inputs.version }}-$ASSET-$SHA256"
-        } >> "$GITHUB_OUTPUT"
+    - name: Resolve the OmniSim asset
+      id: resolve
+      uses: ./.github/actions/install-omnisim/resolve
+      with:
+        repo: ${{ inputs.repo }}
+        version: ${{ inputs.version }}
 
     - name: Cache OmniSim binary
       id: cache
       uses: actions/cache@v5
       with:
         path: omnisim
-        key: ${{ steps.asset.outputs.cache-key }}
-
-    - name: Download OmniSim
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        mkdir -p omnisim
-        URL="https://github.com/${{ inputs.repo }}/releases/download/${{ inputs.version }}/${{ steps.asset.outputs.asset }}"
-        echo "Downloading $URL"
-        curl -fsSL -o "omnisim/${{ steps.asset.outputs.asset }}" "$URL"
-
-    - name: Verify OmniSim checksum
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        EXPECTED="${{ steps.asset.outputs.sha256 }}"
-        # Portable SHA-256 across runners: shasum is on every macOS, sha256sum is on Linux + Git Bash.
-        if command -v sha256sum >/dev/null; then
-          ACTUAL=$(sha256sum "omnisim/${{ steps.asset.outputs.asset }}" | awk '{print $1}')
-        else
-          ACTUAL=$(shasum -a 256 "omnisim/${{ steps.asset.outputs.asset }}" | awk '{print $1}')
-        fi
-        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-          echo "::error::SHA-256 mismatch for ${{ steps.asset.outputs.asset }}"
-          echo "  expected: $EXPECTED"
-          echo "  actual:   $ACTUAL"
-          echo "Upstream may have rotated the asset (or inputs.version was bumped without refreshing the SHA table)."
-          exit 1
-        fi
-        echo "SHA-256 match: $ACTUAL"
-
-    - name: Extract OmniSim
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        ASSET="${{ steps.asset.outputs.asset }}"
-        TMPDIR="omnisim-extract"
-        mkdir -p "$TMPDIR"
-        if [[ "$ASSET" == *.tar.xz ]]; then
-          tar xf "omnisim/$ASSET" -C "$TMPDIR"
-        elif [[ "$ASSET" == *.zip ]]; then
-          unzip -o "omnisim/$ASSET" -d "$TMPDIR"
-        fi
-        # Archives contain a subdirectory named ascom.alpaca.simulators.* — flatten into omnisim/
-        # macOS zips also include a __MACOSX metadata dir, so match by name
-        SUBDIR=$(ls -d "$TMPDIR"/ascom.alpaca.simulators.*/ | head -1)
-        rm -rf omnisim
-        mv "$SUBDIR" omnisim
-        rm -rf "$TMPDIR"
-
-    - name: Set permissions (Linux/macOS)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: chmod +x omnisim/ascom.alpaca.simulators
-
-    - name: Remove quarantine (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: xattr -d com.apple.quarantine omnisim/ascom.alpaca.simulators 2>/dev/null || true
-
-    - name: Add to PATH
-      shell: bash
-      run: echo "${{ github.workspace }}/omnisim" >> "$GITHUB_PATH"
+        key: ${{ steps.resolve.outputs.key }}
 
     # Export the absolute binary path so consumers (notably Bazel's
     # `--test_env=OMNISIM_PATH` and `bdd_infra::rp_harness::OmniSimHandle`,
@@ -167,13 +49,10 @@ runs:
     # invalidates cache entries written by main pushes. A pinned
     # `OMNISIM_PATH=<workspace>/omnisim/<binary>` is stable across event
     # types, so Bazel cache hits work the same as on Linux/macOS. See
-    # docs/decisions/004-* for the analysis.
-    - name: Export OMNISIM_PATH
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          BIN="${{ github.workspace }}/omnisim/ascom.alpaca.simulators.exe"
-        else
-          BIN="${{ github.workspace }}/omnisim/ascom.alpaca.simulators"
-        fi
-        echo "OMNISIM_PATH=$BIN" >> "$GITHUB_ENV"
+    # .bazelrc's `build:ci --test_env=OMNISIM_PATH` for the rest.
+    - name: Install OmniSim
+      uses: ./.github/actions/install-omnisim/install
+      with:
+        repo: ${{ inputs.repo }}
+        version: ${{ inputs.version }}
+        cache-hit: ${{ steps.cache.outputs.cache-hit }}

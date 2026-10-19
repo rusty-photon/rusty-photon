@@ -566,6 +566,7 @@ struct CaptureConditions {
     offset: Option<i32>,
     readout_mode: Option<u32>,
     electrons_per_adu: Option<f64>,
+    max_adu: Option<u32>,
 }
 
 /// What a capture knows about its frame once the image is downloaded:
@@ -962,12 +963,12 @@ pub(crate) fn validate_binning(
 
 /// A camera reading the sidecar records only when `usable` accepts it
 /// (rp.md § Core Fields); one it rejects is dropped and logged.
-fn recordable(
+fn recordable<T: Copy + tracing::Value>(
     camera_id: &str,
     field: &str,
-    reading: Option<f64>,
-    usable: impl Fn(f64) -> bool,
-) -> Option<f64> {
+    reading: Option<T>,
+    usable: impl Fn(T) -> bool,
+) -> Option<T> {
     let reading = reading?;
     if usable(reading) {
         Some(reading)
@@ -1620,12 +1621,12 @@ impl McpHandler {
         // max_adu feeds three consumers: on-disk FITS bit-depth, cache
         // variant, and the exposure document's `max_adu` field
         // (sidecar self-describing for rehydration/archival lineage).
-        // The value was read once at connect time and stashed on
-        // `CameraEntry` — see its docstring for the connect-time-failure
-        // semantics. When `None` we still persist the document with
-        // `max_adu: None`, write the FITS as i32 (lossless fallback), and
-        // skip the cache insert.
-        let captured_max_adu: Option<u32> = frame.invariants.max_adu;
+        // It is read with the frame's other conditions, never cached
+        // per connection: a driver may tie it to the readout mode. When
+        // `None` we still persist the document with `max_adu: None`,
+        // write the FITS as i32 (lossless fallback), and skip the cache
+        // insert.
+        let captured_max_adu: Option<u32> = frame.conditions.max_adu;
 
         let train = self.trains.train_for_camera(frame.camera_id);
         let microns_per_step = train
@@ -1844,8 +1845,9 @@ impl McpHandler {
     /// Cooling metadata (rp.md § Camera Cooling): the rung the
     /// controller currently holds for this camera, a best-effort
     /// post-readout temperature, and the cooler power when
-    /// `reads_cooler_power`; `Gain`, `Offset`, `ReadoutMode` and
-    /// `ElectronsPerADU`, read live because a client can change them; and
+    /// `reads_cooler_power`; `Gain`, `Offset`, `ReadoutMode`,
+    /// `ElectronsPerADU` and `MaxADU`, read live because a client can
+    /// change them; and
     /// the exposure start (rp.md § Core
     /// Fields). All auxiliary — a failed read only drops its field, never
     /// the capture — and issued together, so they cost one round-trip of
@@ -1885,6 +1887,7 @@ impl McpHandler {
             offset,
             readout_mode,
             electrons_per_adu,
+            max_adu,
             driver_start,
         ) = tokio::join!(
             cam.ccd_temperature(),
@@ -1893,6 +1896,7 @@ impl McpHandler {
             bounded_read(deadline, cam.offset()),
             bounded_read(deadline, cam.readout_mode()),
             bounded_read(deadline, cam.electrons_per_adu()),
+            bounded_read(deadline, cam.max_adu()),
             bounded_read(deadline, cam.last_exposure_start_time()),
         );
         let cooler_power_pct = recordable(
@@ -1925,6 +1929,17 @@ impl McpHandler {
             ),
             |e_per_adu| e_per_adu.is_finite() && e_per_adu > 0.0,
         );
+        // A ceiling of 0 would clamp every pixel of the frame to 0.
+        let max_adu = recordable(
+            camera_id,
+            "max_adu",
+            optional_read(
+                max_adu,
+                camera_id,
+                "MaxADU unavailable; the frame omits max_adu, is written as i32 and is not cached",
+            ),
+            |max_adu| max_adu > 0,
+        );
         let driver_start = optional_read(
             driver_start,
             camera_id,
@@ -1941,6 +1956,7 @@ impl McpHandler {
             offset,
             readout_mode,
             electrons_per_adu,
+            max_adu,
         }
     }
 

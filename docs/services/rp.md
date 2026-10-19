@@ -316,17 +316,23 @@ Details](#capture-tool-details), *Light source*). The FITS header has
 no card for it: a panel flat and a sky flat both export
 `IMAGETYP = 'Flat Field'`, which is what stackers recognize as a flat.
 
-`max_adu` carries the camera's `MaxADU` capability at the time of
-capture. Read once per connection (`connect_camera` stashes it on
-`CameraEntry` along with `pixel_size_*` and `camera_*_size` — they are
-all invariant physical-sensor properties that cannot change for the
-life of the connection) and persisted in the sidecar so the file is
-self-describing — the disk-fallback rehydration path in
-[Image and Document Cache](#image-and-document-cache) uses it to choose
-the `CachedPixels::U16` vs `I32` variant without needing the originating
-camera to be connected. `null` (omitted on serialize) when the connect-
-time read failed; in that case the cache insert is skipped on every
-capture from that camera and the entry serves from disk on demand.
+`max_adu` is the camera's `MaxADU` at the time of capture, the largest
+pixel value it delivers. It is read on every capture, with `gain` and
+`offset`, because it is not a fixed property of the sensor: on
+zwo-camera and svbony-camera it follows the readout mode (255 in an
+8-bit mode, the 16-bit ceiling in a 16-bit one), and any client of the
+driver can switch the mode while rp stays connected. It decides how the
+frame is stored: the FITS bit depth, the range each pixel is clamped
+to, and the cache variant
+([Image and Document Cache](#image-and-document-cache)). It is
+persisted in the sidecar so the file is self-describing: the
+disk-fallback rehydration path uses it to choose the
+`CachedPixels::U16` vs `I32` variant without the originating camera
+connected. It is omitted (absent, not `null`) when the read fails or
+takes longer than 3 s, and when it is 0, which would clamp every pixel
+to 0. That frame is then written as a 32-bit FITS, which keeps every
+pixel as delivered, its cache insert is skipped, and it is served from
+disk on demand.
 
 `binning` is the frame's binning factor pair, rendered `"AxB"` — the
 same spelling an acquisition goal uses. `capture` sets the binning
@@ -463,10 +469,10 @@ drops that one field (logged at `debug!`), never the capture or the
 other fields, and an unavailable field is omitted (absent, not `null`).
 Whether a fact can change while the camera is connected decides when it
 is read. One that cannot is read once per connection, when the session
-is established, with `max_adu` and the sensor geometry, and every frame
-of that session records the value read then. One that can is read on
-every capture, with `gain` and `offset`: once the frame is ready, while
-the capture still holds the camera, each read bounded at 3 s. The FITS
+is established, with the sensor geometry, and every frame of that
+session records the value read then. One that can is read on every
+capture, with `gain`, `offset` and `max_adu`: once the frame is ready,
+while the capture still holds the camera, each read bounded at 3 s. The FITS
 header does not export these facts ([FITS header](#fits-header)).
 
 - `sensor_type` is the camera's ASCOM `SensorType`, spelled as ASCOM
@@ -1470,7 +1476,7 @@ Operators can move any tool across the line with `safety.gate`
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
@@ -2896,29 +2902,33 @@ that genuinely emit values outside `u16` range, without a refactor.
 
 Selection policy at `capture` time:
 
-- Read `max_adu` from the cached `CameraEntry.max_adu` populated by
-  `connect_camera` (one Alpaca round-trip per connection, not per
-  exposure — see "Tenet 1: don't re-fetch invariant data"). The
-  cached value drives both the cache variant choice and the `max_adu`
-  field on the resulting `ExposureDocument`.
+- Read `max_adu` from the camera once the frame is ready, in the same
+  round of reads as `gain`, `offset` and `readout_mode`
+  ([Core Fields](#core-fields-owned-by-rp)). The value read drives the
+  FITS bit depth, the cache variant and the `max_adu` field on the
+  resulting `ExposureDocument`.
 - If `max_adu ≤ 65535`: narrow the i32 array returned by
   `ascom-alpaca` to `u16` and store as `CachedPixels::U16`. The
   narrow clamps to `[0, max_adu]` before casting — guards against a
   buggy driver returning out-of-range values.
 - Otherwise: store as `CachedPixels::I32` unchanged.
-- If `max_adu` is `None` on the entry (connect-time read failed): skip
-  the cache insert and persist `max_adu: None` on the document. The
-  FITS file plus the sidecar remain the durable record. The next
-  reconnect re-reads independently.
+- If the read failed, timed out or returned 0: write the FITS as i32,
+  skip the cache insert and omit `max_adu` from the document. The FITS
+  file plus the sidecar remain the durable record. The next capture
+  reads again.
 
-The decision is per-capture in mechanism (consulted at every
-exposure) but the underlying value is per-connection — `MaxADU` is a
-physical property of the sensor and cannot change while the device
-stays connected. A connect-time read failure therefore degrades the
-whole session for that camera until reconnect, in exchange for cutting
-five Alpaca property round-trips out of every capture (mitigates the
-load pattern that triggers OmniSim's per-capture `GC.Collect` ↔
-telescope-timer-thread race).
+`MaxADU` is read per capture, not once per connection, because a
+camera can change it while connected: on zwo-camera and svbony-camera
+it follows the readout mode. A value cached at connect would clamp
+every pixel of a 16-bit frame to 255 once another client switched a
+camera that rp connected in an 8-bit mode to a 16-bit one. A failed
+read degrades only its own frame.
+
+The read is not tied to the frame, because Alpaca reports `MaxADU` for
+the camera's current mode. A client that switches the mode between the
+end of the exposure and this read gets the new mode's ceiling recorded
+against a frame taken in the old one, alongside a `readout_mode` read
+at the same moment, and the frame's pixels clamped to that ceiling.
 
 On disk-fallback rehydration (cache miss, document/pixels read from
 the FITS+sidecar pair), the variant choice comes from the sidecar's
@@ -3631,7 +3641,7 @@ devices:
   routine: re-enumerate the server's device roster, check the entry's
   pinned `UniqueID` if it has one (§ [Device Identity
   Pin](#device-identity-pin)), re-issue `Connected = true`, and re-read
-  the connect-time property cache (a camera's `MaxADU`, pixel pitch,
+  the connect-time property cache (a camera's pixel pitch and
   sensor geometry). Nothing is carried
   over from the dead session — the service may have come back with a
   different device behind the same config entry, so nothing is assumed.

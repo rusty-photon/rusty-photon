@@ -33,6 +33,33 @@ node_test(
     ],
 )
 
+# The module every install-* action downloads, checks and unpacks with. Each OS
+# leg unpacks the archive formats its own assets come in, with its own tools:
+# GNU tar and unzip on Linux, bsdtar on macOS and Windows.
+node_test(
+    name = "install_test",
+    size = "small",
+    srcs = ["lib/install.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
+# install-omnisim: the ASCOM Alpaca simulators rp's BDD scenarios spawn.
+node_test(
+    name = "install_omnisim_test",
+    size = "small",
+    srcs = ["install-omnisim/omnisim.test.mjs"],
+    data = [
+        "install-omnisim/omnisim.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # lan-crates: the pool `stable / clippy`'s crates from the LAN bazel-remote.
 # Reads the repository's own Cargo.lock too: a format Cargo starts to write
 # that the action cannot read fails here, where on the runner it would only
