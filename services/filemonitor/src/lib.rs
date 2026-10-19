@@ -129,6 +129,27 @@ pub enum RuleType {
     Regex,
 }
 
+impl ParsingConfig {
+    /// Compiles the regex a `regex`-type rule is matched with: the pattern
+    /// as written, or under `(?i)` when matching is case-insensitive. The
+    /// one compile behind the evaluation and the rule check at the load and
+    /// on a setup-page save, so a pattern is checked as the regex it runs
+    /// as — `(?i)` widens a character class, and a pattern that fits the
+    /// regex size limit only as written would otherwise pass the check and
+    /// then never match.
+    ///
+    /// # Errors
+    ///
+    /// The regex crate's error when the pattern does not compile that way.
+    pub fn compile_regex(&self, rule: &ParsingRule) -> Result<regex::Regex, regex::Error> {
+        if self.case_sensitive {
+            regex::Regex::new(&rule.pattern)
+        } else {
+            regex::Regex::new(&format!("(?i){}", rule.pattern))
+        }
+    }
+}
+
 /// The packaged first-start default watch path, under the service's
 /// platform-dependent state directory: the packaged unit's `StateDirectory`
 /// on Unix, `%PROGRAMDATA%\rusty-photon\filemonitor\` on Windows (ADR-015).
@@ -248,14 +269,14 @@ impl FileMonitorDevice {
                     }
                 }
                 RuleType::Regex => {
-                    let pattern = if self.config.parsing.case_sensitive {
-                        rule.pattern.clone()
-                    } else {
-                        format!("(?i){}", rule.pattern)
-                    };
-
-                    // Invalid regex patterns don't match.
-                    regex::Regex::new(&pattern).is_ok_and(|re| re.is_match(content))
+                    // A rule whose regex does not compile never matches, so a
+                    // file whose only rule it is reads unsafe. The rule check
+                    // at the load compiles the same regex and refuses such a
+                    // rule, so none reaches a running service.
+                    self.config
+                        .parsing
+                        .compile_regex(rule)
+                        .is_ok_and(|re| re.is_match(content))
                 }
             };
 
@@ -858,6 +879,62 @@ mod device_setup_page_tests {
         let device = FileMonitorDevice::new(test_config());
         let response = device.setup_request(get_request()).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod regex_rule_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn config_with_regex_rule(pattern: &str, safe: bool, case_sensitive: bool) -> Config {
+        Config {
+            device: DeviceConfig {
+                name: "Test Device".to_string(),
+                unique_id: "test-123".to_string(),
+                description: "Test Description".to_string(),
+            },
+            file: FileConfig {
+                path: PathBuf::from("/tmp/test.txt"),
+                polling_interval: Duration::from_secs(1),
+            },
+            parsing: ParsingConfig {
+                rules: vec![ParsingRule {
+                    rule_type: RuleType::Regex,
+                    pattern: pattern.to_string(),
+                    safe,
+                }],
+                case_sensitive,
+            },
+            server: AlpacaServerConfig::new(8080),
+        }
+    }
+
+    #[test]
+    fn a_case_insensitive_regex_rule_is_compiled_under_i() {
+        let insensitive = config_with_regex_rule("^open$", true, false);
+        let compiled = insensitive
+            .parsing
+            .compile_regex(&insensitive.parsing.rules[0])
+            .unwrap();
+        assert!(compiled.is_match("OPEN"));
+
+        let sensitive = config_with_regex_rule("^open$", true, true);
+        let compiled = sensitive
+            .parsing
+            .compile_regex(&sensitive.parsing.rules[0])
+            .unwrap();
+        assert!(!compiled.is_match("OPEN"));
+    }
+
+    #[test]
+    fn an_uncompilable_regex_rule_never_matches_so_the_file_reads_unsafe() {
+        // The content is the pattern's own text: a fallback to a plain
+        // substring match would read it safe. The regex never matches, and a
+        // file no rule matches is unsafe.
+        let device = FileMonitorDevice::new(config_with_regex_rule("(unclosed", true, false));
+        assert!(!device.evaluate_safety("(unclosed"));
     }
 }
 

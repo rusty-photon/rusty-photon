@@ -76,11 +76,11 @@ The `server` block is the shared `AlpacaServerConfig` from
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
-The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons.
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons. With `case_sensitive` false, a `contains` rule compares the lowercased text and a `regex` rule is compiled under `(?i)` (`ParsingConfig::compile_regex`, the one compile behind the evaluation and the rule check below).
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
-The load then applies the rules the setup page's save applies (`ConfigFile::check`, the one `FileMonitorDriver::validate` behind both): `device.unique_id` and `file.path` non-empty, `file.polling_interval` greater than zero, and every `regex`-type rule's `pattern` compiling. A file that breaks one does not start the service, is refused by a reload, and is named by `doctor` with the rule — the same answer the page gives a save of it. The first-start scaffold (`Config::default()`) is held to the same rules before it is written.
+The load then applies the rules the setup page's save applies (`ConfigFile::check`, the one `FileMonitorDriver::validate` behind both): `device.unique_id` and `file.path` non-empty, `file.polling_interval` greater than zero, and every `regex`-type rule's `pattern` compiling as the evaluation compiles it — under `(?i)` when `case_sensitive` is false, which widens a character class, so a pattern that fits the regex size limit only as written is refused rather than left to never match. A file that breaks one does not start the service, is refused by a reload, and is named by `doctor` with the rule — the same answer the page gives a save of it. The first-start scaffold (`Config::default()`) is held to the same rules before it is written.
 
 ## Setup pages
 
@@ -111,8 +111,9 @@ no command-line overrides beyond `--config` / `--log-level`, so
 - **Validation** on every save, of the whole file as the save would leave
   it: `device.unique_id` and `file.path` must be non-empty,
   `file.polling_interval` must be greater than zero, and every
-  `regex`-type parsing rule's `pattern` must compile — a bad pattern
-  otherwise fails silently as a non-match at evaluation time (see
+  `regex`-type parsing rule's `pattern` must compile as the evaluation
+  compiles it (under `(?i)` when `case_sensitive` is false) — a bad
+  pattern otherwise fails silently as a non-match at evaluation time (see
   [Operation](#operation)). These are the load's rules too (above), so a
   file the page would refuse never starts the service. The rules are
   edited in the file, so a rule that does not compile, put into a running

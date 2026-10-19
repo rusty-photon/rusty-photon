@@ -52,14 +52,16 @@ impl ConfigurableDriver for FileMonitorDriver {
         // A rule whose pattern doesn't compile as a regex is otherwise a
         // silent no-match at evaluation time (see `evaluate_safety`) — reject
         // it at the config boundary instead so a typo doesn't quietly disable
-        // a safety rule. The load applies these rules too (`ConfigFile::check`),
-        // so such a file never starts the service; the rules are edited in
-        // the file, not on a page, so the page names the rule by its index
-        // above the form when a hand edit puts one into a running service's
-        // file.
+        // a safety rule. The check compiles the regex the evaluation runs
+        // (`ParsingConfig::compile_regex`: under `(?i)` when matching is
+        // case-insensitive), not the pattern as written. The load applies
+        // these rules too (`ConfigFile::check`), so such a file never starts
+        // the service; the rules are edited in the file, not on a page, so
+        // the page names the rule by its index above the form when a hand
+        // edit puts one into a running service's file.
         for (i, rule) in config.parsing.rules.iter().enumerate() {
             if matches!(rule.rule_type, RuleType::Regex) {
-                if let Err(e) = regex::Regex::new(&rule.pattern) {
+                if let Err(e) = config.parsing.compile_regex(rule) {
                     errors.push(FieldError {
                         path: format!("parsing.rules.{i}.pattern"),
                         msg: format!("invalid regex: {e}"),
@@ -180,6 +182,37 @@ mod tests {
             pattern: r"Status:\s*(SAFE|OK)".to_string(),
             safe: true,
         });
+        assert_eq!(
+            FileMonitorDriver::validate(&config),
+            Vec::<FieldError>::new()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // the two multi-megabyte regex compiles run for over 20 minutes under Miri
+    fn validate_compiles_the_regex_the_evaluation_runs() {
+        // `[a-z]{60000}` fits the regex size limit as written. Under the
+        // `(?i)` the evaluation adds when matching is case-insensitive the
+        // class widens (ſ and the Kelvin sign join it) and the compiled form
+        // exceeds the limit, so the evaluation would never match it: the
+        // check must refuse what the evaluation cannot run.
+        let mut config = valid_config();
+        config.parsing.case_sensitive = false;
+        config.parsing.rules.push(ParsingRule {
+            rule_type: RuleType::Regex,
+            pattern: "[a-z]{60000}".to_string(),
+            safe: false,
+        });
+        let errors = FileMonitorDriver::validate(&config);
+        let [error] = errors.as_slice() else {
+            panic!("expected the one rule refused, got {errors:?}");
+        };
+        assert_eq!(error.path, "parsing.rules.1.pattern");
+        assert!(error.msg.contains("size limit"), "{}", error.msg);
+
+        // The same rule matched case-sensitively is the pattern as written,
+        // which compiles, so it is accepted.
+        config.parsing.case_sensitive = true;
         assert_eq!(
             FileMonitorDriver::validate(&config),
             Vec::<FieldError>::new()
