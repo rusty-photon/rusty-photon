@@ -1214,7 +1214,7 @@ return an earlier frame.
 | `MaxADU` | 65535 |
 | `ImageArray` | unsigned 16-bit values, sent as `UInt16` (ImageBytes `TransmissionElementType` 8): half the bytes of `Int32` |
 | `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
-| `CameraXSize` / `CameraYSize` | the frame size the connect settled on: PHD2's `get_camera_frame_size`, or the size remembered for PHD2's camera when PHD2 reports 0 × 0 (see [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)) |
+| `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect, after the connect's 1 ms frame when PHD2 reports 0 × 0 (see [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)) |
 | `PixelSizeX` / `PixelSizeY` | `camera.pixel_size_x_um` / `camera.pixel_size_y_um` |
 | `SensorType` | `Monochrome` (the facade serves PHD2's frame as written) |
 | `SensorName` | the camera name PHD2's `get_current_equipment` reports, read on connect |
@@ -1245,46 +1245,21 @@ Some of PHD2's camera drivers learn the frame size only from a frame.
 PHD2 2.6.14's Simulator and INDI cameras report 0 × 0 until they have
 taken one; its QHY, ZWO, SVBony and ToupTek drivers, among others,
 report the size as soon as the camera connects. A size with a zero
-dimension is unknown, and the connect takes the first of these that
-applies:
+dimension is unknown. When PHD2 reports one, the facade takes one 1 ms
+frame exactly as `StartExposure` does (the capture slot, PHD2 `Stopped`,
+the restart marker, a random file name, the file deleted after), then
+reads the size PHD2 reports. The connect fails if the frame cannot start
+(a guiding operation in progress, PHD2 not `Stopped`), if PHD2 fails it
+or does not report it within `1 ms + capture_grace`, or if PHD2 still
+reports 0 × 0 after it.
 
-1. **PHD2 reports a size.** The facade uses it and remembers it under
-   the camera's name, rewriting the file only when that camera's size
-   differs.
-2. **PHD2 reports 0 × 0 and a size is remembered for this camera.** The
-   facade uses the remembered size and sends PHD2 nothing.
-3. **PHD2 reports 0 × 0 and nothing is remembered for this camera.** The
-   facade takes one 1 ms frame exactly as `StartExposure` does (the
-   capture slot, PHD2 `Stopped`, the restart marker, a random file name,
-   the file deleted after), then reads the size PHD2 reports and
-   remembers it. The connect fails if the frame cannot start (a guiding
-   operation in progress, PHD2 not `Stopped`), if PHD2 fails it or does
-   not report it within `1 ms + capture_grace`, or if PHD2 still reports
-   0 × 0 after it.
-
-The sizes live in `<image_dir>/phd2-guider-frame-size.json`, one per
-camera, keyed by the name PHD2's `get_current_equipment` reports (the
-`SensorName` the facade serves):
-
-```json
-{
-  "QHY5III715C-6cf42c41a8b2f3188": { "width": 3864, "height": 2192 },
-  "Simulator": { "width": 752, "height": 580 }
-}
-```
-
-So switching PHD2 between cameras, from the guide camera's profile to the
-Simulator for a validation run for instance, never serves one camera's
-size for another. PHD2's names are specific: it names the Simulator
-`Simulator`, an INDI camera after its INDI device, and a native camera
-after its model or id (the field rig's QHY guide camera is
-`QHY5III715C-6cf42c41a8b2f3188`). A remembered size can still be wrong when a
-camera keeps its name and changes its size, as an INDI camera's binning
-change does. That fails the first frame, saying to reconnect the camera
-(see [Files](#files)). PHD2 has taken a frame by then, so the reconnect
-reads PHD2's own size and remembers it. A file that cannot be read is
-treated as remembering nothing, and the next size remembered replaces
-it. Failing to write the file is logged and does not fail the connect.
+The frame is needed only until PHD2 has taken one with its current
+camera: a PHD2 that has looped or guided reports the size, and the
+connect takes no frame. On the Simulator the frame adds about 0.1 s to
+the connect (PHD2 reported a 1 ms frame 87 ms after the request,
+[above](#what-phd2-does-with-a-single-frame)). The facade keeps no size
+of its own: a size it remembered could go stale when PHD2 switches or
+rebins its camera, while PHD2's own answer after a frame cannot.
 
 The 1 ms frame is the only exposure a connect takes. The repo owner
 decided on 2026-10-19 that it is not actuation in tenet 3's sense: it
@@ -1501,10 +1476,9 @@ The ASCOM errors are listed under [Errors](#errors).
   checks that the handle it got is a regular file. The file must be no
   larger than the frame needs: the data for `CameraXSize × CameraYSize`
   16-bit pixels plus eight 2880-byte header blocks. A larger file is
-  refused unread, saying to reconnect the camera if PHD2's frame size
-  changed. A frame whose `NAXIS1`/`NAXIS2` differ from the size the
-  camera connected with fails with "PHD2's frame size changed; reconnect
-  the camera". A frame PHD2 does not write fails it too: floating-point
+  refused unread. A frame whose `NAXIS1`/`NAXIS2` differ from the size
+  read on connect fails with "PHD2's frame size changed; reconnect the
+  camera". A frame PHD2 does not write fails it too: floating-point
   values, a `BSCALE` or `BZERO` that is not a whole number, or a value
   outside 0 to 65535. A frame of integers in another encoding is scaled
   in integer arithmetic, so no value is truncated or clamped. The read
@@ -1532,9 +1506,7 @@ The ASCOM errors are listed under [Errors](#errors).
   facade deletes that file at once. It remembers the last 64 frames it
   gave up on for this, and the sweep catches any it misses.
   The sweep never touches a file without the prefix, so PHD2's own
-  `save_image_…` files and anything else in the directory are safe. Nor
-  does it touch the facade's own `.json` files, the restart marker and
-  the [remembered frame size](#a-frame-size-phd2-does-not-know-yet).
+  `save_image_…` files and anything else in the directory are safe.
 
 ### Restart
 
@@ -1659,7 +1631,7 @@ ASCOM errors from the Camera:
 
 | Condition | ASCOM error |
 |---|---|
-| Not connected; PHD2 unreachable; on connect, PHD2 older than 2.6.14, its camera not connected, or its frame size unknown with nothing remembered and the 1 ms frame that would read it failing | `NotConnected` |
+| Not connected; PHD2 unreachable; on connect, PHD2 older than 2.6.14, its camera not connected, or its frame size unknown and the 1 ms frame that would read it failing | `NotConnected` |
 | `light = false`; a duration outside 1 ms–600 s; a subframe outside the sensor; a bin other than 1 | `InvalidValue` |
 | An exposure already in flight; a guiding operation in progress; PHD2 not `Stopped`; PHD2's own "capture is currently active" | `InvalidOperation` |
 | `ImageArray` with no image yet | `InvalidOperation` |

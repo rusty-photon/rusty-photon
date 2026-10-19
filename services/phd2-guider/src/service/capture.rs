@@ -33,10 +33,6 @@ pub const FILE_SUFFIX: &str = ".fits";
 /// The restart marker, in `image_dir`. Not a frame name: the sweep
 /// leaves it alone.
 pub const MARKER_NAME: &str = "phd2-guider-capture.json";
-/// The frame sizes last read from PHD2, by the camera name PHD2 reports,
-/// in `image_dir`, for a connect that finds PHD2 does not know its
-/// camera's size yet. Not a frame name: the sweep leaves it alone.
-pub const FRAME_SIZE_NAME: &str = "phd2-guider-frame-size.json";
 /// The file startup creates and removes to prove `image_dir` writable.
 pub const PROBE_NAME: &str = ".phd2-guider-probe";
 /// At most this many directory entries are looked at per sweep.
@@ -108,25 +104,6 @@ pub struct Frame {
     pub height: usize,
     pub pixels: Vec<u16>,
 }
-
-/// A camera frame's size in pixels, as PHD2's `get_camera_frame_size`
-/// reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FrameSize {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl FrameSize {
-    /// PHD2 reports 0 x 0 for a camera that has not told it its size.
-    #[must_use]
-    pub const fn is_known(self) -> bool {
-        self.width > 0 && self.height > 0
-    }
-}
-
-/// The remembered frame sizes, by camera name.
-type FrameSizes = std::collections::BTreeMap<String, FrameSize>;
 
 /// The restart marker's content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,7 +196,7 @@ impl CaptureEngine {
             .checked_add(total)
             .unwrap_or_else(tokio::time::Instant::now);
         let marker_path = self.marker_path();
-        write_json(
+        write_marker(
             &marker_path,
             &Marker {
                 path: path.clone(),
@@ -398,7 +375,7 @@ impl CaptureEngine {
     }
 
     /// Read and decode a saved frame, checking it against the frame
-    /// size the camera connected with. Bounded: the file is opened without
+    /// size read on connect. Bounded: the file is opened without
     /// following a link, must be a regular file, and may be no larger
     /// than the frame needs.
     ///
@@ -565,7 +542,7 @@ impl CaptureEngine {
                         path: marker.path.clone(),
                         deadline_unix_ms: unix_ms(deadline),
                     };
-                    if let Err(e) = write_json(&marker_path, &clamped) {
+                    if let Err(e) = write_marker(&marker_path, &clamped) {
                         warn!(path = %marker_path.display(), "cannot rewrite the capture marker: {e}");
                     }
                 }
@@ -653,57 +630,6 @@ impl CaptureEngine {
 
     fn marker_path(&self) -> PathBuf {
         self.image_dir.join(MARKER_NAME)
-    }
-
-    /// The frame size an earlier connect remembered for `camera`. `None`
-    /// when there is none, or it is not a known size.
-    pub fn remembered_frame_size(&self, camera: &str) -> Option<FrameSize> {
-        match self.remembered_frame_sizes().get(camera) {
-            Some(size) if size.is_known() => Some(*size),
-            Some(size) => {
-                warn!(
-                    camera,
-                    ?size,
-                    "the frame size remembered for the camera is not a size"
-                );
-                None
-            }
-            None => None,
-        }
-    }
-
-    /// Remember `size` for `camera`, for a connect that finds PHD2 does
-    /// not know it, unless it is already remembered. A failure is
-    /// logged, never returned.
-    pub fn remember_frame_size(&self, camera: &str, size: FrameSize) {
-        let mut sizes = self.remembered_frame_sizes();
-        if sizes.get(camera) == Some(&size) {
-            return;
-        }
-        sizes.insert(camera.to_string(), size);
-        let path = self.image_dir.join(FRAME_SIZE_NAME);
-        match write_json(&path, &sizes) {
-            Ok(()) => debug!(path = %path.display(), camera, ?size, "remembered the frame size"),
-            Err(e) => warn!(path = %path.display(), "cannot remember the frame size: {e}"),
-        }
-    }
-
-    /// Every remembered frame size. A file that cannot be read remembers
-    /// nothing.
-    fn remembered_frame_sizes(&self) -> FrameSizes {
-        let path = self.image_dir.join(FRAME_SIZE_NAME);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FrameSizes::new(),
-            Err(e) => {
-                warn!(path = %path.display(), "cannot read the remembered frame sizes: {e}");
-                return FrameSizes::new();
-            }
-        };
-        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            warn!(path = %path.display(), "unreadable remembered frame sizes: {e}");
-            FrameSizes::new()
-        })
     }
 }
 
@@ -818,8 +744,7 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
     let cap = frame_size_cap(width, height);
     if meta.len() > cap {
         return Err(format!(
-            "PHD2's frame {} is {} bytes, more than a {width} x {height} frame needs ({cap}); if \
-             PHD2's frame size changed, reconnect the camera",
+            "PHD2's frame {} is {} bytes, more than a {width} x {height} frame needs ({cap})",
             path.display(),
             meta.len()
         ));
@@ -849,7 +774,7 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
     if (got_width, got_height) != expected {
         return Err(format!(
             "PHD2's frame size changed: {got_width} x {got_height}, not the {width} x {height} \
-             the camera connected with; reconnect the camera"
+             read on connect; reconnect the camera"
         ));
     }
     let pixels = unsigned_16(image).map_err(|why| {
@@ -947,10 +872,8 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
-/// Write one of the facade's JSON files whole: staged, then renamed over
-/// the old one.
-fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
-    let body = serde_json::to_vec(value).map_err(std::io::Error::other)?;
+fn write_marker(path: &Path, marker: &Marker) -> std::io::Result<()> {
+    let body = serde_json::to_vec(marker).map_err(std::io::Error::other)?;
     let staged = path.with_extension("json.tmp");
     std::fs::write(&staged, body)?;
     std::fs::rename(&staged, path)
@@ -1057,7 +980,7 @@ mod tests {
     async fn in_flight(engine: &CaptureEngine, path: &Path, deadline: Duration) -> InFlight {
         let frames = engine.ops.subscribe_frames();
         claim(engine, path, false).await;
-        write_json(
+        write_marker(
             &engine.marker_path(),
             &Marker {
                 path: path.to_path_buf(),
@@ -1222,7 +1145,7 @@ mod tests {
     }
 
     fn stage_marker(engine: &CaptureEngine, path: &Path, deadline: SystemTime) {
-        write_json(
+        write_marker(
             &engine.marker_path(),
             &Marker {
                 path: path.to_path_buf(),
@@ -1606,86 +1529,5 @@ mod tests {
         assert!(matches!(err, StartError::Phd2Refused(_)), "{err:?}");
         let err = map_rpc_error(Phd2Error::NotConnected);
         assert!(matches!(err, StartError::Unreachable(_)), "{err:?}");
-    }
-
-    const SIMULATOR: FrameSize = FrameSize {
-        width: 752,
-        height: 580,
-    };
-
-    #[tokio::test]
-    async fn a_remembered_frame_size_reads_back_for_its_camera() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = engine(dir.path());
-        assert_eq!(engine.remembered_frame_size("Simulator"), None);
-        engine.remember_frame_size("Simulator", SIMULATOR);
-        assert_eq!(engine.remembered_frame_size("Simulator"), Some(SIMULATOR));
-        assert_eq!(engine.remembered_frame_size("QHY5III715C"), None);
-        let file = std::fs::read_to_string(dir.path().join(FRAME_SIZE_NAME)).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&file).unwrap(),
-            serde_json::json!({ "Simulator": { "width": 752, "height": 580 } })
-        );
-    }
-
-    #[tokio::test]
-    async fn each_camera_keeps_its_own_remembered_frame_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = engine(dir.path());
-        let qhy = FrameSize {
-            width: 3864,
-            height: 2192,
-        };
-        engine.remember_frame_size("QHY5III715C", qhy);
-        engine.remember_frame_size("Simulator", SIMULATOR);
-        assert_eq!(engine.remembered_frame_size("QHY5III715C"), Some(qhy));
-        assert_eq!(engine.remembered_frame_size("Simulator"), Some(SIMULATOR));
-        let resized = FrameSize {
-            width: 376,
-            height: 290,
-        };
-        engine.remember_frame_size("Simulator", resized);
-        assert_eq!(engine.remembered_frame_size("Simulator"), Some(resized));
-        assert_eq!(engine.remembered_frame_size("QHY5III715C"), Some(qhy));
-    }
-
-    #[tokio::test]
-    async fn a_file_that_is_not_a_known_size_remembers_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = engine(dir.path());
-        for body in [
-            r#"{"Simulator": {"width": 0, "height": 580}}"#,
-            r#"{"Simulator": {"width": 752}}"#,
-            r#"{"width": 752, "height": 580}"#,
-            "not json",
-        ] {
-            std::fs::write(dir.path().join(FRAME_SIZE_NAME), body).unwrap();
-            assert_eq!(engine.remembered_frame_size("Simulator"), None, "{body}");
-        }
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_file_is_replaced_by_the_next_size_remembered() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = engine(dir.path());
-        std::fs::write(dir.path().join(FRAME_SIZE_NAME), "not json").unwrap();
-        engine.remember_frame_size("Simulator", SIMULATOR);
-        assert_eq!(engine.remembered_frame_size("Simulator"), Some(SIMULATOR));
-    }
-
-    #[tokio::test]
-    async fn a_frame_size_that_cannot_be_written_is_only_logged() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = engine(&dir.path().join("missing"));
-        engine.remember_frame_size("Simulator", SIMULATOR);
-        assert_eq!(engine.remembered_frame_size("Simulator"), None);
-    }
-
-    #[test]
-    fn the_sweep_leaves_the_remembered_frame_size_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(FRAME_SIZE_NAME), "{}").unwrap();
-        sweep(dir.path(), None);
-        assert!(dir.path().join(FRAME_SIZE_NAME).exists());
     }
 }
