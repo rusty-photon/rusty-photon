@@ -20,13 +20,14 @@ Feature: FITS header on captured frames
   coordinates. DATE-OBS is the exposure start, the document's
   `exposure_started_at`.
 
-  The header does not export every fact the sidecar records. What the
-  camera reports about its sensor and readout is recorded in the sidecar
-  only: the sensor type and Bayer offsets, read once per connection, and
-  the readout mode, electrons per ADU and cooler power, read on every
-  capture. The simulator camera is a monochrome sensor with one readout
-  mode, "Default", and 0.8 electrons per ADU, and it reports cooler
-  power, 0 % while its cooler is off.
+  The header does not export every fact the sidecar records. READOUTM is
+  the readout mode's name and EGAIN the electrons per ADU; the cooler power
+  is recorded in the sidecar only. A colour mosaic is exported as BAYERPAT
+  on an unbinned frame only, and a monochrome frame carries no Bayer cards.
+  The simulator camera is a monochrome sensor with one readout mode,
+  "Default", and 0.8 electrons per ADU, and it reports cooler power, 0 %
+  while its cooler is off. Every frame says its rows run top-down: ROWORDER
+  is TOP-DOWN.
 
   In the tables, `{version}` stands for rp's own version and
   `{document_id}` for the capture's document id.
@@ -46,6 +47,8 @@ Feature: FITS header on captured frames
       | INSTRUME | string  | Alpaca Camera Simulator   |
       | TELESCOP | string  | Takahashi FSQ-106EDX4     |
       | FILTER   | string  | Luminance                 |
+      | READOUTM | string  | Default                   |
+      | EGAIN    | real    | 0.8                       |
       | CCD-TEMP | real    | 10                        |
       | XBINNING | integer | 1                         |
       | YBINNING | integer | 1                         |
@@ -58,11 +61,15 @@ Feature: FITS header on captured frames
       | SITELONG | real    | -0.2944                   |
       | SWCREATE | string  | rusty-photon rp {version} |
       | DOC_ID   | string  | {document_id}             |
+      | ROWORDER | string  | TOP-DOWN                  |
     And the captured FITS header should not carry these keywords:
       | keyword  |
       | GAIN     |
       | OFFSET   |
       | SET-TEMP |
+      | BAYERPAT |
+      | XBAYROFF |
+      | YBAYROFF |
     And the captured FITS header "DATE-OBS" should be a UTC timestamp of the form "YYYY-MM-DDThh:mm:ss.sss"
     And the captured FITS header RA and DEC should match the mount's reported position within 0.1 degrees
 
@@ -182,6 +189,7 @@ Feature: FITS header on captured frames
       | XPIXSZ   | real    | 5.6                       |
       | SWCREATE | string  | rusty-photon rp {version} |
       | DOC_ID   | string  | {document_id}             |
+      | ROWORDER | string  | TOP-DOWN                  |
     And the captured FITS header should not carry these keywords:
       | keyword  |
       | TELESCOP |

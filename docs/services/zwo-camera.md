@@ -1353,6 +1353,26 @@ in its **Device** column with no renumbering note, and closed with
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
   `SupportedBins` (typically 1–4, up to 8).
+
+  **On a colour sensor each binned pixel adds photosites of one colour, so
+  the binned frame keeps the mosaic.** It starts on the same colour as the
+  unbinned frame, and `BayerOffsetX/Y` read (1, 0) at every bin. This was
+  measured on the ASI120MC-S, whose largest bin is 2 (2026-10-18, Linux
+  x86_64, this driver at `da81df85`, two 5 s full frames per bin with light
+  on the sensor), the way
+  [qhy-camera.md's B1](qhy-camera.md#geometry-binning-roi) describes:
+  - **Raw16:** of 3,836 warm pixels whose predicted positions differ, 1,082
+    are found only where binning by colour puts them and 1 only where
+    neighbour binning would. The bin-1 frame's contrast between its four
+    colour sites survives at 0.98 of its size.
+  - **Raw8:** 1,057 against 3, and the contrast survives at 0.97.
+
+  The two modes combine the four photosites differently: Raw16 averages them
+  (the bin-2 median is 1.03 times bin 1's), while Raw8 sums them (4.12
+  times), so a Raw8 bin-2 frame reaches 255 four times sooner. `rp` still
+  writes no `BAYERPAT` on a binned frame, because ASCOM does not report the
+  layout and other cameras mix the colours
+  ([rp.md § FITS header](rp.md#fits-header)).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
   client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
   their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
