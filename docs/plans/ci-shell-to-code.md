@@ -92,7 +92,7 @@ first in their columns.
 | J1  | Cargo build cache in the LAN bazel-remote | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Done (#1534) |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Done (#1564) |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
-| J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
+| J4  | `install-astap` on the module | `install-astap` | J2 | Done (#1573) |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
@@ -445,6 +445,18 @@ not:
   rest of that workflow. That workflow checks out `main` in every job, so
   the two steps are proven by tests against a copy of the table, not by a
   branch dispatch.
+
+  Done in #1573. The table is `install-astap/assets.json`, JSON because
+  the refresh rewrites it: the workflow's three awk programs became the
+  action's `pin` step, which also refuses a table that names another
+  archive than the workflow's matrix, and its `repin` step, and a test
+  keeps the file in the one layout `repin` writes. The curl flags became
+  `download` options; the D05's rate floor (`minBytesPerSecond`) and its
+  bound on retries (`retryForMs`) are new in `lib/install.mjs`, off by
+  default. The smoke also runs on a change to `.github/actions/lib`, which
+  the action runs. The macOS quarantine step went, as J2's did. ASTAP
+  joins no developer install: Amendment A names J5 and J6 for that. The
+  workflow's own D05 download, with its copy of the pin, stays for J8.
 - **J5 `install-zwo-sdk`** (442 lines, bash and PowerShell). A sudo and a
   sudo-free Linux path, a macOS path and a Windows path; the cache restore
   and save are separate steps; the Windows download is the unpinned,
