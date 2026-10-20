@@ -344,11 +344,16 @@ fn write(work: &Path, name: &str, contents: &str) -> Result<String, Error> {
 }
 
 /// gpg warns about a home others can read.
+#[cfg(unix)]
 fn create_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+/// Windows has no mode bits for gpg to check.
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir(path)
 }
 
 /// A gpg command in `home`. Checking a signature needs no gpg-agent, so
