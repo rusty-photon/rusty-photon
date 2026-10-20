@@ -15,10 +15,12 @@ import {
   INDI,
   install,
   installAt,
+  powershellProgram,
   PREFIX,
   REF,
   resolve,
   RUNNERS,
+  unpackZip,
 } from './zwo-sdk.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -53,8 +55,10 @@ async function indiServer(runner, files = indiFiles(RUNNERS[runner].arch)) {
 }
 
 // The x64 import library and DLL of an SDK, and the builds a search must pass
-// over: 32-bit ones, a demo's, a Windows 7 one, a static library.
-function windowsSdks({ eafX64 = true } = {}) {
+// over: 32-bit ones, a demo's, a Windows 7 one, a static library. With
+// `unicode`, the EFW SDK also holds the guide ZWO names in Chinese, which
+// Windows' code page cannot hold.
+function windowsSdks({ eafX64 = true, unicode = false } = {}) {
   const inner = {
     asi: zip([
       { path: 'ASI SDK/demo/bin/x64/ASICamera2.dll', data: 'a demo camera dll' },
@@ -70,6 +74,7 @@ function windowsSdks({ eafX64 = true } = {}) {
       { path: 'EFW_Windows_SDK_V1.8.4/lib/x64/Release/EFW_filter-static.lib', data: 'a static library' },
       { path: 'EFW_Windows_SDK_V1.8.4/lib/x64/Release/EFW_filter.dll', data: 'filter wheel dll' },
       { path: 'EFW_Windows_SDK_V1.8.4/lib/x64/Release/EFW_filter.lib', data: 'filter wheel lib' },
+      ...(unicode ? [{ path: 'EFW_Windows_SDK_V1.8.4/doc/EFW SDK快速入门.pdf', data: 'a guide' }] : []),
     ]),
     eaf: zip([
       { path: 'EAF_Windows_SDK_V1.8.1/lib/Windows/Win32/Release/EAF_focuser.dll', data: 'a 32-bit focuser dll' },
@@ -438,6 +443,36 @@ test('install on Windows stages each SDK\'s x64 import library and DLL under the
   } finally {
     await server.close();
   }
+});
+
+test('install on Windows unpacks an SDK holding a name Windows\' code page cannot hold', {
+  skip: process.platform !== 'win32' && 'the Windows runner unpacks these with its own PowerShell',
+}, async () => {
+  const { server, runner, assets } = await cdn(windowsSdks({ unicode: true }));
+  try {
+    const out = await inStep(() =>
+      install({ runner, assets, workspace: tempDir(), temp: tempDir(), cached: false, download: fast, run: recorder().run, llvm: tempDir() }),
+    );
+    assert.deepEqual(readAll(envValue(out.env, 'ZWO_SDK_LIB_DIR')), STAGED);
+  } finally {
+    await server.close();
+  }
+});
+
+test('unpackZip on Windows runs Expand-Archive by its full path, with each path quoted whole', async () => {
+  const { run, calls } = recorder();
+  await withEnv({ SystemRoot: 'C:\\Windows' }, () =>
+    unpackZip("C:\\Users\\o'brien\\a\u2019b.zip", 'C:\\Temp\\out', { platform: 'win32', run }),
+  );
+  assert.equal(powershellProgram(), 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(calls.length, 1);
+  const [program, ...args] = calls[0];
+  assert.equal(program, powershellProgram());
+  assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+  const script = Buffer.from(args[3], 'base64').toString('utf16le');
+  assert.match(script, /^\$ErrorActionPreference = 'Stop';/);
+  assert.ok(script.includes("Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\out' -Force"), script);
+  assert.match(script, /catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/);
 });
 
 test('install on Windows takes the LLVM the runner has, and this week\'s cached downloads', async () => {

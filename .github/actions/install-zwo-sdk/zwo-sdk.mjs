@@ -239,6 +239,34 @@ async function installUnprivileged({ assets, temp, suffix, download: options, ru
 
 // --- Windows ----------------------------------------------------------------------------
 
+/** Windows PowerShell, by its full path, which every Windows has. */
+export function powershellProgram() {
+  return path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+// A PowerShell string of `text`, quoted so nothing in it is read: in single
+// quotes, each single quote doubled, curly ones too, which PowerShell also
+// takes for one.
+function psLiteral(text) {
+  return `'${text.replace(/['\u2018\u2019\u201A\u201B]/g, (quote) => quote + quote)}'`;
+}
+
+/**
+ * Unpacks ZWO's zip `file` into `dir`. Windows' tar.exe (bsdtar 3.8.8) skips
+ * an entry whose name the system's code page cannot hold, then fails, and
+ * ZWO's EFW and EAF SDKs each hold one ("EFW SDK快速入门.pdf"), so on Windows
+ * PowerShell's Expand-Archive unpacks them, as the shell did, which reads the
+ * names as Unicode. Elsewhere, where only the tests unpack them, unpack does.
+ */
+export async function unpackZip(file, dir, { platform = process.platform, run = command } = {}) {
+  if (platform !== 'win32') return unpack(file, dir);
+  const script =
+    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
+    `try { Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force } ` +
+    'catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }';
+  await run(powershellProgram(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+}
+
 // The SDK for Windows inside each of ZWO's downloads, beside ones for other
 // systems: ASI_Windows_SDK_V1.41.zip.
 const WINDOWS_SDK = /Windows.*SDK.*\.zip$/i;
@@ -279,9 +307,9 @@ export async function stageWindows(assets, downloads, lib) {
     await mkdir(staged);
     for (const sdk of assets) {
       const unpacked = path.join(work, path.basename(sdk.name, '.zip'));
-      await unpack(path.join(downloads, sdk.name), unpacked);
+      await unpackZip(path.join(downloads, sdk.name), unpacked);
       for (const inner of filesUnder(unpacked).filter((rel) => WINDOWS_SDK.test(path.posix.basename(rel)))) {
-        await unpack(path.join(unpacked, inner), path.join(unpacked, `inner-${path.posix.basename(inner, '.zip')}`));
+        await unpackZip(path.join(unpacked, inner), path.join(unpacked, `inner-${path.posix.basename(inner, '.zip')}`));
       }
       for (const suffix of ['.lib', '.dll']) {
         const found = pickX64(unpacked, `${sdk.library}${suffix}`, sdk.name);

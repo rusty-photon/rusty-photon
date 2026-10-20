@@ -193,6 +193,8 @@ export function zip(entries) {
     // hold), the CRC-32 and both sizes.
     const shared = Buffer.alloc(26);
     shared.writeUInt16LE(10, 0);
+    // A name beyond ASCII is UTF-8, which the flag says, as zip tools set it.
+    if (!/^[\x20-\x7e]*$/.test(entry.path)) shared.writeUInt16LE(0x0800, 2);
     shared.writeUInt16LE((1 << 5) | 1, 8);
     shared.writeUInt32LE(crc, 10);
     shared.writeUInt32LE(data.length, 14);
