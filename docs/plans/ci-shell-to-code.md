@@ -96,7 +96,7 @@ first in their columns.
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
-| J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#J8PR) |
+| J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
@@ -606,7 +606,7 @@ the rewrite at. Every job checks out `main` and the run opens a real PR,
 so a branch dispatch proves nothing: the proof is tests against fixture
 tables and recorded upstream responses, then a watched run after merge.
 
-Done in #J8PR, as the `refresh-astap` action: `detect/` and `publish/`,
+Done in #1580, as the `refresh-astap` action: `detect/` and `publish/`,
 one for each of the workflow's two jobs, with the bash, the two
 `github-script` blocks and install-astap's `pin` and `repin` steps gone.
 
