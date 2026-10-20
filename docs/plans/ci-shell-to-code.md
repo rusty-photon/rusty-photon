@@ -103,7 +103,7 @@ first in their columns.
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
-| R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#R1PR) |
+| R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#1581) |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
@@ -901,7 +901,7 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 
 ### R1 — Toolchain checksums
 
-Done in #R1PR, as `cargo ci rust-toolchain-sha256s <release>`
+Done in #1581, as `cargo ci rust-toolchain-sha256s <release>`
 (`tools/rusty-photon-ci/src/rust_toolchain_sha256s.rs`), replacing
 `scripts/rust-toolchain-sha256s.sh` (124 lines). pre-push.md sends
 developers to it when a Rust pin moves: it prints MODULE.bazel's
