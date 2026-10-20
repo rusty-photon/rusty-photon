@@ -27,7 +27,7 @@
 #  * Includes the BDD suite (--config=coverage flips the default tag filter to
 #    -requires-cargo, see .bazelrc) so the service-binary integration paths are
 #    covered; the spawned-binary coverage is collected via the vendored
-#    rules_rust patches (effectiveness guarded by parity.yml).
+#    rules_rust patches (effectiveness guarded by rules-rust-patches.yml).
 #  * On PRs, posts a non-gating `uncovered-diff-lines` check run whose
 #    annotations mark every uncovered added line inline in the Files changed
 #    tab (diff-cover scores the diff; tools/coverage/post_check_annotations.py

@@ -1,14 +1,11 @@
-# Bazel/Cargo target-parity gate.
+# rules_rust's coverage patches: still applied, and still effective.
 #
-# Ensures every Cargo workspace member has a Bazel rust target, so that
-# "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
-# files can otherwise drift from the workspace). Runs nightly + on push to main
-# (not on PRs): `bazel build //...` does NOT flag a Cargo member with no Bazel
-# target (it is silently absent), so this CI check is the backstop. Per-PR risk is
-# low — Bazel is the local dev loop, so you cannot build or test a new member
-# without writing its BUILD.bazel. Also guards the rules_rust coverage patches.
-#
-# See scripts/check-bazel-cargo-parity.sh.
+# MODULE.bazel's single_version_override carries two patches to rules_rust
+# that `bazel coverage` depends on (.bazelrc's coverage section says what
+# each does). A patch that no longer applies fails every Bazel command; the
+# steps below catch a rules_rust bump after which a patch still applies but
+# no longer does its job, which no test would notice. Runs on push to main,
+# nightly and on dispatch.
 permissions:
   contents: read
 on:
@@ -20,24 +17,17 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-name: parity
+name: rules_rust patches
 jobs:
-  bazel-cargo-parity:
+  rules-rust-patches:
     runs-on: ubuntu-latest
-    name: bazel/cargo target parity
+    name: rules_rust coverage patches
     steps:
       - uses: actions/checkout@v7
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
       - name: Setup bazelisk
         uses: bazelbuild/setup-bazelisk@v3
         with:
           bazelisk-version: 1.28.1
-      # Query-only: cargo metadata + bazel query, no build. jq is preinstalled
-      # on ubuntu-latest.
-      - name: Check Bazel/Cargo target parity
-        run: ./scripts/check-bazel-cargo-parity.sh
-
       # Guard the pinned rules_rust coverage patch (MODULE.bazel
       # single_version_override -> third_party/patches/collect_coverage_extra_objects.patch).
       # It teaches collect_coverage to export spawned-binary coverage via

@@ -67,10 +67,9 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 > `stable / clippy` run on the self-hosted Linux pool for same-repo PRs.
 > `bazel / macos-latest` is **not** a PR check — it runs on
 > push-to-main and nightly, so a macOS-only break is caught on main within
-> minutes of the merge rather than blocking the PR. `bazel/cargo target
-> parity`, plus the Cargo build / test / hack / msrv jobs, run nightly and do
-> not gate PRs — none of them collects coverage; `bazel coverage` is the sole
-> source. So the authoritative pre-push is:
+> minutes of the merge rather than blocking the PR. The Cargo build / test /
+> hack / msrv jobs run nightly and do not gate PRs — none of them collects
+> coverage; `bazel coverage` is the sole source. So the authoritative pre-push is:
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
@@ -691,8 +690,8 @@ cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass
 ## Bazel
 
 Bazel is the per-PR build / test / coverage gate (`.github/workflows/bazel.yml`,
-`bazel-coverage.yml`). `parity.yml` (Bazel/Cargo target parity) and the
-Cargo build/test jobs run nightly as a safety net; `Cargo.toml` / `Cargo.lock`
+`bazel-coverage.yml`). The Cargo build/test jobs run nightly as a safety
+net; `Cargo.toml` / `Cargo.lock`
 remain the single source of truth for dependency versions.
 
 Pre-push commands (these ARE the gate — run them before pushing):

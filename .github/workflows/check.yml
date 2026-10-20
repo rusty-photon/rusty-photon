@@ -46,8 +46,9 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # 06:00 UTC — offset from parity (06:45) and native (06:47) so the nightly
-    # Cargo suites don't contend for the same hosted-runner pool minute.
+    # 06:00 UTC — offset from rules-rust-patches (06:45) and native (06:47) so
+    # the nightly Cargo suites don't contend for the same hosted-runner pool
+    # minute.
     - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:

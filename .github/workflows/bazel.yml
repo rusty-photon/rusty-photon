@@ -5,8 +5,7 @@
 # Windows matrix, producing the `bazel / ubuntu-latest` and
 # `bazel / windows-latest` required checks; macOS joins the matrix on
 # push-to-main and on the nightly schedule only — see the `os:` comment for
-# why. Coverage is gated separately by bazel-coverage.yml and Bazel/Cargo
-# target parity by parity.yml.
+# why. Coverage is gated separately by bazel-coverage.yml.
 #
 # Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the Linux and
 # Windows legs run on the ephemeral self-hosted pool

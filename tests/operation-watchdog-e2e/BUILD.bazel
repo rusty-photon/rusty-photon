@@ -7,8 +7,8 @@ exports_files(
 )
 
 # Doc-only library: this crate exists solely to host the BDD suite below. It
-# carries no code, but a Bazel target keeps it in the build graph (parity gate)
-# and matches the Cargo lib target.
+# carries no code, but a Bazel target keeps it in the build graph and matches
+# the Cargo lib target.
 rust_library(
     name = "operation-watchdog-e2e",
     srcs = glob(["src/**/*.rs"]),

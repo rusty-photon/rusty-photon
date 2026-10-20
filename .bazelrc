@@ -800,7 +800,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # instrumented_files manifest. Without it Bazel's post-collector LcovMerger intersects the
 # exported report against that manifest and silently DROPS main.rs (it is reached only via
 # `data`, not `deps`). Both patches are wired in MODULE.bazel single_version_override and
-# guarded in parity.yml. See docs/plans/archive/bazel-migration.md.
+# guarded in rules-rust-patches.yml. See docs/plans/archive/bazel-migration.md.
 coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services,^//tests,^//tools/rusty-photon-ci
