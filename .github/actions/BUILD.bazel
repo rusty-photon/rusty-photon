@@ -19,6 +19,19 @@ node_test(
     ],
 )
 
+# bdd-sharded: the Cargo safety net's BDD suites as parallel processes. The
+# tests start each fake suite as a Node process of its own.
+node_test(
+    name = "bdd_sharded_test",
+    size = "small",
+    srcs = ["bdd-sharded/bdd.test.mjs"],
+    data = [
+        "bdd-sharded/bdd.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # cargo-cache: the pool `stable / clippy`'s compiled dependencies, kept in the
 # LAN bazel-remote. The tests that pack and unpack run on Linux only, where
 # the action runs, with GNU tar (and zstd, where the machine has it).

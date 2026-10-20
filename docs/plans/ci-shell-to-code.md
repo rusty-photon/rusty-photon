@@ -100,7 +100,7 @@ first in their columns.
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
-| J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
+| J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#NNNN) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
@@ -675,6 +675,36 @@ Its tests cover which suites get shard variables and that one failing
 shard fails the step. Neither workflow runs on a PR, and neither
 publishes, so dispatched `test.yml` and `scheduled.yml` runs on the
 branch prove it.
+
+Done in #NNNN, as a JavaScript action: `bdd-sharded/bdd.mjs`, with the
+bash gone. It runs what the shell ran: one build of every bdd target,
+then rp as four shard processes, session-runner as two, polar-align and
+filemonitor in one stream and the other 21 suites in one more, each
+stream's output in a log of its own, printed as a group once they end.
+The inputs and the six callers are unchanged.
+
+- **No shell and no jq.** The action reads cargo's JSON itself and starts
+  each binary with no shell between, so two of the shell's guards against
+  itself went with it: the count of the suites each list ran (a loop that
+  shared stdin with them had dropped suites) and the check that the split
+  covered every binary (an awk that matched nothing). The tests check the
+  split, and a suite's stdin is never the step's.
+- **A stopped run.** The runner stops a cancelled step, one past its
+  job's `timeout-minutes` included, with SIGINT, then SIGTERM 7.5 s
+  later, then a kill 2.5 s after that, which on Linux and macOS reaches
+  Node alone (actions/runner, `src/Runner.Sdk/ProcessInvoker.cs`). Either
+  signal sends each running suite SIGTERM, then SIGKILL 5 s later, and
+  the logs are printed before the kill, so a stream that hangs still
+  shows what it printed. No further suite starts.
+- **A stream that throws**, which no real suite does (spawn refusing its
+  arguments), stops the others, and the step fails once every suite it
+  started has ended.
+- **Proof:** tests that start each fake suite as a Node process of its
+  own, each shown to fail with its behaviour broken, and a run of the
+  entry file on the real workspace. Dispatched on the branch: `test.yml`
+  on hosted Linux, macOS and Windows, and `scheduled.yml`'s three BDD
+  jobs, `updated` among them, which sets `rustflags`; and a `test.yml`
+  run cancelled while the suites ran, whose logs show each stream's group.
 
 ### J13 — Package-repository scripts
 
