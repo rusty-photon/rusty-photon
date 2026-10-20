@@ -171,5 +171,6 @@ SVBony's Windows SDK) is not offered to developers.
 
 **Consequences.** `bazel run` works only from a checkout with Bazel, which
 every developer of this repository has (AGENTS.md rule 4's gate runs it).
-J3 brings OmniSim and Pebble; J5 and J6 add the ZWO and SVBony SDKs'
-public downloads, retiring the READMEs' copy-paste blocks.
+J3 brings OmniSim and Pebble, and ASTAP followed J4; J5 and J6 add the
+ZWO and SVBony SDKs' public downloads, retiring the READMEs' copy-paste
+blocks.

@@ -518,7 +518,12 @@ the real ASTAP binary, gated by a runtime check on the
 `ASTAP_BINARY` environment variable. Scenarios skip silently when
 the env var is unset (the PR-required path). They fire when the env
 var is set, which is the dedicated nightly cross-platform smoke
-workflow's job. See `docs/plans/archive/plate-solver.md` §"Real-ASTAP
+workflow's job. To fire them on a developer's machine,
+`bazel run //.github/actions:install -- astap` installs the CLI and
+the D05 database the smoke pins into `~/.local/opt/astap` and prints
+the `ASTAP_BINARY` and `ASTAP_DB_DIR` to set; then run
+`cargo test -p plate-solver --all-features --test bdd`, as the smoke
+does. See `docs/plans/archive/plate-solver.md` §"Real-ASTAP
 coverage: cadence and gating" for the rationale and the `bdd.rs`
 filter snippet.
 

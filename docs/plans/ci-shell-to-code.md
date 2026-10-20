@@ -458,9 +458,11 @@ not:
   `plate-solver-smoke` run, when a SourceForge mirror closed the
   connection under a paused body (nodejs/undici#5360). The smoke and
   `plate-solver-smoke` also run on a change to `.github/actions/lib`, which
-  the action runs. The macOS quarantine step went, as J2's did. ASTAP
-  joins no developer install: Amendment A names J5 and J6 for that. The
+  the action runs. The macOS quarantine step went, as J2's did. The
   workflow's own D05 download, with its copy of the pin, stays for J8.
+  ASTAP joined the developer's install in #1574, at the owner's ask,
+  though Amendment A named only J5 and J6: `installAt` puts the CLI and
+  the D05 database in one directory.
 - **J5 `install-zwo-sdk`** (442 lines, bash and PowerShell). A sudo and a
   sudo-free Linux path, a macOS path and a Windows path; the cache restore
   and save are separate steps; the Windows download is the unpinned,
