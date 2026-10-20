@@ -44,9 +44,9 @@ svbony/windows-SVBCameraSDK-v1.13.4.zip
 svbony/SVBONY-Driver-DS-V1.13.4-20250205.exe
 ```
 
-Consumers pin each object's sha256 (e.g. in
-`.github/actions/install-svbony-sdk`) — the mirror is trusted for
-availability, not integrity.
+Consumers pin each object's sha256 (e.g. `WINDOWS_SDK_SHA256`, beside
+`WINDOWS_SDK_VERSION`, in `.github/actions/install-svbony-sdk/svbony-sdk.mjs`)
+— the mirror is trusted for availability, not integrity.
 
 ## Deploy (one-time)
 

@@ -94,7 +94,7 @@ first in their columns.
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Done (#1573) |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
-| J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
+| J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
@@ -502,6 +502,28 @@ not:
   downloads join the developer's install; the Windows one does not, since
   it comes from the private mirror (ADR-018 §7), which developers are not
   given.
+
+  Done in #1578. The steps became `svbony-sdk.mjs`, run by a composite of
+  resolve, cache and install. The SDK goes where it went: `/usr/local`
+  with sudo on hosted Linux and Intel macOS, `$RUNNER_TEMP/svbony-sdk/lib`
+  on the sudo-less Pi. On Windows `$RUNNER_TEMP\svbony-sdk\lib` now holds
+  the import library and DLL alone, where the step pointed into the
+  unpacked zip; no Bazel action carries the string, since Bazel never
+  links the SDK. The commit, the Windows version and its SHA-256 moved
+  into the module from inputs no workflow set, and `check-pkg-assets.sh`
+  reads `REF` there. The mirror's token goes through `download`'s new
+  `headers`, which `get` drops on a redirect to another origin, as fetch
+  does, and the zip still goes into no cache: a fork's pull request can
+  restore the repository's caches. Two changes from the shell: the
+  sudo-free path installs the library as the sudo path does, `.so.1` with
+  a `.so` link; and on macOS libusb is copied and pointed at only when
+  `otool -L` shows the library loads it by `@rpath`. `findRuntime`,
+  `linkRuntime`, `loaderFinds`, `canWrite` and `unpackZips` moved from
+  `zwo-sdk.mjs` into `lib/install.mjs`, now that two modules use them. The
+  developer's `svbony-sdk` installs into `/usr/local` on Linux and Intel
+  Macs, and on Windows says where to get the SDK; it replaced the
+  instruction in `crates/svbony-rs/README.md` to install the library by
+  hand.
 
 ### J7 — Nightly tracking-issue action
 

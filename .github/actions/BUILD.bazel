@@ -89,6 +89,21 @@ node_test(
     ],
 )
 
+# install-svbony-sdk: SVBony's camera SDK, which libsvbony-sys links: from the
+# INDI repository at a commit on Linux and macOS, from the project's private
+# mirror on Windows.
+node_test(
+    name = "install_svbony_sdk_test",
+    size = "small",
+    srcs = ["install-svbony-sdk/svbony-sdk.test.mjs"],
+    data = [
+        "install-svbony-sdk/svbony-sdk.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # install-zwo-sdk: ZWO's ASI, EFW and EAF SDKs, which libzwo-sys links: from the
 # INDI repository at a commit on Linux and macOS, from ZWO's CDN on Windows.
 # Medium: on Windows each install's unpacking starts PowerShell twice, a second
@@ -115,6 +130,7 @@ node_binary(
         "install-astap/astap.mjs",
         "install-omnisim/omnisim.mjs",
         "install-pebble/pebble.mjs",
+        "install-svbony-sdk/svbony-sdk.mjs",
         "install-zwo-sdk/zwo-sdk.mjs",
         "lib/helpers.mjs",
         "lib/install.mjs",

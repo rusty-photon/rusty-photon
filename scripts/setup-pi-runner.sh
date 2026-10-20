@@ -150,8 +150,8 @@ sudo apt-get install -y \
 # `-lusb-1.0` link name (no -dev package), and exports SVBONY_SDK_LIB_DIR
 # (which libsvbony-sys' build.rs puts ahead of /usr/local/lib) +
 # LD_LIBRARY_PATH. As with the QHYCCD/ZWO moves, provisioning in the
-# workflow makes the runner self-healing: an SVBony SDK bump only needs the
-# action's `ref` updated, not a manual re-run of this script. The only
+# workflow makes the runner self-healing: an SVBony SDK bump only needs REF
+# in the action's svbony-sdk.mjs updated, not a manual re-run of this script. The only
 # prerequisite the per-run step cannot install without sudo is the same
 # libusb-1.0 runtime package installed once in §1 above (the symlink
 # target); unlike ZWO, no clang/libclang-dev is needed — libsvbony-sys' FFI

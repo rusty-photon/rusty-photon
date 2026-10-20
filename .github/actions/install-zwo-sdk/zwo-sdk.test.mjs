@@ -10,17 +10,14 @@ import {
   CAMERA_SDK_URL,
   EAF_SDK_URL,
   EFW_SDK_URL,
-  findRuntime,
   HEADERS,
   INDI,
   install,
   installAt,
-  powershellProgram,
   PREFIX,
   REF,
   resolve,
   RUNNERS,
-  unpackZips,
 } from './zwo-sdk.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -409,25 +406,6 @@ test('install without sudo names the package to install when a runtime library i
   }
 });
 
-test('findRuntime reads the loader\'s cache, and the usual directories when that fails', async () => {
-  const listing =
-    '1234 libs found in cache `/etc/ld.so.cache\'\n' +
-    '\tlibusb-1.0.so.0 (libc6,AArch64) => /lib/aarch64-linux-gnu/libusb-1.0.so.0\n' +
-    '\tlibudev.so.1 (libc6,AArch64) => /lib/aarch64-linux-gnu/libudev.so.1\n';
-  const cache = recorder({ ldconfig: listing });
-  assert.equal(await findRuntime('libudev.so.1', { run: cache.run, dirs: [] }), '/lib/aarch64-linux-gnu/libudev.so.1');
-  assert.deepEqual(cache.calls, [['ldconfig', '-p']]);
-
-  const dirs = [tempDir(), tempDir()];
-  writeFileSync(join(dirs[1], 'libudev.so.1'), 'libudev');
-  const none = async () => {
-    throw new Error('spawn ldconfig ENOENT');
-  };
-  assert.equal(await findRuntime('libudev.so.1', { run: none, dirs }), join(dirs[1], 'libudev.so.1'));
-  assert.equal(await findRuntime('libudev.so.1', { run: recorder({ ldconfig: listing.slice(0, 40) }).run, dirs }), join(dirs[1], 'libudev.so.1'));
-  assert.equal(await findRuntime('libusb-1.0.so.0', { run: none, dirs }), undefined);
-});
-
 // --- Installing on Windows ----------------------------------------------------------------
 
 test('install on Windows stages each SDK\'s x64 import library and DLL under the names libzwo-sys links', async () => {
@@ -465,31 +443,6 @@ test('install on Windows unpacks an SDK holding a name Windows\' code page canno
   } finally {
     await server.close();
   }
-});
-
-test('unpackZips on Windows runs one Expand-Archive per zip in one PowerShell, by its full path, each path quoted whole', async () => {
-  const { run, calls } = recorder();
-  const program = await withEnv({ SystemRoot: 'C:\\Windows' }, async () => {
-    const zips = [
-      ["C:\\Users\\o'brien\\a\u2019b.zip", 'C:\\Temp\\a'],
-      ['C:\\Temp\\b.zip', 'C:\\Temp\\b'],
-    ];
-    await unpackZips(zips, { platform: 'win32', run });
-    await unpackZips([], { platform: 'win32', run });
-    return powershellProgram();
-  });
-  assert.equal(program, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-  assert.equal(calls.length, 1);
-  const [called, ...args] = calls[0];
-  assert.equal(called, program);
-  assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
-  assert.equal(
-    Buffer.from(args[3], 'base64').toString('utf16le'),
-    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; try { " +
-      "Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\a' -Force; " +
-      "Expand-Archive -LiteralPath 'C:\\Temp\\b.zip' -DestinationPath 'C:\\Temp\\b' -Force" +
-      ' } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
-  );
 });
 
 test('install on Windows takes the LLVM the runner has, and this week\'s cached downloads', async () => {

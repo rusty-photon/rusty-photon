@@ -32,9 +32,9 @@ exports_files(
 #
 # Phase F (docs/plans/archive/svbony-camera.md) added `.github/actions/install-svbony-sdk`
 # and wired it into `conformu.yml` + `native.yml` — but that is a plain-Cargo,
-# GitHub-Actions-only provisioning mechanism (a composite action that shells
-# out to `apt`/`brew`/`curl`+`ldconfig`), not something Bazel's hermetic build
-# graph consumes; Bazel would need its own repository rule (e.g. an
+# GitHub-Actions-only provisioning mechanism (a composite action that
+# downloads the SDK and installs it with `ldconfig`), not something Bazel's
+# hermetic build graph consumes; Bazel would need its own repository rule (e.g. an
 # `http_file` fetch + a non-`cargo_build_script` link step) to provision the
 # same SDK, which nothing in this workspace's `WORKSPACE`/`MODULE.bazel` does
 # today, unlike QHYCCD/ZWO which land on Bazel CI/dev hosts pre-provisioned by

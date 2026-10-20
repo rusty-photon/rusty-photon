@@ -324,24 +324,24 @@ if [ -f "$bp" ] && [ -f "$zm" ]; then
 fi
 
 # The SVBony blob ref is pinned in three places: the blob build-packages.sh
-# links against at build time, the blob CI links against (install-svbony-sdk),
-# and the blob the operator-run helper downloads post-install
-# (rusty-photon-svbony-sdk-install) — all three must come from the same
-# indi-3rdparty commit.
+# links against at build time, the blob CI links against (install-svbony-sdk's
+# REF in its module), and the blob the operator-run helper downloads
+# post-install (rusty-photon-svbony-sdk-install) — all three must come from
+# the same indi-3rdparty commit.
 svbony_helper=services/svbony-camera/pkg/rusty-photon-svbony-sdk-install
-svbony_act=.github/actions/install-svbony-sdk/action.yml
-if [ -f "$svbony_helper" ] && [ -f "$svbony_act" ]; then
+sm=.github/actions/install-svbony-sdk/svbony-sdk.mjs
+if [ -f "$svbony_helper" ] && [ -f "$sm" ]; then
     s1=$(sed -n 's/^REF="\(.*\)"$/\1/p' "$svbony_helper" | head -1)
-    s2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$svbony_act")
+    s2=$(js_const "$sm" REF)
     if [ -z "$s1" ] || [ "$s1" != "$s2" ]; then
-        err "SVBony SDK ref pin mismatch: rusty-photon-svbony-sdk-install='$s1' vs install-svbony-sdk default='$s2'"
+        err "SVBony SDK ref pin mismatch: rusty-photon-svbony-sdk-install='$s1' vs install-svbony-sdk's REF='$s2'"
     fi
 fi
-if [ -f "$bp" ] && [ -f "$svbony_act" ]; then
+if [ -f "$bp" ] && [ -f "$sm" ]; then
     s3=$(sed -n 's/^SVBONY_SDK_REF="\(.*\)"$/\1/p' "$bp" | head -1)
-    s4=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$svbony_act")
+    s4=$(js_const "$sm" REF)
     if [ -z "$s3" ] || [ "$s3" != "$s4" ]; then
-        err "SVBony SDK ref pin mismatch: build-packages.sh='$s3' vs install-svbony-sdk default='$s4'"
+        err "SVBony SDK ref pin mismatch: build-packages.sh='$s3' vs install-svbony-sdk's REF='$s4'"
     fi
 fi
 

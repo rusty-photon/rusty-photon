@@ -23,7 +23,7 @@
 //! `WinUSB`. Like the Linux/macOS blob it ships no license text (ADR-018). The
 //! vendor download is captcha-gated (not scriptable), so CI provisions it
 //! from the project's private token-gated mirror instead
-//! (`install-svbony-sdk`'s Windows step, ADR-018 §7); builds without mirror
+//! (`install-svbony-sdk` on Windows, ADR-018 §7); builds without mirror
 //! access set `SVBONY_SKIP_NATIVE_LINK`.
 
 use std::env;
@@ -102,7 +102,7 @@ fn main() {
             // No default search path exists on Windows (no ldconfig, no
             // Homebrew prefix), so linking the real SDK relies entirely on
             // SVBONY_SDK_LIB_DIR (set above) or the consumer's own `-L` —
-            // in CI, install-svbony-sdk's Windows step exports it (and puts
+            // in CI, install-svbony-sdk exports it on Windows (and puts
             // the DLL dir on PATH for runtime). No libusb link (unlike
             // Linux/macOS): the DLL uses Windows' in-box WinUSB.
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");

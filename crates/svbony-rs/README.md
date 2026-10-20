@@ -48,8 +48,9 @@ style and sidestepping any enum-size ABI risk entirely.
 ## SVBony vs. QHY vs. ZWO — how this crate differs
 
 - **License**: no grant at all (like QHY), unlike ZWO's MIT SDK header.
-- **Library form**: dynamic `.so` only (`libSVBCameraSDK.so.1`, with a proper
-  SONAME — unlike ZWO's SONAME-less blobs), unlike QHY's static `.a`.
+- **Library form**: dynamic `.so` only, unlike QHY's static `.a`. Like ZWO's
+  blobs it carries no SONAME, though INDI's packaging installs it as
+  `libSVBCameraSDK.so.1`.
 - **Exposure model**: video-only. There is no snap-exposure API (`SVBGetVideoData`
   after `SVBStartVideoCapture` + `SVBSendSoftTrigger`, not a
   `StartExposure`/`GetExpStatus` pair like ASI/QHYCCD). See
@@ -68,14 +69,35 @@ style and sidestepping any enum-size ABI risk entirely.
 
 No libclang / bindgen requirement — `libsvbony-sys` is hand-written FFI.
 
-Install the SDK library at `/usr/local/lib/libSVBCameraSDK.so` (or point
-`SVBONY_SDK_LIB_DIR` at its directory). No packaging/provisioning action
-exists yet in this repo (Phase C+ of `docs/plans/archive/svbony-camera.md`); until
-then, this crate's own Bazel build (`crates/svbony-rs/libsvbony-sys/BUILD.bazel`)
-bakes in `SVBONY_SKIP_NATIVE_LINK=1` so `bazel build //...`/`bazel test //...`
-need zero SDK provisioning — a deliberate difference from `libqhyccd-sys`'s
-and `libzwo-sys`'s Bazel targets, which link the real, pre-provisioned system
-SDK.
+Install the SDK as CI does, from the indi-3rdparty commit CI pins (`REF` in
+`.github/actions/install-svbony-sdk/svbony-sdk.mjs`; bump it there to adopt a
+newer SDK), into `/usr/local` on Linux and Intel Macs:
+
+```sh
+# libusb-1.0 first: libusb-1.0-0-dev (Debian/Ubuntu), libusb1-devel (Fedora),
+# or `brew install libusb` (macOS).
+bazel run //.github/actions:install -- svbony-sdk
+```
+
+The library goes into `/usr/local/lib` as `libSVBCameraSDK.so.1`, with a
+`libSVBCameraSDK.so` link to it, and the header into `/usr/local/include`,
+where libsvbony-sys's build script looks, using `sudo` for the copy when you
+cannot write there; it replaces those files and nothing else. The library
+carries no SONAME, so on Linux a binary that loads it finds it through the
+loader's cache, and where that has no `/usr/local/lib`, as on Fedora, the
+install prints an `LD_LIBRARY_PATH` line to set. With `--prefix DIR`
+elsewhere it also prints the `SVBONY_SDK_LIB_DIR` Cargo needs to link.
+
+There is no build for Apple Silicon. On Windows the install offers nothing:
+CI's copy of SVBony's SDK is on the project's private mirror, which
+developers are not given (ADR-018 §7). Download the SDK from SVBony's site,
+behind its CAPTCHA, and point `SVBONY_SDK_LIB_DIR` at its `SVBONY\lib\x64`,
+which a binary that loads the DLL also needs on `PATH`.
+
+This crate's own Bazel build (`crates/svbony-rs/libsvbony-sys/BUILD.bazel`)
+bakes in `SVBONY_SKIP_NATIVE_LINK=1`, so `bazel build //...`/`bazel test
+//...` need no SDK — a deliberate difference from `libqhyccd-sys`'s and
+`libzwo-sys`'s Bazel targets, which link the real, pre-provisioned system SDK.
 
 Override the SDK lib directory with `SVBONY_SDK_LIB_DIR=/path/to/lib`; skip
 all native linking with `SVBONY_SKIP_NATIVE_LINK=1`.

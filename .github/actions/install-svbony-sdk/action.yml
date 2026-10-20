@@ -1,115 +1,40 @@
 name: Install SVBony Camera SDK
 description: >-
-  Install the SVBony camera SDK (libSVBCameraSDK, no license grant — see
-  ADR-018) + the libusb-1.0 prerequisite so the `svbony-camera` service can
-  link. The SDK links unconditionally via libsvbony-sys, so this is required
-  even for `--features simulation`/`conformu` builds (it removes the camera,
-  not the link — SVBONY_SKIP_NATIVE_LINK is the only way to omit the link
-  entirely). See docs/services/svbony-camera.md "Native dependency & build
-  gating" and docs/plans/archive/svbony-camera.md.
-
-  No bindgen: unlike install-zwo-sdk, this action does not install
-  clang/libclang — libsvbony-sys's FFI is hand-written (`lib.rs`, no
-  bindgen), since SVBony's header carries no license to vendor under. No
-  libudev either — byte-inspection of the vendored `.bin` blobs (readelf -d)
-  confirms libSVBCameraSDK links only libusb-1.0 (undefined `libusb_*`
-  symbols, resolved at runtime by the consuming binary's own `-lusb-1.0`
-  link, since the blob itself carries no NEEDED entry for it at all) plus
-  the usual libc/libstdc++/libgcc_s/libm — matching libsvbony-sys/build.rs's
-  actual link-lib list, not the udev+libusb pair ZWO's EFW/EAF blobs need.
-
-  Windows: provisioned from the project's private CI mirror
-  (https://private.rustyphoton.space — tools/private-mirror-worker/), not
-  from the vendor: SVBony's own Windows SDK download
-  (svbony.com/downloads/software-driver, windows-SVBCameraSDK-v<ver>.zip)
-  sits behind a CAPTCHA/consent flow (`data-fileRestricted="true"`,
-  `recaptcha-v3.js`/`unified-captcha.js`) — no automatable fetch — and
-  indi-3rdparty's libsvbony packaging covers Linux/macOS only. The mirror
-  holds an operator-downloaded copy of the vendor zip, token-gated on
-  every request and never republished (ADR-018 §7); the Windows step
-  verifies a pinned sha256 computed from the vendor original before use,
-  so the mirror is trusted for availability, not integrity. Callers pass
-  the PRIVATE_MIRROR_TOKEN repo secret via the `windows-mirror-token`
-  input; the step FAILS if it is empty (fork PRs and dependabot runs
-  receive no repo secrets), so callers that can degrade should gate the
-  step on the secret's presence and fall back to SVBONY_SKIP_NATIVE_LINK=1
-  instead (see conformu.yml's Windows job). The zip carries both the MSVC
-  import library and the runtime DLL (SVBONY/lib/x64/); the step exports
-  SVBONY_SDK_LIB_DIR for the link and prepends the same dir to PATH so
-  later steps' test/runtime processes can load SVBCameraSDK.dll.
-
-  macOS: x86_64 (`mac64`) only. indi-3rdparty's libsvbony packaging ships no
-  `mac_arm64` blob (SVBony's own direct SDK download has not been
-  independently byte-verified for one — see docs/plans/archive/svbony-camera.md
-  "Packaging"), so this action fails loudly with an actionable message on
-  Apple Silicon runners (`macos-latest` today) rather than attempting a
-  cross-arch link that would fail confusingly at the final link step.
-  Callers needing real-SDK macOS coverage must pin an Intel runner (e.g.
-  `macos-13`); callers on `macos-latest` should skip this action and build
-  with `SVBONY_SKIP_NATIVE_LINK=1` instead (see conformu.yml/native.yml for
-  the pattern).
-
-  Byte-verified 2026-07-21 against the pinned ref's `libsvbony/` blobs
-  (`readelf -d libSVBCameraSDK_amd64.bin`): despite indi-3rdparty's
-  CMakeLists.txt setting a CMake `SOVERSION 1` *install* property, the
-  vendored `.bin` itself carries **no embedded DT_SONAME** — exactly like
-  ZWO's blobs, not the "proper SONAME, no RUNPATH needed" case the design
-  doc's Packaging section speculated and explicitly left unconfirmed.
-  Empirically (`ldconfig -C <scratch-cache> <dir>`), glibc's ldconfig falls
-  back to the on-disk *filename* as the cache key when no SONAME is present,
-  so installing under the literal `libSVBCameraSDK.so.1` name (+ a
-  `libSVBCameraSDK.so` symlink) and running `ldconfig` still lets a plain
-  `-lSVBCameraSDK` resolve at both link and run time via the standard
-  ldconfig-scanned `$PREFIX/lib` — no RUNPATH trick needed after all, just
-  not for the reason the CMakeLists property implied.
+  Install the SVBony camera SDK (libSVBCameraSDK, no license grant, ADR-018)
+  and the libusb-1.0 it needs, so that the `svbony-camera` service links.
+  libsvbony-sys links the SDK even in a `--features simulation` build (it
+  removes the camera, not the link); SVBONY_SKIP_NATIVE_LINK=1 is the only way
+  to leave the link out, see docs/services/svbony-camera.md "Native dependency
+  & build gating". Linux and macOS (Intel only: there is no build for Apple
+  Silicon) take SVBony's prebuilt library as the INDI repository vendors it,
+  at a pinned commit; Windows takes SVBony's own SDK from the project's
+  private mirror, against a pinned SHA-256 (ADR-018 §7). The pins, the files
+  and the install are svbony-sdk.mjs's; the download and the cache key are
+  lib/install.mjs's (plan item J6 in docs/plans/ci-shell-to-code.md).
 
 inputs:
-  ref:
-    description: >-
-      indi-3rdparty git ref for the vendored SVBony `.bin` shared libraries
-      (Linux/macOS). INDI vendors SVBony's upstream prebuilt blobs (no
-      license grant — publicly fetched at build time, not redistributed by
-      us; same posture `install-zwo-sdk` takes toward MIT-licensed ZWO
-      blobs) under libsvbony/. Pinned to a commit SHA (not a moving branch)
-      so the native SDK bits are reproducible and can't change without a
-      repo edit; bump it to adopt a newer SVBony SDK.
-    default: cd50a3b95032d850cca28d8162513276bc1349ba
-  prefix:
-    description: Install prefix for the SDK library and header (Linux/macOS).
-    default: /usr/local
   sudo:
     description: >-
       Whether the Linux path may use sudo (default "true"). The default
-      apt-installs the libusb-1.0 prerequisite and writes the SDK blob into
-      `prefix` (/usr/local) + ldconfig — correct for GitHub-hosted x86/arm64
-      runners. Set "false" for the sudo-LESS self-hosted Pi nightly runner:
-      the blob is staged under $RUNNER_TEMP, `-lusb-1.0` is resolved by
-      symlinking the system *runtime* lib into that dir (no -dev package),
-      and SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of
-      touching /usr/local. In sudo-free mode the libusb-1.0 runtime must
-      already be provisioned by scripts/setup-pi-runner.sh. Mirrors the
-      ZWO/QHYCCD per-run sudo-free model (docs/skills/raspberry-pi-runner.md).
+      apt-installs libusb-1.0's -dev package and installs the SDK into
+      /usr/local, refreshing the loader's cache, as GitHub-hosted runners
+      allow. Set "false" for the sudo-LESS self-hosted Pi nightly runner: the
+      SDK goes under $RUNNER_TEMP/svbony-sdk, uncached, `-lusb-1.0` resolves
+      to a link there to the system *runtime* lib (no -dev package), and
+      SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of touching
+      /usr/local. In sudo-free mode the host must already have the libusb-1.0
+      runtime, installed once at runner setup by scripts/setup-pi-runner.sh.
+      Mirrors the ZWO and QHYCCD per-run sudo-free model.
     default: "true"
   windows-mirror-token:
     description: >-
       Bearer token for the private CI mirror (the PRIVATE_MIRROR_TOKEN
-      GitHub Actions secret). Required on Windows — the step fails loudly
-      without it; unused on Linux/macOS. See the action header comment and
-      ADR-018 §7.
+      GitHub Actions secret). Required on Windows, where the step fails
+      without it; unused on Linux and macOS. Fork PRs and dependabot runs
+      receive no repository secrets, so a caller that can build without the
+      real link gates the step on the secret and sets
+      SVBONY_SKIP_NATIVE_LINK=1 instead (see conformu.yml's Windows job).
     default: ""
-  windows-sdk-version:
-    description: >-
-      SVBony Windows SDK version (Windows only). Selects the mirror key
-      `svbony/windows-SVBCameraSDK-v<version>.zip`; bump it together with
-      `windows-sdk-sha256` after uploading the new vendor zip to the mirror
-      (tools/private-mirror-worker/README.md).
-    default: "1.13.4"
-  windows-sdk-sha256:
-    description: >-
-      Pinned sha256 of the vendor zip (Windows only), computed from the
-      operator-downloaded original — the mirror is trusted for
-      availability, not integrity.
-    default: c0ad5b02c475a39a93d3dbcf8d64a17c079d0d4bcab7d66184a598a15f4d4a5e
 
 runs:
   using: composite
@@ -120,11 +45,10 @@ runs:
       run: |
         sudo apt-get update -qq
         # libusb-1.0-0-dev: the SDK's undefined libusb_* symbols are resolved
-        # at runtime by the CONSUMING binary's own -lusb-1.0 link (the blob
-        # itself carries no NEEDED entry for libusb — see the action header
-        # comment), so libusb-1.0 must be present wherever libsvbony-sys
-        # links. No libclang (no bindgen) and no libudev-dev (the SDK
-        # references no udev_* symbols) — both unlike install-zwo-sdk.
+        # at run time by the consuming binary's own -lusb-1.0 link, so
+        # libusb-1.0 must be there wherever libsvbony-sys links. No libclang
+        # (no bindgen) and no libudev-dev (the SDK references no udev_*
+        # symbols), both unlike install-zwo-sdk.
         sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev
 
     - name: Install libusb (macOS)
@@ -132,236 +56,24 @@ runs:
       shell: bash
       run: brew install libusb
 
-    - name: Determine SVBony SDK arch (Linux/macOS)
-      # Linux uses this sudo path only when sudo == 'true'; the sudo-free
-      # Linux path is the dedicated step below. macOS always uses this path
-      # (x86_64 only — see the action header comment for the arm64 gap).
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
-      id: asset
-      shell: bash
-      env:
-        REF: ${{ inputs.ref }}
-      run: |
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)    ARCH=amd64 ;;
-          Linux-ARM64)  ARCH=armv8 ;;
-          macOS-X64)    ARCH=mac64 ;;
-          macOS-ARM64)
-            echo "::error::install-svbony-sdk: no confirmed arm64 macOS libSVBCameraSDK blob (indi-3rdparty's libsvbony packaging ships mac64/Intel only as of SDK 1.13.4). Pin an Intel runner (e.g. macos-13) for real-SDK SVBony coverage, or skip this action and build with SVBONY_SKIP_NATIVE_LINK=1 on macos-latest. See docs/plans/archive/svbony-camera.md Packaging."
-            exit 1
-            ;;
-          *) echo "::error::install-svbony-sdk: unsupported arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
-        esac
-        if [[ "${{ runner.os }}" == "macOS" ]]; then EXT=dylib; else EXT=so; fi
-        {
-          echo "arch=$ARCH"
-          echo "ext=$EXT"
-          # ARCH values are already OS-unique (amd64/armv8 are Linux-only,
-          # mac64 is macOS-only), so no separate os component is needed.
-          # `ref` participates so bumping the indi-3rdparty pin invalidates
-          # any previously cached blob. The leading `v1` is a schema version
-          # for the *set* of files this action fetches/caches (header + lib)
-          # — bump it if that set changes, so a stale cache entry can be
-          # invalidated without needing an unrelated `ref` bump.
-          echo "cache-key=svbony-sdk-blobs-v1-$ARCH-$REF"
-        } >> "$GITHUB_OUTPUT"
+    - name: Resolve the SVBony SDK files
+      id: resolve
+      uses: ./.github/actions/install-svbony-sdk/resolve
 
-    - name: Cache SVBony SDK blobs (Linux/macOS)
-      # Caches the raw indi-3rdparty download, not the installed $PREFIX
-      # tree — the install step below (always runs) does the sudo copy into
-      # $PREFIX, so a cache hit here skips the GitHub-raw fetch entirely.
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+    # The INDI downloads only: the Windows SDK goes into no cache, which a
+    # fork's pull request could restore, since only the token may fetch it
+    # (ADR-018 §7). The sudo-free path stages per run, uncached.
+    - name: Cache the SVBony SDK downloads
+      if: runner.os != 'Windows' && (runner.os != 'Linux' || inputs.sudo == 'true')
       id: cache
       uses: actions/cache@v6
       with:
-        path: svbony-sdk-blobs
-        key: ${{ steps.asset.outputs.cache-key }}
+        path: svbony-sdk
+        key: ${{ steps.resolve.outputs.key }}
 
-    - name: Download the SVBony SDK (Linux/macOS)
-      if: (runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')) && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        REF: ${{ inputs.ref }}
-        ARCH: ${{ steps.asset.outputs.arch }}
-        EXT: ${{ steps.asset.outputs.ext }}
-      run: |
-        set -euo pipefail
-        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libsvbony"
-        echo "install-svbony-sdk: downloading arch=$ARCH ref=$REF (cache miss)"
-        mkdir -p svbony-sdk-blobs
-
-        # Header: for completeness only. libsvbony-sys's `lib.rs` is a
-        # hand-written `extern "C"` block (no bindgen, no vendored header —
-        # SVBony's SDK carries no license text to vendor under), so nothing
-        # in this repo reads this copy at build time.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/SVBCameraSDK.h" -o "svbony-sdk-blobs/SVBCameraSDK.h"
-
-        # Shared library. INDI's `.bin` is SVBony's upstream `.so`/`.dylib`,
-        # named per-arch (libSVBCameraSDK_<arch>.bin); normalise to the
-        # linker name at install time (next step).
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/libSVBCameraSDK_${ARCH}.bin" -o "svbony-sdk-blobs/libSVBCameraSDK.$EXT"
-
-    - name: Install the SVBony SDK (Linux/macOS)
-      # Always runs (cache hit or miss) — a plain local copy from
-      # svbony-sdk-blobs into $PREFIX, so it's cheap either way.
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
-      shell: bash
-      env:
-        PREFIX: ${{ inputs.prefix }}
-      run: |
-        set -euo pipefail
-        echo "install-svbony-sdk: prefix=$PREFIX"
-        sudo install -d "$PREFIX/lib" "$PREFIX/include"
-        sudo cp "svbony-sdk-blobs/SVBCameraSDK.h" "$PREFIX/include/SVBCameraSDK.h"
-
-        if [[ "${{ runner.os }}" == "macOS" ]]; then
-          # Best-effort only (x86_64, never exercised in this sandbox — no
-          # Mac available to verify). Mirrors install-zwo-sdk's dance: fix
-          # the dylib's own install name, then stage + rewrite its
-          # @rpath/libusb-1.0.0.dylib reference to an absolute path so it
-          # resolves under both Cargo's rpath and Bazel's rust_test binaries
-          # (which get no SDK-prefix rpath).
-          sudo cp "svbony-sdk-blobs/libSVBCameraSDK.dylib" "$PREFIX/lib/libSVBCameraSDK.dylib"
-          sudo install_name_tool -id "$PREFIX/lib/libSVBCameraSDK.dylib" "$PREFIX/lib/libSVBCameraSDK.dylib"
-          sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
-          sudo install_name_tool -change @rpath/libusb-1.0.0.dylib \
-            "$PREFIX/lib/libusb-1.0.0.dylib" "$PREFIX/lib/libSVBCameraSDK.dylib" 2>/dev/null || true
-          echo "install-svbony-sdk: installed libSVBCameraSDK.dylib under $PREFIX/lib"
-        else
-          # Linux. The vendored .bin carries NO embedded SONAME (verified by
-          # readelf -d — see the action header comment), so install it under
-          # a SOVERSIONed name anyway (matching indi-3rdparty's own install
-          # convention) plus the unversioned linker-name symlink, then
-          # ldconfig. Empirically, glibc's ldconfig falls back to the
-          # on-disk filename as the cache key when no SONAME is present, so
-          # both names still resolve via the standard ldconfig cache — no
-          # RUNPATH trick needed (unlike ZWO's SONAME-less blobs, which
-          # genuinely have no versioned install and rely on RUNPATH/
-          # LD_LIBRARY_PATH instead).
-          sudo cp "svbony-sdk-blobs/libSVBCameraSDK.so" "$PREFIX/lib/libSVBCameraSDK.so.1"
-          sudo ln -sf libSVBCameraSDK.so.1 "$PREFIX/lib/libSVBCameraSDK.so"
-          sudo ldconfig
-          # Sanity check: fail loudly here rather than deferring to a much
-          # less actionable "-lSVBCameraSDK not found" error at the first
-          # consumer's link step.
-          if ! ldconfig -p | grep -q 'libSVBCameraSDK\.so'; then
-            echo "::error::install-svbony-sdk: libSVBCameraSDK.so not found in 'ldconfig -p' after install — the ldconfig cache did not pick up $PREFIX/lib (is $PREFIX/lib in /etc/ld.so.conf.d/*.conf?)."
-            exit 1
-          fi
-          echo "install-svbony-sdk: installed libSVBCameraSDK.so.1 (+ .so symlink) under $PREFIX/lib, verified via ldconfig -p"
-        fi
-
-    - name: Provision SVBony SDK (Linux, sudo-free)
-      # The sudo-LESS self-hosted Pi nightly runner cannot apt-install
-      # libusb-1.0-0-dev or write to /usr/local. Stage the blob under
-      # $RUNNER_TEMP and resolve -lusb-1.0 from that same dir, then export
-      # SVBONY_SDK_LIB_DIR (build.rs adds it to the link search ahead of
-      # /usr/local/lib) + LD_LIBRARY_PATH. No ldconfig needed here — the
-      # link/runtime search resolves via -L / LD_LIBRARY_PATH directly, not
-      # the system cache (mirrors ZWO's sudo-free step exactly, minus the
-      # libudev symlink SVBony's SDK does not need).
-      if: runner.os == 'Linux' && inputs.sudo != 'true'
-      shell: bash
-      env:
-        REF: ${{ inputs.ref }}
-      run: |
-        set -euo pipefail
-        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libsvbony"
-        case "${{ runner.arch }}" in
-          ARM64) ARCH=armv8 ;;
-          X64)   ARCH=amd64 ;;
-          *) echo "::error::install-svbony-sdk: unsupported sudo-free arch ${{ runner.arch }}"; exit 1 ;;
-        esac
-        LIBDIR="${RUNNER_TEMP:-/tmp}/svbony-sdk/lib"
-        INCDIR="${RUNNER_TEMP:-/tmp}/svbony-sdk/include"
-        mkdir -p "$LIBDIR" "$INCDIR"
-        echo "install-svbony-sdk (sudo-free): arch=$ARCH libdir=$LIBDIR ref=$REF"
-
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/SVBCameraSDK.h" -o "$INCDIR/SVBCameraSDK.h"
-
-        # Under the linker name so `-lSVBCameraSDK` resolves. The blob
-        # carries no NEEDED entry on libusb (verified by readelf -d) — its
-        # undefined libusb_* symbols are satisfied at runtime by the
-        # consuming binary's own -lusb-1.0 link, so only the SVBony blob and
-        # a libusb-1.0 linker-name symlink need to live in this one dir.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/libSVBCameraSDK_${ARCH}.bin" -o "$LIBDIR/libSVBCameraSDK.so"
-
-        # `-lusb-1.0` normally needs the unversioned linker-name .so from
-        # libusb-1.0-0-dev. Without sudo we cannot apt-install it, so
-        # symlink the linker name to the system *runtime* .so inside our own
-        # search dir — the same libusb-1.0.so.0 runtime package (and the
-        # same symlink target) the ZWO/QHYCCD sudo-free paths already share.
-        found=""
-        if command -v ldconfig >/dev/null 2>&1; then
-          found="$(ldconfig -p 2>/dev/null | awk '$1 == "libusb-1.0.so.0" { print $NF; exit }')" || true
-        fi
-        if [ -z "$found" ]; then
-          for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
-                   /usr/lib/x86_64-linux-gnu /usr/lib /lib; do
-            if [ -e "$d/libusb-1.0.so.0" ]; then found="$d/libusb-1.0.so.0"; break; fi
-          done
-        fi
-        if [ -z "$found" ]; then
-          echo "::error::install-svbony-sdk: required system library libusb-1.0.so.0 not found. The sudo-free path symlinks against host libraries provisioned once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install it and re-run: sudo apt-get install -y libusb-1.0-0"
-          exit 1
-        fi
-        ln -sf "$found" "$LIBDIR/libusb-1.0.so"
-        echo "install-svbony-sdk (sudo-free): libusb-1.0.so -> $found"
-
-        {
-          echo "SVBONY_SDK_LIB_DIR=$LIBDIR"
-          echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        } >> "$GITHUB_ENV"
-        echo "install-svbony-sdk (sudo-free): exported SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
-
-    - name: Provision SVBony SDK (Windows, private mirror)
-      # See the action header comment: the vendor download is captcha-gated,
-      # so this fetches the operator-uploaded vendor zip from the private
-      # token-gated mirror (ADR-018 §7) and verifies its pinned sha256. The
-      # zip's SVBONY/lib/x64/ carries both SVBCameraSDK.lib (MSVC link) and
-      # SVBCameraSDK.dll (runtime): SVBONY_SDK_LIB_DIR covers the link, the
-      # PATH prepend lets later steps' processes load the DLL. No caching —
-      # the mirror serves from Cloudflare's edge with no rate limit, unlike
-      # the throttled indi-3rdparty fetch the Linux/macOS cache works around.
-      if: runner.os == 'Windows'
-      shell: pwsh
-      env:
-        MIRROR_TOKEN: ${{ inputs.windows-mirror-token }}
-        SDK_VERSION: ${{ inputs.windows-sdk-version }}
-        SDK_SHA256: ${{ inputs.windows-sdk-sha256 }}
-      run: |
-        $ErrorActionPreference = "Stop"
-        if ($env:RUNNER_ARCH -ne "X64") {
-          Write-Host "::error::install-svbony-sdk: unsupported Windows arch $env:RUNNER_ARCH (the vendor zip ships x64/x86 only, and this crate targets x64)"
-          exit 1
-        }
-        if (-not $env:MIRROR_TOKEN) {
-          Write-Host "::error::install-svbony-sdk: windows-mirror-token is empty. Pass the PRIVATE_MIRROR_TOKEN repo secret, or (callers that can run without the real link, e.g. forks) skip this action and set SVBONY_SKIP_NATIVE_LINK=1 instead. See the action header comment and ADR-018 section 7."
-          exit 1
-        }
-        $work = Join-Path $env:RUNNER_TEMP "svbony-sdk"
-        New-Item -ItemType Directory -Force -Path $work | Out-Null
-        $zip = Join-Path $work "windows-SVBCameraSDK.zip"
-        $url = "https://private.rustyphoton.space/svbony/windows-SVBCameraSDK-v$($env:SDK_VERSION).zip"
-        Write-Host "install-svbony-sdk (Windows): fetching SDK v$($env:SDK_VERSION) from the private mirror"
-        curl.exe -fsSL --retry 3 --retry-delay 2 -H "Authorization: Bearer $env:MIRROR_TOKEN" $url -o $zip
-        if ($LASTEXITCODE -ne 0) {
-          Write-Host "::error::install-svbony-sdk: mirror download failed (curl exit $LASTEXITCODE). Check the mirror worker (tools/private-mirror-worker/) and that the token matches its READ_TOKEN secret."
-          exit 1
-        }
-        $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
-        if ($hash -ne $env:SDK_SHA256.ToLowerInvariant()) {
-          Write-Host "::error::install-svbony-sdk: sha256 mismatch for windows-SVBCameraSDK-v$($env:SDK_VERSION).zip - got $hash, pinned $env:SDK_SHA256. The mirror object no longer matches the vendor original this action pins; re-verify the upload before trusting it."
-          exit 1
-        }
-        Expand-Archive -Path $zip -DestinationPath $work -Force
-        $libdir = Join-Path $work "SVBONY\lib\x64"
-        foreach ($f in "SVBCameraSDK.lib", "SVBCameraSDK.dll") {
-          if (-not (Test-Path (Join-Path $libdir $f))) {
-            Write-Host "::error::install-svbony-sdk: $f missing under SVBONY\lib\x64 after extract - the vendor zip layout changed; update this step."
-            exit 1
-          }
-        }
-        "SVBONY_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-        $libdir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-        Write-Host "install-svbony-sdk (Windows): staged SDK v$($env:SDK_VERSION) at $libdir (sha256 verified; exported SVBONY_SDK_LIB_DIR + PATH entry for the DLL)"
+    - name: Install the SVBony SDK
+      uses: ./.github/actions/install-svbony-sdk/install
+      with:
+        sudo: ${{ inputs.sudo }}
+        windows-mirror-token: ${{ inputs.windows-mirror-token }}
+        cache-hit: ${{ steps.cache.outputs.cache-hit }}
