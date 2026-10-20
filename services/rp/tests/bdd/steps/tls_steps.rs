@@ -26,19 +26,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
     let mut config = world.build_config();
     config["server"]["tls"] = world.pki().tls_block();
 
-    let config_path = std::env::temp_dir()
-        .join(format!(
-            "rp-tls-test-{}.json",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .to_string_lossy()
-        .to_string();
-    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
-        .await
-        .unwrap();
+    let config_path = bdd_infra::rp_harness::write_temp_config_file("rp-tls-test", &config).await;
 
     world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
@@ -66,19 +54,7 @@ async fn health_responds_https(world: &mut RpWorld) {
 #[when("rp is started without TLS")]
 async fn rp_started_without_tls(world: &mut RpWorld) {
     let config = world.build_config();
-    let config_path = std::env::temp_dir()
-        .join(format!(
-            "rp-notls-test-{}.json",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .to_string_lossy()
-        .to_string();
-    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
-        .await
-        .unwrap();
+    let config_path = bdd_infra::rp_harness::write_temp_config_file("rp-notls-test", &config).await;
 
     world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 

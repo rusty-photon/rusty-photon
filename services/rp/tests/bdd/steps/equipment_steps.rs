@@ -182,19 +182,8 @@ fn configured_with_dome_at(world: &mut RpWorld, url: String, device_number: i32)
 #[when("rp starts")]
 async fn rp_starts(world: &mut RpWorld) {
     let config = world.build_config();
-    let config_path = std::env::temp_dir()
-        .join(format!(
-            "rp-test-config-{}.json",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .to_string_lossy()
-        .to_string();
-    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
-        .await
-        .expect("failed to write config");
+    let config_path =
+        bdd_infra::rp_harness::write_temp_config_file("rp-test-config", &config).await;
 
     world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
