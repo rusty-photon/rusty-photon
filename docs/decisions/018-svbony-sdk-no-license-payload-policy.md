@@ -117,7 +117,7 @@ mechanical delivery differs in one respect worth flagging (see
    `scripts/build-packages.sh`'s existing ZWO handling), and the helper
    installs the bare `libSVBCameraSDK.so` linker name with no SOVERSION/
    symlink pair — see `docs/services/svbony-camera.md`'s Packaging section
-   and `install-svbony-sdk/action.yml`'s header comment for the full trace.
+   and `install-svbony-sdk/svbony-sdk.mjs`'s header comment for the full trace.
    **Update (issue #679, 2026-07-22): wired into `scripts/build-packages.sh`.**
    A `needs_svbony` SDK-staging leg now stages the pinned blob for the link
    only (mirroring QHY/ZWO's staging, but — per this ADR — never copying it
@@ -209,8 +209,8 @@ mechanical delivery differs in one respect worth flagging (see
 - The SDK ref is pinned in the helper script
   (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) AND in
   `scripts/build-packages.sh` (issue #679), both cross-checked by
-  `scripts/check-pkg-assets.sh` against `.github/actions/install-svbony-sdk`'s
-  default ref, mirroring QHY's version/sha256 pin parity-check pattern — a
+  `scripts/check-pkg-assets.sh` against `REF` in
+  `.github/actions/install-svbony-sdk/svbony-sdk.mjs`, mirroring QHY's version/sha256 pin parity-check pattern — a
   version bump is a deliberate,
   checked PR.
 - `svbony-camera`'s Bazel build still bakes `SVBONY_SKIP_NATIVE_LINK=1`

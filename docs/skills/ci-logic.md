@@ -307,6 +307,20 @@ above.
   `install-zwo-sdk` is the example, for ZWO's SDKs for Windows.
 - **`makeRunnable`** sets a binary's mode so it runs, and leaves a
   Windows `.exe` as it is.
+- **A private download sends its token as `headers`** to `download`,
+  which `get` sends on through a redirect to the same origin only, as
+  fetch does. `install-svbony-sdk` does, for the SVBony SDK for Windows on
+  the project's private mirror (ADR-018 §7), and caches nothing it
+  fetched with the token: a fork's pull request can restore the
+  repository's caches.
+- **An SDK a native crate links** has the helpers both SDK actions share:
+  `findRuntime` finds a runtime library through the loader's cache,
+  `linkRuntime` links a -dev package's linker name to it on the sudo-less
+  Pi, `loaderFinds` says whether the loader's cache lists a library where
+  it went, `canWrite` whether the user can write a prefix without `sudo`,
+  and `unpackZips` unpacks a vendor's zip on Windows with PowerShell's
+  `Expand-Archive`, since Windows' `tar.exe` fails on a name the code
+  page cannot hold, as ZWO's SDKs have.
 - **`unpack`** runs each OS's own tool, since Node's built-ins read no
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
@@ -353,12 +367,15 @@ would be a second implementation of the module to keep in step.
   gives a `dir` of its own, for a build that looks in one place only. The
   ZWO SDK's is `/usr/local` on Linux and macOS, where libzwo-sys's build
   script and Bazel's actions find it, as CI installs it; it copies the
-  files there with `sudo` when the developer cannot write there.
+  files there with `sudo` when the developer cannot write there. The
+  SVBony SDK's is `/usr/local` too, where libsvbony-sys's build script
+  looks.
 - **It ships nothing.** It downloads on the developer's machine from
   where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
-  nothing goes into a package, and nothing is mirrored for developers. A
-  tool whose CI download comes from the project's private mirror
-  (ADR-018 §7) gets no entry in `TOOLS`.
+  nothing goes into a package, and nothing is mirrored for developers.
+  Nothing downloads from the project's private mirror (ADR-018 §7): the
+  SVBony SDK installs on Linux and Intel Macs, and on Windows, whose SDK
+  only the mirror holds, says where to get it.
 - **Its launcher is tested as `bazel run` runs it**, from the runfiles
   tree: `local_install_test` takes `:install` as data and runs it, so a
   launcher that drops its arguments or its exit code fails the PR. The

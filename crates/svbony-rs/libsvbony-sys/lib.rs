@@ -42,9 +42,10 @@ use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint};
 ///
 /// The vendored `libSVBCameraSDK.so`/`.dylib` blob references `libusb_*`
 /// symbols **without** declaring libusb in its own `DT_NEEDED` (byte-
-/// verified via `readelf -d`, see `install-svbony-sdk`'s header comment),
-/// so the *consumer binary* must carry the libusb dependency for the loader
-/// to resolve them at the first camera-SDK call. The plain `-lusb-1.0`
+/// verified via `readelf -d`, see the header comment of
+/// `.github/actions/install-svbony-sdk/svbony-sdk.mjs`), so the *consumer
+/// binary* must carry the libusb dependency for the loader to resolve them
+/// at the first camera-SDK call. The plain `-lusb-1.0`
 /// directive from `build.rs` is not sufficient on its own: the linker's
 /// `--as-needed` default (GNU ld and rust-lld alike) drops a library no
 /// regular object references, and `svbony-rs`'s own code never calls a

@@ -22,7 +22,7 @@
 
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, rmSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, constants, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
@@ -165,9 +165,17 @@ export function redirectTarget(from, location) {
   return next;
 }
 
+// `headers` without an Authorization header, which a redirect to another
+// origin does not carry on, as fetch's redirects do not: a token is for the
+// origin it was given for.
+function withoutAuthorization(headers) {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'authorization'));
+}
+
 /**
  * The response to a GET of `url` by Node's own HTTP client, once one answers
- * 2xx after following redirects; any other answer throws an HttpError. Not
+ * 2xx after following redirects, an Authorization header going to `url`'s
+ * origin only; any other answer throws an HttpError. Not
  * fetch: Node 24's (undici 7) crashes the process, beyond any catch, when a
  * server closes the connection while the reader has paused the body
  * (nodejs/undici#5360, fixed in undici 8 only). A SourceForge mirror answers
@@ -176,13 +184,16 @@ export function redirectTarget(from, location) {
  */
 export async function get(url, { headers = {}, signal } = {}) {
   let target = new URL(url);
+  let sent = headers;
   for (let hops = 0; ; hops++) {
-    const response = await request(target, { headers, signal });
+    const response = await request(target, { headers: sent, signal });
     const { statusCode: status, headers: answer } = response;
     if (REDIRECTS.has(status) && answer.location) {
       response.resume();
       if (hops === MAX_REDIRECTS) throw new TypeError(`GET ${target.origin}: more than ${MAX_REDIRECTS} redirects`);
-      target = redirectTarget(target, answer.location);
+      const next = redirectTarget(target, answer.location);
+      if (next.origin !== target.origin) sent = withoutAuthorization(sent);
+      target = next;
       continue;
     }
     if (status < 200 || status > 299) {
@@ -196,10 +207,11 @@ export async function get(url, { headers = {}, signal } = {}) {
   }
 }
 
-// Streams `url` into `file`, aborting when no data comes for `stallMs`, or,
-// with a `minBytesPerSecond`, when a stretch of `stallMs` brings fewer bytes
-// than that rate would, and resolves to the SHA-256 of what it wrote.
-async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs }) {
+// Streams `url` into `file`, with `headers` beside its own, aborting when no
+// data comes for `stallMs`, or, with a `minBytesPerSecond`, when a stretch of
+// `stallMs` brings fewer bytes than that rate would, and resolves to the
+// SHA-256 of what it wrote.
+async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs, headers }) {
   const stall = new AbortController();
   let timer;
   const wait = () => {
@@ -226,7 +238,7 @@ async function fetchTo(url, file, { stallMs, minBytesPerSecond, timeoutMs }) {
     // holds.
     const response = await get(url, {
       signal,
-      headers: { 'accept-encoding': 'identity', 'user-agent': 'rusty-photon-install' },
+      headers: { ...headers, 'accept-encoding': 'identity', 'user-agent': 'rusty-photon-install' },
     });
     const hash = createHash('sha256');
     await pipeline(
@@ -285,8 +297,9 @@ function check(asset, digest) {
  * meet again, such as a 404 or a bad certificate, is not tried again, unless
  * `retryAll` says the server is one of a pool of mirrors, any of which can be
  * broken in any way, where the next attempt likely reaches another: then
- * every failure is, as curl's --retry-all-errors did. Nothing is left at
- * `file` unless every check passed: the bytes land beside it first.
+ * every failure is, as curl's --retry-all-errors did. `headers` go with each
+ * request, such as the Authorization a private mirror asks for. Nothing is
+ * left at `file` unless every check passed: the bytes land beside it first.
  */
 export async function download(
   asset,
@@ -299,6 +312,7 @@ export async function download(
     timeoutMs = 600_000,
     retryForMs,
     retryAll = false,
+    headers = {},
   } = {},
 ) {
   pinKey(asset.pin);
@@ -308,7 +322,7 @@ export async function download(
     await retry(
       async () => {
         io.stdout(`Downloading ${asset.url}\n`);
-        check(asset, await fetchTo(asset.url, part, { stallMs, minBytesPerSecond, timeoutMs }));
+        check(asset, await fetchTo(asset.url, part, { stallMs, minBytesPerSecond, timeoutMs, headers }));
       },
       {
         attempts,
@@ -400,6 +414,40 @@ export async function unpack(file, dir, { platform = process.platform } = {}) {
   }
 }
 
+/** Windows PowerShell, by its full path, which every Windows has. */
+export function powershellProgram() {
+  return path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+// A PowerShell string of `text`, quoted so nothing in it is read: in single
+// quotes, each single quote doubled, curly ones too, which PowerShell also
+// takes for one.
+function psLiteral(text) {
+  return `'${text.replace(/['\u2018\u2019\u201A\u201B]/g, (quote) => quote + quote)}'`;
+}
+
+/**
+ * Unpacks each zip `[file, dir]` in `zips` into its directory, for a vendor's
+ * zip that may hold a name Windows' code page cannot: Windows' tar.exe
+ * (bsdtar 3.8.8) skips such an entry, then fails, and ZWO's EFW and EAF SDKs
+ * each hold one ("EFW SDK快速入门.pdf"). So on Windows PowerShell's
+ * Expand-Archive unpacks them, which reads the names as Unicode: all of them
+ * in one PowerShell, which takes a second or more to start. Elsewhere unpack
+ * does.
+ */
+export async function unpackZips(zips, { platform = process.platform, run = command } = {}) {
+  if (platform !== 'win32') {
+    for (const [file, dir] of zips) await unpack(file, dir);
+    return;
+  }
+  if (zips.length === 0) return;
+  const expand = zips.map(([file, dir]) => `Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force`);
+  const script =
+    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
+    `try { ${expand.join('; ')} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+  await run(powershellProgram(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+}
+
 /**
  * The one directory at the top of `dir`, where an archive that unpacks into a
  * folder of its own put it. A `__MACOSX` folder beside it, which macOS adds to
@@ -476,4 +524,70 @@ export async function checkReplaceable(dir) {
 /** Lets `binary` in `dir` run, unless it is a Windows .exe, which needs no mode for that. */
 export async function makeRunnable(dir, binary) {
   if (!binary.endsWith('.exe')) await chmod(path.join(dir, binary), 0o755);
+}
+
+// --- Libraries a build links -------------------------------------------------------
+
+// Where a runtime library is when the loader's cache cannot say.
+const RUNTIME_DIRS = ['/usr/lib/aarch64-linux-gnu', '/lib/aarch64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/usr/lib', '/lib'];
+
+/**
+ * Where this machine has the runtime library `soname`: the first entry for it
+ * in the loader's cache (`ldconfig -p`), or else in `dirs`.
+ */
+export async function findRuntime(soname, { run = command, dirs = RUNTIME_DIRS } = {}) {
+  try {
+    for (const line of (await run('ldconfig', ['-p'])).split('\n')) {
+      const fields = line.trim().split(/\s+/);
+      if (fields[0] === soname) return fields.at(-1);
+    }
+  } catch {
+    // No ldconfig on PATH, or no cache: the directories below are the rest.
+  }
+  return dirs.map((dir) => path.join(dir, soname)).find((file) => existsSync(file));
+}
+
+/**
+ * Whether the loader's cache lists each of `files` in `lib`, where a binary
+ * that asks for it by that name finds it with no LD_LIBRARY_PATH.
+ */
+export async function loaderFinds(lib, files, { run = command } = {}) {
+  for (const file of files) {
+    if ((await findRuntime(file, { run, dirs: [] })) !== path.join(lib, file)) return false;
+  }
+  return true;
+}
+
+/**
+ * Links each library `[soname, linker, pkg]` of `libraries` into `lib` under
+ * its linker's name, `-l`'s, to the runtime library `find` finds, for a
+ * runner without sudo, which cannot install the -dev package that has the
+ * link. Throws, naming `pkg`, when the runtime library is not there.
+ */
+export async function linkRuntime(lib, libraries, { run = command, find = findRuntime } = {}) {
+  for (const [soname, linker, pkg] of libraries) {
+    const found = await find(soname, { run });
+    if (found === undefined) {
+      throw new Error(
+        `the system library ${soname} is not on this machine. A runner without sudo links against the host's, ` +
+          'which scripts/setup-pi-runner.sh §1 installs once (docs/skills/raspberry-pi-runner.md). ' +
+          `Install the package that has it, then run the job again: sudo apt-get install -y ${pkg}`,
+      );
+    }
+    await rm(path.join(lib, linker), { force: true });
+    await symlink(found, path.join(lib, linker));
+    io.stdout(`${linker} -> ${found}\n`);
+  }
+}
+
+/** Whether this user can write `dir`, or the directory it would be made in. */
+export async function canWrite(dir) {
+  for (let at = dir; ; at = path.dirname(at)) {
+    try {
+      await access(at, constants.W_OK);
+      return true;
+    } catch (err) {
+      if (err.code !== 'ENOENT' || path.dirname(at) === at) return false;
+    }
+  }
 }

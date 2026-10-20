@@ -376,7 +376,11 @@ proof is Cargo-only (`conformu.yml`'s `install-svbony-sdk` step).
 
 Cargo builds outside Bazel follow the same env-var gate (unset the variable,
 with the SDK installed and `ldconfig`'d, to exercise the real link locally)
-— this is exactly what `native.yml`'s `install-svbony-sdk` step does per-run.
+— this is exactly what `native.yml`'s `install-svbony-sdk` step does per-run,
+and `bazel run //.github/actions:install -- svbony-sdk` installs the SDK on a
+developer's Linux box or Intel Mac the same way, by the action's own module
+([`crates/svbony-rs/README.md`](../../crates/svbony-rs/README.md) has the
+details; it offers no Windows SDK, which only the private mirror holds).
 This split (Cargo-CI real-link-provisioned, Bazel still skip-link-only) is a
 deliberate, temporary simplification recorded in
 [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)'s Status section
@@ -2497,7 +2501,7 @@ phases A–G:
   no SONAME is present, so installing under `libSVBCameraSDK.so.1` (+ a
   `.so` symlink) and running `ldconfig` still resolves `-lSVBCameraSDK` at
   both link and run time with no RUNPATH trick needed — just not for the
-  reason the CMake property implied (see `install-svbony-sdk/action.yml`'s
+  reason the CMake property implied (see `install-svbony-sdk/svbony-sdk.mjs`'s
   header comment for the full trace). (2) A pre-existing gap predating this
   phase — `test.yml`, `safety.yml`, `publish-readiness.yml`, and
   `ui-browser-nightly.yml` build/check `--workspace --all-features` without
@@ -2913,7 +2917,7 @@ from this Cargo-only script.
 **macOS: excluded, not simulation-shipped.** `scripts/build-tarballs.sh`
 targets only `aarch64-apple-darwin` (Apple Silicon), and indi-3rdparty
 ships no confirmed `mac_arm64` `libSVBCameraSDK` blob (see
-`install-svbony-sdk/action.yml`'s header comment), so there is no real SDK
+`install-svbony-sdk/svbony-sdk.mjs`'s header comment), so there is no real SDK
 this leg could ever link against. Rather than fall back to
 `SVBONY_SKIP_NATIVE_LINK=1` (a simulation-only binary — see "Native
 dependency & build gating" above) and ship that as the "real" tarball,

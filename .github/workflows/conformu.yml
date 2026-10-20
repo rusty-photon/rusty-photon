@@ -126,12 +126,13 @@ jobs:
       # svbony-camera's build.rs links the real SVBony SDK unconditionally,
       # exactly like ZWO above (not QHYCCD's cfg'd-out-under-simulation
       # posture — see the env comment at the top of this file), so this job
-      # provisions it too. indi-3rdparty ships no `mac_arm64` blob (see
-      # install-svbony-sdk's header comment for the byte-level verification)
-      # and `macos-latest` is Apple Silicon today, so the "provision, don't
-      # exclude" principle (ADR-008) cannot apply to that one leg the way it
-      # does for ZWO: fall back to SVBONY_SKIP_NATIVE_LINK=1 there instead
-      # (the same posture QHYCCD takes in this job everywhere), so
+      # provisions it too. indi-3rdparty ships no `mac_arm64` blob (see the
+      # header comment of install-svbony-sdk/svbony-sdk.mjs for the
+      # byte-level verification) and `macos-latest` is Apple Silicon today,
+      # so the "provision, don't exclude" principle (ADR-008) cannot apply to
+      # that one leg the way it does for ZWO: fall back to
+      # SVBONY_SKIP_NATIVE_LINK=1 there instead (the same posture QHYCCD
+      # takes in this job everywhere), so
       # svbony-camera's ConformU coverage on macOS is protocol-conformance-
       # only until a verified Apple Silicon SVBony blob exists (see
       # docs/plans/archive/svbony-camera.md "Packaging"). Linux always gets the real

@@ -1,0 +1,11 @@
+name: Resolve the SVBony SDK
+description: >-
+  The first step of install-svbony-sdk: the cache key of the SVBony SDK files
+  this runner takes, which carries their pin. Fails on a runner with no build
+  of the SDK (Apple Silicon), saying what to do instead.
+outputs:
+  key:
+    description: The cache key of the SVBony SDK downloads.
+runs:
+  using: node24
+  main: index.mjs

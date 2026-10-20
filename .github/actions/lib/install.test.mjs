@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -12,24 +12,30 @@ import { gzipSync } from 'node:zlib';
 import { HttpError } from './helpers.mjs';
 import {
   cacheKey,
+  canWrite,
   checkReplaceable,
   ChecksumError,
   download,
   downloadAll,
+  findRuntime,
   forRunner,
   get,
   hostKey,
   INSTALLED,
   isoWeek,
+  linkRuntime,
+  loaderFinds,
   makeRunnable,
   markInstalled,
   onlyDirectory,
   pinKey,
+  powershellProgram,
   redirectTarget,
   restoreKey,
   runnerKey,
   tarProgram,
   unpack,
+  unpackZips,
   withWorkDir,
 } from './install.mjs';
 import { capture, serve, tar, withEnv } from './testing.mjs';
@@ -75,6 +81,17 @@ const FORMATS = {
   darwin: ['.tar.gz', '.tar.xz', '.zip'],
   win32: ['.tar.gz', '.zip'],
 }[process.platform];
+
+// A `run` that records each command it is given and answers it from
+// `answers` (a program to its output), running none of them.
+function recorder(answers = {}) {
+  const calls = [];
+  const run = async (program, args) => {
+    calls.push([program, ...args]);
+    return answers[program] ?? '';
+  };
+  return { run, calls };
+}
 
 function asset(server, pin, name = 'asset.bin') {
   return { name, url: `${server.url}/${name}`, pin };
@@ -270,6 +287,29 @@ test('get follows redirects, relative and absolute, to the answer', async () => 
   }
 });
 
+test('get sends an Authorization header on to its own origin only, as fetch does', async () => {
+  const elsewhere = await serve((req, res) => res.end(PAYLOAD));
+  const server = await serve((req, res) => {
+    if (req.url === '/download') {
+      res.writeHead(302, { location: '/moved' });
+    } else {
+      res.writeHead(302, { location: `${elsewhere.url}/final` });
+    }
+    res.end();
+  });
+  try {
+    const response = await get(`${server.url}/download`, { headers: { Authorization: 'Bearer token', 'user-agent': 'test' } });
+    response.resume();
+    assert.deepEqual(server.requests.map(({ headers }) => headers.authorization), ['Bearer token', 'Bearer token']);
+    assert.equal(elsewhere.requests.length, 1);
+    assert.equal(elsewhere.requests[0].headers.authorization, undefined);
+    assert.equal(elsewhere.requests[0].headers['user-agent'], 'test');
+  } finally {
+    await server.close();
+    await elsewhere.close();
+  }
+});
+
 test('get gives up after 20 redirects', async () => {
   const server = await serve((req, res) => {
     res.writeHead(302, { location: '/again' });
@@ -318,6 +358,18 @@ test('download writes an asset that matches its SHA-256, and says so', async () 
     assert.match(stdout, new RegExp(`asset.bin: SHA-256 ${sha(PAYLOAD)} matches its pin`));
     assert.deepEqual(readdirSync(join(file, '..')), ['asset.bin']);
     // The bytes as the server keeps them, never re-encoded on the way.
+    assert.equal(server.requests[0].headers['accept-encoding'], 'identity');
+  } finally {
+    await server.close();
+  }
+});
+
+test('download sends the headers it is given, beside its own', async () => {
+  const server = await serve((req, res) => res.end(PAYLOAD));
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    await capture(() => download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, headers: { authorization: 'Bearer token' } }));
+    assert.equal(server.requests[0].headers.authorization, 'Bearer token');
     assert.equal(server.requests[0].headers['accept-encoding'], 'identity');
   } finally {
     await server.close();
@@ -781,6 +833,31 @@ test('unpack refuses a file it has no tool for', async () => {
   });
 });
 
+test('unpackZips on Windows runs one Expand-Archive per zip in one PowerShell, by its full path, each path quoted whole', async () => {
+  const { run, calls } = recorder();
+  const program = await withEnv({ SystemRoot: 'C:\\Windows' }, async () => {
+    const zips = [
+      ["C:\\Users\\o'brien\\a\u2019b.zip", 'C:\\Temp\\a'],
+      ['C:\\Temp\\b.zip', 'C:\\Temp\\b'],
+    ];
+    await unpackZips(zips, { platform: 'win32', run });
+    await unpackZips([], { platform: 'win32', run });
+    return powershellProgram();
+  });
+  assert.equal(program, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(calls.length, 1);
+  const [called, ...args] = calls[0];
+  assert.equal(called, program);
+  assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+  assert.equal(
+    Buffer.from(args[3], 'base64').toString('utf16le'),
+    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; try { " +
+      "Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\a' -Force; " +
+      "Expand-Archive -LiteralPath 'C:\\Temp\\b.zip' -DestinationPath 'C:\\Temp\\b' -Force" +
+      ' } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
+  );
+});
+
 test('onlyDirectory finds the one folder an archive unpacked into, past a __MACOSX folder', async () => {
   const dir = tempDir();
   mkdirSync(join(dir, 'tool-1.0'));
@@ -900,4 +977,73 @@ test('makeRunnable lets a binary run, and leaves a Windows .exe as it is', { ski
   await makeRunnable(dir, 'tool.exe');
   assert.equal(statSync(join(dir, 'tool')).mode & 0o777, 0o755);
   assert.equal(statSync(join(dir, 'tool.exe')).mode & 0o777, 0o644);
+});
+
+// --- Libraries a build links ---------------------------------------------------
+
+test('findRuntime reads the loader\'s cache, and the usual directories when that fails', async () => {
+  const listing =
+    '1234 libs found in cache `/etc/ld.so.cache\'\n' +
+    '\tlibusb-1.0.so.0 (libc6,AArch64) => /lib/aarch64-linux-gnu/libusb-1.0.so.0\n' +
+    '\tlibudev.so.1 (libc6,AArch64) => /lib/aarch64-linux-gnu/libudev.so.1\n';
+  const cache = recorder({ ldconfig: listing });
+  assert.equal(await findRuntime('libudev.so.1', { run: cache.run, dirs: [] }), '/lib/aarch64-linux-gnu/libudev.so.1');
+  assert.deepEqual(cache.calls, [['ldconfig', '-p']]);
+
+  const dirs = [tempDir(), tempDir()];
+  writeFileSync(join(dirs[1], 'libudev.so.1'), 'libudev');
+  const none = async () => {
+    throw new Error('spawn ldconfig ENOENT');
+  };
+  assert.equal(await findRuntime('libudev.so.1', { run: none, dirs }), join(dirs[1], 'libudev.so.1'));
+  assert.equal(await findRuntime('libudev.so.1', { run: recorder({ ldconfig: listing.slice(0, 40) }).run, dirs }), join(dirs[1], 'libudev.so.1'));
+  assert.equal(await findRuntime('libusb-1.0.so.0', { run: none, dirs }), undefined);
+});
+
+test('loaderFinds says whether the loader\'s cache lists every file in the directory a build linked', async () => {
+  const listing = (dir) =>
+    `2 libs found in cache\n\tlibone.so (libc6,x86-64) => ${join(dir, 'libone.so')}\n\tlibtwo.so (libc6,x86-64) => ${join(dir, 'libtwo.so')}\n`;
+  const lib = join('/', 'usr', 'local', 'lib');
+  assert.equal(await loaderFinds(lib, ['libone.so', 'libtwo.so'], { run: recorder({ ldconfig: listing(lib) }).run }), true);
+  assert.equal(await loaderFinds(lib, ['libone.so', 'libthree.so'], { run: recorder({ ldconfig: listing(lib) }).run }), false);
+  assert.equal(await loaderFinds(lib, ['libone.so'], { run: recorder({ ldconfig: listing(join('/', 'opt', 'lib')) }).run }), false);
+});
+
+test('linkRuntime links each linker\'s name to the runtime library, replacing a link there', {
+  skip: process.platform === 'win32' && 'the runners without sudo are Linux',
+}, async () => {
+  const lib = tempDir();
+  const system = tempDir();
+  writeFileSync(join(system, 'libusb-1.0.so.0'), 'libusb');
+  writeFileSync(join(lib, 'libusb-1.0.so'), 'an older link');
+  const find = async (soname) => join(system, soname);
+  const { stdout } = await capture(() => linkRuntime(lib, [['libusb-1.0.so.0', 'libusb-1.0.so', 'libusb-1.0-0']], { find }));
+  assert.ok(lstatSync(join(lib, 'libusb-1.0.so')).isSymbolicLink());
+  assert.equal(readlinkSync(join(lib, 'libusb-1.0.so')), join(system, 'libusb-1.0.so.0'));
+  assert.equal(stdout, `libusb-1.0.so -> ${join(system, 'libusb-1.0.so.0')}\n`);
+});
+
+test('linkRuntime names the package to install when a runtime library is missing', async () => {
+  const lib = tempDir();
+  await assert.rejects(
+    linkRuntime(lib, [['libudev.so.1', 'libudev.so', 'libudev1']], { find: async () => undefined }),
+    /the system library libudev\.so\.1 is not on this machine\. .*sudo apt-get install -y libudev1$/,
+  );
+  assert.deepEqual(readdirSync(lib), []);
+});
+
+test('canWrite asks of the nearest directory there is, and says no to one this user cannot write', {
+  skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'mode bits deny root and Windows nothing',
+}, async () => {
+  const dir = tempDir();
+  assert.equal(await canWrite(join(dir, 'not', 'there', 'yet')), true);
+  const locked = join(dir, 'locked');
+  mkdirSync(locked);
+  chmodSync(locked, 0o555);
+  try {
+    assert.equal(await canWrite(locked), false);
+    assert.equal(await canWrite(join(locked, 'lib')), false);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
 });

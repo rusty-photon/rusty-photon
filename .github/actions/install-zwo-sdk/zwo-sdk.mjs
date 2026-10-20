@@ -20,20 +20,24 @@
 // from the same links (build-msi.ps1).
 
 import { existsSync, readdirSync } from 'node:fs';
-import { access, constants, copyFile, mkdir, rename, rm, symlink } from 'node:fs/promises';
+import { copyFile, mkdir, rename, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { addPath, command, exportVariable, io } from '../lib/helpers.mjs';
 import {
   cacheKey,
+  canWrite,
   checkReplaceable,
   download,
   downloadAll,
+  findRuntime,
   forRunner,
+  linkRuntime,
+  loaderFinds,
   markInstalled,
   restoreKey,
-  unpack,
+  unpackZips,
   withWorkDir,
 } from '../lib/install.mjs';
 
@@ -192,25 +196,6 @@ export const RUNTIME_LIBRARIES = [
   ['libudev.so.1', 'libudev.so', 'libudev1'],
 ];
 
-// Where a runtime library is when the loader's cache cannot say.
-const RUNTIME_DIRS = ['/usr/lib/aarch64-linux-gnu', '/lib/aarch64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/usr/lib', '/lib'];
-
-/**
- * Where this machine has the runtime library `soname`: the first entry for it
- * in the loader's cache (`ldconfig -p`), or else in RUNTIME_DIRS.
- */
-export async function findRuntime(soname, { run = command, dirs = RUNTIME_DIRS } = {}) {
-  try {
-    for (const line of (await run('ldconfig', ['-p'])).split('\n')) {
-      const fields = line.trim().split(/\s+/);
-      if (fields[0] === soname) return fields.at(-1);
-    }
-  } catch {
-    // No ldconfig on PATH, or no cache: the directories below are the rest.
-  }
-  return dirs.map((dir) => path.join(dir, soname)).find((file) => existsSync(file));
-}
-
 // Installs the SDK under `<temp>/zwo-sdk`, where libzwo-sys's build script
 // finds it by ZWO_SDK_LIB_DIR: the runner cannot sudo, so it cannot install
 // the -dev packages, which give `-lusb-1.0` and `-ludev` their libraries, or
@@ -220,19 +205,7 @@ async function installUnprivileged({ assets, temp, suffix, download: options, ru
   const prefix = path.join(temp, 'zwo-sdk');
   await fetchAndPlace(assets, prefix, prefix, { options, suffix, macos: false, sudo: false, run });
   const lib = path.join(prefix, 'lib');
-  for (const [soname, linker, pkg] of RUNTIME_LIBRARIES) {
-    const found = await find(soname, { run });
-    if (found === undefined) {
-      throw new Error(
-        `the system library ${soname} is not on this machine. A runner without sudo links against the host's, ` +
-          'which scripts/setup-pi-runner.sh §1 installs once (docs/skills/raspberry-pi-runner.md). ' +
-          `Install the package that has it, then run the job again: sudo apt-get install -y ${pkg}`,
-      );
-    }
-    await rm(path.join(lib, linker), { force: true });
-    await symlink(found, path.join(lib, linker));
-    io.stdout(`${linker} -> ${found}\n`);
-  }
+  await linkRuntime(lib, RUNTIME_LIBRARIES, { run, find });
   // The libraries carry no SONAME, so what links them asks the loader for
   // the bare file name, which it finds by LD_LIBRARY_PATH.
   exportVariable('ZWO_SDK_LIB_DIR', lib);
@@ -240,40 +213,6 @@ async function installUnprivileged({ assets, temp, suffix, download: options, ru
 }
 
 // --- Windows ----------------------------------------------------------------------------
-
-/** Windows PowerShell, by its full path, which every Windows has. */
-export function powershellProgram() {
-  return path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-}
-
-// A PowerShell string of `text`, quoted so nothing in it is read: in single
-// quotes, each single quote doubled, curly ones too, which PowerShell also
-// takes for one.
-function psLiteral(text) {
-  return `'${text.replace(/['\u2018\u2019\u201A\u201B]/g, (quote) => quote + quote)}'`;
-}
-
-/**
- * Unpacks each of ZWO's zips `[file, dir]` in `zips` into its directory.
- * Windows' tar.exe (bsdtar 3.8.8) skips an entry whose name the system's code
- * page cannot hold, then fails, and ZWO's EFW and EAF SDKs each hold one
- * ("EFW SDK快速入门.pdf"), so on Windows PowerShell's Expand-Archive unpacks
- * them, as the shell did, which reads the names as Unicode: all of them in
- * one PowerShell, which takes a second or more to start. Elsewhere, where
- * only the tests unpack them, unpack does.
- */
-export async function unpackZips(zips, { platform = process.platform, run = command } = {}) {
-  if (platform !== 'win32') {
-    for (const [file, dir] of zips) await unpack(file, dir);
-    return;
-  }
-  if (zips.length === 0) return;
-  const expand = zips.map(([file, dir]) => `Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force`);
-  const script =
-    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
-    `try { ${expand.join('; ')} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
-  await run(powershellProgram(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
-}
 
 // The SDK for Windows inside each of ZWO's downloads, beside ones for other
 // systems: ASI_Windows_SDK_V1.41.zip.
@@ -396,29 +335,6 @@ export async function install({
   return downloaded;
 }
 
-// Whether this user can write `dir`, or the directory it would be made in.
-async function canWrite(dir) {
-  for (let at = dir; ; at = path.dirname(at)) {
-    try {
-      await access(at, constants.W_OK);
-      return true;
-    } catch (err) {
-      if (err.code !== 'ENOENT' || path.dirname(at) === at) return false;
-    }
-  }
-}
-
-// Whether the loader's cache lists each library in `lib`, where a binary
-// linked against it finds it with no LD_LIBRARY_PATH: the libraries carry no
-// SONAME, and libzwo-sys adds no rpath.
-async function loaderFinds(lib, suffix, run) {
-  for (const name of LIBRARIES) {
-    const file = `lib${name}${suffix}`;
-    if ((await findRuntime(file, { run, dirs: [] })) !== path.join(lib, file)) return false;
-  }
-  return true;
-}
-
 /**
  * A developer's install of what `resolve` chose into `dir`. On Linux and
  * macOS, `dir` is a prefix, PREFIX unless the developer names another: the
@@ -453,6 +369,9 @@ export async function installAt(
   await fetchAndPlace(assets, path.join(os.tmpdir(), 'zwo-sdk'), dir, how);
   const lib = path.join(dir, 'lib');
   const variables = dir === PREFIX ? {} : { ZWO_SDK_LIB_DIR: lib };
-  if (!how.macos && !(await loaderFinds(lib, suffix, run))) variables.LD_LIBRARY_PATH = lib;
+  // The libraries carry no SONAME, and libzwo-sys adds no rpath, so a binary
+  // finds them with no LD_LIBRARY_PATH only where the loader's cache lists them.
+  const files = LIBRARIES.map((name) => `lib${name}${suffix}`);
+  if (!how.macos && !(await loaderFinds(lib, files, { run }))) variables.LD_LIBRARY_PATH = lib;
   return variables;
 }

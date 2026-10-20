@@ -1,0 +1,21 @@
+name: Install the SVBony SDK
+description: >-
+  The last step of install-svbony-sdk: downloads the SVBony SDK files, unless
+  the cache restored them, and installs them where libsvbony-sys's build finds
+  them (svbony-sdk.mjs's install).
+inputs:
+  sudo:
+    description: install-svbony-sdk's sudo input.
+    required: false
+    default: "true"
+  windows-mirror-token:
+    description: install-svbony-sdk's windows-mirror-token input.
+    required: false
+    default: ""
+  cache-hit:
+    description: The cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: index.mjs

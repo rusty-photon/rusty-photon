@@ -7,6 +7,7 @@ import test from 'node:test';
 import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
+import * as svbonySdk from '../install-svbony-sdk/svbony-sdk.mjs';
 import * as zwoSdk from '../install-zwo-sdk/zwo-sdk.mjs';
 import { hostKey } from '../lib/install.mjs';
 import { capture, withEnv } from '../lib/testing.mjs';
@@ -47,6 +48,12 @@ test('parse installs the ZWO SDK where its build looks, but on Windows into ~/.l
   assert.deepEqual(parse(['zwo-sdk', '--prefix', 'sdk'], { cwd: CWD, home: HOME, platform: 'linux' }).dir, join(CWD, 'sdk'));
 });
 
+test('parse installs the SVBony SDK where its build looks, but on Windows into ~/.local/opt/svbony-sdk', () => {
+  assert.deepEqual(parse(['svbony-sdk'], { cwd: CWD, home: HOME, platform: 'linux' }), { tool: 'svbony-sdk', dir: svbonySdk.PREFIX });
+  assert.deepEqual(parse(['svbony-sdk'], { cwd: CWD, home: HOME, platform: 'darwin' }).dir, svbonySdk.PREFIX);
+  assert.deepEqual(parse(['svbony-sdk'], { cwd: CWD, home: HOME, platform: 'win32' }).dir, join(HOME, '.local', 'opt', 'svbony-sdk'));
+});
+
 test('parse takes --prefix, a relative one from where bazel ran', () => {
   assert.deepEqual(parse(['omnisim', '--prefix', 'tools/omnisim'], { cwd: CWD, home: HOME }), {
     tool: 'omnisim',
@@ -72,8 +79,8 @@ test('parse refuses a command line it cannot run', () => {
   const refused = [
     [[], 'name the tool to install'],
     [['pebble', 'omnisim'], 'one tool at a time; got pebble, omnisim'],
-    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble, zwo-sdk'],
-    [['toString'], 'no tool named toString; there are astap, omnisim, pebble, zwo-sdk'],
+    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble, svbony-sdk, zwo-sdk'],
+    [['toString'], 'no tool named toString; there are astap, omnisim, pebble, svbony-sdk, zwo-sdk'],
     [['pebble', '--prefix'], /Option '--prefix <value>' argument missing/],
     [['pebble', '--prefix='], '--prefix needs a directory'],
     [['pebble', '--dir', 'x'], /Unknown option '--dir'/],
@@ -121,19 +128,23 @@ test('settings writes setx lines on Windows, to run once before opening a new sh
 });
 
 test('TOOLS installs each tool by its install-* action module', () => {
-  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble', 'zwo-sdk']);
+  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble', 'svbony-sdk', 'zwo-sdk']);
   assert.equal(TOOLS.astap.resolve, astap.resolve);
   assert.equal(TOOLS.astap.installAt, astap.installAt);
   assert.equal(TOOLS.omnisim.resolve, omnisim.resolve);
   assert.equal(TOOLS.omnisim.installAt, omnisim.installAt);
   assert.equal(TOOLS.pebble.resolve, pebble.resolve);
   assert.equal(TOOLS.pebble.installAt, pebble.installAt);
+  assert.equal(TOOLS['svbony-sdk'].resolve, svbonySdk.resolve);
+  assert.equal(TOOLS['svbony-sdk'].installAt, svbonySdk.installAt);
   assert.equal(TOOLS['zwo-sdk'].resolve, zwoSdk.resolve);
   assert.equal(TOOLS['zwo-sdk'].installAt, zwoSdk.installAt);
-  assert.match(usage(), /\n {2}astap {5}ASTAP's CLI and D05 star database/);
-  assert.match(usage(), /\n {2}omnisim {3}ASCOM OmniSim/);
-  assert.match(usage(), /\n {2}pebble {4}Pebble and pebble-challtestsrv/);
-  assert.match(usage(), /\n {2}zwo-sdk {3}ZWO's SDKs, which zwo-camera and zwo-focuser link; into \/usr\/local/);
+  // Each description starts in one column, past the longest name.
+  assert.match(usage(), /\n {2}astap {6}ASTAP's CLI and D05 star database/);
+  assert.match(usage(), /\n {2}omnisim {4}ASCOM OmniSim/);
+  assert.match(usage(), /\n {2}pebble {5}Pebble and pebble-challtestsrv/);
+  assert.match(usage(), /\n {2}svbony-sdk SVBony's SDK, which svbony-camera links; into \/usr\/local, on Linux and Intel Macs only/);
+  assert.match(usage(), /\n {2}zwo-sdk {4}ZWO's SDKs, which zwo-camera and zwo-focuser link; into \/usr\/local/);
 });
 
 // --- Running it -------------------------------------------------------------------

@@ -5,8 +5,9 @@
 //
 // It downloads on the developer's machine, from where CI downloads, and ships
 // nothing: none of these tools is bundled into a package or mirrored for
-// developers. A tool whose CI download comes from the project's private
-// mirror (ADR-018) gets no entry in TOOLS.
+// developers. Nor does it download from the project's private mirror
+// (ADR-018 §7): the SVBony SDK installs on Linux and macOS, and on Windows,
+// whose SDK only the mirror holds, the install says where to get it.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,7 @@ import { parseArgs } from 'node:util';
 import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
+import * as svbonySdk from '../install-svbony-sdk/svbony-sdk.mjs';
 import * as zwoSdk from '../install-zwo-sdk/zwo-sdk.mjs';
 import { describe, io } from '../lib/helpers.mjs';
 import { hostKey } from '../lib/install.mjs';
@@ -42,6 +44,13 @@ export const TOOLS = {
     resolve: pebble.resolve,
     installAt: pebble.installAt,
   },
+  'svbony-sdk': {
+    about: `SVBony's SDK, which svbony-camera links; into ${svbonySdk.PREFIX}, on Linux and Intel Macs only`,
+    resolve: svbonySdk.resolve,
+    installAt: svbonySdk.installAt,
+    // Where libsvbony-sys's build script looks, as CI installs it.
+    dir: ({ platform }) => (platform === 'win32' ? undefined : svbonySdk.PREFIX),
+  },
   'zwo-sdk': {
     about: `ZWO's SDKs, which zwo-camera and zwo-focuser link; into ${zwoSdk.PREFIX}, but on Windows ~/.local/opt/zwo-sdk`,
     resolve: zwoSdk.resolve,
@@ -53,12 +62,13 @@ export const TOOLS = {
 
 /** How to run it, naming each of `tools`. */
 export function usage(tools = TOOLS) {
+  const width = Math.max(...Object.keys(tools).map((name) => name.length));
   return [
     'usage: bazel run //.github/actions:install -- <tool> [--prefix DIR]',
     '',
     'Installs a tool CI installs: the same release, checked against the same SHA-256.',
     '',
-    ...Object.entries(tools).map(([name, { about }]) => `  ${name.padEnd(9)} ${about}`),
+    ...Object.entries(tools).map(([name, { about }]) => `  ${name.padEnd(width)} ${about}`),
     '',
     'DIR defaults to ~/.local/opt/<tool>, unless the tool says otherwise; a relative one is taken',
     'from where bazel ran.',

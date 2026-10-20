@@ -188,8 +188,9 @@ runner does not pre-provision it either — `pi-nightly.yml` runs the local
 (`sudo: "false"`), which:
 
 - downloads the INDI-vendored SVBony blob (`libSVBCameraSDK`) for `armv8`
-  into `$RUNNER_TEMP/svbony-sdk/lib`, pinned by the action's `ref` (bump it
-  to adopt a newer SDK — no manual re-provision);
+  into `$RUNNER_TEMP/svbony-sdk/lib`, as `libSVBCameraSDK.so.1` with a
+  `libSVBCameraSDK.so` link to it, pinned by `REF` in the action's
+  `svbony-sdk.mjs` (bump it to adopt a newer SDK — no manual re-provision);
 - satisfies the unversioned `-lusb-1.0` link name **without any -dev
   package** by symlinking it to the system *runtime* lib
   (`libusb-1.0.so.0`) inside that same dir, exactly as the ZWO/QHYCCD steps
@@ -595,11 +596,13 @@ on the search path while linking `svbony-camera`. On the Pi nightly these
 are provided per-run by the **Install SVBony SDK (sudo-free)** step
 (`./.github/actions/install-svbony-sdk`, `sudo: "false"`). Check, in order:
 
-- That step ran and printed `exported SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH=…`
-  before `cargo build`. If a blob download failed, confirm the action's
-  pinned `ref` still resolves under
-  `https://github.com/indilib/indi-3rdparty/raw/<ref>/libsvbony/`.
-- The step did **not** abort with `… not found`. That message means the host
+- That step ran and printed `Installed libSVBCameraSDK.so.1, and
+  libSVBCameraSDK.so linked to it, into …/svbony-sdk/lib` and a
+  `libusb-1.0.so -> …` line before `cargo build`. If a blob download failed,
+  confirm `REF` in the action's `svbony-sdk.mjs` still resolves under
+  `https://github.com/indilib/indi-3rdparty/raw/<REF>/libsvbony/`.
+- The step did **not** abort with `the system library … is not on this
+  machine`. That message means the host
   is missing the runtime prerequisite the sudo-free path symlinks against —
   install it once with sudo and re-run: `sudo apt-get install -y
   libusb-1.0-0` (provides `libusb-1.0.so.0`; it is in §1 of

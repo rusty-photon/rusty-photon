@@ -115,7 +115,7 @@ fi
 
 # svbony-camera has no confirmed mac_arm64 SVBony SDK blob — indi-3rdparty's
 # libsvbony packaging ships mac64/Intel only (see
-# .github/actions/install-svbony-sdk/action.yml's header comment), and this
+# .github/actions/install-svbony-sdk/svbony-sdk.mjs's header comment), and this
 # script is arm64-only (the check above), so there is no real SDK this leg
 # could ever link against. Mirrors check-pkg-assets.sh's WIN_SERVICES
 # exclusion (same "no SDK for this platform at all" reasoning, a different

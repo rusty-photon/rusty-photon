@@ -52,8 +52,8 @@
 
 set -eu
 
-# Must match the `ref` default in
-# .github/actions/install-svbony-sdk/action.yml (the blob CI links
+# Must match REF in
+# .github/actions/install-svbony-sdk/svbony-sdk.mjs (the blob CI links
 # against at build time and the blob this helper installs on the target
 # must come from the same indi-3rdparty commit — same posture as the QHY
 # SDK version/sha256 pin's cross-check, see scripts/check-pkg-assets.sh).

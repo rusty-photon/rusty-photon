@@ -67,7 +67,7 @@ QHY_URL_BASE="https://www.qhyccd.com/file/repository/publish/SDK/$(echo "$QHY_SD
 # SHA in the download URL is the integrity statement, same as in the action.
 ZWO_SDK_REF="b0802f28055b67aa6a99580d260c3bb4c27eba4b"
 
-# Must match the `ref` default in .github/actions/install-svbony-sdk/action.yml
+# Must match REF in .github/actions/install-svbony-sdk/svbony-sdk.mjs
 # AND the `REF` in services/svbony-camera/pkg/rusty-photon-svbony-sdk-install
 # (checker-enforced): the blob this script links against at build time, the
 # blob CI links against, and the blob the on-target installer downloads must
@@ -156,8 +156,8 @@ case "$(uname -m)" in
         QHY_SHA256="$QHY_SHA256_X86_64"
         ZWO_ARCH=x64
         # indi-3rdparty's libsvbony blobs use their own arch naming,
-        # distinct from libasi's (amd64, not x64) — see
-        # install-svbony-sdk/action.yml's "Determine SVBony SDK arch" step.
+        # distinct from libasi's (amd64, not x64) — see RUNNERS in
+        # .github/actions/install-svbony-sdk/svbony-sdk.mjs.
         SVBONY_ARCH=amd64
         ;;
     aarch64)
@@ -275,10 +275,10 @@ if [ "$needs_svbony" = 1 ]; then
     SVBONY_CACHE="$CACHE/svbony-$SVBONY_SDK_REF-$(uname -m)"
     mkdir -p "$SVBONY_CACHE"
     # Staged under the plain linker name so libsvbony-sys's
-    # `-lSVBCameraSDK` resolves it via SVBONY_SDK_LIB_DIR below — mirrors
-    # install-svbony-sdk's sudo-free provisioning step exactly (same
-    # source, same per-arch blob, same "just the linker name, no SOVERSION
-    # dance" reasoning: the vendored .bin carries no embedded SONAME).
+    # `-lSVBCameraSDK` resolves it via SVBONY_SDK_LIB_DIR below — the same
+    # source and per-arch blob install-svbony-sdk takes. The linker name
+    # alone does: the vendored .bin carries no embedded SONAME, so the link
+    # records that name, and this staged copy is never loaded.
     if [ ! -f "$SVBONY_CACHE/libSVBCameraSDK.so" ]; then
         [ "$SKIP_STAGING" = 0 ] || die "--skip-sdk-staging set but $SVBONY_CACHE/libSVBCameraSDK.so is missing"
         fetch "https://github.com/indilib/indi-3rdparty/raw/$SVBONY_SDK_REF/libsvbony/libSVBCameraSDK_${SVBONY_ARCH}.bin" \
