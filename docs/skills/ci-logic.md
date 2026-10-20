@@ -342,7 +342,10 @@ would be a second implementation of the module to keep in step.
   (ADR-018 §7) gets no entry in `TOOLS`.
 - **Its launcher is tested as `bazel run` runs it**, from the runfiles
   tree: `local_install_test` takes `:install` as data and runs it, so a
-  launcher that drops its arguments or its exit code fails the PR.
+  launcher that drops its arguments or its exit code fails the PR. The
+  test lists nothing else `:install` brings, so its imports come from
+  `:install`'s runfiles, and a module or table missing from them fails
+  it too.
 
 ### Proving it
 

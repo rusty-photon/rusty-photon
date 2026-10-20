@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
+import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
 import { hostKey } from '../lib/install.mjs';
@@ -62,8 +63,8 @@ test('parse refuses a command line it cannot run', () => {
   const refused = [
     [[], 'name the tool to install'],
     [['pebble', 'omnisim'], 'one tool at a time; got pebble, omnisim'],
-    [['astap'], 'no tool named astap; there are omnisim, pebble'],
-    [['toString'], 'no tool named toString; there are omnisim, pebble'],
+    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble'],
+    [['toString'], 'no tool named toString; there are astap, omnisim, pebble'],
     [['pebble', '--prefix'], /Option '--prefix <value>' argument missing/],
     [['pebble', '--prefix='], '--prefix needs a directory'],
     [['pebble', '--dir', 'x'], /Unknown option '--dir'/],
@@ -97,11 +98,14 @@ test('settings writes setx lines on Windows, to run once before opening a new sh
 });
 
 test('TOOLS installs each tool by its install-* action module', () => {
-  assert.deepEqual(Object.keys(TOOLS), ['omnisim', 'pebble']);
+  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble']);
+  assert.equal(TOOLS.astap.resolve, astap.resolve);
+  assert.equal(TOOLS.astap.installAt, astap.installAt);
   assert.equal(TOOLS.omnisim.resolve, omnisim.resolve);
   assert.equal(TOOLS.omnisim.installAt, omnisim.installAt);
   assert.equal(TOOLS.pebble.resolve, pebble.resolve);
   assert.equal(TOOLS.pebble.installAt, pebble.installAt);
+  assert.match(usage(), /\n {2}astap {5}ASTAP's CLI and D05 star database/);
   assert.match(usage(), /\n {2}omnisim {3}ASCOM OmniSim/);
   assert.match(usage(), /\n {2}pebble {4}Pebble and pebble-challtestsrv/);
 });

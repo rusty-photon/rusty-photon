@@ -5,12 +5,15 @@ import { EOL, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 
+import { INSTALLED } from '../lib/install.mjs';
 import { capture, serve, withEnv, zip } from '../lib/testing.mjs';
 import {
   CLI_DOWNLOAD,
+  DATABASE_DIR,
   DATABASE_DOWNLOAD,
   formatTable,
   install,
+  installAt,
   MAX_STAGGER_SECONDS,
   pinOf,
   readResults,
@@ -356,6 +359,120 @@ test('install refuses a database archive with no files at the top', async () => 
   try {
     await inStep(() => assert.rejects(install({ workspace, cli, database, download: fast }), /d05_star_database.zip holds no files at its top/));
     assert.deepEqual(readdirSync(workspace), ['astap']);
+  } finally {
+    await server.close();
+  }
+});
+
+// --- A developer's install --------------------------------------------------------
+
+test('installAt installs the CLI and the database into a new directory and gives their variables, exporting nothing', async () => {
+  const { server, cli, database } = await sourceForge();
+  const parent = tempDir();
+  const dir = join(parent, 'opt', 'astap');
+  try {
+    const step = await inStep(async () => {
+      const variables = await installAt(dir, { cli, database }, { download: fast });
+      assert.deepEqual(variables, { ASTAP_BINARY: join(dir, BINARY), ASTAP_DB_DIR: join(dir, DATABASE_DIR) });
+    });
+    assert.deepEqual(readdirSync(dir).sort(), [INSTALLED, BINARY, DATABASE_DIR].sort());
+    assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the solver');
+    if (process.platform !== 'win32') assert.equal(statSync(join(dir, BINARY)).mode & 0o777, 0o755);
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), `ASTAP, ${cli.name} and ${database.name}\n`);
+    assert.deepEqual(readdirSync(join(parent, 'opt')), ['astap']);
+    assert.deepEqual([step.env, step.path, step.output], ['', '', '']);
+    assert.equal(server.requests.length, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test('installAt replaces an earlier install, which it marked, database and all', async () => {
+  const { server, cli, database } = await sourceForge();
+  const dir = tempDir();
+  writeFileSync(join(dir, BINARY), 'older');
+  mkdirSync(join(dir, DATABASE_DIR));
+  writeFileSync(join(dir, DATABASE_DIR, 'd05_9999.1476'), 'stale tile');
+  writeFileSync(join(dir, INSTALLED), 'ASTAP, older\n');
+  try {
+    await inStep(() => installAt(dir, { cli, database }, { download: fast }));
+    assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the solver');
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('installAt leaves a directory it did not install alone, and fetches nothing', async () => {
+  const { server, cli, database } = await sourceForge();
+  const dir = tempDir();
+  writeFileSync(join(dir, BINARY), 'mine');
+  try {
+    await assert.rejects(
+      inStep(() => installAt(dir, { cli, database }, { download: fast })),
+      /holds files and no \.installed-by-rusty-photon/,
+    );
+    assert.equal(server.requests.length, 0);
+    assert.deepEqual(readdirSync(dir), [BINARY]);
+  } finally {
+    await server.close();
+  }
+});
+
+for (const [what, archives, refusal] of [
+  [
+    'the CLI',
+    { [TABLE.cli[RUNNER].archive]: zip([{ path: `astap/${BINARY}`, data: 'x' }]), [TABLE.database.archive]: DATABASE_ZIP },
+    new RegExp(`holds no ${BINARY.replace('.', '\\.')} at its top`),
+  ],
+  [
+    'the database',
+    {
+      [TABLE.cli[RUNNER].archive]: CLI_ZIP,
+      [TABLE.database.archive]: zip([{ path: 'd05/' }, { path: 'd05/d05_0101.1476', data: 'tile' }]),
+    },
+    /d05_star_database\.zip holds no files at its top/,
+  ],
+]) {
+  test(`installAt keeps an earlier install when ${what} fails its check, and leaves nothing beside it`, async () => {
+    const { server, cli, database } = await sourceForge(archives);
+    const parent = tempDir();
+    const dir = join(parent, 'astap');
+    mkdirSync(dir);
+    writeFileSync(join(dir, BINARY), 'older');
+    writeFileSync(join(dir, INSTALLED), 'ASTAP, older\n');
+    try {
+      await assert.rejects(inStep(() => installAt(dir, { cli, database }, { download: fast })), refusal);
+      assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'older');
+      assert.deepEqual(readdirSync(dir).sort(), [INSTALLED, BINARY].sort());
+      assert.deepEqual(readdirSync(parent), ['astap']);
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test('installAt downloads each archive as install does, trying another mirror after a 404', async () => {
+  // The first answer for each archive comes from a mirror that has not
+  // synced it yet.
+  const answered = new Set();
+  const archives = { [TABLE.cli[RUNNER].archive]: CLI_ZIP, [TABLE.database.archive]: DATABASE_ZIP };
+  const server = await serve((req, res) => {
+    const name = decodeURIComponent(req.url.split('/').at(-2));
+    const synced = answered.has(name);
+    answered.add(name);
+    res.statusCode = synced ? 200 : 404;
+    res.end(synced ? archives[name] : 'Not Found');
+  });
+  const resolved = resolve({ runner: RUNNER, server: server.url });
+  const cli = { ...resolved.cli, pin: { sha256: sha(CLI_ZIP) } };
+  const database = { ...resolved.database, pin: { sha256: sha(DATABASE_ZIP) } };
+  const dir = join(tempDir(), 'astap');
+  try {
+    await inStep(() => installAt(dir, { cli, database }, { download: fast }));
+    assert.equal(server.requests.length, 4);
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
   } finally {
     await server.close();
   }

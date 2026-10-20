@@ -95,6 +95,8 @@ node_binary(
     name = "install",
     src = "local-install/index.mjs",
     data = [
+        "install-astap/assets.json",
+        "install-astap/astap.mjs",
         "install-omnisim/omnisim.mjs",
         "install-pebble/pebble.mjs",
         "lib/helpers.mjs",
@@ -104,17 +106,14 @@ node_binary(
 )
 
 # The install's command line, and its launcher, run as `bazel run` runs it.
+# What the test imports beyond lib/testing.mjs comes from :install's runfiles
+# alone, so a file :install lacks fails the test as it would fail `bazel run`.
 node_test(
     name = "local_install_test",
     size = "small",
     srcs = ["local-install/local.test.mjs"],
     data = [
-        "install-omnisim/omnisim.mjs",
-        "install-pebble/pebble.mjs",
-        "lib/helpers.mjs",
-        "lib/install.mjs",
         "lib/testing.mjs",
-        "local-install/local.mjs",
         ":install",
     ],
 )

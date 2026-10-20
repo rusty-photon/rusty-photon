@@ -1,6 +1,7 @@
 // ASTAP, the plate solver plate-solver runs (ADR-005): which CLI archive each
 // runner takes, and its install, with the D05 star database when a job asks
-// for it, into <workspace>/astap and <workspace>/astap-db.
+// for it, into <workspace>/astap and <workspace>/astap-db on a runner, or
+// both into a directory a developer names.
 //
 // The table is assets.json, beside this file, rather than a constant here,
 // because a workflow rewrites it. When the nightly install-astap smoke fails,
@@ -21,7 +22,16 @@ import { setTimeout as sleepFor } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { addPath, exportVariable, io, setOutput, warning } from '../lib/helpers.mjs';
-import { cacheKey, ChecksumError, download, forRunner, unpack, withWorkDir } from '../lib/install.mjs';
+import {
+  cacheKey,
+  checkReplaceable,
+  ChecksumError,
+  download,
+  forRunner,
+  markInstalled,
+  unpack,
+  withWorkDir,
+} from '../lib/install.mjs';
 
 /** The table of what each runner downloads, and its pins. */
 export const TABLE_FILE = fileURLToPath(new URL('./assets.json', import.meta.url));
@@ -165,20 +175,25 @@ const ROTATED =
   'the pins are in .github/actions/install-astap/assets.json, and ADR-005 §"Pinned SHA-256 + refresh procedure" ' +
   'has the manual steps.';
 
-// Downloads, checks and unpacks `asset` into `dir`, replacing what is there,
-// once `check` accepts the unpacked directory.
+// Downloads, checks and unpacks `asset` into `unpacked`, beside the archive
+// in the work directory `work`, once `check` accepts what it unpacked.
+async function fetchUnpacked(asset, work, unpacked, options, check) {
+  const archive = path.join(work, asset.name);
+  try {
+    await download(asset, archive, options);
+  } catch (err) {
+    if (err instanceof ChecksumError) throw new ChecksumError(`${err.message} ${ROTATED}`);
+    throw err;
+  }
+  await unpack(archive, unpacked);
+  check(unpacked);
+}
+
+// Downloads, checks and unpacks `asset` into `dir`, replacing what is there.
 async function unpackInto(asset, dir, options, check) {
   await withWorkDir(dir, async (work) => {
-    const archive = path.join(work, asset.name);
-    try {
-      await download(asset, archive, options);
-    } catch (err) {
-      if (err instanceof ChecksumError) throw new ChecksumError(`${err.message} ${ROTATED}`);
-      throw err;
-    }
     const unpacked = path.join(work, 'unpacked');
-    await unpack(archive, unpacked);
-    check(unpacked);
+    await fetchUnpacked(asset, work, unpacked, options, check);
     await rm(dir, { recursive: true, force: true });
     await rename(unpacked, dir);
   });
@@ -188,18 +203,26 @@ function holdsFiles(dir) {
   return existsSync(dir) && readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isFile());
 }
 
-async function installCli(cli, dir, options) {
-  await unpackInto(cli, dir, { ...CLI_DOWNLOAD, ...options }, (unpacked) => {
-    if (!existsSync(path.join(unpacked, cli.binary))) throw new Error(`${cli.name} holds no ${cli.binary} at its top`);
-  });
+function checkCli(cli, unpacked) {
+  if (!existsSync(path.join(unpacked, cli.binary))) throw new Error(`${cli.name} holds no ${cli.binary} at its top`);
 }
 
 // ASTAP reads the database's files from the directory it is given, so they
 // must be at the archive's top.
+function checkDatabase(database, unpacked) {
+  if (!holdsFiles(unpacked)) throw new Error(`${database.name} holds no files at its top`);
+}
+
+async function installCli(cli, dir, options) {
+  await unpackInto(cli, dir, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked));
+}
+
 async function installDatabase(database, dir, options) {
-  await unpackInto(database, dir, { ...DATABASE_DOWNLOAD, ...options }, (unpacked) => {
-    if (!holdsFiles(unpacked)) throw new Error(`${database.name} holds no files at its top`);
-  });
+  await unpackInto(database, dir, { ...DATABASE_DOWNLOAD, ...options }, (unpacked) => checkDatabase(database, unpacked));
+}
+
+async function makeRunnable(dir, binary) {
+  if (!binary.endsWith('.exe')) await chmod(path.join(dir, binary), 0o755);
 }
 
 /**
@@ -228,7 +251,7 @@ export async function install({
     if (cliCached) warning(`The cache restored ${dir} without ${cli.binary}; downloading the ASTAP CLI again`);
     await installCli(cli, dir, options);
   }
-  if (!cli.binary.endsWith('.exe')) await chmod(path.join(dir, cli.binary), 0o755);
+  await makeRunnable(dir, cli.binary);
   // `${workspace}/astap/...`, joined with '/' on Windows too, as the action
   // wrote them before.
   const binary = `${workspace}/astap/${cli.binary}`;
@@ -254,6 +277,34 @@ export async function install({
   }
   exportVariable('ASTAP_DB_DIR', `${workspace}/astap-db`);
   setOutput('astap-db-dir', `${workspace}/astap-db`);
+}
+
+/** Where a developer's install puts the database, inside the directory it installs. */
+export const DATABASE_DIR = 'db';
+
+/**
+ * A developer's install of what `resolve` chose into `dir`: the CLI archive's
+ * contents at its top and the database in DATABASE_DIR. It replaces `dir`
+ * only when it is empty or an earlier install marked it, and only once both
+ * archives are checked, so a failure leaves an earlier install as it was.
+ * Resolves to the variables that point plate-solver's @requires-astap
+ * scenarios at them. `download` overrides the download options of both.
+ */
+export async function installAt(dir, { cli, database }, { download: options } = {}) {
+  await checkReplaceable(dir);
+  await withWorkDir(dir, async (work) => {
+    const tree = path.join(work, 'astap');
+    await fetchUnpacked(cli, work, tree, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked));
+    const files = path.join(work, 'database');
+    const check = (unpacked) => checkDatabase(database, unpacked);
+    await fetchUnpacked(database, work, files, { ...DATABASE_DOWNLOAD, ...options }, check);
+    await rename(files, path.join(tree, DATABASE_DIR));
+    await rm(dir, { recursive: true, force: true });
+    await rename(tree, dir);
+  });
+  await markInstalled(dir, `ASTAP, ${cli.name} and ${database.name}`);
+  await makeRunnable(dir, cli.binary);
+  return { ASTAP_BINARY: path.join(dir, cli.binary), ASTAP_DB_DIR: path.join(dir, DATABASE_DIR) };
 }
 
 // --- Refreshing the pins -------------------------------------------------------------

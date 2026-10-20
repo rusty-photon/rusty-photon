@@ -489,8 +489,15 @@ The earlier `scripts/astap-spike.sh` operator harness was deleted
 once `install-astap` matured: the script duplicated the action's
 per-OS table (causing divergence bugs), and its auto-download
 behaviour conflicted with the BYO posture this ADR adopts. The
-action remains the canonical install recipe for both CI and human
-operators reading the file.
+action's table,
+[`assets.json`](../../.github/actions/install-astap/assets.json),
+remains the canonical install recipe for both CI and operators
+following it by hand. A developer who wants the `@requires-astap`
+scenarios to fire runs the action's own code instead,
+`bazel run //.github/actions:install -- astap` (ADR-022
+Amendment A), which keeps no second table: it installs the CLI and
+the D05 database CI pins into one directory and prints the
+`ASTAP_BINARY` and `ASTAP_DB_DIR` to set.
 
 ### Smoke results captured during ADR drafting
 
@@ -595,10 +602,13 @@ below tracks which have been retired.
   `astap_db_directory` is the contract.
 - Per-platform install instructions live in the `plate-solver`
   README, linking out to hnsky.org / SourceForge by platform. The
-  README also points operators at
-  [`.github/actions/install-astap`](../../.github/actions/install-astap/action.yml)
-  in this repo as the reference for how CI installs ASTAP — the same
-  recipe an operator would follow manually.
+  README also points operators at the
+  [`install-astap`](../../.github/actions/install-astap/action.yml)
+  action's table,
+  [`assets.json`](../../.github/actions/install-astap/assets.json),
+  as the reference for what CI installs: each platform's archive, its
+  SourceForge folder and its SHA-256, the same recipe an operator
+  would follow manually.
 - The `data_directory` `rp` shares via §"File Accessibility" remains
   the place the solver reads FITS from; no additional path contract
   is needed.
@@ -696,6 +706,13 @@ for third-party download under its own distribution channel. The
 that mirrors what a human operator would do by hand from the
 README's "Operator install" section.
 
+The developer's install,
+`bazel run //.github/actions:install -- astap` (ADR-022
+Amendment A), is the same module run on a developer's own machine.
+It downloads from SourceForge there, into a directory the developer
+names, and nothing passes through the project: the developer
+installs ASTAP for themselves, as an operator does.
+
 The dedicated `install-astap` smoke workflow
 (`.github/workflows/install-astap.yml`) sets `use-cache: "false"` on
 the composite action so each run does a genuinely fresh upstream
@@ -738,7 +755,9 @@ same cache scope; they're not republishing.
 - `rp` and `plate-solver` never convey ASTAP. §4 and §6 do not
   engage at the `rp` boundary.
 - The `install-astap` action is repo-internal CI tooling, not a
-  distribution channel. It does not convey.
+  distribution channel. It does not convey, and neither does the
+  developer's install, which runs its module on the developer's
+  machine.
 - GH-Actions cache is ephemeral build infrastructure, not mirroring.
 
 The wrapper's HTTP boundary, BYO config posture, and CI tooling

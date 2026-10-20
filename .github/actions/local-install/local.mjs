@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
 import { describe, io } from '../lib/helpers.mjs';
@@ -23,6 +24,11 @@ import { hostKey } from '../lib/install.mjs';
  * and resolves to the variables that locate them.
  */
 export const TOOLS = {
+  astap: {
+    about: "ASTAP's CLI and D05 star database, for plate-solver's @requires-astap scenarios",
+    resolve: astap.resolve,
+    installAt: astap.installAt,
+  },
   omnisim: {
     about: 'ASCOM OmniSim, the Alpaca simulators the BDD suites spawn',
     resolve: omnisim.resolve,

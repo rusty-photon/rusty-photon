@@ -261,8 +261,8 @@ function check(asset, digest) {
  * pin. A download that fails, stalls for `stallMs`, runs slower than
  * `minBytesPerSecond` over `stallMs` (0, the default, sets no floor), takes
  * longer than `timeoutMs` or does not match is tried again, up to `attempts`
- * times in all, as one unit with its check; a body cut short fails its
- * attempt, as fetch refuses it. With `retryForMs`, no attempt starts once
+ * times in all, as one unit with its check; a body cut short of the length
+ * its server announced fails its attempt. With `retryForMs`, no attempt starts once
  * that long has passed since the first began, though one under way runs on,
  * as curl's --retry-max-time works. A failure that a later attempt would
  * meet again, such as a 404 or a bad certificate, is not tried again, unless
