@@ -252,18 +252,24 @@ function psLiteral(text) {
 }
 
 /**
- * Unpacks ZWO's zip `file` into `dir`. Windows' tar.exe (bsdtar 3.8.8) skips
- * an entry whose name the system's code page cannot hold, then fails, and
- * ZWO's EFW and EAF SDKs each hold one ("EFW SDK快速入门.pdf"), so on Windows
- * PowerShell's Expand-Archive unpacks them, as the shell did, which reads the
- * names as Unicode. Elsewhere, where only the tests unpack them, unpack does.
+ * Unpacks each of ZWO's zips `[file, dir]` in `zips` into its directory.
+ * Windows' tar.exe (bsdtar 3.8.8) skips an entry whose name the system's code
+ * page cannot hold, then fails, and ZWO's EFW and EAF SDKs each hold one
+ * ("EFW SDK快速入门.pdf"), so on Windows PowerShell's Expand-Archive unpacks
+ * them, as the shell did, which reads the names as Unicode: all of them in
+ * one PowerShell, which takes a second or more to start. Elsewhere, where
+ * only the tests unpack them, unpack does.
  */
-export async function unpackZip(file, dir, { platform = process.platform, run = command } = {}) {
-  if (platform !== 'win32') return unpack(file, dir);
+export async function unpackZips(zips, { platform = process.platform, run = command } = {}) {
+  if (platform !== 'win32') {
+    for (const [file, dir] of zips) await unpack(file, dir);
+    return;
+  }
+  if (zips.length === 0) return;
+  const expand = zips.map(([file, dir]) => `Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force`);
   const script =
     "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
-    `try { Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force } ` +
-    'catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }';
+    `try { ${expand.join('; ')} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
   await run(powershellProgram(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
 }
 
@@ -303,17 +309,20 @@ export function pickX64(root, file, what) {
  */
 export async function stageWindows(assets, downloads, lib) {
   await withWorkDir(lib, async (work) => {
+    const unpacked = (sdk) => path.join(work, path.basename(sdk.name, '.zip'));
+    await unpackZips(assets.map((sdk) => [path.join(downloads, sdk.name), unpacked(sdk)]));
+    const inner = assets.flatMap((sdk) =>
+      filesUnder(unpacked(sdk))
+        .filter((rel) => WINDOWS_SDK.test(path.posix.basename(rel)))
+        .map((rel) => [path.join(unpacked(sdk), rel), path.join(unpacked(sdk), `inner-${path.posix.basename(rel, '.zip')}`)]),
+    );
+    await unpackZips(inner);
     const staged = path.join(work, 'lib');
     await mkdir(staged);
     for (const sdk of assets) {
-      const unpacked = path.join(work, path.basename(sdk.name, '.zip'));
-      await unpackZip(path.join(downloads, sdk.name), unpacked);
-      for (const inner of filesUnder(unpacked).filter((rel) => WINDOWS_SDK.test(path.posix.basename(rel)))) {
-        await unpackZip(path.join(unpacked, inner), path.join(unpacked, `inner-${path.posix.basename(inner, '.zip')}`));
-      }
       for (const suffix of ['.lib', '.dll']) {
-        const found = pickX64(unpacked, `${sdk.library}${suffix}`, sdk.name);
-        await copyFile(path.join(unpacked, found), path.join(staged, `${sdk.as}${suffix}`));
+        const found = pickX64(unpacked(sdk), `${sdk.library}${suffix}`, sdk.name);
+        await copyFile(path.join(unpacked(sdk), found), path.join(staged, `${sdk.as}${suffix}`));
         io.stdout(`${sdk.as}${suffix}: ${sdk.name}'s ${found}\n`);
       }
     }

@@ -20,7 +20,7 @@ import {
   REF,
   resolve,
   RUNNERS,
-  unpackZip,
+  unpackZips,
 } from './zwo-sdk.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -459,20 +459,29 @@ test('install on Windows unpacks an SDK holding a name Windows\' code page canno
   }
 });
 
-test('unpackZip on Windows runs Expand-Archive by its full path, with each path quoted whole', async () => {
+test('unpackZips on Windows runs one Expand-Archive per zip in one PowerShell, by its full path, each path quoted whole', async () => {
   const { run, calls } = recorder();
-  await withEnv({ SystemRoot: 'C:\\Windows' }, () =>
-    unpackZip("C:\\Users\\o'brien\\a\u2019b.zip", 'C:\\Temp\\out', { platform: 'win32', run }),
-  );
-  assert.equal(powershellProgram(), 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  const program = await withEnv({ SystemRoot: 'C:\\Windows' }, async () => {
+    const zips = [
+      ["C:\\Users\\o'brien\\a\u2019b.zip", 'C:\\Temp\\a'],
+      ['C:\\Temp\\b.zip', 'C:\\Temp\\b'],
+    ];
+    await unpackZips(zips, { platform: 'win32', run });
+    await unpackZips([], { platform: 'win32', run });
+    return powershellProgram();
+  });
+  assert.equal(program, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   assert.equal(calls.length, 1);
-  const [program, ...args] = calls[0];
-  assert.equal(program, powershellProgram());
+  const [called, ...args] = calls[0];
+  assert.equal(called, program);
   assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
-  const script = Buffer.from(args[3], 'base64').toString('utf16le');
-  assert.match(script, /^\$ErrorActionPreference = 'Stop';/);
-  assert.ok(script.includes("Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\out' -Force"), script);
-  assert.match(script, /catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/);
+  assert.equal(
+    Buffer.from(args[3], 'base64').toString('utf16le'),
+    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; try { " +
+      "Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\a' -Force; " +
+      "Expand-Archive -LiteralPath 'C:\\Temp\\b.zip' -DestinationPath 'C:\\Temp\\b' -Force" +
+      ' } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
+  );
 });
 
 test('install on Windows takes the LLVM the runner has, and this week\'s cached downloads', async () => {

@@ -91,9 +91,11 @@ node_test(
 
 # install-zwo-sdk: ZWO's ASI, EFW and EAF SDKs, which libzwo-sys links: from the
 # INDI repository at a commit on Linux and macOS, from ZWO's CDN on Windows.
+# Medium: on Windows each install's unpacking starts PowerShell twice, a second
+# or more each.
 node_test(
     name = "install_zwo_sdk_test",
-    size = "small",
+    size = "medium",
     srcs = ["install-zwo-sdk/zwo-sdk.test.mjs"],
     data = [
         "install-zwo-sdk/zwo-sdk.mjs",
