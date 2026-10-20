@@ -83,15 +83,19 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 ```
 
 On Linux and macOS the install puts the libraries in `/usr/local/lib` and the
-headers in `/usr/local/include`, where libzwo-sys's build script and the
-loader look, using `sudo` for the copy when you cannot write there; it
-replaces those files and nothing else. With `--prefix DIR` elsewhere it prints
-the `ZWO_SDK_LIB_DIR` Cargo needs to link, but Bazel looks only in
-`/usr/local`, and on Linux a binary that loads the SDK then needs
-`DIR/lib` on `LD_LIBRARY_PATH`. On Windows it installs into
-`%USERPROFILE%\.local\opt\zwo-sdk` and prints a `setx ZWO_SDK_LIB_DIR` line
-to run once; a build that talks to a real camera also needs that directory
-on `PATH`, for the DLLs, and bindgen needs LLVM (`LIBCLANG_PATH`).
+headers in `/usr/local/include`, where libzwo-sys's build script looks, using
+`sudo` for the copy when you cannot write there; it replaces those files and
+nothing else. The libraries carry no SONAME, so on Linux a binary that loads
+them finds them through the loader's cache, and where that has no
+`/usr/local/lib`, as on Fedora, the install prints an `LD_LIBRARY_PATH` line
+to set. Adding `/usr/local/lib` to a file in `/etc/ld.so.conf.d/` and running
+`sudo ldconfig` does it for every binary, Bazel's tests included, which get
+no `LD_LIBRARY_PATH`. With `--prefix DIR` elsewhere it also prints the
+`ZWO_SDK_LIB_DIR` Cargo needs to link, but Bazel looks only in `/usr/local`.
+On Windows it installs into `%USERPROFILE%\.local\opt\zwo-sdk` and prints a
+`setx ZWO_SDK_LIB_DIR` line to run once; a build that talks to a real camera
+also needs that directory on `PATH`, for the DLLs, and bindgen needs LLVM
+(`LIBCLANG_PATH`).
 
 ## CLI
 

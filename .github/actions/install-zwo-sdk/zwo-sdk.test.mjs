@@ -106,15 +106,23 @@ function windowsSdks({ eafX64 = true, unicode = false } = {}) {
   };
 }
 
-// What the Windows install stages, by file name.
+// What the Windows install stages, by file name: each import library under
+// the name libzwo-sys links, each DLL under ZWO's, which the import library
+// tells a binary to load.
 const STAGED = {
   'ASICamera2.dll': 'camera dll',
   'ASICamera2.lib': 'camera lib',
-  'EAFFocuser.dll': 'focuser dll',
+  'EAF_focuser.dll': 'focuser dll',
   'EAFFocuser.lib': 'focuser lib',
-  'EFWFilter.dll': 'filter wheel dll',
+  'EFW_filter.dll': 'filter wheel dll',
   'EFWFilter.lib': 'filter wheel lib',
 };
+
+// The loader's cache (`ldconfig -p`) listing each library in `lib`.
+function cacheListing(lib, suffix = '.so') {
+  const files = ['libASICamera2', 'libEFWFilter', 'libEAFFocuser'].map((name) => `${name}${suffix}`);
+  return `${files.length} libs found in cache\n${files.map((file) => `\t${file} (libc6,x86-64) => ${join(lib, file)}\n`).join('')}`;
+}
 
 // A CDN serving `zips` (a download's name to its bytes), or failing every
 // request with `status`, and resolve's Windows assets pointed at it.
@@ -550,13 +558,13 @@ test('install on Windows refuses an SDK without its x64 library, and stages noth
 
 // --- A developer's install ----------------------------------------------------------------
 
-test('installAt copies into a prefix the developer can write without sudo, and names its lib folder', POSIX, async () => {
+test('installAt copies into a prefix the developer can write without sudo, and names its lib folder for the build and the loader', POSIX, async () => {
   const { server, runner, assets } = await indiServer('Linux-X64');
   const prefix = tempDir();
   writeAll(join(prefix, 'lib'), { 'libother.so': 'mine', 'libASICamera2.so': 'older' });
   try {
     const out = await inStep(() => installAt(prefix, { runner, assets }, { download: fast }));
-    assert.deepEqual(out.value, { ZWO_SDK_LIB_DIR: join(prefix, 'lib') });
+    assert.deepEqual(out.value, { ZWO_SDK_LIB_DIR: join(prefix, 'lib'), LD_LIBRARY_PATH: join(prefix, 'lib') });
     assert.deepEqual(readAll(join(prefix, 'lib')), {
       'libASICamera2.so': 'x64 camera',
       'libEAFFocuser.so': 'x64 focuser',
@@ -571,19 +579,50 @@ test('installAt copies into a prefix the developer can write without sudo, and n
   }
 });
 
-test('installAt writes /usr/local with sudo where the developer cannot, and needs no variable there', async () => {
+test('installAt writes /usr/local with sudo where the developer cannot, and needs no variable where the loader looks', async () => {
   const { server, runner, assets } = await indiServer('Linux-X64');
   const files = [];
   // The copies come from the work directory, which goes when the install ends.
-  const { run, calls } = recorder({ cp: ([from]) => void files.push(readFileSync(from, 'utf8')) });
+  const { run, calls } = recorder({
+    cp: ([from]) => void files.push(readFileSync(from, 'utf8')),
+    ldconfig: (args) => (args[0] === '-p' ? cacheListing(join(PREFIX, 'lib')) : ''),
+  });
   try {
     const out = await inStep(() => installAt(PREFIX, { runner, assets }, { download: fast, run, writable: async () => false }));
     assert.deepEqual(out.value, {});
     assert.match(out.stdout, /Writing \/usr\/local\/lib and \/usr\/local\/include as root, with sudo/);
     const from = calls[1][2].slice(0, -'/ASICamera2.h'.length);
-    assert.deepEqual(calls, [...copiesInto(PREFIX, from, '.so'), ['sudo', 'ldconfig']]);
+    const listings = [['ldconfig', '-p'], ['ldconfig', '-p'], ['ldconfig', '-p']];
+    assert.deepEqual(calls, [...copiesInto(PREFIX, from, '.so'), ['sudo', 'ldconfig'], ...listings]);
     assert.equal(existsSync(from), false);
     assert.deepEqual(files, [...HEADERS.map((name) => `the ${name}`), 'x64 camera', 'x64 filter wheel', 'x64 focuser']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('installAt names LD_LIBRARY_PATH where the loader\'s cache has no /usr/local/lib, as Fedora\'s has none', async () => {
+  const { server, runner, assets } = await indiServer('Linux-X64');
+  const elsewhere = recorder({ ldconfig: (args) => (args[0] === '-p' ? cacheListing(join('/', 'opt', 'zwo', 'lib')) : '') });
+  const missing = recorder({ ldconfig: (args) => (args[0] === '-p' ? '0 libs found in cache\n' : '') });
+  try {
+    for (const { run } of [elsewhere, missing]) {
+      const out = await inStep(() => installAt(PREFIX, { runner, assets }, { download: fast, run, writable: async () => false }));
+      assert.deepEqual(out.value, { LD_LIBRARY_PATH: join(PREFIX, 'lib') });
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('installAt on macOS needs no loader variable, the libraries carrying their own paths', async () => {
+  const { server, runner, assets } = await indiServer('macOS-ARM64');
+  const { run, calls } = recorder({ brew: '/opt/homebrew/opt/libusb\n' });
+  try {
+    const out = await inStep(() => installAt(PREFIX, { runner, assets }, { download: fast, run, writable: async () => false }));
+    assert.deepEqual(out.value, {});
+    assert.ok(calls.some((call) => call.join(' ').startsWith('sudo install_name_tool -id')));
+    assert.ok(!calls.some(([program, ...args]) => program === 'ldconfig' || args[0] === 'ldconfig'));
   } finally {
     await server.close();
   }

@@ -46,7 +46,7 @@ export const TOOLS = {
     about: `ZWO's SDKs, which zwo-camera and zwo-focuser link; into ${zwoSdk.PREFIX}, but on Windows ~/.local/opt/zwo-sdk`,
     resolve: zwoSdk.resolve,
     installAt: zwoSdk.installAt,
-    // Where libzwo-sys's build script and the loader look, as CI installs it.
+    // Where libzwo-sys's build script looks, as CI installs it.
     dir: ({ platform }) => (platform === 'win32' ? undefined : zwoSdk.PREFIX),
   },
 };
@@ -105,6 +105,10 @@ export function parse(args, { cwd, home, platform = process.platform, tools = TO
   return { tool, dir: path.resolve(cwd, prefix) };
 }
 
+// The variables that hold a list of directories, where a profile line puts
+// the new one first and keeps what the shell had.
+const SEARCH_PATHS = new Set(['LD_LIBRARY_PATH']);
+
 /**
  * What to do with `variables`, and the lines that do it: on Windows, setx
  * lines to run once, which set them for every shell opened after; elsewhere,
@@ -120,7 +124,10 @@ export function settings(variables, platform = process.platform) {
   }
   return {
     how: 'Set these in your shell profile',
-    lines: entries.map(([name, value]) => `export ${name}='${value.replaceAll("'", "'\\''")}'`),
+    lines: entries.map(([name, value]) => {
+      const quoted = `'${value.replaceAll("'", "'\\''")}'`;
+      return SEARCH_PATHS.has(name) ? `export ${name}=${quoted}"\${${name}:+:\$${name}}"` : `export ${name}=${quoted}`;
+    }),
   };
 }
 

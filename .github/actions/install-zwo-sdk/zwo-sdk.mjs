@@ -73,8 +73,10 @@ export const HEADERS = ['ASICamera2.h', 'EFW_filter.h', 'EAF_focuser.h', 'licens
 export const LIBRARIES = ['ASICamera2', 'EFWFilter', 'EAFFocuser'];
 
 /**
- * ZWO's three SDKs for Windows, and the library each holds, by the name ZWO
- * gives it and the name libzwo-sys links.
+ * ZWO's three SDKs for Windows, and the library each holds: by the name ZWO
+ * gives it, which its DLL keeps, since the import library names the DLL a
+ * binary built with it loads, and the name libzwo-sys links its import
+ * library by.
  */
 export const WINDOWS_SDKS = [
   { name: 'asi.zip', url: CAMERA_SDK_URL, library: 'ASICamera2', as: 'ASICamera2' },
@@ -82,7 +84,7 @@ export const WINDOWS_SDKS = [
   { name: 'eaf.zip', url: EAF_SDK_URL, library: 'EAF_focuser', as: 'EAFFocuser' },
 ];
 
-/** Where the SDK goes on Linux and macOS: where libzwo-sys's build script looks, and Linux's loader. */
+/** Where the SDK goes on Linux and macOS: where libzwo-sys's build script looks, in Bazel's actions too. */
 export const PREFIX = '/usr/local';
 
 /**
@@ -118,8 +120,8 @@ export function resolve({ runner, server = 'https://github.com', now }) {
 
 /**
  * The INDI repository's files, through GitHub's raw links, with retries for
- * the 429s and timeouts it gives CI's ephemeral addresses (issue #476), as
- * curl's --retry 3 --retry-delay 2 had them.
+ * the 429s and timeouts it gives CI's ephemeral addresses, as curl's
+ * --retry 3 --retry-delay 2 had them.
  */
 export const INDI_DOWNLOAD = { attempts: 4, delayMs: 2_000 };
 
@@ -304,8 +306,9 @@ export function pickX64(root, file, what) {
 
 /**
  * Unpacks each of ZWO's SDKs in `downloads`, and the SDK for Windows inside
- * it, and puts the x64 import library and DLL of each into `lib`, under the
- * names libzwo-sys links. `lib` is replaced only once all six are found.
+ * it, and puts the x64 import library and DLL of each into `lib`: the import
+ * library under the name libzwo-sys links, the DLL under ZWO's. `lib` is
+ * replaced only once all six are found.
  */
 export async function stageWindows(assets, downloads, lib) {
   await withWorkDir(lib, async (work) => {
@@ -320,10 +323,10 @@ export async function stageWindows(assets, downloads, lib) {
     const staged = path.join(work, 'lib');
     await mkdir(staged);
     for (const sdk of assets) {
-      for (const suffix of ['.lib', '.dll']) {
-        const found = pickX64(unpacked(sdk), `${sdk.library}${suffix}`, sdk.name);
-        await copyFile(path.join(unpacked(sdk), found), path.join(staged, `${sdk.as}${suffix}`));
-        io.stdout(`${sdk.as}${suffix}: ${sdk.name}'s ${found}\n`);
+      for (const [file, as] of [[`${sdk.library}.lib`, `${sdk.as}.lib`], [`${sdk.library}.dll`, `${sdk.library}.dll`]]) {
+        const found = pickX64(unpacked(sdk), file, sdk.name);
+        await copyFile(path.join(unpacked(sdk), found), path.join(staged, as));
+        io.stdout(`${as}: ${sdk.name}'s ${found}\n`);
       }
     }
     await rm(lib, { recursive: true, force: true });
@@ -405,6 +408,17 @@ async function canWrite(dir) {
   }
 }
 
+// Whether the loader's cache lists each library in `lib`, where a binary
+// linked against it finds it with no LD_LIBRARY_PATH: the libraries carry no
+// SONAME, and libzwo-sys adds no rpath.
+async function loaderFinds(lib, suffix, run) {
+  for (const name of LIBRARIES) {
+    const file = `lib${name}${suffix}`;
+    if ((await findRuntime(file, { run, dirs: [] })) !== path.join(lib, file)) return false;
+  }
+  return true;
+}
+
 /**
  * A developer's install of what `resolve` chose into `dir`. On Linux and
  * macOS, `dir` is a prefix, PREFIX unless the developer names another: the
@@ -412,8 +426,10 @@ async function canWrite(dir) {
  * those files and nothing else, with sudo where the developer cannot write.
  * On Windows, `dir` is installed whole: it is replaced only when it is empty
  * or an earlier install marked it, and only once all six files are found.
- * Resolves to the variables libzwo-sys's build needs: ZWO_SDK_LIB_DIR, unless
- * the libraries are in PREFIX, where it looks already.
+ * Resolves to the variables a build and its binaries need: ZWO_SDK_LIB_DIR,
+ * unless the libraries are in PREFIX, where libzwo-sys's build looks
+ * already; and on Linux LD_LIBRARY_PATH, unless the loader's cache lists them
+ * where they went, which Fedora's, for one, does not for /usr/local/lib.
  */
 export async function installAt(
   dir,
@@ -435,5 +451,8 @@ export async function installAt(
   if (sudo) io.stdout(`Writing ${dir}/lib and ${dir}/include as root, with sudo\n`);
   const how = { options, suffix, macos: runner.startsWith('macOS-'), sudo, run };
   await fetchAndPlace(assets, path.join(os.tmpdir(), 'zwo-sdk'), dir, how);
-  return dir === PREFIX ? {} : { ZWO_SDK_LIB_DIR: path.join(dir, 'lib') };
+  const lib = path.join(dir, 'lib');
+  const variables = dir === PREFIX ? {} : { ZWO_SDK_LIB_DIR: lib };
+  if (!how.macos && !(await loaderFinds(lib, suffix, run))) variables.LD_LIBRARY_PATH = lib;
+  return variables;
 }

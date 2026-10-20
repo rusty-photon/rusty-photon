@@ -99,6 +99,20 @@ test('settings writes lines for the shell profile that a POSIX shell reads back 
   if (!sh.error) assert.equal(sh.stdout, "/x/o'b $HOME/y");
 });
 
+test('settings puts a library directory first on LD_LIBRARY_PATH and keeps what the shell had', () => {
+  assert.deepEqual(settings({ LD_LIBRARY_PATH: '/usr/local/lib' }, 'linux').lines, [
+    `export LD_LIBRARY_PATH='/usr/local/lib'"\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"`,
+  ]);
+  const line = settings({ LD_LIBRARY_PATH: "/x/o'b" }, 'linux').lines[0];
+  const read = (before) =>
+    spawnSync('sh', ['-c', `${before}${line}; printf %s "$LD_LIBRARY_PATH"`], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+  const unset = read('unset LD_LIBRARY_PATH; ');
+  if (!unset.error) {
+    assert.equal(unset.stdout, "/x/o'b");
+    assert.equal(read("LD_LIBRARY_PATH='/opt/a b'; ").stdout, "/x/o'b:/opt/a b");
+  }
+});
+
 test('settings writes setx lines on Windows, to run once before opening a new shell', () => {
   assert.deepEqual(settings({ A_PATH: 'C:\\Users\\dev\\a', B_PATH: 'C:\\b' }, 'win32'), {
     how: 'Run these once, then open a new shell, which has them',
