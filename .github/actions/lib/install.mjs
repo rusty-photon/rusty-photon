@@ -300,6 +300,8 @@ function check(asset, digest) {
  * every failure is, as curl's --retry-all-errors did. `headers` go with each
  * request, such as the Authorization a private mirror asks for. Nothing is
  * left at `file` unless every check passed: the bytes land beside it first.
+ * Resolves to the file's SHA-256, which for a rolling download is the one
+ * thing that says what it got.
  */
 export async function download(
   asset,
@@ -318,11 +320,13 @@ export async function download(
   pinKey(asset.pin);
   await mkdir(path.dirname(file), { recursive: true });
   const part = `${file}.part`;
+  let digest;
   try {
     await retry(
       async () => {
         io.stdout(`Downloading ${asset.url}\n`);
-        check(asset, await fetchTo(asset.url, part, { stallMs, minBytesPerSecond, timeoutMs, headers }));
+        digest = await fetchTo(asset.url, part, { stallMs, minBytesPerSecond, timeoutMs, headers });
+        check(asset, digest);
       },
       {
         attempts,
@@ -335,6 +339,7 @@ export async function download(
       },
     );
     await rename(part, file);
+    return digest;
   } finally {
     await rm(part, { force: true });
   }

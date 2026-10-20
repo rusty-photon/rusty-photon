@@ -1,0 +1,27 @@
+name: Detect an ASTAP rotation
+description: >-
+  The first job of refresh-astap-shas.yml, once per runner: downloads the CLI
+  archive install-astap's table (assets.json) names for `runner` and compares
+  its SHA-256 with the pin. When it rotated, checks the new binary by solving
+  plate-solver's M101 fixture, if `verify` asks and this runner is `runner`,
+  and writes what it found into `results` for upload-artifact.
+inputs:
+  runner:
+    description: The runner whose archive to compare, as the table keys it, RUNNER_OS-RUNNER_ARCH (Linux-X64).
+    required: true
+  verify:
+    description: Whether to check a new binary; only on its own runner. 'false' for a runner with no job of its own.
+    required: false
+    default: "true"
+  results:
+    description: The directory to write the result into, relative to the workspace.
+    required: false
+    default: refresh-result
+outputs:
+  rotated:
+    description: "'true' when upstream's archive is not the pinned one, and the result is in `results`."
+  sha:
+    description: The SHA-256 of the archive upstream serves.
+runs:
+  using: node24
+  main: index.mjs

@@ -5,18 +5,19 @@
 //
 // The table is assets.json, beside this file, rather than a constant here,
 // because a workflow rewrites it. When the nightly install-astap smoke fails,
-// refresh-astap-shas.yml reads each runner's pin (pin/), checks the archive
-// SourceForge now serves by solving a known field with it, and writes the new
-// SHA-256 back (repin/) in a pull request. Both read and write the table as
-// JSON, whole, so neither depends on how the file is laid out; formatTable is
-// its one layout, so a rewrite changes the sha256 lines and nothing else.
+// refresh-astap-shas.yml compares each runner's pin with the archive
+// SourceForge now serves, checks a new one by solving a known field with it,
+// and proposes the new SHA-256 in a pull request (../refresh-astap). It reads
+// and writes the table as JSON, whole, so it does not depend on how the file
+// is laid out; formatTable is its one layout, so a rewrite changes the sha256
+// lines and nothing else.
 //
 // The URLs are SourceForge's for the newest file of each name, which upstream
 // replaces in place at each release. The SHA-256 pins one release: a new one
 // fails the check, closed, until the refresh moves the pin.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -66,25 +67,25 @@ function checkTable(table, where) {
 }
 
 /**
- * The table in `file`: `cli`, each runner's CLI archive ({ folder, archive,
- * binary, sha256 }), keyed `${RUNNER_OS}-${RUNNER_ARCH}`, and `database`, the
- * D05 archive ({ folder, archive, sha256 }). Throws when an entry lacks one.
+ * The table `text` holds, which `where` names: `cli`, each runner's CLI
+ * archive ({ folder, archive, binary, sha256 }), keyed
+ * `${RUNNER_OS}-${RUNNER_ARCH}`, and `database`, the D05 archive ({ folder,
+ * archive, sha256 }). Throws when an entry lacks one.
  */
-export function readTable(file = TABLE_FILE) {
-  const table = JSON.parse(readFileSync(file, 'utf8'));
-  checkTable(table, path.basename(file));
+export function parseTable(text, where) {
+  const table = JSON.parse(text);
+  checkTable(table, where);
   return table;
+}
+
+/** The table in `file` (parseTable). */
+export function readTable(file = TABLE_FILE) {
+  return parseTable(readFileSync(file, 'utf8'), path.basename(file));
 }
 
 /** The table's one layout, which assets.json keeps. */
 export function formatTable(table) {
   return `${JSON.stringify(table, null, 2)}\n`;
-}
-
-/** Writes `table` to `file` in that layout, once it is known to be whole. */
-export async function writeTable(file, table) {
-  checkTable(table, path.basename(file));
-  await writeFile(file, formatTable(table));
 }
 
 /** The table assets.json holds. */
@@ -302,54 +303,4 @@ export async function installAt(dir, { cli, database }, { download: options } = 
   await markInstalled(dir, `ASTAP, ${cli.name} and ${database.name}`);
   await makeRunnable(dir, cli.binary);
   return { ASTAP_BINARY: path.join(dir, cli.binary), ASTAP_DB_DIR: path.join(dir, DATABASE_DIR) };
-}
-
-// --- Refreshing the pins -------------------------------------------------------------
-
-/**
- * The SHA-256 `table` pins for `runner`'s CLI archive, which must be
- * `archive`: refresh-astap-shas.yml names each runner's archive in its own
- * matrix, and downloads that one to compare.
- */
-export function pinOf(table, runner, archive) {
-  const entry = forRunner(table.cli, runner, 'ASTAP');
-  if (entry.archive !== archive) {
-    throw new Error(`the table pins ${entry.archive} for ${runner}, not ${archive}: the workflow and assets.json disagree`);
-  }
-  return entry.sha256;
-}
-
-/**
- * `table` with the new pin of each of `results` in it, and what changed. A
- * result is a runner's from refresh-astap-shas.yml, `{ arch_key, archive,
- * new_sha }`, and its archive must be the one the table names for that
- * runner.
- */
-export function repin(table, results) {
-  const next = structuredClone(table);
-  const changes = [];
-  for (const { arch_key: runner, archive, new_sha: sha256 } of results) {
-    const from = pinOf(next, runner, archive);
-    if (!SHA256.test(sha256 ?? '')) {
-      throw new Error(`the new pin of ${archive}, ${JSON.stringify(sha256)}, is not a SHA-256 in lowercase hex`);
-    }
-    next.cli[runner].sha256 = sha256;
-    changes.push({ runner, archive, from, to: sha256 });
-  }
-  return { table: next, changes };
-}
-
-/**
- * The results refresh-astap-shas.yml's jobs upload, read from `dir` as
- * download-artifact lays them out: a directory per artifact, each holding one
- * runner's JSON file.
- */
-export async function readResults(dir) {
-  const results = [];
-  const artifacts = (await readdir(dir, { withFileTypes: true })).filter((entry) => entry.isDirectory());
-  for (const artifact of artifacts.map((entry) => entry.name).sort()) {
-    const files = (await readdir(path.join(dir, artifact))).filter((name) => name.endsWith('.json')).sort();
-    for (const file of files) results.push(JSON.parse(await readFile(path.join(dir, artifact, file), 'utf8')));
-  }
-  return results;
 }

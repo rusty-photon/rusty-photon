@@ -10,6 +10,7 @@ import {
   addPath,
   command,
   describe,
+  error,
   exportVariable,
   fail,
   fetchWithRetry,
@@ -130,6 +131,17 @@ test('setSecret escapes the three characters the runner unescapes', async () => 
 test('warning puts a multi-line message on one command line', async () => {
   const { stdout } = await capture(() => warning('first\nsecond'));
   assert.equal(stdout, '::warning::first%0Asecond\n');
+});
+
+test('error annotates without failing the step', async (t) => {
+  const saved = process.exitCode;
+  t.after(() => {
+    process.exitCode = saved;
+  });
+  process.exitCode = undefined;
+  const { stdout } = await capture(() => error('first\nsecond'));
+  assert.equal(stdout, '::error::first%0Asecond\n');
+  assert.equal(process.exitCode, undefined);
 });
 
 test('group closes the group and returns what the function returns', async () => {

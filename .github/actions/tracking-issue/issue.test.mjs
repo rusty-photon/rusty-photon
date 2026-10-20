@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { describe } from '../lib/helpers.mjs';
+import { runContext } from '../lib/github.mjs';
 import { capture, serve } from '../lib/testing.mjs';
-import { runContext, trackFailure } from './issue.mjs';
+import { trackFailure } from './issue.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 

@@ -354,29 +354,41 @@ failing):
 
 The
 [`refresh-astap-shas`](../../.github/workflows/refresh-astap-shas.yml)
-workflow automates steps 1–4 of this procedure. It triggers on an
-`install-astap` smoke failure (the canonical rotation signal) or
-manual dispatch. For each supported platform it downloads the
-upstream archive, detects whether the SHA differs from the pin, and
-— for rotated platforms — **verifies the new binary by solving the
-committed M101 fixture
+workflow automates steps 1–4 of this procedure, with the
+[`refresh-astap`](../../.github/actions/refresh-astap) action. It
+triggers on an `install-astap` smoke failure (the canonical rotation
+signal) or manual dispatch. For each platform in the table it
+downloads the upstream archive, detects whether the SHA differs from
+the pin, and — for rotated platforms — **verifies the new binary by
+solving the committed M101 fixture
 (`services/plate-solver/tests/fixtures/m101_known.fits`) to the
 known center within the same 0.01° tolerance the BDD scenario
-uses**. If every rotated platform's verification passes, it opens
-(or updates) a `chore(install-astap): auto-refresh SHA-256 pins`
-PR and comments on the open `install-astap-nightly` tracking
-issue with the PR link. The PR-opening step requires the "Allow
+uses**. That job runs the new binary with read-only permissions and
+none of the runner's `ACTIONS_*` variables in its environment, since
+nobody has looked at it yet. That is no sandbox: the binary can still
+read the action's own environment, and a hosted runner gives it
+passwordless `sudo` (docs/skills/ci-logic.md). If every rotated platform's verification passes, it commits the
+new pins on main's table through the GitHub API, onto
+`chore/auto-refresh-astap-shas`, opens (or updates) a
+`chore(install-astap): auto-refresh SHA-256 pins` PR from it, and
+comments on the open `install-astap-nightly` tracking issue with the PR
+link. A manual dispatch with `dry-run` reads what it would act on and
+prints what it would write, writing nothing. The PR-opening step requires the "Allow
 GitHub Actions to create and approve pull requests" setting at
 **both** the org and repo level (Settings → Actions → General →
 Workflow permissions; enabled 2026-08-13) — without it the run
-fails *after* pushing the refresh branch, and the fallback is a
+fails *after* moving the refresh branch, and the fallback is a
 human opening the PR from `chore/auto-refresh-astap-shas` (the
 2026-08 rotation went this way, PR #981). The setting only lets a
 workflow that requests `pull-requests: write` open PRs; it cannot
 approve past the merge gate, which requires a code-owner review. If verification fails on any platform, it
 files an `astap-refresh-blocked` issue instead — that case means
-upstream shipped something broken and a human needs to look. The
-aggregator job's M101 verification (described above) is the only
+upstream shipped something broken and a human needs to look. The label
+must exist in the repository: GitHub opens an issue without a label it
+lacks, and says nothing, so the step fails after opening it, and each
+later failure, not finding it, opens another and fails the same way.
+Create the label before the first blocker. The
+M101 verification (described above) is the only
 ASTAP validation that runs before merge — `pull_request`-triggered
 workflows do NOT run on the auto-PR because [GitHub Actions
 suppresses workflows triggered by `GITHUB_TOKEN`-authored
@@ -413,9 +425,9 @@ which passes `download-database: "true"`):
 2. `sha256sum` it (or `shasum -a 256` on macOS).
 3. Update `database.sha256` in
    `.github/actions/install-astap/assets.json`; the action's cache key
-   carries the pin, so it moves with it. `refresh-astap-shas.yml` keeps
-   a copy of the pin for its own D05 download (`EXPECTED=`, and the hex
-   in its `astap-d05-database-*` cache key): update that too.
+   carries the pin, so it moves with it. The refresh reads the pin from
+   the same table, and only warns when the D05 it downloads no longer
+   matches it.
 4. Push to a PR branch — `plate-solver-smoke` exercises the
    downloader on `ubuntu-latest` / `macos-latest` / `windows-latest`.
 

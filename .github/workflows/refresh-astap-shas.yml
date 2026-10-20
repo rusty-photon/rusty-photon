@@ -2,34 +2,34 @@
 #
 # Triggers when the nightly `install-astap` smoke fails (the canonical
 # signal that upstream rotated a SourceForge archive without us
-# refreshing the pin) or on manual dispatch. For each supported
-# platform: downloads the upstream archive, detects whether its SHA-256
-# differs from the pin in install-astap's table
-# (`.github/actions/install-astap/assets.json`, read and rewritten by the
-# action's `pin` and `repin` steps), and — for rotated platforms —
-# verifies the new binary by solving the
-# committed M101 fixture
-# (`services/plate-solver/tests/fixtures/m101_known.fits`) to the
-# known center (RA 210.8099°, Dec 54.3469°) within the same 0.01°
-# tolerance the BDD scenario uses.
+# refreshing the pin) or on manual dispatch. For each platform in
+# install-astap's table (`.github/actions/install-astap/assets.json`),
+# `detect` downloads the upstream archive and compares its SHA-256 with
+# the pin, and, for a rotated platform with a runner of its own,
+# verifies the new binary by solving the committed M101 fixture
+# (`services/plate-solver/tests/fixtures/m101_known.fits`) to the known
+# center (RA 210.8099°, Dec 54.3469°) within the same 0.01° tolerance
+# the BDD scenario uses.
 #
-# An aggregator job opens (or updates) an auto-PR with the new pins
-# IFF every rotated platform passed M101 verification. If verification
-# fails on any platform, it files a separate tracking issue instead —
-# that case means upstream shipped something broken, and a human needs
-# to look. The aggregator job's own M101 verification is the only
-# ASTAP validation that runs before merge — `pull_request`-triggered
-# workflows (`install-astap`, `plate-solver-smoke`) do NOT fire on the
-# auto-PR because GitHub Actions suppresses workflows triggered by
-# GITHUB_TOKEN-authored events. A maintainer can close/reopen the
-# auto-PR to wake a redundant PR-CI signal if desired
+# `open-pr` then opens (or updates) an auto-PR with the new pins IFF
+# every verified platform passed. If verification fails on any
+# platform, it files a separate tracking issue instead — that case
+# means upstream shipped something broken, and a human needs to look.
+# The M101 verification is the only ASTAP validation that runs before
+# merge — `pull_request`-triggered workflows (`install-astap`,
+# `plate-solver-smoke`) do NOT fire on the auto-PR because GitHub
+# Actions suppresses workflows triggered by GITHUB_TOKEN-authored
+# events. A maintainer can close/reopen the auto-PR to wake a redundant
+# PR-CI signal if desired
 # (https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow).
 #
 # Windows-ARM64 has no GitHub-hosted runner, so its SHA is refreshed
 # cross-mirror with no verification — same posture ADR-005 already
 # documents for that row.
 #
-# See `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
+# The logic is the refresh-astap action's (`.github/actions/refresh-astap`,
+# plan item J8 in docs/plans/ci-shell-to-code.md). See
+# `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
 # procedure" for the manual procedure this workflow automates.
 
 name: refresh-astap-shas
@@ -43,14 +43,17 @@ on:
     # which holds write tokens — would react to those PR runs and
     # could be tricked into opening auto-PRs from untrusted code.
     # Restricting to main means only scheduled/push-to-main runs of
-    # install-astap propagate here. Per Copilot review on PR #273.
+    # install-astap propagate here.
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Read what open-pr would act on and print what it would write, writing nothing
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}
@@ -61,342 +64,76 @@ jobs:
     # Run on manual dispatch OR when install-astap concluded as failure.
     # Skipped on install-astap successes (no rotation suspected).
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
-    name: detect / ${{ matrix.arch_key }}
+    name: detect / ${{ matrix.runner }}
     runs-on: ${{ matrix.os }}
+    # Read only: a rotated archive's binary runs here before anyone has
+    # looked at it.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    arch_key: Linux-X64,    archive: astap_command-line_version_Linux_amd64.zip,    subdir: linux_installer,     bin: astap_cli }
-          - { os: ubuntu-24.04-arm, arch_key: Linux-ARM64,  archive: astap_command-line_version_Linux_aarch64.zip,  subdir: linux_installer,     bin: astap_cli }
-          - { os: macos-latest,     arch_key: macOS-ARM64,  archive: astap_command-line_version_macOS_M1.zip,       subdir: macOS%20installer,   bin: astap_cli }
-          - { os: windows-latest,   arch_key: Windows-X64,  archive: astap_command-line_version_win64.zip,          subdir: windows_installer,   bin: astap_cli.exe }
+          - { os: ubuntu-latest,    runner: Linux-X64,     verify: true }
+          - { os: ubuntu-24.04-arm, runner: Linux-ARM64,   verify: true }
+          - { os: macos-latest,     runner: macOS-ARM64,   verify: true }
+          - { os: windows-latest,   runner: Windows-X64,   verify: true }
+          # No hosted Windows-ARM64 runner: compared from Linux, unverified.
+          - { os: ubuntu-latest,    runner: Windows-ARM64, verify: false }
     steps:
       - uses: actions/checkout@v7
         with:
           # workflow_run defaults to the trigger workflow's head_sha
           # (could be a PR commit if install-astap was failing on a PR).
-          # Check out main so the pin step reads the same table the
-          # auto-PR will eventually update. Per Copilot review.
+          # Check out main so the comparison reads the same table the
+          # auto-PR will eventually update.
           ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/install-astap
+            .github/actions/lib
+            .github/actions/refresh-astap
+            services/plate-solver/tests/fixtures
 
-      # Fails unless the table pins a well-formed SHA-256 for this runner
-      # and names the archive this matrix row downloads, so a table that
-      # moved on is never silently read as "rotated".
-      - name: Read the current SHA pin
-        id: current
-        uses: ./.github/actions/install-astap/pin
+      - name: Compare upstream with the pin, and verify a rotated archive
+        id: detect
+        uses: ./.github/actions/refresh-astap/detect
         with:
-          runner: ${{ matrix.arch_key }}
-          archive: ${{ matrix.archive }}
-
-      - name: Download upstream archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          URL="https://sourceforge.net/projects/astap-program/files/${{ matrix.subdir }}/${{ matrix.archive }}/download"
-          echo "Fetching $URL"
-          curl -fsSL --retry 3 --retry-delay 2 -o "${{ matrix.archive }}" "$URL"
-
-      - name: Compute new SHA-256
-        id: new
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v sha256sum >/dev/null; then
-            sha=$(sha256sum "${{ matrix.archive }}" | awk '{print $1}')
-          else
-            sha=$(shasum -a 256 "${{ matrix.archive }}" | awk '{print $1}')
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Upstream SHA: $sha"
-
-      - name: Detect rotation
-        id: rot
-        shell: bash
-        run: |
-          if [[ "${{ steps.current.outputs.sha }}" == "${{ steps.new.outputs.sha }}" ]]; then
-            echo "rotated=false" >> "$GITHUB_OUTPUT"
-            echo "No rotation — pin matches upstream."
-          else
-            echo "rotated=true" >> "$GITHUB_OUTPUT"
-            echo "Rotation detected."
-          fi
-
-      - name: Extract new binary
-        if: steps.rot.outputs.rotated == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p astap-new
-          unzip -oq "${{ matrix.archive }}" -d astap-new
-          # Top-level layout in the archive places the binary at the root
-          # of the unpacked directory — same as the install-astap action's
-          # post-extract expectation.
-          if [[ "${{ runner.os }}" != "Windows" ]]; then
-            chmod +x "astap-new/${{ matrix.bin }}"
-          fi
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            xattr -d com.apple.quarantine "astap-new/${{ matrix.bin }}" 2>/dev/null || true
-          fi
-
-      - name: Capture banner version
-        if: steps.rot.outputs.rotated == 'true'
-        id: banner
-        shell: bash
-        run: |
-          set -euo pipefail
-          # First line of stdout is the version banner
-          # (e.g. "ASTAP astrometric solver version CLI-2026.02.09").
-          # Strip CR for Windows so the value is a clean single line.
-          version=$("$PWD/astap-new/${{ matrix.bin }}" 2>&1 | head -1 | tr -d '\r')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Banner: $version"
-
-      - name: Cache D05 star database
-        if: steps.rot.outputs.rotated == 'true'
-        id: d05-cache
-        uses: actions/cache@v6
-        with:
-          path: d05
-          # This workflow's own entry. actions/cache hashes the paths into
-          # an entry's version (getCacheVersion in actions/toolkit), so
-          # install-astap's, at `astap-db`, never served this one. The hex
-          # is the D05 pin's prefix; EXPECTED below is a copy of that pin,
-          # which install-astap keeps in its assets.json.
-          key: astap-d05-database-39d59b73
-
-      - name: Download D05 if cache miss
-        if: steps.rot.outputs.rotated == 'true' && steps.d05-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p d05
-          URL="https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database.zip/download"
-          curl -fsSL --retry 3 --retry-delay 2 -o d05/d05.zip "$URL"
-          if command -v sha256sum >/dev/null; then
-            ACTUAL=$(sha256sum d05/d05.zip | awk '{print $1}')
-          else
-            ACTUAL=$(shasum -a 256 d05/d05.zip | awk '{print $1}')
-          fi
-          EXPECTED="39d59b73cb960fa0956c35162e70b09a8af10ef20a1e8f5cae7b77d48be5ce31"
-          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo "::warning::D05 also rotated upstream ($ACTUAL vs pinned $EXPECTED). This workflow does not auto-refresh D05 yet — manual refresh required per ADR-005."
-            # Continue with the downloaded bytes so M101 can still be
-            # verified against the new ASTAP. The downstream PR will
-            # only update CLI SHAs, not D05.
-          fi
-          ( cd d05 && unzip -oq d05.zip && rm d05.zip )
-
-      - name: Verify M101 solves correctly with new binary
-        if: steps.rot.outputs.rotated == 'true'
-        id: verify
-        shell: bash
-        run: |
-          # Goal: prove the new ASTAP bytes can solve a known fixture to
-          # the expected coordinates. Signals checked match what the
-          # wrapper's .wcs parser (services/plate-solver/src/runner/wcs.rs)
-          # actually requires — no stricter:
-          #   1. ASTAP exit code (0 = solved)
-          #   2. .wcs sidecar present
-          #   3. CRVAL1/CRVAL2 parseable AND within 0.01° of M101 center
-          #      (RA 210.8099°, Dec 54.3469° — same tolerance and
-          #      reference values the BDD scenario uses)
-          # The companion degenerate fixture must NOT solve (verifies
-          # ASTAP's failure signaling hasn't drifted).
-          #
-          # An earlier draft also gated on `PLTSOLVD=T`, but the wrapper
-          # itself doesn't require that card — gating on it here would
-          # produce false negatives if ASTAP renamed it while still
-          # producing a valid WCS. Per Copilot review on PR #273.
-          #
-          # On any failure: write passed=false and exit 0 so the
-          # aggregator can decide the outcome. Do not fail this matrix
-          # leg — that would short-circuit the other legs and lose
-          # cross-platform signal.
-          set +e
-          bin="$PWD/astap-new/${{ matrix.bin }}"
-          db="$PWD/d05"
-          fixtures="$PWD/services/plate-solver/tests/fixtures"
-
-          work="$RUNNER_TEMP/m101-verify"
-          mkdir -p "$work"
-          cp "$fixtures/m101_known.fits" "$work/"
-          cp "$fixtures/degenerate_no_stars.fits" "$work/"
-
-          fail() {
-            echo "::error::$1"
-            echo "passed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          # Happy path. Explicit hints (ra/spd/fov/r) keep this fast
-          # (~0.06 s on Linux). Issue #236 stripped the M 101 fixture's
-          # FITS pointing breadcrumbs, so a hint-less invocation would
-          # walk ASTAP's full search spiral (~30–60 s). This workflow's
-          # job is binary-bytes-still-solve verification, not perf
-          # trending — hinted is sufficient and faster across the
-          # matrix.
-          #
-          # The values below are the ASTAP-CLI conversions of the
-          # operator-curl recipe in docs/services/plate-solver.md (and
-          # the hinted BDD scenario in
-          # services/plate-solver/tests/features/real_astap_smoke.feature),
-          # which both specify hints in wire-format degrees:
-          #   -ra  = ra_hint  / 15      → 210.8099 / 15 ≈ 14.0540 hours
-          #   -spd = 90 + dec_hint      → 90 + 54.3469 = 144.3469 deg
-          #   -fov = fov_hint_deg       → 0.42 (pass-through)
-          #   -r   = search_radius_deg  → 3.0 (pass-through)
-          # The wrapper does this conversion in
-          # services/plate-solver/src/runner/astap.rs::build_command;
-          # this workflow bypasses the wrapper, so it converts inline.
-          "$bin" -f "$work/m101_known.fits" -d "$db" -wcs \
-              -ra 14.0540 -spd 144.3469 -fov 0.42 -r 3.0
-          rc=$?
-          if [[ $rc -ne 0 ]]; then
-            fail "M101 solve exited $rc"
-          fi
-          if [[ ! -f "$work/m101_known.wcs" ]]; then
-            fail "M101 produced no .wcs sidecar"
-          fi
-
-          ra=$(grep -oE 'CRVAL1  =[^/]+' "$work/m101_known.wcs" | head -1 | awk -F= '{print $2+0}')
-          dec=$(grep -oE 'CRVAL2  =[^/]+' "$work/m101_known.wcs" | head -1 | awk -F= '{print $2+0}')
-          # If ASTAP wrote a sidecar without CRVAL1/CRVAL2 (incomplete
-          # solve, format change), our awk yields "0" and the tolerance
-          # check below would catch it — but surface the missing key
-          # explicitly first so the failure message is clear.
-          if [[ -z "$ra" || -z "$dec" ]]; then
-            fail "M101 .wcs missing CRVAL1 or CRVAL2"
-          fi
-
-          awk -v a="$ra"  -v b=210.8099 -v t=0.01 'BEGIN { d=a-b; if(d<0)d=-d; exit !(d<=t) }' \
-            || fail "M101 RA $ra outside tolerance (expected 210.8099 +/- 0.01)"
-          awk -v a="$dec" -v b=54.3469  -v t=0.01 'BEGIN { d=a-b; if(d<0)d=-d; exit !(d<=t) }' \
-            || fail "M101 Dec $dec outside tolerance (expected 54.3469 +/- 0.01)"
-
-          # Failure path
-          "$bin" -f "$work/degenerate_no_stars.fits" -d "$db" -wcs
-          rc=$?
-          if [[ $rc -eq 0 ]]; then
-            fail "degenerate_no_stars.fits unexpectedly solved"
-          fi
-          if [[ -f "$work/degenerate_no_stars.wcs" ]]; then
-            fail "degenerate fixture produced a .wcs sidecar"
-          fi
-
-          echo "passed=true" >> "$GITHUB_OUTPUT"
-          echo "M101 verified: RA=$ra Dec=$dec; degenerate failed as expected."
-
-      - name: Record platform result
-        if: steps.rot.outputs.rotated == 'true'
-        shell: bash
-        # Untrusted inputs (BANNER comes from upstream binary stdout)
-        # are passed via env so they become runtime bash variables
-        # rather than YAML-preprocessed source text. `jq -n --arg` then
-        # produces correctly-escaped JSON, so a banner containing `"`,
-        # `\`, `$(...)`, or newlines can't break the output or inject
-        # commands. CodeQL flagged the previous printf form on PR #273.
-        env:
-          ARCH_KEY: ${{ matrix.arch_key }}
-          ARCHIVE: ${{ matrix.archive }}
-          CURRENT_SHA: ${{ steps.current.outputs.sha }}
-          NEW_SHA: ${{ steps.new.outputs.sha }}
-          BANNER: ${{ steps.banner.outputs.version }}
-          PASSED: ${{ steps.verify.outputs.passed }}
-        run: |
-          set -euo pipefail
-          mkdir -p result
-          jq -n \
-            --arg arch_key    "$ARCH_KEY" \
-            --arg archive     "$ARCHIVE" \
-            --arg current_sha "$CURRENT_SHA" \
-            --arg new_sha     "$NEW_SHA" \
-            --arg banner      "$BANNER" \
-            --arg m101_passed "$PASSED" \
-            '{arch_key: $arch_key, archive: $archive, current_sha: $current_sha, new_sha: $new_sha, banner: $banner, m101_passed: $m101_passed}' \
-            > "result/${ARCH_KEY}.json"
+          runner: ${{ matrix.runner }}
+          verify: ${{ matrix.verify }}
 
       - uses: actions/upload-artifact@v7
-        if: steps.rot.outputs.rotated == 'true'
+        if: steps.detect.outputs.rotated == 'true'
         with:
-          name: refresh-result-${{ matrix.arch_key }}
-          path: result/
-
-  windows-arm64:
-    # Cross-mirror SHA refresh only — no GH-hosted Windows-ARM64 runner
-    # exists, so M101 verification isn't possible. Hash from an Ubuntu
-    # runner so we still notice rotation and keep the per-OS table
-    # internally consistent.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
-    name: cross-mirror / Windows-ARM64
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - name: Read the current SHA pin
-        id: current
-        uses: ./.github/actions/install-astap/pin
-        with:
-          runner: Windows-ARM64
-          archive: astap_command-line_version_win11_aarch64.zip
-
-      - name: Pull archive and detect rotation
-        id: war
-        shell: bash
-        env:
-          ARCHIVE: astap_command-line_version_win11_aarch64.zip
-          CURRENT: ${{ steps.current.outputs.sha }}
-        run: |
-          set -euo pipefail
-          URL="https://sourceforge.net/projects/astap-program/files/windows_installer/${ARCHIVE}/download"
-          curl -fsSL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$URL"
-          new=$(sha256sum "$ARCHIVE" | awk '{print $1}')
-          current="$CURRENT"
-          if [[ "$current" == "$new" ]]; then
-            echo "rotated=false" >> "$GITHUB_OUTPUT"
-            echo "No rotation for Windows-ARM64."
-          else
-            echo "rotated=true" >> "$GITHUB_OUTPUT"
-            mkdir -p result
-            jq -n \
-              --arg arch_key    "Windows-ARM64" \
-              --arg archive     "$ARCHIVE" \
-              --arg current_sha "$current" \
-              --arg new_sha     "$new" \
-              --arg banner      "cross-mirror SHA only (no runner, no verification)" \
-              --arg m101_passed "skipped" \
-              '{arch_key: $arch_key, archive: $archive, current_sha: $current_sha, new_sha: $new_sha, banner: $banner, m101_passed: $m101_passed}' \
-              > result/Windows-ARM64.json
-          fi
-
-      - uses: actions/upload-artifact@v7
-        if: steps.war.outputs.rotated == 'true'
-        with:
-          name: refresh-result-Windows-ARM64
-          path: result/
+          name: refresh-result-${{ matrix.runner }}
+          path: refresh-result/
 
   open-pr:
-    needs: [detect, windows-arm64]
-    # Default success() gate is implicit — open-pr runs only when both
-    # `detect` (every matrix leg) and `windows-arm64` succeeded. A
-    # detect-leg infra failure (download, unzip, banner-capture) skips
-    # this job; the next install-astap nightly will retrigger refresh.
-    # An M101 verification failure does NOT fail the leg — it surfaces
-    # via the artifact's m101_passed=false, and the file-issue branch
-    # below picks that up. Per Copilot review.
+    needs: detect
+    # Default success() gate is implicit — open-pr runs only when every
+    # detect leg succeeded. A detect-leg infra failure (download, unzip,
+    # a binary that will not start) skips this job; the next
+    # install-astap nightly will retrigger refresh. An M101 verification
+    # failure does NOT fail the leg — it surfaces in the leg's result,
+    # and open-pr files the blocker issue for it.
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
+      # The action and the modules it imports. It reads main's table and
+      # commits through the API, so nothing is pushed from here.
       - uses: actions/checkout@v7
         with:
-          # Always base the auto-refresh off main, regardless of how this
-          # workflow was triggered. workflow_run defaults to the trigger
-          # workflow's head_sha (typically main on schedule); workflow_dispatch
-          # defaults to github.ref. Pinning to main keeps behavior identical.
           ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/install-astap
+            .github/actions/lib
+            .github/actions/refresh-astap
+            .github/actions/tracking-issue
 
       - uses: actions/download-artifact@v8
         with:
@@ -404,271 +141,8 @@ jobs:
           pattern: refresh-result-*
           merge-multiple: false
 
-      - name: Gate on any rotation
-        id: gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if compgen -G "artifacts/refresh-result-*/*.json" > /dev/null; then
-            echo "rotated=true" >> "$GITHUB_OUTPUT"
-            echo "Rotated platforms:"
-            ls artifacts/refresh-result-*/
-          else
-            echo "rotated=false" >> "$GITHUB_OUTPUT"
-            echo "No platforms rotated — nothing to do."
-          fi
-
-      - name: Aggregate verification results
-        if: steps.gate.outputs.rotated == 'true'
-        id: agg
-        shell: bash
-        run: |
-          set -euo pipefail
-          all_passed=true
-          rows=""
-          for f in artifacts/refresh-result-*/*.json; do
-            arch=$(jq -r .arch_key "$f")
-            current=$(jq -r .current_sha "$f")
-            new=$(jq -r .new_sha "$f")
-            banner=$(jq -r .banner "$f")
-            passed=$(jq -r .m101_passed "$f")
-            rows="${rows}- **${arch}** (\`${banner}\`): \`${current:0:8}…\` → \`${new:0:8}…\` — M101 verify: **${passed}**\n"
-            if [[ "$passed" == "false" ]]; then
-              all_passed=false
-            fi
-          done
-          echo "all_passed=$all_passed" >> "$GITHUB_OUTPUT"
-          {
-            echo "rows<<EOF"
-            printf '%b' "$rows"
-            echo ""
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Patch the new SHAs into install-astap's table
-        if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
-        uses: ./.github/actions/install-astap/repin
+      - name: Open or update the auto-PR, or file the blocker issue
+        uses: ./.github/actions/refresh-astap/publish
         with:
           results: artifacts
-
-      - name: Show the patched table
-        if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
-        run: git diff --no-color .github/actions/install-astap/assets.json
-
-      - name: Push branch and open / update PR
-        id: push
-        if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # ROWS contains the per-platform banner versions, which originate
-          # from upstream binary stdout (untrusted). Pass via env so it
-          # becomes a runtime bash variable; the heredoc below interpolates
-          # `${ROWS}` as plain text and bash's single-pass expansion rule
-          # prevents re-evaluation of any `$(...)` or backticks inside.
-          # CodeQL flagged the previous direct `${{ }}` interpolation on
-          # PR #273.
-          ROWS: ${{ steps.agg.outputs.rows }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="chore/auto-refresh-astap-shas"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # actions/checkout@v7 with `ref: main` leaves origin's refspec
-          # as `+refs/heads/main:refs/remotes/origin/main` (single-branch
-          # fetch). A plain `git fetch origin $BRANCH` under that refspec
-          # only populates FETCH_HEAD; the remote-tracking ref
-          # `refs/remotes/origin/$BRANCH` is never created. Without that
-          # ref, `git push --force-with-lease` (with no explicit expected
-          # value) rejects with "(stale info)" the moment $BRANCH already
-          # exists on origin — i.e. on every run after the first
-          # successful one, until that branch is merged or deleted.
-          # Extend the refspec and fetch BEFORE the local branch is
-          # created: the lease's baseline is captured at branch-creation
-          # time, not push time, so fetching after `git checkout -B`
-          # is too late. `|| true` covers the very first refresh when
-          # $BRANCH doesn't exist on origin yet.
-          git remote set-branches --add origin "$BRANCH"
-          git fetch origin "$BRANCH" || true
-
-          # Always derive the auto-refresh branch from main with the patched
-          # assets.json in the worktree. -B creates or resets the local branch
-          # to the current HEAD (pinned to main by the checkout step), so a
-          # previous unmerged auto-refresh branch on origin is overwritten by
-          # the force-with-lease push below. The PR (if one already exists
-          # for this branch name) gets updated automatically.
-          git checkout -B "$BRANCH"
-
-          git add .github/actions/install-astap/assets.json
-          if git diff --cached --quiet; then
-            echo "No staged changes — branch is already up to date."
-            exit 0
-          fi
-
-          git commit -m "$(cat <<'COMMIT'
-          chore(install-astap): auto-refresh SHA-256 pins
-
-          Upstream rotated SourceForge archives. The refresh-astap-shas
-          workflow verified each new binary by solving the committed
-          M101 fixture (services/plate-solver/tests/fixtures/m101_known.fits)
-          to RA 210.8099° / Dec 54.3469° within 0.01° tolerance, then
-          patched the pins in .github/actions/install-astap/assets.json.
-
-          See ADR-005 §"Pinned SHA-256 + refresh procedure" for the
-          manual procedure this workflow automates.
-          COMMIT
-          )"
-          git push -u --force-with-lease origin "$BRANCH"
-
-          body=$(cat <<EOF
-          Auto-refresh detected upstream rotation of ASTAP CLI archives.
-
-          ## Per-platform results
-
-          ${ROWS}
-
-          ## Verification
-
-          Each rotated platform's new binary was executed against
-          \`services/plate-solver/tests/fixtures/m101_known.fits\` and
-          asserted to solve to RA 210.8099° / Dec 54.3469° within 0.01°
-          tolerance (matching \`real_astap_smoke.feature\`). The
-          \`degenerate_no_stars.fits\` failure-mode fixture was also
-          checked.
-
-          Windows-ARM64 has no GH-hosted runner, so its SHA is refreshed
-          cross-mirror with no verification — same posture ADR-005
-          documents.
-
-          Full verification logs:
-          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-          ## PR CI
-
-          \`pull_request\`-triggered workflows (\`install-astap\`,
-          \`plate-solver-smoke\`, etc.) do not run on this PR. GitHub
-          Actions suppresses workflows triggered by GITHUB_TOKEN-authored
-          events, and this PR was opened by GITHUB_TOKEN — so the M101
-          verification above (run on this workflow's own runners) is the
-          only ASTAP validation that runs before merge.
-
-          To wake PR CI for a redundant signal, close and reopen this
-          PR — a human-authored \`pull_request: reopened\` event is not
-          suppressed.
-          EOF
-          )
-
-          # `gh pr list ... --jq '.[0].number'` yields the literal text
-          # "null" when no PR exists (jq -r prints null as the string
-          # "null"). Use `// empty` so the variable is genuinely empty
-          # when absent. Per Copilot review.
-          existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' || true)
-          if [[ -n "$existing" ]]; then
-            gh pr edit "$existing" --body "$body"
-            pr_url=$(gh pr view "$existing" --json url --jq .url)
-            echo "Updated existing PR #$existing — $pr_url"
-          else
-            pr_url=$(gh pr create --base main --head "$BRANCH" \
-              --title "chore(install-astap): auto-refresh SHA-256 pins" \
-              --body "$body")
-            echo "Opened new PR — $pr_url"
-          fi
-          # Surface PR URL to downstream tracker-comment step.
-          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
-
-      - name: File issue when M101 verification fails
-        if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'false'
-        uses: actions/github-script@v9
-        env:
-          ROWS: ${{ steps.agg.outputs.rows }}
-        with:
-          script: |
-            const title = `astap: upstream rotated but new bytes fail M101 verification`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `Auto-refresh detected upstream SHA rotation, but the new ASTAP binary failed to solve the M101 fixture on at least one platform. Manual investigation required — do **not** merge a refresh PR until this is understood.`,
-              ``,
-              `## Per-platform results`,
-              ``,
-              process.env.ROWS,
-              ``,
-              `## Likely causes`,
-              ``,
-              `- Upstream shipped a broken release`,
-              `- CLI surface changed (e.g. \`-wcs\` or \`-d\` flags renamed)`,
-              `- \`.wcs\` sidecar format changed (CRVAL keys renamed, PLTSOLVD card removed)`,
-              `- New binary requires a newer D05 database`,
-              ``,
-              `Workflow run: ${runUrl}`,
-            ].join("\n");
-            // Search only OPEN issues: while a blocker is open each
-            // recurrence appends a comment; once it is closed the
-            // investigation is considered done, so a later rotation that
-            // re-breaks verification opens a fresh blocker rather than
-            // resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'astap-refresh-blocked',
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — see ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['astap-refresh-blocked', 'ci-flake'],
-              });
-            }
-
-      - name: Comment on install-astap tracking issue
-        if: steps.gate.outputs.rotated == 'true'
-        uses: actions/github-script@v9
-        env:
-          ALL_PASSED: ${{ steps.agg.outputs.all_passed }}
-          # PR_URL is empty when verification failed (push step skipped);
-          # the JS branches on allPassed and only references PR_URL on
-          # the success path. Per Copilot review on PR #273.
-          PR_URL: ${{ steps.push.outputs.pr_url }}
-        with:
-          script: |
-            const allPassed = process.env.ALL_PASSED === 'true';
-            const prUrl = process.env.PR_URL;
-            // Search only OPEN issues. install-astap's notify-on-failure
-            // keeps at most one open tracking issue per failure mode, so an
-            // open match is the live issue to update. If it has already been
-            // closed (failure handled) we leave it closed and skip the
-            // comment rather than resurrecting it — the refresh PR stands on
-            // its own.
-            const tracker = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'install-astap-nightly',
-            });
-            const issue = tracker.find(i => i.title === 'nightly: install-astap smoke failing (likely upstream SHA rotation)');
-            if (!issue) {
-              console.log('No open install-astap tracking issue to comment on.');
-              return;
-            }
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const msg = allPassed
-              ? `Auto-refresh workflow opened ${prUrl} with new SHAs (M101 verified on all runner-backed platforms). Review and merge to close this.`
-              : `Auto-refresh workflow detected rotation but M101 verification failed on at least one platform. See the \`astap-refresh-blocked\` issue.`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              body: `${msg}\n\nRun: ${runUrl}`,
-            });
+          dry-run: ${{ inputs.dry-run == true }}

@@ -86,6 +86,7 @@ tools/rusty-photon-ci/
   link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
+  lib/github.mjs           the GitHub REST API, for the actions that call it
   lib/install.mjs          download, check and unpack, for the install-* actions
   lib/install.test.mjs
   lib/testing.mjs          test fixtures every action's tests share
@@ -132,7 +133,7 @@ parsers, which its comments name.
 | `setOutput`, `exportVariable`, `addPath` | Write `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`. Values always go in the multi-line form, under a random delimiter. A name the runner would split (`=`, `<<`, a line break) throws, and so does `NODE_OPTIONS`, which the runner refuses to pass to later steps. |
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
 | `saveState`, `getState` | Keep a value for the action's own `post:` step, which reads it back; the runner hands it to that step alone. |
-| `warning`, `group`, `fail` | A warning annotation; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
+| `warning`, `error`, `group`, `fail` | A warning annotation; an error annotation that leaves the step to succeed, for a failure a later step acts on; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
 | `describe` | An error's message followed by its causes', which is where `fetch` says why a request failed (`fetch failed: connect ECONNREFUSED …`): what `run` puts in its annotation, for an action that reports a failure without failing the step. |
 | `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks, or a minute for its secondary limit, measured on the server's clock (a wait over two minutes is not retried). Each retry is a plain log line, not a warning annotation. Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
@@ -337,11 +338,11 @@ above.
   developer's install below reads the same constants.
 - **A table that a workflow rewrites is JSON**, in a file beside the
   module that reads it: `install-astap`'s `assets.json`, whose pins
-  `refresh-astap-shas.yml` reads and rewrites through the action's `pin`
-  and `repin` steps. Both read and write it whole, as JSON, so neither
-  depends on how the file is laid out, and a test checks the file keeps
-  the one layout the rewrite writes, so a refresh's diff is the pins
-  alone.
+  `refresh-astap` compares with what upstream serves and rewrites in a
+  pull request. It reads and writes the table whole, as JSON, so it does
+  not depend on how the file is laid out, and a test checks the file
+  keeps the one layout the rewrite writes, so a refresh's diff is the
+  pins alone.
 
 ### A developer's install
 
@@ -405,11 +406,48 @@ once and waits for them all.
   `AbortController` the logic takes as `signal`; the logic stops its
   children and prints what it must within the 7.5 s. `bdd-sharded` sends
   each SIGTERM, then SIGKILL 5 s later, and prints the logs.
+- **A program the action downloaded and nobody has checked** gets the
+  step's environment without the runner's `ACTIONS_*` variables and the
+  action's `INPUT_*`. A JavaScript action gets `ACTIONS_RUNTIME_TOKEN`,
+  which can write the repository's caches, and a `run:` step does not
+  (actions/runner, `NodeScriptActionHandler.cs`). Its job also runs with
+  `contents: read` and `persist-credentials: false`, so no token is on
+  disk. `refresh-astap`'s `detect` runs a new ASTAP release so. That only
+  keeps the token from being handed to the program; it is not a sandbox.
+  The action's own process still holds it, and on Linux a process can
+  read its parent's environment (`/proc/<ppid>/environ`), where a `run:`
+  step's program would have had to dig it out of the runner's memory; a
+  hosted runner's user also has passwordless `sudo`. Keep such a job
+  holding nothing else.
 - **Tests start real processes.** The logic takes `spawn` as an option,
   and a test passes one that starts `node -e` with a fake in each
   program's place, so the descriptors, the environment and the signals
   are real. An `'ipc'` channel added to the child's stdio lets the fake
   say when it is ready, so a test can stop it at a known point.
+
+### An action that calls the GitHub API
+
+`lib/github.mjs` holds what `tracking-issue` and `refresh-astap` share:
+`runContext` (the API, the repository and the run's link from the
+runner's variables), `github` (a request that names what failed and
+carries GitHub's own answer, a POST or PATCH sent once; with `missing`, a
+404 is no error), `openIssues` (every page, pull requests left out, a
+next page on another origin refused) and `commentOrOpen` (the open issue
+with a label and an exact title gets a comment, or one is opened; an
+issue opened without the label fails the step, since GitHub drops a label
+the repository lacks and says nothing).
+
+- **The token is an input** (`default: ${{ github.token }}`), and the
+  job grants only what the action needs, beside `contents: read`.
+- **A change to the repository goes through the API**, not a push from a
+  checkout: `refresh-astap` reads the file at main's tip
+  (`git/ref`, `git/commits`, `contents`), writes a tree on main's and a
+  commit on main (`git/trees`, `git/commits`), and creates or moves its
+  branch to it (`git/refs`). Its job checks out the action only, with no
+  token left on disk, and holds no clone to push from.
+- **Tests run against a fake API** (`serve`) that answers in the shapes
+  the real one gives; record a real answer to each read with
+  `gh api` and take the writes' from GitHub's REST docs.
 
 ### Proving it
 

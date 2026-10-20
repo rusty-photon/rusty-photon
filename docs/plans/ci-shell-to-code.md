@@ -71,8 +71,8 @@ first in their columns.
 - **Find every reader and writer of what moves.** Pins and URLs are
   parsed and rewritten in place by other files:
   - `refresh-astap-shas.yml` reads install-astap's SHA table, which J4
-    moved into `install-astap/assets.json`, through the action's `pin`
-    step, and rewrites it through its `repin` step;
+    moved into `install-astap/assets.json`, and rewrites it in its pull
+    request, through the `refresh-astap` action since J8;
   - `scripts/check-pkg-assets.sh` reads the ZWO and SVBony `ref`
     defaults and the ZWO Windows URLs from their `action.yml`, to check
     the packages link what CI links;
@@ -96,7 +96,7 @@ first in their columns.
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
-| J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
+| J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
@@ -605,6 +605,88 @@ pins live in J4's table, which J4 has already pointed both the read and
 the rewrite at. Every job checks out `main` and the run opens a real PR,
 so a branch dispatch proves nothing: the proof is tests against fixture
 tables and recorded upstream responses, then a watched run after merge.
+
+Done in #1580, as the `refresh-astap` action: `detect/` and `publish/`,
+one for each of the workflow's two jobs, with the bash, the two
+`github-script` blocks and install-astap's `pin` and `repin` steps gone.
+
+- **detect**, one job per runner as before. The matrix names the runner
+  and whether to verify, and the action takes the archive, its folder and
+  its binary from the table, so the workflow keeps no copy of them; the
+  Windows-ARM64 job became a row with `verify: false`. The download is
+  `lib/install.mjs`'s, which now resolves to the SHA-256 it computed,
+  with the CLI's re-rolls of a bad mirror where curl tried three times.
+  A rotated binary is checked as the shell checked it: its banner, M101
+  with the same hints to within 0.01°, and the field with no stars. The
+  centre is read from the `.wcs`'s 80-character cards, where grep matched
+  the text, so a CRVAL1 inside a COMMENT card no longer counts.
+- **The D05 database** is downloaded each time, with the hardened
+  download options install-astap uses. The workflow's own cache entry and
+  its copy of the pin went: over the last four rotations it hit once in
+  fifteen checks, since an entry goes after a week unused and the refresh
+  runs about monthly. A D05 that rotated too is still warned about and
+  used.
+- **publish** reads the results, then proposes the new pins or files the
+  blocker, and comments on install-astap's tracking issue, as the shell
+  did. It commits through the GitHub API (`git/trees`, `git/commits`,
+  `git/refs`) instead of pushing from a checkout: it reads the table at
+  main's tip, moves only the pins that changed (`repin`), and proposes
+  nothing when main already pins what upstream serves.
+- **Changes from the shell:**
+  - Each job has only the permissions it needs. `detect`, which runs a
+    binary nobody has reviewed, has `contents: read` and no token on
+    disk. Before, every job had `contents: write`, `pull-requests: write`
+    and `issues: write`, and checkout left the token in `.git/config`.
+    The binary also runs without the runner's `ACTIONS_*` variables
+    (`ACTIONS_RUNTIME_TOKEN` can write the repository's caches), which a
+    JavaScript action gets and the shell's `run:` step did not. That is no
+    sandbox: the action's own process keeps the token, which a child can
+    read on Linux from `/proc/<ppid>/environ`, more easily than the
+    shell's binary could have dug it out of the runner, and a hosted
+    runner's user has passwordless `sudo` either way.
+  - A solve still running after 120 s is killed and fails the check,
+    where the shell would have held the job to its six-hour limit.
+  - The blocker goes through `commentOrOpen`, as J7's tracking issues
+    do, so a blocker opened without its label fails the step. The label
+    `astap-refresh-blocked` did not exist in the repository, so the first
+    blocker would have been opened without it, and every later failure
+    would have opened another, silently; now each of them still opens one,
+    but fails the step saying to create the label. The tracker's comment names the blocker,
+    and a result's row names why its check failed.
+  - `workflow_dispatch` takes `dry-run`: `publish` reads what it would
+    act on and prints what it would write.
+- **Shared:** the GitHub API client J7 wrote in `tracking-issue` moved
+  to `lib/github.mjs`, now that two actions call the API, and `error`, an
+  annotation that leaves the step to succeed, joined the helpers.
+- **Proof:** `refresh_astap_test` runs a fake ASTAP, a Node process
+  started in the binary's place that follows the scenario its archive
+  holds, against the `.wcs` the real ASTAP CLI-2026.09.01 wrote for M101,
+  and a fake GitHub API that answers in the shapes the real one gave. A
+  mutation set of 49 changes turned every one red. The entry files ran
+  for real on Linux x64 against SourceForge: with a pin set wrong, the
+  real binary solved M101 and the result passed, in 5.5 s with the D05
+  download; with the real pins there was no rotation, and the same held
+  for Windows-ARM64 from Linux. `publish` ran a dry run against the real
+  API, reading main's ref, commit and table. On the Windows VM the tests
+  passed under Bazel, and the real `astap_cli.exe` (CLI-2026.09.19)
+  passed its check on Node 24.20.0. On every hosted runner, from a
+  temporary workflow on a throwaway branch that set each runner's pin
+  wrong: the four with a job of their own solved M101 to RA 210.80988,
+  Dec 54.34693 and failed the empty field, Windows-ARM64 was compared
+  only, and `publish`'s dry runs read main with the job's own token, one
+  finding main already pins what upstream serves, the other, given a
+  pin main does not hold, reading the branch, the pull requests and the
+  tracking issue. On macOS the first D05 attempt met a crawling mirror,
+  was cut at the 300 s limit and the next finished in 4 s, where curl,
+  with no limit, would have waited it out.
+- **Writes GitHub fails:** the tree, the commit, moving the branch and a
+  pull request's new body are sent again after a 5xx, since a repeat makes
+  the same thing; creating the branch, opening the pull request and the
+  comments are sent once, as a repeat could fail or make a second one.
+- **After merge:** `publish`'s writes (the tree, commit, ref, pull
+  request and comments) have only met the fake until the first rotation
+  makes them; watch that run. A dispatch on main with `dry-run` proves
+  the five `detect` jobs and `publish`'s reads.
 
 ### J9 — Release and nightly publishing glue
 

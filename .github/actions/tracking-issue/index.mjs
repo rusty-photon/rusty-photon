@@ -1,5 +1,6 @@
+import { runContext } from '../lib/github.mjs';
 import { getInput, run, setOutput } from '../lib/helpers.mjs';
-import { runContext, trackFailure } from './issue.mjs';
+import { trackFailure } from './issue.mjs';
 
 await run(async () => {
   const { number } = await trackFailure({
