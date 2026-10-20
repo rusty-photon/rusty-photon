@@ -331,9 +331,9 @@ Components:
     downloader fetch and the local fallback performs the direct WAN
     download it would have done anyway — one failed LAN round-trip of
     overhead, no behavior change. Only push-to-main, which carries
-    `BAZEL_LAN_CACHE_WRITE_AUTH` (attached to the downloader via
-    `--remote_downloader_header` as well), fetches via the LAN and
-    populates — ADR-020 layer 4 unchanged. The downloader flags stay on
+    `BAZEL_LAN_CACHE_WRITE_AUTH` (which the remote-cache action's
+    credential helper gives the downloader's calls too), fetches via the
+    LAN and populates — ADR-020 layer 4 unchanged. The downloader flags stay on
     anonymous jobs anyway: both venues run one code path, and a
     bazel-remote release that serves anonymous checksummed hits from CAS
     (a pure read, poison-proof) would upgrade PR fetches to LAN hits

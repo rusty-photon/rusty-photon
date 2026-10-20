@@ -106,9 +106,9 @@ jobs:
       # — which run from the default branch — get the write token, so they
       # populate the cache from trusted code. PRs (including forks, which get
       # no secrets at all) read anonymously and never write, which prevents
-      # cache poisoning. The per-step logic below adds --config=remote-cache
-      # unconditionally (reads are anonymous, so even fork PRs get a warm
-      # cache) and only attaches the write token + uploads when
+      # cache poisoning. The remote-cache action below configures the cache
+      # for every job (reads are anonymous, so even fork PRs get a warm cache)
+      # and only gives Bazel the write token, and uploads, when
       # CACHE_WRITE_TOKEN is non-empty.
       CACHE_WRITE_TOKEN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
       # LAN cache write credential, pool jobs only — the same trusted-code
@@ -121,7 +121,7 @@ jobs:
       LAN_CACHE_WRITE_AUTH: ${{ github.event_name == 'push' && secrets.BAZEL_LAN_CACHE_WRITE_AUTH || '' }}
       # Kill switch for routing Bazel repository downloads through the LAN
       # cache's Remote Asset API ('on' = enabled; see the mask step and the
-      # REMOTE_FLAGS blocks). A repo variable, not a workflow constant,
+      # remote-cache action). A repo variable, not a workflow constant,
       # because the ORDER matters: the NAS side (bazel-remote's asset API
       # flag + published gRPC port) must be live before this flips on — with
       # the switch on and the gRPC endpoint unreachable, Bazel fails the
@@ -140,9 +140,10 @@ jobs:
       # When RP_LAN_ASSET_API is 'on', also derive the same cache host's gRPC
       # endpoint (bazel-remote serves gRPC on 9092; the port here must match
       # what the NAS app publishes on the runner VLAN) and hand it to the
-      # build steps via GITHUB_ENV. gRPC error strings print a bare host or
-      # host:port with no scheme, which the full-URL mask would not catch, so
-      # those spellings are masked as well — before anything can log them.
+      # remote-cache action and the Bazel steps via GITHUB_ENV. gRPC error
+      # strings print a bare host or host:port with no scheme, which the
+      # full-URL mask would not catch, so those spellings are masked as well —
+      # before anything can log them.
       - name: Mask runner-provided cache endpoint
         run: |
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
@@ -157,6 +158,11 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+
+      # The remote cache for this job's venue and credentials, which every
+      # Bazel step below reads as --config=ci-remote.
+      - name: Configure the remote cache
+        uses: ./.github/actions/remote-cache
 
       # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
       # registry key, removing the 260-char MAX_PATH ceiling for include
@@ -275,11 +281,9 @@ jobs:
         # .bazelrc.
         timeout-minutes: 30
         run: |
-          # Remote-cache routing for this job's venue and credentials.
-          source tools/ci/bazel-remote-flags.sh
           # --keep_going (surfaces every failing target instead of stopping at
           # the first -- originally added here just for Windows, as an E0463
-          # diagnostic) now comes from `.bazelrc`'s `build:remote-cache`
+          # diagnostic) now comes from `.bazelrc`'s `build:remote-cache-base`
           # unconditionally, for every OS: it's also what lets a remote-cache
           # eviction retry invalidate every currently-broken action per
           # attempt instead of just the first one, which is what actually
@@ -292,7 +296,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             PROFILE_FLAGS=(--config=profile --profile=bazel-profile-build.json.gz)
           fi
-          bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
+          bazel build --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" //...
 
       - name: bazel test (fast)
         id: fast
@@ -301,14 +305,12 @@ jobs:
         # pass separate from BDD, so log output and failure attribution
         # stay useful when something breaks.
         run: |
-          # Remote-cache routing for this job's venue and credentials.
-          source tools/ci/bazel-remote-flags.sh
           # Windows: this step's trace, as in the build step.
           PROFILE_FLAGS=()
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-fast.json.gz)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" \
+          bazel test --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
@@ -326,8 +328,6 @@ jobs:
         # surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs even on a passing run
         # (services/rp/tests/bdd.rs).
         run: |
-          # Remote-cache routing for this job's venue and credentials.
-          source tools/ci/bazel-remote-flags.sh
           # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
           # cargo-shelling bdd-infra unit tests (the only `requires-cargo` users
           # left). //services/qhy-camera:bdd IS included — it spawns the
@@ -341,7 +341,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-bdd.json.gz)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" \
+          bazel test --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" \
             --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

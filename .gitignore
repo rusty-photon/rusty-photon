@@ -22,6 +22,8 @@ services/zwo-focuser/pkg/lib/
 .wrangler/
 # user.bazelrc allows per-developer overrides without touching .bazelrc.
 user.bazelrc
+# CI's remote-cache config, written per job by .github/actions/remote-cache.
+/ci-remote.bazelrc
 # MODULE.bazel.lock IS committed (like Cargo.lock) for reproducibility.
 
 # Claude Code runtime artifacts.

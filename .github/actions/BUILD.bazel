@@ -211,6 +211,23 @@ node_test(
     ],
 )
 
+# remote-cache: the Bazel steps' remote cache for the job's venue, and the
+# credential helper that gives Bazel its write credential. The tests run the
+# helper as Bazel does, and read the cache .bazelrc's remote-cache config names
+# and the file .bazelrc imports.
+node_test(
+    name = "remote_cache_test",
+    size = "small",
+    srcs = ["remote-cache/remote.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+        "remote-cache/helper.mjs",
+        "remote-cache/remote.mjs",
+        "//:.bazelrc",
+    ],
+)
+
 # tracking-issue: a scheduled workflow's tracking issue, opened or commented on
 # when a scheduled run fails.
 node_test(

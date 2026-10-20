@@ -49,6 +49,13 @@ exports_files(
     visibility = ["//.github/actions:__pkg__"],
 )
 
+# The cloud cache's URL and the file CI's remote-cache config is in, which the
+# remote-cache action's tests check it agrees with.
+exports_files(
+    [".bazelrc"],
+    visibility = ["//.github/actions:__pkg__"],
+)
+
 # `bazel run //:buildifier` formats every BUILD / *.bzl / MODULE.bazel file in the
 # workspace in place. Pinned via MODULE.bazel (buildifier_prebuilt) so every dev
 # machine and CI run the identical formatter with no system install.

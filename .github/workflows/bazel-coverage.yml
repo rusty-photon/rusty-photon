@@ -115,9 +115,10 @@ jobs:
       # When RP_LAN_ASSET_API is 'on', also derive the same cache host's gRPC
       # endpoint (bazel-remote serves gRPC on 9092; the port here must match
       # what the NAS app publishes on the runner VLAN) and hand it to the
-      # coverage step via GITHUB_ENV. gRPC error strings print a bare host or
-      # host:port with no scheme, which the full-URL mask would not catch, so
-      # those spellings are masked as well — before anything can log them.
+      # remote-cache action and the coverage step via GITHUB_ENV. gRPC error
+      # strings print a bare host or host:port with no scheme, which the
+      # full-URL mask would not catch, so those spellings are masked as well —
+      # before anything can log them.
       - name: Mask runner-provided cache endpoint
         run: |
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
@@ -132,6 +133,11 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+
+      # The remote cache for this job's venue and credentials, which the
+      # coverage step reads as --config=ci-remote.
+      - name: Configure the remote cache
+        uses: ./.github/actions/remote-cache
 
       # The provisioning steps below are hosted-only: the Linux pool template
       # ships lld, bazelisk, OmniSim, Pebble, and both camera SDKs at the same
@@ -192,8 +198,6 @@ jobs:
       - name: bazel coverage
         run: |
           set -uo pipefail
-          # Remote-cache routing for this job's venue and credentials.
-          source tools/ci/bazel-remote-flags.sh
           # --config=coverage selects the nightly channel + --cfg=coverage_nightly
           # + --combined_report=lcov + first-party instrumentation filter +
           # --test_timeout=900 (.bazelrc). --test_tag_filters=-requires-cargo
@@ -219,7 +223,7 @@ jobs:
           # it fired (137 if it had to escalate to SIGKILL).
           status=0
           timeout --signal=INT --kill-after=2m 50m \
-            bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
+            bazel coverage --config=ci --config=coverage --config=ci-remote \
             --test_tag_filters=-requires-cargo \
             --remote_download_outputs=all \
             --test_output=all \

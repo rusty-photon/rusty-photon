@@ -1,0 +1,15 @@
+name: Bazel remote cache
+description: >-
+  The remote cache as this job's venue reaches it: the LAN bazel-remote on the
+  pool (RP_LAN_CACHE_URL from the runner, RP_LAN_CACHE_GRPC_URL from the mask
+  step), the cloud cache elsewhere. Writes its flags as the `ci-remote` config,
+  which every Bazel step adds with --config=ci-remote, and a credential helper
+  that gives Bazel the write credential from the Bazel step's own environment,
+  so that no file holds it. The credentials are not inputs: Bazel runs the
+  helper in the later steps, which have them from the job's env block
+  (LAN_CACHE_WRITE_AUTH, CACHE_WRITE_TOKEN), and this action reads the same
+  variables. Run it after the mask step and the checkout, before any Bazel
+  step. Plan item J10 in docs/plans/ci-shell-to-code.md.
+runs:
+  using: node24
+  main: index.mjs

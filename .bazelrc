@@ -252,11 +252,11 @@ build --disk_cache=~/.cache/bazel-disk-cache
 
 # --- CI-specific config ----------------------------------------------------
 
-# Activate with `bazel build --config=ci --config=remote-cache` in GitHub
-# Actions. On trusted events (push to main, nightly) a write token is passed
-# via --remote_header="Authorization=Bearer <token>" (not checked in); PRs read
-# anonymously and add --remote_upload_local_results=false. See
-# .github/workflows/bazel.yml.
+# GitHub Actions adds it as `bazel build --config=ci --config=ci-remote`, where
+# ci-remote is the remote cache for the job's venue (below). On trusted events
+# (push to main, nightly) a credential helper gives Bazel the write credential,
+# which no rc file holds; PRs read anonymously and add
+# --remote_upload_local_results=false. See .github/actions/remote-cache.
 
 build:ci --color=yes
 build:ci --show_timestamps
@@ -560,8 +560,9 @@ build:ci --test_env=CONFORMU_PATH
 
 
 # Remote cache is opt-in via a separate --config=remote-cache flag so local
-# developers don't accidentally point at the shared cache. CI jobs combine:
-# --config=ci --config=remote-cache.
+# developers don't accidentally point at the shared cache. CI jobs add
+# --config=ci-remote instead (below): this config on a hosted runner, and the
+# pool's LAN bazel-remote with remote-cache-base's settings on the pool.
 #
 # Backend: a Cloudflare Worker + R2 edge cache. Public-READ (every PR,
 # including forks, gets a warm cache) and token-WRITE (only push-to-main and
@@ -569,7 +570,13 @@ build:ci --test_env=CONFORMU_PATH
 # deploy steps: tools/bazel-cache-worker/. For local builds, override this in a
 # gitignored user.bazelrc to point at a LAN bazel-remote instead.
 build:remote-cache --remote_cache=https://cache.rustyphoton.space
+build:remote-cache --config=remote-cache-base
 
+# What every remote cache takes, whatever its URL: the cloud cache above, and
+# the pool's LAN bazel-remote, which ci-remote names in its place. A config of
+# its own so that ci-remote sets --remote_cache once on the pool: Bazel warns
+# about an option that two config expansions both set.
+#
 # Bazel's own fallback for an Action-Cache hit whose referenced CAS blob has
 # been evicted from R2 is to invalidate that entry and retry the whole build,
 # forcing a local rebuild from source for just the affected actions — no
@@ -585,7 +592,7 @@ build:remote-cache --remote_cache=https://cache.rustyphoton.space
 # there's no second, privileged pass coming to finish the job for it. Raised
 # well above default so a build that's actually making progress (see
 # --keep_going below) has enough budget to walk the whole critical path.
-build:remote-cache --experimental_remote_cache_eviction_retries=30
+build:remote-cache-base --experimental_remote_cache_eviction_retries=30
 
 # Paired with the retry budget above: without --keep_going, Bazel stops at
 # the first failing action per attempt, so an eviction retry only ever
@@ -598,7 +605,16 @@ build:remote-cache --experimental_remote_cache_eviction_retries=30
 # E0463 diagnostic) and was the only platform that converged instead of
 # cycling; this extends the same behavior to every platform for the reason
 # that actually matters here.
-build:remote-cache --keep_going
+build:remote-cache-base --keep_going
+
+# CI's remote cache for the job's venue, ci-remote: remote-cache on a hosted
+# runner, remote-cache-base and the LAN bazel-remote on the pool, and on both
+# the credential helper and, for a job with no write credential, the upload
+# switch. The remote-cache action writes it per job, before the Bazel steps,
+# which add --config=ci-remote; elsewhere the file is absent, and the config
+# undefined. The write credential is not in it: `build:ci --announce_rc` prints
+# every option read from a file.
+try-import %workspace%/ci-remote.bazelrc
 
 # macOS runners intermittently wedge inside Bazel's HTTP remote-cache client:
 # the step goes totally silent mid-build and dies at its timeout, leaving an
@@ -729,7 +745,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...
-# In CI also add --config=ci --config=remote-cache (see bazel-coverage.yml).
+# In CI also add --config=ci --config=ci-remote (see bazel-coverage.yml).
 #
 # Reproduces the Cargo coverage contract (.github/workflows/test.yml `coverage`)
 # under Bazel:

@@ -98,7 +98,7 @@ first in their columns.
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
-| J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
+| J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Done (#1585) |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
@@ -733,6 +733,69 @@ it runs before checkout, and a local action cannot. The macOS venue's
 flags run only in bazel.yml's macOS leg, which no branch reaches, so
 tests prove them and the first push to main is watched.
 
+Done in #1585, as the `remote-cache` action, which each bazel.yml and
+bazel-coverage.yml job runs once, after its checkout. The script and its
+four `source` lines went, and every Bazel step adds `--config=ci-remote`
+where it had `"${REMOTE_FLAGS[@]}"`.
+
+- **The flags** are the `ci-remote` config, in `ci-remote.bazelrc` in the
+  workspace root, which `.bazelrc` try-imports. It is a named config, not
+  plain `build` lines, so a step run without the action fails on an
+  undefined config instead of building with no cache. The venues are the
+  script's: on the pool, the LAN bazel-remote over gRPC with its Remote
+  Asset API, or over HTTP; elsewhere, the cloud cache; and
+  `--remote_upload_local_results=false` for a job with no write
+  credential.
+- **The credential** reaches Bazel through `--credential_helper`, scoped
+  to the cache's host, which Bazel 9.2.0's source settles:
+  - Bazel runs the helper with the Bazel command's own environment
+    (`CredentialHelper.java`), where the job's env block puts the
+    credential on trusted events only.
+  - It asks about the HTTP cache's base URL, and each gRPC service's URI,
+    not each blob.
+  - The server keeps an answer per URI for 30 minutes
+    (`--credential_helper_cache_duration`). A job's Bazel commands share
+    one environment, so this never carries a credential into a read-only
+    command.
+  - A helper scoped to a host is asked about no other, so the archives
+    Bazel downloads never see it. The helper also answers only for the
+    cache's host.
+
+  The helper is configured on read-only jobs too, where it answers with no
+  headers, so every pull request's legs start it as push to main does.
+- **The launcher.** Bazel starts a helper as a program, and a pool
+  runner's PATH may have no Node. So the action writes a launcher that
+  names the runner's own Node: a shell script, and on Windows a `.cmd`
+  file, which CreateProcess runs through cmd.exe.
+- **`remote-cache-base`.** `build:remote-cache` keeps the cloud cache's
+  URL, and its two other settings moved to `build:remote-cache-base`,
+  which the pool venues take with the LAN URL. A config that set
+  `--remote_cache` twice, once through `--config=remote-cache`, made
+  Bazel warn in every step that two config expansions set the option. The
+  script's second `--remote_cache`, on the command line, had raised no
+  warning.
+- **Masking.** The action masks the LAN cache's URL and host before
+  anything prints, as the mask step does. The host is also in
+  `--credential_helper`, which `--announce_rc` prints, so the HTTP venue's
+  bare host is masked now too.
+- **Proven locally** with Bazel 9.2.0:
+  - Against a fake HTTP cache, every request (`GET /ac`, `PUT /ac`,
+    `PUT /cas`) carried the helper's Authorization header. A job with no
+    credential sent none and uploaded nothing.
+  - Against a fake gRPC server, `GetCapabilities` carried it.
+  - Against the cloud cache, Bazel asked the helper once.
+- **What only main proves:**
+  - the credential on each venue;
+  - the cloud cache's venues, all on hosted runners that only push and
+    the schedule use, the macOS leg among them;
+  - the pull request's legs prove that Bazel starts the helper on the
+    pool's Linux and Windows templates.
+
+  With the credential and an `http://` LAN cache (the asset API off),
+  Bazel prints "Credentials are transmitted in plaintext": the credential
+  crossed the LAN in plaintext before too, unannounced. With the asset
+  API on, the pool's cache is gRPC, and Bazel checks only `http://` URLs.
+
 ### J11 — Bazel/Cargo target parity
 
 Dropped in #1583, on the owner's call. `scripts/check-bazel-cargo-parity.sh`
@@ -1214,8 +1277,8 @@ when a matrix value or an expression can replace its control flow. Small
 PRs, in any order:
 
 - bazel.yml: the Windows profile flags chosen in `bazel build`,
-  `bazel test (fast)` and `bazel test (BDD)`, once J10 has taken their
-  sourcing;
+  `bazel test (fast)` and `bazel test (BDD)`, now that J10 has taken
+  their sourcing;
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package";
