@@ -100,7 +100,7 @@ first in their columns.
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
-| J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#NNNN) |
+| J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
@@ -676,7 +676,7 @@ shard fails the step. Neither workflow runs on a PR, and neither
 publishes, so dispatched `test.yml` and `scheduled.yml` runs on the
 branch prove it.
 
-Done in #NNNN, as a JavaScript action: `bdd-sharded/bdd.mjs`, with the
+Done in #1579, as a JavaScript action: `bdd-sharded/bdd.mjs`, with the
 bash gone. It runs what the shell ran: one build of every bdd target,
 then rp as four shard processes, session-runner as two, polar-align and
 filemonitor in one stream and the other 21 suites in one more, each
