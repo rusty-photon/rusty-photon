@@ -99,7 +99,7 @@ first in their columns.
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
-| J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped: the check went, its workflow keeps the rules_rust guards |
+| J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
@@ -735,8 +735,8 @@ tests prove them and the first push to main is watched.
 
 ### J11 — Bazel/Cargo target parity
 
-Dropped, on the owner's call. `scripts/check-bazel-cargo-parity.sh` (82
-lines), run by `parity.yml` alone (on push to main, nightly and on
+Dropped in #1583, on the owner's call. `scripts/check-bazel-cargo-parity.sh`
+(82 lines), run by `parity.yml` alone (on push to main, nightly and on
 dispatch), failed on a Cargo workspace member with no Bazel Rust rule in
 its own directory. Bazel is the primary build: nothing new is compiled or
 tested without its BUILD.bazel, so the check guarded a case that does not
