@@ -93,6 +93,15 @@ export function warning(message) {
   workflowCommand('warning', message);
 }
 
+/**
+ * An error annotation on the run, and a line in the log, leaving the step to
+ * succeed: for an action that reports a failure for a later step to act on.
+ * `fail` also fails the step.
+ */
+export function error(message) {
+  workflowCommand('error', message);
+}
+
 /** Runs `fn` inside a collapsible log group, closing the group however it ends. */
 export async function group(name, fn) {
   workflowCommand('group', name);

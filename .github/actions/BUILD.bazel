@@ -88,7 +88,7 @@ node_test(
 )
 
 # install-astap: the ASTAP CLI and its D05 star database from SourceForge, and
-# the table of pins refresh-astap-shas.yml reads and rewrites.
+# the table of pins refresh-astap rewrites.
 node_test(
     name = "install_astap_test",
     size = "small",
@@ -99,6 +99,32 @@ node_test(
         "lib/helpers.mjs",
         "lib/install.mjs",
         "lib/testing.mjs",
+    ],
+)
+
+# refresh-astap: refresh-astap-shas.yml's refresh of install-astap's pins. The
+# tests start a fake ASTAP as a Node process in the binary's place, and read
+# the .wcs the real one wrote, and the title install-astap.yml gives its
+# tracking issue, which the refresh comments on.
+node_test(
+    name = "refresh_astap_test",
+    size = "small",
+    srcs = [
+        "refresh-astap/detect.test.mjs",
+        "refresh-astap/publish.test.mjs",
+    ],
+    data = [
+        "install-astap/assets.json",
+        "install-astap/astap.mjs",
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+        "refresh-astap/detect.mjs",
+        "refresh-astap/publish.mjs",
+        "refresh-astap/testdata/m101_known.wcs",
+        "tracking-issue/issue.mjs",
+        "//:.github/workflows/install-astap.yml",
     ],
 )
 
@@ -192,6 +218,7 @@ node_test(
     size = "small",
     srcs = ["tracking-issue/issue.test.mjs"],
     data = [
+        "lib/github.mjs",
         "lib/helpers.mjs",
         "lib/testing.mjs",
         "tracking-issue/issue.mjs",

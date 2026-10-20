@@ -17,8 +17,9 @@
 crates/rp-catalog/src/data/*.csv -text
 
 # FITS fixtures are binary; be explicit so Git never tries text conversion on
-# them.
+# them. ASTAP's .wcs sidecar is a FITS header too, recorded byte for byte.
 *.fits -text
+*.wcs -text
 
 # insta snapshot goldens (services/ui-htmx/tests/snapshots, the UI-testing plan
 # Layer B) are committed once and compared byte-for-byte across OSes. The

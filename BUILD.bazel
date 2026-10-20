@@ -38,6 +38,13 @@ exports_files(
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 
+# The title and label install-astap.yml gives its tracking issue, which the
+# refresh-astap action's tests check it finds the issue by.
+exports_files(
+    [".github/workflows/install-astap.yml"],
+    visibility = ["//.github/actions:__pkg__"],
+)
+
 # `bazel run //:buildifier` formats every BUILD / *.bzl / MODULE.bazel file in the
 # workspace in place. Pinned via MODULE.bazel (buildifier_prebuilt) so every dev
 # machine and CI run the identical formatter with no system install.

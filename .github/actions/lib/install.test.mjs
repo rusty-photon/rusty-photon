@@ -674,6 +674,8 @@ test('download takes what a git ref or a rolling link serves, and says it did no
     assert.match(byRef.stdout, new RegExp(`not checked: pinned by the commit in its URL, ${COMMIT}`));
     const rolling = await capture(() => download(asset(server, { rolling: true }), join(dir, 'b'), fast));
     assert.match(rolling.stdout, /not checked: a rolling download with no pin/);
+    assert.equal(byRef.value, sha(PAYLOAD));
+    assert.equal(rolling.value, sha(PAYLOAD));
     assert.deepEqual(readFileSync(join(dir, 'a')), PAYLOAD);
     assert.deepEqual(readFileSync(join(dir, 'b')), PAYLOAD);
   } finally {

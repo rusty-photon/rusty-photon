@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { EOL, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -15,16 +15,12 @@ import {
   install,
   installAt,
   MAX_STAGGER_SECONDS,
-  pinOf,
-  readResults,
   readTable,
-  repin,
   resolve,
   SERVER,
   staggerSeconds,
   TABLE,
   TABLE_FILE,
-  writeTable,
 } from './astap.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -476,78 +472,4 @@ test('installAt downloads each archive as install does, trying another mirror af
   } finally {
     await server.close();
   }
-});
-
-// --- Refreshing the pins -------------------------------------------------------------
-
-// The result refresh-astap-shas.yml's detect job uploads for `runner`.
-function result(runner, newSha, archive = TABLE.cli[runner].archive) {
-  return {
-    arch_key: runner,
-    archive,
-    current_sha: TABLE.cli[runner].sha256,
-    new_sha: newSha,
-    banner: 'ASTAP astrometric solver version CLI-2099.01.01',
-    m101_passed: 'true',
-  };
-}
-
-test('pinOf reads the pin the workflow compares against', () => {
-  assert.equal(pinOf(TABLE, 'Linux-ARM64', 'astap_command-line_version_Linux_aarch64.zip'), TABLE.cli['Linux-ARM64'].sha256);
-  assert.throws(
-    () => pinOf(TABLE, 'Linux-ARM64', 'astap_command-line_version_Linux_amd64.zip'),
-    /the table pins astap_command-line_version_Linux_aarch64.zip for Linux-ARM64, not astap_command-line_version_Linux_amd64.zip/,
-  );
-  assert.throws(() => pinOf(TABLE, 'Linux-RISCV', 'x.zip'), /ASTAP has no asset for Linux-RISCV/);
-});
-
-test('repin moves the pins of the archives that rotated, and no others', () => {
-  const { table, changes } = repin(TABLE, [result('Linux-X64', 'a'.repeat(64)), result('Windows-ARM64', 'b'.repeat(64))]);
-  assert.equal(table.cli['Linux-X64'].sha256, 'a'.repeat(64));
-  assert.equal(table.cli['Windows-ARM64'].sha256, 'b'.repeat(64));
-  const unchanged = (t) => ({ ...t, cli: { ...t.cli, 'Linux-X64': undefined, 'Windows-ARM64': undefined } });
-  assert.deepEqual(unchanged(table), unchanged(TABLE));
-  assert.deepEqual(changes, [
-    { runner: 'Linux-X64', archive: TABLE.cli['Linux-X64'].archive, from: TABLE.cli['Linux-X64'].sha256, to: 'a'.repeat(64) },
-    { runner: 'Windows-ARM64', archive: TABLE.cli['Windows-ARM64'].archive, from: TABLE.cli['Windows-ARM64'].sha256, to: 'b'.repeat(64) },
-  ]);
-  // The table it was given is left as it was.
-  assert.deepEqual(TABLE, readTable());
-});
-
-test('repin refuses a result whose archive or new pin it cannot trust', () => {
-  assert.throws(() => repin(TABLE, [result('macOS-ARM64', 'a'.repeat(64), 'other.zip')]), /not other.zip: the workflow and assets.json disagree/);
-  assert.throws(() => repin(TABLE, [result('macOS-ARM64', 'A'.repeat(64))]), /the new pin of .*macOS_M1.zip, "A{64}", is not a SHA-256/);
-  assert.throws(() => repin(TABLE, [result('macOS-ARM64', undefined)]), /the new pin of .*, undefined, is not a SHA-256/);
-});
-
-test('a refresh rewrites a copy of assets.json at the rotated pin, and nowhere else', async () => {
-  const dir = tempDir();
-  const file = join(dir, 'assets.json');
-  copyFileSync(TABLE_FILE, file);
-  // As download-artifact lays out the results: a directory per artifact.
-  const results = join(dir, 'artifacts');
-  mkdirSync(join(results, 'refresh-result-macOS-ARM64'), { recursive: true });
-  writeFileSync(join(results, 'refresh-result-macOS-ARM64', 'macOS-ARM64.json'), JSON.stringify(result('macOS-ARM64', 'c'.repeat(64))));
-  const before = readFileSync(file, 'utf8').split('\n');
-
-  await writeTable(file, repin(readTable(file), await readResults(results)).table);
-
-  const after = readFileSync(file, 'utf8').split('\n');
-  assert.equal(after.length, before.length);
-  const changed = after.flatMap((line, i) => (line === before[i] ? [] : [[before[i], line]]));
-  assert.deepEqual(changed, [[`      "sha256": "${TABLE.cli['macOS-ARM64'].sha256}"`, `      "sha256": "${'c'.repeat(64)}"`]]);
-  assert.equal(readTable(file).cli['macOS-ARM64'].sha256, 'c'.repeat(64));
-});
-
-test('readResults reads every artifact directory download-artifact made, in order', async () => {
-  const dir = tempDir();
-  for (const runner of ['Windows-X64', 'Linux-X64']) {
-    mkdirSync(join(dir, `refresh-result-${runner}`));
-    writeFileSync(join(dir, `refresh-result-${runner}`, `${runner}.json`), JSON.stringify(result(runner, 'd'.repeat(64))));
-  }
-  assert.deepEqual(
-    (await readResults(dir)).map(({ arch_key }) => arch_key),
-    ['Linux-X64', 'Windows-X64'],
-  );
 });

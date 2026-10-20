@@ -1,0 +1,22 @@
+name: Propose the new ASTAP pins
+description: >-
+  The last job of refresh-astap-shas.yml: from the detect jobs' results,
+  proposes the new pins on main's table in the pull request from
+  chore/auto-refresh-astap-shas when every new binary that was checked passed,
+  or opens or comments on the astap-refresh-blocked issue when one failed;
+  then comments on install-astap's open tracking issue.
+inputs:
+  results:
+    description: The directory download-artifact put the detect jobs' results in, one directory per artifact.
+    required: true
+  dry-run:
+    description: "'true' to read what it would act on and print what it would write, writing nothing."
+    required: false
+    default: "false"
+  token:
+    description: A token that can write the repository's contents, pull requests and issues.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs
