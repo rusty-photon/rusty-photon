@@ -93,7 +93,7 @@ first in their columns.
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Done (#1564) |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Done (#1573) |
-| J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
+| J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
@@ -377,7 +377,7 @@ Done in #1564. The module is `.github/actions/lib/install.mjs`, and
 [ci-logic.md](../skills/ci-logic.md#an-action-that-installs-a-tool) says
 how an action uses it. A zip on Linux takes `unzip`, as the shell did,
 rather than a zip reader of our own. The fallback to the previous week's
-download, for a rolling pin, comes with J5, its first user.
+download, for a rolling pin, came with J5, its first user (`downloadAll`).
 `install-omnisim`'s macOS quarantine step went: neither curl nor Node
 marks a download as quarantined.
 
@@ -471,6 +471,30 @@ not:
   changes in the same PR. The SDK also joins the developer's install
   (ADR-022 Amendment A, `bazel run //.github/actions:install`), which
   replaces the copy-paste block in `services/zwo-camera/README.md`.
+
+  Done in #1575. The commit and the CDN links moved into `zwo-sdk.mjs`
+  (`REF`, `CAMERA_SDK_URL`, `EFW_SDK_URL`, `EAF_SDK_URL`), beside the
+  files they fetch, as J3 moved OmniSim's release: no workflow set the
+  `ref`, `prefix` or URL inputs, and `check-pkg-assets.sh` now reads the
+  three it checks from their lines there. The SDK still goes where
+  libzwo-sys's build script and Bazel look: `/usr/local` with sudo on
+  hosted Linux and macOS, `$RUNNER_TEMP/zwo-sdk` on the sudo-less Pi,
+  `$RUNNER_TEMP\zwo-sdk\lib` on Windows, the very string, since Bazel
+  passes `ZWO_SDK_LIB_DIR` to every Windows action. Every OS now restores
+  and saves its cache in two steps and saves only a new download; the
+  previous week's fallback is `lib/install.mjs`'s `downloadAll`, for any
+  rolling pin. Two changes from the shell: on macOS a library is pointed
+  at the copied libusb when `otool -L` shows it loads libusb by `@rpath`,
+  where the shell ran `install_name_tool -change` on all three and
+  ignored its failures; and on Windows each library is searched for in its
+  own SDK, the first by path among the x64 builds, where the PowerShell
+  searched all three SDKs and took the first file it listed. `makeRunnable`
+  moved into `lib/install.mjs`, as #1566's review was told it would once a
+  third module needed it. The developer's `zwo-sdk` installs into
+  `/usr/local` on Linux and macOS, with sudo where the developer cannot
+  write, and into `~/.local/opt/zwo-sdk` on Windows. It replaced the
+  copy-paste blocks in `services/zwo-camera/README.md` and
+  `crates/zwo-rs/README.md`, each with its own copy of the commit.
 - **J6 `install-svbony-sdk`** (367 lines, bash and PowerShell). Windows
   downloads from the project's private mirror, against a SHA-256; Linux
   and macOS from the INDI repository, against a git ref.

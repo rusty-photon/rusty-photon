@@ -61,8 +61,8 @@ $QhySha256Win64 = "dd696bce5f3a702ef55ad6ad7ae10a8f424879156675916387955170c3455
 # QHY's download layout for >= 26.06.04: the directory is the dotless version.
 $QhyUrlBase = "https://www.qhyccd.com/file/repository/publish/SDK/$($QhySdkVersion -replace '\.', '')"
 
-# Must match the windows_*_sdk_url defaults in
-# .github/actions/install-zwo-sdk/action.yml (checker-enforced). ZWO only
+# Must match CAMERA_SDK_URL and EAF_SDK_URL in
+# .github/actions/install-zwo-sdk/zwo-sdk.mjs (checker-enforced). ZWO only
 # publishes a rolling "latest" CDN download for Windows - no versioned URL to
 # checksum (unlike the Linux blobs, which pin an indi-3rdparty commit).
 $ZwoCameraSdkUrl = "https://dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86&region=Overseas"
@@ -197,8 +197,8 @@ if (($staged | Where-Object { -not (Test-Path $_) }).Count -gt 0) {
     }
 
     # Stage the x64 lib/DLL, picking the x64 build (not Win32/x86, not the
-    # static lib, not demo/opencv payloads) - same selection rule as
-    # .github/actions/install-zwo-sdk.
+    # static lib, not demo/opencv payloads) - the selection rule of
+    # pickX64 in .github/actions/install-zwo-sdk/zwo-sdk.mjs.
     function Stage([string]$pattern, [string]$target) {
         $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|opencv|demo|static' } |

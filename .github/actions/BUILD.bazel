@@ -89,6 +89,22 @@ node_test(
     ],
 )
 
+# install-zwo-sdk: ZWO's ASI, EFW and EAF SDKs, which libzwo-sys links: from the
+# INDI repository at a commit on Linux and macOS, from ZWO's CDN on Windows.
+# Medium: on Windows each install's unpacking starts PowerShell twice, a second
+# or more each.
+node_test(
+    name = "install_zwo_sdk_test",
+    size = "medium",
+    srcs = ["install-zwo-sdk/zwo-sdk.test.mjs"],
+    data = [
+        "install-zwo-sdk/zwo-sdk.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # A developer's install of a tool CI installs, by the install-* action's own
 # module: `bazel run //.github/actions:install -- <tool> [--prefix DIR]`.
 node_binary(
@@ -99,6 +115,7 @@ node_binary(
         "install-astap/astap.mjs",
         "install-omnisim/omnisim.mjs",
         "install-pebble/pebble.mjs",
+        "install-zwo-sdk/zwo-sdk.mjs",
         "lib/helpers.mjs",
         "lib/install.mjs",
         "local-install/local.mjs",

@@ -1,0 +1,28 @@
+name: Install the ZWO SDK
+description: >-
+  The last step of install-zwo-sdk: downloads the ZWO SDK files into
+  <workspace>/zwo-sdk, unless the cache restored them, and installs them where
+  libzwo-sys's build finds them (zwo-sdk.mjs's install).
+inputs:
+  sudo:
+    description: install-zwo-sdk's sudo input.
+    required: false
+    default: "true"
+  cache-hit:
+    description: The cache step's cache-hit output; 'true' when it restored this key.
+    required: false
+    default: ""
+  cache-matched-key:
+    description: >-
+      The cache step's cache-matched-key output: the key it restored, which on
+      Windows can be an earlier week's.
+    required: false
+    default: ""
+outputs:
+  downloaded:
+    description: >-
+      'true' when <workspace>/zwo-sdk holds a new download, for the cache to
+      save.
+runs:
+  using: node24
+  main: index.mjs

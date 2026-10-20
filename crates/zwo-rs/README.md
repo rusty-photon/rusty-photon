@@ -60,21 +60,17 @@ Linux, **libudev** (see the build-requirements table below).
 | **libudev** (Linux, `efw`/`focuser` only) | *linking* + runtime | The EFW/EAF blobs reference `udev_*` symbols without declaring libudev in their own `DT_NEEDED`, so the consumer binary links it on their behalf: `libudev-dev` (Debian/Ubuntu) / `systemd-devel` (Fedora) at build time, `libudev1` at runtime. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
-Install the SDK from the INDI mirror (MIT) — Linux x86_64 = `x64`, aarch64 =
-`armv8`, macOS arm64 = `mac_arm64`. The ref is pinned to a commit SHA (not
-`master`) for reproducibility; bump it to adopt a newer SDK (with narrowed
-device features you only need the libraries those features link):
+Install the SDK (MIT) as CI does, from the indi-3rdparty commit CI pins
+(`REF` in `.github/actions/install-zwo-sdk/zwo-sdk.mjs`; bump it there to
+adopt a newer SDK), into `/usr/local` on Linux and macOS, all three libraries
+and their headers:
 
 ```sh
-ARCH=x64   # aarch64 → armv8, macOS arm64 → mac_arm64
-BASE=https://github.com/indilib/indi-3rdparty/raw/b0802f2/libasi
-sudo install -d /usr/local/lib
-# INDI's `.bin` == ZWO's upstream `.so`; install under the linker name.
-sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
-sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o /usr/local/lib/libEFWFilter.so
-sudo curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so
-sudo ldconfig
+bazel run //.github/actions:install -- zwo-sdk
 ```
+
+`services/zwo-camera/README.md` has what else a build needs, and where the
+install goes on Windows.
 
 Override the SDK lib directory with `ZWO_SDK_LIB_DIR=/path/to/lib`.
 

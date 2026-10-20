@@ -49,8 +49,8 @@ QHY_SHA256_MAC_ARM64="3a03cef52ac95a513e4e7700058352d95c2f0556b02ab15e13efe31316
 QHY_URL_BASE="https://www.qhyccd.com/file/repository/publish/SDK/$(echo "$QHY_SDK_VERSION" | tr -d .)"
 QHY_FILE="sdk_mac_arm_${QHY_SDK_VERSION}.tar.gz"
 
-# Must match build-packages.sh and the `ref` default in
-# .github/actions/install-zwo-sdk/action.yml (checker-enforced): shipped and
+# Must match build-packages.sh and REF in
+# .github/actions/install-zwo-sdk/zwo-sdk.mjs (checker-enforced): shipped and
 # CI-linked blobs must come from the same indi-3rdparty commit.
 ZWO_SDK_REF="b0802f28055b67aa6a99580d260c3bb4c27eba4b"
 

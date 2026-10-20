@@ -1,0 +1,16 @@
+name: Resolve the ZWO SDK
+description: >-
+  The first step of install-zwo-sdk: the cache key of the ZWO SDK files this
+  runner takes, which carries their pin, and, for Windows' rolling downloads,
+  the start of the key every earlier week's download shares.
+outputs:
+  key:
+    description: The cache key of the ZWO SDK downloads.
+  restore-key:
+    description: >-
+      The restore key that finds the newest earlier week's download on
+      Windows, which the install falls back on when ZWO's CDN fails; empty on
+      Linux and macOS, whose files are pinned.
+runs:
+  using: node24
+  main: index.mjs

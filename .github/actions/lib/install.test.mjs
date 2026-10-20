@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -15,15 +15,18 @@ import {
   checkReplaceable,
   ChecksumError,
   download,
+  downloadAll,
   forRunner,
   get,
   hostKey,
   INSTALLED,
   isoWeek,
+  makeRunnable,
   markInstalled,
   onlyDirectory,
   pinKey,
   redirectTarget,
+  restoreKey,
   runnerKey,
   tarProgram,
   unpack,
@@ -174,6 +177,35 @@ test('cacheKey of a rolling download moves with the ISO week', () => {
   const monday = cacheKey('sdk', [sdk], { now: new Date('2026-10-19T01:00:00Z') });
   assert.equal(sunday, 'install-sdk-sdk.zip-week-2026-42');
   assert.equal(monday, 'install-sdk-sdk.zip-week-2026-43');
+});
+
+test('cacheKey carries a pin once after a run of assets that share it, and each pin of another', () => {
+  const ref = { ref: COMMIT };
+  const files = [
+    { name: 'a.h', pin: ref },
+    { name: 'liba.so', pin: ref },
+    { name: 'b.zip', pin: { sha256: '1'.repeat(64) } },
+    { name: 'libc.so', pin: ref },
+  ];
+  assert.equal(cacheKey('sdk', files), `install-sdk-a.h-liba.so-${COMMIT}-b.zip-${'1'.repeat(64)}-libc.so-${COMMIT}`);
+  const weekly = [
+    { name: 'a.zip', pin: { rolling: true } },
+    { name: 'b.zip', pin: { rolling: true } },
+  ];
+  assert.equal(cacheKey('sdk', weekly, { now: new Date('2026-10-19T01:00:00Z') }), 'install-sdk-a.zip-b.zip-week-2026-43');
+});
+
+test('restoreKey is the start every earlier week\'s key of the same rolling downloads has, and nothing for pinned ones', () => {
+  const weekly = [
+    { name: 'a.zip', pin: { rolling: true } },
+    { name: 'b.zip', pin: { rolling: true } },
+  ];
+  const prefix = restoreKey('sdk', weekly, { now: new Date('2026-10-19T01:00:00Z') });
+  assert.equal(prefix, 'install-sdk-a.zip-b.zip-week-');
+  assert.ok(cacheKey('sdk', weekly, { now: new Date('2025-12-31T01:00:00Z') }).startsWith(prefix));
+  assert.ok(!cacheKey('sdk', weekly.slice(0, 1), { now: new Date('2025-12-31T01:00:00Z') }).startsWith(prefix));
+  assert.equal(restoreKey('sdk', [{ name: 'a.so', pin: { ref: COMMIT } }]), '');
+  assert.equal(restoreKey('sdk', [weekly[0], { name: 'c.zip', pin: { sha256: '1'.repeat(64) } }]), '');
 });
 
 // --- Downloading ------------------------------------------------------------------
@@ -607,6 +639,97 @@ test('download refuses a malformed pin before it fetches anything', async () => 
   }
 });
 
+// Assets `names` on `server`, each with `pin`.
+function assets(server, names, pin) {
+  return names.map((name) => asset(server, pin, name));
+}
+
+test('downloadAll downloads every asset into the directory, and says it did', async () => {
+  const server = await serve((req, res) => res.end(`the ${basename(req.url)}`));
+  const dir = join(tempDir(), 'sdk');
+  try {
+    const { value } = await capture(() => downloadAll(assets(server, ['a.zip', 'b.zip'], { rolling: true }), dir, { download: fast }));
+    assert.equal(value, true);
+    assert.deepEqual(readdirSync(dir).sort(), ['a.zip', 'b.zip']);
+    assert.equal(readFileSync(join(dir, 'b.zip'), 'utf8'), 'the b.zip');
+    assert.deepEqual(readdirSync(dirname(dir)), ['sdk']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('downloadAll takes what the cache restored when it holds every asset, and downloads again when not', async () => {
+  const server = await serve((req, res) => res.end(`the ${basename(req.url)}`));
+  const dir = tempDir();
+  writeFileSync(join(dir, 'a.zip'), 'cached');
+  try {
+    const partial = await capture(() => downloadAll(assets(server, ['a.zip', 'b.zip'], { rolling: true }), dir, { cached: true, download: fast }));
+    assert.equal(partial.value, true);
+    assert.match(partial.stdout, /::warning::The cache restored .* without b\.zip; downloading again/);
+    assert.equal(server.requests.length, 2);
+    writeFileSync(join(dir, 'a.zip'), 'cached');
+    const whole = await capture(() => downloadAll(assets(server, ['a.zip', 'b.zip'], { rolling: true }), dir, { cached: true, download: fast }));
+    assert.equal(whole.value, false);
+    assert.equal(server.requests.length, 2);
+    assert.equal(readFileSync(join(dir, 'a.zip'), 'utf8'), 'cached');
+  } finally {
+    await server.close();
+  }
+});
+
+test('downloadAll changes nothing in the directory unless every download passes', async () => {
+  const server = await serve((req, res) => {
+    res.statusCode = req.url === '/b.so' ? 404 : 200;
+    res.end('new');
+  });
+  const dir = tempDir();
+  writeFileSync(join(dir, 'a.so'), 'older');
+  try {
+    await assert.rejects(downloadAll(assets(server, ['a.so', 'b.so'], { ref: COMMIT }), dir, { download: fast }), HttpError);
+    assert.deepEqual(readdirSync(dir), ['a.so']);
+    assert.equal(readFileSync(join(dir, 'a.so'), 'utf8'), 'older');
+  } finally {
+    await server.close();
+  }
+});
+
+test('downloadAll falls back on every rolling asset an earlier week left, when the download fails', async () => {
+  const server = await serve((req, res) => {
+    res.statusCode = 503;
+    res.end();
+  });
+  const dir = tempDir();
+  writeFileSync(join(dir, 'a.zip'), 'last week');
+  writeFileSync(join(dir, 'b.zip'), 'last week');
+  try {
+    const { value, stdout } = await capture(() =>
+      downloadAll(assets(server, ['a.zip', 'b.zip'], { rolling: true }), dir, { restored: 'install-sdk-a.zip-b.zip-week-2026-41', download: fast }),
+    );
+    assert.equal(value, false);
+    assert.match(stdout, /::warning::.*503.*\. Installing the earlier download the cache restored instead, install-sdk-a\.zip-b\.zip-week-2026-41/);
+    assert.equal(readFileSync(join(dir, 'a.zip'), 'utf8'), 'last week');
+  } finally {
+    await server.close();
+  }
+});
+
+test('downloadAll falls back on nothing short of every asset, and never for a pinned one', async () => {
+  const server = await serve((req, res) => {
+    res.statusCode = 503;
+    res.end();
+  });
+  const dir = tempDir();
+  writeFileSync(join(dir, 'a.zip'), 'last week');
+  try {
+    await assert.rejects(downloadAll(assets(server, ['a.zip', 'b.zip'], { rolling: true }), dir, { download: fast }), HttpError);
+    writeFileSync(join(dir, 'b.zip'), 'last week');
+    const pinned = [asset(server, { rolling: true }, 'a.zip'), asset(server, { sha256: '1'.repeat(64) }, 'b.zip')];
+    await assert.rejects(downloadAll(pinned, dir, { download: fast }), HttpError);
+  } finally {
+    await server.close();
+  }
+});
+
 // --- Unpacking --------------------------------------------------------------------
 
 test('tarProgram runs Windows its own bsdtar by its full path', async () => {
@@ -767,4 +890,14 @@ test('checkReplaceable refuses a directory no install of ours marked, even one h
       'and it is not ours to replace; choose another directory',
   });
   await assert.rejects(checkReplaceable(join(dir, 'notes.txt')), /notes\.txt/);
+});
+
+test('makeRunnable lets a binary run, and leaves a Windows .exe as it is', { skip: process.platform === 'win32' && 'Windows has no mode bits' }, async () => {
+  const dir = tempDir();
+  writeFileSync(join(dir, 'tool'), 'binary', { mode: 0o644 });
+  writeFileSync(join(dir, 'tool.exe'), 'binary', { mode: 0o644 });
+  await makeRunnable(dir, 'tool');
+  await makeRunnable(dir, 'tool.exe');
+  assert.equal(statSync(join(dir, 'tool')).mode & 0o777, 0o755);
+  assert.equal(statSync(join(dir, 'tool.exe')).mode & 0o777, 0o644);
 });

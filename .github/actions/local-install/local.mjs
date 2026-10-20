@@ -15,13 +15,16 @@ import { parseArgs } from 'node:util';
 import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
+import * as zwoSdk from '../install-zwo-sdk/zwo-sdk.mjs';
 import { describe, io } from '../lib/helpers.mjs';
 import { hostKey } from '../lib/install.mjs';
 
 /**
  * The tools it installs, each by the install-* action's own module: `resolve`
  * chooses the assets for a runner, `installAt` installs them into a directory
- * and resolves to the variables that locate them.
+ * and resolves to the variables that locate them. A tool with a `dir` names
+ * the directory it installs into by default, where ~/.local/opt/<tool> would
+ * not be found.
  */
 export const TOOLS = {
   astap: {
@@ -39,6 +42,13 @@ export const TOOLS = {
     resolve: pebble.resolve,
     installAt: pebble.installAt,
   },
+  'zwo-sdk': {
+    about: `ZWO's SDKs, which zwo-camera and zwo-focuser link; into ${zwoSdk.PREFIX}, but on Windows ~/.local/opt/zwo-sdk`,
+    resolve: zwoSdk.resolve,
+    installAt: zwoSdk.installAt,
+    // Where libzwo-sys's build script looks, as CI installs it.
+    dir: ({ platform }) => (platform === 'win32' ? undefined : zwoSdk.PREFIX),
+  },
 };
 
 /** How to run it, naming each of `tools`. */
@@ -50,7 +60,8 @@ export function usage(tools = TOOLS) {
     '',
     ...Object.entries(tools).map(([name, { about }]) => `  ${name.padEnd(9)} ${about}`),
     '',
-    'DIR defaults to ~/.local/opt/<tool>; a relative one is taken from where bazel ran.',
+    'DIR defaults to ~/.local/opt/<tool>, unless the tool says otherwise; a relative one is taken',
+    'from where bazel ran.',
     'It prints the variables that point the tests at what it installed.',
   ].join('\n');
 }
@@ -67,7 +78,7 @@ export class UsageError extends Error {
  * What the command line `args` asks for: `{ help: true }`, or the tool and the
  * directory to install it in. `cwd` is where a relative `--prefix` starts.
  */
-export function parse(args, { cwd, home, tools = TOOLS }) {
+export function parse(args, { cwd, home, platform = process.platform, tools = TOOLS }) {
   let parsed;
   try {
     parsed = parseArgs({
@@ -88,11 +99,15 @@ export function parse(args, { cwd, home, tools = TOOLS }) {
     throw new UsageError(`no tool named ${tool}; there are ${Object.keys(tools).join(', ')}`);
   }
   if (values.prefix === '') throw new UsageError('--prefix needs a directory');
-  if (values.prefix === undefined) return { tool, dir: path.join(home, '.local', 'opt', tool) };
+  if (values.prefix === undefined) return { tool, dir: tools[tool].dir?.({ platform }) ?? path.join(home, '.local', 'opt', tool) };
   // A shell expands a leading ~ only in a word of its own, not in --prefix=~/x.
   const prefix = values.prefix.replace(/^~(?=$|[\\/])/, () => home);
   return { tool, dir: path.resolve(cwd, prefix) };
 }
+
+// The variables that hold a list of directories, where a profile line puts
+// the new one first and keeps what the shell had.
+const SEARCH_PATHS = new Set(['LD_LIBRARY_PATH']);
 
 /**
  * What to do with `variables`, and the lines that do it: on Windows, setx
@@ -109,7 +124,10 @@ export function settings(variables, platform = process.platform) {
   }
   return {
     how: 'Set these in your shell profile',
-    lines: entries.map(([name, value]) => `export ${name}='${value.replaceAll("'", "'\\''")}'`),
+    lines: entries.map(([name, value]) => {
+      const quoted = `'${value.replaceAll("'", "'\\''")}'`;
+      return SEARCH_PATHS.has(name) ? `export ${name}=${quoted}"\${${name}:+:\$${name}}"` : `export ${name}=${quoted}`;
+    }),
   };
 }
 
@@ -131,7 +149,7 @@ export async function main(
 ) {
   let request;
   try {
-    request = parse(args, { cwd, home, tools });
+    request = parse(args, { cwd, home, platform, tools });
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
     io.stderr(`${err.message}\n\n${usage(tools)}\n`);
@@ -144,6 +162,10 @@ export async function main(
   try {
     const tool = tools[request.tool];
     const variables = await tool.installAt(request.dir, tool.resolve({ runner: runner ?? hostKey() }), { download });
+    if (Object.keys(variables).length === 0) {
+      io.stdout(`\n${request.tool} installed in ${request.dir}. Nothing needs setting to find it there.\n`);
+      return 0;
+    }
     const { how, lines } = settings(variables, platform);
     io.stdout(`\n${request.tool} installed in ${request.dir}. ${how}:\n\n${lines.map((line) => `  ${line}`).join('\n')}\n`);
     return 0;
