@@ -27,10 +27,13 @@ on:
     # same upstream SourceForge endpoint at the same minute.
     - cron: "30 3 * * *"
   workflow_dispatch:
+  # The only workflow that installs the D05 database, so a change to the
+  # shared modules install-astap runs (.github/actions/lib) runs it too.
   push:
     paths:
       - "services/plate-solver/**"
       - ".github/actions/install-astap/**"
+      - ".github/actions/lib/**"
       - ".github/workflows/plate-solver-smoke.yml"
 
 concurrency:

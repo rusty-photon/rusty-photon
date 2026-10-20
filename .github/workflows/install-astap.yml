@@ -14,8 +14,9 @@
 # rotation that invalidates a SHA pin — that happens on the order of
 # weeks-to-months, so paying for the matrix on every PR is mostly a
 # deterministic replay. The paths filter keeps PR-time verification on
-# changes that *can* affect the install (the action itself or this
-# workflow), so a SHA-refresh PR still runs the smoke before merge.
+# changes that *can* affect the install (the action itself, the shared
+# modules under .github/actions/lib it runs, or this workflow), so a
+# SHA-refresh PR still runs the smoke before merge.
 # The nightly cron catches upstream rotations that arrive between
 # install-touching PRs, and notify-on-failure opens a tracking issue
 # so divergence is visible without trawling scheduled-workflow logs.
@@ -32,10 +33,12 @@ on:
     branches: [main]
     paths:
       - ".github/actions/install-astap/**"
+      - ".github/actions/lib/**"
       - ".github/workflows/install-astap.yml"
   pull_request:
     paths:
       - ".github/actions/install-astap/**"
+      - ".github/actions/lib/**"
       - ".github/workflows/install-astap.yml"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -140,5 +143,5 @@ jobs:
 
             Most likely cause: ASTAP upstream rotated a SourceForge archive
             without us refreshing the SHA pin in
-            `.github/actions/install-astap/action.yml`. See ADR-005
+            `.github/actions/install-astap/assets.json`. See ADR-005
             §"Pinned SHA-256 + refresh procedure" for the refresh steps.

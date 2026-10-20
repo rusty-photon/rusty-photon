@@ -302,8 +302,9 @@ composite action plus the
 workflow that exercises it on `ubuntu-latest`, `ubuntu-24.04-arm`,
 `macos-latest`, and `windows-latest` — covering Linux-X64, Linux-ARM64
 (Raspberry Pi 5 target), macOS-ARM64, and Windows-X64. The action is
-itself the install recipe — its per-OS table names the SourceForge
-archive each platform downloads from. The
+itself the install recipe — its per-OS table,
+[`assets.json`](../../.github/actions/install-astap/assets.json), names
+the SourceForge archive each platform downloads from. The
 smoke workflow forces a fresh upstream download on every run (by
 passing `use-cache: "false"` to the composite action, which skips
 both cache load and save) so upstream regressions surface within a
@@ -315,14 +316,16 @@ ASCOM simulator.
 The smoke workflow runs on a nightly cron (04:30 UTC, offset from
 `plate-solver-smoke`'s 03:30 UTC), `workflow_dispatch` for manual
 re-runs, and on `push`/`pull_request` filtered to changes that touch
-`.github/actions/install-astap/**` or
-`.github/workflows/install-astap.yml`. The workflow's only failure
+`.github/actions/install-astap/**`, the shared modules it runs under
+`.github/actions/lib/**`, or `.github/workflows/install-astap.yml`.
+The workflow's only failure
 mode is an upstream SourceForge rotation invalidating a SHA pin —
 that happens on the order of weeks-to-months, so paying for the
 full matrix on every PR would be a deterministic replay of the
 merge-base run. The paths filter preserves PR-time verification on
-the only PRs that *can* affect the install (the action itself, this
-workflow, or a SHA-refresh PR), and the nightly cron catches
+the only PRs that *can* affect the install (the action itself, the
+modules it runs, this workflow, or a SHA-refresh PR), and the nightly
+cron catches
 upstream rotations that arrive between install-touching PRs.
 
 A `notify-on-failure` job in the same workflow opens (or updates) a
@@ -333,11 +336,13 @@ churn the issue.
 
 ### Pinned SHA-256 + refresh procedure
 
-The action's per-OS table pins a SHA-256 for each downloaded ASTAP
-CLI archive (last refreshed 2026-05-04 against ASTAP CLI-2026.05.03)
-and a separate SHA-256 for the optional D05 star database (still
-pinned against the original 2026-05-02 snapshot — D05 has not
-rotated). Every download is verified before extraction; mismatch
+The action's table,
+[`assets.json`](../../.github/actions/install-astap/assets.json), pins
+a SHA-256 for each downloaded ASTAP CLI archive (on 2026-10-19 the pins
+were for ASTAP CLI-2026.09.01, by the Linux x64 binary's banner; the
+workflow below has refreshed them since 2026-05) and a separate SHA-256
+for the optional D05 star database (still pinned against the original
+2026-05-02 snapshot — D05 has not rotated). Every download is verified before extraction; mismatch
 fails the action closed. ASTAP's URLs are unversioned ("latest" filenames), so
 upstream rotates the bytes without bumping the URL — the SHA pin
 turns that rotation into a deliberate, reviewed event rather than a
@@ -386,8 +391,10 @@ broken.
 1. Download each archive listed in the action's per-OS table from
    SourceForge.
 2. `sha256sum` each (or `shasum -a 256` on macOS).
-3. Update the corresponding `SHA256=` line in
-   `.github/actions/install-astap/action.yml`.
+3. Update the runner's `sha256` in
+   `.github/actions/install-astap/assets.json`, keeping the file's
+   layout: `install_astap_test` checks it is the one the refresh
+   workflow writes.
 4. Push to a PR branch — the `install-astap` smoke workflow will
    then verify the new pins on every supported smoke-matrix OS
    (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`,
@@ -404,9 +411,11 @@ which passes `download-database: "true"`):
 
 1. Download `d05_star_database.zip` from SourceForge.
 2. `sha256sum` it (or `shasum -a 256` on macOS).
-3. Update the `EXPECTED=` value in the database verify step **and**
-   the `astap-d05-database-<8-hex-prefix>` cache-key prefix in
-   `.github/actions/install-astap/action.yml`.
+3. Update `database.sha256` in
+   `.github/actions/install-astap/assets.json`; the action's cache key
+   carries the pin, so it moves with it. `refresh-astap-shas.yml` keeps
+   a copy of the pin for its own D05 download (`EXPECTED=`, and the hex
+   in its `astap-d05-database-*` cache key): update that too.
 4. Push to a PR branch — `plate-solver-smoke` exercises the
    downloader on `ubuntu-latest` / `macos-latest` / `windows-latest`.
 
@@ -417,22 +426,34 @@ mirrors, and a bad mirror either serves the bytes at a crawl or drops
 the transfer part-way through. Two properties of the action exist to
 absorb that.
 
-**`--retry-all-errors` is load-bearing, not decorative.** `curl`'s
-bare `--retry` only treats a timeout or an HTTP 408/429/5xx as a
-transient error. A connection dropped mid-body — `curl: (56)`,
-which is what a bad mirror actually produces — is *not* in that set,
-so `--retry` alone never fires on it and the job fails on the first
-stumble. Both fetches therefore pass `--retry-all-errors`, alongside
-`--connect-timeout` / `--max-time` so an attempt against a degraded
-mirror is cut short and the retry gets a chance at a different one; a
+**Every way a bad mirror fails is retried.** The download
+(`lib/install.mjs`, with the numbers and their reasons in
+`CLI_DOWNLOAD` and `DATABASE_DOWNLOAD` in
+[`astap.mjs`](../../.github/actions/install-astap/astap.mjs)) tries
+again after any failure at all, as `curl --retry-all-errors` did, since
+a bad mirror can fail in any way (a bad certificate, a 404 for a file it
+has not synced, a connection dropped mid-body, a stall, a checksum
+mismatch) and the next attempt likely lands on another: five attempts in
+all.
+Each attempt is cut short by a time limit, 2 minutes for the CLI and 5
+for the database, so the retry gets a chance at a different mirror; a
 mirror slower than the cap is effectively broken, and re-rolling beats
-waiting on it. `--retry-max-time` bounds the D05 sequence as a whole.
-`install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason.
+waiting on it. A crawling mirror never fails on its own, so the
+database's download also drops an attempt slower than 100,000 bytes/s
+over 30 s, about 190 times below a healthy mirror, and starts no attempt
+after 10 minutes. The dropped connection is the case that mattered
+when the action ran `curl`: its bare `--retry` did not count one,
+`curl: (56)`, as transient, and only `--retry-all-errors` did.
+`install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason. The
+download runs on Node's own HTTP client, not `fetch`: on Node 24, `fetch`
+crashes the process, past any retry, when a mirror closes the connection
+while the body is paused
+([nodejs/undici#5360](https://github.com/nodejs/undici/issues/5360)).
 
 **The D05 cache cannot be relied on to hide any of this.** The repo's
 Actions cache sits at GitHub's 10 GB per-repo ceiling, dominated by
 `Swatinem/rust-cache` entries running to hundreds of MB each. The
-103 MB `astap-d05-database-*` entry is touched by one nightly
+103 MB `install-astap-d05-*` entry is touched by one nightly
 workflow, which makes it reliably the least-recently-used thing in
 the store, so it is evicted on a regular cadence and cold runs are
 routine rather than exceptional. Until that quota pressure is

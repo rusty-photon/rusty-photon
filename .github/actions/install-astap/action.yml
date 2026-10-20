@@ -6,7 +6,11 @@ description: |
 
   This is repo tooling that mirrors install-omnisim. CI is acting as a
   normal user that installs ASTAP for itself. See ADR-005 for the
-  bring-your-own posture this action implements.
+  bring-your-own posture this action implements. The archive each runner
+  takes and its SHA-256 pin are in assets.json, which refresh-astap-shas.yml
+  rewrites when upstream rotates an archive; the download, check and unpack
+  are astap.mjs's and lib/install.mjs's (plan item J4 in
+  docs/plans/ci-shell-to-code.md).
 
 inputs:
   download-database:
@@ -39,245 +43,50 @@ inputs:
       Giving each leg a distinct offset spreads that out. It does not
       reduce the bytes fetched, only their overlap.
 
-      Must be a non-negative integer, and is capped — see the wait step
-      for the ceiling and why one exists.
+      Must be a non-negative integer, and is capped — see
+      MAX_STAGGER_SECONDS in astap.mjs for the ceiling and why one
+      exists. A value outside that fails the step even on a warm cache.
     required: false
     default: "0"
 
 outputs:
   astap-binary:
     description: Absolute path to the astap_cli binary.
-    value: ${{ steps.export.outputs.astap-binary }}
+    value: ${{ steps.install.outputs.astap-binary }}
   astap-db-dir:
     description: |
       Absolute path to the directory holding the extracted star
       database. Empty string when download-database is "false".
-    value: ${{ steps.export.outputs.astap-db-dir }}
+    value: ${{ steps.install.outputs.astap-db-dir }}
 
 runs:
   using: composite
   steps:
-    # Per-OS table. SHA-256 values are pinned against the snapshot
-    # captured 2026-05-04 from upstream SourceForge (ASTAP CLI
-    # version CLI-2026.05.03). See
-    # docs/decisions/005-plate-solver.md §Verification Spike for
-    # how/when to refresh these (any upstream release rotates the
-    # archive and breaks this check by design).
-    - name: Determine asset name and pinned SHA-256
-      id: asset
-      shell: bash
-      run: |
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)
-            ARCHIVE="astap_command-line_version_Linux_amd64.zip"
-            SUBDIR="linux_installer"
-            BIN="astap_cli"
-            SHA256="5e7dca28e0e52ad98d4186a01056189e403ba2729bfea9b30f12354436641fe7"
-            ;;
-          Linux-ARM64)
-            ARCHIVE="astap_command-line_version_Linux_aarch64.zip"
-            SUBDIR="linux_installer"
-            BIN="astap_cli"
-            SHA256="139cebec2abb74f8a3b13f26ac6aec2a1058cab5f83608f2cbaab7eb60bcc622"
-            ;;
-          macOS-ARM64)
-            ARCHIVE="astap_command-line_version_macOS_M1.zip"
-            SUBDIR="macOS%20installer"
-            BIN="astap_cli"
-            SHA256="6a59b61c3b9fac987ab5b8241cbd4bffacc05816f58097f52ad1e6bd733cbc45"
-            ;;
-          Windows-X64)
-            ARCHIVE="astap_command-line_version_win64.zip"
-            SUBDIR="windows_installer"
-            BIN="astap_cli.exe"
-            SHA256="e9b94a44bd0f7b60e6e1beeb75951d955815445b965d04c4a61fc6f4c398a3ca"
-            ;;
-          Windows-ARM64)
-            ARCHIVE="astap_command-line_version_win11_aarch64.zip"
-            SUBDIR="windows_installer"
-            BIN="astap_cli.exe"
-            SHA256="c2e1b21b23b85b9a903a930d7273425829f044873eb682aaab4fd5d0bdd3ec59"
-            ;;
-          *)
-            echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
-            exit 1
-            ;;
-        esac
-        {
-          echo "archive=$ARCHIVE"
-          echo "subdir=$SUBDIR"
-          echo "bin=$BIN"
-          echo "sha256=$SHA256"
-          # Pinned SHA participates in the cache key so a SHA bump
-          # invalidates any previously-cached download.
-          echo "cache-key=astap-cli-$ARCHIVE-$SHA256"
-        } >> "$GITHUB_OUTPUT"
+    - name: Resolve the ASTAP assets
+      id: resolve
+      uses: ./.github/actions/install-astap/resolve
 
     - name: Cache ASTAP binary
       if: inputs.use-cache != 'false'
-      id: cache
+      id: cli-cache
       uses: actions/cache@v5
       with:
         path: astap
-        key: ${{ steps.asset.outputs.cache-key }}
+        key: ${{ steps.resolve.outputs.cli-key }}
 
-    - name: Download ASTAP CLI
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        mkdir -p astap
-        URL="https://sourceforge.net/projects/astap-program/files/${{ steps.asset.outputs.subdir }}/${{ steps.asset.outputs.archive }}/download"
-        echo "Downloading $URL"
-        # --retry-all-errors, not bare --retry: curl only treats a timeout or
-        # an HTTP 408/429/5xx as transient, so a connection dropped mid-body
-        # (exit 56) is NOT retried by --retry alone. SourceForge redirects each
-        # client to one of many mirrors and a bad one drops the transfer, which
-        # is exactly the case bare --retry cannot see. --connect-timeout and
-        # --max-time keep an attempt against a degraded mirror short so the
-        # retry lands on a different one instead of stalling the job; a mirror
-        # slower than the cap is effectively broken, and re-rolling beats
-        # waiting on it. Same reasoning as install-zwo-sdk's Windows fetch.
-        curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors \
-          --connect-timeout 20 --max-time 120 \
-          -o "astap/${{ steps.asset.outputs.archive }}" "$URL"
-
-    - name: Verify ASTAP CLI checksum
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        EXPECTED="${{ steps.asset.outputs.sha256 }}"
-        # Portable SHA-256 across runners: shasum is on every macOS, sha256sum is on Linux + Git Bash.
-        if command -v sha256sum >/dev/null; then
-          ACTUAL=$(sha256sum "astap/${{ steps.asset.outputs.archive }}" | awk '{print $1}')
-        else
-          ACTUAL=$(shasum -a 256 "astap/${{ steps.asset.outputs.archive }}" | awk '{print $1}')
-        fi
-        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-          echo "::error::SHA-256 mismatch for ${{ steps.asset.outputs.archive }}"
-          echo "  expected: $EXPECTED"
-          echo "  actual:   $ACTUAL"
-          echo "Upstream may have rotated the archive. See ADR-005 §Verification Spike for the refresh procedure."
-          exit 1
-        fi
-        echo "SHA-256 match: $ACTUAL"
-
-    - name: Extract ASTAP CLI
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        cd astap
-        unzip -o "${{ steps.asset.outputs.archive }}"
-        rm "${{ steps.asset.outputs.archive }}"
-
-    - name: Set permissions (Linux/macOS)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: chmod +x "astap/${{ steps.asset.outputs.bin }}"
-
-    - name: Remove quarantine (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: xattr -d com.apple.quarantine "astap/${{ steps.asset.outputs.bin }}" 2>/dev/null || true
-
-    # D05 SHA-256 also pinned against the 2026-05-02 snapshot.
-    # Refresh procedure same as the per-OS table above.
     - name: Cache D05 star database
       if: inputs.download-database == 'true' && inputs.use-cache != 'false'
-      id: db-cache
+      id: database-cache
       uses: actions/cache@v5
       with:
         path: astap-db
-        key: astap-d05-database-39d59b73
+        key: ${{ steps.resolve.outputs.database-key }}
 
-    # Only when the fetch below is actually going to run. A warm cache waits
-    # for nothing, so the cost lands on cold runs alone. See the input's
-    # description for why matrix callers want this.
-    - name: Stagger the cold-cache D05 fetch
-      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true' && inputs.download-stagger-seconds != '0'
-      shell: bash
-      env:
-        STAGGER: ${{ inputs.download-stagger-seconds }}
-        # Spacing only has to exceed one healthy fetch (well under 30 s), so
-        # anything approaching this is a typo — a stray digit turning 45 into
-        # 450 would otherwise burn runner minutes with nothing to show for it,
-        # silently, which is the cost this whole input exists to avoid.
-        MAX_STAGGER: "300"
-      run: |
-        case "$STAGGER" in
-          '' | *[!0-9]*)
-            echo "::error::download-stagger-seconds must be a non-negative integer, got '$STAGGER'"
-            exit 1
-            ;;
-        esac
-        if [ "$STAGGER" -gt "$MAX_STAGGER" ]; then
-          echo "::error::download-stagger-seconds is ${STAGGER}s, above the ${MAX_STAGGER}s cap"
-          exit 1
-        fi
-        echo "Waiting ${STAGGER}s before the D05 fetch to offset this leg from its siblings"
-        sleep "$STAGGER"
-
-    - name: Download D05 star database
-      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        mkdir -p astap-db
-        URL="https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database.zip/download"
-        echo "Downloading D05 star database (~100 MB)"
-        # See the ASTAP CLI fetch above for why --retry-all-errors and the
-        # timeouts are needed. Higher --max-time here because this transfer is
-        # ~100 MB rather than ~1 MB, and --retry-max-time bounds the whole
-        # retry sequence so a run of bad mirrors cannot stretch the job
-        # unboundedly.
-        #
-        # --speed-limit/--speed-time are what actually re-roll a bad mirror.
-        # SourceForge picks a mirror per client, and a slow one does not fail
-        # — it dribbles. Without a rate floor the only thing that ends such an
-        # attempt is --max-time, so each doomed try burns the full 300 s and
-        # just two of them exhaust --retry-max-time: --retry 4 never reaches
-        # attempts 3 and 4, and the job fails having sampled two mirrors. The
-        # floor is set against measured behaviour, not guessed — a healthy
-        # mirror serves the whole 100 MB in about 5 s (~19 MB/s), so a floor of
-        # 100000 (--speed-limit counts raw bytes per second, so 100 kB/s
-        # decimal, not KiB) sustained for 30 s sits ~190x below healthy and
-        # cannot fire on a merely unlucky-but-working transfer. A mirror under
-        # that floor is broken, and re-rolling in 30 s beats waiting 300.
-        curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors \
-          --connect-timeout 20 --max-time 300 --retry-max-time 600 \
-          --speed-limit 100000 --speed-time 30 \
-          -o astap-db/d05.zip "$URL"
-
-    - name: Verify D05 database checksum
-      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        EXPECTED="39d59b73cb960fa0956c35162e70b09a8af10ef20a1e8f5cae7b77d48be5ce31"
-        if command -v sha256sum >/dev/null; then
-          ACTUAL=$(sha256sum astap-db/d05.zip | awk '{print $1}')
-        else
-          ACTUAL=$(shasum -a 256 astap-db/d05.zip | awk '{print $1}')
-        fi
-        if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-          echo "::error::SHA-256 mismatch for d05_star_database.zip"
-          echo "  expected: $EXPECTED"
-          echo "  actual:   $ACTUAL"
-          echo "Upstream may have rotated the database. See ADR-005 §Verification Spike for the refresh procedure."
-          exit 1
-        fi
-        echo "SHA-256 match: $ACTUAL"
-        ( cd astap-db && unzip -o d05.zip && rm d05.zip )
-
-    - name: Export environment
-      id: export
-      shell: bash
-      run: |
-        BIN_PATH="${{ github.workspace }}/astap/${{ steps.asset.outputs.bin }}"
-        echo "ASTAP_BINARY=$BIN_PATH" >> "$GITHUB_ENV"
-        echo "astap-binary=$BIN_PATH" >> "$GITHUB_OUTPUT"
-        echo "${{ github.workspace }}/astap" >> "$GITHUB_PATH"
-        if [[ "${{ inputs.download-database }}" == "true" ]]; then
-          DB_PATH="${{ github.workspace }}/astap-db"
-          echo "ASTAP_DB_DIR=$DB_PATH" >> "$GITHUB_ENV"
-          echo "astap-db-dir=$DB_PATH" >> "$GITHUB_OUTPUT"
-        else
-          echo "astap-db-dir=" >> "$GITHUB_OUTPUT"
-        fi
+    - name: Install ASTAP
+      id: install
+      uses: ./.github/actions/install-astap/install
+      with:
+        download-database: ${{ inputs.download-database }}
+        download-stagger-seconds: ${{ inputs.download-stagger-seconds }}
+        cli-cache-hit: ${{ steps.cli-cache.outputs.cache-hit }}
+        database-cache-hit: ${{ steps.database-cache.outputs.cache-hit }}

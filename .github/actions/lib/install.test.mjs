@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -15,12 +16,14 @@ import {
   ChecksumError,
   download,
   forRunner,
+  get,
   hostKey,
   INSTALLED,
   isoWeek,
   markInstalled,
   onlyDirectory,
   pinKey,
+  redirectTarget,
   runnerKey,
   tarProgram,
   unpack,
@@ -175,6 +178,105 @@ test('cacheKey of a rolling download moves with the ISO week', () => {
 
 // --- Downloading ------------------------------------------------------------------
 
+// --- Fetching ----------------------------------------------------------------------
+
+// A server speaking raw HTTP/1.1, which answers every request with `answer`
+// and closes its side, as a SourceForge mirror's nginx does after
+// `Connection: close`.
+async function rawServer(answer) {
+  const server = createServer((socket) => {
+    socket.once('data', () => {
+      socket.write(answer);
+      socket.end();
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((done) => server.close(done)) };
+}
+
+test('get hands over a body whole when the server closed before it was read', async () => {
+  // The case that crashes Node 24's fetch (nodejs/undici#5360): a body of a
+  // full stream buffer, 64 KiB, paused unread when the server's FIN comes.
+  const body = Buffer.alloc(64 * 1024, 0x61);
+  const server = await rawServer(
+    Buffer.concat([Buffer.from(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`), body]),
+  );
+  try {
+    const response = await get(`${server.url}/asset.bin`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), body);
+  } finally {
+    await server.close();
+  }
+});
+
+test('get follows redirects, relative and absolute, to the answer', async () => {
+  const server = await serve((req, res) => {
+    if (req.url === '/download') {
+      res.writeHead(302, { location: '/mirror/asset.bin' });
+      res.end('moved');
+    } else if (req.url === '/mirror/asset.bin') {
+      res.writeHead(307, { location: `http://${req.headers.host}/final` });
+      res.end();
+    } else {
+      res.end(PAYLOAD);
+    }
+  });
+  try {
+    const response = await get(`${server.url}/download`, { headers: { 'user-agent': 'test' } });
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), PAYLOAD);
+    assert.deepEqual(server.requests.map(({ url }) => url), ['/download', '/mirror/asset.bin', '/final']);
+    // Each hop carries the request's headers.
+    assert.ok(server.requests.every(({ headers }) => headers['user-agent'] === 'test'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('get gives up after 20 redirects', async () => {
+  const server = await serve((req, res) => {
+    res.writeHead(302, { location: '/again' });
+    res.end();
+  });
+  try {
+    await assert.rejects(get(`${server.url}/start`), /more than 20 redirects/);
+    assert.equal(server.requests.length, 21);
+  } finally {
+    await server.close();
+  }
+});
+
+test('get throws an HttpError for an answer outside 2xx, with the wait it asks for', async () => {
+  const server = await serve((req, res) => {
+    res.writeHead(503, { 'retry-after': '7' });
+    res.end('busy');
+  });
+  try {
+    await assert.rejects(get(`${server.url}/asset.bin?token=secret`), (err) => {
+      assert.ok(err instanceof HttpError);
+      assert.equal(err.status, 503);
+      assert.equal(err.retryAfterMs, 7_000);
+      assert.doesNotMatch(err.message, /secret/);
+      return true;
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('redirectTarget reads a Location against the URL it came from, and refuses https to http', () => {
+  const from = new URL('https://sourceforge.net/projects/x/files/a.zip/download');
+  assert.equal(redirectTarget(from, '/project/x/a.zip').href, 'https://sourceforge.net/project/x/a.zip');
+  assert.equal(redirectTarget(from, 'https://mirror.example/a.zip').href, 'https://mirror.example/a.zip');
+  assert.throws(() => redirectTarget(from, 'http://mirror.example/a.zip'), /refused a redirect from https to http:/);
+  assert.equal(redirectTarget(new URL('http://127.0.0.1:1/a'), 'http://127.0.0.1:1/b').href, 'http://127.0.0.1:1/b');
+});
+
 test('download writes an asset that matches its SHA-256, and says so', async () => {
   const server = await serve((req, res) => res.end(PAYLOAD));
   const file = join(tempDir(), 'sub', 'asset.bin');
@@ -286,6 +388,173 @@ test('download lets a slow transfer run on while data keeps coming', async () =>
     // between two of them.
     await capture(() => download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, stallMs: 1_000 }));
     assert.equal(server.requests.length, 1);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
+  } finally {
+    await server.close();
+  }
+});
+
+// A server whose first answer dribbles `PAYLOAD`, 10 bytes every 50 ms, a
+// rate of 200 bytes/s, and whose later answers send it whole.
+async function dribbleFirst() {
+  return serve((req, res, n) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    if (n > 1) {
+      res.end(PAYLOAD);
+      return;
+    }
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent, sent + 10));
+      sent += 10;
+    }, 50);
+    res.on('close', () => clearInterval(timer));
+  });
+}
+
+test('download abandons a transfer slower than its floor, and tries again', async () => {
+  const server = await dribbleFirst();
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    const { stdout } = await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, stallMs: 500, minBytesPerSecond: 1_000 }),
+    );
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(slower than 1000 bytes\/s for 500 ms\)/);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download catches a transfer that slows part way through', async () => {
+  // Half the payload at once, then 200 bytes/s for as long as the client
+  // listens.
+  const server = await serve((req, res, n) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    if (n > 1) {
+      res.end(PAYLOAD);
+      return;
+    }
+    let sent = PAYLOAD.length / 2;
+    res.write(PAYLOAD.subarray(0, sent));
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent, sent + 10));
+      sent += 10;
+    }, 50);
+    res.on('close', () => clearInterval(timer));
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    // The fast start counts for its own stretch of 500 ms only; the time
+    // limit ends the attempt if nothing else does.
+    const { stdout } = await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, {
+        ...fast,
+        stallMs: 500,
+        minBytesPerSecond: 1_000,
+        timeoutMs: 3_000,
+      }),
+    );
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(slower than 1000 bytes\/s for 500 ms\)/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download sets no floor unless asked, so a dribble that keeps coming finishes', async () => {
+  // 300 bytes at 200 bytes/s take 1.5 s, three times the stall timeout,
+  // with data never more than 50 ms apart.
+  const body = PAYLOAD.subarray(0, 300);
+  const server = await serve((req, res) => {
+    res.writeHead(200, { 'content-length': body.length });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(body.subarray(sent, sent + 10));
+      sent += 10;
+      if (sent >= body.length) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 50);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    await capture(() => download(asset(server, { sha256: sha(body) }), file, { ...fast, stallMs: 500 }));
+    assert.equal(server.requests.length, 1);
+    assert.deepEqual(readFileSync(file), body);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download lets a transfer above its floor run on', async () => {
+  const chunks = 15;
+  const size = Math.ceil(PAYLOAD.length / chunks);
+  const server = await serve((req, res) => {
+    res.writeHead(200, { 'content-length': PAYLOAD.length });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(PAYLOAD.subarray(sent * size, (sent + 1) * size));
+      sent += 1;
+      if (sent === chunks) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 100);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    // About 6,700 bytes/s for 1.5 s, three stretches of 500 ms, against a
+    // floor of 1,000.
+    await capture(() =>
+      download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, stallMs: 500, minBytesPerSecond: 1_000 }),
+    );
+    assert.equal(server.requests.length, 1);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download starts no attempt once retryForMs has passed', async () => {
+  // Each answer is a 503 that takes 100 ms to come.
+  const server = await serve((req, res) => {
+    setTimeout(() => {
+      res.statusCode = 503;
+      res.end('busy');
+    }, 100);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    await capture(() =>
+      assert.rejects(download(asset(server, { sha256: sha(PAYLOAD) }), file, { attempts: 8, delayMs: 1, retryForMs: 250 })),
+    );
+    // At most three attempts start within 250 ms, however busy the host, since
+    // each answer takes 100 ms; all eight take about a second.
+    assert.ok(server.requests.length < 8, `${server.requests.length} requests`);
+    assert.deepEqual(readdirSync(join(file, '..')), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download with retryAll tries again what it would otherwise not', async () => {
+  // A mirror that has not synced the file yet, then one that has.
+  const server = await serve((req, res, n) => {
+    if (n === 1) {
+      res.statusCode = 404;
+      res.end('Not Found');
+      return;
+    }
+    res.end(PAYLOAD);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    const { stdout } = await capture(() => download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, retryAll: true }));
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(GET .*: 404 Not Found\)/);
     assert.deepEqual(readFileSync(file), PAYLOAD);
   } finally {
     await server.close();

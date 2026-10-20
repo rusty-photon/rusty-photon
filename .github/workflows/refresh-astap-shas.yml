@@ -4,8 +4,10 @@
 # signal that upstream rotated a SourceForge archive without us
 # refreshing the pin) or on manual dispatch. For each supported
 # platform: downloads the upstream archive, detects whether its SHA-256
-# differs from the pin in `.github/actions/install-astap/action.yml`,
-# and — for rotated platforms — verifies the new binary by solving the
+# differs from the pin in install-astap's table
+# (`.github/actions/install-astap/assets.json`, read and rewritten by the
+# action's `pin` and `repin` steps), and — for rotated platforms —
+# verifies the new binary by solving the
 # committed M101 fixture
 # (`services/plate-solver/tests/fixtures/m101_known.fits`) to the
 # known center (RA 210.8099°, Dec 54.3469°) within the same 0.01°
@@ -74,34 +76,19 @@ jobs:
         with:
           # workflow_run defaults to the trigger workflow's head_sha
           # (could be a PR commit if install-astap was failing on a PR).
-          # Pin to main so the SHA extraction reads the same action.yml
-          # the auto-PR will eventually update. Per Copilot review.
+          # Check out main so the pin step reads the same table the
+          # auto-PR will eventually update. Per Copilot review.
           ref: main
 
-      - name: Extract current SHA pin from action.yml
+      # Fails unless the table pins a well-formed SHA-256 for this runner
+      # and names the archive this matrix row downloads, so a table that
+      # moved on is never silently read as "rotated".
+      - name: Read the current SHA pin
         id: current
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="${{ matrix.archive }}"
-          sha=$(awk -v target="$arch" '
-            $0 ~ "ARCHIVE=\"" target "\"" { found = 1; next }
-            found && /SHA256=/ {
-              if (match($0, /SHA256="[a-f0-9]+"/)) {
-                print substr($0, RSTART+8, RLENGTH-9)
-              }
-              exit
-            }
-          ' .github/actions/install-astap/action.yml)
-          # Hard-fail if the parse didn't yield a 64-char hex SHA —
-          # otherwise an empty value would be silently treated as
-          # "rotated" against any real upstream SHA. Per Copilot review.
-          if [[ ! "$sha" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "::error::Failed to extract a valid SHA-256 pin for $arch from action.yml (got '$sha'). The action's per-OS table may have changed shape."
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Pinned SHA: $sha"
+        uses: ./.github/actions/install-astap/pin
+        with:
+          runner: ${{ matrix.arch_key }}
+          archive: ${{ matrix.archive }}
 
       - name: Download upstream archive
         shell: bash
@@ -172,9 +159,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: d05
-          # Share the cache key with install-astap so an existing entry
-          # hits across both workflows. The 8-char hex prefix
-          # matches install-astap action.yml's cache-key convention.
+          # This workflow's own entry. actions/cache hashes the paths into
+          # an entry's version (getCacheVersion in actions/toolkit), so
+          # install-astap's, at `astap-db`, never served this one. The hex
+          # is the D05 pin's prefix; EXPECTED below is a copy of that pin,
+          # which install-astap keeps in its assets.json.
           key: astap-d05-database-39d59b73
 
       - name: Download D05 if cache miss
@@ -347,30 +336,25 @@ jobs:
         with:
           ref: main
 
+      - name: Read the current SHA pin
+        id: current
+        uses: ./.github/actions/install-astap/pin
+        with:
+          runner: Windows-ARM64
+          archive: astap_command-line_version_win11_aarch64.zip
+
       - name: Pull archive and detect rotation
         id: war
         shell: bash
         env:
           ARCHIVE: astap_command-line_version_win11_aarch64.zip
+          CURRENT: ${{ steps.current.outputs.sha }}
         run: |
           set -euo pipefail
           URL="https://sourceforge.net/projects/astap-program/files/windows_installer/${ARCHIVE}/download"
           curl -fsSL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$URL"
           new=$(sha256sum "$ARCHIVE" | awk '{print $1}')
-          current=$(awk -v target="$ARCHIVE" '
-            $0 ~ "ARCHIVE=\"" target "\"" { found = 1; next }
-            found && /SHA256=/ {
-              if (match($0, /SHA256="[a-f0-9]+"/)) {
-                print substr($0, RSTART+8, RLENGTH-9)
-              }
-              exit
-            }
-          ' .github/actions/install-astap/action.yml)
-          # Hard-fail on empty/malformed extraction (same reason as detect job).
-          if [[ ! "$current" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "::error::Failed to extract a valid SHA-256 pin for $ARCHIVE from action.yml (got '$current')."
-            exit 1
-          fi
+          current="$CURRENT"
           if [[ "$current" == "$new" ]]; then
             echo "rotated=false" >> "$GITHUB_OUTPUT"
             echo "No rotation for Windows-ARM64."
@@ -461,31 +445,15 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Patch action.yml with new SHAs
+      - name: Patch the new SHAs into install-astap's table
         if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for f in artifacts/refresh-result-*/*.json; do
-            arch=$(jq -r .archive "$f")
-            new=$(jq -r .new_sha "$f")
-            tmp=$(mktemp)
-            awk -v target="$arch" -v new="$new" '
-              {
-                if (found && match($0, /SHA256="[a-f0-9]+"/)) {
-                  sub(/SHA256="[a-f0-9]+"/, "SHA256=\"" new "\"")
-                  found = 0
-                }
-                print
-                if ($0 ~ "ARCHIVE=\"" target "\"") {
-                  found = 1
-                }
-              }
-            ' .github/actions/install-astap/action.yml > "$tmp"
-            mv "$tmp" .github/actions/install-astap/action.yml
-          done
-          echo "---- staged diff ----"
-          git diff --no-color .github/actions/install-astap/action.yml
+        uses: ./.github/actions/install-astap/repin
+        with:
+          results: artifacts
+
+      - name: Show the patched table
+        if: steps.gate.outputs.rotated == 'true' && steps.agg.outputs.all_passed == 'true'
+        run: git diff --no-color .github/actions/install-astap/assets.json
 
       - name: Push branch and open / update PR
         id: push
@@ -526,14 +494,14 @@ jobs:
           git fetch origin "$BRANCH" || true
 
           # Always derive the auto-refresh branch from main with the patched
-          # action.yml in the worktree. -B creates or resets the local branch
+          # assets.json in the worktree. -B creates or resets the local branch
           # to the current HEAD (pinned to main by the checkout step), so a
           # previous unmerged auto-refresh branch on origin is overwritten by
           # the force-with-lease push below. The PR (if one already exists
           # for this branch name) gets updated automatically.
           git checkout -B "$BRANCH"
 
-          git add .github/actions/install-astap/action.yml
+          git add .github/actions/install-astap/assets.json
           if git diff --cached --quiet; then
             echo "No staged changes — branch is already up to date."
             exit 0
@@ -546,7 +514,7 @@ jobs:
           workflow verified each new binary by solving the committed
           M101 fixture (services/plate-solver/tests/fixtures/m101_known.fits)
           to RA 210.8099° / Dec 54.3469° within 0.01° tolerance, then
-          patched the pins in .github/actions/install-astap/action.yml.
+          patched the pins in .github/actions/install-astap/assets.json.
 
           See ADR-005 §"Pinned SHA-256 + refresh procedure" for the
           manual procedure this workflow automates.
