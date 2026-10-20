@@ -94,7 +94,7 @@ first in their columns.
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Done (#1573) |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
-| J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
+| J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
@@ -503,7 +503,7 @@ not:
   it comes from the private mirror (ADR-018 §7), which developers are not
   given.
 
-  Done in #NNNN. The steps became `svbony-sdk.mjs`, run by a composite of
+  Done in #1578. The steps became `svbony-sdk.mjs`, run by a composite of
   resolve, cache and install. The SDK goes where it went: `/usr/local`
   with sudo on hosted Linux and Intel macOS, `$RUNNER_TEMP/svbony-sdk/lib`
   on the sudo-less Pi. On Windows `$RUNNER_TEMP\svbony-sdk\lib` now holds
