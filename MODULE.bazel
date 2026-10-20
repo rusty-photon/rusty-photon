@@ -278,8 +278,8 @@ node.toolchain(node_version = "24.20.0")
 #
 # Upstream has no equivalent hooks for 1-2 (collect_coverage PRs #3490/#3808
 # unmerged; still absent in 0.74.0), so these are carried until upstreamed.
-# The `bazel/cargo target parity` CI job guards that the patches still apply
-# and are effective.
+# The `rules_rust coverage patches` CI job (rules-rust-patches.yml) guards
+# that the patches still apply and are effective.
 single_version_override(
     module_name = "rules_rust",
     patch_strip = 1,

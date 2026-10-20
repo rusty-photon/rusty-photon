@@ -99,7 +99,7 @@ first in their columns.
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
-| J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
+| J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped: the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
@@ -154,7 +154,7 @@ Done in #1541, as `tools/rusty-photon-ci`, run as `cargo ci <tool>`.
 
 - **The crate:** `tools/rusty-photon-ci`, a workspace member with
   `publish = false`, under the workspace lints and MSRV, built and tested
-  by Bazel and Cargo (it joins the parity check like any crate). It sits
+  by Bazel and Cargo. It sits
   under `tools/`, not `crates/`, because no service links it. A library
   holds the tools and their tests; the binary only parses the command
   line, as the services' binaries do. [ci-logic.md](../skills/ci-logic.md#the-rust-tools-crate)
@@ -735,15 +735,19 @@ tests prove them and the first push to main is watched.
 
 ### J11 — Bazel/Cargo target parity
 
-`scripts/check-bazel-cargo-parity.sh` (82 lines), run by `parity.yml`
-alone (on push to main, nightly and on dispatch), compares the targets
-`cargo metadata` lists with the ones `bazel query` finds. It was R3 until
-the plan's second review: only CI runs it, so ADR-022's tiebreak puts it
-in JavaScript, and a Rust port would compile the tools crate cold in a
-job that has no Rust cache. The action runs the two commands and compares
-their output. It is tested against fixture outputs, and a dispatched
-`parity.yml` run on the branch proves it (that workflow publishes
-nothing); after merge, the push-to-main run is the first to watch.
+Dropped, on the owner's call. `scripts/check-bazel-cargo-parity.sh` (82
+lines), run by `parity.yml` alone (on push to main, nightly and on
+dispatch), failed on a Cargo workspace member with no Bazel Rust rule in
+its own directory. Bazel is the primary build: nothing new is compiled or
+tested without its BUILD.bazel, so the check guarded a case that does not
+arise. Its record agrees: in 400 runs from 2026-08-27 it found no gap, and
+its one failure (2026-09-09) was `bazel query` itself exiting 7.
+
+- **What went:** the script, and the workflow's step that ran it and the
+  Rust toolchain step only that step needed.
+- **What stays:** the workflow's two "Guard - rules_rust …" steps. The
+  workflow is `rules-rust-patches.yml` now, its job `rules_rust coverage
+  patches`, after what it still checks. S1 still takes the two steps.
 
 ### J12 — Sharded BDD runner
 
@@ -1224,7 +1228,8 @@ PRs, in any order:
   takes it;
 - install-astap.yml: "Smoke test (Linux/macOS)" and "Smoke test
   (Windows)", a bash and PowerShell pair;
-- parity.yml: the two "Guard - rules_rust …" steps, which J11 leaves;
+- rules-rust-patches.yml (`parity.yml` until J11): the two "Guard -
+  rules_rust …" steps;
 - pi-nightly.yml: "Symlink libusb for the QHYCCD static link";
 - plate-solver-smoke.yml: "Assert solve-time budget", "Log per-scenario
   timing";
