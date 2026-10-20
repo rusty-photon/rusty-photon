@@ -125,8 +125,8 @@ sudo apt-get install -y \
 # `-lusb-1.0`/`-ludev` link names (no -dev package), and exports ZWO_SDK_LIB_DIR
 # (which libzwo-sys' build.rs puts ahead of /usr/local/lib) + LD_LIBRARY_PATH.
 # Like the QHYCCD §1b move, provisioning in the workflow makes the runner
-# self-healing: a ZWO SDK bump only needs the action's `ref` updated, not a
-# manual re-run of this script. The two prerequisites the per-run step cannot
+# self-healing: a ZWO SDK bump only needs REF in the action's zwo-sdk.mjs
+# updated, not a manual re-run of this script. The two prerequisites the per-run step cannot
 # install without sudo are stable host packages installed once in §1 above:
 # clang/libclang-dev (bindgen) and the libusb-1.0 runtime (the symlink target,
 # and the blob's own runtime dependency); libudev.so.1 ships with systemd.

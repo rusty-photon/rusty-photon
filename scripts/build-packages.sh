@@ -61,7 +61,7 @@ QHY_SHA256_AARCH64="d28795977311fba1cb7a4fdc48bbd6d5f994716674b2154d9a860d1fdf2f
 # QHY's download layout for >= 26.06.04: the directory is the dotless version.
 QHY_URL_BASE="https://www.qhyccd.com/file/repository/publish/SDK/$(echo "$QHY_SDK_VERSION" | tr -d .)"
 
-# Must match the `ref` default in .github/actions/install-zwo-sdk/action.yml
+# Must match REF in .github/actions/install-zwo-sdk/zwo-sdk.mjs
 # (checker-enforced): the blobs shipped in the deb and the blobs CI links
 # against must come from the same indi-3rdparty commit. The immutable commit
 # SHA in the download URL is the integrity statement, same as in the action.

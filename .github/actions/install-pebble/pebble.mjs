@@ -8,11 +8,11 @@
 // fails closed on any mismatch.
 
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, rename } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 
 import { exportVariable, io, warning } from '../lib/helpers.mjs';
-import { cacheKey, download, forRunner, unpack, withWorkDir } from '../lib/install.mjs';
+import { cacheKey, download, forRunner, makeRunnable, unpack, withWorkDir } from '../lib/install.mjs';
 
 /** The GitHub repo, and its release, whose assets ASSETS pins. */
 export const REPO = 'letsencrypt/pebble';
@@ -106,12 +106,6 @@ async function fetchInto(assets, dir, options) {
   });
 }
 
-async function makeRunnable(assets, dir) {
-  for (const { file } of assets) {
-    if (!file.endsWith('.exe')) await chmod(path.join(dir, file), 0o755);
-  }
-}
-
 /**
  * Installs both binaries into `<workspace>/pebble`, unless `cached` says the
  * cache restored them there, then exports each one's variable.
@@ -125,7 +119,7 @@ export async function install({ assets, workspace, cached, download: options }) 
     if (cached) warning(`The cache restored ${dir} without ${missing.join(' and ')}; downloading Pebble again`);
     await fetchInto(assets, dir, options);
   }
-  await makeRunnable(assets, dir);
+  for (const { file } of assets) await makeRunnable(dir, file);
   // `${workspace}/pebble/...`, joined with '/' on Windows too, as the
   // workflows wrote it before: Bazel forwards both variables into its tests
   // (.bazelrc), so the strings are part of doctor's BDD test's cache key.
@@ -139,6 +133,6 @@ export async function install({ assets, workspace, cached, download: options }) 
  */
 export async function installAt(dir, { assets }, { download: options } = {}) {
   await fetchInto(assets, dir, options);
-  await makeRunnable(assets, dir);
+  for (const { file } of assets) await makeRunnable(dir, file);
   return Object.fromEntries(assets.map(({ file, variable }) => [variable, path.join(dir, file)]));
 }

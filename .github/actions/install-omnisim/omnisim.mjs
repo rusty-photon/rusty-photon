@@ -34,7 +34,7 @@
 // fails closed on any mismatch.
 
 import { existsSync } from 'node:fs';
-import { chmod, rename, rm } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { addPath, exportVariable, io, warning } from '../lib/helpers.mjs';
@@ -43,6 +43,7 @@ import {
   checkReplaceable,
   download,
   forRunner,
+  makeRunnable,
   markInstalled,
   onlyDirectory,
   unpack,
@@ -106,10 +107,6 @@ async function unpackInto({ asset, binary, dir, download: options }) {
     await rm(dir, { recursive: true, force: true });
     await rename(top, dir);
   });
-}
-
-async function makeRunnable(dir, binary) {
-  if (!binary.endsWith('.exe')) await chmod(path.join(dir, binary), 0o755);
 }
 
 /**

@@ -36,7 +36,9 @@
 #
 # Cadence: nightly cron + workflow_dispatch, plus a paths-filtered push to main so a
 # real-link regression in either service's native code, this workflow, or an
-# SDK-install action is caught when it lands on main rather than only at the next cron fire.
+# SDK-install action (or the shared modules install-zwo-sdk runs,
+# .github/actions/lib) is caught when it lands on main rather than only at the
+# next cron fire.
 permissions:
   contents: read
 on:
@@ -54,6 +56,7 @@ on:
       - "services/zwo-camera/**"
       - "services/zwo-focuser/**"
       - ".github/actions/install-zwo-sdk/**"
+      - ".github/actions/lib/**"
       - "crates/svbony-rs/**"
       - "services/svbony-camera/**"
       - ".github/actions/install-svbony-sdk/**"

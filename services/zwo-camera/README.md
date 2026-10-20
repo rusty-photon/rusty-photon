@@ -60,36 +60,38 @@ Consequences:
 ## Building locally
 
 ```sh
-# 1. Install the MIT-licensed ZWO SDK (Linux x86_64 = x64; aarch64 = armv8;
-#    macOS arm64 = mac_arm64). Mirrors .github/actions/install-zwo-sdk — pulls
-#    ZWO's prebuilt blobs from the INDI mirror.
-#    (Linux) also: sudo apt-get install libusb-1.0-0-dev clang libclang-dev
-# Pinned to a commit SHA (not `master`) so the blobs match CI and the Pi runner;
-# bump it in lockstep with .github/actions/install-zwo-sdk to adopt a newer SDK.
-BASE=https://github.com/indilib/indi-3rdparty/raw/b0802f2/libasi
-sudo install -d /usr/local/lib /usr/local/include
-# Headers + license. bindgen actually reads the copies vendored inside
-# libzwo-sys, so these are for completeness (and to keep the MIT notice with
-# the libs), matching the CI/INDI installer.
-for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-  sudo curl -fsSL "$BASE/$h" -o "/usr/local/include/$h"
-done
-# Shared libraries (INDI's .bin == ZWO's upstream .so), under the linker name.
-# `cargo build -p zwo-camera` links only libASICamera2 (ADR-014), but
-# `bazel build //...` builds the shared zwo-rs targets with the union of
-# device features, so install all three for a full local dev setup.
-sudo curl -fsSL "$BASE/x64/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
-sudo curl -fsSL "$BASE/x64/libEFWFilter.bin"  -o /usr/local/lib/libEFWFilter.so
-sudo curl -fsSL "$BASE/x64/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so
-sudo ldconfig
+# 1. The prerequisites: libusb and libudev for the link, libclang for bindgen.
+#    (Debian/Ubuntu)
+sudo apt-get install libusb-1.0-0-dev libudev-dev clang libclang-dev
+#    (macOS) the install below copies Homebrew's libusb beside the SDK
+brew install libusb llvm
 
-# 2. bindgen needs libclang; point LIBCLANG_PATH at it if not auto-found
-#    (e.g. /usr/lib64 on Fedora, /usr/lib/$(uname -m)-linux-gnu on Debian).
+# 2. The MIT-licensed ZWO SDK, as CI installs it: the same files, from the
+#    same pinned indi-3rdparty commit (Windows: ZWO's developer SDKs).
+#    `cargo build -p zwo-camera` links only libASICamera2 (ADR-014), but
+#    `bazel build //...` builds the shared zwo-rs targets with the union of
+#    device features, so it installs all three SDKs.
+bazel run //.github/actions:install -- zwo-sdk
+
+# 3. bindgen needs libclang; point LIBCLANG_PATH at it if not auto-found
+#    (e.g. /usr/lib64 on Fedora, /usr/lib/$(uname -m)-linux-gnu on Debian,
+#    $(brew --prefix llvm)/lib on macOS).
 export LIBCLANG_PATH=/usr/lib64
 
 bazel build //services/zwo-camera/...
 cargo run  -p zwo-camera --features simulation -- --port 11122
 ```
+
+On Linux and macOS the install puts the libraries in `/usr/local/lib` and the
+headers in `/usr/local/include`, where libzwo-sys's build script and the
+loader look, using `sudo` for the copy when you cannot write there; it
+replaces those files and nothing else. With `--prefix DIR` elsewhere it prints
+the `ZWO_SDK_LIB_DIR` Cargo needs to link, but Bazel looks only in
+`/usr/local`, and on Linux a binary that loads the SDK then needs
+`DIR/lib` on `LD_LIBRARY_PATH`. On Windows it installs into
+`%USERPROFILE%\.local\opt\zwo-sdk` and prints a `setx ZWO_SDK_LIB_DIR` line
+to run once; a build that talks to a real camera also needs that directory
+on `PATH`, for the DLLs, and bindgen needs LLVM (`LIBCLANG_PATH`).
 
 ## CLI
 

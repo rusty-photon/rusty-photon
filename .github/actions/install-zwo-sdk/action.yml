@@ -1,64 +1,36 @@
 name: Install ZWO ASI/EFW/EAF SDK
 description: >-
-  Install the MIT-licensed ZWO ASI camera + EFW filter-wheel + EAF focuser SDK
-  (and the libusb-1.0 / libclang prerequisites) so the `zwo-camera` and
-  `zwo-focuser` services can link. The SDK links unconditionally via
-  libzwo-sys, so this is required even for `--features simulation` builds (it
-  removes the hardware, not the link). See docs/services/zwo-camera.md /
-  docs/services/zwo-focuser.md "Native dependency & build gating" and ADR-008.
-  Linux/macOS pull ZWO's prebuilt blobs from the INDI mirror; Windows pulls the
-  official per-SDK developer zips from ZWO's download CDN. The Linux/macOS
-  blobs are wrapped in actions/cache (keyed on arch + `ref`) so a warm cache
-  skips the mirror fetch entirely — the mirror rate-limits CI's ephemeral IPs
-  (429s), see issue #476. The Windows zips are cached too, keyed on the ISO
-  week (the rolling "latest" CDN URLs offer no version to key on): the first
-  run each week refreshes from the CDN, every other run skips it, and a
-  failed refresh falls back to the newest previous week's zips — ZWO's CDN
-  drops connections often enough that an uncached, retry-less fetch was a
-  recurring source of Windows CI failures.
+  Install the MIT-licensed ZWO ASI camera, EFW filter-wheel and EAF focuser
+  SDKs, with the libusb, libudev and libclang they need, so that the
+  `zwo-camera` and `zwo-focuser` services link. libzwo-sys links the SDK even
+  in a `--features simulation` build (it removes the hardware, not the link),
+  see docs/services/zwo-camera.md / docs/services/zwo-focuser.md "Native
+  dependency & build gating" and ADR-008. Linux and macOS take ZWO's prebuilt
+  libraries as the INDI repository vendors them, at a pinned commit; Windows
+  takes ZWO's developer SDKs from its CDN, whose links are rolling "latest"
+  ones. The pin, the links and the install are zwo-sdk.mjs's; the download,
+  the cache key and the fallback to an earlier week's download are
+  lib/install.mjs's (plan item J5 in docs/plans/ci-shell-to-code.md). The
+  downloads are cached: the INDI mirror rate-limits CI's ephemeral IPs (429s,
+  issue #476), and on Windows the cache keeps a week's download, ZWO's CDN
+  dropping connections often enough that a failed weekly refresh falls back
+  to the newest earlier week's.
 
 inputs:
-  ref:
-    description: >-
-      indi-3rdparty git ref for the vendored ZWO `.bin` shared libraries
-      (Linux/macOS). INDI vendors ZWO's upstream prebuilt blobs (MIT) under
-      libasi/<arch>/. Pinned to a commit SHA (not a moving branch) so the native
-      SDK bits are reproducible and can't change without a repo edit; bump it to
-      adopt a newer ZWO SDK.
-    default: b0802f28055b67aa6a99580d260c3bb4c27eba4b
-  prefix:
-    description: Install prefix for the SDK libraries and headers (Linux/macOS).
-    default: /usr/local
   sudo:
     description: >-
       Whether the Linux path may use sudo (default "true"). The default
-      apt-installs the libusb/libudev/clang prerequisites and writes the SDK
-      blobs into `prefix` (/usr/local) + ldconfig — correct for GitHub-hosted
-      x86 runners. Set "false" for the sudo-LESS self-hosted Pi nightly runner:
-      the blobs are staged under $RUNNER_TEMP, `-lusb-1.0`/`-ludev` are resolved
-      by symlinking the system *runtime* libs into that dir (no -dev package),
+      apt-installs the libusb/libudev/clang prerequisites and installs the SDK
+      into /usr/local, refreshing the loader's cache, as GitHub-hosted runners
+      allow. Set "false" for the sudo-LESS self-hosted Pi nightly runner: the
+      SDK goes under $RUNNER_TEMP/zwo-sdk, uncached, `-lusb-1.0`/`-ludev`
+      resolve to links there to the system *runtime* libs (no -dev package),
       and ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of touching
-      /usr/local. In sudo-free mode the host must already provide clang/libclang
-      (bindgen) and the libusb-1.0 runtime — both installed once at runner setup
-      by scripts/setup-pi-runner.sh. Mirrors the QHYCCD per-run sudo-free model.
+      /usr/local. In sudo-free mode the host must already provide
+      clang/libclang (bindgen) and the libusb-1.0 runtime, both installed once
+      at runner setup by scripts/setup-pi-runner.sh. Mirrors the QHYCCD
+      per-run sudo-free model.
     default: "true"
-  windows_camera_sdk_url:
-    # Reproducibility note: unlike the Linux/macOS blobs (pinned by `ref` to an
-    # indi-3rdparty commit), ZWO's Windows developer SDK is only published as a
-    # rolling "latest" CDN download — there is no versioned/immutable URL to pin
-    # or checksum. Overriding these inputs is the only way to pin, if/when ZWO
-    # offers a stable artifact. Track upstream before relying on Windows CI for
-    # bit-for-bit reproducibility.
-    description: ZWO ASI Camera developer SDK (Windows) download URL (rolling "latest").
-    default: https://dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86&region=Overseas
-  windows_efw_sdk_url:
-    description: ZWO EFW filter-wheel developer SDK (Windows) download URL.
-    default: https://dl.zwoastro.com/software?app=DeveloperEfwSdk&platform=windows86&region=Overseas
-  windows_eaf_sdk_url:
-    description: >-
-      ZWO EAF focuser developer SDK (Windows) download URL. Linked by
-      zwo-focuser.
-    default: https://dl.zwoastro.com/software?app=DeveloperEafSdk&platform=windows86&region=Overseas
 
 runs:
   using: composite
@@ -87,356 +59,36 @@ runs:
         # bindgen needs libclang; surface Homebrew's llvm to subsequent steps.
         echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
-    - name: Determine ZWO SDK arch (Linux/macOS)
-      # Linux uses this sudo path only when sudo == 'true'; the sudo-free Linux
-      # path is the dedicated step below. macOS always uses this path.
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
-      id: asset
-      shell: bash
-      run: |
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)    ARCH=x64 ;;
-          Linux-ARM64)  ARCH=armv8 ;;
-          macOS-ARM64)  ARCH=mac_arm64 ;;
-          macOS-X64)    ARCH=mac_x64 ;;
-          *) echo "::error::unsupported ZWO SDK arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
-        esac
-        if [[ "${{ runner.os }}" == "macOS" ]]; then EXT=dylib; else EXT=so; fi
-        {
-          echo "arch=$ARCH"
-          echo "ext=$EXT"
-          # ARCH values are already OS-unique (x64/armv8 are Linux-only,
-          # mac_arm64/mac_x64 are macOS-only), so no separate os component is
-          # needed. `ref` participates so bumping the indi-3rdparty pin
-          # invalidates any previously cached blob. The leading `v1` is a
-          # schema version for the *set* of files this action fetches/caches
-          # (headers + libs) — bump it if that set changes, so a stale cache
-          # entry can be invalidated without needing an unrelated `ref` bump.
-          echo "cache-key=zwo-sdk-blobs-v1-$ARCH-${{ inputs.ref }}"
-        } >> "$GITHUB_OUTPUT"
+    - name: Resolve the ZWO SDK files
+      id: resolve
+      uses: ./.github/actions/install-zwo-sdk/resolve
 
-    - name: Cache ZWO SDK blobs (Linux/macOS)
-      # Caches the raw mirror download, not the installed $PREFIX tree — the
-      # install step below (always runs) does the sudo copy into $PREFIX, so a
-      # cache hit here skips the indi-3rdparty mirror fetch entirely instead of
-      # eating its 429s (issue #476).
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+    # Restore and save are separate steps, so that only a new download is
+    # saved: re-saving an earlier week's download under this week's key would
+    # stop the weekly refresh from trying ZWO's CDN again. The sudo-free path
+    # stages per run, uncached.
+    - name: Restore the ZWO SDK downloads
+      if: runner.os != 'Linux' || inputs.sudo == 'true'
       id: cache
-      uses: actions/cache@v6
-      with:
-        path: zwo-sdk-blobs
-        key: ${{ steps.asset.outputs.cache-key }}
-
-    - name: Download the ZWO SDK (Linux/macOS)
-      if: (runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')) && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        REF: ${{ inputs.ref }}
-        ARCH: ${{ steps.asset.outputs.arch }}
-        EXT: ${{ steps.asset.outputs.ext }}
-      run: |
-        set -euo pipefail
-        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
-        echo "install-zwo-sdk: downloading arch=$ARCH ref=$REF (cache miss)"
-        mkdir -p zwo-sdk-blobs
-
-        # Headers (MIT) — bindgen reads the copies vendored inside libzwo-sys, so
-        # these are for completeness; the license notice must travel with the blob.
-        # --retry: a cold cache (first run for a new arch/ref) still hits the
-        # mirror directly, so absorb transient 429s/timeouts the same way
-        # install-astap does rather than failing the whole job on one blip.
-        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          curl -fsSL --retry 3 --retry-delay 2 "$BASE/$h" -o "zwo-sdk-blobs/$h"
-        done
-
-        # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
-        # libzwo-sys links libEAFFocuser unconditionally (zwo-camera and
-        # zwo-focuser share one build script), so it's as required as the two
-        # blobs above — fail this step now rather than deferring to a less
-        # actionable link/runtime error later.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT"
-
-    - name: Install the ZWO SDK (Linux/macOS)
-      # Always runs (cache hit or miss) — a plain local copy from zwo-sdk-blobs
-      # into $PREFIX, so it's cheap either way.
-      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
-      shell: bash
-      env:
-        PREFIX: ${{ inputs.prefix }}
-        EXT: ${{ steps.asset.outputs.ext }}
-      run: |
-        set -euo pipefail
-        echo "install-zwo-sdk: prefix=$PREFIX"
-        sudo install -d "$PREFIX/lib" "$PREFIX/include"
-
-        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          sudo cp "zwo-sdk-blobs/$h" "$PREFIX/include/$h"
-        done
-
-        # Install under the linker name so `-lASICamera2` / `-lEFWFilter` /
-        # `-lEAFFocuser` resolve — all three are required (see the fetch step).
-        sudo cp "zwo-sdk-blobs/libASICamera2.$EXT" "$PREFIX/lib/libASICamera2.$EXT"
-        sudo cp "zwo-sdk-blobs/libEFWFilter.$EXT"  "$PREFIX/lib/libEFWFilter.$EXT"
-        sudo cp "zwo-sdk-blobs/libEAFFocuser.$EXT" "$PREFIX/lib/libEAFFocuser.$EXT"
-
-        if [[ "${{ runner.os }}" == "macOS" ]]; then
-          # macOS dylibs ship with an install_name that must match the on-disk
-          # path before they will link (INDI automates this). libEAFFocuser is
-          # now linked unconditionally alongside the other two (libzwo-sys's
-          # build.rs emits all three `-l` directives together), so it needs
-          # the same fixup or Bazel's rust_test binaries fail at runtime with
-          # dyld "Library not loaded: @rpath/libEAFFocuser.dylib".
-          sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
-          sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
-          sudo install_name_tool -id "$PREFIX/lib/libEAFFocuser.dylib" "$PREFIX/lib/libEAFFocuser.dylib"
-          # libASICamera2/libEFWFilter reference `@rpath/libusb-1.0.0.dylib`.
-          # Stage libusb alongside the SDK, then rewrite that reference to the
-          # absolute path so it resolves regardless of the consuming binary's
-          # @rpath: Cargo binaries get this SDK prefix on their rpath (a
-          # link-search dir), but Bazel's rust_test binaries do not — without the
-          # rewrite they fail at runtime with dyld "Library not loaded". Include
-          # libEAFFocuser in the rewrite loop too: `|| true` already tolerates it
-          # not referencing libusb at all, so this is a safe no-op either way.
-          sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
-          for lib in libASICamera2 libEFWFilter libEAFFocuser; do
-            sudo install_name_tool -change @rpath/libusb-1.0.0.dylib \
-              "$PREFIX/lib/libusb-1.0.0.dylib" "$PREFIX/lib/$lib.dylib" 2>/dev/null || true
-          done
-        elif command -v ldconfig >/dev/null 2>&1; then
-          sudo ldconfig
-        fi
-        echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter + libEAFFocuser under $PREFIX/lib"
-
-    - name: Provision ZWO SDK (Linux, sudo-free)
-      # The sudo-LESS self-hosted Pi nightly runner cannot apt-install the -dev
-      # packages or write to /usr/local. Stage the blobs under $RUNNER_TEMP and
-      # resolve every -l from that one dir, then export ZWO_SDK_LIB_DIR (build.rs
-      # adds it to the link search ahead of /usr/local/lib) + LD_LIBRARY_PATH.
-      if: runner.os == 'Linux' && inputs.sudo != 'true'
-      shell: bash
-      env:
-        REF: ${{ inputs.ref }}
-      run: |
-        set -euo pipefail
-        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
-        case "${{ runner.arch }}" in
-          ARM64) ARCH=armv8 ;;
-          X64)   ARCH=x64 ;;
-          *) echo "::error::install-zwo-sdk: unsupported sudo-free arch ${{ runner.arch }}"; exit 1 ;;
-        esac
-        LIBDIR="${RUNNER_TEMP:-/tmp}/zwo-sdk/lib"
-        INCDIR="${RUNNER_TEMP:-/tmp}/zwo-sdk/include"
-        mkdir -p "$LIBDIR" "$INCDIR"
-        echo "install-zwo-sdk (sudo-free): arch=$ARCH libdir=$LIBDIR ref=$REF"
-
-        # Headers (MIT) for completeness; bindgen reads libzwo-sys' vendored copies.
-        # --retry: this path isn't behind the actions/cache wrapping (Pi
-        # nightly, per-run, self-hosted), so absorb transient mirror
-        # 429s/timeouts the same way install-astap does.
-        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          curl -fsSL --retry 3 --retry-delay 2 "$BASE/$h" -o "$INCDIR/$h"
-        done
-
-        # ZWO blobs under the linker name so `-lASICamera2` / `-lEFWFilter`
-        # resolve. INDI's .bin carries no SONAME, so a consumer's NEEDED entry is
-        # the bare `libASICamera2.so` — hence the LD_LIBRARY_PATH export below so
-        # the nextest / BDD binaries load them at runtime.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
-        # Required for the same reason as the cached Linux/macOS path above:
-        # libzwo-sys links libEAFFocuser unconditionally, so a missing blob
-        # should fail this step now, not surface later as a link error.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so"
-
-        # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so
-        # from libusb-1.0-0-dev / libudev-dev. Without sudo we cannot apt-install
-        # those, so symlink the linker name to the system *runtime* .so inside our
-        # own search dir. build.rs emits ZWO_SDK_LIB_DIR's -L first and a single
-        # -L resolves all -l, so this satisfies the link with no -dev package.
-        # (--as-needed then drops the unused libudev/libusb NEEDED entries.)
-        link_runtime_lib() {
-          soname="$1"; linkname="$2"; pkg="$3"; found=""
-          if command -v ldconfig >/dev/null 2>&1; then
-            # `|| true`: with pipefail, a failing `ldconfig -p` makes this
-            # assignment non-zero, which under `set -e` would abort before the
-            # directory-scan fallback below. Swallow it so the fallback runs.
-            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')" || true
-          fi
-          if [ -z "$found" ]; then
-            for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
-                     /usr/lib/x86_64-linux-gnu /usr/lib /lib; do
-              if [ -e "$d/$soname" ]; then found="$d/$soname"; break; fi
-            done
-          fi
-          if [ -z "$found" ]; then
-            echo "::error::install-zwo-sdk: required system library $soname not found. The sudo-free path symlinks against host libraries that are provisioned once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install the package that provides $soname and re-run: sudo apt-get install -y $pkg"
-            exit 1
-          fi
-          ln -sf "$found" "$LIBDIR/$linkname"
-          echo "install-zwo-sdk (sudo-free): $linkname -> $found"
-        }
-        # Suggested remedy package matches setup-pi-runner.sh §1 + the runner
-        # docs: libusb-1.0-0 (the runtime) provides libusb-1.0.so.0 — the
-        # symlink target shared with the QHYCCD sudo-free link path, so no -dev
-        # package is needed; libudev.so.1 ships with systemd (libudev1).
-        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0
-        link_runtime_lib libudev.so.1   libudev.so    libudev1
-
-        {
-          echo "ZWO_SDK_LIB_DIR=$LIBDIR"
-          echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        } >> "$GITHUB_ENV"
-        echo "install-zwo-sdk (sudo-free): exported ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
-
-    - name: Compute ZWO Windows SDK cache key (Windows)
-      if: runner.os == 'Windows'
-      id: win-key
-      shell: bash
-      run: |
-        # ZWO's Windows CDN URLs are rolling "latest" (see the
-        # windows_camera_sdk_url input note), so there is no version to key
-        # on. Key on the ISO week instead: the first run each week refreshes
-        # from the CDN (a new SDK release is adopted within a week), every
-        # other run hits this week's entry and skips the CDN entirely. The
-        # `v1` is a schema version for the set of zips cached — bump it to
-        # invalidate stale entries if that set changes.
-        echo "cache-key=zwo-windows-sdk-zips-v1-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-
-    - name: Restore ZWO Windows SDK zips (Windows)
-      if: runner.os == 'Windows'
-      id: win-cache
       uses: actions/cache/restore@v6
       with:
-        path: zwo-windows-sdk-zips
-        # An older week's zips restore via restore-keys when this week's key
-        # misses. They are only *used* if this week's fresh download then
-        # fails (see the install step): an unreachable CDN degrades to a
-        # stale-but-working SDK install instead of a failed job.
-        key: ${{ steps.win-key.outputs.cache-key }}
-        restore-keys: |
-          zwo-windows-sdk-zips-v1-
+        path: zwo-sdk
+        key: ${{ steps.resolve.outputs.key }}
+        restore-keys: ${{ steps.resolve.outputs.restore-key }}
 
-    - name: Install the ZWO SDK (Windows)
-      if: runner.os == 'Windows'
-      id: win-install
-      shell: pwsh
-      env:
-        CAMERA_URL: ${{ inputs.windows_camera_sdk_url }}
-        EFW_URL: ${{ inputs.windows_efw_sdk_url }}
-        EAF_URL: ${{ inputs.windows_eaf_sdk_url }}
-        CACHE_HIT: ${{ steps.win-cache.outputs.cache-hit }}
-        CACHE_MATCHED_KEY: ${{ steps.win-cache.outputs.cache-matched-key }}
-      run: |
-        $ErrorActionPreference = "Stop"
+    - name: Install the ZWO SDK
+      id: install
+      uses: ./.github/actions/install-zwo-sdk/install
+      with:
+        sudo: ${{ inputs.sudo }}
+        cache-hit: ${{ steps.cache.outputs.cache-hit }}
+        cache-matched-key: ${{ steps.cache.outputs.cache-matched-key }}
 
-        # bindgen needs libclang. The windows runner image ships LLVM; surface it,
-        # installing it only if missing.
-        $llvm = "C:\Program Files\LLVM\bin"
-        if (-not (Test-Path "$llvm\libclang.dll")) {
-          choco install llvm --no-progress -y
-        }
-        "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-        # The three SDK zips live in the actions/cache'd dir restored above
-        # and saved below, only after a complete fresh download. ZWO's CDN
-        # drops or black-holes connections routinely, so downloads run with
-        # retries and short connect timeouts, land in a scratch dir first (a
-        # partial batch must never clobber restored zips), and a failed
-        # refresh falls back to the restored previous-week zips rather than
-        # failing the job.
-        $zipdir = "zwo-windows-sdk-zips"
-        New-Item -ItemType Directory -Force -Path $zipdir | Out-Null
-        $names = "asi", "efw", "eaf"
-        $restored = @($names | Where-Object { Test-Path (Join-Path $zipdir "$_.zip") })
-        $downloaded = "false"
-
-        function Get-Sdk($url, $name, $dir) {
-          Write-Host "install-zwo-sdk: downloading $name SDK"
-          # curl.exe, not Invoke-WebRequest: --retry-all-errors also covers
-          # connect timeouts/resets (-MaximumRetryCount retries HTTP status
-          # codes only), and --connect-timeout keeps each attempt short so
-          # the stale-cache fallback engages in seconds, not minutes.
-          curl.exe -fsSL --retry 4 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 300 $url -o (Join-Path $dir "$name.zip")
-          if ($LASTEXITCODE -ne 0) { throw "install-zwo-sdk: $name SDK download failed (curl exit $LASTEXITCODE)" }
-        }
-
-        if ($env:CACHE_HIT -eq "true") {
-          Write-Host "install-zwo-sdk: using this week's cached SDK zips (no CDN fetch)"
-        } else {
-          $dl = Join-Path $env:RUNNER_TEMP "zwo-sdk-dl"
-          New-Item -ItemType Directory -Force -Path $dl | Out-Null
-          try {
-            # All three are required (the Stage calls below hard-require each
-            # SDK's lib/DLL), so the cache refreshes only as a complete set.
-            Get-Sdk $env:CAMERA_URL "asi" $dl
-            Get-Sdk $env:EFW_URL    "efw" $dl
-            Get-Sdk $env:EAF_URL    "eaf" $dl
-            Copy-Item (Join-Path $dl "*.zip") $zipdir -Force
-            $downloaded = "true"
-          } catch {
-            if ($restored.Count -eq $names.Count) {
-              Write-Host "::warning::install-zwo-sdk: CDN download failed ($_) - continuing with the cached zips from '$($env:CACHE_MATCHED_KEY)'"
-            } else {
-              throw
-            }
-          }
-        }
-        "downloaded=$downloaded" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-        $work    = Join-Path $env:RUNNER_TEMP "zwo-sdk"
-        $extract = Join-Path $work "extract"
-        $libdir  = Join-Path $work "lib"
-        New-Item -ItemType Directory -Force -Path $extract, $libdir | Out-Null
-        foreach ($n in $names) {
-          Expand-Archive -Path (Join-Path $zipdir "$n.zip") -DestinationPath (Join-Path $extract $n) -Force
-        }
-
-        # The per-arch import libs/DLLs live inside nested *Windows*SDK*.zip
-        # archives; extract those too before staging.
-        Get-ChildItem -Path $extract -Recurse -Filter "*Windows*SDK*.zip" | ForEach-Object {
-          Expand-Archive -Path $_.FullName -DestinationPath (Join-Path $extract "nested-$($_.BaseName)") -Force
-        }
-
-        # Stage the x64 lib/DLL under the linker name libzwo-sys expects, picking
-        # the x64 build (not Win32/x86, not the static lib, not the demo opencv libs).
-        function Stage($pattern, $target, $required) {
-          $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|opencv|demo' } |
-            Sort-Object { $_.FullName -notmatch '(?i)\\x64\\|amd64' } |
-            Select-Object -First 1
-          if (-not $hit) {
-            if ($required) { throw "install-zwo-sdk: $pattern not found in the Windows SDK" }
-            Write-Host "install-zwo-sdk: $pattern not found (optional); skipping"
-            return
-          }
-          Copy-Item $hit.FullName (Join-Path $libdir $target) -Force
-          Write-Host "install-zwo-sdk: staged $($hit.FullName) -> $target"
-        }
-        Stage "ASICamera2.lib" "ASICamera2.lib" $true
-        Stage "ASICamera2.dll" "ASICamera2.dll" $true
-        # ZWO's EFW lib/DLL is named EFW_filter; libzwo-sys links `-lEFWFilter`,
-        # so normalise the name.
-        Stage "EFW_filter.lib" "EFWFilter.lib" $true
-        Stage "EFW_filter.dll" "EFWFilter.dll" $true
-        # Linked by zwo-focuser, same as ASICamera2/EFWFilter above.
-        Stage "EAF_focuser.lib" "EAFFocuser.lib" $true
-        Stage "EAF_focuser.dll" "EAFFocuser.dll" $true
-
-        # libzwo-sys' Windows branch links by name and relies on ZWO_SDK_LIB_DIR
-        # for the search path; the DLLs must be on PATH at test runtime.
-        "ZWO_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append
-        $libdir | Out-File -FilePath $env:GITHUB_PATH -Append
-        Write-Host "install-zwo-sdk: ZWO_SDK_LIB_DIR=$libdir (also on PATH for the DLLs)"
-
-    - name: Save ZWO Windows SDK zips (Windows)
-      # Only after a complete fresh download — never re-save restored stale
-      # zips under this week's key, which would stop the weekly refresh from
-      # retrying the CDN. Concurrent jobs racing to save the same key produce
-      # a non-fatal "cache already exists" warning.
-      if: runner.os == 'Windows' && steps.win-install.outputs.downloaded == 'true'
+    # Concurrent jobs racing to save the same key produce a non-fatal "cache
+    # already exists" warning.
+    - name: Save the ZWO SDK downloads
+      if: steps.install.outputs.downloaded == 'true'
       uses: actions/cache/save@v6
       with:
-        path: zwo-windows-sdk-zips
-        key: ${{ steps.win-key.outputs.cache-key }}
+        path: zwo-sdk
+        key: ${{ steps.resolve.outputs.key }}

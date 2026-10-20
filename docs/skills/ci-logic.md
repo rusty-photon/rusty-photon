@@ -275,7 +275,8 @@ above.
   hash of their own; `{ rolling: true }`, for a vendor's "latest" link,
   which has none. `cacheKey` carries each asset's name and pin, and a
   rolling pin's ISO week, so moving a pin misses the old cache and a
-  rolling download is fetched again each week.
+  rolling download is fetched again each week. A run of assets that share
+  a pin, such as the files of one commit, carries it once.
 - **`download`** retries a failed request, a body cut short, a transfer
   that stalls (no data for 30 s) and a SHA-256 mismatch, as one unit with
   its check, and leaves no file unless every check passed. It fetches with
@@ -294,6 +295,18 @@ above.
   would meet again (a 404, a bad certificate) is final, unless the caller
   sets `retryAll` for a pool of mirrors, where the next attempt likely
   reaches another; `install-astap` does, as SourceForge's are one.
+- **`downloadAll`** downloads an action's assets into the directory its
+  cache keeps, all of them or none, unless the cache restored them all.
+  It holds a rolling pin's fallback. The action restores with `restoreKey`
+  as `restore-keys`, so a week whose key misses restores the newest
+  earlier week's download; when the vendor then fails, `downloadAll` warns
+  and installs that one. Such an action restores and saves in two steps
+  (`actions/cache/restore`, `actions/cache/save`), and saves only a new
+  download, which its install step's output names: an earlier week's
+  saved under this week's key would stop the weekly refresh.
+  `install-zwo-sdk` is the example, for ZWO's SDKs for Windows.
+- **`makeRunnable`** sets a binary's mode so it runs, and leaves a
+  Windows `.exe` as it is.
 - **`unpack`** runs each OS's own tool, since Node's built-ins read no
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
@@ -335,6 +348,12 @@ would be a second implementation of the module to keep in step.
   only when it is empty or holds that mark (`checkReplaceable`); one that
   installs single files replaces only those. Its scratch directory goes
   however the install ends, Ctrl-C included (`withWorkDir`).
+- **Where it installs.** `--prefix` names the directory, and
+  `~/.local/opt/<tool>` is the default, unless the tool's `TOOLS` entry
+  gives a `dir` of its own, for a build that looks in one place only. The
+  ZWO SDK's is `/usr/local` on Linux and macOS, where libzwo-sys's build
+  script and Bazel's actions find it, as CI installs it; it copies the
+  files there with `sudo` when the developer cannot write there.
 - **It ships nothing.** It downloads on the developer's machine from
   where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
   nothing goes into a package, and nothing is mirrored for developers. A

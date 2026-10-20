@@ -15,20 +15,21 @@
 //   cannot move.
 // - `{ rolling: true }`: none. A vendor's "latest" link has no version to pin,
 //   so the cache key carries the ISO week, and the first run each week fetches
-//   it again.
+//   it again. When that fails, the newest earlier week's download, which the
+//   cache restores by restoreKey, stands in (downloadAll).
 //
 // The cache key carries the pin, so moving a pin misses the old cache.
 
 import { createHash } from 'node:crypto';
-import { createWriteStream, rmSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { createWriteStream, existsSync, rmSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { command, HttpError, io, isTransient, parseRetryAfter, retry } from './helpers.mjs';
+import { command, describe, HttpError, io, isTransient, parseRetryAfter, retry, warning } from './helpers.mjs';
 
 // --- Choosing the asset ---------------------------------------------------------
 
@@ -103,11 +104,27 @@ export function pinKey(pin, now = new Date()) {
 
 /**
  * The cache key of `assets`, which an action keeps under `name`: each asset's
- * name and pin. `name` names the action and what it keeps; change it when
- * what the action puts in its cached directory changes.
+ * name and pin, where a run of assets that share a pin, such as the files of
+ * one commit or a week's rolling downloads, carries it once, after the last.
+ * `name` names the action and what it keeps; change it when what the action
+ * puts in its cached directory changes.
  */
 export function cacheKey(name, assets, { now } = {}) {
-  return ['install', name, ...assets.flatMap((asset) => [asset.name, pinKey(asset.pin, now)])].join('-');
+  const pins = assets.map((asset) => pinKey(asset.pin, now));
+  const parts = assets.flatMap((asset, i) => (pins[i] === pins[i + 1] ? [asset.name] : [asset.name, pins[i]]));
+  return ['install', name, ...parts].join('-');
+}
+
+/**
+ * For `assets` that are all rolling downloads, the start of their cache key
+ * that every earlier week's key shares, for actions/cache's restore-keys: it
+ * restores the newest earlier week's download, which downloadAll falls back
+ * on. Empty for any other assets, whose pins say what they are, so another
+ * download cannot stand in for them.
+ */
+export function restoreKey(name, assets, { now } = {}) {
+  if (!assets.every(({ pin }) => pin?.rolling === true)) return '';
+  return cacheKey(name, assets, { now }).replace(/[0-9]{4}-[0-9]{2}$/, '');
 }
 
 // --- Downloading ------------------------------------------------------------------
@@ -309,6 +326,40 @@ export async function download(
   }
 }
 
+/**
+ * Downloads each of `assets` into `dir`, as its name, with `download`'s
+ * options, and resolves to true; or, when `cached` says the cache restored
+ * them there and `dir` holds every one, downloads nothing and resolves to
+ * false. The downloads land beside `dir` and move in once every one has
+ * passed its check, so a failure leaves what `dir` held as it was.
+ *
+ * That is the fallback of a rolling download. When every asset is one, and
+ * `dir` holds each from an earlier week's download, which the cache restored
+ * by restoreKey (`restored` names the key it matched), a failed download warns
+ * and resolves to false, leaving those to install: an earlier week's SDK
+ * builds, where a vendor's failing CDN would otherwise fail the job.
+ */
+export async function downloadAll(assets, dir, { cached = false, restored = '', download: options } = {}) {
+  const missing = assets.filter(({ name }) => !existsSync(path.join(dir, name))).map(({ name }) => name);
+  if (cached && missing.length === 0) {
+    io.stdout(`${assets.map(({ name }) => name).join(', ')} restored from the cache into ${dir}\n`);
+    return false;
+  }
+  if (cached) warning(`The cache restored ${dir} without ${missing.join(' and ')}; downloading again`);
+  try {
+    await withWorkDir(dir, async (work) => {
+      for (const asset of assets) await download(asset, path.join(work, asset.name), options);
+      await mkdir(dir, { recursive: true });
+      for (const { name } of assets) await rename(path.join(work, name), path.join(dir, name));
+    });
+    return true;
+  } catch (err) {
+    if (missing.length > 0 || !assets.every(({ pin }) => pin.rolling === true)) throw err;
+    warning(`${describe(err)}. Installing the earlier download the cache restored instead${restored ? `, ${restored}` : ''}`);
+    return false;
+  }
+}
+
 // --- Unpacking --------------------------------------------------------------------
 
 const FORMATS = [
@@ -420,4 +471,9 @@ export async function checkReplaceable(dir) {
         'choose another directory',
     );
   }
+}
+
+/** Lets `binary` in `dir` run, unless it is a Windows .exe, which needs no mode for that. */
+export async function makeRunnable(dir, binary) {
+  if (!binary.endsWith('.exe')) await chmod(path.join(dir, binary), 0o755);
 }

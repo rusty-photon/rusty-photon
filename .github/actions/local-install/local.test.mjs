@@ -7,6 +7,7 @@ import test from 'node:test';
 import * as astap from '../install-astap/astap.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
+import * as zwoSdk from '../install-zwo-sdk/zwo-sdk.mjs';
 import { hostKey } from '../lib/install.mjs';
 import { capture, withEnv } from '../lib/testing.mjs';
 import { main, parse, settings, TOOLS, usage, UsageError } from './local.mjs';
@@ -17,8 +18,9 @@ import { main, parse, settings, TOOLS, usage, UsageError } from './local.mjs';
 const HOME = resolve('/', 'home', 'dev');
 const CWD = resolve('/', 'work', 'rusty-photon');
 
-// A tool that records what it was asked to do, and installs nothing.
-function fakeTools({ fail } = {}) {
+// A tool that records what it was asked to do, installs nothing, and
+// resolves to `variables` of the directory it was given.
+function fakeTools({ fail, variables = (dir) => ({ TOOL_PATH: join(dir, 'tool'), TOOL_HOME: dir }) } = {}) {
   const calls = [];
   const tool = {
     about: 'a tool that records its calls',
@@ -26,7 +28,7 @@ function fakeTools({ fail } = {}) {
     installAt: async (dir, resolved, options) => {
       calls.push({ dir, resolved, options });
       if (fail) throw new Error('fetch failed', { cause: new Error('connect ECONNREFUSED') });
-      return { TOOL_PATH: join(dir, 'tool'), TOOL_HOME: dir };
+      return variables(dir);
     },
   };
   return { tools: { tool }, calls };
@@ -36,6 +38,13 @@ function fakeTools({ fail } = {}) {
 
 test('parse installs a tool into ~/.local/opt/<tool> by default', () => {
   assert.deepEqual(parse(['pebble'], { cwd: CWD, home: HOME }), { tool: 'pebble', dir: join(HOME, '.local', 'opt', 'pebble') });
+});
+
+test('parse installs the ZWO SDK where its build looks, but on Windows into ~/.local/opt/zwo-sdk', () => {
+  assert.deepEqual(parse(['zwo-sdk'], { cwd: CWD, home: HOME, platform: 'linux' }), { tool: 'zwo-sdk', dir: zwoSdk.PREFIX });
+  assert.deepEqual(parse(['zwo-sdk'], { cwd: CWD, home: HOME, platform: 'darwin' }).dir, zwoSdk.PREFIX);
+  assert.deepEqual(parse(['zwo-sdk'], { cwd: CWD, home: HOME, platform: 'win32' }).dir, join(HOME, '.local', 'opt', 'zwo-sdk'));
+  assert.deepEqual(parse(['zwo-sdk', '--prefix', 'sdk'], { cwd: CWD, home: HOME, platform: 'linux' }).dir, join(CWD, 'sdk'));
 });
 
 test('parse takes --prefix, a relative one from where bazel ran', () => {
@@ -63,8 +72,8 @@ test('parse refuses a command line it cannot run', () => {
   const refused = [
     [[], 'name the tool to install'],
     [['pebble', 'omnisim'], 'one tool at a time; got pebble, omnisim'],
-    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble'],
-    [['toString'], 'no tool named toString; there are astap, omnisim, pebble'],
+    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble, zwo-sdk'],
+    [['toString'], 'no tool named toString; there are astap, omnisim, pebble, zwo-sdk'],
     [['pebble', '--prefix'], /Option '--prefix <value>' argument missing/],
     [['pebble', '--prefix='], '--prefix needs a directory'],
     [['pebble', '--dir', 'x'], /Unknown option '--dir'/],
@@ -98,16 +107,19 @@ test('settings writes setx lines on Windows, to run once before opening a new sh
 });
 
 test('TOOLS installs each tool by its install-* action module', () => {
-  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble']);
+  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble', 'zwo-sdk']);
   assert.equal(TOOLS.astap.resolve, astap.resolve);
   assert.equal(TOOLS.astap.installAt, astap.installAt);
   assert.equal(TOOLS.omnisim.resolve, omnisim.resolve);
   assert.equal(TOOLS.omnisim.installAt, omnisim.installAt);
   assert.equal(TOOLS.pebble.resolve, pebble.resolve);
   assert.equal(TOOLS.pebble.installAt, pebble.installAt);
+  assert.equal(TOOLS['zwo-sdk'].resolve, zwoSdk.resolve);
+  assert.equal(TOOLS['zwo-sdk'].installAt, zwoSdk.installAt);
   assert.match(usage(), /\n {2}astap {5}ASTAP's CLI and D05 star database/);
   assert.match(usage(), /\n {2}omnisim {3}ASCOM OmniSim/);
   assert.match(usage(), /\n {2}pebble {4}Pebble and pebble-challtestsrv/);
+  assert.match(usage(), /\n {2}zwo-sdk {3}ZWO's SDKs, which zwo-camera and zwo-focuser link; into \/usr\/local/);
 });
 
 // --- Running it -------------------------------------------------------------------
@@ -139,6 +151,13 @@ test('main tells a Windows developer to run the setx lines once and open a new s
     `\ntool installed in ${dir}. Run these once, then open a new shell, which has them:\n\n` +
       `  setx TOOL_PATH "${join(dir, 'tool')}"\n  setx TOOL_HOME "${dir}"\n`,
   );
+});
+
+test('main says so when a tool needs no variable set where it installed', async () => {
+  const { tools } = fakeTools({ variables: () => ({}) });
+  const { value, stdout } = await capture(() => main(['tool', '--prefix', '/opt/x'], { cwd: CWD, home: HOME, platform: 'linux', tools }));
+  assert.equal(value, 0);
+  assert.equal(stdout, `\ntool installed in ${resolve('/opt/x')}. Nothing needs setting to find it there.\n`);
 });
 
 test('main resolves for this machine when no runner is given', async () => {

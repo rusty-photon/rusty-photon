@@ -152,10 +152,10 @@ no longer pre-provisions it — `pi-nightly.yml` runs the local
 `./.github/actions/install-zwo-sdk` action in its **sudo-free** mode
 (`sudo: "false"`), which:
 
-- downloads the INDI-vendored ZWO blobs (`libASICamera2`/`libEFWFilter`, plus
-  best-effort `libEAFFocuser`) for `armv8` into `$RUNNER_TEMP/zwo-sdk/lib`,
-  pinned by the action's `ref` (bump it to adopt a newer SDK — no manual
-  re-provision);
+- downloads the INDI-vendored ZWO blobs (`libASICamera2`, `libEFWFilter` and
+  `libEAFFocuser`, all three required) for `armv8` into
+  `$RUNNER_TEMP/zwo-sdk/lib`, pinned by `REF` in the action's `zwo-sdk.mjs`
+  (bump it to adopt a newer SDK — no manual re-provision);
 - satisfies the unversioned `-lusb-1.0`/`-ludev` link names **without any -dev
   package** by symlinking them to the system *runtime* libs
   (`libusb-1.0.so.0`, `libudev.so.1`) inside that same dir — `build.rs` puts
@@ -572,10 +572,13 @@ the search path while linking `zwo-camera`. On the Pi nightly these are
 provided per-run by the **Install ZWO SDK (sudo-free)** step
 (`./.github/actions/install-zwo-sdk`, `sudo: "false"`). Check, in order:
 
-- That step ran and printed `exported ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH=…` before
-  `cargo build`. If a blob download failed, confirm the action's pinned `ref`
-  still resolves under `https://github.com/indilib/indi-3rdparty/raw/<ref>/libasi/armv8/`.
-- The step did **not** abort with `… not found`. That message means the host is
+- That step ran and printed `Installed libASICamera2.so, libEFWFilter.so,
+  libEAFFocuser.so into …/zwo-sdk/lib` and a `libusb-1.0.so -> …` and
+  `libudev.so -> …` line before `cargo build`. If a blob download failed,
+  confirm `REF` in the action's `zwo-sdk.mjs` still resolves under
+  `https://github.com/indilib/indi-3rdparty/raw/<REF>/libasi/armv8/`.
+- The step did **not** abort with `the system library … is not on this
+  machine`. That message means the host is
   missing a runtime prerequisite the sudo-free path symlinks against — install it
   once with sudo and re-run: `sudo apt-get install -y libusb-1.0-0` (provides
   `libusb-1.0.so.0`) — `libudev.so.1` ships with systemd. `clang`/`libclang-dev`

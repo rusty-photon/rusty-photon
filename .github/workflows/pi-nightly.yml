@@ -154,7 +154,8 @@ jobs:
       # /usr/local writes, no apt, no sudo. The clang/libclang (bindgen) and
       # libusb-1.0 runtime prerequisites are installed once by
       # scripts/setup-pi-runner.sh. Keep this runner self-healing: a ZWO SDK
-      # bump only needs the action's `ref` updated, not a manual re-provision.
+      # bump only needs REF in the action's zwo-sdk.mjs updated, not a manual
+      # re-provision.
       - name: Install ZWO SDK (sudo-free)
         uses: ./.github/actions/install-zwo-sdk
         with:

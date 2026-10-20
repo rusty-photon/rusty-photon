@@ -16,7 +16,7 @@
 // fails the check, closed, until the refresh moves the pin.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { chmod, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,7 @@ import {
   ChecksumError,
   download,
   forRunner,
+  makeRunnable,
   markInstalled,
   unpack,
   withWorkDir,
@@ -219,10 +220,6 @@ async function installCli(cli, dir, options) {
 
 async function installDatabase(database, dir, options) {
   await unpackInto(database, dir, { ...DATABASE_DOWNLOAD, ...options }, (unpacked) => checkDatabase(database, unpacked));
-}
-
-async function makeRunnable(dir, binary) {
-  if (!binary.endsWith('.exe')) await chmod(path.join(dir, binary), 0o755);
 }
 
 /**

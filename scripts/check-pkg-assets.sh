@@ -307,15 +307,19 @@ for svc in zwo-camera zwo-focuser; do
 done
 
 # The ZWO blob ref is pinned in two places once the build script exists:
-# build-packages.sh (stages pkg/lib/ for the deb) and the CI action's default
-# ref (provisions the link-time SDK) — the shipped blobs and the CI-linked
-# blobs must come from the same indi-3rdparty commit.
-act=.github/actions/install-zwo-sdk/action.yml
-if [ -f "$bp" ] && [ -f "$act" ]; then
+# build-packages.sh (stages pkg/lib/ for the deb) and the CI action's REF in
+# its module (provisions the link-time SDK) — the shipped blobs and the
+# CI-linked blobs must come from the same indi-3rdparty commit.
+zm=.github/actions/install-zwo-sdk/zwo-sdk.mjs
+# The value of a module's one-line `export const NAME = '...';`.
+js_const() { # $1=file $2=name
+    sed -n "s/^export const $2 = '\(.*\)';\$/\1/p" "$1" | head -1
+}
+if [ -f "$bp" ] && [ -f "$zm" ]; then
     z1=$(sed -n 's/^ZWO_SDK_REF="\(.*\)"$/\1/p' "$bp" | head -1)
-    z2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$act")
+    z2=$(js_const "$zm" REF)
     if [ -z "$z1" ] || [ "$z1" != "$z2" ]; then
-        err "ZWO SDK ref pin mismatch: build-packages.sh='$z1' vs install-zwo-sdk default='$z2'"
+        err "ZWO SDK ref pin mismatch: build-packages.sh='$z1' vs install-zwo-sdk's REF='$z2'"
     fi
 fi
 
@@ -367,11 +371,11 @@ if [ -f "$bp" ] && [ -f "$bt" ]; then
         err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs build-tarballs.sh='$vm'"
     fi
 fi
-if [ -f "$bt" ] && [ -f "$act" ]; then
+if [ -f "$bt" ] && [ -f "$zm" ]; then
     z1=$(sed -n 's/^ZWO_SDK_REF="\(.*\)"$/\1/p' "$bt" | head -1)
-    z2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$act")
+    z2=$(js_const "$zm" REF)
     if [ -z "$z1" ] || [ "$z1" != "$z2" ]; then
-        err "ZWO SDK ref pin mismatch: build-tarballs.sh='$z1' vs install-zwo-sdk default='$z2'"
+        err "ZWO SDK ref pin mismatch: build-tarballs.sh='$z1' vs install-zwo-sdk's REF='$z2'"
     fi
 fi
 
@@ -582,15 +586,15 @@ fi
 
 # The ZWO Windows SDK URLs are pinned in two shipped places (rolling CDN
 # "latest" — no commit ref exists for Windows, so URL identity is the whole
-# reproducibility statement): the CI action defaults and build-msi.ps1.
-if [ -f "$bm" ] && [ -f "$act" ]; then
-    for pair in "windows_camera_sdk_url ZwoCameraSdkUrl" "windows_eaf_sdk_url ZwoEafSdkUrl"; do
-        input=${pair% *}
+# reproducibility statement): the CI action's module and build-msi.ps1.
+if [ -f "$bm" ] && [ -f "$zm" ]; then
+    for pair in "CAMERA_SDK_URL ZwoCameraSdkUrl" "EAF_SDK_URL ZwoEafSdkUrl"; do
+        name=${pair% *}
         var=${pair#* }
-        u1=$(awk -v want="$input:" '$1 == want { in_input = 1 } in_input && $1 == "default:" { print $2; exit }' "$act")
+        u1=$(js_const "$zm" "$name")
         u2=$(sed -n "s/^\\\$$var = \"\(.*\)\"\$/\1/p" "$bm" | head -1)
         if [ -z "$u1" ] || [ "$u1" != "$u2" ]; then
-            err "ZWO Windows SDK URL mismatch ($input): install-zwo-sdk='$u1' vs build-msi.ps1='$u2'"
+            err "ZWO Windows SDK URL mismatch ($name): install-zwo-sdk='$u1' vs build-msi.ps1='$u2'"
         fi
     done
 fi
