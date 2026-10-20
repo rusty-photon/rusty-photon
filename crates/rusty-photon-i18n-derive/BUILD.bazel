@@ -1,15 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_proc_macro")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
-# rustc applies the same rustc lints as Cargo's.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     ["Cargo.toml"],
@@ -22,7 +12,6 @@ rust_proc_macro(
     aliases = aliases(),
     crate_name = "rusty_photon_i18n_derive",
     edition = "2021",
-    lint_config = ":lints",
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
 )

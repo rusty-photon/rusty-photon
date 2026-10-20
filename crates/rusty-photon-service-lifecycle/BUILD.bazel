@@ -1,15 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
-# rustc applies the same rustc lints as Cargo's.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     ["Cargo.toml"],
@@ -39,7 +29,6 @@ rust_library(
     }),
     crate_name = "rusty_photon_service_lifecycle",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + select({
@@ -59,7 +48,6 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":rusty-photon-service-lifecycle",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -89,7 +77,6 @@ rust_test(
     crate_name = "rusty_photon_service_lifecycle",
     crate_root = "src/lib.rs",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

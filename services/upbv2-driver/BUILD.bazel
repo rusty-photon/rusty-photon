@@ -1,15 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
-# rustc applies the same rustc lints as Cargo's.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     [
@@ -51,7 +41,6 @@ rust_library(
     aliases = aliases(),
     crate_name = "upbv2_driver",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -63,7 +52,6 @@ rust_binary(
     aliases = aliases(),
     compile_data = _I18N_ASSETS,
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # rules_rust defaults CARGO_PKG_NAME to the Bazel target name; i18n-embed's
     # `fl!` macro reads it via i18n-config to derive the .ftl filename. Pin it
@@ -83,7 +71,6 @@ rust_test(
     ),
     compile_data = ["pkg/doctor.toml"],
     crate = ":upbv2-driver_lib",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -113,7 +100,6 @@ rust_test(
     # proc-macro contexts, so the verifier intentionally avoids it.
     data = glob(["i18n/**/*.ftl"]),
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -146,7 +132,6 @@ rust_test(
         "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -175,7 +160,6 @@ rust_test(
         "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -205,7 +189,6 @@ rust_library(
     crate_features = ["mock"],
     crate_name = "upbv2_driver",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -217,7 +200,6 @@ rust_binary(
     compile_data = _I18N_ASSETS,
     crate_features = ["mock"],
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # See note on the non-mock `upbv2-driver` target above; the pin matters most
     # here, because without it rules_rust would hand i18n-config the target name
@@ -238,7 +220,6 @@ rust_test(
     ),
     crate_features = ["mock"],
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -269,7 +250,6 @@ rust_test(
         "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

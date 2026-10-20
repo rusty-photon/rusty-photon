@@ -1,7 +1,6 @@
 # Top-level package.
 # Exports Cargo.toml and Cargo.lock so crate_universe can read them from
-# MODULE.bazel; Cargo.toml is also the `workspace` every crate's
-# `extract_cargo_lints` inherits `[workspace.lints]` from.
+# MODULE.bazel.
 
 load("@buildifier_prebuilt//:rules.bzl", "buildifier", "buildifier_test")
 

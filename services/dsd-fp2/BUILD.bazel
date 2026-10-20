@@ -1,15 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
-# rustc applies the same rustc lints as Cargo's.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     [
@@ -40,7 +30,6 @@ rust_library(
     aliases = aliases(),
     crate_name = "dsd_fp2",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -51,7 +40,6 @@ rust_binary(
     srcs = ["src/main.rs"],
     aliases = aliases(),
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to
     # the Bazel target name); keeps anything that reads env!("CARGO_PKG_NAME")
@@ -80,7 +68,6 @@ rust_test(
     compile_data = ["pkg/doctor.toml"],
     crate = ":dsd-fp2_lib",
     crate_features = ["mock"],
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -109,7 +96,6 @@ rust_test(
         "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :dsd-fp2_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -138,7 +124,6 @@ rust_library(
     crate_features = ["mock"],
     crate_name = "dsd_fp2",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -149,7 +134,6 @@ rust_binary(
     aliases = aliases(),
     crate_features = ["mock"],
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
     # Public so ui-htmx's BDD can cross-spawn a real mock-mode dsd-fp2, the way
@@ -178,7 +162,6 @@ rust_test(
         "DSD_FP2_BINARY": "$(rootpath :dsd-fp2_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :dsd-fp2_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

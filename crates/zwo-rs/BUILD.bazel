@@ -1,15 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
-# rustc applies the same rustc lints as Cargo's.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     ["Cargo.toml"],
@@ -48,7 +38,6 @@ rust_library(
     crate_features = _DEVICE_FEATURES,
     crate_name = "zwo_rs",
     edition = "2021",
-    lint_config = ":lints",
     visibility = ["//visibility:public"],
     deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
 )
@@ -65,7 +54,6 @@ rust_library(
     crate_features = _DEVICE_FEATURES + ["simulation"],
     crate_name = "zwo_rs",
     edition = "2021",
-    lint_config = ":lints",
     visibility = ["//visibility:public"],
     deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
 )
@@ -88,7 +76,6 @@ rust_test(
     # bulk — camera/EFW/EAF behaviour) compile out and only the un-gated handful
     # run.
     crate_features = _DEVICE_FEATURES + ["simulation"],
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

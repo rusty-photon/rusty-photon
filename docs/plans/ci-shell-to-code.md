@@ -963,7 +963,9 @@ feature sets.
   the test steps to the default gating; `.bazelrc`'s `--config=clippy`
   and its two `build` settings; and `clippy.toml`'s `msrv`, which only
   Bazel's clippy read. Cargo's clippy takes the MSRV from each member's
-  `rust-version`, which every member inherits.
+  `rust-version`, which every member inherits. Every Rust target's
+  `lint_config` went too, with the 56 `extract_cargo_lints` targets that
+  fed it (below).
 - **What the step cost**, over the 40 pool PR runs before the decision:
   1–3 s on Linux and 5–7 s on Windows when no Rust changed, 23–45 s and
   27–61 s when it did, and 35–45 s and 50–105 s for a dependency bump. On
@@ -986,12 +988,19 @@ feature sets.
   the Bazel legs, which was this item's open question. The script's
   checks of the lint setup (`lint_config` on every target, no opt-out
   tags) served only Bazel's clippy and went with it.
-- **`lint_config` stays** on every Rust target, so Bazel's rustc applies
-  the workspace's rustc lints. Today the only one is `unexpected_cfgs`,
-  which Bazel cannot check, so it changes nothing yet.
+- **`lint_config` went, on the owner's call.** Without clippy it gave
+  Bazel's rustc one flag, `--warn=unexpected_cfgs`. That is the lint's
+  default level, and it never fires under Bazel, which passes rustc no
+  `--check-cfg`. A rustc lint added to `[workspace.lints]` later reaches
+  Cargo only (pre-push.md, *Bazel's Rust pin*).
 - **The cache:** removing the two `build` settings changed no other
   action. All 1,062 Rust actions of `//...` and its dependencies kept
   their keys and output paths (`bazel aquery`, before and after).
+  Removing `lint_config` changes the keys of the 253 first-party `Rustc`
+  actions, whose command line loses the lint file, so each leg's first
+  build after the merge recompiles the workspace's own crates once. Every
+  third-party action keeps its key. The 65 actions that read the lints,
+  or built the tool that does, no longer run.
 - **Proven locally:** the test passes against the real files, and fails,
   naming the mismatch, against each of a stable pin bumped alone, an MSRV
   lowered alone, and a nightly date bumped without its comment line. 21

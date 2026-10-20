@@ -729,15 +729,13 @@ bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
 Bazel runs no clippy: Cargo's `stable / clippy` is a PR's only Rust lint (the
 check.yml section above). What Bazel's own build needs from you:
 
-- **Every Rust target sets `lint_config = ":lints"`**, and its package
-  declares the `extract_cargo_lints` target named `lints` that reads the
-  crate's Cargo.toml `[lints]` (copy it from any existing BUILD.bazel), so
-  Bazel's rustc applies the workspace's rustc lints. Today the only one is
-  `unexpected_cfgs`, which Bazel cannot check (next point), so a target
-  without it builds the same; nothing checks the attribute. The three
-  `cargo_build_script` targets have none: the macro does not pass it through.
-- **Bazel never checks cfg names.** `extract_cargo_lints` drops
-  `unexpected_cfgs`'s `check-cfg`, and rules_rust passes rustc no
+- **Bazel reads no `[lints]` table.** Its rustc runs at rustc's default lint
+  levels, with `-Dwarnings` under `--config=ci`. Today that is Cargo's set
+  too: `[workspace.lints.rust]` sets only `unexpected_cfgs`, at its default
+  level. A rustc lint added there reaches Cargo's build and clippy, not
+  Bazel's. To carry it to Bazel, give each package rules_rust's
+  `extract_cargo_lints` and each Rust target its `lint_config`.
+- **Bazel never checks cfg names.** rules_rust passes rustc no
   `--check-cfg`, so a misspelled `#[cfg(feature = "...")]` fails only Cargo's
   clippy. On a PR that means only in code Linux compiles, so check OS-gated
   cfgs with the local `cargo clippy --target …` recipe above.
