@@ -154,6 +154,58 @@ impl Runner for System {
     }
 }
 
+/// A [`Runner`] for the tools' tests. It records every command and answers
+/// `read` from a queue, in order; `fail_at` makes the command with that index
+/// fail.
+#[cfg(test)]
+#[derive(Default)]
+pub struct Fake {
+    pub ran: Vec<Cmd>,
+    pub stdout: std::collections::VecDeque<&'static str>,
+    pub fail_at: Option<usize>,
+}
+
+#[cfg(test)]
+impl Fake {
+    #[must_use]
+    pub fn answering(stdout: &[&'static str]) -> Self {
+        Self {
+            stdout: stdout.iter().copied().collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The commands it ran, as the developer would see them.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        self.ran.iter().map(ToString::to_string).collect()
+    }
+
+    fn record(&mut self, cmd: &Cmd) -> Result<(), Error> {
+        let index = self.ran.len();
+        self.ran.push(cmd.clone());
+        if self.fail_at == Some(index) {
+            return Err(Error::Failed {
+                command: cmd.to_string(),
+                status: "exit status: 1".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Runner for Fake {
+    fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {
+        self.record(cmd)
+    }
+
+    fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
+        self.record(cmd)?;
+        Ok(self.stdout.pop_front().unwrap_or_default().to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

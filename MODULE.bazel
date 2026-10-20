@@ -301,11 +301,11 @@ rust.toolchain(
     edition = "2021",
     # Hashes of both pinned releases' archives, the stable pin's and the
     # coverage nightly's, from their GPG-signed channel manifests
-    # (`scripts/rust-toolchain-sha256s.sh <pin>` and `... nightly/<date>`).
+    # (`cargo ci rust-toolchain-sha256s <pin>` and `... nightly/<date>`).
     # rules_rust's own table ends at stable 1.98.0 and pins only a few nightly
     # dates, so without these the toolchains download unverified.
     # tools/ci/bazel-clippy.sh fails unless this holds each pin's full set
-    # (what the script prints for one release) and nothing else.
+    # (what the tool prints for one release) and nothing else.
     sha256s = {
         "2026-08-15/cargo-nightly-aarch64-apple-darwin.tar.xz": "fb7295c093b9cb26743a4bf8552cf8709196708f254a4e8108a9ffdb0a34f7a8",
         "2026-08-15/cargo-nightly-aarch64-unknown-linux-gnu.tar.xz": "2dab7500df5dff33dcb6adf9264fdeacc8b6a11291b0a63c69d8233fe9a42377",
@@ -431,10 +431,10 @@ rust.toolchain(
     #   first nightly.
     # - An earlier nightly can predate more of those stabilizations. A later
     #   one is the next release, with its new lints and deprecations.
-    # - If the hash script refuses the last date because a component is
+    # - If the hash tool refuses the last date because a component is
     #   missing on a host, take the latest earlier date it accepts.
     #
-    # `scripts/rust-toolchain-sha256s.sh nightly/<date>` prints the hashes
+    # `cargo ci rust-toolchain-sha256s nightly/<date>` prints the hashes
     # and, on stderr, the comment line with the date's rustc version, which
     # goes directly above the entry as printed. tools/ci/bazel-clippy.sh
     # checks it: it must name the entry's date, and the MSRV's release or the

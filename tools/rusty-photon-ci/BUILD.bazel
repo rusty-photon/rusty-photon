@@ -45,7 +45,8 @@ rust_binary(
 
 # pool_routing.rs reads the workflows and actionlint's runner labels. Cargo sets
 # CARGO_MANIFEST_DIR when it runs a test; here it is relative to the runfiles
-# root the test starts in.
+# root the test starts in. rust_toolchain_sha256s.rs's tests `include_str!` the
+# saved channel manifests in testdata/.
 rust_test(
     name = "rusty-photon-ci_unit_test",
     size = "small",
@@ -53,6 +54,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    compile_data = glob(["testdata/**"]),
     crate = ":rusty-photon-ci_lib",
     data = [
         "//:.github/actionlint.yaml",

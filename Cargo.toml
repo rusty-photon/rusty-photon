@@ -222,6 +222,9 @@ thiserror = "2.0.18"
 saphyr = { version = "=0.2.2", default-features = false }
 # saphyr's parser, whose events keep the tags saphyr drops; the same pin.
 saphyr-parser = { version = "=0.2.2", default-features = false }
+# A TOML reader, for rusty-photon-ci's rust-toolchain-sha256s, which reads Rust's
+# channel manifests. Reading only: no `display`, which writes TOML.
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 base64 = "0.23.0"
 mockall = "0.15.0"
 # The Servo html5ever/selectors stack: CSS-selector assertions on rendered

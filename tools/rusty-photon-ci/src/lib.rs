@@ -10,3 +10,4 @@
 mod pool_routing;
 pub mod process;
 pub mod repin_bazel_lock;
+pub mod rust_toolchain_sha256s;

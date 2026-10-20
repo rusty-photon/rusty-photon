@@ -1,0 +1,365 @@
+# The channel manifest of Rust 1.99.0, from static.rust-lang.org, cut down for
+# rust_toolchain_sha256s.rs's tests. Every line below is the manifest's own, in
+# its order, from whole tables: the ones the tool reads (the seven tools'
+# packages and rust-src, for the five hosts it covers), one table of theirs
+# that is not available ([pkg.llvm-tools-preview.target.aarch64-apple-ios]), the
+# `rust` package with one host's components (its extensions cut), and the
+# renames and profiles. The rest of the manifest is gone.
+manifest-version = "2"
+date = "2026-10-01"
+
+[pkg.cargo]
+version = "0.100.0 (5f94df478 2026-08-27)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.cargo.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "318b85c276b43134102fb49bbb54bfd0757e5cce47a772461149aeab5adea2ab"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "76abff0ad79a10a3152dff640ea0d8b3c37637d9300bf55da41b95c3ddc069c1"
+
+[pkg.cargo.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "f8b85e84b0514b69e17e3bad1c2dec7526f4a40cec565d233bbdcb66484dd9e0"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "113229fcc16cc1ba004923a4cc275fbf3281dafaaf8b97269f9c00189d497fd4"
+
+[pkg.cargo.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "ec5bd1c782e5b9d58cfcafbc4131d19fd7ca2ec6b1a197f2fd1a1f953802a26a"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "939b71952afd63ae73bc00f3517c19f0dd7ac54884b5fac16a813ee50985d14d"
+
+[pkg.cargo.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "5e7c399c9bcc944791dcd6cb666eec826bfa8cd04e4b81b7790c030165927965"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "6201b8dcea8cc55ccfa12e842adf1b2c2aa96490a6cb4f129bf03f2df08c80c9"
+
+[pkg.cargo.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "c2b8ba1f59e7a230aa5522684f3f7aa620b98e5ad37683a5e5cf9b41f534fa1e"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/cargo-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "d7674918d28093097614cd9728b6ca60db9ea3038f640f0bd1e9a4188c7568ce"
+
+[pkg.clippy-preview]
+version = "0.1.99"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.clippy-preview.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "d13d16085280bd652d4a77041073264719c9ee92f33702f9dce2ee86777c92b1"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "c31a0765ed31d98515a09a13b44486048873d90ac75bb1e6690a17fb36a5d4e2"
+
+[pkg.clippy-preview.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "18b0a743b8b6952ec6271edd385c8af8517de2d3eba5939f8bebd0f9ba99ffbd"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "42e49dc02d29949395c0c072585961f6c9b5408110236087828d4e2f94ca96ef"
+
+[pkg.clippy-preview.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "533d0da6c47a785c87837d543679524b271ec8b01fad6ef3107335a86c33f6de"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "cd93518193f16b21cfa7147a42cb03cd2d9ca9b3d0c2daf46dcae44c88a696df"
+
+[pkg.clippy-preview.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "57a07620787891328e0a02592eb256e16770e9375df32a31312d9a764d13c490"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "b1b94d7d7717f42727eec41e70952100d865d25ebb7b1dd08041f6971237cfa9"
+
+[pkg.clippy-preview.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "4b3b972738f6b8e0e55065e273a972cc25fccf53629b4308eec67d6a66a8cf4a"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/clippy-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "982442e32ad8dd3f0bb3a30db74038da5f71fd9bf1a865cc71da8ea5d4ec71ec"
+
+[pkg.llvm-tools-preview]
+version = "1.99.0 (b940084d7 2026-09-28)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.llvm-tools-preview.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "c4d82f3efd8cf9d2f8fa8dcb2a173877b95c91fe87d628602053e2770245b65b"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "9cbaa83827e53c9bbae05fa3a36aff0832448de6d2204829b710cbc85567ad2d"
+
+[pkg.llvm-tools-preview.target.aarch64-apple-ios]
+available = false
+
+[pkg.llvm-tools-preview.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "810a9863376a959d36b0a762297ba13b8331ebc2b7878229cbd6dfb29079d987"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "6e921c7c1225ec43dcdd0bda2ce541ac79d45eaa2da64c686f7d78e8cb3dff04"
+
+[pkg.llvm-tools-preview.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "e6a641f5a38b796b53284cdc0e0acdc4cd046224c3faecf888edd871cd826386"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "708b998c88ccbf2ce847cc8aeeb9fa55b969319848971a9e2085c8e426b907cf"
+
+[pkg.llvm-tools-preview.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "88916a665452b7cd75ad47938038727c38f65398cd108b3a8038e7065a6637c5"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "6b02bf162f4c29007655f989092949458b0433e61da411ee246b60d602367c39"
+
+[pkg.llvm-tools-preview.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "128135fdcb3dec851861c952c1d9f97159446387860d5d5a633b7dcc3a1d4997"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/llvm-tools-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "91a6db5668c08ee68e330e5b0fda27c11b79b90592627e89f7c5db12af2ff0ba"
+
+[pkg.rust]
+version = "1.99.0 (b940084d7 2026-09-28)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rust.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "de0581ca9d732295a6474cfbd02461db27d69acd5050a8206523a8d6fa1599db"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "891c6366d7100feda0bca4c03ce63f3c9ac827cbebbc283e7433061d42c6a376"
+
+[[pkg.rust.target.x86_64-unknown-linux-gnu.components]]
+pkg = "rustc"
+target = "x86_64-unknown-linux-gnu"
+
+[[pkg.rust.target.x86_64-unknown-linux-gnu.components]]
+pkg = "rust-std"
+target = "x86_64-unknown-linux-gnu"
+
+[[pkg.rust.target.x86_64-unknown-linux-gnu.components]]
+pkg = "cargo"
+target = "x86_64-unknown-linux-gnu"
+
+[[pkg.rust.target.x86_64-unknown-linux-gnu.components]]
+pkg = "rust-docs"
+target = "x86_64-unknown-linux-gnu"
+
+[pkg.rust-analyzer-preview]
+version = "0.0.0"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rust-analyzer-preview.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "07a9c072954126cd6a6978e4cec40aaec83dfde0452a0bb1863ad8a755df3ad7"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "8004bdc89c8ec77ccb100a8480126af5cf9f65ded9a197e33eed47fa3f8623aa"
+
+[pkg.rust-analyzer-preview.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "c737f69936d1cf1ebbfccfc5475a14d342516aa33bbbfe781d32a111a2b5f0ad"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "5de24052ef1e3c324815d6b81281025e26b9640be247387feb689fa7db2d5eb4"
+
+[pkg.rust-analyzer-preview.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "d3da72a0c17a59db6e43e88c381242266e9b7225289f79a67caa266ec6c4da85"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "abc0d38c2771a968e09a7ae23a1e149cdedfdd72f0d47659755f4fef4ca57615"
+
+[pkg.rust-analyzer-preview.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "a9265455e25f44a6105ec043c0de5e2b18f1fe5925066f4693e12bf1f4ae34e1"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "308e3e6370f7f27c83e25410290b4d1bdf16963f567a3a57c7516898b508a2e5"
+
+[pkg.rust-analyzer-preview.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "85bcab8993a9cd1dd73303241ed1044a1c6b0dcab3fbc01fb756ba8dfa8fb792"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-analyzer-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "52dfae764797c3c7f32ba2ba82d49659741a867e7a3f45bc3291b822c955d6a8"
+
+[pkg.rust-src]
+version = "1.99.0 (b940084d7 2026-09-28)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rust-src.target."*"]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-src-1.99.0.tar.gz"
+hash = "82b978093b33c71bcbe69005b92181bfb76d3d0e434ef303e637812e21badcd7"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-src-1.99.0.tar.xz"
+xz_hash = "3f1f9b7ed48f4596fc87889b7b3c61747336a55c9c22db1ab0c697e0aadb77aa"
+
+[pkg.rust-std]
+version = "1.99.0 (b940084d7 2026-09-28)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rust-std.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "3589b3a6c6470d590aa5aa7fa1a4af0101103847761a5372a7300b0aa85699c6"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "a7c6de8aa21e7c31163a7656295b321bb85f5dce55ed8ea95ac9ac561202bb5b"
+
+[pkg.rust-std.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "cdffa7100206633ccfd2514ea7781b4211813bf04c831a509240e1cda5308512"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "1cf7e2ef58ed1cfa6f1adea18e155cbf254c1951f39e5f5e3376879f55fd64a4"
+
+[pkg.rust-std.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "7321ff86554726b8ab7b0a5c0d9ba0a3e763824f5d09b0c997e36bd72b80fa06"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "18ee81961a73c3ae966ecb1e8f6096438c90aeefece8856201a6ecc17f5bc850"
+
+[pkg.rust-std.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "0f755f2339d6fcb97da532cde33566350e9690398a0fdd06fba8fc281e0bd6dc"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "adadeafff137a7610884696912b853d4de259c4299ab035b66661e2e0f923ff0"
+
+[pkg.rust-std.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "1dcaa01beb6bc78fdb13815b4f15214719167c58e3d79fbdf214591f8c195ee1"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "3e58dff2d0b72196b5ea4e90536e174d400de88564a52694686b81e091169933"
+
+[pkg.rustc]
+version = "1.99.0 (b940084d7 2026-09-28)"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rustc.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "2f6b9c9cdc9c2e87ab2e27335e8bb0c4dbe4daea486e39030b66980058f74353"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "334a66714ca316d71bbe5efe44f71762d0b276cea73be2987374693a837f7450"
+
+[pkg.rustc.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "6780ebb1b8ae66cc5d37ebfdc70b18fe775b1083c997f4e2c963d45a7eec59bc"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "89c0f1a3a44df63c95e5d5f2ba093d0a12c5f5f57f8635f8a7a0ce50cf86600e"
+
+[pkg.rustc.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "4b909ba0153d4a67eb83a31ef11157b7c54e5c04a323d80e46436b778c18df52"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "7460910254f059b49b99ee3ddbcf7197d16b9505b59c166e14a1465ee323a81d"
+
+[pkg.rustc.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "4d05087fd7786cceb9460f573df54d1c0511ff3aa121e8e8da346c325b9fc3f6"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "20fed82e629c1ed145f9e9bdee9aad65e790d4237a49bcfc61221eda69e35b14"
+
+[pkg.rustc.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "238e72b8617f79bc96f27a5bfeb1a208b5755fe1a48f8bc190fe403ef6d54ab8"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustc-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "77171ba2a0345fdf2abc4fedda55d6de078dae7a68527c28be8c77dcc9604bd5"
+
+[pkg.rustfmt-preview]
+version = "1.10.0"
+git_commit_hash = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+
+[pkg.rustfmt-preview.target.aarch64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-aarch64-apple-darwin.tar.gz"
+hash = "c8d86490e38920ab7783483dc828695a9a678eff541c5fa793f165b374e87312"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-aarch64-apple-darwin.tar.xz"
+xz_hash = "8b1436085c081e5efa88febadf667171a7a107073d168cd32b249a8eb70800da"
+
+[pkg.rustfmt-preview.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "6dd2fc9666ca97f366a8d581e46ca115ebcc962e9717d72ff4b9422c0c99551d"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-aarch64-unknown-linux-gnu.tar.xz"
+xz_hash = "4b9162fef99fd5246d2f83a2430c144e9bb9095aac6d1de0aaebde45ec01e09a"
+
+[pkg.rustfmt-preview.target.x86_64-apple-darwin]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-apple-darwin.tar.gz"
+hash = "54de2b0f84ac7d5fbc783af16e37a711099ef95ed2fc86076a8d4f8e2d5a7748"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-apple-darwin.tar.xz"
+xz_hash = "e5e59e6910aa6e716fbb8a53950e109fb675ead428688f3ba2d1702b50928f92"
+
+[pkg.rustfmt-preview.target.x86_64-pc-windows-msvc]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-pc-windows-msvc.tar.gz"
+hash = "0a152a82f36aaefcf9380a7294126c0b70ab44c0342f792ba27006f47888e587"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-pc-windows-msvc.tar.xz"
+xz_hash = "6aa039ed3de3bb9cc46ea7412d16463c700f4a31c3a1849ce818e84cd350ec81"
+
+[pkg.rustfmt-preview.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "9fc3a87d3d4f6e5e2bd87e6fb8779b7a95831f533cb8cc8ae1304a797c648733"
+xz_url = "https://static.rust-lang.org/dist/2026-10-01/rustfmt-1.99.0-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "b22c09ab9e258ec5571da170d88bd1624a4ea602e6d70d95720c5b47494cadce"
+
+[renames.clippy]
+to = "clippy-preview"
+
+[renames.enzyme]
+to = "enzyme-preview"
+
+[renames.gcc-x86_64-unknown-linux-gnu]
+to = "gcc-x86_64-unknown-linux-gnu-preview"
+
+[renames.llvm-bitcode-linker]
+to = "llvm-bitcode-linker-preview"
+
+[renames.llvm-tools]
+to = "llvm-tools-preview"
+
+[renames.miri]
+to = "miri-preview"
+
+[renames.offload]
+to = "offload-preview"
+
+[renames.rust-analyzer]
+to = "rust-analyzer-preview"
+
+[renames.rust-docs-json]
+to = "rust-docs-json-preview"
+
+[renames.rustc-codegen-cranelift]
+to = "rustc-codegen-cranelift-preview"
+
+[renames.rustc-codegen-gcc]
+to = "rustc-codegen-gcc-preview"
+
+[renames.rustfmt]
+to = "rustfmt-preview"
+
+[profiles]
+complete = ["rustc", "cargo", "rust-std", "rust-mingw", "rust-docs", "rustfmt-preview", "clippy-preview", "rust-analyzer-preview", "rust-src", "llvm-tools-preview", "rust-analysis", "miri-preview", "rustc-codegen-cranelift-preview"]
+default = ["rustc", "cargo", "rust-std", "rust-mingw", "rust-docs", "rustfmt-preview", "clippy-preview"]
+minimal = ["rustc", "cargo", "rust-std", "rust-mingw"]
+
