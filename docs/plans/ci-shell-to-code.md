@@ -93,7 +93,7 @@ first in their columns.
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Done (#1564) |
 | J3  | `install-pebble` on the module | `install-pebble` | J2 | Done (#1566) |
 | J4  | `install-astap` on the module | `install-astap` | J2 | Done (#1573) |
-| J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#J5PR) |
+| J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Done (#1575) |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
@@ -472,7 +472,7 @@ not:
   (ADR-022 Amendment A, `bazel run //.github/actions:install`), which
   replaces the copy-paste block in `services/zwo-camera/README.md`.
 
-  Done in #J5PR. The commit and the CDN links moved into `zwo-sdk.mjs`
+  Done in #1575. The commit and the CDN links moved into `zwo-sdk.mjs`
   (`REF`, `CAMERA_SDK_URL`, `EFW_SDK_URL`, `EAF_SDK_URL`), beside the
   files they fetch, as J3 moved OmniSim's release: no workflow set the
   `ref`, `prefix` or URL inputs, and `check-pkg-assets.sh` now reads the
