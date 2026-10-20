@@ -264,13 +264,25 @@ function check(asset, digest) {
  * times in all, as one unit with its check; a body cut short fails its
  * attempt, as fetch refuses it. With `retryForMs`, no attempt starts once
  * that long has passed since the first began, though one under way runs on,
- * as curl's --retry-max-time works. Nothing is left at `file` unless every
- * check passed: the bytes land beside it first.
+ * as curl's --retry-max-time works. A failure that a later attempt would
+ * meet again, such as a 404 or a bad certificate, is not tried again, unless
+ * `retryAll` says the server is one of a pool of mirrors, any of which can be
+ * broken in any way, where the next attempt likely reaches another: then
+ * every failure is, as curl's --retry-all-errors did. Nothing is left at
+ * `file` unless every check passed: the bytes land beside it first.
  */
 export async function download(
   asset,
   file,
-  { attempts = 3, delayMs = 2_000, stallMs = 30_000, minBytesPerSecond = 0, timeoutMs = 600_000, retryForMs } = {},
+  {
+    attempts = 3,
+    delayMs = 2_000,
+    stallMs = 30_000,
+    minBytesPerSecond = 0,
+    timeoutMs = 600_000,
+    retryForMs,
+    retryAll = false,
+  } = {},
 ) {
   pinKey(asset.pin);
   await mkdir(path.dirname(file), { recursive: true });
@@ -285,7 +297,7 @@ export async function download(
         attempts,
         delayMs,
         label: `download ${asset.name}`,
-        isRetryable: (err) => err instanceof ChecksumError || isTransient(err),
+        isRetryable: (err) => retryAll || err instanceof ChecksumError || isTransient(err),
         // retry starts no attempt once this aborts; the fetch under way does
         // not see it.
         signal: retryForMs === undefined ? undefined : AbortSignal.timeout(retryForMs),

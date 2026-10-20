@@ -168,8 +168,8 @@ test('resolve keys each cache on its archive and pin, so moving a pin misses the
 // --- Downloading -------------------------------------------------------------------
 
 test('the database download re-rolls a crawling mirror the way the curl flags did', () => {
-  // --retry 4, --retry-delay 5, --max-time 300, --retry-max-time 600,
-  // --speed-limit 100000 --speed-time 30.
+  // --retry 4 --retry-all-errors, --retry-delay 5, --max-time 300,
+  // --retry-max-time 600, --speed-limit 100000 --speed-time 30.
   assert.deepEqual(DATABASE_DOWNLOAD, {
     attempts: 5,
     delayMs: 5_000,
@@ -177,9 +177,11 @@ test('the database download re-rolls a crawling mirror the way the curl flags di
     minBytesPerSecond: 100_000,
     timeoutMs: 300_000,
     retryForMs: 600_000,
+    retryAll: true,
   });
-  // --retry 4, --retry-delay 5, --connect-timeout 20, --max-time 120.
-  assert.deepEqual(CLI_DOWNLOAD, { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000 });
+  // --retry 4 --retry-all-errors, --retry-delay 5, --connect-timeout 20,
+  // --max-time 120.
+  assert.deepEqual(CLI_DOWNLOAD, { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000, retryAll: true });
 });
 
 test('staggerSeconds takes a whole number of seconds up to its cap', () => {
@@ -308,6 +310,26 @@ test('install refuses an archive that does not match its pin, and leaves nothing
     );
     assert.equal(server.requests.length, CLI_DOWNLOAD.attempts);
     assert.deepEqual(readdirSync(workspace), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test('install tries another mirror after one that answers 404', async () => {
+  // A mirror SourceForge sent the first attempt to has not synced the file.
+  let answered = 0;
+  const server = await serve((req, res) => {
+    answered += 1;
+    res.statusCode = answered === 1 ? 404 : 200;
+    res.end(answered === 1 ? 'Not Found' : CLI_ZIP);
+  });
+  const { cli } = resolve({ runner: RUNNER, server: server.url });
+  const pinned = { ...cli, pin: { sha256: sha(CLI_ZIP) } };
+  const workspace = tempDir();
+  try {
+    await inStep(() => install({ workspace, cli: pinned, download: fast }));
+    assert.equal(server.requests.length, 2);
+    assert.deepEqual(readdirSync(join(workspace, 'astap')), [BINARY]);
   } finally {
     await server.close();
   }

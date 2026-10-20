@@ -451,9 +451,9 @@ not:
   action's `pin` step, which also refuses a table that names another
   archive than the workflow's matrix, and its `repin` step, and a test
   keeps the file in the one layout `repin` writes. The curl flags became
-  `download` options; the D05's rate floor (`minBytesPerSecond`) and its
-  bound on retries (`retryForMs`) are new in `lib/install.mjs`, off by
-  default. The download moved off `fetch` onto Node's own HTTP client:
+  `download` options; the D05's rate floor (`minBytesPerSecond`), its
+  bound on retries (`retryForMs`) and `--retry-all-errors` (`retryAll`, for
+  a pool of mirrors) are new in `lib/install.mjs`, off by default. The download moved off `fetch` onto Node's own HTTP client:
   Node 24's `fetch` crashed the process on two of three legs of the PR's
   `plate-solver-smoke` run, when a SourceForge mirror closed the
   connection under a paused body (nodejs/undici#5360). The smoke and

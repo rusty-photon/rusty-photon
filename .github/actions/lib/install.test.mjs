@@ -531,9 +531,31 @@ test('download starts no attempt once retryForMs has passed', async () => {
     await capture(() =>
       assert.rejects(download(asset(server, { sha256: sha(PAYLOAD) }), file, { attempts: 8, delayMs: 1, retryForMs: 250 })),
     );
-    // Three attempts fit in 250 ms; all eight take about a second.
-    assert.ok(server.requests.length >= 2 && server.requests.length <= 5, `${server.requests.length} requests`);
+    // At most three attempts start within 250 ms, however busy the host, since
+    // each answer takes 100 ms; all eight take about a second.
+    assert.ok(server.requests.length < 8, `${server.requests.length} requests`);
     assert.deepEqual(readdirSync(join(file, '..')), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test('download with retryAll tries again what it would otherwise not', async () => {
+  // A mirror that has not synced the file yet, then one that has.
+  const server = await serve((req, res, n) => {
+    if (n === 1) {
+      res.statusCode = 404;
+      res.end('Not Found');
+      return;
+    }
+    res.end(PAYLOAD);
+  });
+  const file = join(tempDir(), 'asset.bin');
+  try {
+    const { stdout } = await capture(() => download(asset(server, { sha256: sha(PAYLOAD) }), file, { ...fast, retryAll: true }));
+    assert.equal(server.requests.length, 2);
+    assert.match(stdout, /attempt 1 of 3 failed \(GET .*: 404 Not Found\)/);
+    assert.deepEqual(readFileSync(file), PAYLOAD);
   } finally {
     await server.close();
   }

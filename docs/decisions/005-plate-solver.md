@@ -430,8 +430,11 @@ absorb that.
 (`lib/install.mjs`, with the numbers and their reasons in
 `CLI_DOWNLOAD` and `DATABASE_DOWNLOAD` in
 [`astap.mjs`](../../.github/actions/install-astap/astap.mjs)) tries
-again after a request that fails, a connection dropped mid-body, a
-transfer that stalls and a checksum mismatch, five attempts in all.
+again after any failure at all, as `curl --retry-all-errors` did, since
+a bad mirror can fail in any way (a bad certificate, a 404 for a file it
+has not synced, a connection dropped mid-body, a stall, a checksum
+mismatch) and the next attempt likely lands on another: five attempts in
+all.
 Each attempt is cut short by a time limit, 2 minutes for the CLI and 5
 for the database, so the retry gets a chance at a different mirror; a
 mirror slower than the cap is effectively broken, and re-rolling beats

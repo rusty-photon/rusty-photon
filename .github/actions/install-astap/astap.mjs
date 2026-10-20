@@ -102,16 +102,19 @@ export function resolve({ runner, table = TABLE, server = SERVER }) {
 
 // --- Downloading -------------------------------------------------------------------
 
-// SourceForge sends each client to one of many mirrors, and a bad one either
-// drops the transfer part way, which download tries again, or serves it at a
-// crawl. A crawl does not fail: only a time limit or a floor on the rate ends
-// such an attempt, and the next one likely lands on another mirror.
+// SourceForge sends each client to one of many mirrors, and a bad one can
+// fail in any way: a bad certificate, a malformed body, a 404 for a file it
+// has not synced yet, a transfer dropped part way, or one served at a crawl.
+// The next attempt likely lands on another mirror, so both downloads try
+// again after any failure (retryAll), as curl's --retry-all-errors did. A
+// crawl does not fail: only a time limit or a floor on the rate ends such an
+// attempt.
 
 /**
  * The CLI archive, about 1 MB. A mirror that takes two minutes over it is
  * broken, and a new attempt beats waiting on it.
  */
-export const CLI_DOWNLOAD = { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000 };
+export const CLI_DOWNLOAD = { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000, retryAll: true };
 
 /**
  * The database, about 100 MB. A healthy mirror serves it in about 5 s
@@ -130,6 +133,7 @@ export const DATABASE_DOWNLOAD = {
   minBytesPerSecond: 100_000,
   timeoutMs: 300_000,
   retryForMs: 600_000,
+  retryAll: true,
 };
 
 /**

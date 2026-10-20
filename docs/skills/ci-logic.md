@@ -290,7 +290,10 @@ above.
   that crawls rather than fails, such as a SourceForge mirror, a caller
   can also set a floor on the rate (`minBytesPerSecond`, measured over the
   stall time) and a time after which no attempt starts (`retryForMs`), as
-  `install-astap` does for its 100 MB database.
+  `install-astap` does for its 100 MB database. A failure a later attempt
+  would meet again (a 404, a bad certificate) is final, unless the caller
+  sets `retryAll` for a pool of mirrors, where the next attempt likely
+  reaches another; `install-astap` does, as SourceForge's are one.
 - **`unpack`** runs each OS's own tool, since Node's built-ins read no
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
