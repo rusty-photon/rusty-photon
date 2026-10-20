@@ -3,9 +3,8 @@ load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
-# names it as `lint_config`: rustc applies its rustc lints, and the clippy
-# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
+# rustc applies the same rustc lints as Cargo's.
 extract_cargo_lints(
     name = "lints",
     manifest = "Cargo.toml",
@@ -32,7 +31,7 @@ rust_library(
 )
 
 # Developers run it through Cargo (`cargo ci <tool>`, .cargo/config.toml);
-# Bazel builds it so the build and its clippy cover it like any crate.
+# Bazel builds it so the build covers it like any crate.
 rust_binary(
     name = "rusty-photon-ci",
     srcs = ["src/main.rs"],
@@ -43,7 +42,8 @@ rust_binary(
     deps = [":rusty-photon-ci_lib"] + all_crate_deps(normal = True),
 )
 
-# pool_routing.rs reads the workflows and actionlint's runner labels. Cargo sets
+# pool_routing.rs reads the workflows and actionlint's runner labels, and
+# toolchain_pins.rs MODULE.bazel and the root Cargo.toml. Cargo sets
 # CARGO_MANIFEST_DIR when it runs a test; here it is relative to the runfiles
 # root the test starts in. rust_toolchain_sha256s.rs's tests `include_str!` the
 # saved channel manifests in testdata/.
@@ -58,6 +58,8 @@ rust_test(
     crate = ":rusty-photon-ci_lib",
     data = [
         "//:.github/actionlint.yaml",
+        "//:Cargo.toml",
+        "//:MODULE.bazel",
         "//:workflows",
     ],
     env = {"CARGO_MANIFEST_DIR": "tools/rusty-photon-ci"},

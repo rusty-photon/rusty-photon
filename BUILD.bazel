@@ -1,9 +1,7 @@
 # Top-level package.
 # Exports Cargo.toml and Cargo.lock so crate_universe can read them from
 # MODULE.bazel; Cargo.toml is also the `workspace` every crate's
-# `extract_cargo_lints` inherits `[workspace.lints]` from. clippy.toml is the
-# clippy aspect's config (`--@rules_rust//rust/settings:clippy.toml` in
-# .bazelrc).
+# `extract_cargo_lints` inherits `[workspace.lints]` from.
 
 load("@buildifier_prebuilt//:rules.bzl", "buildifier", "buildifier_test")
 
@@ -11,7 +9,6 @@ exports_files(
     [
         "Cargo.toml",
         "Cargo.lock",
-        "clippy.toml",
     ],
     visibility = ["//visibility:public"],
 )
@@ -35,6 +32,14 @@ filegroup(
 
 exports_files(
     [".github/actionlint.yaml"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# MODULE.bazel's Rust toolchain pins, read by the tools crate's test that they
+# agree with each other and with the MSRV
+# (tools/rusty-photon-ci/src/toolchain_pins.rs).
+exports_files(
+    ["MODULE.bazel"],
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 

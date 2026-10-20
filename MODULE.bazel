@@ -304,8 +304,9 @@ rust.toolchain(
     # (`cargo ci rust-toolchain-sha256s <pin>` and `... nightly/<date>`).
     # rules_rust's own table ends at stable 1.98.0 and pins only a few nightly
     # dates, so without these the toolchains download unverified.
-    # tools/ci/bazel-clippy.sh fails unless this holds each pin's full set
-    # (what the tool prints for one release) and nothing else.
+    # `bazel test //...` fails unless this holds each pin's full set (what the
+    # tool prints for one release) and nothing else: the tools crate's test of
+    # the pins (tools/rusty-photon-ci/src/toolchain_pins.rs) lists its checks.
     sha256s = {
         "2026-08-15/cargo-nightly-aarch64-apple-darwin.tar.xz": "fb7295c093b9cb26743a4bf8552cf8709196708f254a4e8108a9ffdb0a34f7a8",
         "2026-08-15/cargo-nightly-aarch64-unknown-linux-gnu.tar.xz": "2dab7500df5dff33dcb6adf9264fdeacc8b6a11291b0a63c69d8233fe9a42377",
@@ -382,14 +383,15 @@ rust.toolchain(
     },
     # Stable (the default channel, selected in .bazelrc) is current stable —
     # the release check.yml's `stable / clippy` installs — and it is the
-    # workspace MSRV's release: the root Cargo.toml's `rust-version` and
-    # clippy.toml's `msrv` name it. A point release of the pin (1.99.1) needs
-    # no MSRV bump, since point releases add no language or library
-    # features. tools/ci/bazel-clippy.sh fails when they disagree.
-    # - Current stable, because the clippy aspect (`--config=clippy`) runs
-    #   this toolchain's clippy-driver, and the workspace's lint attributes
-    #   track current stable clippy (an `#[expect]` only a newer clippy
-    #   fulfils is an error on an older one; see docs/skills/pre-push.md).
+    # workspace MSRV's release: the root Cargo.toml's `rust-version` names it.
+    # A point release of the pin (1.99.1) needs no MSRV bump, since point
+    # releases add no language or library features. `bazel test //...` fails
+    # when they disagree (tools/rusty-photon-ci/src/toolchain_pins.rs).
+    # - Current stable, because the tree is written against Cargo's floating
+    #   stable. An older rustc does not know a lint a newer one added, so an
+    #   attribute naming it is `unknown_lints`, and an `#[expect]` only the
+    #   newer rustc fulfils is unfulfilled: both are warnings, and CI builds
+    #   with `-Dwarnings` (see docs/skills/pre-push.md).
     # - The MSRV's, because then every PR compiles what its Linux and Windows
     #   Bazel targets build with the MSRV, so code newer than it (a std API
     #   or a language feature) fails the build. A Bazel target builds one
@@ -398,13 +400,13 @@ rust.toolchain(
     #   and only on Linux: Windows-only code behind such a combination is
     #   not compiled on a PR at all.
     # In the first PR after each stable release, bump all of them together:
-    # the pin with its `sha256s`, rust-version, clippy.toml's msrv and the
-    # coverage nightly below (docs/skills/pre-push.md lists the steps). Until
-    # then the two clippies differ, and a change written against the new
-    # stable fails `bazel clippy` here. After it merges, rebuild the pool
-    # runner templates (docs/skills/proxmox-runner-pool.md), which pre-fetch
-    # both toolchains: until then every pool PR job downloads the new ones
-    # over the WAN.
+    # the pin with its `sha256s`, rust-version and the coverage nightly below
+    # (docs/skills/pre-push.md lists the steps). Until then Cargo's stable and
+    # this pin differ, and a change written against the new stable (a lint
+    # only it knows) fails the Bazel build in CI. After it merges, rebuild the
+    # pool runner templates (docs/skills/proxmox-runner-pool.md), which
+    # pre-fetch both toolchains: until then every pool PR job downloads the new
+    # ones over the WAN.
     #
     # The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
@@ -436,10 +438,10 @@ rust.toolchain(
     #
     # `cargo ci rust-toolchain-sha256s nightly/<date>` prints the hashes
     # and, on stderr, the comment line with the date's rustc version, which
-    # goes directly above the entry as printed. tools/ci/bazel-clippy.sh
-    # checks it: it must name the entry's date, and the MSRV's release or the
-    # next one (the remedy above). So a bump that leaves the nightly behind
-    # fails there.
+    # goes directly above the entry as printed. `bazel test //...` checks it:
+    # it must name the entry's date, and the MSRV's release or the next one
+    # (the remedy above). So a bump that leaves the nightly behind fails
+    # there.
     versions = [
         "1.99.0",
         # nightly/2026-08-15 is rustc 1.99.0-nightly (d453bdd8f 2026-08-14)

@@ -3,9 +3,8 @@ load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
-# names it as `lint_config`: rustc applies its rustc lints, and the clippy
-# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+# Cargo.toml. Every Rust target below names it as `lint_config`, so Bazel's
+# rustc applies the same rustc lints as Cargo's.
 extract_cargo_lints(
     name = "lints",
     manifest = "Cargo.toml",

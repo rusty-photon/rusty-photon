@@ -49,7 +49,7 @@ first in their columns.
     and the schedule. The install actions also reach hosted macOS from a
     dispatched `test.yml` (OmniSim, Pebble) or `native.yml` (the ZWO SDK),
     so J2, J3 and J5 prove macOS there. What only that leg runs (J10's
-    remote flags, R2's clippy) is proven by tests. Every item that changes
+    remote flags) is proven by tests. Every item that changes
     code the leg runs watches its first push-to-main run. Adding
     `workflow_dispatch` to bazel.yml would change the matrix and routing
     expressions ADR-020 reviews, so an item does that only with the
@@ -76,9 +76,9 @@ first in their columns.
   - `scripts/check-pkg-assets.sh` reads the ZWO and SVBony `ref`
     defaults and the ZWO Windows URLs from their `action.yml`, to check
     the packages link what CI links;
-  - `tools/ci/bazel-clippy.sh` keeps its own copy of the archive list
-    `cargo ci rust-toolchain-sha256s` prints, until R2 reads the tool's
-    (`Release::archives`, R1).
+  - the tools crate's test `toolchain_pins.rs` reads `rust.toolchain`'s
+    `versions` and `sha256s` in `MODULE.bazel`, and the root Cargo.toml's
+    `rust-version`, and holds the keys to `Release::archives` (R1, R2).
 
   An item that moves a pin updates its readers and writers in the same
   PR, or leaves the pin where they find it.
@@ -104,7 +104,7 @@ first in their columns.
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#1581) |
-| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
+| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` and bazel.yml's `bazel clippy` step | F2, R1 | Done (#R2PR): removed, and its pin checks became a test |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
@@ -952,21 +952,52 @@ fingerprint.
 
 ### R2 — Bazel clippy
 
-`tools/ci/bazel-clippy.sh` (184 lines): runs the clippy aspect over
-`//...` and checks the toolchain pins agree. It is in AGENTS.md rule 4's
-local gate and in bazel.yml's `bazel clippy` step. It needs R1 first, and
-reads R1's archive list (`Release::archives`) rather than porting the
-script's own copy.
-**Open question:** the tool may not start through the alias in the Bazel
-legs. The Linux pool template has no Cargo until T1, and whether the
-Windows template, whose variables include `CARGO_HOME` and `RUSTUP_HOME`
-([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)), puts Cargo
-on a job's PATH is unchecked. `bazel run` would make the
-tool start Bazel from inside a `bazel run`; building it first and running
-it from `bazel-bin` avoids that. Verify the choice on the Linux and
-Windows PR legs; don't assume it. bazel.yml's macOS leg runs the step
-too, but never on a branch, so the launch there is proven by the first
-push to main (see the proving rule).
+Done in #R2PR, by removal rather than a port. The owner chose on
+2026-10-20 to drop Bazel's clippy. `stable / clippy` runs Cargo's two
+passes on the pool for every PR, so the `bazel clippy` step added one
+thing: a lint of Windows-only code before a merge, in the Bazel targets'
+feature sets.
+
+- **What went:** `tools/ci/bazel-clippy.sh` (185 lines); bazel.yml's
+  `bazel clippy` step on every leg, its job budget back to 40 minutes and
+  the test steps to the default gating; `.bazelrc`'s `--config=clippy`
+  and its two `build` settings; and `clippy.toml`'s `msrv`, which only
+  Bazel's clippy read. Cargo's clippy takes the MSRV from each member's
+  `rust-version`, which every member inherits.
+- **What the step cost**, over the 40 pool PR runs before the decision:
+  1–3 s on Linux and 5–7 s on Windows when no Rust changed, 23–45 s and
+  27–61 s when it did, and 35–45 s and 50–105 s for a dependency bump. On
+  the macOS leg (push to main) it took 8–23 s, or 126–167 s after a
+  dependency change.
+- **What is lost:** a clippy lint in Windows-only code surfaces after a
+  merge, from check.yml's `windows / clippy` on the push to main or
+  overnight. The Windows leg still compiles that code on every PR with
+  `-Dwarnings`, so a compile error or a rustc warning still fails the PR.
+  Bazel's per-target feature sets linted no Linux code Cargo's two passes
+  miss: the one test module compiled only with a feature off
+  (svbony-camera's `production_default_tests`) is linted by neither.
+  macOS code was already linted only after a merge, by both.
+- **What moved:** the script's checks of the toolchain pins (the stable
+  pin against the MSRV, the coverage nightly's cycle, `sha256s` against
+  `Release::archives`) are a test in the tools crate, `toolchain_pins.rs`,
+  which `bazel test //...` runs on every leg. It reads `MODULE.bazel`'s
+  `rust.toolchain` line by line, and fails on a line of any other shape
+  inside `versions` and `sha256s`. So nothing has to launch a tool inside
+  the Bazel legs, which was this item's open question. The script's
+  checks of the lint setup (`lint_config` on every target, no opt-out
+  tags) served only Bazel's clippy and went with it.
+- **`lint_config` stays** on every Rust target, so Bazel's rustc applies
+  the workspace's rustc lints. Today the only one is `unexpected_cfgs`,
+  which Bazel cannot check, so it changes nothing yet.
+- **The cache:** removing the two `build` settings changed no other
+  action. All 1,062 Rust actions of `//...` and its dependencies kept
+  their keys and output paths (`bazel aquery`, before and after).
+- **Proven locally:** the test passes against the real files, and fails,
+  naming the mismatch, against each of a stable pin bumped alone, an MSRV
+  lowered alone, and a nightly date bumped without its comment line. 21
+  mutations of the checks and the reader all turn it red.
+- **Unproven until main:** the macOS leg without the step, on the first
+  push after the merge.
 
 ### R3 — Moved: Bazel/Cargo target parity
 
@@ -1170,8 +1201,8 @@ when a matrix value or an expression can replace its control flow. Small
 PRs, in any order:
 
 - bazel.yml: the Windows profile flags chosen in `bazel build`,
-  `bazel clippy`, `bazel test (fast)` and `bazel test (BDD)`, once J10
-  has taken their sourcing;
+  `bazel test (fast)` and `bazel test (BDD)`, once J10 has taken their
+  sourcing;
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package";
@@ -1225,9 +1256,8 @@ proxy; J14 serves the crates.
   pool's will too.
 - **Every mention moves with it.** These say the Linux pool has no Cargo
   or rustup, or that the job downloads its toolchain, and change in the
-  same PR: ADR-022's Consequences, F2's note on `repin-bazel.yml`, R2's
-  open question, J1's scope bullet, and the comment above check.yml's
-  `stable / clippy` job.
+  same PR: ADR-022's Consequences, F2's note on `repin-bazel.yml`, J1's
+  scope bullet, and the comment above check.yml's `stable / clippy` job.
 - **Done when** a pool `stable / clippy` run's toolchain step installs no
   rustup and downloads no toolchain.
 

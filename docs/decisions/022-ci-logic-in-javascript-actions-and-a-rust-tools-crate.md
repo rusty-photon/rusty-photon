@@ -50,10 +50,10 @@ Two constraints decide what can replace it:
    there must already be on every runner: GitHub-hosted Linux, Windows and
    macOS, the Proxmox pool's Linux and Windows templates, and the Pi.
 2. **Some logic is a developer tool as much as a CI step** —
-   `tools/ci/bazel-clippy.sh` is in AGENTS.md rule 4's local gate,
-   the lock repin in rule 10. It has to run on a developer's
-   machine without CI around it, and it benefits from knowing the
-   workspace (crates, features, pins).
+   `tools/ci/bazel-clippy.sh` was in AGENTS.md rule 4's local gate (until
+   the plan's R2 removed Bazel's clippy), the lock repin is in rule 10. It
+   has to run on a developer's machine without CI around it, and it
+   benefits from knowing the workspace (crates, features, pins).
 
 ## Decision
 
@@ -132,11 +132,13 @@ Three kinds of code are outside this decision:
   linter is a later decision.
 - A Rust tool costs a compile on first local use, where a script ran at
   once. In the Bazel legs it comes from the remote cache.
-- Some tools that drive Bazel (`bazel-clippy.sh`) run inside the Bazel
-  legs, where Cargo may not be on the job's PATH: the Linux pool template
-  has none until the plan's T1 adds it, and the Windows template has not
-  been checked. The plan item that moves such a tool settles how it is
-  launched there, and verifies it.
+- A tool that drives Bazel from inside the Bazel legs would meet a job
+  where Cargo may not be on the PATH: the Linux pool template has none
+  until the plan's T1 adds it, and the Windows template has not been
+  checked. The one such tool, `bazel-clippy.sh`, went with Bazel's clippy
+  instead (the plan's R2), and its checks of the toolchain pins became a
+  test, so no tool has had to settle this yet. One that does settles how it
+  is launched there, and verifies it.
 - `stable / shellcheck` lints less over time. It stays for the shell this
   decision leaves in place.
 - Shell is no longer the default for new CI logic: a reviewer may ask for

@@ -112,50 +112,6 @@ build --local_resources=omnisim=35
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
-# `--config=clippy` runs clippy over first-party Rust targets through rules_rust's
-# aspect: one `Clippy` action per target, keyed on its sources, its deps'
-# metadata, its lint files and clippy.toml, so the remote cache serves every
-# crate a change does not reach. Run it through tools/ci/bazel-clippy.sh, as
-# bazel.yml does on each OS leg after `bazel build` (which makes it the only
-# clippy that lints `#[cfg(windows)]` code before a merge): the script also
-# checks the inputs below and lints the `manual` targets `//...` skips.
-#
-# The deny set comes from each target's `lint_config` — an
-# `extract_cargo_lints` reading the crate's Cargo.toml `[lints]`, so Cargo and
-# Bazel enforce one list. A target without a `lint_config` is linted with
-# clippy's defaults only, and that includes the three `cargo_build_script`
-# build.rs binaries: the macro does not pass `lint_config` through.
-#
-# The one exception to the shared list is `unexpected_cfgs`.
-# `extract_cargo_lints` drops its `check-cfg`, and rules_rust passes rustc no
-# `--check-cfg` (only a hand-written `rust_lint_config` can), so Bazel's rustc
-# and clippy never check cfg names. A misspelled `#[cfg(feature = "...")]`
-# fails Cargo's clippy, and only where Cargo compiles it: on a PR, Linux.
-#
-# Each target is linted with the feature set its BUILD rule compiles, not
-# Cargo's two passes (check.yml's `stable / clippy`): a test target built with
-# `mock` is linted with `mock`, the production library beside it without.
-#
-# The two settings sit on `build`, not `build:clippy`: a Starlark flag that
-# changes between invocations discards the analysis cache, and neither one
-# enters any action but clippy's. `-Dwarnings` is explicit because the aspect
-# adds it on its own only for a target with no `lint_config`; without it a
-# clippy warning would pass, and be cached as passing.
-#
-# The clippy_checks output group ALONE (no `+`): a clippy run builds what the
-# Clippy actions need (dependency metadata) and nothing else — no linking —
-# so it also works on a target that cannot link here, which is why bazel.yml
-# can name the `manual` targets `//...` would skip.
-#
-# --keep_going: one run reports every crate's findings, not just the first
-# failing crate's. CI already has it from `build:remote-cache`; this gives a
-# local run the same.
-build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
-build --@rules_rust//rust/settings:clippy_flag=-Dwarnings
-build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
-build:clippy --output_groups=clippy_checks
-build:clippy --keep_going
-
 # Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
 # symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves
 # over the wire — keeping them small matters for a LAN cache and keeps CAS

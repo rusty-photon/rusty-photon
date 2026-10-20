@@ -6,8 +6,8 @@
 # nightly beta leg going red every time a group gains a lint.
 #
 # PR-gating (every pull_request + push to main). The per-PR Bazel gate
-# (bazel.yml) runs no rustfmt; it does run clippy (its `bazel clippy` step),
-# but on each target's Bazel feature set rather than Cargo's two passes below:
+# (bazel.yml) runs neither rustfmt nor clippy, so this is a PR's only Rust
+# lint:
 #   - clippy: stable clippy, `-D warnings`,   (required check: `stable / clippy`)
 #             two passes: `--all-features --all-targets`, then default-features
 #             `--lib --bins` (see the job comment for why that exact shape).
@@ -290,15 +290,13 @@ jobs:
   clippy-os:
     # The required gate above runs on ubuntu, so production code behind
     # `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` is never compiled by
-    # it. bazel.yml's `bazel clippy` step lints that code on the Windows (PR)
-    # and macOS (push to main) legs, but only in the feature sets the Bazel
-    # targets compile, not the two Cargo shapes these legs run. Without these
-    # legs an OS-gated violation of the workspace deny set in a Cargo-only
-    # feature shape lands green in CI and then fails that OS's contributors'
-    # pre-commit hooks (#984). Same two passes as the gate (#988): here the
-    # default-features pass is what lints `#[cfg(all(windows, not(feature =
-    # "simulation")))]` — qhy-camera's delay-load DLL machinery, the code
-    # #988 was filed about — which no `--all-features` run anywhere compiles.
+    # it, and these legs are the only clippy that lints it. Without them an
+    # OS-gated violation of the workspace deny set lands green in CI and then
+    # fails that OS's contributors' pre-commit hooks (#984). Same two passes
+    # as the gate (#988): here the default-features pass is what lints
+    # `#[cfg(all(windows, not(feature = "simulation")))]` — qhy-camera's
+    # delay-load DLL machinery, the code #988 was filed about — which no
+    # `--all-features` run anywhere compiles.
     #
     # Off-PR like `hack` / `msrv`: the cfg'd code changes rarely, so a
     # violation surfaces on main within minutes of a merge (push) or overnight
