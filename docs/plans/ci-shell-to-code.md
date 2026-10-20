@@ -104,7 +104,7 @@ first in their columns.
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#1581) |
-| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` and bazel.yml's `bazel clippy` step | F2, R1 | Done (#R2PR): removed, and its pin checks became a test |
+| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` and bazel.yml's `bazel clippy` step | F2, R1 | Done (#1582): removed, and its pin checks became a test |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
@@ -952,7 +952,7 @@ fingerprint.
 
 ### R2 — Bazel clippy
 
-Done in #R2PR, by removal rather than a port. The owner chose on
+Done in #1582, by removal rather than a port. The owner chose on
 2026-10-20 to drop Bazel's clippy. `stable / clippy` runs Cargo's two
 passes on the pool for every PR, so the `bazel clippy` step added one
 thing: a lint of Windows-only code before a merge, in the Bazel targets'
