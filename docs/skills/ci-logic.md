@@ -383,6 +383,34 @@ would be a second implementation of the module to keep in step.
   `:install`'s runfiles, and a module or table missing from them fails
   it too.
 
+### An action that runs processes
+
+`bdd-sharded` is the example: it starts the BDD suites as processes at
+once and waits for them all.
+
+- **`spawn` a program, never through a shell**, with stdin `'ignore'`:
+  a program that read stdin would take the step's, and in a list run one
+  after another, the next one's. `command` in the helper module does this
+  for one program whose output the action reads.
+- **Programs that run at once write to a file each**: pass the file's
+  descriptor as the child's stdout and stderr, and print each file
+  afterwards in a group of its own. Written to the step's log as they
+  came, their lines would interleave.
+- **A stopped step.** The runner stops a cancelled step, one past its
+  job's `timeout-minutes` included, with SIGINT, then SIGTERM 7.5 s
+  later, then kills it 2.5 s after that (actions/runner,
+  `src/Runner.Sdk/ProcessInvoker.cs`; Ctrl+C and Ctrl+Break on Windows).
+  On Linux and macOS the kill reaches Node alone, and the processes it
+  started go on. So the entry file listens for both signals and aborts an
+  `AbortController` the logic takes as `signal`; the logic stops its
+  children and prints what it must within the 7.5 s. `bdd-sharded` sends
+  each SIGTERM, then SIGKILL 5 s later, and prints the logs.
+- **Tests start real processes.** The logic takes `spawn` as an option,
+  and a test passes one that starts `node -e` with a fake in each
+  program's place, so the descriptors, the environment and the signals
+  are real. An `'ipc'` channel added to the child's stdio lets the fake
+  say when it is ready, so a test can stop it at a known point.
+
 ### Proving it
 
 A PR's CI only runs the workflows its events trigger. Name every runner
