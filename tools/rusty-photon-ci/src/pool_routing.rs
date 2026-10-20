@@ -36,6 +36,8 @@ use std::path::{Path, PathBuf};
 use saphyr::{LoadableYamlNode, MarkedYaml, Scalar, ScanError, YamlData};
 use saphyr_parser::{Event, Parser};
 
+use crate::repo_root;
+
 /// The Linux pool, as reviewed: its kill switch, the trusted-event test (a
 /// push, or a pull request from this repository) and its labels.
 const LINUX: &str = r#"
@@ -213,20 +215,6 @@ struct Read {
     /// does. When only an escape spells the label, the line is the one the
     /// string starts on.
     stray: Vec<(usize, String)>,
-}
-
-/// The repository's root, two levels above the crate. Cargo sets
-/// `CARGO_MANIFEST_DIR` when it runs a test. For Bazel the BUILD file sets
-/// it, relative to the runfiles root the test starts in, which holds the
-/// workflows and `.github/actionlint.yaml` as the test's data.
-fn repo_root() -> PathBuf {
-    let crate_dir = std::env::var_os("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR is set by Cargo, and for Bazel by the BUILD file");
-    Path::new(&crate_dir)
-        .ancestors()
-        .nth(2)
-        .expect("the crate sits two levels below the repository root")
-        .to_path_buf()
 }
 
 /// The one document in a YAML file's `text`, as GitHub reads a workflow:

@@ -22,9 +22,8 @@
 
    ```sh
    bazel build //... && bazel test //...                     # build + tests incl. BDD (the per-PR Bazel gate, run locally)
-   tools/ci/bazel-clippy.sh                                  # the Bazel legs' clippy step — each target's own feature set
    cargo fmt                                                 # Bazel runs no rustfmt
-   cargo clippy --all-targets --all-features -- -D warnings  # Cargo's two clippy shapes, which Bazel's clippy does not cover
+   cargo clippy --all-targets --all-features -- -D warnings  # Cargo's two clippy shapes: Bazel runs no clippy
    cargo clippy --workspace --lib --bins -- -D warnings      # default-features pass — lints what --all-features cfgs out (#988)
    ```
 

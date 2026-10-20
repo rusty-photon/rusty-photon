@@ -23,9 +23,9 @@
 //! without `gpg`, and bring its own cryptography into every build of `//...`,
 //! for a tool run once a Rust release.
 //!
-//! [`Release::archives`] is the list of archives. `tools/ci/bazel-clippy.sh`
-//! keeps its own copy, to check that `sha256s` holds exactly these; keep the
-//! two in step.
+//! [`Release::archives`] is the list of archives. The crate's test of the
+//! toolchain pins (`toolchain_pins.rs`) checks that `sha256s` holds exactly
+//! these, for both pins.
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};

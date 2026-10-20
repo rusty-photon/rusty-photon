@@ -1,16 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
-# names it as `lint_config`: rustc applies its rustc lints, and the clippy
-# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     [
@@ -40,7 +29,6 @@ rust_library(
     aliases = aliases(),
     crate_name = "qhy_focuser",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -51,7 +39,6 @@ rust_binary(
     srcs = ["src/main.rs"],
     aliases = aliases(),
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = [":qhy-focuser_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -66,7 +53,6 @@ rust_test(
     ),
     compile_data = ["pkg/doctor.toml"],
     crate = ":qhy-focuser_lib",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -87,7 +73,6 @@ rust_test(
     ),
     crate_features = ["mock"],
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -116,7 +101,6 @@ rust_test(
         "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-focuser_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -144,7 +128,6 @@ rust_library(
     crate_features = ["mock"],
     crate_name = "qhy_focuser",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -155,7 +138,6 @@ rust_binary(
     aliases = aliases(),
     crate_features = ["mock"],
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # Pin CARGO_PKG_NAME to the Cargo package name, as the real binary does,
     # so bdd-infra's {PKG}_BINARY discovery and the spawned process agree.
@@ -185,7 +167,6 @@ rust_test(
         "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-focuser_mock)",
     },
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

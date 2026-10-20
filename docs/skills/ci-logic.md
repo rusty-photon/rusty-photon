@@ -44,6 +44,7 @@ tools/rusty-photon-ci/
                            and Fake, for the tests
   src/<tool>.rs            one module per tool, with its tests
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
+  src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
   testdata/                files the tests include_str!: saved channel manifests
 ```
 
@@ -70,7 +71,11 @@ tools/rusty-photon-ci/
   Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
   relative to the runfiles root. It reads a YAML file with the parser
   (`saphyr`), never line by line: R6's guard started line by line, and
-  each review of it found YAML it misread.
+  each review of it found YAML it misread. No parser in the workspace
+  reads Starlark, so the guard over `MODULE.bazel` reads its
+  `rust.toolchain` call line by line, in the shape `rust-toolchain-sha256s`
+  prints, and fails on any other line inside `versions` and `sha256s`
+  rather than skipping it.
 - **The shell it replaces goes in the same PR**, with every mention of it
   (ADR-022): search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the

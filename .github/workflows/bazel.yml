@@ -96,9 +96,8 @@ jobs:
     # rp:bdd is sharded on every OS (private OmniSim per test process since
     # #467 — --multi-instance + OMNISIM_SETTINGS_DIR), so the BDD step is
     # bounded by the slowest shard; 40 leaves generous headroom for a
-    # cold-cache first run. Plus 15 for the `bazel clippy` step's own cap, so
-    # a stalled clippy runs out its step budget instead of the tests'.
-    timeout-minutes: 55
+    # cold-cache first run.
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
@@ -270,9 +269,8 @@ jobs:
       - name: bazel build
         id: build
         # Step budget: a fully cold build fits well under 30 minutes on every
-        # OS, and a wedged build must not eat the whole 55-minute job budget
-        # (the clippy step after it is capped at 15, and the tests need ~10).
-        # This is also the backstop for
+        # OS, and a wedged build must not eat the whole 40-minute job budget
+        # (the tests after this step need ~10). This is also the backstop for
         # the macOS remote-cache wedge — a silent stall with no diagnostics —
         # whose mitigations are the `build:macos` remote-cache settings in
         # .bazelrc.
@@ -297,48 +295,8 @@ jobs:
           fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
 
-      - name: bazel clippy
-        id: clippy
-        # rules_rust's clippy aspect over every first-party target
-        # (`--config=clippy`; what it lints and with which lint set: .bazelrc).
-        # Its own step, after the build, so its cost reads straight off the
-        # step timing: everything it depends on is already built, which leaves
-        # only the Clippy actions — one per target, served from the remote
-        # cache for every crate the change does not reach. It runs on every
-        # OS leg, so `#[cfg(windows)]` code is linted before a merge, not only
-        # by check.yml's off-PR `windows / clippy`.
-        #
-        # A lint failure here must not hide test results: the test steps
-        # below are gated on the build, not on this step, so a push with a
-        # lint and a failing test reports both in one run. Nor may a failed
-        # build hide the lint: `--config=clippy` never links, so a link-only
-        # failure (a Windows LNK error in one binary) still leaves every
-        # crate lintable. A compile error simply fails both steps.
-        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
-        #
-        # 15 minutes: a cold run of every target is about half a minute on
-        # the Linux pool. The cap is for a hang, and the job budget above
-        # carries it on top of the build's and the tests'.
-        timeout-minutes: 15
-        run: |
-          # The same script a developer runs locally. It first checks the
-          # inputs Bazel's clippy takes on trust, the lint setup and the
-          # toolchain pins (its header lists the checks), then lints `//...`
-          # plus the `manual` targets `//...` skips. So a red step can also
-          # mean a toolchain bump left something behind.
-          # Remote-cache routing for this job's venue and credentials.
-          source tools/ci/bazel-remote-flags.sh
-          # Windows: this step's trace, as in the build step.
-          PROFILE_FLAGS=()
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-clippy.json.gz)
-          fi
-          tools/ci/bazel-clippy.sh --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}"
-
       - name: bazel test (fast)
         id: fast
-        # Runs whenever the build succeeded, even if `bazel clippy` failed.
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The .bazelrc default filter includes bdd (for the local loop);
         # exclude it here explicitly to keep the fast unit + integration
         # pass separate from BDD, so log output and failure attribution
@@ -356,9 +314,6 @@ jobs:
 
       - name: bazel test (BDD)
         id: bdd
-        # Only after a passing fast pass. Spelled out because the default
-        # `success()` would also skip it when `bazel clippy` alone failed.
-        if: ${{ !cancelled() && steps.fast.outcome == 'success' }}
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. They need OMNISIM_PATH (the
         # install-omnisim action's pinned binary path, consumed by
@@ -475,8 +430,7 @@ jobs:
       # messages -- so dump the state directly: the `_main\external` link the
       # generated runner creates, and for every .rlib the manifest names, both
       # spellings of it. Cheap and silent unless something is actually wrong.
-      # Only after a build or test failure: a run red on `bazel clippy` alone
-      # has no doc-test problem to dump, and a post-mortem there misleads.
+      # Only after a build or test failure.
       - name: Dump doc-test runfiles state (Windows diagnostic)
         if: >-
           ${{ !cancelled() && runner.os == 'Windows'

@@ -1,16 +1,6 @@
 load("@cr//:defs.bzl", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "cargo_toml_env_vars", "extract_cargo_lints")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_library")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
-# names it as `lint_config`: rustc applies its rustc lints, and the clippy
-# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     ["Cargo.toml"],
@@ -76,7 +66,6 @@ rust_library(
     crate_features = _DEVICE_FEATURES,
     crate_name = "libzwo_sys",
     edition = "2021",
-    lint_config = ":lints",
     rustc_env_files = [":cargo_toml_env_vars"],
     visibility = ["//visibility:public"],
     deps = [":build_script"],

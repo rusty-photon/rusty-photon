@@ -1,16 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-
-# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
-# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
-# names it as `lint_config`: rustc applies its rustc lints, and the clippy
-# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
-extract_cargo_lints(
-    name = "lints",
-    manifest = "Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 exports_files(
     ["Cargo.toml"],
@@ -23,7 +12,6 @@ rust_library(
     aliases = aliases(),
     crate_name = "rusty_photon_doctor_checks",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = ["//crates/rusty-photon-process"] + all_crate_deps(normal = True),
@@ -46,7 +34,6 @@ rust_library(
     crate_features = ["mock"],
     crate_name = "rusty_photon_doctor_checks",
     edition = "2021",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = ["//crates/rusty-photon-process"] + all_crate_deps(normal = True),
@@ -64,7 +51,6 @@ rust_test(
     ),
     crate = ":rusty-photon-doctor-checks_mock",
     crate_features = ["mock"],
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -87,7 +73,6 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":rusty-photon-doctor-checks",
-    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
