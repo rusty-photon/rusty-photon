@@ -77,8 +77,8 @@ first in their columns.
     defaults and the ZWO Windows URLs from their `action.yml`, to check
     the packages link what CI links;
   - `tools/ci/bazel-clippy.sh` keeps its own copy of the archive list
-    `scripts/rust-toolchain-sha256s.sh` prints, and its errors tell
-    developers to run that script.
+    `cargo ci rust-toolchain-sha256s` prints, until R2 reads the tool's
+    (`Release::archives`, R1).
 
   An item that moves a pin updates its readers and writers in the same
   PR, or leaves the pin where they find it.
@@ -103,7 +103,7 @@ first in their columns.
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
-| R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
+| R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#R1PR) |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
@@ -901,25 +901,62 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 
 ### R1 — Toolchain checksums
 
-`scripts/rust-toolchain-sha256s.sh` (124 lines), which pre-push.md sends
-developers to when a Rust pin moves: it prints MODULE.bazel's `sha256s`
-entries from a release's channel manifest, after checking the manifest's
-detached signature against the Rust release key, pinned by fingerprint.
-Today `gpg` does the check. The port either keeps calling `gpg` or takes
-an OpenPGP crate; decide in the item. The manifest parsing is unit-tested
-against a saved manifest.
+Done in #R1PR, as `cargo ci rust-toolchain-sha256s <release>`
+(`tools/rusty-photon-ci/src/rust_toolchain_sha256s.rs`), replacing
+`scripts/rust-toolchain-sha256s.sh` (124 lines). pre-push.md sends
+developers to it when a Rust pin moves: it prints MODULE.bazel's
+`sha256s` entries from a release's channel manifest, after checking the
+manifest's detached signature against the Rust release key, pinned by
+fingerprint.
 
-`tools/ci/bazel-clippy.sh` keeps its own copy of the archive list this
-script prints, and its errors tell developers to run it. R1 updates those
-messages in the same PR, and exposes the list so R2 uses it instead of
-keeping a second copy.
+- **`gpg` still checks the signature.** rPGP (`pgp` 0.21.0, default
+  features) resolves to 154 crates, 84 of them new to Cargo.lock, that
+  every build of `//...` would compile and lint, for a tool run once a
+  Rust release. The tool runs `gpg` with `--no-autostart`, since a
+  signature check needs no gpg-agent, and with `--log-file`, so a good
+  signature prints nothing but the entries and a refused one quotes gpg's
+  log. `curl` downloads, as before. Each
+  download is a `read`, so the tests answer it from a saved file, and gpg
+  checks the files written from the text the entries are parsed from.
+- **For the developer** nothing else changes: `curl` and `gpg` on the
+  PATH, the same arguments, the same output. The first run compiles the
+  crate.
+- **The list for R2** is `Release::archives`: each archive's package,
+  manifest target, file name and `sha256s` key. bazel-clippy.sh keeps its
+  copy until R2, and its comment and its two errors name the tool.
+- **Dependencies:** `toml` 1.1.8 joins the workspace's, reading only
+  (`std`, `serde`, `parse`). Its lock entry raised `toml_datetime` to
+  1.1.2 and `toml_parser` to 1.1.5, which `toml_edit` shares (through
+  `proc-macro-crate`). `serde` and `tempfile` were the workspace's
+  already. The tests' fake runner moved to `process.rs`, shared with
+  repin-bazel-lock's.
+- **Tests:** the channel manifests of 1.99.0 and nightly/2026-08-15, cut
+  to the tables the tool reads (`testdata/`), give exactly the entries
+  MODULE.bazel pins, and the nightly its comment line. Edited, they show
+  the tool refusing a missing host, a missing `.tar.xz`, an archive named
+  otherwise, a nightly of another date and text that is not TOML; with
+  the fake's answers, a key of another fingerprint, a signature by another
+  key, one gpg rejects, and a failed download or import.
+- **Proven locally**, on 2026-10-20: against static.rust-lang.org, the
+  tool printed what the script printed for both pins, byte for byte,
+  the nightly's comment line on stderr included, starting no gpg-agent.
+  With `curl` shimmed to serve local files to the real `gpg`, it
+  refused a manifest with a line appended (gpg's "BAD signature", quoted),
+  a key file holding another key (its fingerprint), and a manifest signed
+  by a second key the key file also held: gpg reported a good signature,
+  and VALIDSIG named the other key. A nightly date the server lacks fails
+  with curl's 404.
+- **Unproven:** a run on macOS or Windows. The tool runs on no CI venue;
+  the Bazel legs run its tests on Linux and Windows. On Windows it needs
+  `gpg` on the PATH (Gpg4win), which the bash script never ran on.
 
 ### R2 — Bazel clippy
 
 `tools/ci/bazel-clippy.sh` (184 lines): runs the clippy aspect over
 `//...` and checks the toolchain pins agree. It is in AGENTS.md rule 4's
 local gate and in bazel.yml's `bazel clippy` step. It needs R1 first, and
-reads R1's archive list rather than porting the script's own copy.
+reads R1's archive list (`Release::archives`) rather than porting the
+script's own copy.
 **Open question:** the tool may not start through the alias in the Bazel
 legs. The Linux pool template has no Cargo until T1, and whether the
 Windows template, whose variables include `CARGO_HOME` and `RUSTUP_HOME`

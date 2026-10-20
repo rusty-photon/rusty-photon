@@ -793,16 +793,17 @@ needs from you:
     ```
   - A point release of the pin (1.99.1) needs no MSRV bump.
 - **Bump them together in the first PR after each stable release**:
-  - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
-    prints them from the release's GPG-signed channel manifest);
+  - the pin, with its `sha256s` (`cargo ci rust-toolchain-sha256s <version>`
+    prints them from the release's GPG-signed channel manifest; it runs `curl`
+    and `gpg`);
   - the root Cargo.toml's `rust-version` and `clippy.toml`'s `msrv`, then
     `cargo ci repin-bazel-lock`;
   - the coverage nightly, to the last nightly of the new MSRV's cycle
     (`MODULE.bazel` says why), with its hashes from
-    `scripts/rust-toolchain-sha256s.sh nightly/<date>`. On stderr the script
+    `cargo ci rust-toolchain-sha256s nightly/<date>`. On stderr the tool
     prints a comment line with the date's rustc version: paste it, as printed,
     directly above the nightly entry.
-    If the script refuses the date because a component is missing on a
+    If the tool refuses the date because a component is missing on a
     host, take the latest earlier date it accepts;
   - the places that state the MSRV for readers. Nothing checks these, so
     update each by hand:

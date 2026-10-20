@@ -155,55 +155,10 @@ fn report(unstaged: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use crate::process::Fake;
     use std::path::Path;
 
-    /// Records every command and answers `read` from a queue, in order.
-    /// `fail_at` makes the command with that index fail.
-    #[derive(Default)]
-    struct Fake {
-        ran: Vec<Cmd>,
-        stdout: VecDeque<&'static str>,
-        fail_at: Option<usize>,
-    }
-
-    impl Fake {
-        fn answering(stdout: &[&'static str]) -> Self {
-            Self {
-                stdout: stdout.iter().copied().collect(),
-                ..Self::default()
-            }
-        }
-
-        fn record(&mut self, cmd: &Cmd) -> Result<(), Error> {
-            let index = self.ran.len();
-            self.ran.push(cmd.clone());
-            if self.fail_at == Some(index) {
-                return Err(Error::Failed {
-                    command: cmd.to_string(),
-                    status: "exit status: 1".to_owned(),
-                });
-            }
-            Ok(())
-        }
-    }
-
-    impl Runner for Fake {
-        fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {
-            self.record(cmd)
-        }
-
-        fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
-            self.record(cmd)?;
-            Ok(self.stdout.pop_front().unwrap_or_default().to_owned())
-        }
-    }
-
     const ROOT: &str = "/home/dev/rusty-photon\n";
-
-    fn command_lines(fake: &Fake) -> Vec<String> {
-        fake.ran.iter().map(ToString::to_string).collect()
-    }
 
     #[test]
     fn runs_the_repin_then_stages_the_lock_then_looks_for_unstaged_cargo_files() {
@@ -212,7 +167,7 @@ mod tests {
         repin(&mut fake, []).unwrap();
 
         assert_eq!(
-            command_lines(&fake),
+            fake.lines(),
             [
                 "git rev-parse --show-toplevel",
                 "CARGO_BAZEL_REPIN=1 bazel mod tidy",
@@ -292,7 +247,7 @@ mod tests {
         let error = repin(&mut fake, []).unwrap_err();
 
         assert_eq!(error.to_string(), "`bazel mod tidy` failed: exit status: 1");
-        assert_eq!(fake.ran.len(), 3, "{:?}", command_lines(&fake));
+        assert_eq!(fake.ran.len(), 3, "{:?}", fake.lines());
     }
 
     #[test]

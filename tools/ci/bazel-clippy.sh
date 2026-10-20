@@ -32,9 +32,9 @@
 #       because MODULE.bazel names it as the remedy for a stabilization the
 #       MSRV's last nightly lacks. The check shows the nightly's cycle, not
 #       that it is the right date in it; choosing that is the bump's job.
-#     - `sha256s` holds exactly the archives the hash script prints for the
-#       two pins. A pin bumped without its hashes would otherwise download
-#       unverified.
+#     - `sha256s` holds exactly the archives `cargo ci rust-toolchain-sha256s`
+#       prints for the two pins. A pin bumped without its hashes would
+#       otherwise download unverified.
 #
 # This header is the one list of these checks; the docs point here.
 #
@@ -116,7 +116,7 @@ patch_of() {
 # rust.toolchain's call in MODULE.bazel, from its opening line to its closing
 # parenthesis. Its `versions` list holds the stable pin (a bare X.Y.Z) and
 # the coverage nightly, one per line, the nightly directly under the line the
-# hash script prints for it: `# nightly/<date> is rustc <version>-nightly (...)`.
+# hash tool prints for it: `# nightly/<date> is rustc <version>-nightly (...)`.
 toolchain=$(sed -n '/^rust\.toolchain($/,/^)$/p' MODULE.bazel)
 bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' <<<"$toolchain")
 nightly=$(sed -n 's/^ *"nightly\/\([0-9][0-9-]*\)",$/\1/p' <<<"$toolchain")
@@ -139,13 +139,14 @@ else
     next_release="${msrv_release%%.*}.$((${msrv_release#*.} + 1))"
     recorded_release=$(release_of "${recorded#* }")
     if [[ "${recorded%% *}" != "$nightly" || ("$recorded_release" != "$msrv_release" && "$recorded_release" != "$next_release") ]]; then
-      flag "::error::the coverage nightly must come from the MSRV's ($msrv_release) cycle, or the next one's ($next_release), and the line directly above its entry must record that; for nightly/$nightly it reads \"${recorded:-no recorded version}\". Paste the line \`scripts/rust-toolchain-sha256s.sh nightly/<date>\` prints."
+      flag "::error::the coverage nightly must come from the MSRV's ($msrv_release) cycle, or the next one's ($next_release), and the line directly above its entry must record that; for nightly/$nightly it reads \"${recorded:-no recorded version}\". Paste the line \`cargo ci rust-toolchain-sha256s nightly/<date>\` prints."
     fi
   fi
-  # The archives scripts/rust-toolchain-sha256s.sh prints for the two pins:
+  # The archives `cargo ci rust-toolchain-sha256s` prints for the two pins:
   # its seven tools for each of its five hosts, plus rust-src, whose key has
   # no date even for the nightly (rules_rust looks it up without one). Keep
-  # these lists and key shapes in step with the script's.
+  # these lists and key shapes in step with `Release::archives` in
+  # tools/rusty-photon-ci/src/rust_toolchain_sha256s.rs.
   expected=$(
     for tool in rustc cargo clippy rustfmt llvm-tools rust-std rust-analyzer; do
       for host in aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin \
@@ -162,7 +163,7 @@ else
   unexpected=$(comm -13 <(sort <<<"$expected") <(sort <<<"$keys"))
   if [[ -n "$missing" || -n "$unexpected" ]]; then
     flag ${missing:+"missing:"} ${missing:+"$missing"} ${unexpected:+"unexpected:"} ${unexpected:+"$unexpected"} \
-      "::error::MODULE.bazel's sha256s must hold exactly the archives of the stable pin ($bazel_pin) and of the coverage nightly ($nightly), as scripts/rust-toolchain-sha256s.sh prints them; the keys above are missing or unexpected. Regenerate them with the script, or the toolchains download unverified."
+      "::error::MODULE.bazel's sha256s must hold exactly the archives of the stable pin ($bazel_pin) and of the coverage nightly ($nightly), as \`cargo ci rust-toolchain-sha256s <release>\` prints them; the keys above are missing or unexpected. Regenerate them with it, or the toolchains download unverified."
   fi
 fi
 
