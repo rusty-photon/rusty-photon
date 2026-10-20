@@ -264,6 +264,41 @@ test('a pull request GitHub refuses to open fails the step with its answer, and 
   assert.equal(routes(api).filter((route) => route === 'POST /repos/o/r/pulls').length, 1);
 });
 
+test('a write GitHub answers 502 is sent again when a repeat makes the same thing, and the proposal goes on', async (t) => {
+  const failedOnce = new Set();
+  const flaky = ['POST /repos/o/r/git/trees', 'POST /repos/o/r/git/commits', `PATCH /repos/o/r/git/refs/heads/${BRANCH}`, 'PATCH /repos/o/r/pulls/9'];
+  const api = await fakeGitHub({
+    branch: OLD_TIP,
+    pulls: [{ number: 9, html_url: 'https://github.example/o/r/pull/9' }],
+    fail: (req, res) => {
+      const route = `${req.method} ${req.url}`;
+      if (!flaky.includes(route) || failedOnce.has(route)) return false;
+      failedOnce.add(route);
+      json(res, 502, { message: 'Server Error' });
+      return true;
+    },
+  });
+  t.after(api.close);
+  const { value } = await run(api, PASSED);
+  assert.deepEqual(value, { outcome: 'proposed', url: 'https://github.example/o/r/pull/9' });
+  for (const route of flaky) assert.equal(routes(api).filter((r) => r === route).length, 2, route);
+});
+
+test('creating the branch and opening the pull request are each sent once, whatever GitHub answers', async (t) => {
+  for (const route of ['POST /repos/o/r/git/refs', 'POST /repos/o/r/pulls']) {
+    const api = await fakeGitHub({
+      fail: (req, res) => {
+        if (`${req.method} ${req.url}` !== route) return false;
+        json(res, 502, { message: 'Server Error' });
+        return true;
+      },
+    });
+    t.after(api.close);
+    await assert.rejects(run(api, PASSED), /failed \(GitHub answered: \{"message":"Server Error"\}\)/);
+    assert.equal(routes(api).filter((r) => r === route).length, 1, route);
+  }
+});
+
 // --- A failed check ---------------------------------------------------------------
 
 const FAILED = [result('Linux-X64', NEW['Linux-X64']), result('macOS-ARM64', '7'.repeat(64), 'failed', { problem: 'M101 solve exited 1' })];

@@ -59,7 +59,11 @@ export const CROSS_MIRROR = 'cross-mirror SHA only (no runner, no verification)'
 // (actions/runner, NodeScriptActionHandler.cs): ACTIONS_RUNTIME_TOKEN would
 // let a program write the repository's caches, and INPUT_* are the action's
 // inputs. A binary being checked is one upstream released and nobody has
-// looked at yet, so it gets neither.
+// looked at yet, so they are not handed to it. That is no sandbox: this
+// process keeps them, and on Linux a process can read its parent's
+// environment (/proc/<ppid>/environ); a hosted runner's user also has
+// passwordless sudo. The job holds no token besides, with contents: read and
+// no credentials left by checkout.
 function withoutRunnerVariables(env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ACTIONS|INPUT)_/i.test(name)));
 }

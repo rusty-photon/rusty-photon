@@ -364,8 +364,10 @@ solving the committed M101 fixture
 (`services/plate-solver/tests/fixtures/m101_known.fits`) to the
 known center within the same 0.01° tolerance the BDD scenario
 uses**. That job runs the new binary with read-only permissions and
-none of the runner's `ACTIONS_*` variables, since nobody has looked at
-it yet. If every rotated platform's verification passes, it commits the
+none of the runner's `ACTIONS_*` variables in its environment, since
+nobody has looked at it yet. That is no sandbox: the binary can still
+read the action's own environment, and a hosted runner gives it
+passwordless `sudo` (docs/skills/ci-logic.md). If every rotated platform's verification passes, it commits the
 new pins on main's table through the GitHub API, onto
 `chore/auto-refresh-astap-shas`, opens (or updates) a
 `chore(install-astap): auto-refresh SHA-256 pins` PR from it, and
@@ -383,8 +385,9 @@ approve past the merge gate, which requires a code-owner review. If verification
 files an `astap-refresh-blocked` issue instead — that case means
 upstream shipped something broken and a human needs to look. The label
 must exist in the repository: GitHub opens an issue without a label it
-lacks, so the step fails then, rather than let each later failure open
-another issue. The
+lacks, and says nothing, so the step fails after opening it, and each
+later failure, not finding it, opens another and fails the same way.
+Create the label before the first blocker. The
 M101 verification (described above) is the only
 ASTAP validation that runs before merge — `pull_request`-triggered
 workflows do NOT run on the auto-PR because [GitHub Actions

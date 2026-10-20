@@ -639,14 +639,19 @@ one for each of the workflow's two jobs, with the bash, the two
     and `issues: write`, and checkout left the token in `.git/config`.
     The binary also runs without the runner's `ACTIONS_*` variables
     (`ACTIONS_RUNTIME_TOKEN` can write the repository's caches), which a
-    JavaScript action gets and the shell's `run:` step did not.
+    JavaScript action gets and the shell's `run:` step did not. That is no
+    sandbox: the action's own process keeps the token, which a child can
+    read on Linux from `/proc/<ppid>/environ`, more easily than the
+    shell's binary could have dug it out of the runner, and a hosted
+    runner's user has passwordless `sudo` either way.
   - A solve still running after 120 s is killed and fails the check,
     where the shell would have held the job to its six-hour limit.
   - The blocker goes through `commentOrOpen`, as J7's tracking issues
     do, so a blocker opened without its label fails the step. The label
     `astap-refresh-blocked` did not exist in the repository, so the first
     blocker would have been opened without it, and every later failure
-    would have opened another. The tracker's comment names the blocker,
+    would have opened another, silently; now each of them still opens one,
+    but fails the step saying to create the label. The tracker's comment names the blocker,
     and a result's row names why its check failed.
   - `workflow_dispatch` takes `dry-run`: `publish` reads what it would
     act on and prints what it would write.
@@ -674,6 +679,10 @@ one for each of the workflow's two jobs, with the bash, the two
   tracking issue. On macOS the first D05 attempt met a crawling mirror,
   was cut at the 300 s limit and the next finished in 4 s, where curl,
   with no limit, would have waited it out.
+- **Writes GitHub fails:** the tree, the commit, moving the branch and a
+  pull request's new body are sent again after a 5xx, since a repeat makes
+  the same thing; creating the branch, opening the pull request and the
+  comments are sent once, as a repeat could fail or make a second one.
 - **After merge:** `publish`'s writes (the tree, commit, ref, pull
   request and comments) have only met the fake until the first rotation
   makes them; watch that run. A dispatch on main with `dry-run` proves

@@ -412,7 +412,13 @@ once and waits for them all.
   which can write the repository's caches, and a `run:` step does not
   (actions/runner, `NodeScriptActionHandler.cs`). Its job also runs with
   `contents: read` and `persist-credentials: false`, so no token is on
-  disk. `refresh-astap`'s `detect` runs a new ASTAP release so.
+  disk. `refresh-astap`'s `detect` runs a new ASTAP release so. That only
+  keeps the token from being handed to the program; it is not a sandbox.
+  The action's own process still holds it, and on Linux a process can
+  read its parent's environment (`/proc/<ppid>/environ`), where a `run:`
+  step's program would have had to dig it out of the runner's memory; a
+  hosted runner's user also has passwordless `sudo`. Keep such a job
+  holding nothing else.
 - **Tests start real processes.** The logic takes `spawn` as an option,
   and a test passes one that starts `node -e` with a fake in each
   program's place, so the descriptors, the environment and the signals

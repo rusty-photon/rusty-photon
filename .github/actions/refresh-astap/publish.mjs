@@ -177,6 +177,14 @@ async function answer(what, url, options) {
   return response === undefined ? undefined : response.json();
 }
 
+// The writes a repeat leaves as they were, which fetchWithRetry may send
+// again after a 5xx or no answer: a tree or commit is named by its content,
+// so a second POST of one makes the same object, and a PATCH sets the ref
+// or the body to the same value again. Creating the branch, opening the pull
+// request and commenting are sent once: a repeat of one GitHub had acted on
+// would fail on the branch it made, or make a second of the others.
+const REPEATABLE = { attempts: 3 };
+
 // The pull request from BRANCH with `body`, its branch at a new commit on
 // `base` that changes the table to `table`: the open one updated, or one
 // opened. Resolves to its link.
@@ -185,11 +193,13 @@ async function propose({ api, repo, token, base, tree, table, body, open, branch
   const madeTree = await answer('Writing the new table', `${repos}/git/trees`, {
     token,
     json: { base_tree: tree, tree: [{ path: TABLE_PATH, mode: '100644', type: 'blob', content: formatTable(table) }] },
+    ...REPEATABLE,
     ...options,
   });
   const commit = await answer('Committing the new table', `${repos}/git/commits`, {
     token,
     json: { message: COMMIT_MESSAGE, tree: madeTree.sha, parents: [base] },
+    ...REPEATABLE,
     ...options,
   });
   io.stdout(`Committed ${commit.sha} on ${base}\n`);
@@ -202,11 +212,18 @@ async function propose({ api, repo, token, base, tree, table, body, open, branch
       token,
       method: 'PATCH',
       json: { sha: commit.sha, force: true },
+      ...REPEATABLE,
       ...options,
     });
   }
   if (open !== undefined) {
-    await github(`Updating #${open.number}`, `${repos}/pulls/${open.number}`, { token, method: 'PATCH', json: { body }, ...options });
+    await github(`Updating #${open.number}`, `${repos}/pulls/${open.number}`, {
+      token,
+      method: 'PATCH',
+      json: { body },
+      ...REPEATABLE,
+      ...options,
+    });
     io.stdout(`Updated #${open.number}: ${open.html_url}\n`);
     return open.html_url;
   }
