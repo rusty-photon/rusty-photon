@@ -24,19 +24,7 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
     config["server"]["tls"] = world.pki().tls_block();
     config["server"]["auth"] = world.pki().auth_block();
 
-    let config_path = std::env::temp_dir()
-        .join(format!(
-            "rp-auth-test-{}.json",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .to_string_lossy()
-        .to_string();
-    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
-        .await
-        .unwrap();
+    let config_path = bdd_infra::rp_harness::write_temp_config_file("rp-auth-test", &config).await;
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
