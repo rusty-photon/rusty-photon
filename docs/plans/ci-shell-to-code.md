@@ -662,7 +662,18 @@ one for each of the workflow's two jobs, with the bash, the two
   real binary solved M101 and the result passed, in 5.5 s with the D05
   download; with the real pins there was no rotation, and the same held
   for Windows-ARM64 from Linux. `publish` ran a dry run against the real
-  API, reading main's ref, commit and table.
+  API, reading main's ref, commit and table. On the Windows VM the tests
+  passed under Bazel, and the real `astap_cli.exe` (CLI-2026.09.19)
+  passed its check on Node 24.20.0. On every hosted runner, from a
+  temporary workflow on a throwaway branch that set each runner's pin
+  wrong: the four with a job of their own solved M101 to RA 210.80988,
+  Dec 54.34693 and failed the empty field, Windows-ARM64 was compared
+  only, and `publish`'s dry runs read main with the job's own token, one
+  finding main already pins what upstream serves, the other, given a
+  pin main does not hold, reading the branch, the pull requests and the
+  tracking issue. On macOS the first D05 attempt met a crawling mirror,
+  was cut at the 300 s limit and the next finished in 4 s, where curl,
+  with no limit, would have waited it out.
 - **After merge:** `publish`'s writes (the tree, commit, ref, pull
   request and comments) have only met the fake until the first rotation
   makes them; watch that run. A dispatch on main with `dry-run` proves
