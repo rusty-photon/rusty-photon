@@ -460,9 +460,9 @@ not:
   `plate-solver-smoke` also run on a change to `.github/actions/lib`, which
   the action runs. The macOS quarantine step went, as J2's did. The
   workflow's own D05 download, with its copy of the pin, stays for J8.
-  ASTAP joined the developer's install in a follow-up, at the owner's
-  ask, though Amendment A named only J5 and J6: `installAt` puts the
-  CLI and the D05 database in one directory.
+  ASTAP joined the developer's install in #1574, at the owner's ask,
+  though Amendment A named only J5 and J6: `installAt` puts the CLI and
+  the D05 database in one directory.
 - **J5 `install-zwo-sdk`** (442 lines, bash and PowerShell). A sudo and a
   sudo-free Linux path, a macOS path and a Windows path; the cache restore
   and save are separate steps; the Windows download is the unpinned,
