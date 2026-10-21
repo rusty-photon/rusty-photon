@@ -2,6 +2,7 @@
 // conformu-run): streams of runs, all started together, each stream's runs
 // one after another and its output in a log file of its own, printed
 // afterwards as a log group, so that the streams' lines do not interleave.
+// How a program ended (`ended`, `exitText`) serves beta-clippy too.
 // Conventions: docs/skills/ci-logic.md §An action that runs processes.
 
 import { spawn as nodeSpawn } from 'node:child_process';

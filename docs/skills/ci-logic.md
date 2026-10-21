@@ -465,20 +465,20 @@ stream's log as a group.
 - **A program the action downloaded and nobody has checked** gets the
   step's environment without the runner's `ACTIONS_*` variables and the
   action's `INPUT_*` (`withoutRunnerVariables`, which `execute` applies
-  unless given an environment). So does a program the action runs where a
-  `run:` step ran it, so that the move hands it nothing the step did not:
-  `bazel-coverage` and `rules-rust-patches` run Bazel so, which runs the
-  build's repository rules, `uncovered-diff-lines` runs pip, diff-cover
-  and the coverage scripts' poster so, `cargo-workspace` runs Cargo and
-  cargo-msrv so, `conformu-run` runs each service's `cargo test` so, `install-astap`'s smoke test runs ASTAP so, and
-  `install-conformu` runs ConformU's Windows installer and each install's
-  `--version` so. A
-  JavaScript action gets
-  `ACTIONS_RUNTIME_TOKEN`, which can write the repository's caches, and a
-  `run:` step does not (actions/runner, `NodeScriptActionHandler.cs`). Its
-  job also runs with `contents: read` and `persist-credentials: false`, so
-  no token is on disk. `refresh-astap`'s `detect` runs a new ASTAP release
-  so. That only
+  unless given an environment). So does a program the action runs where
+  a `run:` step ran it, so that the move hands it nothing the step did
+  not: `bazel-coverage` and `rules-rust-patches` run Bazel so, which
+  runs the build's repository rules, `uncovered-diff-lines` runs pip,
+  diff-cover and the coverage scripts' poster so, `cargo-workspace` runs
+  Cargo and cargo-msrv so, `conformu-run` runs each service's `cargo
+  test` so, `beta-clippy` runs clippy and the census script so,
+  `install-astap`'s smoke test runs ASTAP so, and `install-conformu`
+  runs ConformU's Windows installer and each install's `--version` so. A
+  JavaScript action gets `ACTIONS_RUNTIME_TOKEN`, which can write the
+  repository's caches, and a `run:` step does not (actions/runner,
+  `NodeScriptActionHandler.cs`). Its job also runs with `contents: read`
+  and `persist-credentials: false`, so no token is on disk.
+  `refresh-astap`'s `detect` runs a new ASTAP release so. That only
   keeps the token from being handed to the program; it is not a sandbox.
   The action's own process still holds it, and on Linux a process can
   read its parent's environment (`/proc/<ppid>/environ`), where a `run:`
@@ -516,8 +516,9 @@ write credential.
 ### An action that calls the GitHub API
 
 `lib/github.mjs` holds what `tracking-issue`, `refresh-astap`,
-`uncovered-diff-lines` and `install-conformu` share: `runContext` (the API, the repository and
-the run's link from the runner's variables), `github` (a request that
+`uncovered-diff-lines`, `install-conformu` and `beta-clippy` share:
+`runContext` (the API, the repository and the run's link from the
+runner's variables), `github` (a request that
 names what failed and carries GitHub's own answer, a POST or PATCH sent
 once; with `missing`, a 404 is no error; with `accept`, the answer in
 another media type, such as a pull request's diff), `openIssues` (every

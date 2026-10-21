@@ -1,0 +1,13 @@
+name: Beta clippy census
+description: >-
+  check.yml's nightly beta clippy: clippy on the beta toolchain, in the stable
+  gate's two passes with every lint capped at a warning, what it reported
+  printed, and its census per lint (tools/ci/beta_clippy_census.py) added to
+  the run's summary. Fails only when a pass fails, as on a compile error. The
+  logic is ../report.mjs's.
+outputs:
+  census:
+    description: The census's file, for ../track; none when a pass failed.
+runs:
+  using: node24
+  main: index.mjs

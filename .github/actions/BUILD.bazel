@@ -73,6 +73,26 @@ node_test(
     ],
 )
 
+# beta-clippy: check.yml's nightly beta clippy, its census and its issue per
+# lint. The tests start a fake in cargo's and the census script's place, and
+# answer the GitHub API from a fake.
+node_test(
+    name = "beta_clippy_test",
+    size = "small",
+    srcs = [
+        "beta-clippy/report.test.mjs",
+        "beta-clippy/track.test.mjs",
+    ],
+    data = [
+        "beta-clippy/report.mjs",
+        "beta-clippy/track.mjs",
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/processes.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # bazel-coverage: the coverage job's `bazel coverage` run. The tests start a
 # fake Bazel as a Node process of its own, and read .bazelrc for the configs.
 node_test(

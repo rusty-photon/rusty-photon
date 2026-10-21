@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588) and the small blocks of nine more (#1589) done |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589) and check.yml's beta clippy (#1594) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1328,8 +1328,8 @@ together, in one (#1589):
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package" (done, below);
 - check.yml: "Verify workspace MSRV" (from R5, done, below); `clippy-beta`'s
-  report and aggregation blocks, and its per-lint census `github-script` if
-  J7 leaves it out;
+  report and aggregation blocks, and its per-lint census `github-script`,
+  which J7 left out (done, below);
 - conformu.yml: "Discover ConformU services" (from R5, done, below); the two "Export
   CONFORMU_PATH" blocks and "Run ConformU tests (parallel)", which R7
   took (#1591, #1593);
@@ -1432,6 +1432,22 @@ Done so far:
   `uncovered-diff-lines` now that `cargo-workspace` and
   `rules-rust-patches` also run a program as the `run:` step did, and
   `notice`.
+- **check.yml's beta clippy** (#1594): the `beta-clippy` action, in the
+  job's two steps.
+  - **`report`** takes the report and aggregation steps: the stable
+    gate's two clippy passes on beta, with every lint capped at a
+    warning, then what they reported, printed, then
+    `tools/ci/beta_clippy_census.py` on it, its table added to the run's
+    summary. A pass that fails, as on a compile error, fails the step,
+    naming the pass, and makes no census, as before. The files go in
+    `RUNNER_TEMP`, not the checkout. The census script stays Python:
+    ADR-022 leaves the Python scripts where they are, and developers run
+    this one too (pre-push.md).
+  - **`track`** takes the `github-script`, through `lib/github.mjs`: the
+    issue per lint, its body as before, and the cap of 20 lints. It reads
+    the label and creates it when the repository lacks it, where the
+    script created it and took a 422 to mean it existed, and the issue
+    list it reads leaves pull requests out.
 
 ## T1 — The Linux pool template carries rustup and stable
 
