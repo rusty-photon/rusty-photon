@@ -1,0 +1,19 @@
+name: Plate-solver solve times
+description: >-
+  Puts the solve times plate-solver-smoke.yml's BDD run recorded in the log,
+  a notice each, and checks the M 101 hinted and blind solves against a
+  coarse budget. The logic and the budget are times.mjs's.
+inputs:
+  csv:
+    description: The CSV the BDD run wrote (PLATE_SOLVER_PERF_CSV).
+    required: true
+  os:
+    description: The leg's runner, which the log lines and annotations name.
+    required: true
+  check:
+    description: Whether to check the budget, which needs a BDD run that passed.
+    required: false
+    default: "true"
+runs:
+  using: node24
+  main: index.mjs

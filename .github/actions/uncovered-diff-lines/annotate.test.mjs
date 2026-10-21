@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { capture, serve } from '../lib/testing.mjs';
-import { CHECK, DIFF_COVER, POSTER, annotate, execute } from './annotate.mjs';
+import { CHECK, DIFF_COVER, POSTER, annotate } from './annotate.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 
@@ -373,25 +373,6 @@ test('the real poster exits 0 when only its annotations past the first 50 fail, 
   } finally {
     await api.close();
   }
-});
-
-// --- execute ------------------------------------------------------------------
-
-test('execute copies a program\'s output to the log and resolves to its stdout', async () => {
-  const fake = fakeSpawn({ pip: { stdout: 'out\n', stderr: 'err\n' } });
-  const { value, stdout, stderr } = await capture(() => execute('python3', ['-m', 'pip'], { env: ENV, spawn: fake.spawn }));
-  assert.equal(value, 'out\n');
-  assert.equal(stdout, 'out\n');
-  assert.equal(stderr, 'err\n');
-});
-
-test('execute rejects with the exit code and the last line of stderr, or the code alone', async () => {
-  const failing = fakeSpawn({ pip: { stderr: 'first\nlast\n', code: 2 } });
-  await capture(() =>
-    assert.rejects(execute('python3', ['-m', 'pip'], { env: ENV, spawn: failing.spawn }), { message: 'python3 exited with 2: last' }),
-  );
-  const silent = fakeSpawn({ pip: { code: 3 } });
-  await capture(() => assert.rejects(execute('python3', ['-m', 'pip'], { env: ENV, spawn: silent.spawn }), { message: 'python3 exited with 3' }));
 });
 
 // --- The poster ---------------------------------------------------------------

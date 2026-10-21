@@ -32,6 +32,19 @@ node_test(
     ],
 )
 
+# cargo-workspace: the packages a [package.metadata] table gives a command,
+# and the MSRV check. The tests answer `cargo` from a fake.
+node_test(
+    name = "cargo_workspace_test",
+    size = "small",
+    srcs = ["cargo-workspace/workspace.test.mjs"],
+    data = [
+        "cargo-workspace/workspace.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # bazel-coverage: the coverage job's `bazel coverage` run. The tests start a
 # fake Bazel as a Node process of its own, and read .bazelrc for the configs.
 node_test(
@@ -112,6 +125,58 @@ node_test(
         "lib/helpers.mjs",
         "lib/install.mjs",
         "lib/testing.mjs",
+    ],
+)
+
+# install-astap's smoke test, install-astap.yml's check of the action. The
+# tests start a fake ASTAP as a Node process in the binary's place.
+node_test(
+    name = "astap_smoke_test",
+    size = "small",
+    srcs = ["install-astap/smoke.test.mjs"],
+    data = [
+        "install-astap/smoke.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
+# plate-solver-times: plate-solver-smoke.yml's solve times and their budget.
+node_test(
+    name = "plate_solver_times_test",
+    size = "small",
+    srcs = ["plate-solver-times/times.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+        "plate-solver-times/times.mjs",
+    ],
+)
+
+# qhyccd-libusb: pi-nightly.yml's libusb link for the QHYCCD SDK.
+node_test(
+    name = "qhyccd_libusb_test",
+    size = "small",
+    srcs = ["qhyccd-libusb/libusb.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+        "qhyccd-libusb/libusb.mjs",
+    ],
+)
+
+# rules-rust-patches: rules-rust-patches.yml's guards over the rules_rust
+# coverage patches. The tests answer `bazel` from a fake and read a fetched
+# rules_rust made in a temp directory.
+node_test(
+    name = "rules_rust_patches_test",
+    size = "small",
+    srcs = ["rules-rust-patches/patches.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+        "rules-rust-patches/patches.mjs",
     ],
 )
 

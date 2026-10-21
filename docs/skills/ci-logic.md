@@ -149,7 +149,7 @@ parsers, which its comments name.
 | `setOutput`, `exportVariable`, `addPath` | Write `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`. Values always go in the multi-line form, under a random delimiter. A name the runner would split (`=`, `<<`, a line break) throws, and so does `NODE_OPTIONS`, which the runner refuses to pass to later steps. |
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
 | `saveState`, `getState` | Keep a value for the action's own `post:` step, which reads it back; the runner hands it to that step alone. |
-| `warning`, `error`, `group`, `fail` | A warning annotation; an error annotation that leaves the step to succeed, for a failure a later step acts on; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
+| `notice`, `warning`, `error`, `group`, `fail` | A notice annotation; a warning annotation; an error annotation that leaves the step to succeed, for a failure a later step acts on; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
 | `describe` | An error's message followed by its causes', which is where `fetch` says why a request failed (`fetch failed: connect ECONNREFUSED …`): what `run` puts in its annotation, for an action that reports a failure without failing the step. |
 | `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks, or a minute for its secondary limit, measured on the server's clock (a wait over two minutes is not retried). Each retry is a plain log line, not a warning annotation. Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
@@ -158,6 +158,7 @@ parsers, which its comments name.
 | `maskUrl` | Mask a URL that is the operator's own, such as the LAN cache's: the URL, its host and its hostname. Returns it without trailing slashes; one that does not parse throws without showing it. |
 | `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
 | `command` | Runs a program with its arguments, never through a shell, and resolves to what it prints. An exit other than 0 rejects with the last line of its stderr, and a program that cannot start with its spawn error (`ENOENT`). |
+| `execute` | Runs a program as the `run:` step it replaces would have: never through a shell, with no stdin, with the environment without the runner's variables unless given another, and its output copied to the log as it comes (stdout left out with `echo: false`). Resolves to what it printed on stdout and rejects as `command` does; when its `signal` aborts, the program is sent SIGTERM and it rejects with an AbortError. |
 | `withoutRunnerVariables` | An environment without the variables the runner gives a JavaScript action and not a `run:` step, `ACTIONS_*` and `INPUT_*`, for a program the action starts (below). |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `parseRetryAfter` | The wait a Retry-After header asks for, in ms: its seconds, or its HTTP date measured against the server's clock. For a request made without `fetchWithRetry`, as `lib/install.mjs`'s download is. |
@@ -409,7 +410,8 @@ once and waits for them all.
 - **`spawn` a program, never through a shell**, with stdin `'ignore'`:
   a program that read stdin would take the step's, and in a list run one
   after another, the next one's. `command` in the helper module does this
-  for one program whose output the action reads.
+  for one program whose output the action reads, and `execute` for one
+  whose output belongs in the step's log, with the environment below.
 - **Programs that run at once write to a file each**: pass the file's
   descriptor as the child's stdout and stderr, and print each file
   afterwards in a group of its own. Written to the step's log as they
@@ -425,11 +427,14 @@ once and waits for them all.
   each SIGTERM, then SIGKILL 5 s later, and prints the logs.
 - **A program the action downloaded and nobody has checked** gets the
   step's environment without the runner's `ACTIONS_*` variables and the
-  action's `INPUT_*` (`withoutRunnerVariables`). So does a program the
-  action runs where a `run:` step ran it, so that the move hands it
-  nothing the step did not: `bazel-coverage` runs Bazel so, which runs
-  the build's repository rules, and `uncovered-diff-lines` runs pip,
-  diff-cover and the coverage scripts' poster so. A JavaScript action gets
+  action's `INPUT_*` (`withoutRunnerVariables`, which `execute` applies
+  unless given an environment). So does a program the action runs where a
+  `run:` step ran it, so that the move hands it nothing the step did not:
+  `bazel-coverage` and `rules-rust-patches` run Bazel so, which runs the
+  build's repository rules, `uncovered-diff-lines` runs pip, diff-cover
+  and the coverage scripts' poster so, `cargo-workspace` runs Cargo and
+  cargo-msrv so, and `install-astap`'s smoke test runs ASTAP so. A
+  JavaScript action gets
   `ACTIONS_RUNTIME_TOKEN`, which can write the repository's caches, and a
   `run:` step does not (actions/runner, `NodeScriptActionHandler.cs`). Its
   job also runs with `contents: read` and `persist-credentials: false`, so

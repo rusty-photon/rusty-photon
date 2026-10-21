@@ -33,9 +33,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [address, leak]
+        # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        include:
+          - sanitizer: address
+            test-targets: --lib --tests
+          - sanitizer: leak
+            test-targets: --all-targets
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+      # Workspace code builds at opt-level 1 for the sanitizers. The variable
+      # sets [profile.dev]'s opt-level over Cargo.toml's, and `cargo test`'s
+      # test profile inherits it.
+      # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
       # Build the zwo + qhy + svbony crates' pure-Rust `simulation` path with
       # no native SDK link, so they can be sanitized without provisioning any
       # SDK (see the cargo build step +
@@ -53,15 +63,6 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
       - run: sudo apt install -y llvm
         name: Install llvm (symbolizer for debug symbols)
-      - name: Enable opt-level 1 for sanitizers
-        run: |
-          # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
-          if ! grep -qE '^\s*\[profile.dev\]' Cargo.toml; then
-              echo >> Cargo.toml
-              echo '[profile.dev]' >> Cargo.toml
-          fi
-          sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
-          sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
       - name: cargo build
         # All three native-SDK camera stacks (zwo-rs/libzwo-sys,
         # qhyccd-rs/libqhyccd-sys, svbony-rs/libsvbony-sys) build their
@@ -75,7 +76,7 @@ jobs:
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
-        # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        # The targets are the matrix's, per sanitizer.
         # exclude bdd-infra: its unit tests look for binaries in target/debug/
         # which doesn't exist when CARGO_BUILD_TARGET is set.
         # qhy-camera is NOT excluded: QHYCCD_SKIP_NATIVE_LINK=1 (above) builds its
@@ -84,12 +85,7 @@ jobs:
         # the workspace. Without it cargo stops at the first failing test binary,
         # so a run reports whichever crate happens to fail earliest and says
         # nothing about the crates whose binaries never got to run.
-        run: |
-          if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --lib --tests --all-features --no-fail-fast
-          else
-            cargo test --workspace --exclude bdd-infra --all-features --all-targets --no-fail-fast
-          fi
+        run: cargo test --workspace --exclude bdd-infra ${{ matrix.test-targets }} --all-features --no-fail-fast
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"

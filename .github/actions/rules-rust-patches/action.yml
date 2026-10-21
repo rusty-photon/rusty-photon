@@ -1,0 +1,9 @@
+name: Check the rules_rust coverage patches
+description: >-
+  Fetches rules_rust as MODULE.bazel patches it and checks that each patch
+  `bazel coverage` depends on still does its job in the fetched source, for
+  a rules_rust bump after which a patch applies but no longer works. The job
+  sets Bazel up first. The logic is patches.mjs's.
+runs:
+  using: node24
+  main: index.mjs

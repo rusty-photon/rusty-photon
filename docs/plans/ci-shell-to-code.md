@@ -107,11 +107,11 @@ first in their columns.
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` and bazel.yml's `bazel clippy` step | F2, R1 | Done (#1582): removed, and its pin checks became a test |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
-| R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
+| R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586) and bazel-coverage.yml (#1587, #1588) done |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588) and the small blocks of nine more (#1589) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -810,7 +810,8 @@ its one failure (2026-09-09) was `bazel query` itself exiting 7.
   Rust toolchain step only that step needed.
 - **What stays:** the workflow's two "Guard - rules_rust …" steps. The
   workflow is `rules-rust-patches.yml` now, its job `rules_rust coverage
-  patches`, after what it still checks. S1 still takes the two steps.
+  patches`, after what it still checks. S1 took the two steps in #1589:
+  the `rules-rust-patches` action.
 
 ### J12 — Sharded BDD runner
 
@@ -1091,7 +1092,8 @@ ConformU services" (each an `if`/`else` on a count, writing several
 outputs) read `cargo metadata | jq`. They have control flow, so ADR-022
 does not leave them in YAML, and only CI runs them, so they are
 JavaScript under its tiebreak, which also spares those jobs a compile of
-the tools crate. They are in S1's list.
+the tools crate. They are in S1's list, and S1 took them in #1589: the
+`cargo-workspace` action.
 
 ### R6 — Pool routing copies stay identical
 
@@ -1274,7 +1276,8 @@ that no item above takes and that "Not in this plan" does not leave out,
 as of 2026-10-13. Only CI runs these, so each moves to JavaScript under
 ADR-022's tiebreak, or stays in YAML when it is really one command, or
 when a matrix value or an expression can replace its control flow. Small
-PRs, in any order:
+PRs, in any order; the owner chose on 2026-10-21 to take the smallest
+together, in one (#1589):
 
 - bazel.yml: the Windows profile flags chosen in `bazel build`,
   `bazel test (fast)` and `bazel test (BDD)`, now that J10 has taken
@@ -1282,25 +1285,26 @@ PRs, in any order:
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package" (done, below);
-- check.yml: "Verify workspace MSRV" (from R5); shellcheck's "Install
+- check.yml: "Verify workspace MSRV" (from R5, done, below); shellcheck's "Install
   pinned shellcheck" and its script list; `clippy-beta`'s report and
   aggregation blocks, and its per-lint census `github-script` if J7
   leaves it out;
-- conformu.yml: "Discover ConformU services" (from R5); the two "Export
+- conformu.yml: "Discover ConformU services" (from R5, done, below); the two "Export
   CONFORMU_PATH" blocks; "Run ConformU tests (parallel)", unless R7
   takes it;
 - install-astap.yml: "Smoke test (Linux/macOS)" and "Smoke test
-  (Windows)", a bash and PowerShell pair;
+  (Windows)", a bash and PowerShell pair (done, below);
 - rules-rust-patches.yml (`parity.yml` until J11): the two "Guard -
-  rules_rust …" steps;
-- pi-nightly.yml: "Symlink libusb for the QHYCCD static link";
+  rules_rust …" steps (done, below);
+- pi-nightly.yml: "Symlink libusb for the QHYCCD static link" (done,
+  below);
 - plate-solver-smoke.yml: "Assert solve-time budget", "Log per-scenario
-  timing";
-- release.yml: "Strip binary";
+  timing" (done, below);
+- release.yml: "Strip binary" (done, below);
 - repin-bazel.yml: "Skip if already in sync", "Commit and push repin";
 - safety.yml: "Enable opt-level 1 for sanitizers", and "cargo test"'s
-  flags per sanitizer;
-- scheduled.yml: "Find Miri services" (from R5).
+  flags per sanitizer (done, below);
+- scheduled.yml: "Find Miri services" (from R5, done, below).
 
 The "Mask runner-provided cache endpoint" steps stay in YAML for the
 reason J10 gives.
@@ -1344,6 +1348,45 @@ Done so far:
   failed, where the step used to post nothing and leave the PR blocked.
   The poster exits 1 when it cannot create the check run, so the action
   knows to post it.
+- **The small blocks of nine workflows** (#1589):
+  - **R5's three**, which read `cargo metadata | jq`: the
+    `cargo-workspace` action. Its `packages` step outputs the packages a
+    `[package.metadata.<table>]` gives a command, as conformu.yml's
+    "Discover ConformU services" and scheduled.yml's "Find Miri services"
+    did, and its `msrv` step runs check.yml's `cargo msrv verify` per
+    member, stopping at the first that fails, as the loop did. Against
+    this workspace it finds what the jq found, byte for byte: 14 ConformU
+    services, 5 Miri ones, 56 members to verify. A `command` that is not
+    a command line now fails the job, naming the package, where jq passed
+    it on to the matrix.
+  - **install-astap.yml's smoke pair**: one step on every leg, the
+    `install-astap/smoke` action, with both shells' checks. Node checks no
+    execute bit on Windows, so there it checks the file exists, as the
+    PowerShell did.
+  - **rules-rust-patches.yml's two guards**: one step, the
+    `rules-rust-patches` action. It fetches rules_rust once, checks both
+    patches and reports each that is not effective, where the first
+    failing step skipped the second.
+  - **pi-nightly.yml's libusb link**: the `qhyccd-libusb` action, on
+    `lib/install.mjs`'s `linkRuntime`, which the ZWO and SVBony SDK
+    actions use for the same link. The Pi runs main alone, so its first
+    nightly after the merge is the proof.
+  - **plate-solver-smoke.yml's timing steps**: one step, the
+    `plate-solver-times` action, which logs the times however the BDD run
+    ended and checks the budget only after it passed, as the two steps'
+    conditions did. The budget's numbers and their baselines are
+    constants in its module. It reads a last row with no line end, which
+    `read` dropped, and a Windows line end.
+  - **release.yml's "Strip binary"**: the matrix names each target's
+    `strip`, so the step is one command.
+  - **safety.yml**: `CARGO_PROFILE_DEV_OPT_LEVEL=1` builds workspace code
+    at opt-level 1 instead of a `sed` of Cargo.toml, and the targets
+    `cargo test` takes per sanitizer are a matrix value.
+
+  Two helpers came with them: `execute`, moved from
+  `uncovered-diff-lines` now that `cargo-workspace` and
+  `rules-rust-patches` also run a program as the `run:` step did, and
+  `notice`.
 
 ## T1 — The Linux pool template carries rustup and stable
 

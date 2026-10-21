@@ -28,9 +28,11 @@ on:
   push:
     branches: [main]
     paths:
+      - ".github/actions/cargo-workspace/**"
       - ".github/workflows/conformu.yml"
   pull_request:
     paths:
+      - ".github/actions/cargo-workspace/**"
       - ".github/workflows/conformu.yml"
 
 concurrency:
@@ -51,25 +53,20 @@ jobs:
     runs-on: ubuntu-latest
     name: plan
     outputs:
-      services: ${{ steps.discover.outputs.services }}
-      has_services: ${{ steps.discover.outputs.has_services }}
+      services: ${{ steps.discover.outputs.packages }}
+      has_services: ${{ steps.discover.outputs.found }}
     steps:
       - uses: actions/checkout@v7
+      # Every conformu-tagged service runs, on every OS: this cadence has no
+      # PR base to diff against, and catching drift across the full surface
+      # is the point. Services whose native SDK cannot be provisioned on a
+      # given runner build against their `simulation` backend there instead
+      # of dropping out ("provision, don't exclude" — ADR-008).
       - name: Discover ConformU services
         id: discover
-        run: |
-          # Every conformu-tagged service runs, on every OS: this cadence has no
-          # PR base to diff against, and catching drift across the full surface
-          # is the point. Services whose native SDK cannot be provisioned on a
-          # given runner build against their `simulation` backend there instead
-          # of dropping out ("provision, don't exclude" — ADR-008).
-          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
-
-          COUNT=$(echo "$SERVICES" | jq 'length')
-          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
-          echo "has_services=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "ConformU services ($COUNT): $(echo "$SERVICES" | jq -r '[.[].name] | join(", ")')"
+        uses: ./.github/actions/cargo-workspace/packages
+        with:
+          table: conformu
 
   # Ubuntu and macOS: run all conformu tests in parallel within a single job.
   conformu:

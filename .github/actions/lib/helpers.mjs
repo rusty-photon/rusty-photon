@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { EOL } from 'node:os';
-import { delimiter as PATH_DELIMITER } from 'node:path';
+import { delimiter as PATH_DELIMITER, basename } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { inspect } from 'node:util';
 
@@ -86,6 +86,11 @@ function workflowCommand(name, data) {
  */
 export function setSecret(secret) {
   workflowCommand('add-mask', secret);
+}
+
+/** A notice annotation on the run, and a line in the log. */
+export function notice(message) {
+  workflowCommand('notice', message);
 }
 
 /** A warning annotation on the run, and a line in the log. */
@@ -589,6 +594,45 @@ export function command(cmd, args, { cwd, env } = {}) {
       }
       const last = Buffer.concat(err).toString('utf8').trim().split('\n').pop();
       reject(new Error(`${cmd} ${code === null ? `was stopped by ${signal}` : `exited with ${code}`}${last ? `: ${last}` : ''}`));
+    });
+  });
+}
+
+/**
+ * Runs `program` with `args` as a `run:` step would have: never through a
+ * shell, with no stdin, and with `env`, by default this process's environment
+ * without the runner's variables (withoutRunnerVariables). Its output is
+ * copied to the step's log as it comes, stdout only when `echo` is true, and
+ * it resolves to what it printed on stdout. Rejects when it cannot start, or
+ * when it exits other than 0, with the last line of its stderr. When `signal`
+ * aborts, the program is sent SIGTERM and the promise rejects with an
+ * AbortError.
+ */
+export function execute(program, args, { env = withoutRunnerVariables(process.env), spawn: start = spawn, signal, echo = true } = {}) {
+  return new Promise((resolve, reject) => {
+    // A spawn that throws rejects the promise, as any throw in its executor does.
+    const child = start(program, args, { env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (text) => {
+      out += text;
+      if (echo) io.stdout(text);
+    });
+    child.stderr.on('data', (text) => {
+      err += text;
+      io.stderr(text);
+    });
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve(out);
+        return;
+      }
+      const last = err.trim().split('\n').pop();
+      const ended = code === null ? `was stopped by ${signal}` : `exited with ${code}`;
+      reject(new Error(`${basename(program)} ${ended}${last ? `: ${last}` : ''}`));
     });
   });
 }

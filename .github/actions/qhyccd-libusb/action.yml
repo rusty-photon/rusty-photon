@@ -1,0 +1,8 @@
+name: Link libusb for the QHYCCD SDK
+description: >-
+  On a runner without sudo, links libusb's linker name into the QHYCCD SDK's
+  directory, QHYCCD_SDK_DIR, to the system's libusb runtime, for the static
+  libqhyccd.a's `-lusb-1.0`. The logic is libusb.mjs's.
+runs:
+  using: node24
+  main: index.mjs
