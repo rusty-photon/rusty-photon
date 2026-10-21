@@ -441,6 +441,28 @@ once and waits for them all.
   are real. An `'ipc'` channel added to the child's stdio lets the fake
   say when it is ready, so a test can stop it at a known point.
 
+### Code another program runs
+
+`remote-cache` is the example: it writes the Bazel steps' `ci-remote`
+config, and Bazel runs its credential helper in each Bazel step, for the
+write credential.
+
+- **A launcher names the runner's own Node** (`process.execPath`): the
+  other program starts the code as a program, and a pool runner's PATH may
+  have no Node. It is a shell script on Linux and macOS and a `.cmd` file
+  on Windows, written to `RUNNER_TEMP`.
+- **Its stdout is the other program's to parse**, so the code prints no
+  workflow command and does not use `run`: a failure goes to stderr and
+  the exit status.
+- **A secret stays in the environment.** The code reads it from the step
+  the other program runs in, where the job's `env` block puts it, never
+  from a file the action wrote. For Bazel that rules out an rc file above
+  all: `--announce_rc`, which `build:ci` sets, prints every option Bazel
+  reads from one.
+- **Its tests run the launcher as the program does**: directly on Linux
+  and macOS, and through cmd.exe on Windows, where CreateProcess runs a
+  `.cmd` file so.
+
 ### An action that calls the GitHub API
 
 `lib/github.mjs` holds what `tracking-issue` and `refresh-astap` share:

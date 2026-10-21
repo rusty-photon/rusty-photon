@@ -33,7 +33,7 @@ build:remote-cache --remote_cache=http://<your-lan-cache-host>:8088
 The self-hosted pool's LAN bazel-remote (on the operator's NAS) can also
 serve Bazel's repository *downloads* — crates.io archives, Rust toolchains,
 BCR modules — via its experimental Remote Asset API, gated on the
-`RP_LAN_ASSET_API` repo variable. When it is `on`, `bazel.yml` /
+`RP_LAN_ASSET_API` repo variable. When it is `on`, the `bazel.yml` and
 `bazel-coverage.yml` pool jobs switch their cache channel to the cache
 host's gRPC endpoint and add `--experimental_remote_downloader` (Bazel
 requires gRPC caching alongside a remote downloader; the asset API is a
@@ -54,14 +54,18 @@ The cache stores build/test outputs of public code, so:
   and the nightly `schedule`, never to PRs or forks. So only trusted,
   main-derived runs can populate the cache — no poisoning path.
 
-`bazel.yml` attaches the Bearer token only on push/schedule and adds
-`--remote_upload_local_results=false` on PRs (read-only). Reads need no
-credentials, so fork PRs benefit too.
+The token reaches Bazel through a credential helper, never a flag or a
+file: `.bazelrc`'s `build:ci --announce_rc` prints every option a step reads
+from an rc file. The remote-cache action writes the helper, scoped to the
+cache's host, and Bazel runs it in each Bazel step, where the workflow's env
+block holds the token on push/schedule only. Jobs without it read only, with
+`--remote_upload_local_results=false`. Reads need no credentials, so fork PRs
+benefit too.
 
 ## Repo wiring
 
-- `.bazelrc` — `build:remote-cache --remote_cache=https://cache.rustyphoton.space`; debuginfo is stripped (`-Cdebuginfo=0`) to keep cached blobs small.
-- `bazel.yml` — sends the Bearer token on trusted events; reads anonymously otherwise.
+- `.bazelrc` — `build:remote-cache --remote_cache=https://cache.rustyphoton.space`, with `remote-cache-base`'s settings, which the pool's LAN cache takes too; debuginfo is stripped (`-Cdebuginfo=0`) to keep cached blobs small.
+- [`.github/actions/remote-cache`](../../.github/actions/remote-cache/remote.mjs) — run once per `bazel.yml` and `bazel-coverage.yml` job: writes the job's venue as the `ci-remote` config (in `ci-remote.bazelrc`, which `.bazelrc` try-imports; every Bazel step adds `--config=ci-remote`), and the credential helper that sends the write credential on trusted events.
 - The GitHub secret `BAZEL_CACHE_WRITE_TOKEN` must match the Worker's `WRITE_TOKEN`.
 
 ## Verify
