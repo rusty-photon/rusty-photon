@@ -258,7 +258,8 @@ node_test(
 # uncovered-diff-lines: the coverage job's check on a pull request, posted by
 # the coverage scripts' poster, which the action runs from the checkout. The
 # tests start a fake in each program's place as a Node process of its own,
-# and answer as the GitHub API does.
+# and answer as the GitHub API does. On Linux they also run the poster
+# itself, with the host's python3.
 node_test(
     name = "uncovered_diff_lines_test",
     size = "small",
@@ -268,6 +269,7 @@ node_test(
         "lib/helpers.mjs",
         "lib/testing.mjs",
         "uncovered-diff-lines/annotate.mjs",
+        "//:tools/coverage/filter_lcov.py",
         "//:tools/coverage/post_check_annotations.py",
     ],
 )

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
@@ -28,12 +28,14 @@ function json(res, status, value) {
 
 // A program the fake spawn starts in each program's place: `node -e FAKE
 // <answer>`, which prints the answer's stdout and stderr and exits with its
-// code. The answer goes as base64 JSON, which no platform's quoting alters.
+// code, or with `hang` runs until it is killed. The answer goes as base64
+// JSON, which no platform's quoting alters.
 const FAKE = `
-const { stdout, stderr, code } = JSON.parse(Buffer.from(process.argv[1], 'base64').toString());
+const { stdout, stderr, code, hang } = JSON.parse(Buffer.from(process.argv[1], 'base64').toString());
 process.stdout.write(stdout);
 process.stderr.write(stderr);
 process.exitCode = code;
+if (hang) setInterval(() => {}, 1000);
 `;
 
 // Which of the four programs a call starts.
@@ -46,16 +48,24 @@ function which(cmd, args) {
 }
 
 // A spawn that answers each program as `answers` says ({ stdout, stderr,
-// code }, all optional), USER_BASE for pip's user base and success for the
-// rest, recording what it was asked to start.
+// code, hang }, all optional, or 'real' to start the program itself),
+// USER_BASE for pip's user base and success for the rest, recording what it
+// was asked to start and the child it started.
 function fakeSpawn(answers = {}) {
   const calls = [];
   const spawnFake = (cmd, args, options) => {
-    calls.push({ cmd, args, options, program: which(cmd, args) });
-    const answer = answers[which(cmd, args)] ?? (which(cmd, args) === 'user-base' ? { stdout: `${USER_BASE}\n` } : {});
-    const { stdout = '', stderr = '', code = 0 } = answer;
-    const encoded = Buffer.from(JSON.stringify({ stdout, stderr, code })).toString('base64');
-    return spawn(process.execPath, ['-e', FAKE, encoded], options);
+    const program = which(cmd, args);
+    const answer = answers[program] ?? (program === 'user-base' ? { stdout: `${USER_BASE}\n` } : {});
+    let child;
+    if (answer === 'real') {
+      child = spawn(cmd, args, options);
+    } else {
+      const { stdout = '', stderr = '', code = 0, hang = false } = answer;
+      const encoded = Buffer.from(JSON.stringify({ stdout, stderr, code, hang })).toString('base64');
+      child = spawn(process.execPath, ['-e', FAKE, encoded], options);
+    }
+    calls.push({ cmd, args, options, program, child });
+    return child;
   };
   return { spawn: spawnFake, calls };
 }
@@ -69,8 +79,7 @@ async function fakeGitHub({ diff = (res) => res.writeHead(200).end(DIFF), checks
   });
 }
 
-async function score(api, fake, options = {}) {
-  const dir = tempDir();
+async function score(api, fake, { dir = tempDir(), ...options } = {}) {
   const result = await capture(() =>
     annotate({ lcov: LCOV, token: 'tok', pr: '7', sha: 'abc123', dir, api: api.url, repo: 'o/r', runUrl: RUN, env: ENV, spawn: fake.spawn, delayMs: 1, ...options }),
   );
@@ -81,9 +90,9 @@ function posted(api) {
   return api.requests.filter((r) => r.method === 'POST').map((r) => JSON.parse(r.body));
 }
 
-// The check posted when `stage` failed.
+// The check posted, last, when `stage` failed.
 function assertUnscored(api, stage) {
-  const [body] = posted(api);
+  const body = posted(api).at(-1);
   const { output, ...rest } = body;
   assert.deepEqual(rest, { name: CHECK, head_sha: 'abc123', status: 'completed', conclusion: 'neutral', details_url: RUN });
   assert.equal(output.title, `Not scored: ${stage} failed`);
@@ -240,6 +249,127 @@ test('annotate posts the not-scored check once when the token cannot write check
     const { stdout } = await score(api, fake);
     assert.equal(posted(api).length, 1);
     assert.match(stdout, /could not post the check either, .*Resource not accessible by integration/);
+  } finally {
+    await api.close();
+  }
+});
+
+test('annotate stops the program under way when the step is stopped, and posts nothing', async () => {
+  const api = await fakeGitHub();
+  const stop = new AbortController();
+  const fake = fakeSpawn({ pip: { hang: true } });
+  // The runner's signal comes once the program is running.
+  const spawnThenStop = (cmd, args, options) => fake.spawn(cmd, args, options).once('spawn', () => stop.abort());
+  try {
+    const { stdout } = await score(api, { spawn: spawnThenStop }, { signal: stop.signal });
+    assert.deepEqual(fake.calls.map((c) => c.program), ['pip']);
+    assert.equal(fake.calls[0].child.killed, true);
+    assert.ok(stdout.includes(`::warning::${CHECK}: the step was stopped while installing diff-cover, so no check is posted\n`), stdout);
+    assert.deepEqual(posted(api), []);
+  } finally {
+    await api.close();
+  }
+});
+
+test('annotate stops the diff request when the step is stopped, and posts nothing', async () => {
+  const stop = new AbortController();
+  // The request arrives, the step is stopped, and no answer comes.
+  const api = await fakeGitHub({ diff: () => stop.abort() });
+  try {
+    const { stdout } = await score(api, fakeSpawn(), { signal: stop.signal });
+    assert.ok(stdout.includes(`::warning::${CHECK}: the step was stopped while fetching the pull request's diff, so no check is posted\n`), stdout);
+    assert.deepEqual(posted(api), []);
+  } finally {
+    await api.close();
+  }
+});
+
+// --- The real poster --------------------------------------------------------------
+//
+// The not-scored check hangs on the poster's exit code: 1 when it could not
+// create the check run, 0 once the run exists. These run the poster itself,
+// with python3, against a fake API. The coverage job, its one caller, runs on
+// Linux, so they run there.
+
+const onLinux = { skip: process.platform !== 'linux' && "the coverage job, the poster's one caller, runs on Linux" };
+
+// A work directory holding a diff-cover report of `runs` runs of uncovered
+// lines in src/lib.rs, and the LCOV report it was scored against.
+function scored(runs) {
+  const dir = tempDir();
+  const lines = Array.from({ length: runs }, (_, i) => 2 * i + 1);
+  const report = { src_stats: { 'src/lib.rs': { violation_lines: lines } }, total_num_lines: 2 * runs, total_num_violations: runs, total_percent_covered: 50 };
+  writeFileSync(path.join(dir, 'diff-cover.json'), JSON.stringify(report));
+  writeFileSync(path.join(dir, 'coverage.info'), 'SF:src/lib.rs\nDA:1,0\nend_of_record\n');
+  return dir;
+}
+
+// A fake API that answers the poster's create with `create` and its updates
+// with `update`, and the action's not-scored check with 201.
+async function fakeChecks({ create = (res) => json(res, 201, { id: 9, html_url: 'https://github.example/o/r/runs/9' }), update = (res) => json(res, 200, { id: 9 }) } = {}) {
+  return serve((req, res) => {
+    if (req.method === 'GET' && req.url === '/repos/o/r/pulls/7') res.writeHead(200).end(DIFF);
+    else if (req.method === 'POST' && req.url === '/repos/o/r/check-runs' && JSON.parse(req.body).output.title.startsWith('Not scored')) json(res, 201, { id: 10 });
+    else if (req.method === 'POST' && req.url === '/repos/o/r/check-runs') create(res);
+    else if (req.method === 'PATCH' && req.url === '/repos/o/r/check-runs/9') update(res);
+    else json(res, 404, { message: 'Not Found' });
+  });
+}
+
+// annotate with the real poster, which posts to `posterApi` (GITHUB_API_URL).
+function scoreWithPoster(api, dir, { posterApi = api.url } = {}) {
+  return score(api, fakeSpawn({ poster: 'real' }), { dir, lcov: path.join(dir, 'coverage.info'), env: { ...ENV, GITHUB_API_URL: posterApi } });
+}
+
+test('the real poster creates the check, and no not-scored check follows', onLinux, async () => {
+  const api = await fakeChecks();
+  try {
+    const { stdout } = await scoreWithPoster(api, scored(3));
+    const [check, ...more] = posted(api);
+    assert.deepEqual(more, []);
+    assert.equal(check.conclusion, 'neutral');
+    assert.equal(check.output.annotations.length, 3);
+    assert.ok(stdout.includes('uncovered-diff-lines: neutral (3 annotation(s)) https://github.example/o/r/runs/9\n'), stdout);
+    assert.doesNotMatch(stdout, /::warning::/);
+  } finally {
+    await api.close();
+  }
+});
+
+test('the real poster exits 1 when GitHub refuses the create, and the not-scored check follows', onLinux, async () => {
+  const api = await fakeChecks({ create: (res) => json(res, 422, { message: 'Validation Failed' }) });
+  try {
+    const { stdout } = await scoreWithPoster(api, scored(3));
+    assert.equal(posted(api).length, 2);
+    assert.match(stdout, /::warning::uncovered-diff-lines: posting the check run failed, .*python3 exited with 1: error: creating the uncovered-diff-lines check run failed: HTTP 422 \{"message":"Validation Failed"\}\n/);
+    assertUnscored(api, 'posting the check run');
+  } finally {
+    await api.close();
+  }
+});
+
+test('the real poster exits 1 when the create gets no answer, and the not-scored check follows', onLinux, async () => {
+  const api = await fakeChecks();
+  const gone = await serve(() => {});
+  await gone.close();
+  try {
+    const { stdout } = await scoreWithPoster(api, scored(3), { posterApi: gone.url });
+    assert.equal(posted(api).length, 1);
+    assert.match(stdout, /::warning::uncovered-diff-lines: posting the check run failed, .*python3 exited with 1: error: creating the uncovered-diff-lines check run failed: /);
+    assertUnscored(api, 'posting the check run');
+  } finally {
+    await api.close();
+  }
+});
+
+test('the real poster exits 0 when only its annotations past the first 50 fail, and its check stands', onLinux, async () => {
+  const api = await fakeChecks({ update: (res) => json(res, 500, { message: 'Server Error' }) });
+  try {
+    const { stdout } = await scoreWithPoster(api, scored(60));
+    assert.equal(posted(api).length, 1);
+    assert.equal(api.requests.filter((r) => r.method === 'PATCH').length, 1);
+    assert.ok(stdout.includes('::warning::adding annotations to uncovered-diff-lines failed: HTTP 500 {"message":"Server Error"}\n'), stdout);
+    assert.doesNotMatch(stdout, /not scored/);
   } finally {
     await api.close();
   }

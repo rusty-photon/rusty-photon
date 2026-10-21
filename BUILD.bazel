@@ -56,10 +56,14 @@ exports_files(
     visibility = ["//.github/actions:__pkg__"],
 )
 
-# The coverage job's check poster, which the uncovered-diff-lines action runs
-# from the checkout: its tests check the action names it where it is.
+# The coverage job's check poster and the module it imports, which the
+# uncovered-diff-lines action runs from the checkout: its tests run the poster
+# and check the action names it where it is.
 exports_files(
-    ["tools/coverage/post_check_annotations.py"],
+    [
+        "tools/coverage/filter_lcov.py",
+        "tools/coverage/post_check_annotations.py",
+    ],
     visibility = ["//.github/actions:__pkg__"],
 )
 

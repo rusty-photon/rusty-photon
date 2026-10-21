@@ -32,12 +32,13 @@ export const POSTER = fileURLToPath(new URL('../../../tools/coverage/post_check_
  * Runs `program` with `args` and the environment `env`, with no stdin, its
  * output copied to the step's log, and resolves to what it printed on stdout.
  * Rejects when it cannot start, or when it exits other than 0, with the last
- * line of its stderr.
+ * line of its stderr. When `signal` aborts, the program is sent SIGTERM and
+ * the promise rejects with an AbortError.
  */
-export function execute(program, args, { env, spawn = nodeSpawn }) {
+export function execute(program, args, { env, spawn = nodeSpawn, signal }) {
   return new Promise((resolve, reject) => {
     // A spawn that throws rejects the promise, as any throw in its executor does.
-    const child = spawn(program, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(program, args, { env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     child.stdout.setEncoding('utf8');
@@ -70,12 +71,14 @@ export function execute(program, args, { env, spawn = nodeSpawn }) {
  * `run:` step it replaces gave them, and only the poster gets the token.
  * Never throws: a stage that fails is a warning, with why, and the check is
  * posted neutral, naming the stage alone, since the check's text is public
- * and a program's error can hold a LAN address (a proxy's). Other options go
- * to the API requests.
+ * and a program's error can hold a LAN address (a proxy's). When `signal`
+ * aborts (the runner stopping the step), the program or request under way
+ * is stopped and nothing is posted: the job is cancelled, and its required
+ * `bazel coverage` with it. Other options go to the API requests.
  */
-export async function annotate({ lcov, token, pr, sha, dir, api, repo, runUrl, env = process.env, spawn, ...options }) {
+export async function annotate({ lcov, token, pr, sha, dir, api, repo, runUrl, env = process.env, spawn, signal, ...options }) {
   const base = withoutRunnerVariables(env);
-  const run = (program, args, extra = {}) => execute(program, args, { env: { ...base, ...extra }, spawn });
+  const run = (program, args, extra = {}) => execute(program, args, { env: { ...base, ...extra }, spawn, signal });
   let stage = 'installing diff-cover';
   try {
     await run('python3', ['-m', 'pip', 'install', '--user', '--quiet', DIFF_COVER]);
@@ -90,6 +93,7 @@ export async function annotate({ lcov, token, pr, sha, dir, api, repo, runUrl, e
     const response = await github(`Fetching pull request #${pr}'s diff`, `${api}/repos/${repo}/pulls/${pr}`, {
       token,
       accept: 'application/vnd.github.diff',
+      signal,
       ...options,
     });
     await writeFile(diff, await response.text());
@@ -113,6 +117,10 @@ export async function annotate({ lcov, token, pr, sha, dir, api, repo, runUrl, e
       { GITHUB_TOKEN: token },
     );
   } catch (err) {
+    if (signal?.aborted) {
+      warning(`${CHECK}: the step was stopped while ${stage}, so no check is posted`);
+      return;
+    }
     warning(`${CHECK}: ${stage} failed, so the check is posted as not scored: ${describe(err)}`);
     await postUnscored({ stage, token, sha, api, repo, runUrl, ...options });
   }
