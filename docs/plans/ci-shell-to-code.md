@@ -1285,10 +1285,9 @@ together, in one (#1589):
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package" (done, below);
-- check.yml: "Verify workspace MSRV" (from R5, done, below); shellcheck's "Install
-  pinned shellcheck" and its script list; `clippy-beta`'s report and
-  aggregation blocks, and its per-lint census `github-script` if J7
-  leaves it out;
+- check.yml: "Verify workspace MSRV" (from R5, done, below); `clippy-beta`'s
+  report and aggregation blocks, and its per-lint census `github-script` if
+  J7 leaves it out;
 - conformu.yml: "Discover ConformU services" (from R5, done, below); the two "Export
   CONFORMU_PATH" blocks; "Run ConformU tests (parallel)", unless R7
   takes it;
@@ -1304,7 +1303,11 @@ together, in one (#1589):
 - repin-bazel.yml: "Skip if already in sync", "Commit and push repin";
 - safety.yml: "Enable opt-level 1 for sanitizers", and "cargo test"'s
   flags per sanitizer (done, below);
-- scheduled.yml: "Find Miri services" (from R5, done, below).
+- scheduled.yml: "Find Miri services" (from R5, done, below);
+- shellcheck.yml: "Install pinned shellcheck" and its script list. They were
+  check.yml's until the owner chose on 2026-10-21 to give the job a workflow
+  of its own, which runs only when a file it lints changes: ADR-022 leaves
+  that shell in bash, so the job keeps its work after this plan.
 
 The "Mask runner-provided cache endpoint" steps stay in YAML for the
 reason J10 gives.

@@ -82,11 +82,14 @@ Four rules for anyone adding cases:
   writes reaches the journal except through systemd running the unit. Give
   that a second look before adding one.
 
-`shellcheck` is a required PR check (`stable / shellcheck`) over everything in
-`tools/ci`, so a footgun it names cannot reach `main` unnoticed. That gate
-exists because several of this script's worst defects were exactly that kind:
-a pipeline status inverted through `!`, an assignment in a `local` reading an
-outer variable of the same name.
+`shellcheck` lints every script in `tools/ci` (`stable / shellcheck`, in
+`shellcheck.yml`) on any pull request that changes one, so a footgun it names
+shows on the PR before it reaches `main`. It is not a required check: its
+workflow runs only when one of those files changes, and a required check would
+wait forever on every other pull request. It exists because several of this
+script's worst defects were exactly that kind: a pipeline status inverted
+through `!`, an assignment in a `local` reading an outer variable of the same
+name.
 
 ## What This Is
 
