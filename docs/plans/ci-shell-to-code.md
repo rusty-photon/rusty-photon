@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml done (#1586) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1278,7 +1278,7 @@ PRs, in any order:
 
 - bazel.yml: the Windows profile flags chosen in `bazel build`,
   `bazel test (fast)` and `bazel test (BDD)`, now that J10 has taken
-  their sourcing;
+  their sourcing (done, below);
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
   "Split combined lcov per package";
@@ -1304,6 +1304,16 @@ PRs, in any order:
 
 The "Mask runner-provided cache endpoint" steps stay in YAML for the
 reason J10 gives.
+
+Done so far:
+
+- **bazel.yml** (#1586): each of the three Bazel steps chose its Windows
+  profile flags with a bash array and an `if` on `RUNNER_OS`. An
+  expression now picks them, `${{ runner.os == 'Windows' && '…' || '' }}`,
+  so each step is one command again. The matrix is a plain list of OS
+  names, which ADR-020's routing expressions read, so a matrix value
+  would have meant changing them. Each step's Bazel arguments are the
+  same as before, on every OS.
 
 ## T1 — The Linux pool template carries rustup and stable
 
