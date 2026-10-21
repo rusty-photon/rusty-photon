@@ -105,6 +105,8 @@ tools/rusty-photon-ci/
   lib/github.mjs           the GitHub REST API, for the actions that call it
   lib/install.mjs          download, check and unpack, for the install-* actions
   lib/install.test.mjs
+  lib/processes.mjs        programs run at once, for the actions that run processes
+  lib/processes.test.mjs
   lib/testing.mjs          test fixtures every action's tests share
   local-install/           a developer's install, by the install-* modules
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
@@ -424,8 +426,11 @@ would be a second implementation of the module to keep in step.
 
 ### An action that runs processes
 
-`bdd-sharded` is the example: it starts the BDD suites as processes at
-once and waits for them all.
+`bdd-sharded` starts the BDD suites as processes at once and waits for
+them all, and `conformu-run` the ConformU suites. What they share is
+`lib/processes.mjs`: `runStreams` starts streams of programs at once,
+each stream's programs one after another, and `replay` prints each
+stream's log as a group.
 
 - **`spawn` a program, never through a shell**, with stdin `'ignore'`:
   a program that read stdin would take the step's, and in a list run one
@@ -443,8 +448,20 @@ once and waits for them all.
   On Linux and macOS the kill reaches Node alone, and the processes it
   started go on. So the entry file listens for both signals and aborts an
   `AbortController` the logic takes as `signal`; the logic stops its
-  children and prints what it must within the 7.5 s. `bdd-sharded` sends
-  each SIGTERM, then SIGKILL 5 s later, and prints the logs.
+  children and prints what it must within the 7.5 s. `runStreams` sends
+  each program SIGTERM, then SIGKILL 5 s later, and the action prints the
+  logs.
+- **A stop goes to the program's process group.** On Linux and macOS
+  `runStreams` starts each program as the leader of a process group of its
+  own (`detached`) and signals the group, since what a program starts
+  outlives a signal sent to it alone: SIGTERM ends `cargo test` and leaves
+  its test binary running. A process that starts a session of its own
+  leaves the group, as bdd-infra starts ConformU; it runs on until its own
+  deadline, or until the runner kills it at the job's end with every
+  other process whose environment holds the job's `RUNNER_TRACKING_ID`
+  (actions/runner, `src/Runner.Worker/JobExtension.cs`), which is why no
+  action removes that variable. Windows has no group a signal reaches, and
+  there the program is killed.
 - **A program the action downloaded and nobody has checked** gets the
   step's environment without the runner's `ACTIONS_*` variables and the
   action's `INPUT_*` (`withoutRunnerVariables`, which `execute` applies
@@ -453,7 +470,7 @@ once and waits for them all.
   `bazel-coverage` and `rules-rust-patches` run Bazel so, which runs the
   build's repository rules, `uncovered-diff-lines` runs pip, diff-cover
   and the coverage scripts' poster so, `cargo-workspace` runs Cargo and
-  cargo-msrv so, `install-astap`'s smoke test runs ASTAP so, and
+  cargo-msrv so, `conformu-run` runs each service's `cargo test` so, `install-astap`'s smoke test runs ASTAP so, and
   `install-conformu` runs ConformU's Windows installer and each install's
   `--version` so. A
   JavaScript action gets

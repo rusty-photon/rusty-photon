@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { capture } from '../lib/testing.mjs';
-import { BUILD, HEAVY, SHARDED, baseEnv, build, main, replay, runStreams, shardCount, streams, suites } from './bdd.mjs';
+import { BUILD, HEAVY, SHARDED, baseEnv, build, main, shardCount, streams, suites } from './bdd.mjs';
 
 function tempDir() {
   const base = process.env.TEST_TMPDIR ?? path.join(process.cwd(), '.tmp');
@@ -350,15 +350,6 @@ test('each stream’s output is printed as a group of its own, its suites in ord
   assert.match(stdout, /^built 25 bdd binaries$/m);
 });
 
-test('a suite that cannot start fails its stream, and its log says why', async () => {
-  const logs = tempDir();
-  const missing = path.join(logs, 'no-such-bdd');
-  const planned = [{ name: 'rest', runs: [{ name: 'gone', dir: logs, exe: missing }] }];
-  const result = await runStreams(planned, { env: { PATH: process.env.PATH }, logs });
-  assert.deepEqual(result, { failed: ['rest'], stopped: false });
-  assert.match(readFileSync(path.join(logs, 'rest.log'), 'utf8'), new RegExp(`no-such-bdd did not start: spawn .*ENOENT`));
-});
-
 test('a stopped run stops every suite, starts no other, and still prints what each printed', async () => {
   const stop = new AbortController();
   // Every suite hangs, so each of the eight streams has one running when the
@@ -391,33 +382,4 @@ test('a stream that throws stops the others, starts no other suite, and still pr
   assert.deepEqual([...stdout.matchAll(/^::group::bdd (.*)$/gm)].map(([, name]) => name), [
     'rp-0', 'rp-1', 'rp-2', 'rp-3', 'session-runner-0', 'session-runner-1', 'heavy', 'rest',
   ]);
-});
-
-test('streams stopped before they start run nothing', async () => {
-  const stop = new AbortController();
-  stop.abort();
-  const fake = fakeSpawn();
-  const logs = tempDir();
-  const planned = [{ name: 'rest', runs: [{ name: 'doctor', dir: logs, exe: 'fake:hang:doctor' }] }];
-  const result = await runStreams(planned, { env: { ...process.env }, logs, spawn: fake.spawn, signal: stop.signal });
-  assert.deepEqual(result, { failed: ['rest'], stopped: true });
-  assert.deepEqual(fake.calls, []);
-});
-
-test('a suite still running after the grace is killed', { skip: process.platform === 'win32' && 'a kill on Windows is never ignored' }, async () => {
-  const stop = new AbortController();
-  const logs = tempDir();
-  const fake = fakeSpawn({ ready: () => stop.abort() });
-  const planned = [{ name: 'rest', runs: [{ name: 'stuck', dir: logs, exe: 'fake:stubborn:stuck' }] }];
-  const result = await runStreams(planned, { env: { ...process.env }, logs, spawn: fake.spawn, signal: stop.signal, graceMs: 100 });
-  assert.deepEqual(result, { failed: ['rest'], stopped: true });
-  assert.equal(fake.children[0].signalCode, 'SIGKILL');
-});
-
-test('a stream that printed nothing, or whose log never opened, prints an empty group', async () => {
-  const logs = tempDir();
-  const planned = [{ name: 'rp-0', runs: [] }, { name: 'never-opened', runs: [] }];
-  await runStreams(planned.slice(0, 1), { env: {}, logs });
-  const { stdout } = await capture(() => replay(planned, logs));
-  assert.equal(stdout, '::group::bdd rp-0\n::endgroup::\n::group::bdd never-opened\n::endgroup::\n');
 });

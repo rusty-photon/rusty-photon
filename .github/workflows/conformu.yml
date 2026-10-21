@@ -136,47 +136,14 @@ jobs:
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
+      # Every service's suite at once, each one's output printed as a log
+      # group of its own once they all end, a cancelled or timed-out run
+      # included. The logic is the action's (docs/skills/ci-logic.md).
       - name: Run ConformU tests (parallel)
-        shell: bash
         timeout-minutes: 30
-        run: |
-          # All suites run concurrently. (This was briefly serialized on a
-          # mistaken "macOS runner CPU starvation" theory; the real cause of the
-          # zwo-camera macOS StartExposure timeout was a driver bug — the exposure
-          # integration loop summed intended sleep time instead of honouring a
-          # real-clock deadline — fixed in services/zwo-camera/src/backend.rs.)
-          SERVICES='${{ needs.plan.outputs.services }}'
-          COUNT=$(echo "$SERVICES" | jq 'length')
-
-          echo "Running $COUNT ConformU services"
-          pids=()
-          cmds=()
-          for i in $(seq 0 $((COUNT - 1))); do
-            name=$(echo "$SERVICES" | jq -r ".[$i].name")
-            cmd=$(echo "$SERVICES" | jq -r ".[$i].command")
-            echo "::group::Starting $name"
-            echo "Command: $cmd"
-            echo "::endgroup::"
-            # Run in a subshell that exits with the ConformU command's status,
-            # NOT sed's. A bare `cmd | sed &` makes `$!` the sed PID, so the
-            # `wait` loop below would see sed's (always-0) exit and mask a
-            # failing ConformU run. `exit ${PIPESTATUS[0]}` propagates the real
-            # status to the subshell, which `$!` now captures.
-            ( eval "$cmd" 2>&1 | sed "s/^/[$name] /"; exit "${PIPESTATUS[0]}" ) &
-            pids+=($!)
-            cmds+=("$name")
-          done
-
-          failed=0
-          for i in "${!pids[@]}"; do
-            if ! wait "${pids[$i]}"; then
-              echo "::error::${cmds[$i]} failed"
-              failed=1
-            else
-              echo "${cmds[$i]} passed"
-            fi
-          done
-          exit $failed
+        uses: ./.github/actions/conformu-run
+        with:
+          services: ${{ needs.plan.outputs.services }}
 
   # Windows: per-service jobs to avoid cargo lock contention.
   conformu-windows:

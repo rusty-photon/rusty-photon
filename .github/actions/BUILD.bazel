@@ -19,6 +19,19 @@ node_test(
     ],
 )
 
+# The programs run at once that bdd-sharded and conformu-run share. The tests
+# start each fake program as a Node process of its own.
+node_test(
+    name = "processes_test",
+    size = "small",
+    srcs = ["lib/processes.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/processes.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # bdd-sharded: the Cargo safety net's BDD suites as parallel processes. The
 # tests start each fake suite as a Node process of its own.
 node_test(
@@ -28,6 +41,21 @@ node_test(
     data = [
         "bdd-sharded/bdd.mjs",
         "lib/helpers.mjs",
+        "lib/processes.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
+# conformu-run: conformu.yml's ConformU suites at once, on Linux and macOS.
+# The tests start a fake in cargo's place.
+node_test(
+    name = "conformu_run_test",
+    size = "small",
+    srcs = ["conformu-run/run.test.mjs"],
+    data = [
+        "conformu-run/run.mjs",
+        "lib/helpers.mjs",
+        "lib/processes.mjs",
         "lib/testing.mjs",
     ],
 )

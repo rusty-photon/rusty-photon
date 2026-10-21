@@ -1,0 +1,19 @@
+name: Run the ConformU suites at once
+description: >-
+  Runs the ConformU suite of every service the services input lists, all at
+  once, each by the command its `[package.metadata.conformu]` gives, run
+  without a shell. Each suite's output is printed as a log group of its own
+  once they all end, a cancelled or timed-out run included, and the step
+  fails naming each suite that failed. The logic is run.mjs's (plan item R7
+  in docs/plans/ci-shell-to-code.md).
+
+inputs:
+  services:
+    description: >-
+      The services, as cargo-workspace/packages's `packages` output gives
+      them: a JSON list of `{ name, command }`.
+    required: true
+
+runs:
+  using: node24
+  main: index.mjs

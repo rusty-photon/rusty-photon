@@ -109,7 +109,7 @@ first in their columns.
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
-| R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | In progress: the install action, and the script deleted (#1591); the parallel run next |
+| R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588) and the small blocks of nine more (#1589) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
@@ -1278,8 +1278,15 @@ PRs:
    table has whenever it changes; the developer's
    `bazel run //.github/actions:install -- conformu`; and the script,
    deleted.
-2. **The parallel run**: conformu.yml's "Run ConformU tests (parallel)"
-   block, as an action built like `bdd-sharded`.
+2. **The parallel run** (#1593): conformu.yml's "Run ConformU tests
+   (parallel)" block, as `conformu-run`. It runs each service's command
+   without a shell, as the words it splits into, and refuses one a shell
+   would read otherwise, and prints each suite's log as a group once they
+   all end, where the block prefixed every line with the service's name
+   as it came. `bdd-sharded`'s runner moved to `lib/processes.mjs`, which
+   both use, and now stops each program's process group: SIGTERM ends
+   `cargo test` and leaves its test binary running. The Windows jobs'
+   "Run ConformU test" is one command, and stays YAML.
 
 ### R8 — Packaging scripts
 
@@ -1325,7 +1332,7 @@ together, in one (#1589):
   J7 leaves it out;
 - conformu.yml: "Discover ConformU services" (from R5, done, below); the two "Export
   CONFORMU_PATH" blocks and "Run ConformU tests (parallel)", which R7
-  takes;
+  took (#1591, #1593);
 - install-astap.yml: "Smoke test (Linux/macOS)" and "Smoke test
   (Windows)", a bash and PowerShell pair (done, below);
 - rules-rust-patches.yml (`parity.yml` until J11): the two "Guard -
