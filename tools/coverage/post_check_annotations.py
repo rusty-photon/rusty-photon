@@ -15,16 +15,19 @@ missed lines. diff-cover silently skips such files, so this script re-checks
 the diff's changed files against the report's `SF:` paths (`--diff` +
 `--lcov`), skipping the coverage-exempt files per `filter_lcov.IGNORED_RE`.
 
-The check never gates: its conclusion is `success` when every added line is
-covered (or the diff has no coverable lines) and `neutral` otherwise. Making
-it required would be a branch-protection decision, not a flag here.
+The check never fails: its conclusion is `success` when every added line is
+covered (or the diff has no coverable lines) and `neutral` otherwise. Main's
+ruleset requires it, so it reports the diff's coverage without gating on it.
 
 Only GitHub Apps can create check runs, so this needs an Actions
 `GITHUB_TOKEN` (the github-actions app); a user PAT cannot exercise it —
-use `--dry-run` to inspect the payloads locally. In CI any API failure
-prints a workflow warning and exits 0 -- annotations are a visibility
-feature and must never redden the required coverage job. The one caller
-that hits this by design is a fork PR, whose token is read-only.
+use `--dry-run` to inspect the payloads locally. A check run it cannot
+create exits 1, with why on stderr: the uncovered-diff-lines action that
+runs it then posts the check as not scored, since a required check that
+never reports blocks the merge. A fork PR's read-only token is the one
+caller that meets this by design. A failure after the check run exists,
+appending annotations, is a workflow warning and exits 0: the check is
+there, with its conclusion.
 
 The API accepts at most 50 annotations per request, so larger sets are
 appended through update requests against the same check run. The total is
@@ -70,6 +73,17 @@ def _api(method: str, url: str, token: str, body: "dict[str, object]") -> "dict[
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
+
+
+def _why(error: OSError) -> str:
+    """One line on why a request failed: the HTTP status and the start of
+    GitHub's answer, or why there was no answer."""
+    if isinstance(error, urllib.error.HTTPError):
+        detail = error.read().decode("utf-8", "replace")[:300]
+        return " ".join(f"HTTP {error.code} {detail}".split())
+    if isinstance(error, urllib.error.URLError):
+        return str(error.reason)
+    return str(error) or type(error).__name__
 
 
 def _line_runs(numbers: "list[int]") -> "list[tuple[int, int]]":
@@ -296,14 +310,14 @@ def main(argv: "list[str] | None" = None) -> int:
 
     try:
         created = _api("POST", f"{base}/repos/{args.repo}/check-runs", token, create_body)
+    except OSError as error:
+        print(f"error: creating the {args.check_name} check run failed: {_why(error)}", file=sys.stderr)
+        return 1
+    try:
         for body in update_bodies:
             _api("PATCH", f"{base}/repos/{args.repo}/check-runs/{created['id']}", token, body)
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")[:300]
-        print(f"::warning::posting {args.check_name} failed: HTTP {error.code} {detail}")
-        return 0
-    except urllib.error.URLError as error:
-        print(f"::warning::posting {args.check_name} failed: {error.reason}")
+    except OSError as error:
+        print(f"::warning::adding annotations to {args.check_name} failed: {_why(error)}")
         return 0
 
     print(

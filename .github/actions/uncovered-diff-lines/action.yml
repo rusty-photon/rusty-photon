@@ -1,0 +1,28 @@
+name: Uncovered diff lines
+description: >-
+  Posts the `uncovered-diff-lines` check on a pull request's head, which
+  main's ruleset requires: diff-cover scores the pull request's diff against
+  an LCOV report, and tools/coverage/post_check_annotations.py posts an
+  annotation on each run of uncovered added lines, neutral when there are
+  some and success when there are none. A diff that cannot be scored gets the
+  check neutral, naming the stage that failed, with a warning; the step does
+  not fail. The logic is annotate.mjs's (S1 in docs/plans/ci-shell-to-code.md).
+inputs:
+  lcov:
+    description: The LCOV report to score the diff against.
+    required: true
+  pull-request:
+    description: The pull request's number.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  sha:
+    description: The pull request's head commit, which the check goes on.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  token:
+    description: A token that can read the pull request and create check runs.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs

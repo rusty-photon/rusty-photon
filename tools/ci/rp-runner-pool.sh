@@ -173,14 +173,14 @@ FREE_RETRY_SLEEP=5
 #
 # 928 is a full clone of 927 that bakes the coverage job's annotation tool:
 # python3-pip is installed, diff-cover==10.5.1 is pre-installed for the ci
-# user (the same pin bazel-coverage.yml's annotate step installs per run, so
-# on a pool clone that command becomes an offline "already satisfied" no-op),
+# user (the same pin the uncovered-diff-lines action installs per run, so on
+# a pool clone that command becomes an offline "already satisfied" no-op),
 # and the runner's .env gains PIP_BREAK_SYSTEM_PACKAGES=1. That variable is
 # load-bearing: Ubuntu 24.04's apt-installed pip enforces PEP 668
 # (externally-managed-environment) and fails a plain `pip install --user`
 # even when the requirement is already satisfied, so without it the baked
-# package would sit unused while the step warn-skips. 927 is retained for
-# rollback until 928's clones are proven.
+# package would sit unused while the annotations go unposted. 927 is
+# retained for rollback until 928's clones are proven.
 #
 # 927 is a full clone of 926 with the guest's unattended upgrades removed:
 # `unattended-upgrades` and `needrestart` are purged and the `apt-daily` /
