@@ -292,11 +292,9 @@ jobs:
           # Windows: keep this step's trace for the profile artifact uploaded
           # below (what it records: build:profile in .bazelrc). Bazel resolves
           # a relative --profile against the workspace root.
-          PROFILE_FLAGS=()
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-build.json.gz)
-          fi
-          bazel build --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" //...
+          bazel build --config=ci --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-build.json.gz' || '' }} \
+            //...
 
       - name: bazel test (fast)
         id: fast
@@ -306,11 +304,8 @@ jobs:
         # stay useful when something breaks.
         run: |
           # Windows: this step's trace, as in the build step.
-          PROFILE_FLAGS=()
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-fast.json.gz)
-          fi
-          bazel test --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" \
+          bazel test --config=ci --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-fast.json.gz' || '' }} \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
@@ -337,11 +332,8 @@ jobs:
           # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
           # SDK" step above provisioned. Matches the coverage config in .bazelrc.
           # Windows: this step's trace, as in the build step.
-          PROFILE_FLAGS=()
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-bdd.json.gz)
-          fi
-          bazel test --config=ci --config=ci-remote "${PROFILE_FLAGS[@]}" \
+          bazel test --config=ci --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-bdd.json.gz' || '' }} \
             --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
