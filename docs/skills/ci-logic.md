@@ -516,9 +516,9 @@ write credential.
 ### An action that calls the GitHub API
 
 `lib/github.mjs` holds what `tracking-issue`, `refresh-astap`,
-`uncovered-diff-lines`, `install-conformu` and `beta-clippy` share:
-`runContext` (the API, the repository and the run's link from the
-runner's variables), `github` (a request that
+`uncovered-diff-lines`, `install-conformu`, `beta-clippy` and
+`commit-repin` share: `runContext` (the API, the repository and the
+run's link from the runner's variables), `github` (a request that
 names what failed and carries GitHub's own answer, a POST or PATCH sent
 once; with `missing`, a 404 is no error; with `accept`, the answer in
 another media type, such as a pull request's diff), `openIssues` (every
@@ -536,7 +536,13 @@ step, since GitHub drops a label the repository lacks and says nothing).
   (`git/ref`, `git/commits`, `contents`), writes a tree on main's and a
   commit on main (`git/trees`, `git/commits`), and creates or moves its
   branch to it (`git/refs`). Its job checks out the action only, with no
-  token left on disk, and holds no clone to push from.
+  token left on disk, and holds no clone to push from. `commit-repin`
+  commits the `MODULE.bazel.lock` repin-bazel.yml refreshed on a
+  dependabot branch so: a blob, a tree on the checked-out commit's, a
+  commit on it, and the branch moved to it as a fast-forward, so a branch
+  that moved meanwhile fails the step rather than lose a commit. Its
+  job's checkout keeps no token either, and the token reaches that step
+  alone, as its input.
 - **Tests run against a fake API** (`serve`) that answers in the shapes
   the real one gives; record a real answer to each read with
   `gh api` and take the writes' from GitHub's REST docs.

@@ -93,6 +93,20 @@ node_test(
     ],
 )
 
+# commit-repin: repin-bazel.yml's commit of the refreshed MODULE.bazel.lock on
+# a dependabot branch. The tests answer the GitHub API from a fake.
+node_test(
+    name = "commit_repin_test",
+    size = "small",
+    srcs = ["commit-repin/repin.test.mjs"],
+    data = [
+        "commit-repin/repin.mjs",
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # bazel-coverage: the coverage job's `bazel coverage` run. The tests start a
 # fake Bazel as a Node process of its own, and read .bazelrc for the configs.
 node_test(

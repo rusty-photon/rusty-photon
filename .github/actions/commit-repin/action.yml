@@ -1,0 +1,21 @@
+name: Commit the repinned MODULE.bazel.lock
+description: >-
+  repin-bazel.yml's last step: commits the MODULE.bazel.lock the job refreshed
+  on the checked-out branch, through the GitHub API, on the commit the job
+  checked out, and moves the branch to it as a fast-forward; or does nothing
+  when the branch already holds that lock. The logic is repin.mjs's.
+inputs:
+  token:
+    description: >-
+      A token that can write the repository's contents. Its owner is who the
+      branch's push is by, which decides whether the runs it starts wait for
+      a maintainer's approval (repin-bazel.yml's header).
+    required: false
+    default: ${{ github.token }}
+  branch:
+    description: The branch the job checked out, the pull request's.
+    required: false
+    default: ${{ github.head_ref }}
+runs:
+  using: node24
+  main: index.mjs
