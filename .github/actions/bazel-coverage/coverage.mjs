@@ -13,9 +13,12 @@ import { command, describe, withoutRunnerVariables } from '../lib/helpers.mjs';
 /**
  * The command, after `bazel`. --config=coverage selects the nightly channel,
  * --cfg=coverage_nightly, --combined_report=lcov, the first-party
- * instrumentation filter and --test_timeout=900 (.bazelrc).
- * --test_tag_filters=-requires-cargo includes the BDD suites; --config=coverage
- * sets it too, but on the command line it does not depend on rc precedence.
+ * instrumentation filter and --test_timeout=900 (.bazelrc). It comes after
+ * --config=ci, so that its test scheduling wins over test:ci's.
+ * --test_tag_filters=-requires-cargo includes the BDD suites, and replaces
+ * --config=coverage's `-requires-cargo,-conformu`, so the conformu-tagged
+ * targets are selected too; they skip themselves, since this job sets no
+ * CONFORMU_PATH.
  * --remote_download_outputs=all overrides build:ci's `toplevel`, so the
  * combined report and the per-test .dat files it is made from are written
  * locally. --test_output=all prints rp:bdd's BDD-TRACE breadcrumbs (ENTER,

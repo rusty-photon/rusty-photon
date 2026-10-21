@@ -745,7 +745,8 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...
-# In CI also add --config=ci --config=ci-remote (see bazel-coverage.yml).
+# In CI also add --config=ci --config=ci-remote (see the bazel-coverage action,
+# .github/actions/bazel-coverage/coverage.mjs).
 #
 # Reproduces the Cargo coverage contract (.github/workflows/test.yml `coverage`)
 # under Bazel:
@@ -786,7 +787,8 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 #    it per package with tools/coverage/split_lcov.py for its lcov artifact.
 #
 # The rc value below, `--test_tag_filters=-requires-cargo,-conformu`, governs
-# a local `bazel coverage --config=coverage`. bazel-coverage.yml pins
+# a local `bazel coverage --config=coverage`. The CI job's bazel-coverage
+# action (.github/actions/bazel-coverage/coverage.mjs) pins
 # `--test_tag_filters=-requires-cargo` on its command line after
 # `--config=coverage`, and the command line wins, so in the CI job the
 # conformu-tagged targets ARE selected — they self-skip, because that job
@@ -827,9 +829,10 @@ coverage:coverage --combined_report=lcov
 # hang indefinitely; the size=large (900s) timeout was observed NOT to fire
 # under `bazel coverage`, so the action ran to the CI job's 60-min wall and
 # uploaded nothing. An explicit --test_timeout kills the hang and marks it
-# FAILED; with --keep_going (set above) the rest of the report still builds, and
-# bazel-coverage.yml tolerates the resulting "tests failed" exit so the coverage
-# of every target that DID pass still uploads. 900s preserves rp:bdd's intended
+# FAILED; with --keep_going (set above) the rest of the report still builds. The
+# CI job's bazel-coverage action fails the step on the resulting "tests failed"
+# exit (3) and publishes no coverage from that run: coverage from a run with a
+# failed test is not a passing suite's. 900s preserves rp:bdd's intended
 # budget (~400s warm) while bounding a hang at minutes, not the full hour.
 # NB: the single-value form is a fleet-wide override — it caps EVERY coverage
 # test at 900s, so a future coverage target needing more must switch this to the
@@ -845,9 +848,9 @@ coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 # Coverage keeps un-overcommitted test scheduling: instrumented BDD suites run
 # much heavier than plain ones (rp:bdd ~400s warm against the 900s cap above,
 # with a hang history under instrumentation), so the 2x CPU overcommit that
-# test:ci applies to the PR gate is reset here. bazel-coverage.yml passes
-# --config=ci before --config=coverage, so these later values win. Revisit
-# once the PR gate has soak time at 8-wide.
+# test:ci applies to the PR gate is reset here. The CI job's bazel-coverage
+# action passes --config=ci before --config=coverage, so these later values win.
+# Revisit once the PR gate has soak time at 8-wide.
 coverage:coverage --local_test_jobs=auto
 coverage:coverage --local_resources=cpu=HOST_CPUS
 
