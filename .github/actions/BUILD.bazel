@@ -32,6 +32,19 @@ node_test(
     ],
 )
 
+# bazel-coverage: the coverage job's `bazel coverage` run. The tests start a
+# fake Bazel as a Node process of its own, and read .bazelrc for the configs.
+node_test(
+    name = "bazel_coverage_test",
+    size = "small",
+    srcs = ["bazel-coverage/coverage.test.mjs"],
+    data = [
+        "bazel-coverage/coverage.mjs",
+        "lib/helpers.mjs",
+        "//:.bazelrc",
+    ],
+)
+
 # cargo-cache: the pool `stable / clippy`'s compiled dependencies, kept in the
 # LAN bazel-remote. The tests that pack and unpack run on Linux only, where
 # the action runs, with GNU tar (and zstd, where the machine has it).

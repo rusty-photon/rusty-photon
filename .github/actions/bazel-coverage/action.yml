@@ -1,0 +1,16 @@
+name: bazel coverage
+description: >-
+  Runs `bazel coverage` over the whole repository for the coverage job
+  (bazel-coverage.yml), with the CI, coverage and remote-cache configs, so run
+  it after the remote-cache action. A run past 50 minutes is interrupted, so
+  that Bazel writes the logs of the tests still running before the job's
+  60-minute timeout. Any ending but a pass fails the step, with an annotation
+  that names it from Bazel's exit code. A passing run's combined lcov report
+  is the `report` output. The logic is coverage.mjs's (S1 in
+  docs/plans/ci-shell-to-code.md).
+outputs:
+  report:
+    description: The combined lcov report's path, under Bazel's output path.
+runs:
+  using: node24
+  main: index.mjs

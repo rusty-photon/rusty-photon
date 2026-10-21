@@ -17,7 +17,7 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { CLI_DOWNLOAD, DATABASE_DOWNLOAD, resolve, SERVER, TABLE } from '../install-astap/astap.mjs';
-import { error, io, warning } from '../lib/helpers.mjs';
+import { error, io, warning, withoutRunnerVariables } from '../lib/helpers.mjs';
 import { download, makeRunnable, unpack } from '../lib/install.mjs';
 
 // --- Checking a new binary ------------------------------------------------------
@@ -55,19 +55,6 @@ export const SOLVE_TIMEOUT_MS = 120_000;
 /** What a runner without its own job reports in place of a check. */
 export const CROSS_MIRROR = 'cross-mirror SHA only (no runner, no verification)';
 
-// The variables the runner gives a JavaScript action and not a `run:` step
-// (actions/runner, NodeScriptActionHandler.cs): ACTIONS_RUNTIME_TOKEN would
-// let a program write the repository's caches, and INPUT_* are the action's
-// inputs. A binary being checked is one upstream released and nobody has
-// looked at yet, so they are not handed to it. That is no sandbox: this
-// process keeps them, and on Linux a process can read its parent's
-// environment (/proc/<ppid>/environ); a hosted runner's user also has
-// passwordless sudo. The job holds no token besides, with contents: read and
-// no credentials left by checkout.
-function withoutRunnerVariables(env) {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ACTIONS|INPUT)_/i.test(name)));
-}
-
 /**
  * Runs `binary` with `args` in `cwd`, with this process's environment
  * without the runner's own variables, its stdout and stderr both into `log`,
@@ -78,6 +65,12 @@ export function runProgram(binary, args, { cwd, log, timeoutMs }) {
   const out = openSync(log, 'w');
   let child;
   try {
+    // A binary being checked is one upstream released and nobody has looked
+    // at yet. That is no sandbox: this process keeps the runner's variables,
+    // and on Linux a process can read its parent's environment
+    // (/proc/<ppid>/environ); a hosted runner's user also has passwordless
+    // sudo. The job holds no token besides, with contents: read and no
+    // credentials left by checkout.
     child = spawn(binary, args, { cwd, env: withoutRunnerVariables(process.env), stdio: ['ignore', out, out], windowsHide: true });
   } finally {
     closeSync(out);

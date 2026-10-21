@@ -29,6 +29,7 @@ import {
   setSecret,
   sha256,
   warning,
+  withoutRunnerVariables,
 } from './helpers.mjs';
 import { capture, serve, withEnv } from './testing.mjs';
 
@@ -851,6 +852,12 @@ test('requestFailure gives a status or error codes, never a message that may hol
 
 // The one program every OS and Bazel's sandbox are sure to have: this Node.
 const node = (script) => command(process.execPath, ['-e', script]);
+
+test('withoutRunnerVariables drops ACTIONS_* and INPUT_*, in any case, and keeps the rest', () => {
+  const env = { ACTIONS_RUNTIME_TOKEN: 't', actions_cache_url: 'u', INPUT_PIN: 'p', CACHE_WRITE_TOKEN: 'kept', PATH: '/bin', MY_ACTIONS_X: 'kept' };
+  assert.deepEqual(withoutRunnerVariables(env), { CACHE_WRITE_TOKEN: 'kept', PATH: '/bin', MY_ACTIONS_X: 'kept' });
+  assert.equal(env.ACTIONS_RUNTIME_TOKEN, 't', 'the caller\'s object is left alone');
+});
 
 test('command resolves to what the program prints', async () => {
   assert.equal(await node("process.stdout.write('out'); process.stderr.write('err')"), 'out');

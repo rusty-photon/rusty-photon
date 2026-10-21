@@ -560,6 +560,16 @@ export function requestFailure(err) {
 // --- Processes ----------------------------------------------------------------
 
 /**
+ * `env` without the variables the runner gives a JavaScript action and not a
+ * `run:` step (actions/runner, NodeScriptActionHandler.cs), for a program the
+ * action starts: ACTIONS_RUNTIME_TOKEN would let it write the repository's
+ * caches, and INPUT_* are the action's inputs.
+ */
+export function withoutRunnerVariables(env) {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ACTIONS|INPUT)_/i.test(name)));
+}
+
+/**
  * Runs `cmd` with `args` and resolves to what it prints, or rejects with the
  * last line of its stderr when it exits other than 0, and with the spawn
  * error (ENOENT) when it cannot start.

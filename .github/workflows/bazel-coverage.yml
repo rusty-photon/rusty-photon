@@ -195,108 +195,43 @@ jobs:
         if: runner.environment == 'github-hosted'
         uses: ./.github/actions/install-zwo-sdk
 
+      # The whole repository under the coverage config, interrupted at 50
+      # minutes so that Bazel writes the logs of the tests still running before
+      # the job's 60-minute timeout cancels it. Any ending but a pass fails the
+      # step, with an annotation named from Bazel's exit code, and so skips the
+      # steps that make and upload the coverage: a run in which a test failed
+      # is not a passing suite's. The flags and their reasons are in the
+      # action's coverage.mjs.
       - name: bazel coverage
-        run: |
-          set -uo pipefail
-          # --config=coverage selects the nightly channel + --cfg=coverage_nightly
-          # + --combined_report=lcov + first-party instrumentation filter +
-          # --test_timeout=900 (.bazelrc). --test_tag_filters=-requires-cargo
-          # INCLUDES the BDD suite; it is also set by --config=coverage but pinned
-          # here on the command line so CI is not sensitive to rc precedence
-          # (command line always wins). --remote_download_outputs=all overrides
-          # build:ci's `toplevel` so the combined lcov and its per-test .dat inputs
-          # are materialised locally. --test_output=all surfaces rp:bdd's BDD-TRACE
-          # breadcrumbs (ENTER / reset-ok / EXIT, tagged +Ns) even on a passing run
-          # — parity with the BDD leg in bazel.yml. --spawn_strategy=local (the
-          # confirmed rp:bdd post-scenario park fix) and --remote_timeout=15 are
-          # inherited from `.bazelrc` test:ci/build:ci.
-          #
-          # `|| status=$?` keeps a non-zero exit from aborting the step and records
-          # the code, so the classification below can distinguish bazel exit 3
-          # (tests failed/timed out) from build/flag failures.
-          #
-          # observability (C): bound the run ~10 min below the 60-min job timeout.
-          # `timeout --signal=INT 50m` interrupts bazel cleanly (it flushes the
-          # in-progress test.log) with headroom for the always() capture step to run
-          # unhurried, instead of a hard job-cancel at 60 min that flushes nothing.
-          # --kill-after SIGKILLs if bazel ignores the INT. `timeout` exits 124 when
-          # it fired (137 if it had to escalate to SIGKILL).
-          status=0
-          timeout --signal=INT --kill-after=2m 50m \
-            bazel coverage --config=ci --config=coverage --config=ci-remote \
-            --test_tag_filters=-requires-cargo \
-            --remote_download_outputs=all \
-            --test_output=all \
-            //... || status=$?
-          # Bazel exit codes: 0 = all tests passed (publish coverage below); ANY non-zero =
-          # something did not validly complete, so we FAIL. Rationale: coverage from a run with
-          # a failed/killed test (exit 3) — or a build/flag error — does not correspond to a
-          # passing suite, so the number is misleading; we do NOT publish it (a non-zero exit
-          # here skips the no-`if:` Split step, which is the intended behaviour). The always()
-          # test-log capture step still runs regardless, so a failure is fully triage-able.
-          # The rp:bdd post-scenario park (which could cancel ~half of these runs at the
-          # 60-min wall) is fixed (bounded --remote_timeout + --spawn_strategy=local in .bazelrc);
-          # this job is a required gate.
-          if [[ $status -eq 124 || $status -eq 137 ]]; then
-            echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. Captured test logs are in the 'bazel-testlogs' artifact."
-            exit 1
-          elif [[ $status -eq 3 ]]; then
-            echo "::error title=bazel coverage test failure::A coverage test FAILED or hit its --test_timeout (bazel exit 3). Coverage from a failed run does not reflect a passing suite, so it is NOT published. See the test logs below / in the 'bazel-testlogs' artifact."
-            exit 1
-          elif [[ $status -ne 0 ]]; then
-            echo "::error title=bazel coverage failed::bazel coverage failed (exit $status — 1=build error, 2=bad flags, 4=no tests, 8=interrupted/superseded)."
-            exit "$status"
-          fi
+        id: coverage
+        uses: ./.github/actions/bazel-coverage
 
-      # Capture every test.log/test.xml out of the (symlinked) bazel-testlogs tree
-      # so a coverage failure — including a timeout-cap SIGINT — is triageable from
-      # the uploaded artifact. bazel only writes these when the action ends.
-      - name: Capture bazel test logs
-        if: always()
-        run: |
-          set +e +o pipefail  # best-effort: a find/tar miss must NOT fail the job.
-          TESTLOGS="$(readlink -f bazel-testlogs 2>/dev/null || echo bazel-testlogs)"
-          DEST=bazel-testlogs-captured
-          mkdir -p "$DEST"
-          # Copy out of the (symlinked) testlogs tree into a real dir so the upload
-          # is clean and survives the symlink.
-          if [[ -d "$TESTLOGS" ]]; then
-            ( cd "$TESTLOGS" && find . \( -name test.log -o -name test.xml \) -print0 \
-                | tar --null -cf - -T - ) | tar -C "$DEST" -xf - 2>/dev/null
-          fi
-          RP_BDD_LOG="$TESTLOGS/services/rp/bdd/test.log"
-          if [[ -f "$RP_BDD_LOG" ]]; then
-            echo "===== rp:bdd test.log tail (last 80 lines) ====="
-            tail -80 "$RP_BDD_LOG"
-          fi
-          exit 0  # best-effort — must never fail the job
-
+      # Every test's test.log and test.xml, so that a failure, an interrupted
+      # run's included, can be read from the artifact. Bazel writes them as
+      # each test ends. `bazel-out/*/testlogs` rather than the `bazel-testlogs`
+      # convenience link, as bazel.yml's BDD log upload does.
       - name: Upload bazel test logs (artifact)
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: bazel-testlogs
-          path: bazel-testlogs-captured/**
+          path: |
+            bazel-out/*/testlogs/**/test.log
+            bazel-out/*/testlogs/**/test.xml
           if-no-files-found: warn
           retention-days: 14
 
+      # The Coveralls upload gets the combined report minus the
+      # coverage-exempt files (mock/test-helper binaries, examples), so the
+      # published number matches the policy. The artifact below stays
+      # unfiltered as line-level truth. The coverage step checked that the
+      # report is there and not empty.
       - name: Split combined lcov per package
+        env:
+          REPORT: ${{ steps.coverage.outputs.report }}
         run: |
-          REPORT="$(bazel info output_path)/_coverage/_coverage_report.dat"
-          echo "Combined report: $REPORT"
-          if [[ ! -s "$REPORT" ]]; then
-            echo "::error::combined coverage report missing or empty at $REPORT"
-            exit 1
-          fi
-          ls -l "$REPORT"
-          # The Coveralls upload gets the combined report minus the
-          # coverage-exempt files (mock/test-helper binaries, examples), so
-          # the published number matches the policy. The artifact below stays
-          # unfiltered as line-level truth.
           python3 tools/coverage/filter_lcov.py "$REPORT" --output combined-coverage.info
-          mkdir -p coverage-lcov
           python3 tools/coverage/split_lcov.py "$REPORT" --output-dir coverage-lcov
-          ls -l coverage-lcov
 
       - name: Upload per-package lcov (artifact)
         if: always()
