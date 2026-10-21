@@ -255,6 +255,23 @@ node_test(
     ],
 )
 
+# uncovered-diff-lines: the coverage job's check on a pull request, posted by
+# the coverage scripts' poster, which the action runs from the checkout. The
+# tests start a fake in each program's place as a Node process of its own,
+# and answer as the GitHub API does.
+node_test(
+    name = "uncovered_diff_lines_test",
+    size = "small",
+    srcs = ["uncovered-diff-lines/annotate.test.mjs"],
+    data = [
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+        "uncovered-diff-lines/annotate.mjs",
+        "//:tools/coverage/post_check_annotations.py",
+    ],
+)
+
 # Every JavaScript file in this package parses, and its imports resolve to a
 # Node built-in or a file here, with the names it imports: entry files
 # included, which no test imports, since they run on load.

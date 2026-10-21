@@ -428,11 +428,13 @@ once and waits for them all.
   action's `INPUT_*` (`withoutRunnerVariables`). So does a program the
   action runs where a `run:` step ran it, so that the move hands it
   nothing the step did not: `bazel-coverage` runs Bazel so, which runs
-  the build's repository rules. A JavaScript action gets `ACTIONS_RUNTIME_TOKEN`,
-  which can write the repository's caches, and a `run:` step does not
-  (actions/runner, `NodeScriptActionHandler.cs`). Its job also runs with
-  `contents: read` and `persist-credentials: false`, so no token is on
-  disk. `refresh-astap`'s `detect` runs a new ASTAP release so. That only
+  the build's repository rules, and `uncovered-diff-lines` runs pip,
+  diff-cover and the coverage scripts' poster so. A JavaScript action gets
+  `ACTIONS_RUNTIME_TOKEN`, which can write the repository's caches, and a
+  `run:` step does not (actions/runner, `NodeScriptActionHandler.cs`). Its
+  job also runs with `contents: read` and `persist-credentials: false`, so
+  no token is on disk. `refresh-astap`'s `detect` runs a new ASTAP release
+  so. That only
   keeps the token from being handed to the program; it is not a sandbox.
   The action's own process still holds it, and on Linux a process can
   read its parent's environment (`/proc/<ppid>/environ`), where a `run:`
@@ -469,15 +471,16 @@ write credential.
 
 ### An action that calls the GitHub API
 
-`lib/github.mjs` holds what `tracking-issue` and `refresh-astap` share:
-`runContext` (the API, the repository and the run's link from the
-runner's variables), `github` (a request that names what failed and
-carries GitHub's own answer, a POST or PATCH sent once; with `missing`, a
-404 is no error), `openIssues` (every page, pull requests left out, a
-next page on another origin refused) and `commentOrOpen` (the open issue
-with a label and an exact title gets a comment, or one is opened; an
-issue opened without the label fails the step, since GitHub drops a label
-the repository lacks and says nothing).
+`lib/github.mjs` holds what `tracking-issue`, `refresh-astap` and
+`uncovered-diff-lines` share: `runContext` (the API, the repository and
+the run's link from the runner's variables), `github` (a request that
+names what failed and carries GitHub's own answer, a POST or PATCH sent
+once; with `missing`, a 404 is no error; with `accept`, the answer in
+another media type, such as a pull request's diff), `openIssues` (every
+page, pull requests left out, a next page on another origin refused) and
+`commentOrOpen` (the open issue with a label and an exact title gets a
+comment, or one is opened; an issue opened without the label fails the
+step, since GitHub drops a label the repository lacks and says nothing).
 
 - **The token is an input** (`default: ${{ github.token }}`), and the
   job grants only what the action needs, beside `contents: read`.

@@ -9,13 +9,13 @@ the `uncovered-diff-lines` check on the PR. The moving parts:
 | Check | What it asserts | State |
 |---|---|---|
 | `bazel coverage` | the instrumented suite passed and a report was published | **required** on `main` |
-| Coveralls status | repo-wide coverage did not drop past the threshold set in the Coveralls repo settings | settings-side; not yet posting — see below |
-| `uncovered-diff-lines` | nothing — informational: counts + inline annotations for the diff's uncovered lines | best-effort — same-repo PRs; skipped on forks and on any annotate-step failure (§0) |
+| Coveralls status (`coverage/coveralls`) | repo-wide coverage did not drop past the threshold set in the Coveralls repo settings | **required** on `main`; the threshold is settings-side — see below |
+| `uncovered-diff-lines` | nothing — it never fails: counts + inline annotations for the diff's uncovered lines | **required** on `main`; neutral and "Not scored" when the diff could not be scored; a fork's PR cannot get it (§0) |
 
-`bazel coverage` is required on `main` (the `main_protection` ruleset,
-alongside `stable / clippy` and `bazel /
-{ubuntu,windows}-latest`). The standing rule when any coverage signal goes red
-is **write the test**.
+`bazel coverage`, `coverage/coveralls` and `uncovered-diff-lines` are
+required on `main` (the `main_protection` ruleset, alongside `stable /
+clippy` and `bazel / {ubuntu,windows}-latest`). The standing rule when any
+coverage signal goes red is **write the test**.
 
 ## The gating policy
 
@@ -100,14 +100,16 @@ coverage data anywhere. Nothing should link either Codecov project any more.
 
 ## 0. In-diff annotations — uncovered lines where review happens
 
-On every PR, the coverage job posts a **non-gating** check run named
+On every PR, the coverage job posts a **required** check run named
 `uncovered-diff-lines` on the PR head: the title carries the diff's coverage
 percentage and finding counts, and one annotation per run of uncovered added
 lines renders inline in the **Files changed** tab, plus a file-level
 annotation (at the file's first added line) for any changed first-party `.rs`
 file with no coverage record at all. The scoring is
-[diff-cover](https://github.com/Bachmann1234/diff_cover)'s (pip-pinned in the
-workflow): it intersects the filtered report with the PR's merge-base diff
+[diff-cover](https://github.com/Bachmann1234/diff_cover)'s, pip-pinned in the
+`uncovered-diff-lines` action
+(`.github/actions/uncovered-diff-lines/annotate.mjs`), which runs every
+stage: it intersects the filtered report with the PR's merge-base diff
 fetched from the GitHub API (`--diff-file`, so no git history is needed on
 the shallow CI checkout), and `post_check_annotations.py` converts its JSON
 findings into Checks API payloads — so the check agrees with the published
@@ -118,17 +120,22 @@ changed files against the report's `SF:` paths.
 
 Semantics worth knowing:
 
-- **It never gates.** Conclusion is `success` when every added line is
-  covered (or the diff has no coverable lines) and `neutral` when findings
-  exist. Promoting it to a required check would be a branch-protection
-  decision, made the usual observe-first way.
+- **It is required, and never fails.** Conclusion is `success` when every
+  added line is covered (or the diff has no coverable lines) and `neutral`
+  when findings exist, so it shows coverage without gating on it.
+- **A diff that could not be scored still gets it**, neutral, titled
+  "Not scored: <stage> failed": diff-cover would not install, the diff would
+  not fetch (the API refuses one past its size limit), diff-cover failed, or
+  the poster could not create the check. A required check that never reports
+  blocks the merge. The title names the stage alone, since the check is
+  public; why it failed is a warning in the run's log.
 - **It only exists where the coverage run succeeded** — the posting step runs
   after the split, which a failed `bazel coverage` skips, matching the
   don't-publish-failed-runs rule above.
-- **Fork PRs don't get it**: their `GITHUB_TOKEN` is read-only, the API
-  refuses the check-run write, and the step degrades to a run warning — as
-  does every other failure in the step, because visibility must never redden
-  the required `bazel coverage` check.
+- **Fork PRs can't get it**: their `GITHUB_TOKEN` is read-only, so the API
+  refuses the check run and its not-scored stand-in alike, and a fork's PR
+  lacks the required check. The step only warns, there as on every failure,
+  because visibility must never redden the required `bazel coverage` check.
 - **Annotations are capped at 200** (50 per API request, appended in
   chunks). Past the cap the check's summary counts what was cut; the full
   list is always in the artifact.

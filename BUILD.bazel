@@ -56,6 +56,13 @@ exports_files(
     visibility = ["//.github/actions:__pkg__"],
 )
 
+# The coverage job's check poster, which the uncovered-diff-lines action runs
+# from the checkout: its tests check the action names it where it is.
+exports_files(
+    ["tools/coverage/post_check_annotations.py"],
+    visibility = ["//.github/actions:__pkg__"],
+)
+
 # `bazel run //:buildifier` formats every BUILD / *.bzl / MODULE.bazel file in the
 # workspace in place. Pinned via MODULE.bazel (buildifier_prebuilt) so every dev
 # machine and CI run the identical formatter with no system install.

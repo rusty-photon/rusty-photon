@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586) and bazel-coverage.yml's run (#1587) done |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586) and bazel-coverage.yml (#1587, #1588) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1281,8 +1281,7 @@ PRs, in any order:
   their sourcing (done, below);
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
-  "Split combined lcov per package" (all but "Annotate uncovered diff
-  lines" done, below);
+  "Split combined lcov per package" (done, below);
 - check.yml: "Verify workspace MSRV" (from R5); shellcheck's "Install
   pinned shellcheck" and its script list; `clippy-beta`'s report and
   aggregation blocks, and its per-lint census `github-script` if J7
@@ -1335,6 +1334,16 @@ Done so far:
   Bazel gets the step's environment without the runner's `ACTIONS_*` and
   `INPUT_*` variables, which a `run:` step does not have
   (`withoutRunnerVariables`, now in the helper module).
+- **bazel-coverage.yml's "Annotate uncovered diff lines"** (#1588): the
+  `uncovered-diff-lines` action installs diff-cover with the step's pip
+  command and pin, fetches the PR's diff, runs diff-cover and runs
+  `post_check_annotations.py`, each program with the environment the step
+  gave it and only the poster with the token. The owner chose on
+  2026-10-21 to keep the check required, so a diff that cannot be scored
+  now gets the check, neutral and "Not scored", naming the stage that
+  failed, where the step used to post nothing and leave the PR blocked.
+  The poster exits 1 when it cannot create the check run, so the action
+  knows to post it.
 
 ## T1 — The Linux pool template carries rustup and stable
 
