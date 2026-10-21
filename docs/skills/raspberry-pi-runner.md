@@ -121,9 +121,9 @@ linked **statically**, so no QHYCCD `.so` runtime chain, no `ldconfig`, and no
 The static `libqhyccd.a` does, however, pull in a *dynamic* `-lusb-1.0`. On a
 sudo-less runner there is no `libusb-1.0-0-dev`, hence no unversioned
 `libusb-1.0.so` for the linker — so the **Symlink libusb for the QHYCCD static
-link** step in `pi-nightly.yml` drops that linker-name symlink into
-`QHYCCD_SDK_DIR` (the one dir `build.rs` searches), pointing at the libusb-1.0
-*runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
+link** step in `pi-nightly.yml` (the `qhyccd-libusb` action) drops that
+linker-name symlink into `QHYCCD_SDK_DIR` (the one dir `build.rs` searches),
+pointing at the libusb-1.0 *runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
 (this was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402)).
 This mirrors the ZWO sudo-free symlink (next subsection); both share the one
 `libusb-1.0` runtime package installed in §1.
@@ -559,10 +559,11 @@ The **Symlink libusb for the QHYCCD static link (sudo-free)** step in
 `pi-nightly.yml` fixes it by linking `libusb-1.0.so` → the runtime `.so.0`
 inside `QHYCCD_SDK_DIR`. Check, in order:
 
-- That step ran and printed `linked …/libusb-1.0.so -> …/libusb-1.0.so.0`
-  before `cargo build` (it runs right after the QHYCCD SDK step).
-- The step did **not** abort with `libusb-1.0 runtime … not found`. That means
-  the host lacks the libusb-1.0 runtime — install it once with sudo and re-run:
+- That step ran and printed `libusb-1.0.so -> …/libusb-1.0.so.0` before
+  `cargo build` (it runs right after the QHYCCD SDK step).
+- The step did **not** fail with `the system library libusb-1.0.so.0 is not on
+  this machine`. That means the host lacks the libusb-1.0 runtime — install it
+  once with sudo and re-run:
   `sudo apt-get install -y libusb-1.0-0` (it is in §1 of `setup-pi-runner.sh`,
   so re-running the setup script is the catch-all fix).
 

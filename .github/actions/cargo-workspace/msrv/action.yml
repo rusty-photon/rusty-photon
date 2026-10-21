@@ -1,0 +1,8 @@
+name: Verify the workspace MSRV
+description: >-
+  Checks that each package of the Cargo workspace that declares a
+  rust-version builds with it, by cargo-msrv, which the job installs first.
+  The logic is ../workspace.mjs's.
+runs:
+  using: node24
+  main: index.mjs

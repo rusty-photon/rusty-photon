@@ -1,0 +1,17 @@
+name: Workspace packages with a command
+description: >-
+  The Cargo workspace's packages whose [package.metadata.<table>] gives a
+  command, for a job that runs one each from a matrix. The logic is
+  ../workspace.mjs's.
+inputs:
+  table:
+    description: The table under [package.metadata] that marks a package, such as conformu.
+    required: true
+outputs:
+  packages:
+    description: The packages found, as a JSON array of { name, command }.
+  found:
+    description: Whether any package was found, true or false.
+runs:
+  using: node24
+  main: index.mjs

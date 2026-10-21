@@ -69,49 +69,8 @@ jobs:
         # callers leave use-cache at its default true.
         with:
           use-cache: "false"
-      - name: Smoke test (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          if [[ -z "${ASTAP_BINARY:-}" ]]; then
-            echo "::error::ASTAP_BINARY not set by install-astap action"
-            exit 1
-          fi
-          if [[ ! -x "$ASTAP_BINARY" ]]; then
-            echo "::error::$ASTAP_BINARY is not an executable file"
-            exit 1
-          fi
-          echo "Running $ASTAP_BINARY (no args; ASTAP prints banner and exits)"
-          OUTPUT="$("$ASTAP_BINARY" 2>&1 || true)"
-          echo "$OUTPUT"
-          if ! grep -qi "astap" <<<"$OUTPUT"; then
-            echo "::error::ASTAP banner not detected in output"
-            exit 1
-          fi
-      - name: Smoke test (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not $env:ASTAP_BINARY) {
-            Write-Error "ASTAP_BINARY not set by install-astap action"
-            exit 1
-          }
-          if (-not (Test-Path $env:ASTAP_BINARY)) {
-            Write-Error "$env:ASTAP_BINARY does not exist"
-            exit 1
-          }
-          Write-Host "Running $env:ASTAP_BINARY (no args; ASTAP prints banner and exits)"
-          # Capture output as a single string so -match returns a boolean,
-          # not a filtered array. Against an array, -notmatch returns the
-          # non-matching elements; the array is non-empty whenever ASTAP
-          # prints any usage line, so the if-branch fires even when the
-          # banner is present.
-          $output = (& $env:ASTAP_BINARY 2>&1) | Out-String
-          Write-Host $output
-          if ($output -notmatch '(?i)astap') {
-            Write-Error "ASTAP banner not detected in output"
-            exit 1
-          }
+      - name: Smoke test
+        uses: ./.github/actions/install-astap/smoke
 
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so an

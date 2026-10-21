@@ -109,40 +109,13 @@ jobs:
           version: "26.06.04"
           install: env
 
-      # The static libqhyccd.a still pulls in a *dynamic* `-lusb-1.0`, and
-      # libqhyccd-sys's build.rs only adds `-L $QHYCCD_SDK_DIR` to the link
-      # search (the SDK dir holds libqhyccd.a, no libusb). On a sudo-less runner
-      # there is no libusb-1.0-0-dev, hence no unversioned `libusb-1.0.so` for
-      # the linker to find, and the build fails with "cannot find -lusb-1.0"
-      # (issue #402). Drop that linker-name symlink into $QHYCCD_SDK_DIR — the
-      # one dir build.rs searches — pointing at the libusb-1.0 *runtime* .so.0
-      # (the libusb-1.0-0 package installed once by setup-pi-runner.sh §1). This
-      # mirrors install-zwo-sdk's sudo-free symlink for libzwo-sys, keeping the
-      # runner self-healing and free of -dev packages.
+      # The static libqhyccd.a pulls in a dynamic `-lusb-1.0`, and without
+      # sudo there is no libusb-1.0-0-dev to give the linker libusb-1.0.so: the
+      # action links that name in $QHYCCD_SDK_DIR, the one directory
+      # libqhyccd-sys's build.rs searches, to the libusb-1.0-0 runtime that
+      # setup-pi-runner.sh §1 installs (qhyccd-libusb/libusb.mjs).
       - name: Symlink libusb for the QHYCCD static link (sudo-free)
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${QHYCCD_SDK_DIR:?QHYCCD_SDK_DIR not set — the QHYCCD SDK step must run first}"
-          rt=""
-          if command -v ldconfig >/dev/null 2>&1; then
-            # `|| true`: with pipefail, a failing `ldconfig -p` makes this
-            # assignment non-zero, which under `set -e` would abort the step
-            # before the directory-scan fallback below ever runs. Swallow it so
-            # the fallback can still find libusb-1.0.so.0.
-            rt="$(ldconfig -p 2>/dev/null | awk '/libusb-1\.0\.so\.0/{print $NF; exit}')" || true
-          fi
-          if [ -z "$rt" ]; then
-            for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib /lib; do
-              if [ -e "$d/libusb-1.0.so.0" ]; then rt="$d/libusb-1.0.so.0"; break; fi
-            done
-          fi
-          if [ -z "$rt" ]; then
-            echo "::error::pi-nightly: libusb-1.0 runtime (libusb-1.0.so.0) not found. It is installed once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install it and re-run: sudo apt-get install -y libusb-1.0-0"
-            exit 1
-          fi
-          ln -sf "$rt" "$QHYCCD_SDK_DIR/libusb-1.0.so"
-          echo "pi-nightly: linked $QHYCCD_SDK_DIR/libusb-1.0.so -> $rt"
+        uses: ./.github/actions/qhyccd-libusb
 
       # Provision the ZWO ASI/EFW SDK without sudo, mirroring the QHYCCD step.
       # zwo-camera links libzwo-sys, whose build.rs emits -lASICamera2 /

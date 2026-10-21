@@ -28,50 +28,8 @@ jobs:
         uses: bazelbuild/setup-bazelisk@v3
         with:
           bazelisk-version: 1.28.1
-      # Guard the pinned rules_rust coverage patch (MODULE.bazel
-      # single_version_override -> third_party/patches/collect_coverage_extra_objects.patch).
-      # It teaches collect_coverage to export spawned-binary coverage via
-      # RUST_COVERAGE_EXTRA_OBJECTS; a rules_rust bump that drops or relocates it
-      # would silently regress BDD child-process coverage. A non-applying patch
-      # already fails every bazel command (fetch-time error); this asserts an
-      # applied-but-ineffective patch is caught too, by requiring both the env-var
-      # marker AND the structural anchor (the find_extra_object helper) to survive.
-      # --nobuild forces the fetch+patch without compiling the collector; the
-      # behavioural backstop is the bazel-coverage job, which compiles and runs
-      # the patched collector on every PR.
-      - name: Guard - rules_rust coverage patch applied & effective
-        run: |
-          bazel build --nobuild @rules_rust//util/collect_coverage:collect_coverage
-          src="$(bazel info output_base)/external/rules_rust+/util/collect_coverage/collect_coverage.rs"
-          if ! grep -q 'RUST_COVERAGE_EXTRA_OBJECTS' "$src" || ! grep -q 'fn find_extra_object' "$src"; then
-            echo "::error::collect_coverage patch not effective: $src is missing RUST_COVERAGE_EXTRA_OBJECTS / find_extra_object. A rules_rust upgrade likely needs the patch re-rebased (third_party/patches/collect_coverage_extra_objects.patch)."
-            exit 1
-          fi
-          echo "rules_rust collect_coverage patch is applied and effective."
-
-      # Guard the SECOND pinned coverage patch (MODULE.bazel single_version_override ->
-      # third_party/patches/instrumented_files_include_data.patch). It adds `data` to the
-      # rust rules' coverage dependency_attributes so a spawned binary's src/main.rs lands
-      # in the test's instrumented_files manifest and survives Bazel's post-collector
-      # LcovMerger intersection. Without it, the (1) EXPORT patch's main.rs coverage is
-      # silently filtered back out. A rules_rust bump that drops/relocates this hunk would
-      # regress main.rs coverage with no test failure, so assert the patched hunk survives.
-      - name: Guard - rules_rust instrumented-files (data) patch applied & effective
-        run: |
-          # Force fetch+patch of rules_rust (the .bzl source is not itself a target).
-          bazel build --nobuild @rules_rust//util/collect_coverage:collect_coverage
-          src="$(bazel info output_base)/external/rules_rust+/rust/private/rustc.bzl"
-          # Anchor the check to the coverage `instrumented_files_kwargs` block specifically,
-          # not just any dependency_attributes list that happens to contain "data" (rules_rust
-          # has unrelated ["data", "compile_data"] lists elsewhere). awk so the assertion is
-          # identical on GNU grep / BSD / CI; matches only `data` inside the kwargs `{ ... }`.
-          if ! awk '
-            /instrumented_files_kwargs = \{/ { inblk = 1 }
-            inblk && /"dependency_attributes":/ && /"data"/ { found = 1 }
-            inblk && /\}/ { inblk = 0 }
-            END { exit(found ? 0 : 1) }
-          ' "$src"; then
-            echo "::error::instrumented_files patch not effective: the coverage instrumented_files_kwargs block in $src no longer carries \"data\" in dependency_attributes. A rules_rust upgrade likely needs the patch re-rebased (third_party/patches/instrumented_files_include_data.patch)."
-            exit 1
-          fi
-          echo "rules_rust instrumented-files (data) patch is applied and effective."
+      # Each patch's work, looked for in rules_rust's fetched source (the
+      # action's patches.mjs). The bazel-coverage job, which compiles and runs
+      # the patched collector on every PR, is the behavioural backstop.
+      - name: Guard - rules_rust coverage patches applied & effective
+        uses: ./.github/actions/rules-rust-patches

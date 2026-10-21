@@ -24,10 +24,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # strip: the strip that reads the target's binaries.
           - target: x86_64-unknown-linux-gnu
             arch: amd64
+            strip: strip
           - target: aarch64-unknown-linux-gnu
             arch: arm64
+            strip: aarch64-linux-gnu-strip
     name: linux / ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v7
@@ -45,12 +48,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Strip binary
-        run: |
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            strip target/${{ matrix.target }}/release/filemonitor
-          else
-            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/filemonitor
-          fi
+        run: ${{ matrix.strip }} target/${{ matrix.target }}/release/filemonitor
       - name: Create tarball
         run: |
           VERSION=${GITHUB_REF_NAME#v}

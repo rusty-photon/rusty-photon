@@ -584,14 +584,7 @@ jobs:
         with:
           shared-key: linux-stable
           save-if: false
+      # Each member by its own manifest, since cargo-msrv does not read a
+      # virtual workspace root's rust-version.
       - name: Verify workspace MSRV
-        run: |
-          # cargo-msrv doesn't resolve [workspace.package].rust-version from
-          # virtual workspace roots, so verify each member individually.
-          cargo metadata --format-version 1 --no-deps | \
-            jq -r '.packages[] | select(.rust_version) | .manifest_path' | \
-          while IFS= read -r manifest; do
-            echo "::group::$(basename "$(dirname "$manifest")")"
-            cargo msrv verify --manifest-path "$manifest"
-            echo "::endgroup::"
-          done
+        uses: ./.github/actions/cargo-workspace/msrv

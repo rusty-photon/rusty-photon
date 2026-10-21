@@ -81,30 +81,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      services: ${{ steps.find.outputs.services }}
-      has_services: ${{ steps.find.outputs.has_services }}
+      services: ${{ steps.find.outputs.packages }}
+      has_services: ${{ steps.find.outputs.found }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Find Miri services
         id: find
-        run: |
-          # Get all packages with miri metadata and build JSON array
-          SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -c '[.packages[] | select(.metadata.miri.command) | {name: .name, command: .metadata.miri.command}]')
-
-          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
-
-          # Check if we have any services
-          COUNT=$(echo "$SERVICES" | jq 'length')
-          if [ "$COUNT" -gt 0 ]; then
-            echo "has_services=true" >> "$GITHUB_OUTPUT"
-            echo "Found $COUNT Miri services:"
-            echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
-          else
-            echo "has_services=false" >> "$GITHUB_OUTPUT"
-            echo "No Miri services found"
-          fi
+        uses: ./.github/actions/cargo-workspace/packages
+        with:
+          table: miri
 
   miri:
     if: needs.discover-miri.outputs.has_services == 'true'

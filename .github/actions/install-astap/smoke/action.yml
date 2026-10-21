@@ -1,0 +1,8 @@
+name: Smoke-test ASTAP
+description: >-
+  install-astap.yml's check of the install-astap action: the ASTAP_BINARY it
+  exported names a file that runs and prints ASTAP's banner. The logic is
+  ../smoke.mjs's.
+runs:
+  using: node24
+  main: index.mjs

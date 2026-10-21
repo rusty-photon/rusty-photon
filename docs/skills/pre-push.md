@@ -53,7 +53,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
 | cargo-llvm-cov | `cargo install cargo-llvm-cov` | Local ad-hoc cargo coverage (CI coverage is `bazel coverage`) |
 | ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
-| jq | `sudo apt install jq` / `brew install jq` | ConformU & miri discovery |
+| jq | `sudo apt install jq` / `brew install jq` | Listing the ConformU and Miri services by hand |
 | llvm | `sudo apt install llvm` | Address sanitizer symbolization |
 
 ---
@@ -503,7 +503,7 @@ Address sanitizer:
 
 ```bash
 ASAN_OPTIONS="detect_odr_violation=0:detect_leaks=0" \
-RUSTFLAGS="-Z sanitizer=address" \
+RUSTFLAGS="-Z sanitizer=address" CARGO_PROFILE_DEV_OPT_LEVEL=1 \
 ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1 \
   cargo +nightly test --workspace --exclude bdd-infra --lib --tests --all-features \
     --no-fail-fast --target x86_64-unknown-linux-gnu
@@ -512,17 +512,17 @@ ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1 \
 Leak sanitizer:
 
 ```bash
-RUSTFLAGS="-Z sanitizer=leak" \
+RUSTFLAGS="-Z sanitizer=leak" CARGO_PROFILE_DEV_OPT_LEVEL=1 \
 ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1 \
   cargo +nightly test --workspace --exclude bdd-infra --all-features --all-targets \
     --no-fail-fast --target x86_64-unknown-linux-gnu
 ```
 
-> **Note:** The sanitizers modify `Cargo.toml` in CI to set `[profile.dev] opt-level = 1`.
-> Locally you can either do the same (and revert), or pass `-C opt-level=1` in
-> `RUSTFLAGS` alongside the sanitizer flag. LeakSanitizer is documented as
-> unreliable at `opt-level = 0`, so prefer one of the two over accepting the
-> default.
+> **Note:** Both jobs set `CARGO_PROFILE_DEV_OPT_LEVEL=1`, as the commands above
+> do, which builds workspace code at `opt-level = 1` without editing
+> `Cargo.toml` (`cargo test`'s test profile inherits the dev profile's).
+> LeakSanitizer is documented as unreliable at `opt-level = 0`, so keep it
+> rather than accept the default.
 
 LeakSanitizer counts an intentionally leaked allocation as a leak — `Box::leak`
 to satisfy a `&'static` bound in a test is a real finding, not a false positive.
@@ -542,7 +542,7 @@ a scheduled run fails.
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|
-| **plan** | `cargo metadata` + jq (see below) | jq | -- |
+| **plan** | `cargo metadata` (the `cargo-workspace/packages` action; a jq equivalent below) | jq | -- |
 | **conformu** | Per-service command (see below) | ConformU | Optional |
 
 The `plan` job exercises every conformu-tagged service (nightly + on-demand).
@@ -595,7 +595,7 @@ No change detection is used; everything runs against the full workspace.
 |--------|---------------|---------------|-----------|
 | **nightly** | `cargo +nightly nextest run --locked --all-features` + `cargo +nightly test --locked --all-features --test bdd` | nightly, cargo-nextest | Optional |
 | **beta** | Same commands with `+beta` | beta toolchain | Optional |
-| **discover-miri** | `cargo metadata` + jq | jq | -- |
+| **discover-miri** | `cargo metadata` (the `cargo-workspace/packages` action; a jq equivalent below) | jq | -- |
 | **miri** | Per-service command (see below) | nightly + miri component | Optional |
 | **update** | `cargo +beta update && cargo +beta nextest run --locked --all-features` + `cargo +beta test --locked --all-features --test bdd` | beta, cargo-nextest | Optional |
 

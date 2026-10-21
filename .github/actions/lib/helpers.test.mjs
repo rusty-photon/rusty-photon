@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { EOL, tmpdir } from 'node:os';
-import { delimiter as PATH_DELIMITER, join } from 'node:path';
+import { delimiter as PATH_DELIMITER, basename, join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { inspect } from 'node:util';
@@ -11,6 +12,7 @@ import {
   command,
   describe,
   error,
+  execute,
   exportVariable,
   fail,
   fetchWithRetry,
@@ -21,6 +23,7 @@ import {
   HttpError,
   isTransient,
   maskUrl,
+  notice,
   requestFailure,
   retry,
   run,
@@ -127,6 +130,11 @@ test('getBooleanInput accepts the YAML 1.2 core spellings only', async () => {
 test('setSecret escapes the three characters the runner unescapes', async () => {
   const { stdout } = await capture(() => setSecret('50%\r\nnext'));
   assert.equal(stdout, '::add-mask::50%25%0D%0Anext\n');
+});
+
+test('notice puts a multi-line message on one command line', async () => {
+  const { stdout } = await capture(() => notice('first\nsecond'));
+  assert.equal(stdout, '::notice::first%0Asecond\n');
 });
 
 test('warning puts a multi-line message on one command line', async () => {
@@ -882,6 +890,63 @@ test('command rejects with the exit code and the last line of stderr', async () 
 
 test('command rejects a program that cannot start', async () => {
   await assert.rejects(command('rp-no-such-program', []), { code: 'ENOENT' });
+});
+
+const NODE = basename(process.execPath);
+const PRINTS = "process.stdout.write('out\\n'); process.stderr.write('err\\n')";
+
+test("execute copies a program's output to the log and resolves to its stdout", async () => {
+  const { value, stdout, stderr } = await capture(() => execute(process.execPath, ['-e', PRINTS]));
+  assert.equal(value, 'out\n');
+  assert.equal(stdout, 'out\n');
+  assert.equal(stderr, 'err\n');
+});
+
+test('execute leaves stdout out of the log when echo is false, and still resolves to it', async () => {
+  const { value, stdout, stderr } = await capture(() => execute(process.execPath, ['-e', PRINTS], { echo: false }));
+  assert.equal(value, 'out\n');
+  assert.equal(stdout, '');
+  assert.equal(stderr, 'err\n');
+});
+
+test("execute gives a program the environment without the runner's variables, unless given one", async () => {
+  const script = 'process.stdout.write(JSON.stringify([process.env.ACTIONS_RUNTIME_TOKEN, process.env.INPUT_TOKEN, process.env.RP_KEPT, process.env.RP_ONLY]))';
+  await withEnv({ ACTIONS_RUNTIME_TOKEN: 'runtime', INPUT_TOKEN: 'input', RP_KEPT: 'kept' }, async () => {
+    assert.equal(await execute(process.execPath, ['-e', script], { echo: false }), '[null,null,"kept",null]');
+    const env = { ...withoutRunnerVariables(process.env), RP_ONLY: 'only' };
+    delete env.RP_KEPT;
+    assert.equal(await execute(process.execPath, ['-e', script], { env, echo: false }), '[null,null,null,"only"]');
+  });
+});
+
+test('execute rejects with the exit code and the last line of stderr, or the code alone', async () => {
+  await capture(() =>
+    assert.rejects(execute(process.execPath, ['-e', "console.error('first'); console.error('last'); process.exit(2)"]), {
+      message: `${NODE} exited with 2: last`,
+    }),
+  );
+  await assert.rejects(execute(process.execPath, ['-e', 'process.exit(3)']), { message: `${NODE} exited with 3` });
+});
+
+test('execute rejects a program that cannot start', async () => {
+  await assert.rejects(execute('rp-no-such-program', []), { code: 'ENOENT' });
+});
+
+test('execute stops the program when its signal aborts, and rejects with an AbortError', async () => {
+  const stop = new AbortController();
+  let child;
+  // Aborted once the child has started, not inside spawn, where Node would
+  // emit the error before execute listens for it.
+  const start = (...args) => {
+    child = spawn(...args);
+    child.once('spawn', () => stop.abort());
+    return child;
+  };
+  await assert.rejects(execute(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { spawn: start, signal: stop.signal }), {
+    name: 'AbortError',
+  });
+  await new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve)));
+  assert.ok(child.killed);
 });
 
 // --- Hashing ------------------------------------------------------------------

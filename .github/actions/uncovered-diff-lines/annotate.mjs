@@ -7,13 +7,12 @@
 // gets the check, neutral, naming the stage that failed. Conventions:
 // docs/skills/ci-logic.md.
 
-import { spawn as nodeSpawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { github } from '../lib/github.mjs';
-import { describe, io, warning, withoutRunnerVariables } from '../lib/helpers.mjs';
+import { describe, execute, warning, withoutRunnerVariables } from '../lib/helpers.mjs';
 
 /** The check run's name, which main's ruleset requires. */
 export const CHECK = 'uncovered-diff-lines';
@@ -27,42 +26,6 @@ export const DIFF_COVER = 'diff-cover==10.5.1';
 
 /** The script that turns diff-cover's findings into the check run. */
 export const POSTER = fileURLToPath(new URL('../../../tools/coverage/post_check_annotations.py', import.meta.url));
-
-/**
- * Runs `program` with `args` and the environment `env`, with no stdin, its
- * output copied to the step's log, and resolves to what it printed on stdout.
- * Rejects when it cannot start, or when it exits other than 0, with the last
- * line of its stderr. When `signal` aborts, the program is sent SIGTERM and
- * the promise rejects with an AbortError.
- */
-export function execute(program, args, { env, spawn = nodeSpawn, signal }) {
-  return new Promise((resolve, reject) => {
-    // A spawn that throws rejects the promise, as any throw in its executor does.
-    const child = spawn(program, args, { env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (text) => {
-      out += text;
-      io.stdout(text);
-    });
-    child.stderr.on('data', (text) => {
-      err += text;
-      io.stderr(text);
-    });
-    child.on('error', reject);
-    child.on('close', (code, signal) => {
-      if (code === 0) {
-        resolve(out);
-        return;
-      }
-      const last = err.trim().split('\n').pop();
-      const ended = code === null ? `was stopped by ${signal}` : `exited with ${code}`;
-      reject(new Error(`${path.basename(program)} ${ended}${last ? `: ${last}` : ''}`));
-    });
-  });
-}
 
 /**
  * Scores pull request `pr`'s diff against the LCOV report `lcov` and posts
