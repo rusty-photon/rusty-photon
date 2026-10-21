@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml done (#1586) |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586) and bazel-coverage.yml's run (#1587) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1281,7 +1281,8 @@ PRs, in any order:
   their sourcing (done, below);
 - bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
   handling), "Annotate uncovered diff lines", "Capture bazel test logs",
-  "Split combined lcov per package";
+  "Split combined lcov per package" (all but "Annotate uncovered diff
+  lines" done, below);
 - check.yml: "Verify workspace MSRV" (from R5); shellcheck's "Install
   pinned shellcheck" and its script list; `clippy-beta`'s report and
   aggregation blocks, and its per-lint census `github-script` if J7
@@ -1314,6 +1315,26 @@ Done so far:
   names, which ADR-020's routing expressions read, so a matrix value
   would have meant changing them. Each step's Bazel arguments are the
   same as before, on every OS.
+- **bazel-coverage.yml's run** (#1587): the `bazel-coverage` action runs
+  `bazel coverage` with the step's flags. It replaces three steps' shell:
+  - **"bazel coverage"**: it keeps the 50-minute cap the step had from
+    `timeout`. Past it, Bazel is sent SIGINT, and SIGKILL 2 minutes later,
+    and the runner's stop signal sends the SIGINT at once. It names a
+    failure from Bazel's exit code, as the step did, in an annotation
+    without the step's titles, which the helper module does not write.
+  - **"Capture bazel test logs"**: gone. The upload reads
+    `bazel-out/*/testlogs` itself, as bazel.yml's BDD log upload does, so
+    the artifact's paths now start at the configuration directory
+    (`k8-fastbuild/testlogs/…`). The step's rp:bdd tail had printed
+    nothing since rp:bdd was sharded: it looked for the unsharded
+    `services/rp/bdd/test.log`.
+  - **"Split combined lcov per package"**: the action finds the combined
+    report and fails on a missing or empty one, and gives its path as the
+    `report` output. The step runs the two Python scripts on it.
+
+  Bazel gets the step's environment without the runner's `ACTIONS_*` and
+  `INPUT_*` variables, which a `run:` step does not have
+  (`withoutRunnerVariables`, now in the helper module).
 
 ## T1 — The Linux pool template carries rustup and stable
 

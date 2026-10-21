@@ -158,6 +158,7 @@ parsers, which its comments name.
 | `maskUrl` | Mask a URL that is the operator's own, such as the LAN cache's: the URL, its host and its hostname. Returns it without trailing slashes; one that does not parse throws without showing it. |
 | `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
 | `command` | Runs a program with its arguments, never through a shell, and resolves to what it prints. An exit other than 0 rejects with the last line of its stderr, and a program that cannot start with its spawn error (`ENOENT`). |
+| `withoutRunnerVariables` | An environment without the variables the runner gives a JavaScript action and not a `run:` step, `ACTIONS_*` and `INPUT_*`, for a program the action starts (below). |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `parseRetryAfter` | The wait a Retry-After header asks for, in ms: its seconds, or its HTTP date measured against the server's clock. For a request made without `fetchWithRetry`, as `lib/install.mjs`'s download is. |
 | `io` | Where the helpers write. Tests swap it out (below). |
@@ -424,7 +425,10 @@ once and waits for them all.
   each SIGTERM, then SIGKILL 5 s later, and prints the logs.
 - **A program the action downloaded and nobody has checked** gets the
   step's environment without the runner's `ACTIONS_*` variables and the
-  action's `INPUT_*`. A JavaScript action gets `ACTIONS_RUNTIME_TOKEN`,
+  action's `INPUT_*` (`withoutRunnerVariables`). So does a program the
+  action runs where a `run:` step ran it, so that the move hands it
+  nothing the step did not: `bazel-coverage` runs Bazel so, which runs
+  the build's repository rules. A JavaScript action gets `ACTIONS_RUNTIME_TOKEN`,
   which can write the repository's caches, and a `run:` step does not
   (actions/runner, `NodeScriptActionHandler.cs`). Its job also runs with
   `contents: read` and `persist-credentials: false`, so no token is on
