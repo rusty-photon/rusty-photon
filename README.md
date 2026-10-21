@@ -205,8 +205,9 @@ bazel test --test_tag_filters=bdd //...
 ASCOM Alpaca compliance testing is integrated via [ConformU](https://github.com/ASCOMInitiative/ConformU):
 
 ```bash
-# Install ConformU (first time only)
-./scripts/test-conformance.sh --install-conformu
+# Install ConformU's latest release, as CI does (first time, and after each
+# ConformU release); it prints the CONFORMU_PATH to set
+bazel run //.github/actions:install -- conformu
 
 # Run a service's ConformU suite. The tests are feature-gated behind `conformu`
 # (a no-op without it). The canonical per-service command lives in each

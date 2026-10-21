@@ -88,22 +88,14 @@ jobs:
           shared-key: ${{ runner.os == 'Linux' && 'linux-stable' || 'macos-stable' }}
           save-if: false
 
-      - name: Install ConformU
-        uses: ivonnyssen/conformu-install@v3
-
       # The conformu_integration tests drive ConformU via bdd_infra::run_conformu,
       # which runs the tool only when CONFORMU_PATH points at it (and self-skips
-      # otherwise). The install action puts conformu on PATH; surface its absolute
-      # path so the tests actually run. Fail loudly if it's missing — a silent
-      # skip here would make the whole conformance workflow a no-op.
-      - name: Export CONFORMU_PATH
-        shell: bash
-        run: |
-          CONFORMU_PATH="$(command -v conformu || command -v conformu.exe || true)"
-          if [ -z "$CONFORMU_PATH" ]; then
-            echo "conformu not found on PATH after install"; exit 1
-          fi
-          echo "CONFORMU_PATH=$CONFORMU_PATH" >> "$GITHUB_ENV"
+      # otherwise). The action exports CONFORMU_PATH, the absolute path of a
+      # binary it has checked answers with the release's version, and fails
+      # otherwise: a silent skip would make the whole conformance workflow a
+      # no-op.
+      - name: Install ConformU
+        uses: ./.github/actions/install-conformu
 
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
@@ -218,22 +210,14 @@ jobs:
           shared-key: windows-stable
           save-if: false
 
-      - name: Install ConformU
-        uses: ivonnyssen/conformu-install@v3
-
       # The conformu_integration tests drive ConformU via bdd_infra::run_conformu,
       # which runs the tool only when CONFORMU_PATH points at it (and self-skips
-      # otherwise). The install action puts conformu on PATH; surface its absolute
-      # path so the tests actually run. Fail loudly if it's missing — a silent
-      # skip here would make the whole conformance workflow a no-op.
-      - name: Export CONFORMU_PATH
-        shell: bash
-        run: |
-          CONFORMU_PATH="$(command -v conformu || command -v conformu.exe || true)"
-          if [ -z "$CONFORMU_PATH" ]; then
-            echo "conformu not found on PATH after install"; exit 1
-          fi
-          echo "CONFORMU_PATH=$CONFORMU_PATH" >> "$GITHUB_ENV"
+      # otherwise). The action exports CONFORMU_PATH, the absolute path of a
+      # binary it has checked answers with the release's version, and fails
+      # otherwise: a silent skip would make the whole conformance workflow a
+      # no-op.
+      - name: Install ConformU
+        uses: ./.github/actions/install-conformu
 
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''

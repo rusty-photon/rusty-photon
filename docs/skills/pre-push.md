@@ -52,7 +52,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 | miri component | `rustup +nightly component add miri` | Miri checks |
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
 | cargo-llvm-cov | `cargo install cargo-llvm-cov` | Local ad-hoc cargo coverage (CI coverage is `bazel coverage`) |
-| ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
+| ConformU | `bazel run //.github/actions:install -- conformu` | Conformance tests |
 | jq | `sudo apt install jq` / `brew install jq` | Listing the ConformU and Miri services by hand |
 | llvm | `sudo apt install llvm` | Address sanitizer symbolization |
 
@@ -657,15 +657,18 @@ means it checks something else.
 ### ConformU Quick Start
 
 ```bash
-# Install ConformU (resolves the latest release, same as CI; Linux x64 only)
-./scripts/test-conformance.sh --install-conformu
+# Install ConformU's latest release, as CI does; it prints the CONFORMU_PATH to set
+bazel run //.github/actions:install -- conformu
 
-# Run conformance tests
-./scripts/test-conformance.sh
+# One service's ConformU suite: the command its Cargo.toml's
+# [package.metadata.conformu] gives, here filemonitor's
+cargo test -p filemonitor --features conformu --test conformu_integration -- --nocapture
 
-# Run with custom options
-./scripts/test-conformance.sh --port 12345 --verbose --keep-reports
+# Or every service's, through Bazel
+bazel test --config=conformu //...
 ```
+
+Each suite skips without `CONFORMU_PATH`, so set it first.
 
 Running against **real hardware** to produce a `docs/validation/` record
 is a different task with a version gate of its own — see

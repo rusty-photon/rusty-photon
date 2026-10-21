@@ -109,7 +109,7 @@ first in their columns.
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
-| R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
+| R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | In progress: the install action, and the script deleted (#1591); the parallel run next |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588) and the small blocks of nine more (#1589) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
@@ -1240,11 +1240,46 @@ too, in the same diff the reviewer reads. Raised by the review of #1505.
   differs from what it reviews fails it, and the workflows' comments name
   it.
 
-### R7 — ConformU runner
+### R7 — ConformU install and parallel run, now JavaScript
 
-`scripts/test-conformance.sh` (450 lines), which hardware-validation.md
-and pre-push.md send developers to. conformu.yml's "Run ConformU tests
-(parallel)" block may fold into the same subcommand.
+`scripts/test-conformance.sh` (450 lines) had two halves. Its
+`--install-conformu`, which the README, hardware-validation.md,
+pre-push.md and filemonitor's tests README sent developers to, installed
+the latest ConformU into `~/tools/conformu`, on Linux x64 only and
+unchecked. Its run tested filemonitor alone, with a config of its own:
+what filemonitor's `conformu_integration` test, the command its
+`[package.metadata.conformu]` gives, already does, and what conformu.yml
+runs. CI installed ConformU with `ivonnyssen/conformu-install@v3`, also
+unchecked, and two "Export CONFORMU_PATH" blocks found it on the PATH.
+
+ADR-022's Amendment A makes a developer's install the CI install action's
+own module, so once the filemonitor run goes nothing here is a tool a
+developer runs, and the item is JavaScript. The owner chose on 2026-10-21
+to replace both installs with a local action, and that it:
+
+- stays on the latest release, as hardware-validation.md's version gate
+  requires;
+- checks each download against the SHA-256 GitHub's release API gives
+  for the asset, and refuses a release without one. ConformU's releases
+  carry one from v4.2.1 on; older ones are not supported;
+- keeps no way to install an older release, since no old run has been
+  reproduced;
+- installs on every platform a developer uses, Windows by ConformU's own
+  installer, since a developer has admin rights on their machine;
+- installs a developer's copy into `~/.local/opt/conformu`, as the other
+  tools do;
+
+and that the script's filemonitor-only run is deleted, not ported. Two
+PRs:
+
+1. **The install** (#1591): `install-conformu`, which conformu.yml's two
+   jobs use, exporting CONFORMU_PATH itself, so the Export blocks go;
+   `install-conformu.yml`, which installs it on the four runners its
+   table has whenever it changes; the developer's
+   `bazel run //.github/actions:install -- conformu`; and the script,
+   deleted.
+2. **The parallel run**: conformu.yml's "Run ConformU tests (parallel)"
+   block, as an action built like `bdd-sharded`.
 
 ### R8 — Packaging scripts
 
@@ -1289,8 +1324,8 @@ together, in one (#1589):
   report and aggregation blocks, and its per-lint census `github-script` if
   J7 leaves it out;
 - conformu.yml: "Discover ConformU services" (from R5, done, below); the two "Export
-  CONFORMU_PATH" blocks; "Run ConformU tests (parallel)", unless R7
-  takes it;
+  CONFORMU_PATH" blocks and "Run ConformU tests (parallel)", which R7
+  takes;
 - install-astap.yml: "Smoke test (Linux/macOS)" and "Smoke test
   (Windows)", a bash and PowerShell pair (done, below);
 - rules-rust-patches.yml (`parity.yml` until J11): the two "Guard -

@@ -41,12 +41,14 @@ deployment work. Remote dev loop: see
 
 ### 1.3 zwo-camera against real hardware
 
-- [ ] First real-SDK ConformU run: `scripts/test-conformance.sh` pointed at
-      the rig's zwo-camera (ports/flags per that script). The sim round
-      surfaced sensor-geometry and async-op bugs (CameraXSize R4 alignment,
-      async PulseGuide); expect the real sensor to disagree with the sim on
-      geometry, exposure limits, and gain/offset ranges — capture every
-      mismatch as a driver issue rather than hand-tuning config around it.
+- [ ] First real-SDK ConformU run against the rig's zwo-camera, invoking
+      ConformU directly as
+      [hardware-validation.md](../skills/hardware-validation.md#install-and-run)
+      says. The sim round surfaced sensor-geometry and async-op bugs
+      (CameraXSize R4 alignment, async PulseGuide); expect the real sensor
+      to disagree with the sim on geometry, exposure limits, and gain/offset
+      ranges — capture every mismatch as a driver issue rather than
+      hand-tuning config around it.
 - [ ] Full-frame capture at 16-bit; verify FITS lands via filemonitor and
       dimensions/bit depth match the sensor spec.
 - [ ] Cooler: set-point reached and reported power plausible.

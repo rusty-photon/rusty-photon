@@ -3333,7 +3333,7 @@ To reproduce locally, run the in-tree integration test with
 config as above, through the same runner the nightly rotation uses:
 
 ```bash
-CONFORMU_PATH=$HOME/tools/conformu/conformu \
+CONFORMU_PATH=$HOME/.local/opt/conformu/conformu \
   bazel test --config=conformu //services/star-adventurer-gti:conformu_integration
 ```
 

@@ -237,6 +237,23 @@ node_test(
     ],
 )
 
+# install-conformu: ConformU's latest release, which the conformu_integration
+# tests drive, checked against the SHA-256 GitHub's API gives each asset. The
+# tests answer the API and the downloads from one fake server, and the disk
+# image, the Windows installer and the binary's --version from fakes.
+node_test(
+    name = "install_conformu_test",
+    size = "small",
+    srcs = ["install-conformu/conformu.test.mjs"],
+    data = [
+        "install-conformu/conformu.mjs",
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # A developer's install of a tool CI installs, by the install-* action's own
 # module: `bazel run //.github/actions:install -- <tool> [--prefix DIR]`.
 node_binary(
@@ -245,10 +262,12 @@ node_binary(
     data = [
         "install-astap/assets.json",
         "install-astap/astap.mjs",
+        "install-conformu/conformu.mjs",
         "install-omnisim/omnisim.mjs",
         "install-pebble/pebble.mjs",
         "install-svbony-sdk/svbony-sdk.mjs",
         "install-zwo-sdk/zwo-sdk.mjs",
+        "lib/github.mjs",
         "lib/helpers.mjs",
         "lib/install.mjs",
         "local-install/local.mjs",

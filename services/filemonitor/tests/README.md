@@ -7,8 +7,9 @@ This directory contains integration tests that use ConformU for ASCOM Alpaca com
 The ConformU tests are integrated into the Rust test suite but require ConformU to be installed:
 
 ```bash
-# Install ConformU first (if not already installed)
-./test-conformance.sh --install-conformu
+# Install ConformU first (if not already installed); it prints the
+# CONFORMU_PATH to set
+bazel run //.github/actions:install -- conformu
 
 # Run the ConformU integration tests. The default test filter excludes the
 # `conformu` tag, so select it with --config=conformu (needs ConformU
