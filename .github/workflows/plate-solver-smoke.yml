@@ -64,6 +64,7 @@ jobs:
             stagger: 90
     steps:
       - uses: actions/checkout@v7
+        id: checkout
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -113,9 +114,10 @@ jobs:
 
       # The times go in the log however the BDD run ended, so a failure can
       # be read from the run's page without the artifact below; the budget
-      # (times.mjs) is checked only after a BDD run that passed.
+      # (times.mjs) is checked only after a BDD run that passed. The action
+      # is read from the checkout, so it needs one.
       - name: Log and check solve times
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         uses: ./.github/actions/plate-solver-times
         with:
           csv: ${{ runner.temp }}/plate-solver-perf.csv

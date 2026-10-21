@@ -28,11 +28,9 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/actions/cargo-workspace/**"
       - ".github/workflows/conformu.yml"
   pull_request:
     paths:
-      - ".github/actions/cargo-workspace/**"
       - ".github/workflows/conformu.yml"
 
 concurrency:
