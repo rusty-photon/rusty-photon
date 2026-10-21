@@ -239,9 +239,20 @@ struct DeviceState {
     /// and offset reads and the claim; both setters match. The last four are
     /// leaves.
     frame_setup_lock: Mutex<()>,
-    /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
-    /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
-    pulse_guide_until: Mutex<Option<SystemTime>>,
+    /// The ST4 guide pulse in flight in each direction (asynchronous
+    /// `PulseGuide`). `IsPulseGuiding` is `now < until` for any of them (PG2).
+    pulses: Mutex<Pulses>,
+    /// The id the next `PulseGuide` gives its pulse.
+    next_pulse_id: AtomicU64,
+    /// One pulse start or stop at the camera at a time. A start holds it across
+    /// `ASIPulseGuideOn` and recording its pulse, a stop across checking that
+    /// its pulse still owns the direction and `ASIPulseGuideOff`, so the
+    /// order the camera sees is the order `pulses` records: a stop that runs
+    /// late never ends a newer pulse in its direction (PG2).
+    ///
+    /// **Lock order:** before the handle's camera lock and `pulses`; nothing
+    /// takes it while holding another.
+    pulse_order: tokio::sync::Mutex<()>,
     /// One connection change at a time. `set_connected` reads the handle's
     /// session and acts on it under this lock, so a second request sees what
     /// the first left behind. Without it, two `Connected = true` requests
@@ -276,7 +287,9 @@ impl DeviceState {
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
             frame_setup_lock: Mutex::new(()),
-            pulse_guide_until: Mutex::new(None),
+            pulses: Mutex::new(Pulses::NONE),
+            next_pulse_id: AtomicU64::new(0),
+            pulse_order: tokio::sync::Mutex::const_new(()),
             lifecycle_lock: Mutex::new(()),
         }
     }
@@ -292,7 +305,7 @@ impl DeviceState {
         *self.last_error.lock() = None;
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
-        *self.pulse_guide_until.lock() = None;
+        *self.pulses.lock() = Pulses::NONE;
         // Last, and deliberately so: taking the cell *is* releasing the
         // in-flight claim, and `start_exposure` does not take `result_lock`.
         // Hand the device back any earlier and the next exposure can claim it
@@ -940,6 +953,50 @@ const fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
         BayerPattern::Gb => camera_core::BayerPattern::Gbrg,
     }
     .offsets()
+}
+
+/// One ST4 guide pulse in flight: the id its `PulseGuide` gave it, which says
+/// whether a stop is still its own, and its deadline.
+#[derive(Debug, Clone, Copy)]
+struct Pulse {
+    id: u64,
+    until: SystemTime,
+}
+
+/// The ST4 guide pulse in flight in each direction; `None` where none is.
+#[derive(Debug, Clone, Copy)]
+struct Pulses {
+    north: Option<Pulse>,
+    south: Option<Pulse>,
+    east: Option<Pulse>,
+    west: Option<Pulse>,
+}
+
+impl Pulses {
+    const NONE: Self = Self {
+        north: None,
+        south: None,
+        east: None,
+        west: None,
+    };
+
+    /// The pulse in `direction`.
+    const fn slot(&mut self, direction: zwo_rs::GuideDirection) -> &mut Option<Pulse> {
+        match direction {
+            zwo_rs::GuideDirection::North => &mut self.north,
+            zwo_rs::GuideDirection::South => &mut self.south,
+            zwo_rs::GuideDirection::East => &mut self.east,
+            zwo_rs::GuideDirection::West => &mut self.west,
+        }
+    }
+
+    /// Whether a pulse in any direction runs until after `now`.
+    fn guiding_at(&self, now: SystemTime) -> bool {
+        [self.north, self.south, self.east, self.west]
+            .iter()
+            .flatten()
+            .any(|pulse| now < pulse.until)
+    }
 }
 
 /// Map an ASCOM guide direction onto the `zwo-rs` one.
@@ -1611,17 +1668,17 @@ impl Camera for ZwoCamera {
         Ok(self.info.has_st4_port)
     }
 
-    /// The deadline this reads is cleared in `reset_exposure_state`, which runs
-    /// at the *start of a connect* and nowhere else — so without the check a
-    /// pulse issued shortly before a disconnect reports `IsPulseGuiding = true`
-    /// on a camera nobody is connected to, until someone reconnects it. Session
-    /// state, answered only for a running session, exactly as E11's members are.
+    /// A disconnect leaves the pulses this reads in place: a pulse's own stop
+    /// clears it, and `reset_exposure_state`, at the *start of a connect*, clears
+    /// them all. So without the check a pulse issued shortly before a
+    /// disconnect reports `IsPulseGuiding = true` on a camera nobody is
+    /// connected to, until its deadline. Session state, answered only for a
+    /// running session, exactly as E11's members are.
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
-        // Asynchronous: `pulse_guide` returns immediately and records a deadline;
-        // the pulse is in progress until that deadline passes (PG2).
+        // Asynchronous: `pulse_guide` returns immediately and records each
+        // direction's deadline; a pulse is in progress until it passes (PG2).
         self.ensure_connected()?;
-        Ok((*self.state.pulse_guide_until.lock())
-            .is_some_and(|deadline| SystemTime::now() < deadline))
+        Ok(self.state.pulses.lock().guiding_at(SystemTime::now()))
     }
 
     // --- exposure state ---------------------------------------------------------
@@ -1849,37 +1906,52 @@ impl Camera for ZwoCamera {
         // detached task to end it after `duration`. Blocking it for the whole
         // pulse would exceed ConformU's 1 s response target and stall an
         // autoguider. `IsPulseGuiding` is true until the recorded deadline.
-        self.on_handle(move |h| {
-            h.pulse_guide_on(dir).map_err(|e| {
-                let otherwise = ASCOMError::invalid_operation(format!("pulse guide failed: {e}"));
-                sdk_failure(&e, otherwise)
+        let id = {
+            let _order = self.state.pulse_order.lock().await;
+            self.on_handle(move |h| {
+                h.pulse_guide_on(dir).map_err(|e| {
+                    let otherwise =
+                        ASCOMError::invalid_operation(format!("pulse guide failed: {e}"));
+                    sdk_failure(&e, otherwise)
+                })
             })
-        })
-        .await?;
-
-        // A guide pulse is milliseconds long, so this cannot overflow the clock;
-        // falling back to `now` would simply report the pulse as already done.
-        let now = SystemTime::now();
-        let deadline = now.checked_add(duration).unwrap_or(now);
-        *self.state.pulse_guide_until.lock() = Some(deadline);
+            .await?;
+            // A guide pulse is milliseconds long, so this cannot overflow the
+            // clock; falling back to `now` would simply report the pulse as
+            // already done.
+            let id = self.state.next_pulse_id.fetch_add(1, Ordering::Relaxed);
+            let now = SystemTime::now();
+            let until = now.checked_add(duration).unwrap_or(now);
+            *self.state.pulses.lock().slot(dir) = Some(Pulse { id, until });
+            id
+        };
 
         let off_handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             tokio::time::sleep(duration).await;
+            // An autoguider, and ConformU, start the next pulse as soon as
+            // `IsPulseGuiding` reads false, which is when this deadline passes,
+            // and may start one in this direction before then. A newer pulse in
+            // this direction owns the line, and its own stop ends it; an Off
+            // here would cut it short (PG2).
+            let _order = state.pulse_order.lock().await;
+            if state
+                .pulses
+                .lock()
+                .slot(dir)
+                .is_some_and(|pulse| pulse.id != id)
+            {
+                return;
+            }
             match tokio::task::spawn_blocking(move || off_handle.pulse_guide_off(dir)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => debug!(error = %e, "ending the ST4 guide pulse failed"),
                 Err(e) => debug!(error = %e, "pulse-guide stop task failed to join"),
             }
-            // Only this pulse's deadline: an autoguider, and ConformU, start the
-            // next pulse as soon as `IsPulseGuiding` reads false, which is when
-            // this deadline passes, while this stop may still be at the camera.
-            // That pulse's deadline is its own to clear (PG2).
-            let mut until = state.pulse_guide_until.lock();
-            if *until == Some(deadline) {
-                *until = None;
-            }
+            // Ours, or reset by a reconnect: no pulse can take this direction
+            // while the order is held.
+            *state.pulses.lock().slot(dir) = None;
         });
         Ok(())
     }
@@ -1889,7 +1961,8 @@ impl Camera for ZwoCamera {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::{CaptureOutcome, MockCameraHandle};
+    use crate::backend::mock::{CaptureOutcome, MockCameraHandle, PulseCall};
+    use zwo_rs::GuideDirection as St4;
 
     fn roi(start_x: u32, start_y: u32, width: u32, height: u32) -> Roi {
         Roi {
@@ -3577,45 +3650,145 @@ mod tests {
         .expect("pulse did not expire");
     }
 
+    /// Waits until the runtime has `alive` tasks or fewer. The pulses' stop
+    /// tasks are the only ones these tests start, so this is when the stops
+    /// before the last pulse's have ended; the last pulse outlives the test.
+    async fn stops_ended(runtime: &tokio::runtime::RuntimeMetrics, alive: usize) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while runtime.num_alive_tasks() > alive {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a pulse's stop task did not end");
+    }
+
     #[tokio::test]
-    async fn a_pulse_ending_late_leaves_the_next_pulse_guiding() {
-        // The next pulse starts once IsPulseGuiding reads false, when the last
-        // pulse's deadline passes, which can be before the last pulse's stop
-        // has finished at the camera. Its stop then clears only its own
-        // deadline (PG2). The gate holds the first stop past the deadline;
-        // the runtime's task count says when the first stop task has ended,
-        // the second's (a 60 s pulse) outliving the test.
+    async fn a_pulse_ending_leaves_a_pulse_in_another_direction_guiding() {
+        // Each direction keeps its own pulse (PG2): East's stop, which ends
+        // after West has started, leaves West guiding.
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let runtime = tokio::runtime::Handle::current().metrics();
+        let idle = runtime.num_alive_tasks();
+        device
+            .pulse_guide(GuideDirection::East, Duration::from_millis(300))
+            .await
+            .unwrap();
+        device
+            .pulse_guide(GuideDirection::West, Duration::from_mins(1))
+            .await
+            .unwrap();
+        stops_ended(&runtime, idle + 1).await;
+        assert!(
+            device.is_pulse_guiding().await.unwrap(),
+            "East's stop ended West's IsPulseGuiding"
+        );
+        assert!(
+            device.state.pulses.lock().slot(St4::East).is_none(),
+            "East's stop left its pulse recorded"
+        );
+        assert_eq!(
+            handle.pulse_calls(),
+            [
+                PulseCall::On(St4::East),
+                PulseCall::On(St4::West),
+                PulseCall::Off(St4::East)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_short_pulse_on_one_axis_leaves_a_longer_one_guiding() {
+        // A client may pulse both axes at once; the shorter pulse ending does
+        // not end IsPulseGuiding for the longer one (PG2).
+        let (device, _handle) = connected_device_with_handle(MockCameraHandle::default());
+        let runtime = tokio::runtime::Handle::current().metrics();
+        let idle = runtime.num_alive_tasks();
+        device
+            .pulse_guide(GuideDirection::North, Duration::from_mins(1))
+            .await
+            .unwrap();
+        device
+            .pulse_guide(GuideDirection::East, Duration::from_millis(20))
+            .await
+            .unwrap();
+        stops_ended(&runtime, idle + 1).await;
+        assert!(
+            device.is_pulse_guiding().await.unwrap(),
+            "East's stop ended North's IsPulseGuiding"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_stop_does_not_cut_the_next_pulse_in_its_direction() {
+        // The next pulse starts once IsPulseGuiding reads false, which can be
+        // while the last pulse's stop is still at the camera, and can go the
+        // same way. The stop reaches the camera first and the next pulse's
+        // start after it, so the line is on for the next pulse (PG2). The
+        // gate holds the first stop at the camera; the second pulse has 50 ms
+        // to overtake it, as it could without the pulse order.
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
         let runtime = tokio::runtime::Handle::current().metrics();
         let idle = runtime.num_alive_tasks();
         handle.set_pulse_off_gate(true);
         device
-            .pulse_guide(GuideDirection::East, Duration::from_millis(20))
+            .pulse_guide(GuideDirection::West, Duration::from_millis(20))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(30), async {
-            while device.is_pulse_guiding().await.unwrap() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            while handle.pulse_offs_begun() == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await
-        .expect("the first pulse did not reach its deadline");
+        .expect("the first pulse's stop did not begin");
+        // The deadline ends the pulse's IsPulseGuiding, not its stop.
+        assert!(!device.is_pulse_guiding().await.unwrap());
+        let (second, ()) = tokio::join!(
+            device.pulse_guide(GuideDirection::West, Duration::from_mins(1)),
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                handle.set_pulse_off_gate(false);
+            }
+        );
+        second.unwrap();
+        stops_ended(&runtime, idle + 1).await;
+        assert_eq!(
+            handle.pulse_calls(),
+            [
+                PulseCall::On(St4::West),
+                PulseCall::Off(St4::West),
+                PulseCall::On(St4::West)
+            ],
+            "the first pulse's stop reached the camera after the second pulse's start"
+        );
+        assert!(device.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_pulse_started_during_one_in_its_direction_keeps_the_line_on() {
+        // A client may start a pulse in a direction already guiding. The
+        // earlier pulse's stop leaves the line to the newer pulse, whose own
+        // stop ends it (PG2). Whichever takes the pulse order first, the line
+        // is on once the earlier stop is done.
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let runtime = tokio::runtime::Handle::current().metrics();
+        let idle = runtime.num_alive_tasks();
+        device
+            .pulse_guide(GuideDirection::West, Duration::from_millis(300))
+            .await
+            .unwrap();
         device
             .pulse_guide(GuideDirection::West, Duration::from_mins(1))
             .await
             .unwrap();
-        handle.set_pulse_off_gate(false);
-        tokio::time::timeout(Duration::from_secs(30), async {
-            while runtime.num_alive_tasks() > idle + 1 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the first pulse's stop task did not end");
-        assert!(
-            device.is_pulse_guiding().await.unwrap(),
-            "the first pulse's stop ended the second pulse's IsPulseGuiding"
+        stops_ended(&runtime, idle + 1).await;
+        assert_eq!(
+            handle.pulse_calls().last(),
+            Some(&PulseCall::On(St4::West)),
+            "the earlier pulse's stop ended the newer pulse at the camera"
         );
+        assert!(device.is_pulse_guiding().await.unwrap());
     }
 
     #[tokio::test]
@@ -3979,6 +4152,10 @@ mod tests {
             device.is_pulse_guiding().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
+        // The next session starts with no pulse: the connect clears the last
+        // session's (C3).
+        device.set_connected(true).await.unwrap();
+        assert!(!device.is_pulse_guiding().await.unwrap());
     }
 
     // --- C6: a camera that has left the bus ---------------------------------

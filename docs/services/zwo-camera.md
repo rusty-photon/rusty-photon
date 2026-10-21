@@ -1908,21 +1908,27 @@ in its **Device** column with no renumbering note, and closed with
 - **PG2.** `PulseGuide(direction, duration)` is **asynchronous**: it starts the
   ST4 pulse (`ASIPulseGuideOn`) and returns immediately, with `IsPulseGuiding`
   reporting `true` until the pulse's deadline (`now + duration`); a detached task
-  ends it (`ASIPulseGuideOff`) when the deadline passes, then clears the deadline
-  only if it is still that pulse's. An autoguider, and ConformU, start the next
-  pulse as soon as `IsPulseGuiding` reads false, which can be before the last
-  pulse's stop has finished at the camera; that pulse keeps its own deadline,
-  so `IsPulseGuiding` stays `true` for it. Blocking for the whole
+  ends it (`ASIPulseGuideOff`) when the deadline passes. Blocking for the whole
   pulse would exceed ConformU's 1 s response target and stall an autoguider's
-  cadence. While disconnected it returns `NOT_CONNECTED`; a model without ST4
+  cadence. Each direction keeps its own pulse, so a short pulse on one axis
+  does not end `IsPulseGuiding` for a longer one on the other. An autoguider,
+  and ConformU, start the next pulse as soon as `IsPulseGuiding` reads false,
+  which can be while the last pulse's stop is still at the camera, and in the
+  same direction. So a pulse's start (`ASIPulseGuideOn`, and recording the
+  pulse) and a pulse's stop (checking that its pulse still owns the
+  direction, and `ASIPulseGuideOff`) take one lock in turn, and a stop whose
+  direction a newer pulse has taken sends no `ASIPulseGuideOff`: the newer
+  pulse's stop ends the line, which a late stop would otherwise cut short.
+  While disconnected `PulseGuide` returns `NOT_CONNECTED`; a model without ST4
   returns `NOT_IMPLEMENTED`. `IsPulseGuiding` refuses while disconnected for the
-  same reason the exposure state does (E11, E12): the deadline it reads is
-  cleared only at the start of a connect, so a pulse issued shortly before a
-  disconnect would otherwise report `IsPulseGuiding = true` on a camera nobody
-  is connected to, until someone reconnects it. *(The disconnected branch is a BDD scenario; the
-  no-ST4 `NOT_IMPLEMENTED` branch and the async `IsPulseGuiding` timing are
-  covered by unit tests, since the `simulation` backend always reports ST4
-  present.)*
+  same reason the exposure state does (E11, E12): a disconnect leaves the
+  pulses it reads in place, which a pulse's own stop and the start of a connect
+  clear, so a pulse issued shortly before a disconnect would otherwise report
+  `IsPulseGuiding = true` on a camera nobody is connected to, until its
+  deadline. *(The disconnected branch is a BDD scenario; the no-ST4
+  `NOT_IMPLEMENTED` branch, the async `IsPulseGuiding` timing and the pulse
+  order are covered by unit tests, since the `simulation` backend always
+  reports ST4 present.)*
 
 ### FilterWheel — moved to the future `zwo-filterwheel` service
 

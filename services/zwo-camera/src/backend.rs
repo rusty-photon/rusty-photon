@@ -1459,6 +1459,11 @@ pub(crate) mod mock {
         /// and stays there until the gate is lowered. That lets a test hold a
         /// pulse's stop past the pulse's deadline while it starts the next one.
         pulse_off_gate: AtomicBool,
+        /// How many `pulse_guide_off` calls have begun, the gate's included.
+        pulse_offs_begun: std::sync::atomic::AtomicUsize,
+        /// Each guide-pulse start and stop, in the order it reached the camera
+        /// (a held stop reaches it when the gate lowers).
+        pulse_calls: Mutex<Vec<PulseCall>>,
         /// One entry per `capture` call, in call order: `None` while the call is
         /// still running, then how it ended. A test can assert that a superseded
         /// capture really saw its abort instead of running on to a frame.
@@ -1493,6 +1498,13 @@ pub(crate) mod mock {
         opens: std::sync::atomic::AtomicUsize,
     }
 
+    /// A guide-pulse start or stop that reached the mock camera.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PulseCall {
+        On(GuideDirection),
+        Off(GuideDirection),
+    }
+
     /// How one mock [`capture`](CameraHandle::capture) call ended.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CaptureOutcome {
@@ -1518,6 +1530,8 @@ pub(crate) mod mock {
                 capture_delay: Mutex::new(Duration::ZERO),
                 capture_gate: AtomicBool::new(false),
                 pulse_off_gate: AtomicBool::new(false),
+                pulse_offs_begun: std::sync::atomic::AtomicUsize::new(0),
+                pulse_calls: Mutex::new(Vec::new()),
                 capture_outcomes: Mutex::new(Vec::new()),
                 last_capture_request: Mutex::new(None),
                 control_writes: Mutex::new(Vec::new()),
@@ -1576,6 +1590,17 @@ pub(crate) mod mock {
         /// Hold every pulse's stop at the gate (or release the held ones).
         pub fn set_pulse_off_gate(&self, closed: bool) {
             self.pulse_off_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// How many pulse stops have begun, a held one included.
+        pub fn pulse_offs_begun(&self) -> usize {
+            self.pulse_offs_begun.load(Ordering::SeqCst)
+        }
+
+        /// Every guide-pulse start and stop so far, in the order each reached
+        /// the camera.
+        pub fn pulse_calls(&self) -> Vec<PulseCall> {
+            self.pulse_calls.lock().clone()
         }
 
         /// How each `capture` call so far ended, in call order; `None` for one
@@ -1891,18 +1916,23 @@ pub(crate) mod mock {
             result
         }
 
-        fn pulse_guide_on(&self, _direction: GuideDirection) -> BackendResult<()> {
-            self.reach()
+        fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()> {
+            self.reach()?;
+            self.pulse_calls.lock().push(PulseCall::On(direction));
+            Ok(())
         }
 
-        fn pulse_guide_off(&self, _direction: GuideDirection) -> BackendResult<()> {
+        fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()> {
+            self.pulse_offs_begun.fetch_add(1, Ordering::SeqCst);
             // Bounded for the capture gate's reason (see `capture`).
             let gate_start = std::time::Instant::now();
             while self.pulse_off_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT
             {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            self.reach()
+            self.reach()?;
+            self.pulse_calls.lock().push(PulseCall::Off(direction));
+            Ok(())
         }
     }
 }
