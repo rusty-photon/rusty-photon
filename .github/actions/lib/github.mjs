@@ -1,5 +1,5 @@
 // The GitHub REST API, for the actions that call it (tracking-issue,
-// refresh-astap, uncovered-diff-lines): the run's context, a request that says what failed with
+// refresh-astap, uncovered-diff-lines, install-conformu): the run's context, a request that says what failed with
 // GitHub's own answer, the open issues with a label, and an issue that a
 // failure comments on or opens. Conventions: docs/skills/ci-logic.md.
 
@@ -29,12 +29,13 @@ export function runContext(env = process.env) {
  * the error says `what` failed and carries it. With `missing`, a 404 resolves
  * to undefined. With `accept`, the answer comes in that media type, such as a
  * pull request's diff (`application/vnd.github.diff`). A POST or PATCH is
- * sent once (fetchWithRetry).
+ * sent once (fetchWithRetry). Without a token the request goes
+ * unauthenticated, as a developer's install reads a public repository.
  */
 export async function github(what, url, { token, json, method, accept = 'application/vnd.github+json', missing = false, ...options }) {
   const headers = {
     accept,
-    authorization: `Bearer ${token}`,
+    ...(token && { authorization: `Bearer ${token}` }),
     'user-agent': 'rusty-photon-actions',
     'x-github-api-version': '2022-11-28',
   };

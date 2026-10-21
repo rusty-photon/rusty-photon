@@ -309,10 +309,9 @@ merged branch.
 
 ### When only the ConformU legs go red
 
-`conformu.yml` pins **no** ConformU version: it calls
-`ivonnyssen/conformu-install@v3`, whose `version` input defaults to
-`latest` and is resolved against `ASCOMInitiative/ConformU/releases/latest`
-on every run. That is deliberate — ConformU is the spec validator, and
+`conformu.yml` pins **no** ConformU version: its `install-conformu`
+action installs the release `ASCOMInitiative/ConformU/releases/latest`
+names on every run. That is deliberate — ConformU is the spec validator, and
 drifting behind it is the worse failure — but it means **a release upstream
 can turn a green nightly red with no commit of ours**.
 

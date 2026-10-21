@@ -354,6 +354,22 @@ above.
 - **The release lives in the module**, beside the pins it is pinned to,
   not in an `action.yml` input: a new version needs new pins, and the
   developer's install below reads the same constants.
+- **A tool CI runs at its latest release**, by decision, is the
+  exception: `install-conformu`, since hardware-validation.md's version
+  gate wants every new record on the latest ConformU. Its `resolve` asks
+  GitHub's API for the latest release and pins each asset to the SHA-256
+  the API gives for it (the asset's `digest`, which GitHub computes on
+  upload, for assets uploaded since mid-2025); a release without one is
+  refused. It caches nothing, so it is one JavaScript action rather than
+  the composite above, and resolves and installs in one step, where the
+  release cannot move between them.
+- **An installer the vendor ships** runs as the vendor meant: ConformU's
+  Windows installer (Inno Setup) runs silently from a scratch directory
+  and installs where its script says, which no command line moves, and
+  needs an administrator; a macOS disk image is mounted read-only,
+  without the Finder, inside the work directory (`hdiutil attach
+  -nobrowse -mountpoint`), its app copied out with `ditto`, and detached
+  however the copy ends.
 - **A table that a workflow rewrites is JSON**, in a file beside the
   module that reads it: `install-astap`'s `assets.json`, whose pins
   `refresh-astap` compares with what upstream serves and rewrites in a
@@ -374,7 +390,10 @@ would be a second implementation of the module to keep in step.
 - **Each tool's module exports `installAt(dir, resolved, options)`**
   beside `install`: it installs what `resolve` chose into a directory the
   developer names and resolves to the variables that locate it, where
-  `install` exports them to the job. `local-install/local.mjs` lists the
+  `install` exports them to the job. A `resolve` may answer with a
+  promise, as ConformU's does, which reads the latest release from
+  GitHub's API, unauthenticated on a developer's machine; ConformU's
+  action has no `install`, and exports what `installAt` resolves to. `local-install/local.mjs` lists the
   tools in `TOOLS`.
 - **It never removes what it did not install.** A tool that installs a
   directory whole marks it (`markInstalled`), and replaces a directory
@@ -388,7 +407,8 @@ would be a second implementation of the module to keep in step.
   script and Bazel's actions find it, as CI installs it; it copies the
   files there with `sudo` when the developer cannot write there. The
   SVBony SDK's is `/usr/local` too, where libsvbony-sys's build script
-  looks.
+  looks. ConformU's on Windows is where its installer installs it,
+  `C:\Program Files\ASCOM\ConformU`, and any other is refused there.
 - **It ships nothing.** It downloads on the developer's machine from
   where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
   nothing goes into a package, and nothing is mirrored for developers.
@@ -433,7 +453,9 @@ once and waits for them all.
   `bazel-coverage` and `rules-rust-patches` run Bazel so, which runs the
   build's repository rules, `uncovered-diff-lines` runs pip, diff-cover
   and the coverage scripts' poster so, `cargo-workspace` runs Cargo and
-  cargo-msrv so, and `install-astap`'s smoke test runs ASTAP so. A
+  cargo-msrv so, `install-astap`'s smoke test runs ASTAP so, and
+  `install-conformu` runs ConformU's Windows installer and each install's
+  `--version` so. A
   JavaScript action gets
   `ACTIONS_RUNTIME_TOKEN`, which can write the repository's caches, and a
   `run:` step does not (actions/runner, `NodeScriptActionHandler.cs`). Its
@@ -476,8 +498,8 @@ write credential.
 
 ### An action that calls the GitHub API
 
-`lib/github.mjs` holds what `tracking-issue`, `refresh-astap` and
-`uncovered-diff-lines` share: `runContext` (the API, the repository and
+`lib/github.mjs` holds what `tracking-issue`, `refresh-astap`,
+`uncovered-diff-lines` and `install-conformu` share: `runContext` (the API, the repository and
 the run's link from the runner's variables), `github` (a request that
 names what failed and carries GitHub's own answer, a POST or PATCH sent
 once; with `missing`, a 404 is no error; with `accept`, the answer in
@@ -488,7 +510,9 @@ comment, or one is opened; an issue opened without the label fails the
 step, since GitHub drops a label the repository lacks and says nothing).
 
 - **The token is an input** (`default: ${{ github.token }}`), and the
-  job grants only what the action needs, beside `contents: read`.
+  job grants only what the action needs, beside `contents: read`. Without
+  one, `github` sends no Authorization header, for a developer's install
+  that reads a public repository (`install-conformu`).
 - **A change to the repository goes through the API**, not a push from a
   checkout: `refresh-astap` reads the file at main's tip
   (`git/ref`, `git/commits`, `contents`), writes a tree on main's and a

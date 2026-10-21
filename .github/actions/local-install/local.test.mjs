@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import * as astap from '../install-astap/astap.mjs';
+import * as conformu from '../install-conformu/conformu.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
 import * as svbonySdk from '../install-svbony-sdk/svbony-sdk.mjs';
@@ -20,12 +21,20 @@ const HOME = resolve('/', 'home', 'dev');
 const CWD = resolve('/', 'work', 'rusty-photon');
 
 // A tool that records what it was asked to do, installs nothing, and
-// resolves to `variables` of the directory it was given.
-function fakeTools({ fail, variables = (dir) => ({ TOOL_PATH: join(dir, 'tool'), TOOL_HOME: dir }) } = {}) {
+// resolves to `variables` of the directory it was given. With `later`, its
+// resolve answers later, as one that asks the network does, and with
+// `unresolved` it rejects.
+function fakeTools({ fail, later, unresolved, variables = (dir) => ({ TOOL_PATH: join(dir, 'tool'), TOOL_HOME: dir }) } = {}) {
   const calls = [];
   const tool = {
     about: 'a tool that records its calls',
-    resolve: ({ runner }) => ({ runner }),
+    resolve: later || unresolved
+      ? async ({ runner }) => {
+          await new Promise((done) => setTimeout(done, 1));
+          if (unresolved) throw new Error('Reading the release failed', { cause: new Error('getaddrinfo ENOTFOUND') });
+          return { runner };
+        }
+      : ({ runner }) => ({ runner }),
     installAt: async (dir, resolved, options) => {
       calls.push({ dir, resolved, options });
       if (fail) throw new Error('fetch failed', { cause: new Error('connect ECONNREFUSED') });
@@ -54,6 +63,12 @@ test('parse installs the SVBony SDK where its build looks, but on Windows into ~
   assert.deepEqual(parse(['svbony-sdk'], { cwd: CWD, home: HOME, platform: 'win32' }).dir, join(HOME, '.local', 'opt', 'svbony-sdk'));
 });
 
+test('parse installs ConformU into ~/.local/opt/conformu, but on Windows where its installer puts it', () => {
+  assert.deepEqual(parse(['conformu'], { cwd: CWD, home: HOME, platform: 'linux' }), { tool: 'conformu', dir: join(HOME, '.local', 'opt', 'conformu') });
+  assert.deepEqual(parse(['conformu'], { cwd: CWD, home: HOME, platform: 'darwin' }).dir, join(HOME, '.local', 'opt', 'conformu'));
+  assert.deepEqual(parse(['conformu'], { cwd: CWD, home: HOME, platform: 'win32' }).dir, conformu.windowsDir());
+});
+
 test('parse takes --prefix, a relative one from where bazel ran', () => {
   assert.deepEqual(parse(['omnisim', '--prefix', 'tools/omnisim'], { cwd: CWD, home: HOME }), {
     tool: 'omnisim',
@@ -79,8 +94,8 @@ test('parse refuses a command line it cannot run', () => {
   const refused = [
     [[], 'name the tool to install'],
     [['pebble', 'omnisim'], 'one tool at a time; got pebble, omnisim'],
-    [['nothing'], 'no tool named nothing; there are astap, omnisim, pebble, svbony-sdk, zwo-sdk'],
-    [['toString'], 'no tool named toString; there are astap, omnisim, pebble, svbony-sdk, zwo-sdk'],
+    [['nothing'], 'no tool named nothing; there are astap, conformu, omnisim, pebble, svbony-sdk, zwo-sdk'],
+    [['toString'], 'no tool named toString; there are astap, conformu, omnisim, pebble, svbony-sdk, zwo-sdk'],
     [['pebble', '--prefix'], /Option '--prefix <value>' argument missing/],
     [['pebble', '--prefix='], '--prefix needs a directory'],
     [['pebble', '--dir', 'x'], /Unknown option '--dir'/],
@@ -128,9 +143,11 @@ test('settings writes setx lines on Windows, to run once before opening a new sh
 });
 
 test('TOOLS installs each tool by its install-* action module', () => {
-  assert.deepEqual(Object.keys(TOOLS), ['astap', 'omnisim', 'pebble', 'svbony-sdk', 'zwo-sdk']);
+  assert.deepEqual(Object.keys(TOOLS), ['astap', 'conformu', 'omnisim', 'pebble', 'svbony-sdk', 'zwo-sdk']);
   assert.equal(TOOLS.astap.resolve, astap.resolve);
   assert.equal(TOOLS.astap.installAt, astap.installAt);
+  assert.equal(TOOLS.conformu.resolve, conformu.resolve);
+  assert.equal(TOOLS.conformu.installAt, conformu.installAt);
   assert.equal(TOOLS.omnisim.resolve, omnisim.resolve);
   assert.equal(TOOLS.omnisim.installAt, omnisim.installAt);
   assert.equal(TOOLS.pebble.resolve, pebble.resolve);
@@ -141,6 +158,7 @@ test('TOOLS installs each tool by its install-* action module', () => {
   assert.equal(TOOLS['zwo-sdk'].installAt, zwoSdk.installAt);
   // Each description starts in one column, past the longest name.
   assert.match(usage(), /\n {2}astap {6}ASTAP's CLI and D05 star database/);
+  assert.match(usage(), /\n {2}conformu {3}ASCOM ConformU's latest release/);
   assert.match(usage(), /\n {2}omnisim {4}ASCOM OmniSim/);
   assert.match(usage(), /\n {2}pebble {5}Pebble and pebble-challtestsrv/);
   assert.match(usage(), /\n {2}svbony-sdk SVBony's SDK, which svbony-camera links; into \/usr\/local, on Linux and Intel Macs only/);
@@ -196,6 +214,21 @@ test('main takes a relative --prefix from BUILD_WORKING_DIRECTORY, where bazel r
   const { tools, calls } = fakeTools();
   await withEnv({ BUILD_WORKING_DIRECTORY: CWD }, () => capture(() => main(['tool', '--prefix', 'here'], { home: HOME, tools })));
   assert.equal(calls[0].dir, join(CWD, 'here'));
+});
+
+test('main waits for a resolve that answers later, as one that asks the network does', async () => {
+  const { tools, calls } = fakeTools({ later: true });
+  const { value } = await capture(() => main(['tool'], { cwd: CWD, home: HOME, runner: 'macOS-ARM64', tools }));
+  assert.equal(value, 0);
+  assert.deepEqual(calls[0].resolved, { runner: 'macOS-ARM64' });
+});
+
+test('main says why the release could not be resolved, and exits 1, installing nothing', async () => {
+  const { tools, calls } = fakeTools({ unresolved: true });
+  const { value, stderr } = await capture(() => main(['tool'], { cwd: CWD, home: HOME, tools }));
+  assert.equal(value, 1);
+  assert.equal(stderr, 'tool was not installed: Reading the release failed: getaddrinfo ENOTFOUND\n');
+  assert.deepEqual(calls, []);
 });
 
 test('main says why an install failed, with its causes, and exits 1', async () => {

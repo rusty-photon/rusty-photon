@@ -1,0 +1,49 @@
+# Installs ConformU with the .github/actions/install-conformu action on every
+# runner its asset table covers: Linux x64 and ARM64 from the release
+# archives, macOS from the disk image, Windows by ConformU's installer. The
+# action checks each download against the SHA-256 GitHub's API gives for it,
+# and the install against its `--version`, so installing is the test.
+#
+# Cadence: paths-filtered push to main + pull_request, and workflow_dispatch
+# (manual). conformu.yml runs the action nightly on Linux x64, macOS and
+# Windows, but runs on a pull request only when its own file changes, so a
+# change to the action alone runs here, and the Linux ARM64 row, which no
+# other workflow installs, runs here only.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/install-conformu/**"
+      - ".github/actions/lib/**"
+      - ".github/workflows/install-conformu.yml"
+  pull_request:
+    paths:
+      - ".github/actions/install-conformu/**"
+      - ".github/actions/lib/**"
+      - ".github/workflows/install-conformu.yml"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: install-conformu
+jobs:
+  install:
+    name: install-conformu / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install ConformU
+        id: conformu
+        uses: ./.github/actions/install-conformu
+      - name: Show what was installed
+        shell: bash
+        run: echo "ConformU ${{ steps.conformu.outputs.version }} at $CONFORMU_PATH"

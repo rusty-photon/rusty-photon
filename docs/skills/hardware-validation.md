@@ -35,40 +35,34 @@ go red".
 ## Install and run
 
 ```sh
-./scripts/test-conformance.sh --install-conformu   # installs the latest release
+bazel run //.github/actions:install -- conformu   # installs the latest release
 ```
 
-The installer is **Linux x64 only** and refuses to run anywhere else — it
-fetches the `conformu.linux-x64.tar.xz` asset. On macOS, Windows, or a
-Linux box of another architecture (the aarch64 field rig, say), install
-the matching asset by hand from the
-[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest)
-— the arm64 asset is `conformu.linux-arm64.tar.xz`, and it unpacks flat,
-so extract it into its own directory.
+It installs what CI's `install-conformu` action installs, with the same
+code: the release GitHub names latest at that moment, its download checked
+against the SHA-256 GitHub gives for it, and the install against its own
+`--version`. On Linux (x64, and arm64 for the field rig) it unpacks into
+`~/.local/opt/conformu`, and on macOS it copies `ConformU.app` there from
+the disk image; `--prefix DIR` picks another directory. On Windows it runs
+ConformU's installer, which needs an administrator and always installs
+into `C:\Program Files\ASCOM\ConformU`.
 
-Either way it lands **off your `PATH`**: the installer writes
-`$HOME/tools/conformu/conformu` and changes nothing else. The bare
-`conformu` commands below assume you have put it on yours —
+It prints the `CONFORMU_PATH` line to set, which the in-tree
+`conformu_integration` tests read, and changes nothing else. The bare
+`conformu` commands below assume you have put the binary's directory on
+your `PATH`:
 
 ```sh
-export PATH="$HOME/tools/conformu:$PATH"
+export PATH="$HOME/.local/opt/conformu:$PATH"                                   # Linux
+export PATH="$HOME/.local/opt/conformu/ConformU.app/Contents/Resources:$PATH"   # macOS
 ```
 
-The installer resolves `latest` at the moment you run it, matching what
-CI installs — so a fresh install is never behind on arrival. It says
-nothing about later: releases keep landing, and an *existing* install
-from an earlier session is exactly the stale copy the gate exists to
-catch. Run the version check on every validation run, including right
-after installing, where it confirms what actually landed.
-
-To reproduce an old run deliberately, pin it:
-
-```sh
-CONFORMU_VERSION=v4.4.0 ./scripts/test-conformance.sh --install-conformu
-```
-
-A run pinned that way must not be filed as a new record — it is for
-reproducing history, and the gate above is the rule for anything new.
+Installing resolves `latest` at the moment you run it, matching what CI
+installs, so a fresh install is never behind on arrival. It says nothing
+about later: releases keep landing, and an *existing* install from an
+earlier session is exactly the stale copy the gate exists to catch. Run
+the version check on every validation run, including right after
+installing, where it confirms what actually landed.
 
 For the record itself, invoke ConformU directly so it writes its own
 artifacts rather than scraping the console:

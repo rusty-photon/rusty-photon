@@ -1,0 +1,21 @@
+name: Install ConformU
+description: >-
+  Install ASCOM ConformU's latest release and export CONFORMU_PATH, the
+  binary's path, which the conformu_integration tests read
+  (bdd_infra::run_conformu skips without it). The asset is checked against
+  the SHA-256 GitHub's API gives for it, and the install against its
+  `--version`. Linux unpacks into RUNNER_TEMP/conformu, macOS copies
+  ConformU.app there from the disk image, and Windows runs ConformU's
+  installer, which installs into Program Files. The logic is conformu.mjs's
+  (plan item R7 in docs/plans/ci-shell-to-code.md).
+inputs:
+  token:
+    description: The token that reads ConformU's latest release from the GitHub API.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  version:
+    description: The ConformU version installed, such as 4.5.2.
+runs:
+  using: node24
+  main: index.mjs

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import * as astap from '../install-astap/astap.mjs';
+import * as conformu from '../install-conformu/conformu.mjs';
 import * as omnisim from '../install-omnisim/omnisim.mjs';
 import * as pebble from '../install-pebble/pebble.mjs';
 import * as svbonySdk from '../install-svbony-sdk/svbony-sdk.mjs';
@@ -23,8 +24,9 @@ import { hostKey } from '../lib/install.mjs';
 
 /**
  * The tools it installs, each by the install-* action's own module: `resolve`
- * chooses the assets for a runner, `installAt` installs them into a directory
- * and resolves to the variables that locate them. A tool with a `dir` names
+ * chooses the assets for a runner (ConformU's asks GitHub's API, so it may
+ * answer with a promise), `installAt` installs them into a directory and
+ * resolves to the variables that locate them. A tool with a `dir` names
  * the directory it installs into by default, where ~/.local/opt/<tool> would
  * not be found.
  */
@@ -33,6 +35,13 @@ export const TOOLS = {
     about: "ASTAP's CLI and D05 star database, for plate-solver's @requires-astap scenarios",
     resolve: astap.resolve,
     installAt: astap.installAt,
+  },
+  conformu: {
+    about: "ASCOM ConformU's latest release, which the conformu_integration tests drive; on Windows by its installer",
+    resolve: conformu.resolve,
+    installAt: conformu.installAt,
+    // Where its Windows installer puts it, which nothing here can move.
+    dir: ({ platform }) => (platform === 'win32' ? conformu.windowsDir() : undefined),
   },
   omnisim: {
     about: 'ASCOM OmniSim, the Alpaca simulators the BDD suites spawn',
@@ -171,7 +180,7 @@ export async function main(
   }
   try {
     const tool = tools[request.tool];
-    const variables = await tool.installAt(request.dir, tool.resolve({ runner: runner ?? hostKey() }), { download });
+    const variables = await tool.installAt(request.dir, await tool.resolve({ runner: runner ?? hostKey() }), { download });
     if (Object.keys(variables).length === 0) {
       io.stdout(`\n${request.tool} installed in ${request.dir}. Nothing needs setting to find it there.\n`);
       return 0;
