@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589) and check.yml's beta clippy (#1594) done |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594) and repin-bazel.yml's commit (#1595) done |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1342,7 +1342,8 @@ together, in one (#1589):
 - plate-solver-smoke.yml: "Assert solve-time budget", "Log per-scenario
   timing" (done, below);
 - release.yml: "Strip binary" (done, below);
-- repin-bazel.yml: "Skip if already in sync", "Commit and push repin";
+- repin-bazel.yml: "Skip if already in sync", "Commit and push repin"
+  (done, below);
 - safety.yml: "Enable opt-level 1 for sanitizers", and "cargo test"'s
   flags per sanitizer (done, below);
 - scheduled.yml: "Find Miri services" (from R5, done, below);
@@ -1448,6 +1449,24 @@ Done so far:
     the label and creates it when the repository lacks it, where the
     script created it and took a 422 to mean it existed, and the issue
     list it reads leaves pull requests out.
+- **repin-bazel.yml's commit** (#1595): the `commit-repin` action
+  commits the refreshed lock through the GitHub API, as ci-logic.md has a
+  change to the repository go, where the step committed in the clone and
+  pushed with a git credential helper. It writes the lock as a blob, a
+  tree on the checked-out commit's and a commit on it, by
+  github-actions[bot] as before, and moves the branch to it as a
+  fast-forward, so a branch that moved meanwhile fails the step, as the
+  push did. The token is the step's input, the Dependabot secret or the
+  job's own, as before.
+  - **"Skip if already in sync" is gone.** The action compares the lock's
+    blob with the one the checked-out commit holds and commits nothing
+    when they match. "Validate lock resolves" now runs either way, which
+    costs one analysis on a re-run after the commit landed, the one case
+    where the lock is in sync.
+  - **Proven after merge:** the job runs on dependabot PRs alone, so its
+    first run is on the next dependabot cargo PR. Its tests run the
+    action against a fake API, and its reads were checked against
+    GitHub's (the root tree's entry for the lock, and its blob's SHA-1).
 
 ## T1 — The Linux pool template carries rustup and stable
 

@@ -4,8 +4,9 @@
 # MODULE.bazel.lock, so the Bazel crate_universe index (which reads
 # Cargo.lock via `crate.from_cargo`) drifts stale on every cargo update
 # (see CLAUDE.md rule 10). This job runs the
-# repin on the PR branch and pushes the refreshed lock back, so the author
-# never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
+# repin on the PR branch and commits the refreshed lock back to it, through
+# the GitHub API, so the author never has to remember the manual
+# `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
 #
 # Scope: Dependabot cargo PRs only. Every other check on the dependabot
 # commit is red by design — `--config=ci` carries `--lockfile_mode=error`
@@ -13,8 +14,8 @@
 # is the only useful work on that commit, and the required checks only ever
 # go green on the repinned commit it pushes. It validates the refreshed lock
 # in-place with `bazel build --nobuild //... --lockfile_mode=error` (resolves
-# the full target graph without compiling) before pushing it. Two things make
-# the push land fast, because until it lands nothing else can start:
+# the full target graph without compiling) before committing it. Two things
+# make the commit land fast, because until it lands nothing else can start:
 #
 #  * Venue. The job runs on the ephemeral Linux pool (ADR-020) under the same
 #    `runs-on` expression and RP_POOL_LINUX kill switch as bazel-coverage.yml
@@ -25,29 +26,29 @@
 #    crates.io over WAN, which the runner VLAN allows. No remote-cache flags:
 #    `--nobuild` executes no actions, so a cache endpoint would only be one
 #    more thing to fail on.
-#  * Credential. The push uses RP_REPIN_PUSH_TOKEN when present: a
-#    fine-grained personal access token, Contents read/write on this
-#    repository and nothing else, stored as a **Dependabot** secret (the only
-#    kind a dependabot-triggered run can see). GitHub creates the repinned
-#    commit's `pull_request` run set either way, but a push made with the
-#    job's GITHUB_TOKEN arrives as github-actions[bot] — an outside
-#    contributor under the fork-approval policy — and those runs then wait in
-#    `action_required` for a maintainer's click, observed at hours to a day.
-#    A push by a maintainer's token starts them immediately, and its
+#  * Credential. The commit uses RP_REPIN_PUSH_TOKEN when present: a
+#    fine-grained personal access token, Contents read/write on this repository
+#    and nothing else, stored as a **Dependabot** secret (the only kind a
+#    dependabot-triggered run can see). GitHub creates the repinned commit's
+#    `pull_request` run set either way, but a branch moved with the job's
+#    GITHUB_TOKEN is pushed by github-actions[bot] — an outside contributor
+#    under the fork-approval policy — and those runs then wait in
+#    `action_required` for a maintainer's click, observed at hours to a day. A
+#    push by a maintainer's token starts them immediately, and its
 #    `github.actor` is that maintainer, so the actor gate below keeps this job
-#    from re-running on its own push. Without the secret the push falls back
-#    to GITHUB_TOKEN and the approval click returns: degraded, not broken.
-#    A 403 on the push step with the secret set means the token has expired
-#    or lost its Contents: write permission. Mint a new one (fine-grained,
-#    this repository only, Contents: Read and write), replace the Dependabot
-#    secret, then re-run the failed job from the Actions tab: a re-run keeps
-#    dependabot as `github.actor`, so the gate below still passes and the
-#    fresh secret is read at job start. Replacing the secret alone retries
-#    nothing — this workflow fires only on pull_request changes, and the
-#    repin commit that failed to push existed only on that clone. Commenting
-#    `@dependabot rebase` on the PR is the other route: a fresh push, a
-#    fresh run. ADR-020 layer 4 records why this credential is allowed on a
-#    pool job and how its reach is bounded.
+#    from re-running on its own push. Without the secret the commit falls back
+#    to GITHUB_TOKEN and the approval click returns: degraded, not broken. A
+#    401 or 403 on the push step with the secret set means the token has
+#    expired or lost its Contents: write permission. Mint a new one
+#    (fine-grained, this repository only, Contents: Read and write), replace
+#    the Dependabot secret, then re-run the failed job from the Actions tab: a
+#    re-run keeps dependabot as `github.actor`, so the gate below still passes
+#    and the fresh secret is read at job start. Replacing the secret alone
+#    retries nothing — this workflow fires only on pull_request changes, and
+#    nothing of the failed run's repin reached the branch. Commenting
+#    `@dependabot rebase` on the PR is the other route: a fresh push, a fresh
+#    run. ADR-020 layer 4 records why this credential is allowed on a pool job
+#    and how its reach is bounded.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
 # fixes up module extensions it can find via explicit `use_repo()` calls in
@@ -123,7 +124,7 @@ jobs:
       # Check out the actual PR head branch (not the detached merge ref).
       # Credentials are deliberately NOT persisted: the Bazel steps below
       # evaluate the branch's module graph and run with no token on disk or in
-      # their environment. The push step is handed its token directly.
+      # their environment. The commit step is handed its token as its input.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
@@ -159,53 +160,21 @@ jobs:
           bazel mod tidy
           bazel build --nobuild --config=ci --lockfile_mode=update //...
 
-      - name: Skip if already in sync
-        id: changed
-        run: |
-          if git diff --quiet -- MODULE.bazel.lock; then
-            echo "MODULE.bazel.lock already in sync; nothing to push."
-            echo "dirty=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "dirty=true" >> "$GITHUB_OUTPUT"
-          fi
-
       # Validate the refreshed lock resolves the full target graph before
-      # pushing. --lockfile_mode=error fails if the lock is stale; --nobuild
-      # skips compilation.
+      # committing it. --lockfile_mode=error fails if the lock is stale;
+      # --nobuild skips compilation. A lock already in sync, as on a re-run
+      # after the commit landed, is validated too, and the next step then
+      # commits nothing.
       - name: Validate lock resolves
-        if: steps.changed.outputs.dirty == 'true'
-        run: |
-          bazel build --nobuild --config=ci --lockfile_mode=error //...
+        run: bazel build --nobuild --config=ci --lockfile_mode=error //...
 
+      # The lock as a commit on the checked-out one, through the GitHub API,
+      # and the branch fast-forwarded to it; nothing when the branch already
+      # holds it. The token goes to this step alone, as the action's input: the
+      # Dependabot secret when it exists, else the job's own token (see the
+      # header for what each one costs). The logic is the action's
+      # (docs/skills/ci-logic.md).
       - name: Commit and push repin
-        if: steps.changed.outputs.dirty == 'true'
-        # The branch name reaches the script through the environment rather
-        # than `${{ }}` interpolation: an expression is pasted in as literal
-        # text before bash parses the line, so a branch whose name carried
-        # shell metacharacters would execute as code. Dependabot's own naming
-        # makes that unreachable here, but the env indirection costs nothing
-        # and keeps the pattern uniform.
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          # The Dependabot secret when it exists, else the job's own token
-          # (see the header for what each one costs). Both are masked in logs.
-          PUSH_TOKEN: ${{ secrets.RP_REPIN_PUSH_TOKEN || github.token }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add MODULE.bazel.lock
-          git commit -m "chore(bazel): repin MODULE.bazel.lock for $HEAD_REF"
-          # The token reaches git through a credential helper that reads it
-          # from this step's environment when git asks, so it is never part
-          # of any process's argv (world-readable under /proc on Linux), never
-          # in the remote URL, and never written to .git/config. Helpers are
-          # a list that `-c` appends to, and git stops at the first one that
-          # answers — so the empty value first resets the list, or a helper
-          # configured on the runner image would answer instead of this one.
-          # The single quotes are deliberate: the helper is a shell snippet
-          # that git runs at push time, and that is where ${PUSH_TOKEN} must
-          # expand.
-          # shellcheck disable=SC2016
-          git -c credential.helper= \
-              -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${PUSH_TOKEN}"; }; f' \
-            push origin "HEAD:$HEAD_REF"
+        uses: ./.github/actions/commit-repin
+        with:
+          token: ${{ secrets.RP_REPIN_PUSH_TOKEN || github.token }}
