@@ -1908,7 +1908,11 @@ in its **Device** column with no renumbering note, and closed with
 - **PG2.** `PulseGuide(direction, duration)` is **asynchronous**: it starts the
   ST4 pulse (`ASIPulseGuideOn`) and returns immediately, with `IsPulseGuiding`
   reporting `true` until the pulse's deadline (`now + duration`); a detached task
-  ends it (`ASIPulseGuideOff`) when the deadline passes. Blocking for the whole
+  ends it (`ASIPulseGuideOff`) when the deadline passes, then clears the deadline
+  only if it is still that pulse's. An autoguider, and ConformU, start the next
+  pulse as soon as `IsPulseGuiding` reads false, which can be before the last
+  pulse's stop has finished at the camera; that pulse keeps its own deadline,
+  so `IsPulseGuiding` stays `true` for it. Blocking for the whole
   pulse would exceed ConformU's 1 s response target and stall an autoguider's
   cadence. While disconnected it returns `NOT_CONNECTED`; a model without ST4
   returns `NOT_IMPLEMENTED`. `IsPulseGuiding` refuses while disconnected for the

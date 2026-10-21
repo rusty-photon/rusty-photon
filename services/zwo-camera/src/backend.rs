@@ -1455,6 +1455,10 @@ pub(crate) mod mock {
         /// while it drives a disconnect, a reconnect, and a second exposure —
         /// the interleaving a sleep can only approximate.
         capture_gate: AtomicBool,
+        /// While set, every `pulse_guide_off` parks before it reaches the camera,
+        /// and stays there until the gate is lowered. That lets a test hold a
+        /// pulse's stop past the pulse's deadline while it starts the next one.
+        pulse_off_gate: AtomicBool,
         /// One entry per `capture` call, in call order: `None` while the call is
         /// still running, then how it ended. A test can assert that a superseded
         /// capture really saw its abort instead of running on to a frame.
@@ -1513,6 +1517,7 @@ pub(crate) mod mock {
                 fail_capture: AtomicBool::new(false),
                 capture_delay: Mutex::new(Duration::ZERO),
                 capture_gate: AtomicBool::new(false),
+                pulse_off_gate: AtomicBool::new(false),
                 capture_outcomes: Mutex::new(Vec::new()),
                 last_capture_request: Mutex::new(None),
                 control_writes: Mutex::new(Vec::new()),
@@ -1566,6 +1571,11 @@ pub(crate) mod mock {
         /// Hold every capture at the gate (or release the held ones).
         pub fn set_capture_gate(&self, closed: bool) {
             self.capture_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// Hold every pulse's stop at the gate (or release the held ones).
+        pub fn set_pulse_off_gate(&self, closed: bool) {
+            self.pulse_off_gate.store(closed, Ordering::SeqCst);
         }
 
         /// How each `capture` call so far ended, in call order; `None` for one
@@ -1886,6 +1896,12 @@ pub(crate) mod mock {
         }
 
         fn pulse_guide_off(&self, _direction: GuideDirection) -> BackendResult<()> {
+            // Bounded for the capture gate's reason (see `capture`).
+            let gate_start = std::time::Instant::now();
+            while self.pulse_off_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             self.reach()
         }
     }

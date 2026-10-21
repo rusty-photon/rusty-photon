@@ -1860,7 +1860,8 @@ impl Camera for ZwoCamera {
         // A guide pulse is milliseconds long, so this cannot overflow the clock;
         // falling back to `now` would simply report the pulse as already done.
         let now = SystemTime::now();
-        *self.state.pulse_guide_until.lock() = Some(now.checked_add(duration).unwrap_or(now));
+        let deadline = now.checked_add(duration).unwrap_or(now);
+        *self.state.pulse_guide_until.lock() = Some(deadline);
 
         let off_handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
@@ -1871,7 +1872,14 @@ impl Camera for ZwoCamera {
                 Ok(Err(e)) => debug!(error = %e, "ending the ST4 guide pulse failed"),
                 Err(e) => debug!(error = %e, "pulse-guide stop task failed to join"),
             }
-            *state.pulse_guide_until.lock() = None;
+            // Only this pulse's deadline: an autoguider, and ConformU, start the
+            // next pulse as soon as `IsPulseGuiding` reads false, which is when
+            // this deadline passes, while this stop may still be at the camera.
+            // That pulse's deadline is its own to clear (PG2).
+            let mut until = state.pulse_guide_until.lock();
+            if *until == Some(deadline) {
+                *until = None;
+            }
         });
         Ok(())
     }
@@ -3567,6 +3575,47 @@ mod tests {
         })
         .await
         .expect("pulse did not expire");
+    }
+
+    #[tokio::test]
+    async fn a_pulse_ending_late_leaves_the_next_pulse_guiding() {
+        // The next pulse starts once IsPulseGuiding reads false, when the last
+        // pulse's deadline passes, which can be before the last pulse's stop
+        // has finished at the camera. Its stop then clears only its own
+        // deadline (PG2). The gate holds the first stop past the deadline;
+        // the runtime's task count says when the first stop task has ended,
+        // the second's (a 60 s pulse) outliving the test.
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let runtime = tokio::runtime::Handle::current().metrics();
+        let idle = runtime.num_alive_tasks();
+        handle.set_pulse_off_gate(true);
+        device
+            .pulse_guide(GuideDirection::East, Duration::from_millis(20))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while device.is_pulse_guiding().await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first pulse did not reach its deadline");
+        device
+            .pulse_guide(GuideDirection::West, Duration::from_mins(1))
+            .await
+            .unwrap();
+        handle.set_pulse_off_gate(false);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while runtime.num_alive_tasks() > idle + 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first pulse's stop task did not end");
+        assert!(
+            device.is_pulse_guiding().await.unwrap(),
+            "the first pulse's stop ended the second pulse's IsPulseGuiding"
+        );
     }
 
     #[tokio::test]
