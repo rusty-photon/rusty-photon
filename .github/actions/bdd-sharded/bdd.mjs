@@ -16,10 +16,11 @@
 // the suites in SHARDED. Conventions: docs/skills/ci-logic.md.
 
 import { spawn as nodeSpawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { describe, fail, group, io } from '../lib/helpers.mjs';
+import { fail, io } from '../lib/helpers.mjs';
+import { ended, exitText, replay, runStreams } from '../lib/processes.mjs';
 
 /** The suites split across processes, each by an input of its own. */
 export const SHARDED = ['rp', 'session-runner'];
@@ -122,30 +123,15 @@ export function baseEnv(env, rustflags) {
   return base;
 }
 
-function runEnv(base, run) {
+// A run of a stream `streams` planned, `{ name, dir, exe, shard }`, as the
+// program runStreams starts: the suite's binary, in an environment of its own.
+function suiteRun(base, run) {
   const env = { ...base, BDD_PACKAGE_DIR: run.dir };
   if (run.shard) {
     env.TEST_SHARD_INDEX = String(run.shard.index);
     env.TEST_TOTAL_SHARDS = String(run.shard.total);
   }
-  return env;
-}
-
-// How `child` ended: its exit code or signal, and the error it could not start
-// with, after which Node still emits 'close'.
-function ended(child) {
-  return new Promise((resolve) => {
-    let error;
-    child.on('error', (err) => {
-      error ??= err;
-    });
-    child.on('close', (code, signal) => resolve({ code, signal, error }));
-  });
-}
-
-function exitText({ code, signal, error }) {
-  if (error) return `did not start: ${describe(error)}`;
-  return signal ? `was stopped by ${signal}` : `exited with ${code}`;
+  return { program: run.exe, args: [], env };
 }
 
 // The compiler's messages in cargo's JSON `text`, as it would have printed
@@ -184,95 +170,6 @@ export async function build({ env, file, spawn = nodeSpawn, signal }) {
   return suites(text);
 }
 
-function logFile(logs, name) {
-  return path.join(logs, `${name}.log`);
-}
-
-/**
- * Runs `planned` streams at once, the runs of each one after another, every
- * run's output going to its stream's log in `logs`, so that the streams'
- * lines do not interleave. A stream runs all its suites, even after one
- * fails. Resolves to `{ failed, stopped }`: the streams that failed, by name,
- * and whether `signal` stopped them. Then no further run starts, each running
- * one is sent SIGTERM, and one still running `graceMs` later SIGKILL.
- */
-export async function runStreams(planned, { env, logs, spawn = nodeSpawn, signal, graceMs = 5000 }) {
-  // Every log opens before the first suite starts, so a log that cannot open
-  // fails the step with nothing left running.
-  const outs = [];
-  try {
-    for (const { name } of planned) outs.push(openSync(logFile(logs, name), 'w'));
-  } catch (err) {
-    outs.forEach((out) => closeSync(out));
-    throw err;
-  }
-  // Stopped by `signal`, or by a stream that threw.
-  const halt = new AbortController();
-  const running = new Set();
-  halt.signal.addEventListener('abort', () => {
-    for (const child of running) child.kill();
-    setTimeout(() => {
-      for (const child of running) child.kill('SIGKILL');
-    }, graceMs).unref();
-  });
-  const stop = () => halt.abort();
-  if (signal?.aborted) stop();
-  signal?.addEventListener('abort', stop, { once: true });
-
-  const runStream = async ({ runs }, out) => {
-    let ok = true;
-    for (const run of runs) {
-      if (halt.signal.aborted) return false;
-      // stdin is not the step's: a suite that reads it would take it from
-      // the suites after it.
-      const child = spawn(run.exe, [], { env: runEnv(env, run), stdio: ['ignore', out, out] });
-      running.add(child);
-      const result = await ended(child);
-      running.delete(child);
-      if (result.error) writeSync(out, `${run.exe} ${exitText(result)}\n`);
-      if (result.error || result.code !== 0) ok = false;
-    }
-    return ok;
-  };
-
-  try {
-    // Settled, not raced: a stream that threw stops the others, and the step
-    // goes on only once every suite it started has ended.
-    const settled = await Promise.allSettled(
-      planned.map((stream, i) =>
-        runStream(stream, outs[i]).catch((err) => {
-          stop();
-          throw err;
-        }),
-      ),
-    );
-    const thrown = settled.find((s) => s.status === 'rejected');
-    if (thrown) throw thrown.reason;
-    return {
-      failed: planned.filter((_, i) => !settled[i].value).map(({ name }) => name),
-      stopped: signal?.aborted ?? false,
-    };
-  } finally {
-    signal?.removeEventListener('abort', stop);
-    outs.forEach((out) => closeSync(out));
-  }
-}
-
-/** Prints each stream's log in `logs` as a log group of its own. */
-export async function replay(planned, logs) {
-  for (const { name } of planned) {
-    await group(`bdd ${name}`, () => {
-      let text = '';
-      try {
-        text = readFileSync(logFile(logs, name), 'utf8');
-      } catch {
-        // a stream whose log never opened printed nothing
-      }
-      io.stdout(text.endsWith('\n') || text === '' ? text : `${text}\n`);
-    });
-  }
-}
-
 /**
  * The action: checks the inputs, builds every bdd target, runs the streams,
  * and prints each stream's log however the run ends, a stopped one included,
@@ -294,11 +191,12 @@ export async function main({ rpShards, sessionRunnerShards, rustflags, env = pro
   const planned = streams(built, counts);
   io.stdout(`built ${built.length} bdd binaries\n`);
 
+  const programs = planned.map(({ name, runs }) => ({ name, runs: runs.map((run) => suiteRun(base, run)) }));
   let result;
   try {
-    result = await runStreams(planned, { env: base, logs, spawn, signal, graceMs });
+    result = await runStreams(programs, { logs, spawn, signal, graceMs });
   } finally {
-    await replay(planned, logs);
+    await replay(programs, logs, (name) => `bdd ${name}`);
   }
   if (result.stopped) {
     fail('the BDD streams were stopped before they finished');
