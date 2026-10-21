@@ -300,137 +300,20 @@ jobs:
         with:
           shared-key: linux-beta
           save-if: true
+      # Both of the stable gate's passes with every lint capped at a warning,
+      # what they reported, printed, and its census per lint in the run's
+      # summary. A pass that fails, as on a compile error, fails the step. The
+      # logic is the action's (docs/skills/ci-logic.md).
       - name: cargo clippy (report-only)
-        run: |
-          cargo clippy --version | tee toolchain.txt
-          # The cap goes on clippy's own argument line rather than in RUSTFLAGS
-          # so it applies to the workspace packages being linted and leaves
-          # dependency artifacts cached.
-          status=0
-          cargo clippy --all-targets --all-features --message-format=json \
-            -- --cap-lints warn > clippy.json || status=$?
-          # Same second pass as the stable gate (#988), so beta pre-announces
-          # lints on the default-features surface too; the census script
-          # dedups sites reported by both passes.
-          cargo clippy --workspace --lib --bins --message-format=json \
-            -- --cap-lints warn >> clippy.json || status=$?
-          # `--message-format=json` moves the rendered diagnostics into the
-          # JSON payload, so echo them back for anyone reading the run log.
-          # Never let this displace clippy's own verdict (`bash -e`).
-          jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' clippy.json || true
-          exit $status
-      - name: Aggregate findings per lint
-        run: |
-          python3 tools/ci/beta_clippy_census.py \
-            --root "$GITHUB_WORKSPACE" \
-            --toolchain "$(cat toolchain.txt)" \
-            --summary census.md \
-            < clippy.json > census.json
-          cat census.md >> "$GITHUB_STEP_SUMMARY"
+        id: report
+        uses: ./.github/actions/beta-clippy/report
       - name: Track each lint as an issue
         # Schedule only by default; `workflow_dispatch` can opt in, which is the
         # only way to exercise this path outside the nightly window.
         if: github.event_name == 'schedule' || inputs.report_beta_lints
-        uses: actions/github-script@v9
+        uses: ./.github/actions/beta-clippy/track
         with:
-          script: |
-            const fs = require("fs");
-            const census = JSON.parse(fs.readFileSync("census.json", "utf8"));
-            const { owner, repo } = context.repo;
-            const label = "beta-clippy";
-            const prefix = "beta clippy: ";
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            // A toolchain that renames or splits many lints at once would open a
-            // flood of issues, and truncating the set would make the auto-close
-            // below wrongly retire the lints left out. Hand it to a human
-            // instead — failing here surfaces via notify-clippy-failure.
-            const maxLints = 20;
-            if (census.lints.length > maxLints) {
-              core.setFailed(
-                `beta clippy reported ${census.lints.length} distinct lints ` +
-                `(cap ${maxLints}); triage the census in the run summary rather ` +
-                `than opening an issue per lint.`
-              );
-              return;
-            }
-            // Created on first use so the workflow needs no manual label setup.
-            try {
-              await github.rest.issues.createLabel({
-                owner, repo, name: label, color: "ededed",
-                description: "a lint beta clippy reports that stable does not yet",
-              });
-            } catch (error) {
-              if (error.status !== 422) throw error; // 422 = already exists
-            }
-            const render = (entry) => {
-              const shown = entry.sites.slice(0, 20);
-              const lines = [
-                `\`${entry.lint}\` fires **${entry.count}×** under the beta toolchain.`,
-                ``,
-                `\`stable / clippy\` is a required gate running \`-D warnings\`, so`,
-                `\`main\` is silent on stable — this lint is new on the beta channel`,
-                `and will start failing that gate when beta becomes stable. Fixing`,
-                `it in current code now avoids a rushed sweep on the bump.`,
-                ``,
-                `> ${entry.example}`,
-                ``,
-              ];
-              if (entry.docs) {
-                lines.push(`Lint reference: ${entry.docs}`, ``);
-              }
-              lines.push(
-                `**Sites** (showing ${shown.length} of ${entry.count}):`,
-                ``,
-                ...shown.map((site) => `- \`${site}\``),
-                ``,
-                `Toolchain: \`${census.toolchain}\``,
-                `Last seen: ${runUrl}`,
-                ``,
-                `Opened automatically by the nightly \`beta / clippy\` job. This`,
-                `body is rewritten on every run, and the issue closes itself once`,
-                `the lint stops being reported.`,
-              );
-              return lines.join("\n");
-            };
-            const open = await github.paginate(github.rest.issues.listForRepo, {
-              owner, repo, state: "open", labels: label,
-            });
-            const existing = new Map(open.map((issue) => [issue.title, issue]));
-            const reported = new Set();
-            for (const entry of census.lints) {
-              const title = `${prefix}${entry.lint}`;
-              reported.add(title);
-              const body = render(entry);
-              const match = existing.get(title);
-              if (match) {
-                await github.rest.issues.update({
-                  owner, repo, issue_number: match.number, body,
-                });
-                core.info(`updated #${match.number} — ${title} (${entry.count} sites)`);
-              } else {
-                const created = await github.rest.issues.create({
-                  owner, repo, title, body, labels: [label, "check-nightly"],
-                });
-                core.info(`opened #${created.data.number} — ${title} (${entry.count} sites)`);
-              }
-            }
-            // A lint that stopped firing was either fixed here or dropped
-            // upstream; retire its issue rather than leaving stale ones to be
-            // triaged by hand. Only issues this job generated are eligible.
-            for (const issue of open) {
-              if (reported.has(issue.title) || !issue.title.startsWith(prefix)) {
-                continue;
-              }
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: issue.number,
-                body: `No longer reported by \`beta / clippy\` — closing.\n\nRun: ${runUrl}`,
-              });
-              await github.rest.issues.update({
-                owner, repo, issue_number: issue.number,
-                state: "closed", state_reason: "completed",
-              });
-              core.info(`closed #${issue.number} — ${issue.title}`);
-            }
+          census: ${{ steps.report.outputs.census }}
   notify-clippy-failure:
     # Open or update a tracking issue when a scheduled clippy job fails, so the
     # failure surfaces without depending on someone reading scheduled-workflow

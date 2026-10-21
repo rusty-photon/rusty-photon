@@ -1,0 +1,18 @@
+name: Track beta clippy's lints
+description: >-
+  check.yml's nightly beta clippy, after ../report: one open issue labelled
+  beta-clippy per lint the census lists, opened on its first sighting, its
+  body rewritten each run, and closed once the lint is no longer reported.
+  A census of more than 20 lints fails the step instead. The logic is
+  ../track.mjs's.
+inputs:
+  census:
+    description: The census's file, ../report's census output.
+    required: true
+  token:
+    description: A token that can read and write the repository's issues and labels.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs
