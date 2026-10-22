@@ -687,14 +687,15 @@ section `svbony-camera` serves:
   still holds a record, and each port that has gained a record since that
   start's scan. The page opens nothing, so it takes a new record for a
   camera; the reload's own scan, join and opens decide. A camera the start
-  placed but could not open — served nowhere without a list, held by a
-  placeholder with one — may open on the reload or fail again, which the
-  page cannot tell: the numbers listed are for an open that fails again,
-  and where an open that succeeds would give others, the confirmation
-  lists those too, and asks even when only they move. So a camera plugged into an
-  earlier port since the start is confirmed as the move it causes, whether
-  the save leaves a list or the service already has none, and the
-  confirmation says the bus has changed. A camera page's save reloads too,
+  placed but did not open — unlisted, such as a guide camera another
+  application holds, or one whose open failed — may open on the reload or
+  not, which the page cannot tell. The reload serves each camera it opens
+  in its place in port order, so the confirmation names those cameras and
+  lists the moves for none of them opening and, where they differ, for
+  all of them opening, and it asks even when only the second list moves.
+  So a camera plugged into an earlier port since the start is confirmed as
+  the move it causes, whether the save leaves a list or the service
+  already has none, and the confirmation says the bus has changed. A camera page's save reloads too,
   so it is checked the same way; its page scans the bus only for a save, so
   showing it costs no scan. Only a save that changes something is asked:
   one that changes nothing fires no reload, so nothing it could confirm

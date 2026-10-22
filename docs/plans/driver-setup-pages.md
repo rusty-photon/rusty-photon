@@ -649,12 +649,14 @@ the start opens only the listed cameras. So the cameras the build tells
 the shared pages it placed carry their key only where it was read: every
 camera served with no list, and with a list each listed camera whose open
 succeeded. Leaving a list confirms the names of a listed camera whose open
-failed as dropped, as it does a placeholder's. A camera whose open failed
-at the start may open on the reload or fail again, which the page cannot
-tell, so the build marks it, and the confirmation of a save that leaves no
-list lists the moves for both outcomes where they differ (the first PR's
-review, rated fix). `max_adu_reporting`, a string enum the generic form does
-not render, is file-only on the page, as the mount's `tracking_rate` is.
+failed as dropped, as it does a placeholder's. A placed camera the start
+did not open — unlisted, or its open failed — has no key, and whether the
+reload opens it the page cannot tell, so the confirmation of a save that
+leaves no list names those cameras, lists the moves for none and for all
+of them opening where they differ, and states the port-order rule for any
+other outcome (the PR's first two reviews, rated fix). `max_adu_reporting`,
+a string enum the generic form does not render, is file-only on the page,
+as the mount's `tracking_rate` is.
 
 ### D12. Restart
 
