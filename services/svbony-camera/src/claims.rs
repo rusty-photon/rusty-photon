@@ -9,16 +9,18 @@
 //! is `rusty-photon-driver`'s, shared with the other camera drivers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
     self, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
-use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
+use rusty_photon_doctor_checks::UsbScan;
+use rusty_photon_driver::claims::{BusCamera, Placeholder, PlaceholderCamera, ScanCameras};
 use svbony_rs::CameraInfo;
 
 use crate::config::{Config, UsbDeviceEntry};
-use crate::config_actions::SvbonyCameraDriver;
+use crate::setup::SvbonyCameraDriver;
 
 /// The service name: the config file's stem and the placeholder `UniqueID`'s
 /// middle field.
@@ -127,6 +129,33 @@ fn simulated_inventory() -> rusty_photon_doctor_checks::UsbScan {
     }
 }
 
+/// The rows the setup pages' Cameras section shows from `scan`: every
+/// `f266` record the normalizer can count as a camera, named by its product
+/// string, else `f266:<pid>` (*Setup pages*).
+#[must_use]
+pub fn bus_cameras(scan: &UsbScan) -> Vec<BusCamera> {
+    NORMALIZER
+        .camera_records(scan)
+        .into_iter()
+        .filter_map(|record| {
+            Some(BusCamera {
+                port: record.port.clone()?,
+                label: record
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| format!("{}:{}", record.vendor, record.product)),
+            })
+        })
+        .collect()
+}
+
+/// The scan the Cameras section runs for each server page: `source`'s, the
+/// one a start takes (U1), so nothing is opened.
+#[must_use]
+pub fn scan_cameras(source: UsbSource) -> ScanCameras {
+    Arc::new(move || source.scan().map(|scan| bus_cameras(&scan)))
+}
+
 /// The placeholder that holds `entry`'s number for `reason` (U4).
 #[must_use]
 pub fn placeholder(
@@ -221,6 +250,35 @@ mod tests {
             port: Some(port.to_string()),
             serial: None,
         }
+    }
+
+    #[test]
+    fn the_cameras_section_rows_are_the_svbony_records_named_as_the_bus_names_them() {
+        let other_vendor = UsbDevice {
+            vendor: "03c3".to_string(),
+            ..sv605cc("p:3")
+        };
+        let unnamed = UsbDevice {
+            model: None,
+            ..sv605cc("p:2")
+        };
+        let scan = UsbScan {
+            devices: vec![sv605cc("p:1"), unnamed, other_vendor],
+            faults: Vec::new(),
+        };
+        assert_eq!(
+            bus_cameras(&scan),
+            vec![
+                BusCamera {
+                    port: "p:1".to_string(),
+                    label: "SVBONY SV605CC".to_string(),
+                },
+                BusCamera {
+                    port: "p:2".to_string(),
+                    label: "f266:9a0a".to_string(),
+                },
+            ]
+        );
     }
 
     fn claims_for(devices: Vec<UsbDevice>, infos: &[CameraInfo]) -> Claims<'static> {

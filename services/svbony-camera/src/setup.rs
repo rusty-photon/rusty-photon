@@ -1,24 +1,23 @@
-//! `ConfigurableDriver` impl for svbony-camera — wires the cross-driver
-//! `config.get` / `config.apply` / `config.schema` protocol
-//! (`docs/services/config-actions.md`) to this service's [`Config`].
+//! svbony-camera's [`ConfigurableDriver`] implementation — the
+//! driver-specific half behind its setup pages.
 //!
-//! Editability tiers (mirrors `zwo-camera`):
-//! - **Locked (identity):** none. ASCOM `UniqueID`s are derived from the
-//!   camera SDK serial (see `docs/services/svbony-camera.md` "Device
-//!   identity"), not minted into config, so there is no identity field to
-//!   lock.
-//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** the `usb_devices` list and the per-serial `devices` map
-//!   (`name` / `description`).
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the confirmation, the reload) are `rusty-photon-setup`'s,
+//! and the camera drivers' own part of them — the Cameras section that edits
+//! `usb_devices`, and each camera's page — is `rusty-photon-driver`'s
+//! `claims` module, which `lib.rs` feeds what the build registered. This
+//! module supplies what is the service's own: its `Config` type, validation,
+//! its secret, and the `--port` pin. See [`docs/services/svbony-camera.md`]
+//! "Setup pages".
+//!
+//! [`docs/services/svbony-camera.md`]: ../../../docs/services/svbony-camera.md
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
-use rusty_photon_doctor_checks::claims;
 
 use crate::config::{CliOverrides, Config};
 
-/// Zero-sized marker implementing [`ConfigurableDriver`] for the
-/// svbony-camera [`Config`]. The generic `rusty_photon_driver::dispatch`
-/// routes the three config actions against this.
+/// Driver marker wiring svbony-camera's [`Config`] into the shared setup
+/// pages.
 pub struct SvbonyCameraDriver;
 
 impl ConfigurableDriver for SvbonyCameraDriver {
@@ -27,14 +26,11 @@ impl ConfigurableDriver for SvbonyCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// The `usb_devices` rules the load applies (U9), plus the one only an
-    /// apply has: an empty list is refused, because it registers no device, so
-    /// none would be left to serve the config actions. The per-serial overrides
-    /// are free-form name/description strings.
+    /// The `usb_devices` rules the load applies (U9), each named by its
+    /// entry's field. An empty list is legal: the server page outlives it.
     fn validate(config: &Config) -> Vec<FieldError> {
-        let mut errors = config.list_errors();
-        errors.extend(claims::apply_errors(config.usb_devices.as_deref()));
-        errors
+        config
+            .list_errors()
             .into_iter()
             .map(|error| FieldError {
                 path: error.path,
@@ -43,8 +39,9 @@ impl ConfigurableDriver for SvbonyCameraDriver {
             .collect()
     }
 
-    /// The one secret: the server-auth password hash. `TlsConfig` stores file
-    /// *paths*, not key material, so there is nothing to redact there.
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows. `TlsConfig` stores file
+    /// *paths*, not key material.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -55,13 +52,6 @@ impl ConfigurableDriver for SvbonyCameraDriver {
 
     fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
         overrides.apply(config);
-    }
-
-    // `locked_paths()` intentionally not overridden (defaults to `&[]`): the
-    // hardware-derived UniqueID means there is no locked identity field.
-
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port"]
     }
 }
 
@@ -83,7 +73,7 @@ mod tests {
         );
         assert_eq!(
             SvbonyCameraDriver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -109,20 +99,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_is_refused_at_the_list() {
+    fn an_empty_list_is_saved_like_any_other() {
         let config = Config {
             usb_devices: Some(Vec::new()),
             ..Config::default()
         };
-        let errors = SvbonyCameraDriver::validate(&config);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].path, "usb_devices");
-        assert!(
-            errors[0]
-                .msg
-                .starts_with("an empty list registers no camera"),
-            "{}",
-            errors[0].msg
+        assert_eq!(
+            SvbonyCameraDriver::validate(&config),
+            Vec::<FieldError>::new()
         );
     }
 
@@ -155,20 +139,10 @@ mod tests {
     }
 
     #[test]
-    fn no_locked_identity_fields() {
-        assert_eq!(SvbonyCameraDriver::locked_paths(), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn port_is_read_only() {
-        assert_eq!(SvbonyCameraDriver::read_only_paths(), &["server.port"]);
-    }
-
-    #[test]
     fn port_override_is_pinned_and_applied() {
         let overrides = CliOverrides { port: Some(12321) };
         assert_eq!(
-            SvbonyCameraDriver::override_paths(&overrides),
+            SvbonyCameraDriver::pinned_paths(&Config::default(), &overrides),
             vec!["server.port".to_string()]
         );
         let mut config = Config::default();

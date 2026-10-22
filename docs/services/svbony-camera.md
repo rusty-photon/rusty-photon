@@ -243,7 +243,7 @@
 > subcommand all work.
 > [`SvbonyCamera`](../../services/svbony-camera/src/camera.rs) implements
 > both `ascom_alpaca::api::Device` and `ascom_alpaca::api::Camera` for real:
-> connection lifecycle, config actions, sensor geometry/type, gain/offset/
+> connection lifecycle, setup pages, sensor geometry/type, gain/offset/
 > readout, binning/ROI, cooling, and the soft-trigger video-capture exposure
 > state machine (incl. abort and pulse-guide) are all backed by
 > [`backend::CameraHandle`](../../services/svbony-camera/src/backend.rs)
@@ -565,7 +565,7 @@ graph TD;
     BB --> RS[svbony-rs Sdk/Camera];
     RS -->|FFI| SDK[libsvbony-sys → SVBony camera SDK];
     SDK -->|libusb-1.0| HW[SVBony camera over USB];
-    C --> CA[config_actions.rs<br/>config.get/apply/schema];
+    B --> SP[setup.rs + rusty-photon-driver claims pages<br/>/setup, /setup/v1/camera/n/setup];
     M[main.rs<br/>ServiceRunner] --> B;
 ```
 
@@ -622,8 +622,9 @@ graph TD;
   `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
   mirroring `zwo-camera`'s release-during-integration pattern.
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
-- **`config_actions.rs`** — `ConfigurableDriver` impl (real as of Phase
-  C/D) + the `dispatch` the device delegates to.
+- **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages, and
+  what the running server registered, which the camera pages and the
+  Cameras section read (*Setup pages*).
 - **`doctor.rs`** — the `doctor` subcommand (real as of Phase C/D): config
   parse + `svbony_rs::Sdk::cameras()` enumeration, gated the same way as
   `zwo-camera`'s doctor; `--devices` prints the port listing (U8).
@@ -783,7 +784,7 @@ either: both members answer from the cache and both setters only store
   `SVB_CAMERA_PROPERTY_EX.bSupportControlTemp`. Cooler set-point / current
   temperature are 0.1 °C SDK units (÷10 for ASCOM's °C). **Tenet 3 (no
   actuation on connect) explicitly covers the cooler**: connect, reconnect,
-  and `config.apply` must never touch `SVB_COOLER_ENABLE` or
+  and a setup-page save must never touch `SVB_COOLER_ENABLE` or
   `SVB_TARGET_TEMPERATURE` — the TEC engages only on an explicit operator
   `CoolerOn` command. Verified by a unit test (`k5_connecting_never_enables_the_cooler`)
   and by construction: `open_handshake` (the connect path) contains no call
@@ -809,8 +810,8 @@ either: both members answer from the cache and both setters only store
   `zwo-camera`'s asynchronous fire-and-forget-with-deadline wrapper) — see
   "Pulse guiding" below for the reasoning; unexercised by the simulation
   (the SV605CC has no ST4 port) beyond mock-backend unit tests.
-- `config.get`/`config.apply`/`config.schema` actions (real since Phase
-  C/D); hardware-derived `UniqueID`; in-process reload.
+- Setup pages (`/setup` with the Cameras section, a page per camera —
+  *Setup pages*); hardware-derived `UniqueID`; in-process reload.
 
 **Deferred (see *Future Work*)**
 
@@ -869,9 +870,9 @@ means plain, unauthenticated HTTP.
   - **description** — optional description for the camera. A placeholder's
     `Description` is always its reason (U4), so it does not use this one.
 
-  Validated at load, before any USB or SDK work, and again by `config.apply`
-  (U9); a list that fails either is named entry by entry and nothing starts
-  from it:
+  Validated at load, before any USB or SDK work, and again by every
+  setup-page save (U9); a list that fails either is named entry by entry and
+  nothing starts from it:
 
   - `usb_port` is non-blank, carries no leading or trailing whitespace, and is
     unique across entries. A padded port is rejected, not trimmed: the scan
@@ -895,9 +896,9 @@ means plain, unauthenticated HTTP.
   **`"usb_devices": []` registers nothing** — legal in the file, logged at
   `warn!` at every start, and it needs no USB scan or SDK enumeration. It is
   how an operator hands every SVBony camera to another application for a
-  night. A server with no device has nowhere for the config actions to live,
-  so `[]` is left by editing the file and reloading; `config.apply` refuses
-  it (U9).
+  night. The server page is the server's, not a device's, so it outlives the
+  last camera: unchecking every row saves `[]`, and checking one again undoes
+  it (*Setup pages*).
 
   **No list is the default, permanently.** With no `usb_devices` key the
   service registers every camera the USB scan can place, numbered in port
@@ -908,7 +909,8 @@ means plain, unauthenticated HTTP.
 - **devices** — Optional per-device override map keyed by **SDK serial**
   (`SVB_CAMERA_INFO.CameraSN`, or `noserial-{usb_port}` for a camera reporting
   none — see *Device identity*). Any device without an entry uses SDK-derived defaults. It serves the
-  no-list default only: beside a list it is rejected (above). No per-camera
+  no-list default only: beside a list it is rejected (above), and each
+  camera's page edits its own entry (*Setup pages*). No per-camera
   connect-time tuning (gain/offset/target temperature) in v0 — deferred (see
   *Future Work*).
 
@@ -918,25 +920,123 @@ means plain, unauthenticated HTTP.
   }
   ```
 - **server.port** — Listening port (**11125**; 11111–11124 are already
-  allocated, see `docs/workspace.md`'s Services table). Hard read-only
-  (self-lockout: a port change would make the BFF lose the devices).
+  allocated, see `docs/workspace.md`'s Services table). `--port` pins it.
+  Editable on the server page, whose save answers with the address the page
+  moves to.
 
-### Config actions
+### Setup pages
 
-Standard cross-driver protocol ([`config-actions.md`](config-actions.md)),
-implemented generically in `rusty_photon_config::actions` + the ASCOM
-adapter in [`rusty-photon-driver`](../../crates/rusty-photon-driver).
-`config_actions.rs` supplies `ConfigurableDriver for SvbonyCameraDriver`
-(real as of Phase C/D):
+The service configures itself on the two HTML pages the Alpaca Management
+API defines, served on its own listener behind its own TLS and Basic Auth:
+`/setup` for the whole server and `/setup/v1/camera/{n}/setup` for each
+camera it serves. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section, the
+confirmation and the reload wait. The camera drivers' own parts — the
+**Cameras** section that edits `usb_devices`, and the camera pages — are
+`rusty-photon-driver`'s `claims` module, which `zwo-camera` and
+`qhy-camera` share; `setup.rs` supplies the rest
+(`ConfigurableDriver for SvbonyCameraDriver`): the `Config`, the
+validation, the secret, the `--port` pin, and what the running server
+registered. The `config.get` / `config.apply` / `config.schema` actions are
+gone: a camera's and a placeholder's `SupportedActions` is empty, and any
+`Action` answers `ActionNotImplemented`.
 
-- **Secrets redacted/carried forward:** `server.auth.password_hash`.
-- **Locked (identity) fields:** none — UniqueIDs are hardware-derived.
-- **Hard read-only fields:** `/server/port`.
-- **Editable fields:** `usb_devices` and the `devices` map (per-serial
-  `name` / `description`).
-- **Validation** at load (parse-don't-validate): unknown keys are rejected
-  at deserialize (`deny_unknown_fields`); the `usb_devices` rules above run
-  at load and in `config.apply` alike (U9).
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| | Cameras | `usb_devices`, and `devices` when the mode changes (below) |
+| `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
+
+**The Cameras section** is the device-claims plan's C8, settled as
+[driver-setup-pages.md](../plans/driver-setup-pages.md) D11:
+
+- **Two modes**, chosen by a radio: *serve every SVBony camera the USB scan
+  places, numbered in port order* — no list (U10) — and *serve only the
+  checked cameras* — a list (U1–U5).
+- **One row per port**, in port order (U8's): each port that holds an
+  `f266` record the normalizer can count as a camera now, and each listed
+  port that holds none, a placeholder's. The rows come from a USB scan run
+  for the page — the passive scan a start takes (U1), with no SDK call, so
+  nothing is opened. A row names the port, what the bus calls the device
+  (its product string, else `f266:<pid>`), and what the running service
+  serves there: `camera <n>`, `placeholder <n>`, or nothing.
+- **With a list**, each row has a checkbox — checked is served — and its
+  entry's `name` and `description`. The numbers are kept by the page, never
+  typed: the checked rows keep the order of the numbers they have now and
+  take `0..N-1` in it, and a newly checked row takes the next number, in
+  port order. Unchecking any camera but the highest-numbered moves the
+  numbers after it down; checking one adds it at the end. A kept entry's
+  other keys stay as the file has them.
+- **The numbers a row has now** are the list's or, with no list, the port
+  order the running service serves, so changing the mode without touching
+  a row moves no number.
+- **Changing to a list** carries each camera's `devices` name and
+  description into its row — the rows show them, filled in — and deletes the
+  `devices` map, which a list refuses (*Configuration*). **Changing to no
+  list** deletes the list and carries each row's name and description into a
+  `devices` entry under the camera's key (its `CameraSN`, or
+  `noserial-<port>`), for every row whose camera the last start or reload
+  placed on its port; a placeholder's row has no camera whose key the page
+  could know.
+- **Every row unchecked** with a list saves `"usb_devices": []` (above).
+- **A save that moves a number is confirmed first.** It answers with the
+  form as submitted, each port whose camera would be served at another
+  number (from → to), each number a dropped camera held that another
+  camera would take (a camera unchecked and another checked in one save,
+  or a placeholder's number served once the list goes), and that rp's
+  camera entries bound to those numbers
+  must be renumbered to match — an entry without a `unique_id` pin would
+  otherwise open the wrong camera with no error; rp's own page shows which
+  entries those are, which this driver cannot. The same confirmation names
+  each name and description the save would drop: an entry's no longer
+  listed (every row unchecked included — a row checked again later starts
+  without them), a `devices` entry no row carries into the list, and a
+  placeholder's names when the list goes. Nothing is written until the
+  operator saves it again from that page; a confirmation covers the
+  changes it showed, so a submission whose changes differ is asked again.
+- **With no list after a save**, the numbers it is checked against are the
+  ones the reload it fires would give the bus as the page's scan finds it:
+  in port order, each camera the last start or reload placed whose port
+  still holds a record, and each port that has gained a record since that
+  start's scan. The page makes no SDK call, so it takes a new record for a
+  camera; the reload's own scan and join decide. So a camera plugged into
+  an earlier port since the start is confirmed as the move it causes,
+  whether the save leaves a list or the service already has none, and the
+  confirmation says the bus has changed. A camera page's save reloads too,
+  so it is checked the same way; its page scans the bus only for a save, so
+  showing it costs no scan. Only a save that changes something is
+  asked: one that changes nothing fires no reload, so nothing it could
+  confirm would happen. A reload by `SIGHUP`, or a restart, numbers a
+  changed bus afresh unasked: without a list, a camera added or removed
+  moves the numbers after it (U10).
+- **A failed scan** is said, with the collector's error, and the rows are
+  the listed ports and what the running service serves.
+
+**A camera's page** depends on what its number serves:
+
+- **a listed camera**: its model, port and `UniqueID`, and a link to its
+  row in the server page's Cameras section, where its name and description
+  are edited;
+- **a placeholder** (U4): the port it stands in for and why no camera is
+  served there, and a link to the Cameras section;
+- **a camera served without a list** (U10): its `devices` entry's `name`
+  and `description`, with its model, port and `UniqueID`. The first save
+  that names either creates the entry, under the camera's key; a save that
+  clears both deletes it.
+
+- **Secrets:** `/server/auth/password_hash`, edited through the Security
+  section and never shown.
+- **Validation** on every save is the load's: unknown keys are rejected at
+  deserialize (`deny_unknown_fields`), and the `usb_devices` rules above run
+  at load and on every save alike (U9). The Cameras section builds only
+  lists those rules accept.
+
+A save that changes anything persists atomically, answers that the
+service is reloading, and fires the in-process reload after the response
+has flushed: the reload re-scans, re-places and re-registers every camera
+(U1), which closes and re-opens every camera the service serves. A save
+that changes nothing says so and fires no reload.
 
 ### Device identity (UniqueID)
 
@@ -966,8 +1066,8 @@ cameras of one model swap. It follows the socket: moved to another port, the
 camera is another device, which is what the list already asks the operator
 to edit (the device-claims plan's D4.6). Consequences (same as `zwo-camera`/`qhy-camera`): **no
 `unique_id` field in config**, an **empty identity-pointer list** passed to
-`resolve_and_init` in `main.rs`, and **no locked identity field** in the
-config-actions tiers. A listed camera keeps exactly this identity — the list
+`resolve_and_init` in `main.rs`, and **no Identity disclosure** on a camera's
+setup page. A listed camera keeps exactly this identity — the list
 pins its number, not its identity (U5). A placeholder's `UniqueID` has its
 own fixed form, `placeholder:svbony-camera:{usb_port}`, which no camera's can
 take (U4).
@@ -1087,7 +1187,7 @@ one core at load average 65, see "Real-hardware validation").
   when a failed handshake closes it (C2), so the next connect's handshake
   cannot take a set against them (GO4).
 - **C5 (tenet 3, verified).** No code path in this service pushes cooler
-  state or any other actuation on startup, connect, or `config.apply`
+  state or any other actuation on startup, connect, or a setup-page save
   (workspace tenet [*no actuation on connect*](../workspace.md#project-tenets));
   `SVB_COOLER_ENABLE`/`SVB_TARGET_TEMPERATURE` are touched only by an
   explicit ASCOM `CoolerOn`/`SetCCDTemperature` call — `camera.rs`'s
@@ -1337,7 +1437,7 @@ and what `doctor --devices` can say about a camera without opening it — is
   that ran fails the start or reload, with or without a list, as it always
   has (C0). Only the scan, which the list adds, is made non-fatal and
   retried. None of these steps is an open, let alone an actuation, and a
-  reload — `config.apply`'s, `SIGHUP`'s, or U6's own — runs the same path
+  reload — a setup-page save's, `SIGHUP`'s, or U6's own — runs the same path
   (tenet 3, C5).
 - **U2. Placing a camera on a port is a join.** No SVBony SDK call reports a
   USB location: `SVB_CAMERA_INFO` carries a name, `CameraSN`, a port *type*
@@ -1448,10 +1548,10 @@ and what `doctor --devices` can say about a camera without opening it — is
     can take, so a client that remembers devices by `UniqueID` never mistakes
     the stand-in for the camera, and central doctor can recognise it in
     `configureddevices` (plan C5).
-  - `SupportedActions` lists the config actions and `Action` serves them,
-    connected or not — an rp camera entry bound to this number is how
-    `ui-htmx` reaches the service, and a missing camera is exactly when the
-    operator needs that page to fix the list.
+  - Its setup page, `/setup/v1/camera/<n>/setup`, says which port it stands
+    in for and why, and links to the server page's Cameras section, where
+    the list is fixed (*Setup pages*). `SupportedActions` is empty and
+    `Action` answers `ActionNotImplemented`, as for a camera.
   - `DriverInfo`, `DriverVersion` and `InterfaceVersion` answer as for a
     camera; every other member answers `NOT_CONNECTED`.
   - The service logs `warn!` at start naming the number, the port and the
@@ -1492,7 +1592,7 @@ and what `doctor --devices` can say about a camera without opening it — is
   asked for this rebuild, though, so it is built from the configuration the
   stopped server was serving, not from the config file: an edit to the file
   that no reload has applied — a list removed, a port or a certificate
-  changed — waits for the reload (`config.apply`, `SIGHUP`) or restart that
+  changed — waits for the reload (a setup-page save, `SIGHUP`) or restart that
   applies it, rather than moving or ending the service. A rebuild whose SDK
   enumeration fails would still end it — with the first scan failed, the
   rebuild is the first enumeration since the start — so each try takes the
@@ -1576,20 +1676,20 @@ and what `doctor --devices` can say about a camera without opening it — is
   reproducing a refused list would only be pasted back. Text only:
   `--devices` does not combine with `--json`. U11's checks close the
   listing.
-- **U9. The list over `config.apply`.** `usb_devices` is an editable field.
-  `config.apply` runs the load-time validation and answers a bad list with
-  field errors naming the entry (`usb_devices.1.usb_port`,
-  `usb_devices.0.device_number`) or the `devices` key beside it
-  (`devices.<serial>`), persisting nothing. It refuses `"usb_devices": []`
-  with an error saying why: an empty list registers no device, so none would
-  be left to serve the config actions, and no apply could undo it. A shorter
-  list is accepted: it can retire the number the apply arrived through, but
-  its remaining devices still carry the actions. A changed list applies through the
-  ordinary in-process reload, which closes and re-opens every camera on the
-  service — an operator editing the list is re-cabling or re-assigning
-  cameras, not mid-exposure. Placeholders carry the actions (U4), so a list
-  whose camera went missing can be fixed from `ui-htmx` through the
-  placeholder at that camera's number.
+- **U9. The list over the setup pages.** `usb_devices` is edited in the
+  server page's Cameras section (*Setup pages*). Every save runs the
+  load-time validation and answers a list that breaks a rule with errors
+  naming the entry (`usb_devices.1.usb_port`, `usb_devices.0.device_number`)
+  or the `devices` key beside it (`devices.<serial>`), persisting nothing;
+  the section itself builds only lists that pass. `"usb_devices": []` is
+  saved like any other list: the server page is not a device's page, so it
+  outlives the last camera and can undo it. A changed list applies through
+  the ordinary in-process reload, which closes and re-opens every camera on
+  the service — an operator editing the list is re-cabling or re-assigning
+  cameras, not mid-exposure — and a save that moves a number is confirmed
+  first. The server page is on the service's listener, so a list whose
+  camera went missing is fixed there whatever the list serves; the
+  placeholder's page links to it.
 - **U10. Without a list, every camera the scan can place is served, in port
   order.** With no `usb_devices` key, `build()` takes U1's steps — the host's
   USB scan, the SDK enumeration, the join (U2) — and registers every SDK
@@ -1605,8 +1705,8 @@ and what `doctor --devices` can say about a camera without opening it — is
   be read cannot be numbered by it: the error is logged at `error!`, the SDK
   is not enumerated, and the service re-scans in the background and rebuilds
   on the first success, exactly as U6 does for a list. Until then the server
-  serves no Camera at all, so no config action is reachable over Alpaca
-  either; the re-scan needs none.
+  serves no Camera at all; its server page is still served, and the re-scan
+  needs nothing from it.
 
   Each registered camera is the same `SvbonyCamera` a list serves, with its
   `UniqueID` (*Device identity*, `noserial-{usb_port}` for one with no
@@ -2151,7 +2251,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   `CoolerPower` is the raw `SVB_COOLER_POWER` percent (already 0–100, no
   normalization needed).
 - **K5 (tenet 3).** No code path reachable from connect, reconnect, or
-  `config.apply` calls `set_cooler_enable`/`set_target_temperature_celsius`
+  a setup-page save calls `set_cooler_enable`/`set_target_temperature_celsius`
   — the cooler engages only on an explicit operator `CoolerOn` ASCOM call.
   Review this explicitly at the Phase E connect-path PR, per the workspace
   tenet list's explicit callout of cooler setpoints as actuation.
@@ -2306,10 +2406,10 @@ reload ends the service without building another server first.
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 168 no-features / 199 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 167 no-features / 198 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
-  `noserial-{usb_port}`-fallback branches), config-actions editability tiers,
+  `noserial-{usb_port}`-fallback branches), the setup pages' driver half,
   the `exposure_timeout_ms` protocol-encoding pure function
   (`backend.rs::pure_fn_tests`), the readout-format negotiation's
   no-usable-format connect failure (RM3) and its `to_image_array`
@@ -2412,9 +2512,13 @@ Layered per [`testing.md`](../skills/testing.md).
   through the real join, an unlisted camera left unregistered, a placeholder
   for each reason U4 gives (an empty port, a fault, another device on the
   port, a look-alike, a failed scan) with its connect error code, its
-  `Description`, its `UniqueID` form and its config actions, a failed scan
+  `Description`, its `UniqueID` form and its setup page, a failed scan
   re-scanned until it succeeds and the service reloads itself, the empty
-  list, and the list's validation at start and over `config.apply`.
+  list, and the list's validation at start. `setup_pages.feature` covers
+  the pages: the server page and its Cameras section in both modes — a
+  row checked, a number moved and confirmed, the mode changed with its
+  names carried, every row unchecked and the page still served — and each
+  kind of camera page.
   `doctor --devices` is covered from the same feature against staged
   inventories. The join's own rules — the one-to-one test, elimination, the
   serial route the simulation cannot reach (its camera publishes no USB
@@ -2958,7 +3062,7 @@ phasing; tracked here as follow-up rather than silently left undocumented.
 - Same-vendor-class precedent: [`zwo-camera.md`](zwo-camera.md) (mechanical
   template) · [`qhy-camera.md`](qhy-camera.md) (packaging/licensing
   template)
-- [`config-actions.md`](config-actions.md) ·
+- [`rusty-photon-setup.md`](../crates/rusty-photon-setup.md) ·
   [`service-lifecycle.md`](../skills/service-lifecycle.md) ·
   [`development-workflow.md`](../skills/development-workflow.md) ·
   [`testing.md`](../skills/testing.md)

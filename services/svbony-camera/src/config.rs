@@ -55,7 +55,7 @@ impl Default for Config {
 
 impl Config {
     /// Every rule the `usb_devices` list breaks, and every `devices` override
-    /// beside it; empty without a list. The load and `config.apply` both
+    /// beside it; empty without a list. The load and every setup-page save
     /// refuse a config with any.
     #[must_use]
     pub fn list_errors(&self) -> Vec<ListError> {

@@ -47,8 +47,10 @@ use tracing::{debug, warn};
 
 use crate::backend::{BackendResult, CameraHandle, CaptureRequest};
 use crate::config::DeviceOverride;
-use crate::config_actions::SvbonyCameraDriver;
-use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
+use crate::setup::SvbonyCameraDriver;
+use ascom_alpaca::{SetupRequest, SetupResponse};
+use rusty_photon_driver::{connected_transition, ConnectedTransition};
+use rusty_photon_setup::SetupPages;
 
 /// `DriverInfo`, the same for every device this service registers — its
 /// cameras and its placeholders alike.
@@ -417,8 +419,9 @@ pub struct SvbonyCamera {
     name: String,
     description: String,
     state: Arc<DeviceState>,
+    /// The setup pages, and the device number its page is served at.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<SvbonyCameraDriver>>,
+    pages: Option<(Arc<SetupPages<SvbonyCameraDriver>>, u32)>,
 }
 
 impl SvbonyCamera {
@@ -441,14 +444,19 @@ impl SvbonyCamera {
             name,
             description,
             state: Arc::new(DeviceState::new()),
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach config-action wiring (enables `config.get`/`apply`/`schema`).
+    /// Serve its setup page, `/setup/v1/camera/<number>/setup`, through the
+    /// shared pages.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<SvbonyCameraDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<SvbonyCameraDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
         self
     }
 
@@ -1253,13 +1261,38 @@ impl Device for SvbonyCamera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<SvbonyCameraDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The camera's setup page, through the shared handler. A camera built
+    /// without the pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some((pages, number)) => {
+                rusty_photon_driver::device_setup_request(pages, "camera", *number, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -1731,7 +1764,7 @@ impl Camera for SvbonyCamera {
     // K5 (tenet 3): this is the ONLY code path in this file that may write
     // SVB_COOLER_ENABLE, and it is reachable solely from an explicit
     // operator ASCOM `CoolerOn` call — never from `connect`/`disconnect`/
-    // `open_handshake`/`config.apply`.
+    // `open_handshake`/a setup-page save.
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
         if !self.sensor()?.caps.supports_control_temp {

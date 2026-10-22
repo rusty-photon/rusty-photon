@@ -67,9 +67,9 @@ pub mod backend;
 mod camera;
 pub mod claims;
 mod config;
-mod config_actions;
 pub mod doctor;
 mod error;
+mod setup;
 
 pub use camera::SvbonyCamera;
 pub use claims::UsbSource;
@@ -77,9 +77,9 @@ pub use config::{
     load_effective_config, read_effective_config, AlpacaServerConfig, CliOverrides, Config,
     DeviceOverride, UsbDeviceEntry, DEFAULT_PORT,
 };
-pub use config_actions::SvbonyCameraDriver;
 pub use error::SvbonyCameraError;
 pub use rusty_photon_driver::claims::{serve_and_rebuild, Ended};
+pub use setup::SvbonyCameraDriver;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -89,9 +89,9 @@ use std::sync::Arc;
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
-use rusty_photon_driver::claims::Rescan;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served};
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use svbony_rs::CameraInfo;
 use tokio::net::TcpListener;
@@ -121,6 +121,9 @@ pub struct ServerBuilder {
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
+    /// The setup pages, set by [`Self::build`] when there is a config
+    /// source and a reload path.
+    pages: Option<Pages>,
     /// The file whose existence takes the simulated cameras off the bus — the
     /// test-only path exercising a camera that loses its power while connected
     /// (contract C6). `None` builds cameras that never leave.
@@ -142,8 +145,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the config source (persist path + CLI overrides) for the config
-    /// actions. Together with [`Self::with_reload_signal`], enables editing.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], serves them.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
@@ -151,7 +154,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response flushes.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -218,7 +222,7 @@ impl ServerBuilder {
     /// listener cannot bind the configured port. A failed USB scan is not an
     /// error: it registers placeholders, or no camera without a list, and is
     /// retried (U6, U10).
-    pub async fn build(self) -> Result<BoundServer, SvbonyCameraError> {
+    pub async fn build(mut self) -> Result<BoundServer, SvbonyCameraError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
         // each entry's position its number — and a config built in code
@@ -227,10 +231,16 @@ impl ServerBuilder {
             .check_list()
             .map_err(SvbonyCameraError::Config)?;
         let mut server = Server::new(CargoServerInfo!());
+        self.pages = self.setup_pages();
         let registered = match &self.config.usb_devices {
             None => self.register_enumerated(&mut server).await?,
             Some(list) => self.register_list(&mut server, list).await?,
         };
+        if let Some(pages) = &self.pages {
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                &pages.setup,
+            ))));
+        }
 
         // Use the shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like
         // every other Alpaca service. SO_REUSEADDR matters here because the
@@ -309,6 +319,7 @@ impl ServerBuilder {
         server: &mut Server,
     ) -> Result<Registered, SvbonyCameraError> {
         let (scan, cameras) = self.scan_and_enumerate().await?;
+        let seen = seen_ports(&scan);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -327,6 +338,7 @@ impl ServerBuilder {
         for note in claims.unplaced_notes() {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
+        self.record_placed(&claims, &cameras, seen);
         // The join places only what the SDK enumerated, so every index is in
         // `cameras`.
         let placed = claims
@@ -339,10 +351,10 @@ impl ServerBuilder {
                 port, "an SVBony camera is placed on a port"
             );
             // `devices` overrides are keyed by the bare SDK serial, or
-            // `noserial-<port>` (matching the config-actions `devices.{key}`
-            // paths), NOT the prefixed `SVBONY:{name}:{key}` UniqueID.
+            // `noserial-<port>` (the key a camera's setup page writes its
+            // override under), NOT the prefixed `SVBONY:{name}:{key}` UniqueID.
             let key = claims::override_key(&cam.info, port);
-            self.register_camera(server, cam, port, self.config.devices.get(&key))?;
+            self.register_camera(server, cam, port, self.config.devices.get(&key), false)?;
             registered.cameras = registered.cameras.saturating_add(1);
         }
         if registered.cameras == 0 {
@@ -402,12 +414,14 @@ impl ServerBuilder {
                  succeeds"
             );
         }
+        let seen = seen_ports(&scan);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
             scan,
             claims::sdk_cameras(cameras.iter().map(|c| &c.info)),
         );
+        self.record_placed(&claims, &cameras, seen);
 
         let mut registered = Registered::default();
         let mut entries: Vec<&UsbDeviceEntry> = list.iter().collect();
@@ -431,6 +445,7 @@ impl ServerBuilder {
                         cam,
                         &entry.usb_port,
                         Some(&DeviceOverride::from(entry)),
+                        true,
                     )?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
@@ -441,9 +456,17 @@ impl ServerBuilder {
                         %reason,
                         "a listed number is held by a placeholder"
                     );
-                    let mut placeholder = claims::placeholder(entry, reason);
-                    if let Some(ctx) = self.config_actions() {
-                        placeholder = placeholder.with_config_actions(ctx);
+                    let mut placeholder = claims::placeholder(entry, reason.clone());
+                    if let Some(pages) = &self.pages {
+                        let number = pages.claims.register(
+                            placeholder.static_name(),
+                            Served::Placeholder {
+                                port: entry.usb_port.clone(),
+                                reason,
+                            },
+                        );
+                        placeholder =
+                            placeholder.with_setup_pages(Arc::clone(&pages.setup), number);
                     }
                     server.devices.register(placeholder);
                     registered.placeholders = registered.placeholders.saturating_add(1);
@@ -484,13 +507,14 @@ impl ServerBuilder {
     }
 
     /// Register one enumerated camera, placed on `port`, with its display
-    /// overrides.
+    /// overrides; `listed` when a `usb_devices` entry lists it.
     fn register_camera(
         &self,
         server: &mut Server,
         cam: &EnumeratedCamera,
         port: &str,
         overrides: Option<&DeviceOverride>,
+        listed: bool,
     ) -> Result<(), SvbonyCameraError> {
         // Said here rather than where the identity is minted: with a list,
         // the SDK's cameras on unlisted ports are enumerated too, and one
@@ -509,25 +533,95 @@ impl ServerBuilder {
         let handle: Arc<dyn CameraHandle> =
             Arc::new(SvbonyCameraHandle::new(sdk, cam.info.clone(), unique_id));
         let mut device = SvbonyCamera::new(handle, overrides);
-        if let Some(ctx) = self.config_actions() {
-            device = device.with_config_actions(ctx);
+        if let Some(pages) = &self.pages {
+            let number = pages.claims.register(
+                device.static_name(),
+                Served::Camera {
+                    port: port.to_string(),
+                    model: cam.info.friendly_name.clone(),
+                    unique_id: device.unique_id().to_string(),
+                    override_key: claims::override_key(&cam.info, port),
+                    listed,
+                },
+            );
+            device = device.with_setup_pages(Arc::clone(&pages.setup), number);
         }
         debug!(sdk_index = cam.index, name = %device.static_name(), "registering SVBony camera");
         server.devices.register(device);
         Ok(())
     }
 
-    /// The config-action context every registered device carries, when the
-    /// builder has a config source and a reload path.
-    fn config_actions(&self) -> Option<ConfigActionCtx<SvbonyCameraDriver>> {
+    /// The setup pages this build serves, when the builder has a config
+    /// source and a reload path: the shared handler, saving to the file and
+    /// rendering what this build runs, and the camera drivers' own part of
+    /// the pages, which registration fills.
+    fn setup_pages(&self) -> Option<Pages> {
         let (path, reload) = (self.config_path.clone()?, self.reload.clone()?);
-        Some(ConfigActionCtx {
-            effective: self.config.clone(),
+        let claims = Arc::new(ClaimsPages::new(
+            claims::SDK_NAME,
+            claims::scan_cameras(self.usb_source()),
+            rusty_photon_doctor_checks::claims::compare_ports,
+        ));
+        let setup = SetupPages::<SvbonyCameraDriver>::new(
+            claims::SERVICE,
+            self.config.clone(),
             path,
-            overrides: self.overrides.clone(),
-            reload,
+            self.overrides.clone(),
+        )
+        .with_reload(reload)
+        .with_https(self.config.server.tls.is_some())
+        .with_driver_pages(Arc::<ClaimsPages>::clone(&claims));
+        Some(Pages {
+            setup: Arc::new(setup),
+            claims,
         })
     }
+
+    /// Tell the pages every camera the join placed, listed or not — what the
+    /// no-list default would serve, in port order — and the ports the scan
+    /// `seen` records on. A failed scan (`seen` is `None`) tells nothing.
+    fn record_placed(
+        &self,
+        claims: &Claims<'_>,
+        cameras: &[EnumeratedCamera],
+        seen: Option<Vec<String>>,
+    ) {
+        let (Some(pages), Some(seen)) = (&self.pages, seen) else {
+            return;
+        };
+        pages.claims.placed(
+            claims
+                .placed()
+                .into_iter()
+                .filter_map(|(index, port)| {
+                    cameras.get(index).map(|cam| PlacedCamera {
+                        port: port.to_string(),
+                        override_key: claims::override_key(&cam.info, port),
+                    })
+                })
+                .collect(),
+            seen,
+        );
+    }
+}
+
+/// Every port `scan` holds a record on that can be an `SVBony` camera, placed
+/// or not; `None` for a failed scan.
+fn seen_ports(scan: &Result<rusty_photon_doctor_checks::UsbScan, String>) -> Option<Vec<String>> {
+    scan.as_ref().ok().map(|scan| {
+        claims::bus_cameras(scan)
+            .into_iter()
+            .map(|c| c.port)
+            .collect()
+    })
+}
+
+/// The setup pages one build serves: the shared handler, and the camera
+/// drivers' own part of them, which registration fills.
+#[derive(Clone)]
+struct Pages {
+    setup: Arc<SetupPages<SvbonyCameraDriver>>,
+    claims: Arc<ClaimsPages>,
 }
 
 /// What a build registered: the cameras it serves, the placeholders holding
