@@ -369,7 +369,7 @@ impl ServerBuilder {
         let force_empty = self.force_empty;
         let placed = tokio::task::spawn_blocking(move || place_enumerated(&sdk, scan, force_empty))
             .await??;
-        self.record_placed(served_cameras(&placed.cameras), Some(seen));
+        self.record_placed(placed_without_list(&placed.cameras), Some(seen));
 
         for note in &placed.unplaced {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
@@ -636,8 +636,9 @@ struct PlacedList {
     /// The SDK cameras placed on ports no entry lists, with their ports.
     unlisted: Vec<(usize, String)>,
     /// Every camera the join placed, listed or not, in port order, with the
-    /// key its override is read under when it was opened: a listed
-    /// camera's, whose open succeeded. An unlisted one is never opened.
+    /// key its override is read under when it was opened — a listed
+    /// camera's, whose open succeeded — and marked where the open failed.
+    /// An unlisted one is never opened.
     placed: Vec<PlacedCamera>,
     /// The USB scan could not run.
     scan_failed: bool,
@@ -676,7 +677,9 @@ fn place_list(
 }
 
 /// Every camera the join placed, in port order, with the key its override
-/// is read under where an open read it: a listed camera's, from `resolved`.
+/// is read under where an open read it — a listed camera's, from
+/// `resolved` — and marked where that open failed. An unlisted camera is
+/// never opened.
 fn placed_cameras(
     claims: &Claims<'_>,
     resolved: &[(UsbDeviceEntry, Result<EnumeratedCamera, String>)],
@@ -684,13 +687,16 @@ fn placed_cameras(
     claims
         .placed()
         .into_iter()
-        .map(|(_, port)| PlacedCamera {
-            port: port.to_string(),
-            override_key: resolved
+        .map(|(_, port)| {
+            let opened = resolved
                 .iter()
                 .find(|(entry, _)| entry.usb_port == port)
-                .and_then(|(_, outcome)| outcome.as_ref().ok())
-                .map(|cam| cam.serial.clone()),
+                .map(|(_, outcome)| outcome.as_ref());
+            PlacedCamera {
+                port: port.to_string(),
+                override_key: opened.and_then(Result::ok).map(|cam| cam.serial.clone()),
+                open_failed: opened.is_some_and(|outcome| outcome.is_err()),
+            }
         })
         .collect()
 }
@@ -782,17 +788,18 @@ fn place_enumerated(
     })
 }
 
-/// What the no-list default numbers, in port order: each placed camera
-/// whose open read its serial. One whose open failed is served nowhere, so
-/// the pages take it as the join's unplaced (*Setup pages*).
-fn served_cameras(cameras: &[(String, Result<EnumeratedCamera, String>)]) -> Vec<PlacedCamera> {
+/// Every camera the no-list default placed, in port order: keyed by the
+/// serial its open read, or marked as one whose open failed, which is
+/// served nowhere (*Setup pages*).
+fn placed_without_list(
+    cameras: &[(String, Result<EnumeratedCamera, String>)],
+) -> Vec<PlacedCamera> {
     cameras
         .iter()
-        .filter_map(|(port, outcome)| {
-            outcome.as_ref().ok().map(|cam| PlacedCamera {
-                port: port.clone(),
-                override_key: Some(cam.serial.clone()),
-            })
+        .map(|(port, outcome)| PlacedCamera {
+            port: port.clone(),
+            override_key: outcome.as_ref().ok().map(|cam| cam.serial.clone()),
+            open_failed: outcome.is_err(),
         })
         .collect()
 }
@@ -1053,6 +1060,14 @@ mod list_tests {
         assert_eq!(outcome.as_ref().unwrap().index, 1);
     }
 
+    fn placed(port: &str, key: Option<&str>, open_failed: bool) -> PlacedCamera {
+        PlacedCamera {
+            port: port.to_string(),
+            override_key: key.map(str::to_string),
+            open_failed,
+        }
+    }
+
     #[test]
     fn the_placed_cameras_carry_a_key_only_where_an_open_read_it() {
         let (claims, infos) = two_cameras();
@@ -1064,19 +1079,9 @@ mod list_tests {
             vec![entry(0, "p2"), entry(1, "p9")],
             |_, _, _| Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError)),
         );
-        let placed = placed_cameras(&claims, &resolved);
         assert_eq!(
-            placed,
-            vec![
-                PlacedCamera {
-                    port: "p1".to_string(),
-                    override_key: None,
-                },
-                PlacedCamera {
-                    port: "p2".to_string(),
-                    override_key: None,
-                },
-            ]
+            placed_cameras(&claims, &resolved),
+            vec![placed("p1", None, false), placed("p2", None, true)]
         );
         let resolved = resolve_list(&claims, &infos, vec![entry(0, "p2")], |index, info, _| {
             Ok(opened_as(index, info))
@@ -1084,20 +1089,14 @@ mod list_tests {
         assert_eq!(
             placed_cameras(&claims, &resolved),
             vec![
-                PlacedCamera {
-                    port: "p1".to_string(),
-                    override_key: None,
-                },
-                PlacedCamera {
-                    port: "p2".to_string(),
-                    override_key: Some("serial-1".to_string()),
-                },
+                placed("p1", None, false),
+                placed("p2", Some("serial-1"), false)
             ]
         );
     }
 
     #[test]
-    fn without_a_list_only_a_camera_whose_open_read_its_serial_is_numbered() {
+    fn without_a_list_a_camera_whose_open_failed_is_marked_and_unkeyed() {
         let (claims, infos) = two_cameras();
         let cameras = open_placed(&claims, &infos, |index, info, _| {
             if index == 0 {
@@ -1107,11 +1106,11 @@ mod list_tests {
             }
         });
         assert_eq!(
-            served_cameras(&cameras),
-            vec![PlacedCamera {
-                port: "p2".to_string(),
-                override_key: Some("serial-1".to_string()),
-            }]
+            placed_without_list(&cameras),
+            vec![
+                placed("p1", None, true),
+                placed("p2", Some("serial-1"), false)
+            ]
         );
     }
 

@@ -686,9 +686,12 @@ section `svbony-camera` serves:
   in port order, each camera the last start or reload placed whose port
   still holds a record, and each port that has gained a record since that
   start's scan. The page opens nothing, so it takes a new record for a
-  camera, and a camera the start placed without a list but could not open
-  for its serial — which it did not serve — for one that stays unserved;
-  the reload's own scan, join and opens decide. So a camera plugged into an
+  camera; the reload's own scan, join and opens decide. A camera the start
+  placed but could not open — served nowhere without a list, held by a
+  placeholder with one — may open on the reload or fail again, which the
+  page cannot tell: the numbers listed are for an open that fails again,
+  and where an open that succeeds would give others, the confirmation
+  lists those too, and asks even when only they move. So a camera plugged into an
   earlier port since the start is confirmed as the move it causes, whether
   the save leaves a list or the service already has none, and the
   confirmation says the bus has changed. A camera page's save reloads too,
@@ -2283,8 +2286,9 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   form, `NOT_CONNECTED` members and empty action list; the failed scan's
   re-scan that rebuilds the server, from the configuration it serves rather
   than a hand edit to the file; the empty list; the list's validation at
-  start; a camera that cannot be opened failing a start without a list (C0);
-  and `doctor --devices`' listing and block. `setup_pages.feature` covers
+  start; a camera that cannot be opened at a start without a list, left
+  unregistered while the service starts (C0); and `doctor --devices`'
+  listing and block. `setup_pages.feature` covers
   the pages: the server page and its Cameras section in both modes — a row
   checked, a number moved and confirmed, the mode changed with its names
   carried, every row unchecked and the page still served — and each camera

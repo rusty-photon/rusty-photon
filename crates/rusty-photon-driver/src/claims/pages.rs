@@ -93,6 +93,10 @@ pub struct PlacedCamera {
     /// The key its `devices` override is read under; `None` when the driver
     /// learns it only by opening the camera, and this one was not opened.
     pub override_key: Option<String>,
+    /// The start opened it for its key and the open failed, so the no-list
+    /// default serves it nowhere; whether the next open fails too, the page
+    /// cannot tell.
+    pub open_failed: bool,
 }
 
 /// The scan the server page runs. It blocks, so it runs on the blocking
@@ -369,6 +373,14 @@ fn overrides_mut(config: &mut Value) -> Option<&mut Map<String, Value>> {
         .as_object_mut()
 }
 
+/// A port whose camera a save moves: the port, the number it has, the
+/// number it takes.
+type Move = (String, u64, u64);
+
+/// A number a save gives another camera: the number, the port that held
+/// it, the port that takes it.
+type Retake = (u64, String, String);
+
 /// A row of the Cameras section.
 #[derive(Debug, Clone)]
 struct Row {
@@ -419,7 +431,7 @@ impl CamerasSection {
 
     /// The numbers the running service serves each port at under `config`:
     /// its list's, or with no list the port order of the cameras the last
-    /// start placed.
+    /// start placed and served.
     fn numbers(&self, config: &Value) -> BTreeMap<String, u64> {
         entries(config).map_or_else(
             || {
@@ -427,6 +439,7 @@ impl CamerasSection {
                     self.registry
                         .placed
                         .iter()
+                        .filter(|p| !p.open_failed)
                         .map(|p| p.port.clone())
                         .collect(),
                 )
@@ -437,12 +450,23 @@ impl CamerasSection {
 
     /// The numbers the reload a save of `config` fires would serve each port
     /// at: its list's, or with no list the port order the no-list default
-    /// gives the bus as it is now (`predicted`).
-    fn numbers_after(&self, config: &Value) -> BTreeMap<String, u64> {
+    /// gives the bus as it is now (`predicted`), `reopened` saying whether
+    /// the cameras whose open failed at the start open this time.
+    fn numbers_after(&self, config: &Value, reopened: bool) -> BTreeMap<String, u64> {
         entries(config).map_or_else(
-            || Self::in_order(self.predicted()),
+            || Self::in_order(self.predicted(reopened)),
             |list| list.into_iter().map(|e| (e.port, e.number)).collect(),
         )
+    }
+
+    /// The ports of the cameras the start placed and could not open.
+    fn failed_opens(&self) -> Vec<&str> {
+        self.registry
+            .placed
+            .iter()
+            .filter(|p| p.open_failed)
+            .map(|p| p.port.as_str())
+            .collect()
     }
 
     /// `ports`, already in port order, numbered from 0.
@@ -452,12 +476,18 @@ impl CamerasSection {
 
     /// The ports the no-list default would serve a camera on after a reload,
     /// in port order: each camera the last start placed whose port the bus
-    /// still shows, and each port that has gained a record since that start
-    /// — which the page, making no SDK call, takes for a camera. A record the
-    /// start saw and did not place stays unplaced; a failed scan predicts
-    /// what the start placed.
-    fn predicted(&self) -> Vec<String> {
-        let placed = self.registry.placed.iter().map(|p| p.port.clone());
+    /// still shows — one whose open failed only when `reopened` — and each
+    /// port that has gained a record since that start, which the page,
+    /// making no SDK call, takes for a camera. A record the start saw and did
+    /// not place stays unplaced; a failed scan predicts what the start
+    /// placed.
+    fn predicted(&self, reopened: bool) -> Vec<String> {
+        let placed = self
+            .registry
+            .placed
+            .iter()
+            .filter(|p| reopened || !p.open_failed)
+            .map(|p| p.port.clone());
         let Ok(bus) = &self.bus else {
             return placed.collect();
         };
@@ -482,7 +512,7 @@ impl CamerasSection {
     /// Whether the bus differs from what the last start's scan saw: a placed
     /// camera's port gone, or a port gained since.
     fn bus_changed(&self) -> bool {
-        let predicted = self.predicted();
+        let predicted = self.predicted(true);
         let placed: Vec<&str> = self
             .registry
             .placed
@@ -666,9 +696,10 @@ impl CamerasSection {
         }
     }
 
-    /// Each port served at one number in `before` and another in `after`.
-    fn moves(&self, before: &Value, after: &Value) -> Vec<(String, u64, u64)> {
-        let to = self.numbers_after(after);
+    /// Each port served at one number in `before` and another in `after`,
+    /// `reopened` as for [`Self::numbers_after`].
+    fn moves(&self, before: &Value, after: &Value, reopened: bool) -> Vec<(String, u64, u64)> {
+        let to = self.numbers_after(after, reopened);
         let mut moves: Vec<(String, u64, u64)> = self
             .numbers(before)
             .into_iter()
@@ -690,6 +721,7 @@ impl CamerasSection {
         before: &Value,
         after: &Value,
         moves: &[(String, u64, u64)],
+        reopened: bool,
     ) -> Vec<(u64, String, String)> {
         let held: BTreeMap<u64, String> = self
             .numbers(before)
@@ -697,7 +729,7 @@ impl CamerasSection {
             .map(|(port, number)| (number, port))
             .collect();
         let mut retaken: Vec<(u64, String, String)> = self
-            .numbers_after(after)
+            .numbers_after(after, reopened)
             .into_iter()
             .filter_map(|(port, number)| {
                 let old = held.get(&number)?;
@@ -763,7 +795,8 @@ enum Dropped {
     /// The override of the camera on this port, whose row the new list
     /// leaves unchecked.
     Unserved(String),
-    /// The override under this key, whose camera the join placed nowhere.
+    /// The override under this key, whose camera the last start did not
+    /// serve.
     Key(String),
 }
 
@@ -914,21 +947,21 @@ impl CustomSection for CamerasSection {
     }
 
     fn confirmation(&self, before: &Value, after: &Value) -> Option<Confirmation> {
-        let moves = self.moves(before, after);
-        let retaken = self.retaken(before, after, &moves);
+        let moves = self.moves(before, after, false);
+        let retaken = self.retaken(before, after, &moves, false);
         let dropped = self.dropped(before, after);
-        if moves.is_empty() && retaken.is_empty() && dropped.is_empty() {
+        let failed = self.failed_opens();
+        let reopened = self.if_reopened(after, &failed, before, (&moves, &retaken));
+        if moves.is_empty() && retaken.is_empty() && dropped.is_empty() && reopened.is_none() {
             return None;
         }
-        let mut tokens: Vec<String> = moves
-            .iter()
-            .map(|(port, from, to)| format!("move {port} {from}>{to}"))
-            .collect();
-        tokens.extend(
-            retaken
-                .iter()
-                .map(|(number, old, new)| format!("number {number} {old}>{new}")),
-        );
+        let mut tokens = Self::move_tokens("", &moves, &retaken);
+        if let Some((moves, retaken)) = &reopened {
+            tokens.extend(Self::move_tokens("if reopened: ", moves, retaken));
+            if moves.is_empty() && retaken.is_empty() {
+                tokens.push("if reopened: nothing moves".to_string());
+            }
+        }
         tokens.extend(dropped.iter().map(|d| match d {
             Dropped::Port(port) | Dropped::Unlisted(port) | Dropped::Unserved(port) => {
                 format!("drop {port}")
@@ -961,8 +994,35 @@ impl CustomSection for CamerasSection {
                             "drop the " code { "devices" } " override of the camera on " code { (port) } ", which the list does not serve"
                         },
                         Dropped::Key(key) => li.dropped data-key=(key) {
-                            "drop the " code { "devices" } " override " code { (key) } ", whose camera is on no port this start placed"
+                            "drop the " code { "devices" } " override " code { (key) } ", whose camera the last start did not serve"
                         },
+                    }
+                }
+            }
+            @if let Some((if_moves, if_retaken)) = &reopened {
+                p {
+                    "The last start could not open the camera on "
+                    @for (i, port) in failed.iter().enumerate() {
+                        @if i > 0 { ", " }
+                        code { (port) }
+                    }
+                    ", and the page opens nothing, so it cannot tell whether the reload will. "
+                    "What is listed above is for an open that fails again. If it opens, the reload instead:"
+                }
+                ul.if-reopened {
+                    @for (port, from, to) in if_moves {
+                        li.move-if-reopened data-port=(port) data-from=(from) data-to=(to) {
+                            "moves the camera on " code { (port) } " from number " (from) " to " (to)
+                        }
+                    }
+                    @for (number, old, new) in if_retaken {
+                        li.retaken-if-reopened data-number=(number) data-from=(old) data-to=(new) {
+                            "gives number " (number) ", which the camera on " code { (old) }
+                            " held, to the camera on " code { (new) }
+                        }
+                    }
+                    @if if_moves.is_empty() && if_retaken.is_empty() {
+                        li { "moves no number" }
                     }
                 }
             }
@@ -972,7 +1032,7 @@ impl CustomSection for CamerasSection {
                     "The page opens nothing, so it takes a record new since then for a camera; the reload's own scan decides."
                 }
             }
-            @if !moves.is_empty() || !retaken.is_empty() {
+            @if !moves.is_empty() || !retaken.is_empty() || reopened.as_ref().is_some_and(|(m, r)| !m.is_empty() || !r.is_empty()) {
                 p {
                     "rp's camera entries bound to the numbers that move must be renumbered to match: an entry without a "
                     code { "unique_id" } " pin would otherwise open the wrong camera, with no error. rp's own page shows which entries those are."
@@ -983,6 +1043,41 @@ impl CustomSection for CamerasSection {
             token: tokens.join("; "),
             markup,
         })
+    }
+}
+
+impl CamerasSection {
+    /// The moves and retaken numbers if the cameras in `failed`, whose open
+    /// failed at the start, open on the reload a no-list save fires — when
+    /// they differ from `if_not`'s, the ones for an open that fails again.
+    /// `None` when the outcome does not depend on those opens.
+    fn if_reopened(
+        &self,
+        after: &Value,
+        failed: &[&str],
+        before: &Value,
+        if_not: (&[Move], &[Retake]),
+    ) -> Option<(Vec<Move>, Vec<Retake>)> {
+        if entries(after).is_some() || failed.is_empty() {
+            return None;
+        }
+        let moves = self.moves(before, after, true);
+        let retaken = self.retaken(before, after, &moves, true);
+        (moves.as_slice() != if_not.0 || retaken.as_slice() != if_not.1).then_some((moves, retaken))
+    }
+
+    /// The confirmation's tokens for `moves` and `retaken`, each after
+    /// `prefix`.
+    fn move_tokens(prefix: &str, moves: &[Move], retaken: &[Retake]) -> Vec<String> {
+        moves
+            .iter()
+            .map(|(port, from, to)| format!("{prefix}move {port} {from}>{to}"))
+            .chain(
+                retaken
+                    .iter()
+                    .map(|(number, old, new)| format!("{prefix}number {number} {old}>{new}")),
+            )
+            .collect()
     }
 }
 
@@ -1175,6 +1270,7 @@ mod tests {
         PlacedCamera {
             port: port.to_string(),
             override_key: Some(key.to_string()),
+            open_failed: false,
         }
     }
 
@@ -1488,6 +1584,67 @@ mod tests {
     }
 
     #[test]
+    fn leaving_a_list_names_the_moves_either_way_a_failed_open_goes() {
+        // a:1's listed camera failed its open, so a placeholder holds 0.
+        let mut s = section(vec![
+            ("One", placeholder("a:1")),
+            ("Three", camera("a:3", "K3", true)),
+        ]);
+        s.registry.placed[0].override_key = None;
+        s.registry.placed[0].open_failed = true;
+        let mut config = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:1" },
+            { "device_number": 1, "usb_port": "a:3" }
+        ]});
+        let before = config.clone();
+        let submitted = rows_form(
+            AUTO,
+            &[("a:1", true, ""), ("a:2", false, ""), ("a:3", true, "")],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        let confirmation = s.confirmation(&before, &config).expect("a move");
+        // Failing again, a:1 is served nowhere and a:3 takes 0; opening,
+        // it keeps 0 and nothing moves.
+        assert_eq!(
+            confirmation.token,
+            "move a:3 1>0; if reopened: nothing moves"
+        );
+        let html = confirmation.markup.into_string();
+        assert!(html.contains("could not open the camera on"), "{html}");
+        assert!(html.contains("moves no number"), "{html}");
+    }
+
+    #[test]
+    fn without_a_list_a_camera_whose_open_failed_is_not_numbered_and_asks_if_it_opens() {
+        // The start placed a:1 but could not open it; a:3 is served at 0.
+        let mut s = section(vec![("Three", camera("a:3", "K3", false))]);
+        s.registry.placed[0].override_key = None;
+        s.registry.placed[0].open_failed = true;
+        let mut config = json!({ "server": { "port": 1 } });
+        let before = config.clone();
+        let submitted = rows_form(
+            AUTO,
+            &[("a:1", false, ""), ("a:2", false, ""), ("a:3", true, "")],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        let confirmation = s
+            .confirmation(&before, &config)
+            .expect("a move if a:1 opens");
+        assert_eq!(
+            confirmation.token,
+            "if reopened: move a:3 0>1; if reopened: number 0 a:3>a:1"
+        );
+        let html = confirmation.markup.into_string();
+        assert!(
+            html.contains(
+                r#"li class="move-if-reopened" data-port="a:3" data-from="0" data-to="1""#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("must be renumbered"), "{html}");
+    }
+
+    #[test]
     fn an_unchanged_bus_or_a_failed_scan_predicts_what_the_start_placed() {
         let mut s = section(vec![
             ("One", camera("a:1", "K1", false)),
@@ -1497,7 +1654,10 @@ mod tests {
         assert!(s.confirmation(&config, &config).is_none());
         assert!(!s.bus_changed());
         s.bus = Err("no".to_string());
-        assert_eq!(s.predicted(), vec!["a:1".to_string(), "a:3".to_string()]);
+        assert_eq!(
+            s.predicted(false),
+            vec!["a:1".to_string(), "a:3".to_string()]
+        );
         assert!(s.confirmation(&config, &config).is_none());
     }
 
@@ -1598,6 +1758,7 @@ mod tests {
             ("Three", placeholder("a:3")),
         ]);
         s.registry.placed[1].override_key = None;
+        s.registry.placed[1].open_failed = true;
         let mut config = json!({ "usb_devices": [
             { "device_number": 0, "usb_port": "a:1", "name": "Main" },
             { "device_number": 1, "usb_port": "a:3", "name": "Three" }
