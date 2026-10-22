@@ -97,7 +97,7 @@ first in their columns.
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
-| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | In progress: the nightly's plan and its MSI job's fetch (#1597); its publish, then release.yml, next |
+| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | In progress: the nightly's plan and its MSI job's fetch (#1597), and its publish (#1598); release.yml next |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Done (#1585) |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
@@ -734,6 +734,32 @@ Done so far:
     fails the leg, as an unreadable release does.
   - The plan's checkout keeps no token: nothing in the job pushes or
     reads the remote with git any more.
+- **The publish** (#1598), as the `packages/nightly-assets`,
+  `packages/publish-nightly` and `packages/tap` actions.
+  - The rpms' names and the sums are as the shell made them. A kind of
+    asset with none in the set fails the sums, as the shell's unmatched
+    glob failed `sha256sum`.
+  - The tag moves through the API, by a forced PATCH of its ref or a new
+    ref, where the job pushed it from its checkout, which now keeps no
+    token.
+  - The release loses every old asset, listed page by page, and gets its
+    notes, which are byte for byte the shell's for the same inputs. The
+    new assets go up five at a time, as `gh release upload` sent them.
+    An upload that fails transiently is retried, as `gh` did, but first
+    whatever it left under its name is deleted, since GitHub refuses a
+    second asset of one name; and the name GitHub gives an asset must be
+    the one the sums list.
+  - The tap gets one commit through the API, on its main, by
+    github-actions[bot] as the push from a clone was, and moved to only
+    as a fast-forward; a tree equal to the tip's commits nothing, where
+    `git diff --cached --quiet` did. `HOMEBREW_TAP_TOKEN` reaches that
+    step alone, where the clone kept it in its `.git/config` for the rest
+    of the job. Its `stable` channel is tested here and wired into
+    release.yml by the next PR.
+  - `lib/github.mjs`'s `github` takes an `upload` body and any method, and
+    `everyPage` follows a paged list, which `openIssues` now uses.
+  - A dry run skips `publish`, so the tests against a fake API carry
+    this, and the first nightly after merge is watched.
 
 ### J10 — Bazel remote-cache flags
 

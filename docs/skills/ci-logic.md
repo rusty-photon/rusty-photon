@@ -520,11 +520,13 @@ write credential.
 `commit-repin` and `packages` share: `runContext` (the API, the
 repository and the run's link from the runner's variables), `github` (a
 request that names what failed and carries GitHub's own answer, a POST
-or PATCH sent once; with `missing`, a 404 is no error; with `accept`,
-the answer in another media type, such as a pull request's diff),
-`openIssues` (every page, pull requests left out, a next page on another
-origin refused) and `commentOrOpen` (the open issue with a label and an
-exact title gets a comment, or one is opened; an issue opened without
+or PATCH sent once; with `json` or `upload`, a body, such as a release
+asset's bytes; with `missing`, a 404 is no error; with `accept`, the
+answer in another media type, such as a pull request's diff),
+`everyPage` (every item of a paged list, a next page on another origin
+refused), `openIssues` (every page of the open issues with a label, pull
+requests left out) and `commentOrOpen` (the open issue with a label and
+an exact title gets a comment, or one is opened; an issue opened without
 the label fails the step, since GitHub drops a label the repository
 lacks and says nothing).
 
@@ -533,17 +535,20 @@ lacks and says nothing).
   one, `github` sends no Authorization header, for a developer's install
   that reads a public repository (`install-conformu`).
 - **A change to the repository goes through the API**, not a push from a
-  checkout: `refresh-astap` reads the file at main's tip
-  (`git/ref`, `git/commits`, `contents`), writes a tree on main's and a
-  commit on main (`git/trees`, `git/commits`), and creates or moves its
-  branch to it (`git/refs`). Its job checks out the action only, with no
-  token left on disk, and holds no clone to push from. `commit-repin`
-  commits the `MODULE.bazel.lock` repin-bazel.yml refreshed on a
-  dependabot branch so: a blob, a tree on the checked-out commit's, a
-  commit on it, and the branch moved to it as a fast-forward, so a branch
-  that moved meanwhile fails the step rather than lose a commit. Its
-  job's checkout keeps no token either, and the token reaches that step
-  alone, as its input.
+  checkout: `refresh-astap` reads the file at main's tip (`git/ref`,
+  `git/commits`, `contents`), writes a tree on main's and a commit on
+  main (`git/trees`, `git/commits`), and creates or moves its branch to
+  it (`git/refs`). Its job checks out the action only, with no token
+  left on disk, and holds no clone to push from. `commit-repin` commits
+  the `MODULE.bazel.lock` repin-bazel.yml refreshed on a dependabot
+  branch so: a blob, a tree on the checked-out commit's, a commit on it,
+  and the branch moved to it as a fast-forward, so a branch that moved
+  meanwhile fails the step rather than lose a commit. Its job's checkout
+  keeps no token either, and the token reaches that step alone, as its
+  input. `packages/tap` commits a channel's Homebrew formulas to the
+  tap, another repository, the same way, with the tap's token as its
+  input, and `packages/publish-nightly` moves the nightly tag and
+  rewrites its release, deleting and uploading its assets.
 - **Tests run against a fake API** (`serve`) that answers in the shapes
   the real one gives; record a real answer to each read with
   `gh api` and take the writes' from GitHub's REST docs.

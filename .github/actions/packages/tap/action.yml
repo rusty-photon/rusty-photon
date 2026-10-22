@@ -1,0 +1,23 @@
+name: Commit a channel's formulas to the Homebrew tap
+description: >-
+  Replaces a channel's formulas in rusty-photon/homebrew-rusty-photon's
+  Formula directory with the ones generate-brew-formulas.sh rendered, in one
+  commit on its main branch through the GitHub API, moved to as a
+  fast-forward; or commits nothing when the tap already holds them. The
+  other channel's formulas stay. The logic is ../tap.mjs's.
+inputs:
+  channel:
+    description: nightly (the -nightly.rb formulas) or stable (the other .rb formulas).
+    required: true
+  version:
+    description: The version the formulas are of, which the commit's message names.
+    required: true
+  formulas:
+    description: The directory the generator rendered the formulas into.
+    required: true
+  token:
+    description: A token that can write the tap's contents; the repository's own token cannot.
+    required: true
+runs:
+  using: node24
+  main: index.mjs
