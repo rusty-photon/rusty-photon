@@ -194,41 +194,65 @@ impl DriverPages for ClaimsPages {
             let registry = self.lock().clone();
             match scope {
                 PageScope::Server => {
-                    let scan = Arc::clone(&self.scan);
-                    // A scan that panics has failed to scan, like one that
-                    // errors.
-                    let bus = tokio::task::spawn_blocking(move || scan())
-                        .await
-                        .unwrap_or_else(|error| {
-                            Err(format!("the USB scan did not finish: {error}"))
-                        });
-                    if let Err(error) = &bus {
-                        debug!(%error, "the Cameras section's USB scan failed");
-                    }
-                    let section: Box<dyn CustomSection> = Box::new(CamerasSection {
-                        sdk: self.sdk,
-                        bus,
-                        registry,
-                        order: self.order,
-                    });
+                    let section: Box<dyn CustomSection> =
+                        Box::new(self.cameras_section(registry).await);
                     vec![section]
                 }
                 PageScope::Device {
                     device_type,
                     device_number,
-                } => device_page(&registry, device_type, device_number)
-                    .into_iter()
-                    .collect(),
+                } => {
+                    // An unlisted camera's page saves its override, and the
+                    // reload that fires numbers the bus as it is now: its
+                    // page needs the scan to tell what that would move.
+                    let unlisted = device_type == DEVICE_TYPE
+                        && usize::try_from(device_number)
+                            .ok()
+                            .and_then(|index| registry.served.get(index))
+                            .is_some_and(|(_, served)| {
+                                matches!(served, Served::Camera { listed: false, .. })
+                            });
+                    let numbering = if unlisted {
+                        Some(self.cameras_section(registry.clone()).await)
+                    } else {
+                        None
+                    };
+                    device_page(&registry, device_type, device_number, numbering)
+                        .into_iter()
+                        .collect()
+                }
             }
         })
     }
 }
 
-/// The section a camera's page draws, by what its number serves.
+impl ClaimsPages {
+    /// The Cameras section over `registry` and the bus as a scan finds it
+    /// now. A scan that panics has failed to scan, like one that errors.
+    async fn cameras_section(&self, registry: Registry) -> CamerasSection {
+        let scan = Arc::clone(&self.scan);
+        let bus = tokio::task::spawn_blocking(move || scan())
+            .await
+            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
+        if let Err(error) = &bus {
+            debug!(%error, "the setup pages' USB scan failed");
+        }
+        CamerasSection {
+            sdk: self.sdk,
+            bus,
+            registry,
+            order: self.order,
+        }
+    }
+}
+
+/// The section a camera's page draws, by what its number serves; an
+/// unlisted camera's checks its save against `numbering`.
 fn device_page(
     registry: &Registry,
     device_type: &str,
     device_number: u32,
+    numbering: Option<CamerasSection>,
 ) -> Option<Box<dyn CustomSection>> {
     if device_type != DEVICE_TYPE {
         return None;
@@ -259,6 +283,7 @@ fn device_page(
             model,
             unique_id,
             key: override_key,
+            numbering: numbering?,
         }),
         Served::Placeholder { port, reason } => Box::new(PlaceholderPage { port, reason }),
     };
@@ -1022,6 +1047,9 @@ struct OverridePage {
     unique_id: String,
     /// The key its override is read under.
     key: String,
+    /// The Cameras section's numbering, which a save of this page — a
+    /// reload, like any — is checked against.
+    numbering: CamerasSection,
 }
 
 impl CustomSection for OverridePage {
@@ -1087,6 +1115,13 @@ impl CustomSection for OverridePage {
             _ = overrides.insert(self.key.clone(), Value::Object(names));
         }
         Vec::new()
+    }
+
+    /// The reload this page's save fires numbers the bus as it is now, so a
+    /// camera plugged in or pulled since the start is confirmed as the move
+    /// it causes, as on the server page.
+    fn confirmation(&self, before: &Value, after: &Value) -> Option<Confirmation> {
+        self.numbering.confirmation(before, after)
     }
 }
 
@@ -1630,6 +1665,7 @@ mod tests {
             model: "SV605CC".to_string(),
             unique_id: "SVBONY:SV605CC:K1".to_string(),
             key: "K1".to_string(),
+            numbering: section(vec![("Main", camera("a:1", "K1", false))]),
         };
         let mut config = json!({ "server": {} });
         assert_eq!(
@@ -1665,6 +1701,33 @@ mod tests {
         );
         assert_eq!(config["devices"], json!({}));
         assert!(page.has_controls());
+    }
+
+    #[test]
+    fn a_camera_pages_save_asks_when_the_bus_changed_the_port_order() {
+        let placed_two = || {
+            section(vec![
+                ("One", camera("a:1", "K1", false)),
+                ("Three", camera("a:3", "K3", false)),
+            ])
+        };
+        let page = |numbering| OverridePage {
+            port: "a:3".to_string(),
+            model: "SV605CC".to_string(),
+            unique_id: "SVBONY:SV605CC:K3".to_string(),
+            key: "K3".to_string(),
+            numbering,
+        };
+        let before = json!({ "devices": {} });
+        let after = json!({ "devices": { "K3": { "name": "Three" } } });
+        // The bus as the start found it: nothing moves.
+        assert!(page(placed_two()).confirmation(&before, &after).is_none());
+        // a:1 has gone since: a:3 takes its number on the reload.
+        let page = page(with_bus(placed_two(), &["a:2", "a:3"]));
+        assert_eq!(
+            page.confirmation(&before, &after).expect("a move").token,
+            "move a:3 1>0"
+        );
     }
 
     #[test]

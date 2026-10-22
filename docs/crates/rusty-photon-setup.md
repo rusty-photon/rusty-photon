@@ -214,8 +214,10 @@ for a field the page does not show.
 
 A section can ask that a save be confirmed before it is written: one that
 moves a camera to another device number, which every client bound to the
-old number must follow (D11). After the save has passed validation, each
-section on the page is shown the file before and after it; one that wants
+old number must follow (D11). After the save has passed validation — and
+only when it changes something, so fires a reload, since a save that
+changes nothing has nothing to confirm — each section on the page is
+shown the file before and after it; one that wants
 the change confirmed answers what it would change and a token naming
 exactly that. When the submission's `confirm` field does not carry the
 tokens the same submission produces now, nothing is written: the page

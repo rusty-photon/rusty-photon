@@ -85,6 +85,19 @@ pub fn render(view: &AuthView, submitted: Option<&FormValues>, errors: &[FieldEr
     }
 }
 
+/// Whether `change` alters the credential `stored` describes: a new
+/// password always does, turning auth off does when it was on, and keeping
+/// the stored password does when the username changes.
+#[must_use]
+pub fn changes(change: &AuthChange, stored: &AuthView) -> bool {
+    match change {
+        AuthChange::Untouched => false,
+        AuthChange::Off => stored.has_hash || !stored.username.is_empty(),
+        AuthChange::Keep { username } => *username != stored.username,
+        AuthChange::Set { .. } => true,
+    }
+}
+
 /// What a submission asks of the auth block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthChange {

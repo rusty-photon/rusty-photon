@@ -1003,10 +1003,12 @@ gone: a camera's and a placeholder's `SupportedActions` is empty, and any
   camera; the reload's own scan and join decide. So a camera plugged into
   an earlier port since the start is confirmed as the move it causes,
   whether the save leaves a list or the service already has none, and the
-  confirmation says the bus has changed. A camera page's save also
-  reloads, and numbers a changed bus afresh the same way unconfirmed — as
-  `SIGHUP` does: without a list, a camera added or removed moves the
-  numbers after it (U10).
+  confirmation says the bus has changed. A camera page's save reloads too,
+  so it is checked the same way. Only a save that changes something is
+  asked: one that changes nothing fires no reload, so nothing it could
+  confirm would happen. A reload by `SIGHUP`, or a restart, numbers a
+  changed bus afresh unasked: without a list, a camera added or removed
+  moves the numbers after it (U10).
 - **A failed scan** is said, with the collector's error, and the rows are
   the listed ports and what the running service serves.
 

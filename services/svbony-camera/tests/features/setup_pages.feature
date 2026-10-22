@@ -183,6 +183,23 @@ Feature: Setup pages
     And the page says "The bus has changed since the service last started"
     And the configuration file holds "simulated-usbv3-0:2" at "/usb_devices/0/usb_port"
 
+  Scenario: Without a list, a save the changed bus would renumber asks first, and one that changes nothing does not
+    Given the staged USB inventory:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:2" } ] }
+      """
+    When the svbony-camera service starts
+    And the staged USB inventory becomes:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9b00", "port": "simulated-usbv3-0:1" },
+                 { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:2" } ] }
+      """
+    And I submit the server setup page setting "server.bind_address" to "0.0.0.0"
+    Then the page reports the configuration was saved and nothing changed
+    When I submit the setup page of device "camera" 0 setting "override.name" to "Main"
+    Then the page asks to confirm that the camera on "simulated-usbv3-0:2" moves from 0 to 1
+    And the configuration file has nothing at "/devices/SVB0123456789AB"
+
   Scenario: Changing to no list carries each listed camera's names into its override
     Given the configuration lists these USB devices:
       | device_number | usb_port            | name |

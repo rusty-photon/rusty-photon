@@ -671,7 +671,12 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }),
         }
         Self::place_variant_errors(&page.fields(model), &file, &mut errors);
-        let confirmation = Self::confirmation(drawn, &form, &file_before, &file);
+        // A save that changes nothing fires no reload, so nothing it could
+        // confirm would happen: a section is asked only when it does.
+        let confirmation = self
+            .reloads(&file_before, &file, effective, auth_change.as_ref())
+            .then(|| Self::confirmation(drawn, &form, &file_before, &file))
+            .flatten();
         if !errors.is_empty() {
             // A submission that confirmed what it changes keeps the
             // confirmation through a rejection, so fixing the field — the
@@ -743,6 +748,29 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 None
             }
         }
+    }
+
+    /// Whether saving `file` over `file_before` changes what the service
+    /// runs, as [`Self::persist`] judges it — or changes the credential
+    /// `auth` asks for — so the save fires a reload (or, for a service that
+    /// restarts, waits for one).
+    fn reloads(
+        &self,
+        file_before: &Value,
+        file: &Value,
+        effective: &Value,
+        auth: Option<&(&str, security::AuthChange)>,
+    ) -> bool {
+        let credential = auth.is_some_and(|(pointer, change)| {
+            security::changes(
+                change,
+                &security::AuthView::from_config(file_before, pointer),
+            )
+        });
+        credential
+            || self.effective_of(file).is_none_or(|after| {
+                !changed_paths(&self.baseline(file_before, effective), &after).is_empty()
+            })
     }
 
     /// What the driver's sections want confirmed of a save from `before` to
@@ -2743,5 +2771,119 @@ mod tests {
             "{}",
             refused.body
         );
+    }
+
+    /// A section that edits nothing and always wants its change confirmed:
+    /// what a camera driver's section does when the bus changed, whatever
+    /// the form says.
+    struct AlwaysAsks;
+
+    impl CustomSection for AlwaysAsks {
+        fn render(&self, _: SectionView<'_>) -> Markup {
+            html! { p #asks { "asks" } }
+        }
+
+        fn has_controls(&self) -> bool {
+            false
+        }
+
+        fn apply(&self, _: &FormValues, _: &mut Value) -> Vec<FieldError> {
+            Vec::new()
+        }
+
+        fn confirmation(&self, _: &Value, _: &Value) -> Option<Confirmation> {
+            Some(Confirmation {
+                token: "always".to_string(),
+                markup: html! { ul { li { "renumbered" } } },
+            })
+        }
+    }
+
+    struct AskingPart;
+
+    impl DriverPages for AskingPart {
+        fn owned_keys(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn sections<'a>(
+            &'a self,
+            _: PageScope<'a>,
+        ) -> crate::custom::BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
+            Box::pin(async {
+                let sections: Vec<Box<dyn CustomSection>> = vec![Box::new(AlwaysAsks)];
+                sections
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_save_that_reloads_nothing_is_not_asked_to_confirm() {
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default()).with_driver_pages(Arc::new(AskingPart));
+        let unchanged = p.handle(PageScope::Server, post(&server_base())).await;
+        assert_eq!(unchanged.status, StatusCode::OK, "{}", unchanged.body);
+        assert!(
+            unchanged.body.contains(r#"id="saved-unchanged""#),
+            "{}",
+            unchanged.body
+        );
+
+        let mut moved = server_base();
+        moved.retain(|(k, _)| *k != "server.port");
+        moved.push(("server.port", "11120"));
+        let asked = p.handle(PageScope::Server, post(&moved)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert_eq!(on_disk(&fx)["server"]["port"], 11119);
+    }
+
+    #[tokio::test]
+    async fn a_credential_change_alone_reloads_so_it_is_asked() {
+        let fx = fixture(&config());
+        let p = pages(&fx, config(), Overrides::default()).with_driver_pages(Arc::new(AskingPart));
+        let mut pairs = server_base();
+        pairs.extend([
+            ("auth.username", "obs"),
+            ("auth.password", "pw"),
+            ("auth.password_repeat", "pw"),
+        ]);
+        let asked = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert!(on_disk(&fx)["server"].get("auth").is_none());
+    }
+
+    #[test]
+    fn a_credential_changes_when_its_password_its_username_or_its_presence_does() {
+        use security::{changes, AuthChange, AuthView};
+        let stored = AuthView {
+            username: "obs".to_string(),
+            has_hash: true,
+        };
+        let none = AuthView {
+            username: String::new(),
+            has_hash: false,
+        };
+        assert!(!changes(&AuthChange::Untouched, &stored));
+        assert!(!changes(
+            &AuthChange::Keep {
+                username: "obs".to_string()
+            },
+            &stored
+        ));
+        assert!(changes(
+            &AuthChange::Keep {
+                username: "other".to_string()
+            },
+            &stored
+        ));
+        assert!(changes(
+            &AuthChange::Set {
+                username: "obs".to_string(),
+                password: "pw".to_string()
+            },
+            &stored
+        ));
+        assert!(changes(&AuthChange::Off, &stored));
+        assert!(!changes(&AuthChange::Off, &none));
     }
 }
