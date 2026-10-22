@@ -127,26 +127,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msi
+      # build-msi.ps1 stamps the MSI with the workspace version, so a tag
+      # that names another would release wrongly versioned binaries under a
+      # right-named tag.
       - name: Check tag matches the workspace version
-        shell: pwsh
-        # build-msi.ps1 derives the MSI version from the workspace Cargo.toml;
-        # a tag/workspace mismatch would silently release wrongly-versioned
-        # binaries under a right-versioned tag.
-        run: |
-          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
-          # Same first-match extraction as build-msi.ps1 — the guard must
-          # read the version the way the build does, or the two can drift.
-          $match = Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
-            Select-Object -First 1
-          if (-not $match) {
-            Write-Error "could not read the workspace version from Cargo.toml"
-            exit 1
-          }
-          $workspace = $match.Matches[0].Groups[1].Value
-          if ($tag -ne $workspace) {
-            Write-Error "tag version '$tag' != workspace version '$workspace'"
-            exit 1
-          }
+        uses: ./.github/actions/packages/release-version
       - name: Build the suite MSI
         shell: pwsh
         run: scripts\build-msi.ps1
@@ -193,7 +178,13 @@ jobs:
     runs-on: ubuntu-latest
     name: update homebrew tap
     steps:
+      # The tap changes through the API, so no step pushes from a clone.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Strip the v prefix off the tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Download macOS tarballs
         uses: actions/download-artifact@v8
         with:
@@ -212,30 +203,15 @@ jobs:
             --dist artifacts \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
             --output stable-formulas
-      - name: Checkout Homebrew tap
-        uses: actions/checkout@v7
+      # Replaces the stable set wholesale: a dropped service must not
+      # linger, and this also retires the pre-N4 hand-stamped filemonitor.rb
+      # (renamed rusty-photon-filemonitor.rb per ADR-012). The -nightly
+      # siblings belong to nightly-packages.yml and are left alone. A re-run
+      # for the same tag renders the same formulas and commits nothing.
+      - name: Commit the stable formulas to the tap
+        uses: ./.github/actions/packages/tap
         with:
-          repository: rusty-photon/homebrew-rusty-photon
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-      - name: Commit and push the stable formulas
-        run: |
-          # Replace the stable set wholesale: a dropped service must not
-          # linger, and this also retires the pre-N4 hand-stamped
-          # filemonitor.rb (renamed rusty-photon-filemonitor.rb per
-          # ADR-012). The -nightly siblings belong to nightly-packages.yml
-          # and are left alone.
-          find homebrew-tap/Formula -name '*.rb' ! -name '*-nightly.rb' -delete
-          cp stable-formulas/*.rb homebrew-tap/Formula/
-          cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula
-          # A re-run for the same tag regenerates identical formulas; an
-          # empty commit would fail the job (same guard as the nightly push).
-          if git diff --cached --quiet; then
-            echo "tap already current"
-          else
-            git commit -m "release: ${GITHUB_REF_NAME#v}"
-            git push
-          fi
+          channel: stable
+          version: ${{ steps.v.outputs.version }}
+          formulas: stable-formulas
