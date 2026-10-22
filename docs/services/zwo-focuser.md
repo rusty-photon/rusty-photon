@@ -338,7 +338,8 @@ cameras — but with a **simpler fallback chain**, since the EAF SDK exposes no
 Consequences (same as `zwo-camera`): **no `unique_id` field in config**, an
 **empty identity-pointer list** passed to `resolve_and_init` (no minting; the
 bootstrap still materializes the default config file on first start), and **no
-locked identity field** in the config-actions tiers.
+identity field on the setup pages**: an EAF's page shows its `UniqueID` and
+edits only its override's name and description.
 
 ## MVP scope
 
