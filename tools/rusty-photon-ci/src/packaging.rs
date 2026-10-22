@@ -524,6 +524,18 @@ pub fn cargo_runs(services: &[String]) -> Vec<Vec<String>> {
     runs
 }
 
+/// `cmd`, a cargo run, with `flags` as the only extra flags rustc gets.
+///
+/// They go in `RUSTFLAGS`, which replaces any the caller has, so the
+/// binaries do not depend on the shell they were built from; and
+/// `CARGO_ENCODED_RUSTFLAGS`, which Cargo reads before `RUSTFLAGS`, is
+/// taken out.
+#[must_use]
+pub fn rustflags(cmd: Cmd, flags: &str) -> Cmd {
+    cmd.env_remove(&["CARGO_ENCODED_RUSTFLAGS".into()])
+        .env("RUSTFLAGS", flags)
+}
+
 /// The binaries the cargo runs build for `services`: theirs, and doctor's
 /// with sentinel's.
 #[must_use]

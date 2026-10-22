@@ -236,7 +236,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # No token on disk while podman runs the client images.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Download the verified packages
         uses: actions/download-artifact@v8
         with:

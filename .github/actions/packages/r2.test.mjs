@@ -307,12 +307,17 @@ test('a stale object it fails to delete stays listed, so the next run deletes it
   assert.ok(!store.held.has('deb/pool/main/older.deb'));
 });
 
-test('publishes nothing when it cannot read what the bucket lists, or has nothing to publish', async () => {
+test('publishes nothing when it cannot read what the bucket lists', async () => {
   const store = memoryStore({}, { failGet: true });
   await assert.rejects(capture(() => publishSite({ site: site(TREE), store })), { message: /403 Forbidden/ });
   assert.deepEqual(store.ops, [`get ${MANIFEST}`]);
-  const empty = memoryStore();
-  const root = site([MANIFEST, MANIFEST_PREV]);
-  await assert.rejects(capture(() => publishSite({ site: root, store: empty })), { message: `no files under ${root}` });
-  assert.ok(!empty.ops.some((op) => op.startsWith('put')));
+});
+
+test('publishes no tree without the public key, which every rendered site has', async () => {
+  for (const files of [TREE.filter((key) => key !== 'pubkey.asc'), [MANIFEST, MANIFEST_PREV]]) {
+    const store = memoryStore({ [MANIFEST]: lines(...TREE) });
+    const root = site(files);
+    await assert.rejects(capture(() => publishSite({ site: root, store })), { message: `${root}/pubkey.asc missing: render the site first` });
+    assert.deepEqual(store.ops, []);
+  }
 });

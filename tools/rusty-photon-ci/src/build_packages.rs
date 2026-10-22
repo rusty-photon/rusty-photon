@@ -298,11 +298,10 @@ fn stage_svbony(
 fn cargo_build(staged: &Staged, root: &Path, packages: &[String]) -> Cmd {
     let mut args = vec!["build", "--release"];
     args.extend(packages.iter().map(String::as_str));
-    // It replaces any RUSTFLAGS the caller has, so the binaries do not
-    // depend on the shell they were built from.
-    let mut cmd = Cmd::new("cargo", &args)
-        .dir(root)
-        .env("RUSTFLAGS", &format!("-C link-arg=-Wl,-rpath,{RUNPATH}"));
+    let mut cmd = packaging::rustflags(
+        Cmd::new("cargo", &args).dir(root),
+        &format!("-C link-arg=-Wl,-rpath,{RUNPATH}"),
+    );
     if let Some(dir) = &staged.qhy {
         cmd = cmd.env("QHYCCD_SDK_DIR", &dir.to_string_lossy());
     }
@@ -560,6 +559,15 @@ mod tests {
                 deb("zwo-camera"),
             ]
         );
+        let builds: Vec<&Cmd> = runner
+            .ran
+            .iter()
+            .filter(|cmd| cmd.args.first().is_some_and(|arg| arg == "build"))
+            .collect();
+        assert_eq!(builds.len(), 2);
+        for cmd in builds {
+            assert_eq!(cmd.env_remove, ["CARGO_ENCODED_RUSTFLAGS"]);
+        }
         assert!(dist.join("SHA256SUMS.txt").is_file());
     }
 
