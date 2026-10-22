@@ -20,6 +20,9 @@
 //!   `Server::setup`) to `rusty-photon-setup`'s pages.
 //! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
 //!   whose session may have been lost to a device that left the bus.
+//! - [`overrides`] — the own part of the setup pages of a driver whose hardware
+//!   names its devices and whose configuration only renames them, through a
+//!   `devices` map of overrides: a page per device, editing its override.
 //! - `claims` (the `claims` feature) — a camera driver's device claims at
 //!   runtime: the placeholder Camera that holds a listed device number whose
 //!   camera cannot be served, and the failed USB scan's background re-scan.
@@ -63,6 +66,7 @@ pub mod connection;
 pub mod discovery;
 pub mod error;
 mod macros;
+pub mod overrides;
 pub mod setup;
 
 pub use actions::{dispatch, supported_actions, ConfigActionCtx, RELOAD_AFTER_RESPONSE_DELAY};

@@ -138,8 +138,8 @@ fn main() -> ServiceResult {
     let simulation_departure_file = args.simulation_departure_file;
     debug!(config = ?config_path, "starting zwo-focuser");
 
-    // `config.apply` triggers an in-process reload: each loop iteration re-reads
-    // the effective config, re-enumerates, and rebuilds the server.
+    // A setup-page save triggers an in-process reload: each loop iteration
+    // re-reads the effective config, re-enumerates, and rebuilds the server.
     ServiceRunner::new("zwo-focuser")
         .with_reload()
         .scm_mode(args.service)

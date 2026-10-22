@@ -14,14 +14,15 @@
 use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use parking_lot::Mutex;
+use rusty_photon_setup::SetupPages;
 use tracing::debug;
 
 use crate::backend::{BackendError, FocuserHandle, SessionState};
 use crate::config::DeviceOverride;
-use crate::config_actions::ZwoFocuserDriver;
-use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
+use crate::setup::ZwoFocuserDriver;
+use rusty_photon_driver::{connected_transition, ConnectedTransition};
 
 /// What a failed SDK call answers a client: `NOT_CONNECTED` when the handle
 /// judged the failure to mean the EAF has left the bus (C5), and the generic
@@ -61,8 +62,9 @@ pub struct ZwoFocuser {
     unique_id: String,
     name: String,
     description: String,
+    /// The setup pages, and the device number its page is served at.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<ZwoFocuserDriver>>,
+    pages: Option<(Arc<SetupPages<ZwoFocuserDriver>>, u32)>,
     /// Held while a `Connected` write reads the session and acts on it, so
     /// connection changes run one at a time (C5). A release is not idempotent
     /// the way an open is: without this, two reconnects after a departure
@@ -91,15 +93,20 @@ impl ZwoFocuser {
             unique_id,
             name,
             description,
-            config_ctx: None,
+            pages: None,
             lifecycle: Arc::new(Mutex::new(())),
         }
     }
 
-    /// Attach config-action wiring (enables `config.get`/`apply`/`schema`).
+    /// Serve its setup page, `/setup/v1/focuser/<number>/setup`, through the
+    /// shared pages.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<ZwoFocuserDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<ZwoFocuserDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
         self
     }
 
@@ -237,13 +244,38 @@ impl Device for ZwoFocuser {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<ZwoFocuserDriver>(&self.config_ctx, action, parameters)
-            .await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The focuser's setup page, through the shared handler. A focuser built
+    /// without the pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some((pages, number)) => {
+                rusty_photon_driver::device_setup_request(pages, "focuser", *number, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -323,6 +355,31 @@ mod tests {
 
     fn device(handle: MockFocuserHandle) -> ZwoFocuser {
         ZwoFocuser::new(Arc::new(handle), None)
+    }
+
+    #[tokio::test]
+    async fn no_custom_action_is_supported_and_any_is_not_implemented() {
+        let d = device(MockFocuserHandle::default());
+        assert_eq!(d.supported_actions().await.unwrap(), Vec::<String>::new());
+        let err = d
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn a_focuser_built_without_its_pages_has_no_setup_page() {
+        let request = SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        };
+        let response = device(MockFocuserHandle::default())
+            .setup_request(request)
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

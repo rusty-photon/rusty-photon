@@ -1,9 +1,8 @@
 //! Configuration for the zwo-focuser service.
 //!
-//! `server.socket_addr()` binds the listener; the `devices` override map
-//! (keyed by SDK serial — applied to each `ZwoFocuser` at registration) and
-//! the whole `Config` are exposed through the `config.get`/`apply`/`schema`
-//! actions (see `config_actions.rs`).
+//! `server.socket_addr()` binds the listener; the `devices` override map is
+//! keyed by SDK serial and applied to each `ZwoFocuser` at registration. The
+//! whole `Config` is edited on the service's setup pages (see `setup.rs`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
