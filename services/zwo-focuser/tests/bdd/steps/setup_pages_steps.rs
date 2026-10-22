@@ -1,8 +1,8 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra`, plus the Givens that start this service in each shape, the
 //! steps on its (now empty) action list, the focuser's name after a save,
-//! and the server page's pinned port and the overrides it leaves to the
-//! focusers' pages.
+//! the facts a focuser's page lists, and the server page's pinned port and
+//! the overrides it leaves to the focusers' pages.
 
 use ascom_alpaca::ASCOMErrorCode;
 use bdd_infra::setup_pages::{dom, SetupPagesWorld as _};
@@ -47,6 +47,32 @@ fn page_does_not_name_file_only(world: &mut FocuserWorld, name: String) {
     assert!(
         !dom::matches(&state.last_body, &css),
         "{name} is named as file-only:\n{}",
+        state.last_body
+    );
+}
+
+#[then("the page lists the facts:")]
+fn page_lists_facts(world: &mut FocuserWorld, step: &cucumber::gherkin::Step) {
+    let table = step.table().expect("the facts step needs a data table");
+    let state = world.setup_pages();
+    let listed = |part: &str, index: usize| {
+        dom::text_of(
+            &state.last_body,
+            &format!("dl.facts {part}:nth-of-type({index})"),
+        )
+    };
+    for (index, row) in (1..).zip(&table.rows) {
+        assert_eq!(
+            (listed("dt", index), listed("dd", index)),
+            (Some(row[0].clone()), Some(row[1].clone())),
+            "fact {index} in:\n{}",
+            state.last_body
+        );
+    }
+    assert_eq!(
+        listed("dt", table.rows.len() + 1),
+        None,
+        "more facts than listed in:\n{}",
         state.last_body
     );
 }

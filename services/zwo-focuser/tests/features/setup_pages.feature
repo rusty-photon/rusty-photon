@@ -30,8 +30,10 @@ Feature: Setup pages
     And the bound port is pinned in the configuration file so a reload keeps the address
     When I open the setup page of device "focuser" 0
     Then the page shows an input named "override.name" with value ""
-    And the page says "EAF-Simulated"
-    And the page says "ZWO:EAF-Simulated:2a3b4c5d6e7f8091"
+    And the page lists the facts:
+      | Model                  | EAF-Simulated                      |
+      | Travel limit (MaxStep) | 60000                              |
+      | UniqueID               | ZWO:EAF-Simulated:2a3b4c5d6e7f8091 |
     When I submit the setup page of device "focuser" 0 setting "override.name" to "Main Focuser"
     Then the page reports the configuration was saved and the service is reloading
     And the configuration file holds "Main Focuser" at "/devices/2a3b4c5d6e7f8091/name"
