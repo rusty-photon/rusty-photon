@@ -105,29 +105,9 @@ pub fn port(service: &str) -> Option<u16> {
 /// (docs/services/svbony-camera.md, Packaging).
 pub const NO_MACOS_SDK: &str = "svbony-camera";
 
-/// The QHY SDK's pins.
-///
-/// The same release is linked on every OS, and
-/// qhy-camera reports it as the ABI it was built against
-/// (`PINNED_SDK_VERSION` in `services/qhy-camera/src/preflight.rs`), which
-/// the packaging guard checks.
-pub mod qhy {
-    /// QHYCCD's release, `YY.MM.DD`.
-    pub const VERSION: &str = "26.06.04";
-    /// The SHA-256 of the macOS arm64 archive.
-    pub const SHA256_MAC_ARM64: &str =
-        "3a03cef52ac95a513e4e7700058352d95c2f0556b02ab15e13efe313168f40a5";
-
-    /// Where QHYCCD publishes `file`: from 26.06.04 on, in a directory named
-    /// after the version without its dots.
-    #[must_use]
-    pub fn url(file: &str) -> String {
-        format!(
-            "https://www.qhyccd.com/file/repository/publish/SDK/{}/{file}",
-            VERSION.replace('.', "")
-        )
-    }
-}
+/// The QHY SDK's pins, in a file of their own: the macOS jobs' SDK cache is
+/// keyed on it.
+pub mod qhy;
 
 /// The install modules whose `REF` pins the ZWO and `SVBony` SDKs.
 pub const ZWO_MODULE: &str = ".github/actions/install-zwo-sdk/zwo-sdk.mjs";
@@ -568,6 +548,16 @@ mod tests {
             format!(
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.tar.gz\n{b}  b.tar.gz\n"
             )
+        );
+    }
+
+    /// The archive QHYCCD publishes for the pinned release, which the
+    /// macOS builder downloads and unpacks.
+    #[test]
+    fn names_the_qhy_mac_archive_as_qhyccd_does() {
+        assert_eq!(
+            qhy::mac_archive(),
+            format!("sdk_mac_arm_{}.tar.gz", qhy::VERSION)
         );
     }
 

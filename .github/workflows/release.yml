@@ -100,7 +100,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/rusty-photon-pkg
-          key: rusty-photon-pkg-macos-${{ hashFiles('tools/rusty-photon-ci/src/packaging.rs', 'tools/rusty-photon-ci/src/build_tarballs.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs') }}
+          key: rusty-photon-pkg-macos-${{ hashFiles('tools/rusty-photon-ci/src/packaging/qhy.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs') }}
       - name: Build the per-service tarballs
         run: cargo ci build-tarballs --version '${{ steps.v.outputs.version }}'
       - name: Verify via Homebrew (release gate)

@@ -117,7 +117,7 @@ struct Staged {
 
 /// Stages QHYCCD's SDK and returns the directory holding `libqhyccd.a`.
 fn stage_qhy(runner: &mut impl Runner, cache: &Path, offline: bool) -> Result<PathBuf, Error> {
-    let file = format!("sdkmac_dir_arm_{}.tar.gz", qhy::VERSION);
+    let file = qhy::mac_archive();
     let extract = cache.join(format!("qhy-sdk-{}-mac-arm64", qhy::VERSION));
     if !extract.is_dir() {
         if offline {
@@ -479,7 +479,7 @@ mod tests {
         let m = mac.path();
         let cache = m.join("cache");
         let qhy = cache.join(format!(
-            "qhy-sdk-{v}-mac-arm64/sdkmac_dir_arm_{v}/lib",
+            "qhy-sdk-{v}-mac-arm64/sdk_mac_arm_{v}/lib",
             v = qhy::VERSION
         ));
         fs::create_dir_all(&qhy).unwrap();
@@ -546,7 +546,7 @@ mod tests {
         .unwrap();
         assert_eq!(dist, fixture.root.path().join("dist/0.1.0"));
         let qhy = format!(
-            "QHYCCD_SDK_DIR=<mac>/cache/qhy-sdk-{v}-mac-arm64/sdkmac_dir_arm_{v}/lib",
+            "QHYCCD_SDK_DIR=<mac>/cache/qhy-sdk-{v}-mac-arm64/sdk_mac_arm_{v}/lib",
             v = qhy::VERSION
         );
         let zwo = format!("ZWO_SDK_LIB_DIR=<mac>/cache/zwo-{REF}-mac_arm64");
@@ -708,7 +708,7 @@ mod tests {
                 .join(format!("qhy-sdk-{}-mac-arm64", qhy::VERSION)),
         )
         .unwrap();
-        let archive = format!("sdkmac_dir_arm_{}.tar.gz", qhy::VERSION);
+        let archive = qhy::mac_archive();
         fs::write(fixture.host.cache.join(archive), "not the archive").unwrap();
         let mut runner = Fake::default();
         let error = build(
