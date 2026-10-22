@@ -54,7 +54,7 @@ function Die([string]$msg) {
 # The QHY version must match scripts/build-packages.sh QHY_SDK_VERSION, the
 # sdk_win64_<ver> root in crates/qhyccd-rs/libqhyccd-sys/build.rs, and
 # PINNED_SDK_VERSION in services/qhy-camera/src/preflight.rs
-# (scripts/check-pkg-assets.sh enforces all three): the import lib linked here
+# (tools/rusty-photon-ci/src/pkg_assets.rs checks all three): the import lib linked here
 # is the ABI statement the preflight/doctor report against.
 $QhySdkVersion = "26.06.04"
 $QhySha256Win64 = "dd696bce5f3a702ef55ad6ad7ae10a8f424879156675916387955170c3455347"

@@ -209,7 +209,7 @@ mechanical delivery differs in one respect worth flagging (see
 - The SDK ref is pinned in the helper script
   (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) AND in
   `scripts/build-packages.sh` (issue #679), both cross-checked by
-  `scripts/check-pkg-assets.sh` against `REF` in
+  the packaging guard (`tools/rusty-photon-ci/src/pkg_assets.rs`) against `REF` in
   `.github/actions/install-svbony-sdk/svbony-sdk.mjs`, mirroring QHY's version/sha256 pin parity-check pattern — a
   version bump is a deliberate,
   checked PR.

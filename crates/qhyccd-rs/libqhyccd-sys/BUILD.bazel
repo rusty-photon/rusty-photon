@@ -34,3 +34,10 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [":build_script"],
 )
+
+# The build script's QHY SDK search path, which the packaging guard
+# (tools/rusty-photon-ci/src/pkg_assets.rs) checks against the packaging pins.
+exports_files(
+    ["build.rs"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

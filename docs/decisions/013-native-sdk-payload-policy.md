@@ -61,7 +61,8 @@ explicitly redistributable (the same blobs ship in indi-3rdparty).
   (`rusty-photon-qhy-firmware-install`) before first camera use; ZWO
   operators need nothing extra.
 - The QHY SDK version is pinned in two shipped places (build script,
-  firmware helper) — `scripts/check-pkg-assets.sh` asserts they match, and
+  firmware helper) — the tools crate's packaging guard
+  (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks they match, and
   an SDK bump is a deliberate two-line PR.
 - zwo-camera's lintian emits `custom-library-search-path` (RUNPATH) —
   documented as expected, not suppressed.

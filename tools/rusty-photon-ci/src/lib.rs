@@ -7,6 +7,8 @@
 //! of its own that only the tests compile.
 
 #[cfg(test)]
+mod pkg_assets;
+#[cfg(test)]
 mod pool_routing;
 pub mod process;
 pub mod repin_bazel_lock;

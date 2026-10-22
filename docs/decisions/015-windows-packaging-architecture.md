@@ -134,9 +134,10 @@ different audience and a different platform:
   its Linux `.deb` remains an open follow-up of the service-packaging plan —
   the first platform-coverage inversion; the Linux package should follow.
 - The suite installer is hand-maintained WiX: adding a service means adding
-  a feature fragment, and `scripts/check-pkg-assets.sh` grows Windows
-  assertions (service name / exe / port / pin parity) to keep the WXS from
-  drifting, as it does for `pkg/` on Linux.
+  a feature fragment, and the packaging guard
+  (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks the Windows side
+  (service name / exe / port / pin parity) to keep the WXS from drifting, as
+  it does for `pkg/` on Linux.
 - Relying on the All-in-One pack for `qhyccd.dll` trades a pinned-download
   helper (the Linux approach) for a version we do not control; the delay-load
   preflight and doctor exist to make that failure mode diagnosable rather

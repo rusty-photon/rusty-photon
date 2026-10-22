@@ -28,11 +28,13 @@ sources, no generator — the same explicitness rule as the Linux
 - `License.rtf` — the MIT license text shown by the installer UI
   (the family is MIT OR Apache-2.0; both full texts install with Core).
 
-`scripts/check-pkg-assets.sh` asserts the fragment contract (fragment per
-service, service name, exe rename, `--service`, failure actions + flag,
-firewall port, demand-start on exactly the gated five, the doctor
-exe + renewal-task wiring,
-QHY/ZWO pin parity). Run it after any edit here.
+The tools crate's packaging guard
+([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs))
+checks the fragment contract (fragment per service, service name, exe
+rename, `--service`, failure actions + flag, firewall port, demand-start on
+exactly the gated services, the doctor exe + renewal-task wiring, QHY/ZWO
+pin parity) on every pull request. Run it after any edit here, with
+`cargo test -p rusty-photon-ci pkg_assets`.
 
 ## Fragment contract notes
 

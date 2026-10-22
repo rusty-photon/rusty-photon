@@ -73,8 +73,8 @@ first in their columns.
   - `refresh-astap-shas.yml` reads install-astap's SHA table, which J4
     moved into `install-astap/assets.json`, and rewrites it in its pull
     request, through the `refresh-astap` action since J8;
-  - `scripts/check-pkg-assets.sh` reads the ZWO and SVBony `ref`
-    defaults and the ZWO Windows URLs from their `action.yml`, to check
+  - the tools crate's guard `pkg_assets.rs` reads the ZWO and SVBony
+    `REF` and the ZWO Windows URLs from their install modules, to check
     the packages link what CI links;
   - the tools crate's test `toolchain_pins.rs` reads `rust.toolchain`'s
     `versions` and `sha256s` in `MODULE.bazel`, and the root Cargo.toml's
@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: `check-pkg-assets.sh` is a tools-crate guard (#1601) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -466,7 +466,8 @@ not:
 - **J5 `install-zwo-sdk`** (442 lines, bash and PowerShell). A sudo and a
   sudo-free Linux path, a macOS path and a Windows path; the cache restore
   and save are separate steps; the Windows download is the unpinned,
-  weekly-cached one. `check-pkg-assets.sh` reads this action's `ref`
+  weekly-cached one. `check-pkg-assets.sh` (the tools crate's
+  `pkg_assets.rs` since R8) reads this action's `ref`
   default and Windows URLs, so they stay where it reads them or it
   changes in the same PR. The SDK also joins the developer's install
   (ADR-022 Amendment A, `bazel run //.github/actions:install`), which
@@ -1370,8 +1371,29 @@ developers to `build-packages.sh` and `verify-packages.sh`
 `generate-brew-formulas.sh`. The apt and yum repository scripts, which
 only CI runs, are J13.
 
-One PR per script, or per tight pair (a builder and its verifier). A
-builder or verifier is proven before its shell is deleted, by a
+The owner chose on 2026-10-21 to take it in five PRs:
+
+1. `check-pkg-assets.sh` becomes a guard the tools crate's tests run, as
+   R2's pin checks did. No workflow ran it: it ran when a developer
+   remembered to.
+2. `generate-brew-formulas.sh` becomes a tool, with tests against saved
+   formulas. It renders in the `publish` job and `release.yml` too, so the
+   publishing rule below applies.
+3. `build-tarballs.sh` and `verify-brew.sh`, which start the module the
+   three builders share: service discovery, version stamps, the output
+   directory and its checksums.
+4. `build-packages.sh` and `verify-packages.sh`.
+5. `build-msi.ps1` and `verify-msi.ps1`.
+
+Each of 3 to 5 removes from the guard the checks of copies it merges into
+one. The builders take the ZWO and SVBony SDKs from the install actions'
+module, where they download them themselves today: in CI the `install-*`
+step runs first, and a developer runs `bazel run
+//.github/actions:install` (ADR-022 Amendment A). The owner chose this on
+2026-10-21 over a third copy of the download and its pins. The QHY SDK
+has no install action; PR 3 settles where its download lives.
+
+A builder or verifier is proven before its shell is deleted, by a
 `nightly-packages.yml` dispatch with `dry_run=true` (which builds and
 verifies every leg and publishes nothing) or by `msi.yml`. A script that
 only the publish job or `release.yml` runs falls under the publishing
@@ -1380,6 +1402,32 @@ The `verify-msi.ps1` PR also takes nightly-packages.yml's "Verify the MSI
 lifecycle" step, whose only logic is whether to pass `-UpgradeFrom`.
 ADRs 012 to 018 and the packaging docs name these scripts and change
 with them.
+
+Done so far:
+
+- **The asset checker** (#1601): `check-pkg-assets.sh` is
+  `tools/rusty-photon-ci/src/pkg_assets.rs`, a module only the tests
+  compile, so `bazel test //...` runs it on every pull request. Its module
+  comment lists the checks, which are the script's, with four
+  differences:
+  - it takes the services from the workspace's members and fails on one
+    whose `Cargo.toml` it cannot read, or whose `pkg/` it cannot see
+    though its `Cargo.toml` packages it. Under Bazel it sees only the
+    files its test declares: each packaged service's `BUILD.bazel` has a
+    `pkg` filegroup, which the test's `_SERVICES` names. `scripts` left
+    `.bazelignore` for the same reason, as `.github` did in F1;
+  - a missing file it reads fails it, where the script skipped the checks
+    that read it;
+  - a WiX fragment's firewall port is checked against
+    `verify-packages.sh`'s port table, which the script mirrored in a
+    table of its own;
+  - `Cargo.toml`'s packaging tables are read with the TOML parser, where
+    the script matched lines.
+
+  Each check is shown to fire by a test that makes the mistake in the
+  repository's own files and names the problem it adds, 91 mistakes in
+  all. The script fails on each of them too, except the two the
+  membership checks add.
 
 ## S1 — Sweep of the remaining inline blocks
 

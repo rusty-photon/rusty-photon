@@ -220,3 +220,15 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# pkg/, which the tools crate's packaging guard reads
+# (tools/rusty-photon-ci/src/pkg_assets.rs). pkg/lib/ is not in git: the
+# packaging build stages the SDK blobs the package ships there.
+filegroup(
+    name = "pkg",
+    srcs = glob(
+        ["pkg/**"],
+        exclude = ["pkg/lib/**"],
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

@@ -3,7 +3,8 @@
   Shared ZWO SDK license (MIT) — referenced by the ZwoCamera and ZwoFocuser
   features; one component so co-installs never collide on the filename.
   Source of truth: crates/zwo-rs/libzwo-sys/sdk/include/license.txt (the same
-  file the Linux debs ship; check-pkg-assets.sh asserts the deb copies match).
+  file the Linux debs ship; tools/rusty-photon-ci/src/pkg_assets.rs checks the
+  deb copies match).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>

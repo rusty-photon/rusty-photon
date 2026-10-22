@@ -79,7 +79,8 @@ not:
    `rusty-photon` group, so their units need no supplementary groups at
    all. Maintainer scripts stay
    byte-identical across packages (service name derived from
-   `$DPKG_MAINTSCRIPT_PACKAGE`), enforced by `scripts/check-pkg-assets.sh`.
+   `$DPKG_MAINTSCRIPT_PACKAGE`), enforced by the tools crate's packaging guard
+   (`tools/rusty-photon-ci/src/pkg_assets.rs`).
 5. **Hardened unit template with three service classes** (serial / USB
    camera / network-only), `ProtectSystem=strict` +
    `ReadWritePaths=/var/lib/rusty-photon`, `StateDirectory=rusty-photon/<svc>`;

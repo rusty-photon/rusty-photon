@@ -98,7 +98,7 @@ esac
 
 # ---- service selection ----------------------------------------------------
 # Packaged services are exactly the crates with a pkg/ dir (same discovery as
-# build-packages.sh / check-pkg-assets.sh).
+# build-packages.sh and the packaging guard, tools/rusty-photon-ci/src/pkg_assets.rs).
 ALL_SERVICES=$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')
 
 SERVICES=""
@@ -117,7 +117,7 @@ fi
 # libsvbony packaging ships mac64/Intel only (see
 # .github/actions/install-svbony-sdk/svbony-sdk.mjs's header comment), and this
 # script is arm64-only (the check above), so there is no real SDK this leg
-# could ever link against. Mirrors check-pkg-assets.sh's WIN_SERVICES
+# could ever link against. Mirrors the packaging guard's Windows
 # exclusion (same "no SDK for this platform at all" reasoning, a different
 # platform) rather than falling back to SVBONY_SKIP_NATIVE_LINK=1: that
 # escape hatch produces a simulation-only binary (see libsvbony-sys/build.rs

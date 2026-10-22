@@ -16,7 +16,8 @@
 // Linux and macOS take SVBony's prebuilt library as the INDI repository
 // vendors it, libsvbony/libSVBCameraSDK_<arch>.bin at the commit REF: it has
 // no hash of its own, and a commit's content cannot move. Bump REF to adopt a
-// newer SDK. scripts/check-pkg-assets.sh reads REF from its line below, to
+// newer SDK. The tools crate's packaging guard
+// (tools/rusty-photon-ci/src/pkg_assets.rs) reads REF from its line below, to
 // check that build-packages.sh's SVBONY_SDK_REF and the operator's
 // rusty-photon-svbony-sdk-install take the same commit.
 //

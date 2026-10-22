@@ -184,3 +184,11 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [":sky-survey-camera_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
+
+# pkg/, which the tools crate's packaging guard reads
+# (tools/rusty-photon-ci/src/pkg_assets.rs).
+filegroup(
+    name = "pkg",
+    srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

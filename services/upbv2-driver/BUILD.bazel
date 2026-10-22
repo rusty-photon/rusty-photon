@@ -268,3 +268,11 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# pkg/, which the tools crate's packaging guard reads
+# (tools/rusty-photon-ci/src/pkg_assets.rs).
+filegroup(
+    name = "pkg",
+    srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

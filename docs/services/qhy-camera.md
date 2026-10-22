@@ -2826,8 +2826,8 @@ session-0 service cannot: talk to the operator and open a browser.
 
 The pinned build-time SDK version constant lives in `preflight.rs`, kept in
 lockstep with the SDK pin in `crates/qhyccd-rs/libqhyccd-sys/build.rs` and the
-CI workflows; the Windows packaging plan's `check-pkg-assets.sh` assertions
-(W4) will assert that parity.
+CI workflows; the tools crate's packaging guard
+(`tools/rusty-photon-ci/src/pkg_assets.rs`) checks that parity.
 
 zwo-camera / zwo-focuser need none of this: their MIT DLLs ship in the MSI
 next to the exes (ADR-013/014), and the loader finds same-directory DLLs

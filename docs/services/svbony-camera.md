@@ -2923,16 +2923,16 @@ this leg could ever link against. Rather than fall back to
 dependency & build gating" above) and ship that as the "real" tarball,
 `build-tarballs.sh` drops `svbony-camera` from its service list entirely,
 with `scripts/generate-brew-formulas.sh` mirroring the same exclusion so no
-Homebrew formula ever points at a tarball that doesn't exist (both are
-cross-checked by `scripts/check-pkg-assets.sh`). Net effect: no
+Homebrew formula ever points at a tarball that doesn't exist (the packaging
+guard, `tools/rusty-photon-ci/src/pkg_assets.rs`, checks both). Net effect: no
 `rusty-photon-svbony-camera` formula ships on macOS today — same posture as
 the Windows exclusion, different platform, same "no SDK for this platform
 at all" reason. Revisit once a verified Apple Silicon blob exists (or
 SVBony grants a redistribution license, collapsing this to the ZWO bucket).
 
 **Known gap: `apt purge` does not remove the helper-installed SDK blob.**
-`pkg/postrm` is `packaging/postrm.common` byte-for-byte — `scripts/
-check-pkg-assets.sh` enforces this identically across every packaged
+`pkg/postrm` is `packaging/postrm.common` byte-for-byte — the packaging
+guard (`tools/rusty-photon-ci/src/pkg_assets.rs`) enforces this identically across every packaged
 service, with no per-service exception (unlike `pkg/postinst`, which does
 allow one) — so it only ever cleans up `/var/lib/rusty-photon/$SVC`, never
 `/usr/lib/rusty-photon/libSVBCameraSDK.so`. Since `rusty-photon-svbony-sdk-
@@ -2944,7 +2944,7 @@ svbony-camera: `qhy-camera`'s analogous `rusty-photon-qhy-firmware-install`
 helper has the identical gap for its firmware/fxload/udev-rule files. Fixing
 it properly means teaching the *shared* `postrm.common` template about each
 download-on-target service's extra paths (keyed on `$SVC`, mirroring how
-`check-pkg-assets.sh` already special-cases `postinst` per service) — a
+the packaging guard already special-cases `postinst` per service) — a
 fleet-wide packaging change, out of scope for this service's own delivery
 phasing; tracked here as follow-up rather than silently left undocumented.
 

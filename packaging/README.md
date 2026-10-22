@@ -52,9 +52,13 @@ exactly `libEAFFocuser.so` (the link-search dir during the build is the
 blob cache itself, not a pkg/lib dir). No blob appears in two packages, so
 the zwo debs co-install without file conflicts.
 
-`scripts/check-pkg-assets.sh` enforces all of this — run it after touching
-anything under `packaging/` or a service's `pkg/` directory. It discovers
-packaged services by the presence of `pkg/` dirs, so adding a service means:
+The tools crate's packaging guard
+([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs))
+checks all of this on every pull request, under `bazel test //...`; its
+module comment is the list of checks. Run it after touching anything under
+`packaging/` or a service's `pkg/` directory with
+`cargo test -p rusty-photon-ci pkg_assets`. A packaged service is a
+`services/*` workspace member with a `pkg/` dir, so adding a service means:
 
 1. copy `postinst.common` / `postrm.common` into `services/<svc>/pkg/`,
 2. write `rusty-photon-<svc>.service` (start from filemonitor's and apply
@@ -80,8 +84,11 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
    guards that keep rpm upgrades from stopping the service, since the old
    package's `%preun` runs after the new one's `%post`),
 4. add the service's port to `port_of()` in **both**
-   `scripts/verify-packages.sh` and `scripts/verify-brew.sh`, and to
-   `win_port_of()` in the checker (plus a WiX fragment under
-   `installer/fragments/`) — the checker cross-checks the port tables
-   against each other,
-5. run `scripts/check-pkg-assets.sh`.
+   `scripts/verify-packages.sh` and `scripts/verify-brew.sh`, and write its
+   WiX fragment under `installer/fragments/` — the guard checks the two
+   tables agree, and the fragment's firewall port against them,
+5. add the service to `_SERVICES` in `tools/rusty-photon-ci/BUILD.bazel`, and
+   give its `BUILD.bazel` the `pkg` filegroup the others have: under Bazel
+   the guard reads only the files its test declares, and fails on a
+   workspace member it cannot see,
+6. run `cargo test -p rusty-photon-ci pkg_assets`.

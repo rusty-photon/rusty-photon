@@ -53,7 +53,7 @@ die() { echo "build-packages: $*" >&2; exit 1; }
 
 # ---- pins -------------------------------------------------------------
 # The QHY pins must match services/qhy-camera/pkg/rusty-photon-qhy-firmware-install
-# (scripts/check-pkg-assets.sh enforces it): the SDK linked at build time and
+# (tools/rusty-photon-ci/src/pkg_assets.rs checks it): the SDK linked at build time and
 # the firmware the helper installs on the target must be the same release.
 QHY_SDK_VERSION="26.06.04"
 QHY_SHA256_X86_64="cbfcec159809e6984c5013a587fed88c892afae9d834019e820213f64616a308"
@@ -123,7 +123,7 @@ fi
 
 # ---- service selection --------------------------------------------------
 # Packaged services are exactly the crates with a pkg/ dir (same discovery
-# as check-pkg-assets.sh). All of them are daemons — phd2-guider gained its
+# as the packaging guard, tools/rusty-photon-ci/src/pkg_assets.rs). All of them are daemons — phd2-guider gained its
 # unit with the HTTP service mode (issue #464).
 ALL_SERVICES=$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')
 
