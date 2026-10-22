@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603), the Linux pair (this PR) |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603), the Linux pair (#1604) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -1471,7 +1471,7 @@ Done so far:
   of service's checks, each shown to fail with its behaviour broken. A
   `dry_run=true` dispatch runs both on hosted macOS; `release.yml`'s
   stable run waits for the next tag.
-- **The Linux pair** (this PR): `build-packages.sh` and
+- **The Linux pair** (#1604): `build-packages.sh` and
   `verify-packages.sh` are `cargo ci build-packages` and
   `cargo ci verify-packages` (`build_packages.rs`, `verify_packages.rs`),
   which the nightly's Linux legs run. The macOS builder's SDK staging and
