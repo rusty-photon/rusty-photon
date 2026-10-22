@@ -1004,7 +1004,8 @@ gone: a camera's and a placeholder's `SupportedActions` is empty, and any
   an earlier port since the start is confirmed as the move it causes,
   whether the save leaves a list or the service already has none, and the
   confirmation says the bus has changed. A camera page's save reloads too,
-  so it is checked the same way. Only a save that changes something is
+  so it is checked the same way; its page scans the bus only for a save, so
+  showing it costs no scan. Only a save that changes something is
   asked: one that changes nothing fires no reload, so nothing it could
   confirm would happen. A reload by `SIGHUP`, or a restart, numbers a
   changed bus afresh unasked: without a list, a camera added or removed

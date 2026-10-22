@@ -201,7 +201,9 @@ the file (the driver-setup-pages plan's D11). A `DriverPages` says:
   driver lets a page edit. A page whose every part submits nothing — a
   page that only shows — has no form and no Save button.
 - **its sections on a page**, asked for on every request, so a section can
-  read the host as it is now (the camera drivers' USB scan).
+  read the host as it is now (the camera drivers' USB scan), and told
+  whether the request saves, so work only a save needs is skipped on a page
+  that is only shown.
 
 A section draws its markup inside the page's form — from the file as the
 page shows it, or, re-rendering a save, from the submission and its errors

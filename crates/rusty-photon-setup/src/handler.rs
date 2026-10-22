@@ -312,7 +312,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             D::pinned_paths(&self.effective, &self.overrides),
         );
         let custom = match &self.driver_pages {
-            Some(pages) => pages.sections(scope).await,
+            Some(pages) => pages.sections(scope, request.method == Method::POST).await,
             None => Vec::new(),
         };
         let drawn = Drawn {
@@ -2478,6 +2478,7 @@ mod tests {
         fn sections<'a>(
             &'a self,
             scope: PageScope<'a>,
+            _: bool,
         ) -> crate::custom::BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
             Box::pin(async move {
                 let sections: Vec<Box<dyn CustomSection>> = match scope {
@@ -2809,6 +2810,7 @@ mod tests {
         fn sections<'a>(
             &'a self,
             _: PageScope<'a>,
+            _: bool,
         ) -> crate::custom::BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
             Box::pin(async {
                 let sections: Vec<Box<dyn CustomSection>> = vec![Box::new(AlwaysAsks)];
@@ -2885,5 +2887,35 @@ mod tests {
         ));
         assert!(changes(&AuthChange::Off, &stored));
         assert!(!changes(&AuthChange::Off, &none));
+    }
+
+    /// Records whether each request it was asked for saved.
+    #[derive(Default)]
+    struct SavingSeen(std::sync::Mutex<Vec<bool>>);
+
+    impl DriverPages for SavingSeen {
+        fn owned_keys(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn sections<'a>(
+            &'a self,
+            _: PageScope<'a>,
+            saving: bool,
+        ) -> crate::custom::BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
+            self.0.lock().unwrap().push(saving);
+            Box::pin(async { Vec::new() })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_sections_are_told_whether_the_request_saves() {
+        let fx = fixture(&config());
+        let seen = Arc::new(SavingSeen::default());
+        let p = pages(&fx, config(), Overrides::default())
+            .with_driver_pages(Arc::<SavingSeen>::clone(&seen));
+        _ = p.handle(PageScope::Server, get()).await;
+        _ = p.handle(PageScope::Server, post(&server_base())).await;
+        assert_eq!(*seen.0.lock().unwrap(), vec![false, true]);
     }
 }

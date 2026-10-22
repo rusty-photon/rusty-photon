@@ -189,7 +189,11 @@ impl DriverPages for ClaimsPages {
         )
     }
 
-    fn sections<'a>(&'a self, scope: PageScope<'a>) -> BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
+    fn sections<'a>(
+        &'a self,
+        scope: PageScope<'a>,
+        saving: bool,
+    ) -> BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
         Box::pin(async move {
             let registry = self.lock().clone();
             match scope {
@@ -203,9 +207,11 @@ impl DriverPages for ClaimsPages {
                     device_number,
                 } => {
                     // An unlisted camera's page saves its override, and the
-                    // reload that fires numbers the bus as it is now: its
-                    // page needs the scan to tell what that would move.
-                    let unlisted = device_type == DEVICE_TYPE
+                    // reload that fires numbers the bus as it is now: a save
+                    // needs the scan to tell what that would move. Showing
+                    // the page needs none, so a `GET` takes none.
+                    let unlisted = saving
+                        && device_type == DEVICE_TYPE
                         && usize::try_from(device_number)
                             .ok()
                             .and_then(|index| registry.served.get(index))
@@ -283,7 +289,7 @@ fn device_page(
             model,
             unique_id,
             key: override_key,
-            numbering: numbering?,
+            numbering,
         }),
         Served::Placeholder { port, reason } => Box::new(PlaceholderPage { port, reason }),
     };
@@ -727,7 +733,7 @@ impl CamerasSection {
                 .filter(|(_, names)| names.as_object().is_some_and(|o| !o.is_empty()))
                 .filter_map(|(key, _)| match self.placed_port(key) {
                     Some(port) if list.iter().any(|e| e.port == port) => None,
-                    Some(port) => Some(Dropped::Port(port.to_string())),
+                    Some(port) => Some(Dropped::Unserved(port.to_string())),
                     None => Some(Dropped::Key(key.clone())),
                 })
                 .collect(),
@@ -753,6 +759,9 @@ enum Dropped {
     Port(String),
     /// The names of the entry for this port, which is no longer listed.
     Unlisted(String),
+    /// The override of the camera on this port, whose row the new list
+    /// leaves unchecked.
+    Unserved(String),
     /// The override under this key, whose camera the join placed nowhere.
     Key(String),
 }
@@ -760,7 +769,7 @@ enum Dropped {
 impl Dropped {
     fn port(&self) -> Option<&str> {
         match self {
-            Self::Port(port) | Self::Unlisted(port) => Some(port),
+            Self::Port(port) | Self::Unlisted(port) | Self::Unserved(port) => Some(port),
             Self::Key(_) => None,
         }
     }
@@ -768,7 +777,7 @@ impl Dropped {
     fn key(&self) -> Option<&str> {
         match self {
             Self::Key(key) => Some(key),
-            Self::Port(_) | Self::Unlisted(_) => None,
+            Self::Port(_) | Self::Unlisted(_) | Self::Unserved(_) => None,
         }
     }
 }
@@ -920,7 +929,9 @@ impl CustomSection for CamerasSection {
                 .map(|(number, old, new)| format!("number {number} {old}>{new}")),
         );
         tokens.extend(dropped.iter().map(|d| match d {
-            Dropped::Port(port) | Dropped::Unlisted(port) => format!("drop {port}"),
+            Dropped::Port(port) | Dropped::Unlisted(port) | Dropped::Unserved(port) => {
+                format!("drop {port}")
+            }
             Dropped::Key(key) => format!("drop key {key}"),
         }));
         let afresh = entries(after).is_none() && self.bus_changed();
@@ -944,6 +955,9 @@ impl CustomSection for CamerasSection {
                         },
                         Dropped::Unlisted(port) => li.dropped data-port=(port) {
                             "drop the name and description of the entry for " code { (port) } ", which is no longer listed"
+                        },
+                        Dropped::Unserved(port) => li.dropped data-port=(port) {
+                            "drop the " code { "devices" } " override of the camera on " code { (port) } ", which the list does not serve"
                         },
                         Dropped::Key(key) => li.dropped data-key=(key) {
                             "drop the " code { "devices" } " override " code { (key) } ", whose camera is on no port this start placed"
@@ -1048,8 +1062,9 @@ struct OverridePage {
     /// The key its override is read under.
     key: String,
     /// The Cameras section's numbering, which a save of this page — a
-    /// reload, like any — is checked against.
-    numbering: CamerasSection,
+    /// reload, like any — is checked against; `None` on a page that only
+    /// shows (a `GET`), which needs no scan.
+    numbering: Option<CamerasSection>,
 }
 
 impl CustomSection for OverridePage {
@@ -1121,7 +1136,7 @@ impl CustomSection for OverridePage {
     /// camera plugged in or pulled since the start is confirmed as the move
     /// it causes, as on the server page.
     fn confirmation(&self, before: &Value, after: &Value) -> Option<Confirmation> {
-        self.numbering.confirmation(before, after)
+        self.numbering.as_ref()?.confirmation(before, after)
     }
 }
 
@@ -1596,6 +1611,10 @@ mod tests {
         assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
         let confirmation = s.confirmation(&before, &config).expect("dropped names");
         assert_eq!(confirmation.token, "drop a:3; drop key GONE");
+        let html = confirmation.markup.into_string();
+        // a:3's camera is there; its row is only left unchecked.
+        assert!(html.contains("which the list does not serve"), "{html}");
+        assert!(!html.contains("no camera whose override"), "{html}");
     }
 
     #[test]
@@ -1665,7 +1684,7 @@ mod tests {
             model: "SV605CC".to_string(),
             unique_id: "SVBONY:SV605CC:K1".to_string(),
             key: "K1".to_string(),
-            numbering: section(vec![("Main", camera("a:1", "K1", false))]),
+            numbering: Some(section(vec![("Main", camera("a:1", "K1", false))])),
         };
         let mut config = json!({ "server": {} });
         assert_eq!(
@@ -1721,9 +1740,13 @@ mod tests {
         let before = json!({ "devices": {} });
         let after = json!({ "devices": { "K3": { "name": "Three" } } });
         // The bus as the start found it: nothing moves.
-        assert!(page(placed_two()).confirmation(&before, &after).is_none());
+        assert!(page(Some(placed_two()))
+            .confirmation(&before, &after)
+            .is_none());
+        // A page that only showed took no scan, and asks nothing.
+        assert!(page(None).confirmation(&before, &after).is_none());
         // a:1 has gone since: a:3 takes its number on the reload.
-        let page = page(with_bus(placed_two(), &["a:2", "a:3"]));
+        let page = page(Some(with_bus(placed_two(), &["a:2", "a:3"])));
         assert_eq!(
             page.confirmation(&before, &after).expect("a move").token,
             "move a:3 1>0"
@@ -1790,40 +1813,52 @@ mod tests {
     #[tokio::test]
     async fn each_page_gets_its_section() {
         let p = pages();
-        let server = p.sections(PageScope::Server).await;
+        let server = p.sections(PageScope::Server, false).await;
         assert_eq!(server.len(), 1);
         assert!(server[0].has_controls());
         let html = server[0].render(view(&json!({}))).into_string();
         assert!(html.contains(r#"data-port="a:1""#), "{html}");
 
         let unlisted = p
-            .sections(PageScope::Device {
-                device_type: "camera",
-                device_number: 0,
-            })
+            .sections(
+                PageScope::Device {
+                    device_type: "camera",
+                    device_number: 0,
+                },
+                false,
+            )
             .await;
         assert!(unlisted[0].has_controls());
         let held = p
-            .sections(PageScope::Device {
-                device_type: "camera",
-                device_number: 1,
-            })
+            .sections(
+                PageScope::Device {
+                    device_type: "camera",
+                    device_number: 1,
+                },
+                false,
+            )
             .await;
         assert!(!held[0].has_controls());
         assert_eq!(
-            p.sections(PageScope::Device {
-                device_type: "camera",
-                device_number: 2
-            })
+            p.sections(
+                PageScope::Device {
+                    device_type: "camera",
+                    device_number: 2,
+                },
+                false,
+            )
             .await
             .len(),
             0
         );
         assert_eq!(
-            p.sections(PageScope::Device {
-                device_type: "filterwheel",
-                device_number: 0
-            })
+            p.sections(
+                PageScope::Device {
+                    device_type: "filterwheel",
+                    device_number: 0,
+                },
+                false,
+            )
             .await
             .len(),
             0
@@ -1831,9 +1866,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unlisted_cameras_page_scans_only_for_a_save() {
+        let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&scans);
+        let p = ClaimsPages::new(
+            "SVBony",
+            Arc::new(move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(vec![bus("a:1", "SVBONY SV605CC")])
+            }),
+            str::cmp,
+        );
+        assert_eq!(p.register("Main", camera("a:1", "K1", false)), 0);
+        p.placed(vec![placed("a:1", "K1")], vec!["a:1".to_string()]);
+        let camera_page = PageScope::Device {
+            device_type: "camera",
+            device_number: 0,
+        };
+        let shown = p.sections(camera_page, false).await;
+        assert!(shown[0].has_controls());
+        assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let _saved = p.sections(camera_page, true).await;
+        assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // The server page's rows are the bus now, shown or saved.
+        let _server = p.sections(PageScope::Server, false).await;
+        assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn a_scan_that_panics_is_a_failed_scan() {
         let p = ClaimsPages::new("SVBony", Arc::new(|| panic!("collector")), str::cmp);
-        let server = p.sections(PageScope::Server).await;
+        let server = p.sections(PageScope::Server, false).await;
         let html = server[0].render(view(&json!({}))).into_string();
         assert!(
             html.contains("The USB scan failed: the USB scan did not finish"),

@@ -91,6 +91,11 @@ pub trait DriverPages: Send + Sync {
         None
     }
 
-    /// The driver's sections on the page `scope`.
-    fn sections<'a>(&'a self, scope: PageScope<'a>) -> BoxFuture<'a, Vec<Box<dyn CustomSection>>>;
+    /// The driver's sections on the page `scope`; `saving` when the request
+    /// is a save (a `POST`), so a section can skip work only a save needs.
+    fn sections<'a>(
+        &'a self,
+        scope: PageScope<'a>,
+        saving: bool,
+    ) -> BoxFuture<'a, Vec<Box<dyn CustomSection>>>;
 }
