@@ -649,8 +649,7 @@ mod tests {
         };
         let llvm = fixture.mac_dir.path().join("llvm");
         fs::create_dir_all(llvm.join("lib")).unwrap();
-        let answer: &'static str = Box::leak(format!("{}\n", llvm.display()).into_boxed_str());
-        let mut runner = Fake::answering(&[answer]);
+        let mut runner = Fake::answering(&[&format!("{}\n", llvm.display())]);
         build(&mut runner, fixture.root.path(), &host, &Request::default()).unwrap();
         let lines = lines(&runner, &fixture);
         assert_eq!(lines[0], "brew --prefix llvm");

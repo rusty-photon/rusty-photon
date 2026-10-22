@@ -300,16 +300,16 @@ impl Runner for System {
 #[derive(Default)]
 pub struct Fake {
     pub ran: Vec<Cmd>,
-    pub stdout: std::collections::VecDeque<&'static str>,
+    pub stdout: std::collections::VecDeque<String>,
     pub fail_at: Option<usize>,
 }
 
 #[cfg(test)]
 impl Fake {
     #[must_use]
-    pub fn answering(stdout: &[&'static str]) -> Self {
+    pub fn answering(stdout: &[&str]) -> Self {
         Self {
-            stdout: stdout.iter().copied().collect(),
+            stdout: stdout.iter().map(|&answer| answer.to_owned()).collect(),
             ..Self::default()
         }
     }
@@ -482,7 +482,7 @@ impl Runner for Fake {
 
     fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
         self.record(cmd)?;
-        Ok(self.stdout.pop_front().unwrap_or_default().to_owned())
+        Ok(self.stdout.pop_front().unwrap_or_default())
     }
 
     /// 1 for the command `fail_at` names, 0 for the rest.
@@ -493,10 +493,7 @@ impl Runner for Fake {
     /// The next answer from the queue, with the code [`Fake::code`] gives.
     fn output(&mut self, cmd: &Cmd) -> Result<(Option<i32>, String), Error> {
         let code = i32::from(self.record(cmd).is_err());
-        Ok((
-            Some(code),
-            self.stdout.pop_front().unwrap_or_default().to_owned(),
-        ))
+        Ok((Some(code), self.stdout.pop_front().unwrap_or_default()))
     }
 
     fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, Error> {
