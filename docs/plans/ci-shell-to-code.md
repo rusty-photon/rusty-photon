@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602) |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -1386,12 +1386,17 @@ The owner chose on 2026-10-21 to take it in five PRs:
 5. `build-msi.ps1` and `verify-msi.ps1`.
 
 Each of 3 to 5 removes from the guard the checks of copies it merges into
-one. The builders take the ZWO and SVBony SDKs from the install actions'
-module, where they download them themselves today: in CI the `install-*`
-step runs first, and a developer runs `bazel run
-//.github/actions:install` (ADR-022 Amendment A). The owner chose this on
-2026-10-21 over a third copy of the download and its pins. The QHY SDK
-has no install action; PR 3 settles where its download lives.
+one. The builders download the SDKs themselves, as the scripts did, from
+one pin each: the ZWO and SVBony commits are the `REF` their install
+modules hold, which the builders read, and the QHY SDK's pins are the
+tools crate's `packaging::qhy`, which the three builders share. The owner
+first chose, on 2026-10-21, to have the builders take the SDKs from the
+install actions, then chose this the same day, once PR 3 found that the
+actions install for CI's tests and not for shipping. On macOS they give
+each library an absolute install name and point its libusb at a copy
+beside it, where a tarball needs `@rpath` names and Homebrew's libusb; and
+a builder taking whatever an action left in `/usr/local` could not check
+that it ships the pinned SDK.
 
 A builder or verifier is proven before its shell is deleted, by a
 `nightly-packages.yml` dispatch with `dry_run=true` (which builds and
@@ -1429,7 +1434,8 @@ Done so far:
   all. The script fails on each of them too, except the two the
   membership checks add.
 - **The formula renderer** (#1602): `generate-brew-formulas.sh` is
-  `cargo ci brew-formulas` (`brew_formulas.rs`), which `verify-brew.sh`,
+  `cargo ci brew-formulas` (`brew_formulas.rs`), which `verify-brew.sh`
+  (`cargo ci verify-brew` since the macOS pair),
   the nightly's `publish` job and `release.yml`'s tap job run. Its formulas
   are the script's byte for byte, but the first line, which names the
   tool: compared for every packaged service on both channels and for a
@@ -1439,11 +1445,32 @@ Done so far:
   where the script inserted it as it was. The `publish` job and the tap
   job, on hosted Ubuntu, install the toolchain before it; ci-logic.md
   says how a workflow runs a tool. The guard no longer reads the script:
-  it checks `build-tarballs.sh` leaves out the service the tool does. A
+  it checks `build-tarballs.sh` leaves out the service the tool does, until
+  the macOS pair has both read one constant. A
   `dry_run=true` dispatch proves it on macOS, through `verify-brew.sh`;
   the `publish` job's run is proven by the first nightly after the merge,
   whose render step comes before anything is published, and
   `release.yml`'s by the next tag.
+- **The macOS pair** (#1603): `build-tarballs.sh` and `verify-brew.sh`
+  are `cargo ci build-tarballs` and `cargo ci verify-brew`
+  (`build_tarballs.rs`, `verify_brew.rs`), on a new `packaging` module
+  holding what the builders share: the packaged services and their kinds
+  (serial, gated, …), one port table, the version stamp, the SDK pins and
+  their download, and the checksum manifest. `brew-formulas` and the guard
+  moved onto it. The guard checks `verify-packages.sh`'s port table and
+  the WiX fragments against `packaging::PORTS`, and every copy of the QHY
+  version against `packaging::qhy::VERSION`; its checks of
+  `build-tarballs.sh` went with the script. The ZWO dylibs come from
+  `install-zwo-sdk`'s `REF`, and the macOS jobs' SDK cache is keyed on
+  the files that hold the pins. Unlike the script, `verify-brew` has no
+  trap to clean up on an interrupt: an interrupted run leaves its scratch
+  formulas installed, and the next run refuses to start and names the
+  commands that remove them. The tests run the builder against a fake
+  runner for every kind of service, and the verifier against a scripted
+  Homebrew: its whole lifecycle, a failure and its clean-up, and each kind
+  of service's checks, each shown to fail with its behaviour broken. A
+  `dry_run=true` dispatch runs both on hosted macOS; `release.yml`'s
+  stable run waits for the next tag.
 
 ## S1 — Sweep of the remaining inline blocks
 

@@ -83,10 +83,11 @@ module comment is the list of checks. Run it after touching anything under
    copy the rpm scriptlets from filemonitor's block — they carry the `$1`
    guards that keep rpm upgrades from stopping the service, since the old
    package's `%preun` runs after the new one's `%post`),
-4. add the service's port to `port_of()` in **both**
-   `scripts/verify-packages.sh` and `scripts/verify-brew.sh`, and write its
-   WiX fragment under `installer/fragments/` — the guard checks the two
-   tables agree, and the fragment's firewall port against them,
+4. add the service's port to `PORTS` in
+   `tools/rusty-photon-ci/src/packaging.rs` and to `port_of()` in
+   `scripts/verify-packages.sh`, and write its WiX fragment under
+   `installer/fragments/` — the guard checks the table and the fragment's
+   firewall port against `PORTS`,
 5. add the service to `_SERVICES` in `tools/rusty-photon-ci/BUILD.bazel`, and
    give its `BUILD.bazel` the `pkg` filegroup the others have: under Bazel
    the guard reads only the files its test declares, and fails on a

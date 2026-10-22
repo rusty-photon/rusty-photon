@@ -8,10 +8,11 @@
 // Linux and macOS take ZWO's prebuilt libraries as the INDI repository
 // vendors them, under libasi/ at the commit REF: they have no hash of their
 // own, and a commit's content cannot move. Bump REF to adopt a newer SDK.
-// The tools crate's packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs)
-// reads REF from its line below, to check that the packages ship the
-// libraries CI links (build-packages.sh's and build-tarballs.sh's
-// ZWO_SDK_REF).
+// The tools crate's macOS builder, `cargo ci build-tarballs`, downloads the
+// libraries it ships from REF, which it reads from its line below, and the
+// packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs) checks
+// build-packages.sh's ZWO_SDK_REF against it: the packages ship the
+// libraries CI links.
 //
 // Windows takes ZWO's developer SDKs from its CDN, whose links are rolling
 // "latest" ones, with no version to pin or hash to check. The cache keeps a

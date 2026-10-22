@@ -78,10 +78,10 @@ jobs:
             filemonitor-*.tar.gz
 
   # Per-service arm64 tarballs — the Homebrew formula payloads — built and
-  # verified by the same scripts the nightly macos leg runs. Passing the tag
-  # version to build-tarballs.sh doubles as the tag/workspace guard: the
-  # script refuses any version that is not the workspace version (or a
-  # +nightly stamp on it).
+  # verified by the same tools the nightly macos leg runs. Passing the tag
+  # version to `cargo ci build-tarballs` doubles as the tag/workspace guard:
+  # it refuses any version that is not the workspace version (or a +nightly
+  # stamp on it).
   build-macos:
     runs-on: macos-latest
     name: macos / arm64 tarballs
@@ -100,11 +100,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/rusty-photon-pkg
-          key: rusty-photon-pkg-macos-${{ hashFiles('scripts/build-tarballs.sh') }}
+          key: rusty-photon-pkg-macos-${{ hashFiles('tools/rusty-photon-ci/src/packaging.rs', 'tools/rusty-photon-ci/src/build_tarballs.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs') }}
       - name: Build the per-service tarballs
-        run: scripts/build-tarballs.sh --version '${{ steps.v.outputs.version }}'
+        run: cargo ci build-tarballs --version '${{ steps.v.outputs.version }}'
       - name: Verify via Homebrew (release gate)
-        run: scripts/verify-brew.sh --channel stable --dist 'dist/${{ steps.v.outputs.version }}'
+        run: cargo ci verify-brew --channel stable --dist 'dist/${{ steps.v.outputs.version }}'
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:

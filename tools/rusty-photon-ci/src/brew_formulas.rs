@@ -4,12 +4,12 @@
 //! One renderer serves both channels. `release.yml` renders the stable
 //! formulas, `rusty-photon-<svc>.rb`, on a `v*` tag; `nightly-packages.yml`
 //! renders their `-nightly` siblings on every publish; and
-//! `scripts/verify-brew.sh` renders either with `file://` URLs against
+//! `cargo ci verify-brew` renders either with `file://` URLs against
 //! just-built tarballs, which a developer runs too. The versions and
 //! sha256s change with every run, so they are stamped here. What makes each
 //! formula what it is stays in this repository: the packaged services
-//! (`services/*/pkg`, the discovery `scripts/build-packages.sh` and
-//! `scripts/build-tarballs.sh` share), each service's `Cargo.toml`
+//! (`services/*/pkg`, the discovery the builders share), each service's
+//! `Cargo.toml`
 //! `description`, and the particulars below: which services load libusb,
 //! which bundle a ZWO SDK dylib, sentinel's doctor and renewal job, and the
 //! caveats.
@@ -26,18 +26,12 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
-use crate::process::{self, Cmd, Runner};
-
-/// It has no macOS `SVBony` SDK, so `scripts/build-tarballs.sh` builds no
-/// tarball for it (docs/services/svbony-camera.md, Packaging). The packaging
-/// guard checks that script leaves out this service.
-pub(crate) const NO_MACOS_TARBALL: &str = "svbony-camera";
+use crate::build_tarballs::tarball;
+use crate::packaging::{self, io};
 
 /// The services whose binary loads Homebrew's libusb: qhy-camera links it
 /// for the QHYCCD static library, and the ZWO camera library loads it by
-/// `@rpath`, which `build-tarballs.sh` rewrites to Homebrew's copy. The EAF
+/// `@rpath`, which `cargo ci build-tarballs` rewrites to Homebrew's copy. The EAF
 /// focuser library uses the system's HID frameworks alone.
 const NEEDS_LIBUSB: &[&str] = &["qhy-camera", "zwo-camera"];
 
@@ -105,79 +99,13 @@ pub struct Request {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Process(#[from] process::Error),
-    #[error("{path}: {source}")]
-    Io {
-        path: String,
-        source: std::io::Error,
-    },
-    #[error("unknown or unpackaged service: {service} (packaged: {packaged})")]
-    UnknownService { service: String, packaged: String },
-    #[error(
-        "svbony-camera has no macOS tarball (no confirmed mac_arm64 SVBony SDK blob — \
-         see docs/services/svbony-camera.md Packaging)"
-    )]
-    NoMacosTarball,
-    #[error("{path} missing — run scripts/build-tarballs.sh first")]
+    Packaging(#[from] packaging::Error),
+    #[error("{path} missing — run `cargo ci build-tarballs` first")]
     MissingTarball { path: String },
     #[error("{path} missing — the meta-formula downloads the checksum manifest")]
     MissingSums { path: String },
     #[error("{service}: no description in services/{service}/Cargo.toml")]
     NoDescription { service: String },
-}
-
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
-    move |source| Error::Io {
-        path: path.display().to_string(),
-        source,
-    }
-}
-
-/// The repository's root, which the services are found under.
-///
-/// # Errors
-///
-/// When git cannot say.
-pub fn repo_root(runner: &mut impl Runner) -> Result<PathBuf, Error> {
-    let root = runner.read(&Cmd::new("git", &["rev-parse", "--show-toplevel"]))?;
-    Ok(PathBuf::from(root.trim_end()))
-}
-
-/// The packaged services, those with a `pkg/` directory, sorted.
-fn packaged(root: &Path) -> Result<Vec<String>, Error> {
-    let services = root.join("services");
-    let mut names: Vec<String> = fs::read_dir(&services)
-        .map_err(io(&services))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().join("pkg").is_dir())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
-    names.sort();
-    Ok(names)
-}
-
-/// The services to render: the ones asked for, in the order asked, or every
-/// packaged one with a macOS tarball.
-fn selected(packaged: &[String], asked: Option<&[String]>) -> Result<Vec<String>, Error> {
-    let Some(asked) = asked else {
-        return Ok(packaged
-            .iter()
-            .filter(|service| *service != NO_MACOS_TARBALL)
-            .cloned()
-            .collect());
-    };
-    for service in asked {
-        if !packaged.contains(service) {
-            return Err(Error::UnknownService {
-                service: service.clone(),
-                packaged: packaged.join(" "),
-            });
-        }
-        if service == NO_MACOS_TARBALL {
-            return Err(Error::NoMacosTarball);
-        }
-    }
-    Ok(asked.to_vec())
 }
 
 /// A service's `Cargo.toml` `description`.
@@ -199,21 +127,6 @@ fn description(root: &Path, service: &str) -> Result<String, Error> {
         })
 }
 
-/// The SHA-256 of the file at `path`, in hex.
-fn sha256(path: &Path) -> Result<String, Error> {
-    let bytes = fs::read(path).map_err(io(path))?;
-    Ok(hex(Sha256::digest(&bytes).as_slice()))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut hex = String::new();
-    for byte in bytes {
-        // Writing to a String cannot fail.
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
-}
-
 /// `text` as the inside of a Ruby double-quoted string.
 fn ruby(text: &str) -> String {
     text.replace('\\', r"\\")
@@ -233,10 +146,6 @@ fn class_name(formula: &str) -> String {
             })
         })
         .collect()
-}
-
-fn tarball(service: &str, version: &str) -> String {
-    format!("rusty-photon-{service}-{version}-aarch64-apple-darwin.tar.gz")
 }
 
 /// Doctor rides in sentinel's formula: no doctor formula exists. Its
@@ -423,8 +332,8 @@ fn meta_formula(request: &Request, services: &[String], sha256: &str) -> String 
 /// checksum manifest or a description is missing, or a file cannot be read
 /// or written. Formulas written before the error stay written.
 pub fn render(root: &Path, request: &Request) -> Result<Vec<PathBuf>, Error> {
-    let packaged = packaged(root)?;
-    let services = selected(&packaged, request.services.as_deref())?;
+    let packaged = packaging::packaged(root)?;
+    let services = packaging::macos_services(&packaged, request.services.as_deref())?;
     fs::create_dir_all(&request.output).map_err(io(&request.output))?;
     let suffix = request.channel.suffix();
     let mut written = Vec::new();
@@ -439,7 +348,7 @@ pub fn render(root: &Path, request: &Request) -> Result<Vec<PathBuf>, Error> {
             request,
             service,
             &description(root, service)?,
-            &sha256(&path)?,
+            &packaging::sha256(&path)?,
         );
         let out = request
             .output
@@ -454,7 +363,7 @@ pub fn render(root: &Path, request: &Request) -> Result<Vec<PathBuf>, Error> {
                 path: sums.display().to_string(),
             });
         }
-        let text = meta_formula(request, &services, &sha256(&sums)?);
+        let text = meta_formula(request, &services, &packaging::sha256(&sums)?);
         let out = request.output.join(format!("rusty-photon{suffix}.rb"));
         fs::write(&out, text).map_err(io(&out))?;
         written.push(out);
@@ -464,8 +373,10 @@ pub fn render(root: &Path, request: &Request) -> Result<Vec<PathBuf>, Error> {
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::*;
-    use crate::process::Fake;
+    use crate::packaging::hex;
 
     const VERSION: &str = "0.1.0+nightly.202610220507.gabc1234";
     const NIGHTLY: &str = "https://github.com/rusty-photon/rusty-photon/releases/download/nightly";
@@ -693,7 +604,10 @@ mod tests {
             ..fixture.request.clone()
         };
         let error = render(fixture.root.path(), &request).unwrap_err();
-        assert!(matches!(error, Error::NoMacosTarball), "{error}");
+        assert!(
+            matches!(error, Error::Packaging(packaging::Error::NoMacosSdk)),
+            "{error}"
+        );
     }
 
     #[test]
@@ -705,7 +619,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "{} missing — run scripts/build-tarballs.sh first",
+                "{} missing — run `cargo ci build-tarballs` first",
                 tarball.display()
             )
         );
@@ -730,12 +644,5 @@ mod tests {
             error.to_string(),
             "filemonitor: no description in services/filemonitor/Cargo.toml"
         );
-    }
-
-    #[test]
-    fn asks_git_for_the_repository_root() {
-        let mut runner = Fake::answering(&["/repo\n"]);
-        assert_eq!(repo_root(&mut runner).unwrap(), PathBuf::from("/repo"));
-        assert_eq!(runner.lines(), ["git rev-parse --show-toplevel"]);
     }
 }

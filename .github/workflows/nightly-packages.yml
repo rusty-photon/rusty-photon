@@ -45,7 +45,7 @@
 # Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
 # scripts/verify-packages.sh (shared with on-demand builds on the rigs),
 # scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
-# release.yml), scripts/build-tarballs.sh + scripts/verify-brew.sh +
+# release.yml), `cargo ci build-tarballs` + `cargo ci verify-brew` +
 # `cargo ci brew-formulas` (shared with release.yml's stable Homebrew
 # channel), and scripts/build-apt-repo.sh +
 # scripts/build-yum-repo.sh + scripts/verify-packages-repo.sh +
@@ -213,19 +213,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: nightly-packages-macos
-      # Keyed on the script because it embeds the SDK pins (same contract as
-      # the linux legs): the cache invalidates exactly when a pin or the
-      # staging logic changes, keeping qhyccd.com off the nightly critical
-      # path.
+      # Keyed on the files that pin the SDKs, the tools crate's packaging
+      # module (QHY's) and install-zwo-sdk's module (ZWO's commit): the cache
+      # invalidates when a pin or the staging changes, which keeps qhyccd.com
+      # off the nightly's critical path.
       - name: Cache staged SDKs
         uses: actions/cache@v6
         with:
           path: ~/.cache/rusty-photon-pkg
-          key: rusty-photon-pkg-macos-${{ hashFiles('scripts/build-tarballs.sh') }}
+          key: rusty-photon-pkg-macos-${{ hashFiles('tools/rusty-photon-ci/src/packaging.rs', 'tools/rusty-photon-ci/src/build_tarballs.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs') }}
       - name: Build the per-service tarballs
-        run: scripts/build-tarballs.sh --version '${{ needs.plan.outputs.nightly_version }}'
+        run: cargo ci build-tarballs --version '${{ needs.plan.outputs.nightly_version }}'
       - name: Verify via Homebrew (full install lifecycle)
-        run: scripts/verify-brew.sh --channel nightly --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
+        run: cargo ci verify-brew --channel nightly --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
       - name: Upload tarballs
         uses: actions/upload-artifact@v7
         with:

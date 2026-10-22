@@ -43,7 +43,11 @@ tools/rusty-photon-ci/
   src/process.rs           Cmd, the Runner trait, System, which runs for real,
                            and Fake, for the tests
   src/<tool>.rs            one module per tool, with its tests
-  src/brew_formulas.rs     the one tool CI runs: the Homebrew formulas
+  src/packaging.rs         what the packaging tools share: the services, the
+                           SDK pins, the ports, downloads, checksums
+  src/build_tarballs.rs    the macOS tarballs, a tool CI runs
+  src/verify_brew.rs       their Homebrew lifecycle, likewise
+  src/brew_formulas.rs     the Homebrew tap's formulas, likewise
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
   src/pkg_assets.rs        a guard over the packaging files, likewise
@@ -94,16 +98,20 @@ tools/rusty-photon-ci/
   check a signature, where an OpenPGP crate would bring about 150 crates
   into every build of `//...` for a tool run once a Rust release.
 - **A workflow runs a tool with `cargo ci <tool>`**, which builds it from
-  the checkout. `brew-formulas` is the one so far: the nightly's `publish`
-  job and `release.yml`'s tap job, on hosted Ubuntu, run
-  `dtolnay/rust-toolchain@stable` before it, as every job that builds Rust
-  here does, and `verify-brew.sh` runs it in macOS jobs that have just built
-  the services. A step that does what a tool does but does not run it
-  stays YAML, and the tool's source names the step to keep in step with
-  (`repin-bazel-lock`, `repin-bazel.yml`). The Linux pool template has
-  carried Cargo since the plan's T1, so a tool run there needs no install;
-  a tool that drives Bazel settles how it is launched in the Bazel legs
-  (ADR-022's Consequences).
+  the checkout. The packaging tools are the ones so far:
+  `build-tarballs`, `verify-brew` and `brew-formulas` in the macOS jobs,
+  which install the toolchain to build the services anyway, and
+  `brew-formulas` in the nightly's `publish` job and `release.yml`'s tap
+  job too, on hosted Ubuntu, after `dtolnay/rust-toolchain@stable`, as
+  every job that builds Rust here runs it. A tool that builds the
+  workspace runs `cargo` from inside `cargo run`, which works: Cargo holds
+  no lock on the target directory once the tool is built. A step that does
+  what a tool does but does not run it stays YAML, and the tool's source
+  names the step to keep in step with (`repin-bazel-lock`,
+  `repin-bazel.yml`). The Linux pool template has carried Cargo since the
+  plan's T1, so a tool run there needs no install; a tool that drives
+  Bazel settles how it is launched in the Bazel legs (ADR-022's
+  Consequences).
 
 ## JavaScript actions
 

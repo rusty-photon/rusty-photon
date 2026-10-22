@@ -4,8 +4,9 @@
 
 use std::ffi::OsString;
 use std::fmt;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 /// A command for a [`Runner`] to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +95,24 @@ pub enum Error {
     Failed { command: String, status: String },
     #[error("`{command}` printed something that is not UTF-8")]
     NotUtf8 { command: String },
+    #[error("could not open {path} for `{command}`'s output: {source}")]
+    Log {
+        command: String,
+        path: String,
+        source: std::io::Error,
+    },
+}
+
+/// A process a [`Runner`] started in the background.
+pub trait Background {
+    /// How it exited, once it has; `None` while it runs.
+    fn exited(&mut self) -> Option<String>;
+
+    /// Waits for it to exit and returns how it did.
+    fn wait(&mut self) -> Option<String>;
+
+    /// Ends it, if it still runs, and waits for it.
+    fn stop(&mut self);
 }
 
 pub trait Runner {
@@ -112,6 +131,45 @@ pub trait Runner {
     /// When it cannot be started, exits unsuccessfully or prints something
     /// that is not UTF-8.
     fn read(&mut self, cmd: &Cmd) -> Result<String, Error>;
+
+    /// Runs `cmd` with its output discarded and returns its exit code:
+    /// `None` when a signal ended it.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be started.
+    fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error>;
+
+    /// Starts `cmd` in the background, its stdout and stderr appended to
+    /// `log`.
+    ///
+    /// # Errors
+    ///
+    /// When `log` cannot be opened or `cmd` cannot be started.
+    fn start(&mut self, cmd: &Cmd, log: &Path) -> Result<Box<dyn Background>, Error>;
+}
+
+/// A process [`System`] started.
+struct Running(Child);
+
+impl Background for Running {
+    fn exited(&mut self) -> Option<String> {
+        self.0
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.to_string())
+    }
+
+    fn wait(&mut self) -> Option<String> {
+        self.0.wait().ok().map(|status| status.to_string())
+    }
+
+    fn stop(&mut self) {
+        // It may have exited already, which leaves nothing to kill.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Runs commands for real.
@@ -151,6 +209,42 @@ impl Runner for System {
         String::from_utf8(output.stdout).map_err(|_| Error::NotUtf8 {
             command: cmd.to_string(),
         })
+    }
+
+    fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error> {
+        let status = cmd
+            .command()
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| Error::Spawn {
+                command: cmd.to_string(),
+                source,
+            })?;
+        Ok(status.code())
+    }
+
+    fn start(&mut self, cmd: &Cmd, log: &Path) -> Result<Box<dyn Background>, Error> {
+        let open = || OpenOptions::new().create(true).append(true).open(log);
+        let (stdout, stderr) =
+            open()
+                .and_then(|out| Ok((out.try_clone()?, out)))
+                .map_err(|source| Error::Log {
+                    command: cmd.to_string(),
+                    path: log.display().to_string(),
+                    source,
+                })?;
+        let child = cmd
+            .command()
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+            .map_err(|source| Error::Spawn {
+                command: cmd.to_string(),
+                source,
+            })?;
+        Ok(Box::new(Running(child)))
     }
 }
 
@@ -194,6 +288,23 @@ impl Fake {
     }
 }
 
+/// A process [`Fake`] started: it runs until stopped.
+#[cfg(test)]
+struct Idle;
+
+#[cfg(test)]
+impl Background for Idle {
+    fn exited(&mut self) -> Option<String> {
+        None
+    }
+
+    fn wait(&mut self) -> Option<String> {
+        None
+    }
+
+    fn stop(&mut self) {}
+}
+
 #[cfg(test)]
 impl Runner for Fake {
     fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {
@@ -203,6 +314,16 @@ impl Runner for Fake {
     fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
         self.record(cmd)?;
         Ok(self.stdout.pop_front().unwrap_or_default().to_owned())
+    }
+
+    /// 1 for the command `fail_at` names, 0 for the rest.
+    fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error> {
+        Ok(Some(i32::from(self.record(cmd).is_err())))
+    }
+
+    fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, Error> {
+        self.record(cmd)?;
+        Ok(Box::new(Idle))
     }
 }
 
@@ -307,6 +428,34 @@ mod tests {
     }
 
     #[test]
+    fn system_code_is_the_exit_code() {
+        let name = "process::tests::system_code_is_the_exit_code";
+        let list = this_test_binary(&["--list", "--exact", name]);
+        assert_eq!(System.code(&list).unwrap(), Some(0));
+        let code = System
+            .code(&this_test_binary(&["--no-such-option"]))
+            .unwrap();
+        assert!(code.is_some_and(|code| code != 0), "{code:?}");
+    }
+
+    #[test]
+    fn system_start_appends_the_output_to_the_log() {
+        let name = "process::tests::system_start_appends_the_output_to_the_log";
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("out.log");
+        std::fs::write(&log, "before\n").unwrap();
+        let mut started = System
+            .start(&this_test_binary(&["--list", "--exact", name]), &log)
+            .unwrap();
+        let status = started.wait().unwrap();
+        assert!(status.contains('0'), "{status}");
+        assert_eq!(started.exited().as_deref(), Some(status.as_str()));
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.starts_with("before\n"), "{text}");
+        assert!(text.contains(&format!("{name}: test")), "{text}");
+    }
+
+    #[test]
     fn system_reports_a_program_it_cannot_start() {
         let cmd = Cmd::new("rusty-photon-ci-no-such-program", &[]);
 
@@ -317,5 +466,11 @@ mod tests {
             "{error:?}"
         );
         assert!(matches!(System.read(&cmd), Err(Error::Spawn { .. })));
+        assert!(matches!(System.code(&cmd), Err(Error::Spawn { .. })));
+        let log = tempfile::NamedTempFile::new().unwrap();
+        assert!(matches!(
+            System.start(&cmd, log.path()),
+            Err(Error::Spawn { .. })
+        ));
     }
 }

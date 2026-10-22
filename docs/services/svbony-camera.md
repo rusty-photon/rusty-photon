@@ -157,10 +157,10 @@
 > RUNPATH `build-packages.sh` already bakes in for `zwo-camera` is what
 > lets the operator-installed copy (`rusty-photon-svbony-sdk-install`)
 > resolve at runtime, exactly as this document's Packaging section always
-> said it would once wired up. `scripts/build-tarballs.sh` (macOS) and
+> said it would once wired up. The macOS builder (`cargo ci build-tarballs`) and
 > the Homebrew formula renderer (`cargo ci brew-formulas`) now both explicitly exclude
 > `svbony-camera`: indi-3rdparty ships no confirmed `mac_arm64` blob, and
-> that script is arm64-only, so there is no real SDK to link there —
+> that builder is arm64-only, so there is no real SDK to link there —
 > shipping a `SVBONY_SKIP_NATIVE_LINK=1` (simulation-only) binary as the
 > "real" nightly tarball would silently hand users a driver that can never
 > see a physical camera. The Bazel-side SDK-fetch rule (`:svbony-camera`'s
@@ -2564,7 +2564,7 @@ phases A–G:
   back to the same session with its capture disarmed, so a trigger camera's
   exposures time out until a reconnect. Re-arming after a capture times out,
   or ending the session on such a timeout, would close it.
-- A confirmed `mac_arm64` SVBony SDK blob — `scripts/build-tarballs.sh` and
+- A confirmed `mac_arm64` SVBony SDK blob — `cargo ci build-tarballs` and
   `cargo ci brew-formulas` currently exclude `svbony-camera`
   outright (no macOS tarball/formula) rather than ship a
   `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as the "real" release
@@ -2914,18 +2914,17 @@ the Status banner above) — that piece still cannot be tested without a
 Bazel-side blob-fetch repository rule, a materially different mechanism
 from this Cargo-only script.
 
-**macOS: excluded, not simulation-shipped.** `scripts/build-tarballs.sh`
+**macOS: excluded, not simulation-shipped.** `cargo ci build-tarballs`
 targets only `aarch64-apple-darwin` (Apple Silicon), and indi-3rdparty
 ships no confirmed `mac_arm64` `libSVBCameraSDK` blob (see
 `install-svbony-sdk/svbony-sdk.mjs`'s header comment), so there is no real SDK
 this leg could ever link against. Rather than fall back to
 `SVBONY_SKIP_NATIVE_LINK=1` (a simulation-only binary — see "Native
 dependency & build gating" above) and ship that as the "real" tarball,
-`build-tarballs.sh` drops `svbony-camera` from its service list entirely,
-with `cargo ci brew-formulas` mirroring the same exclusion so no Homebrew
-formula ever points at a tarball that doesn't exist (the packaging guard,
-`tools/rusty-photon-ci/src/pkg_assets.rs`, checks the script leaves out the
-service the renderer does). Net effect: no
+the builder drops `svbony-camera` from its service list entirely, and
+`cargo ci brew-formulas` leaves out the same service, through the one
+constant both read (`packaging::NO_MACOS_SDK` in the tools crate), so no
+Homebrew formula ever points at a tarball that doesn't exist. Net effect: no
 `rusty-photon-svbony-camera` formula ships on macOS today — same posture as
 the Windows exclusion, different platform, same "no SDK for this platform
 at all" reason. Revisit once a verified Apple Silicon blob exists (or

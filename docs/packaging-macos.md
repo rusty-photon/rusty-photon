@@ -136,7 +136,7 @@ minted.
 **Switching channels / rolling back.** `brew uninstall` the one channel's
 formulas, then install the other (configs are untouched by uninstall).
 The nightly channel keeps no history; to pin a known-good nightly, rebuild
-that commit on a Mac with `scripts/build-tarballs.sh` and install the
+that commit on a Mac with `cargo ci build-tarballs` and install the
 binaries by hand, or wait out the next publish.
 
 ## Configuration
@@ -261,9 +261,9 @@ in-process upload is a tracked follow-up.
 **svbony-camera — not available on macOS today.** indi-3rdparty's
 `libsvbony` packaging ships no `mac_arm64` blob (Intel/`mac64` only), and
 Apple Silicon is the only Mac target this project builds for, so there is
-no real SVBony SDK `build-tarballs.sh` could ever link against here.
+no real SVBony SDK `cargo ci build-tarballs` could ever link against here.
 Rather than publish a `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as
-the "real" tarball, `build-tarballs.sh` and `cargo ci brew-formulas` exclude
+the "real" tarball, `cargo ci build-tarballs` and `cargo ci brew-formulas` exclude
 `svbony-camera` outright — no `rusty-photon-svbony-camera` formula exists
 in the tap. Revisit once a verified Apple Silicon blob exists (or SVBony
 grants a redistribution license). See
@@ -300,24 +300,27 @@ dpkg purge): to fully clean up, delete
 On a Mac with Rust and Homebrew installed:
 
 ```sh
-scripts/build-tarballs.sh                 # per-service arm64 tarballs into dist/<version>/
-scripts/verify-brew.sh                    # full Homebrew lifecycle against them
-scripts/verify-brew.sh --services filemonitor,zwo-camera --keep
+cargo ci build-tarballs                   # per-service arm64 tarballs into dist/<version>/
+cargo ci verify-brew                      # full Homebrew lifecycle against them
+cargo ci verify-brew --services filemonitor,zwo-camera --keep
 ```
 
-`build-tarballs.sh` stages the pinned native SDKs (QHYCCD static lib for
-the link; per zwo service its one MIT dylib, which becomes that tarball's
-payload) and release-builds with the `@loader_path` rpaths — the zwo
+`cargo ci build-tarballs` stages the pinned native SDKs (QHYCCD static lib
+for the link, pinned in the tools crate's `packaging` module; per zwo
+service its one MIT dylib, from the commit `install-zwo-sdk` pins, which
+becomes that tarball's payload) and release-builds with the `@loader_path` rpaths — the zwo
 services each in their own cargo invocation, so feature unification cannot
 re-union their per-device SDK links. `svbony-camera` is skipped entirely
 (no confirmed `mac_arm64` SVBony SDK blob — see "Camera specifics" above).
-`verify-brew.sh` renders the formulas, with `cargo ci brew-formulas`,
-with `file://` URLs into a scratch tap and, per service: install →
+`cargo ci verify-brew` renders the formulas, as `cargo ci brew-formulas`
+does, with `file://` URLs into a scratch tap and, per service: install →
 `brew test` → `brew services start` → HTTP probe → config self-created →
 stop → uninstall clean — with the same class exceptions as
 `verify-packages.sh` (gated services are never started; serial drivers
 verify config + handshake-attempted from the log; the zwo binaries prove
-via `otool` that each loads exactly its own bundled dylib). The nightly
+via `otool` that each loads exactly its own bundled dylib). An interrupted
+run leaves its scratch formulas installed; the next run refuses to start
+and names the commands that remove them. The nightly
 `macos` leg runs exactly this pair as its pre-publish gate
 (`.github/workflows/nightly-packages.yml`), as does `release.yml` for the
 stable channel.
