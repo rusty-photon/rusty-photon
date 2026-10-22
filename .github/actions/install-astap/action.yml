@@ -10,7 +10,7 @@ description: |
   takes and its SHA-256 pin are in assets.json, which refresh-astap-shas.yml
   rewrites when upstream rotates an archive; the download, check and unpack
   are astap.mjs's and lib/install.mjs's (plan item J4 in
-  docs/plans/ci-shell-to-code.md).
+  docs/plans/archive/ci-shell-to-code.md).
 
 inputs:
   download-database:

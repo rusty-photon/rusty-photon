@@ -10,7 +10,7 @@
 // asks a credential helper for it instead (helper.mjs). Bazel runs the helper
 // in each Bazel step with that step's environment, where the workflows' env
 // blocks put the credential on trusted events only. Plan item J10 in
-// docs/plans/ci-shell-to-code.md.
+// docs/plans/archive/ci-shell-to-code.md.
 
 import { chmod, writeFile } from 'node:fs/promises';
 import path from 'node:path';

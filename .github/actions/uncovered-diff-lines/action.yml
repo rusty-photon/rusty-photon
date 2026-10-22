@@ -6,7 +6,7 @@ description: >-
   annotation on each run of uncovered added lines, neutral when there are
   some and success when there are none. A diff that cannot be scored gets the
   check neutral, naming the stage that failed, with a warning; the step does
-  not fail. The logic is annotate.mjs's (S1 in docs/plans/ci-shell-to-code.md).
+  not fail. The logic is annotate.mjs's (S1 in docs/plans/archive/ci-shell-to-code.md).
 inputs:
   lcov:
     description: The LCOV report to score the diff against.

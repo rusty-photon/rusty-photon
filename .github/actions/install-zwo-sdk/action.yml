@@ -10,7 +10,7 @@ description: >-
   takes ZWO's developer SDKs from its CDN, whose links are rolling "latest"
   ones. The pin, the links and the install are zwo-sdk.mjs's; the download,
   the cache key and the fallback to an earlier week's download are
-  lib/install.mjs's (plan item J5 in docs/plans/ci-shell-to-code.md). The
+  lib/install.mjs's (plan item J5 in docs/plans/archive/ci-shell-to-code.md). The
   downloads are cached: the INDI mirror rate-limits CI's ephemeral IPs
   (429s), and on Windows the cache keeps a week's download, ZWO's CDN
   dropping connections often enough that a failed weekly refresh falls back

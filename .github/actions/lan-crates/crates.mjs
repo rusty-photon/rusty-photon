@@ -1,6 +1,6 @@
 // The crates.io packages Cargo.lock pins, read from the LAN bazel-remote's
 // content-addressed store instead of crates.io (plan item J14,
-// docs/plans/ci-shell-to-code.md).
+// docs/plans/archive/ci-shell-to-code.md).
 //
 // bazel-remote keeps a blob under its SHA-256, and that is the checksum
 // Cargo.lock records for a crate, so a crate's address in the store is its

@@ -1,6 +1,6 @@
 // What every install-* action does: choose the asset for the runner, download
 // it, check it against its pin and unpack it (plan item J2,
-// docs/plans/ci-shell-to-code.md). An action keeps its assets in a table keyed
+// docs/plans/archive/ci-shell-to-code.md). An action keeps its assets in a table keyed
 // by runner, and runs as a composite of three steps (docs/skills/ci-logic.md
 // §An action that needs another action): resolve the asset and its cache key,
 // restore the cache with that key, then install on a miss and export the

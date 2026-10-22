@@ -10,7 +10,7 @@ description: >-
   at a pinned commit; Windows takes SVBony's own SDK from the project's
   private mirror, against a pinned SHA-256 (ADR-018 §7). The pins, the files
   and the install are svbony-sdk.mjs's; the download and the cache key are
-  lib/install.mjs's (plan item J6 in docs/plans/ci-shell-to-code.md).
+  lib/install.mjs's (plan item J6 in docs/plans/archive/ci-shell-to-code.md).
 
 inputs:
   sudo:

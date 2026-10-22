@@ -4,15 +4,15 @@
 decides where CI logic lives: workflow YAML for a step that runs one
 command, a local JavaScript action for logic that runs inside GitHub
 Actions, one Rust tools crate for tools a developer also runs. This doc
-says how to write it there. Moving the existing shell is
-[docs/plans/ci-shell-to-code.md](../plans/ci-shell-to-code.md).
+says how to write it there. The existing shell moved under
+[docs/plans/archive/ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md),
+now complete.
 
 ## When to Read This
 
 - Before adding or changing a workflow step, or a composite action's step,
   that runs more than a few commands or has any control flow
 - Before writing or changing a local action under `.github/actions/`
-- Before picking up an item of the CI shell plan
 
 ## Where it goes
 
@@ -603,5 +603,5 @@ A PR's CI only runs the workflows its events trigger. Name every runner
 the code runs on (hosted Linux, Windows and macOS, the pool's Linux and
 Windows templates, the Pi) and show each one green, or say what stays
 unproven until it first runs on main and watch that run. The plan's
-[Working an item](../plans/ci-shell-to-code.md#working-an-item) covers the
+[Working an item](../plans/archive/ci-shell-to-code.md#working-an-item) covers the
 workflows that cannot be dispatched on a branch.
