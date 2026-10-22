@@ -22,7 +22,8 @@ snap-mode exposure state
 machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
 `CameraState`, `PercentCompleted`, mid-exposure `Error` — all of which report
 the **running** session and answer `NOT_CONNECTED` outside one), plus serial-derived
-identity and the `config.get`/`apply`/`schema` actions. A camera that leaves the
+identity and its setup pages (`/setup`, with the Cameras section that edits
+`usb_devices`, and a page per camera). A camera that leaves the
 bus while connected reads `Connected = false` once a call on it fails and a
 rescan no longer finds it; a reconnect finds it again by its serial once it is
 back (design doc C6). Phase E landed
@@ -108,6 +109,9 @@ also needs that directory on `PATH`, for the DLLs, and bindgen needs LLVM
 | `doctor --devices` | List the ASI cameras on the bus by USB port and print the `usb_devices` block to paste. Opens nothing. |
 
 ## Configuration
+
+Edit it on the service's own setup page, `http://<host>:11122/setup`
+(design doc "Setup pages"), or in the file:
 
 ```jsonc
 {

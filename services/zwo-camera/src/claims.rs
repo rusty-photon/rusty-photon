@@ -10,16 +10,18 @@
 //! shared with the other camera drivers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
     self, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
-use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
+use rusty_photon_doctor_checks::UsbScan;
+use rusty_photon_driver::claims::{BusCamera, Placeholder, PlaceholderCamera, ScanCameras};
 use zwo_rs::CameraInfo;
 
 use crate::config::{Config, UsbDeviceEntry};
-use crate::config_actions::ZwoCameraDriver;
+use crate::setup::ZwoCameraDriver;
 
 /// The service name: the config file's stem and the placeholder `UniqueID`'s
 /// middle field.
@@ -145,6 +147,33 @@ fn simulated_inventory() -> rusty_photon_doctor_checks::UsbScan {
             .collect(),
         faults: Vec::new(),
     }
+}
+
+/// The rows the setup pages' Cameras section shows from `scan`: every
+/// `03c3` record the normalizer can count as a camera, named by its product
+/// string, else `03c3:<pid>` (*Setup pages*).
+#[must_use]
+pub fn bus_cameras(scan: &UsbScan) -> Vec<BusCamera> {
+    NORMALIZER
+        .camera_records(scan)
+        .into_iter()
+        .filter_map(|record| {
+            Some(BusCamera {
+                port: record.port.clone()?,
+                label: record
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| format!("{}:{}", record.vendor, record.product)),
+            })
+        })
+        .collect()
+}
+
+/// The scan the Cameras section runs for each server page: `source`'s, the
+/// one a start takes (U1), so nothing is opened.
+#[must_use]
+pub fn scan_cameras(source: UsbSource) -> ScanCameras {
+    Arc::new(move || source.scan().map(|scan| bus_cameras(&scan)))
 }
 
 /// The placeholder that holds `entry`'s number for `reason` (U4).

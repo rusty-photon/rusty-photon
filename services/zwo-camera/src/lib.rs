@@ -62,9 +62,9 @@ pub mod backend;
 mod camera;
 pub mod claims;
 mod config;
-mod config_actions;
 pub mod doctor;
 mod error;
+mod setup;
 
 pub use camera::ZwoCamera;
 pub use claims::UsbSource;
@@ -72,9 +72,9 @@ pub use config::{
     load_effective_config, read_effective_config, AlpacaServerConfig, CliOverrides, Config,
     DeviceOverride, UsbDeviceEntry, DEFAULT_PORT,
 };
-pub use config_actions::ZwoCameraDriver;
 pub use error::ZwoCameraError;
 pub use rusty_photon_driver::claims::{serve_and_rebuild, Ended};
+pub use setup::ZwoCameraDriver;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -85,9 +85,9 @@ use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
 use rusty_photon_doctor_checks::UsbScan;
-use rusty_photon_driver::claims::Rescan;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served};
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
@@ -123,6 +123,9 @@ pub struct ServerBuilder {
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
+    /// The setup pages, set by [`Self::build`] when there is a config
+    /// source and a reload path.
+    pages: Option<Pages>,
     /// Test-only: the file whose existence takes the simulated camera off
     /// the bus (C6). See [`Self::with_departure_file`].
     #[cfg(feature = "simulation")]
@@ -147,8 +150,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the config source (persist path + CLI overrides) for the config
-    /// actions. Together with [`Self::with_reload_signal`], enables editing.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], serves them.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
@@ -156,7 +159,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response flushes.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -246,7 +250,7 @@ impl ServerBuilder {
     /// camera that cannot be opened for its serial costs only itself (U5,
     /// U10), and a failed USB scan is not an error: it registers placeholders,
     /// or no camera without a list, and is retried (U6, U10).
-    pub async fn build(self) -> Result<BoundServer, ZwoCameraError> {
+    pub async fn build(mut self) -> Result<BoundServer, ZwoCameraError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
         // each entry's position its number — and a config built in code
@@ -254,10 +258,16 @@ impl ServerBuilder {
         self.config.check_list().map_err(ZwoCameraError::Config)?;
         let mut server = Server::new(CargoServerInfo!());
         let held = HeldCameras::default();
+        self.pages = self.setup_pages();
         let registered = match &self.config.usb_devices {
             None => self.register_enumerated(&mut server, &held).await?,
             Some(list) => self.register_list(&mut server, &held, list).await?,
         };
+        if let Some(pages) = &self.pages {
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                &pages.setup,
+            ))));
+        }
 
         // Use the shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like
         // every other Alpaca service. SO_REUSEADDR matters here because the
@@ -352,28 +362,31 @@ impl ServerBuilder {
                 return Ok(registered);
             }
         };
+        let seen = seen_ports(&scan);
         let sdk = zwo_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
         let sdk = self.simulated(sdk);
         let force_empty = self.force_empty;
         let placed = tokio::task::spawn_blocking(move || place_enumerated(&sdk, scan, force_empty))
             .await??;
+        self.record_placed(served_cameras(&placed.cameras), Some(seen));
 
         for note in &placed.unplaced {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
         for (port, outcome) in &placed.cameras {
             match outcome {
-                // `devices` overrides are keyed by the bare SDK serial (matching
-                // the config-actions `devices.{serial}` paths), NOT the prefixed
-                // `ZWO:{name}:{serial}` UniqueID — looking up by UniqueID would
-                // never match a user's serial-keyed entry.
+                // `devices` overrides are keyed by the bare SDK serial (the key
+                // a camera's setup page writes its override under), NOT the
+                // prefixed `ZWO:{name}:{serial}` UniqueID — looking up by
+                // UniqueID would never match a user's serial-keyed entry.
                 Ok(cam) => {
                     debug!(
                         camera = cam.index,
                         port, "an ASI camera is placed on a port"
                     );
-                    self.register_camera(server, held, cam, self.config.devices.get(&cam.serial))?;
+                    let overrides = self.config.devices.get(&cam.serial);
+                    self.register_camera(server, held, cam, port, overrides, false)?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(error) => warn!(
@@ -426,6 +439,7 @@ impl ServerBuilder {
                  succeeds"
             );
         }
+        let seen = scan.as_ref().ok().map(seen_ports);
         let mut entries = list.to_vec();
         entries.sort_by_key(|e| e.device_number);
         let sdk = zwo_rs::Sdk::new()?;
@@ -435,6 +449,7 @@ impl ServerBuilder {
         let placed =
             tokio::task::spawn_blocking(move || place_list(&sdk, scan, entries, force_empty))
                 .await??;
+        self.record_placed(placed.placed.clone(), seen);
 
         let mut registered = Registered::default();
         for (entry, outcome) in &placed.entries {
@@ -445,7 +460,14 @@ impl ServerBuilder {
                         port = %entry.usb_port,
                         "a listed port holds an ASI camera"
                     );
-                    self.register_camera(server, held, cam, Some(&DeviceOverride::from(entry)))?;
+                    self.register_camera(
+                        server,
+                        held,
+                        cam,
+                        &entry.usb_port,
+                        Some(&DeviceOverride::from(entry)),
+                        true,
+                    )?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(reason) => {
@@ -456,8 +478,16 @@ impl ServerBuilder {
                         "a listed number is held by a placeholder"
                     );
                     let mut placeholder = claims::placeholder(entry, reason.clone());
-                    if let Some(ctx) = self.config_actions() {
-                        placeholder = placeholder.with_config_actions(ctx);
+                    if let Some(pages) = &self.pages {
+                        let number = pages.claims.register(
+                            placeholder.static_name(),
+                            Served::Placeholder {
+                                port: entry.usb_port.clone(),
+                                reason: reason.clone(),
+                            },
+                        );
+                        placeholder =
+                            placeholder.with_setup_pages(Arc::clone(&pages.setup), number);
                     }
                     server.devices.register(placeholder);
                     registered.placeholders = registered.placeholders.saturating_add(1);
@@ -476,13 +506,16 @@ impl ServerBuilder {
         Ok(registered)
     }
 
-    /// Register one enumerated camera with its display overrides.
+    /// Register one enumerated camera, placed on `port`, with its display
+    /// overrides; `listed` when a `usb_devices` entry lists it.
     fn register_camera(
         &self,
         server: &mut Server,
         held: &HeldCameras,
         cam: &EnumeratedCamera,
+        port: &str,
         overrides: Option<&DeviceOverride>,
+        listed: bool,
     ) -> Result<(), ZwoCameraError> {
         let sdk = zwo_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
@@ -496,24 +529,57 @@ impl ServerBuilder {
             Arc::clone(held),
         ));
         let mut device = ZwoCamera::new(handle, overrides, self.config.max_adu_reporting);
-        if let Some(ctx) = self.config_actions() {
-            device = device.with_config_actions(ctx);
+        if let Some(pages) = &self.pages {
+            let number = pages.claims.register(
+                device.static_name(),
+                Served::Camera {
+                    port: port.to_string(),
+                    model: cam.info.name.clone(),
+                    unique_id: device.unique_id().to_string(),
+                    override_key: cam.serial.clone(),
+                    listed,
+                },
+            );
+            device = device.with_setup_pages(Arc::clone(&pages.setup), number);
         }
         debug!(sdk_index = cam.index, name = %device.static_name(), "registering ASI camera");
         server.devices.register(device);
         Ok(())
     }
 
-    /// The config-action context every registered device carries, when the
-    /// builder has a config source and a reload path.
-    fn config_actions(&self) -> Option<ConfigActionCtx<ZwoCameraDriver>> {
+    /// The setup pages this build serves, when the builder has a config
+    /// source and a reload path: the shared handler, saving to the file and
+    /// rendering what this build runs, and the camera drivers' own part of
+    /// the pages, which registration fills.
+    fn setup_pages(&self) -> Option<Pages> {
         let (path, reload) = (self.config_path.clone()?, self.reload.clone()?);
-        Some(ConfigActionCtx {
-            effective: self.config.clone(),
+        let claims = Arc::new(ClaimsPages::new(
+            claims::SDK_NAME,
+            claims::scan_cameras(self.usb_source()),
+            rusty_photon_doctor_checks::claims::compare_ports,
+        ));
+        let setup = SetupPages::<ZwoCameraDriver>::new(
+            claims::SERVICE,
+            self.config.clone(),
             path,
-            overrides: self.overrides.clone(),
-            reload,
+            self.overrides.clone(),
+        )
+        .with_reload(reload)
+        .with_https(self.config.server.tls.is_some())
+        .with_driver_pages(Arc::<ClaimsPages>::clone(&claims));
+        Some(Pages {
+            setup: Arc::new(setup),
+            claims,
         })
+    }
+
+    /// Tell the pages the cameras the join `placed`, in port order, and the
+    /// ports the scan `seen` records on. A failed scan (`seen` is `None`)
+    /// tells nothing.
+    fn record_placed(&self, placed: Vec<PlacedCamera>, seen: Option<Vec<String>>) {
+        if let (Some(pages), Some(seen)) = (&self.pages, seen) {
+            pages.claims.placed(placed, seen);
+        }
     }
 
     /// The background re-scan after a failed USB scan (U6): each try takes
@@ -536,6 +602,23 @@ impl ServerBuilder {
     }
 }
 
+/// Every port `scan` holds a record on that can be an ASI camera, placed or
+/// not.
+fn seen_ports(scan: &UsbScan) -> Vec<String> {
+    claims::bus_cameras(scan)
+        .into_iter()
+        .map(|c| c.port)
+        .collect()
+}
+
+/// The setup pages one build serves: the shared handler, and the camera
+/// drivers' own part of them, which registration fills.
+#[derive(Clone)]
+struct Pages {
+    setup: Arc<SetupPages<ZwoCameraDriver>>,
+    claims: Arc<ClaimsPages>,
+}
+
 /// What a build registered: the cameras it serves, the placeholders holding
 /// listed numbers, and the re-scan to run when the USB scan failed.
 #[derive(Default)]
@@ -552,6 +635,10 @@ struct PlacedList {
     entries: Vec<(UsbDeviceEntry, Result<EnumeratedCamera, String>)>,
     /// The SDK cameras placed on ports no entry lists, with their ports.
     unlisted: Vec<(usize, String)>,
+    /// Every camera the join placed, listed or not, in port order, with the
+    /// key its override is read under when it was opened: a listed
+    /// camera's, whose open succeeded. An unlisted one is never opened.
+    placed: Vec<PlacedCamera>,
     /// The USB scan could not run.
     scan_failed: bool,
 }
@@ -579,11 +666,33 @@ fn place_list(
         .filter(|(_, port)| !resolved.iter().any(|(e, _)| e.usb_port == *port))
         .map(|(index, port)| (index, port.to_string()))
         .collect();
+    let placed = placed_cameras(&claims, &resolved);
     Ok(PlacedList {
         unlisted,
+        placed,
         scan_failed: claims.scan_error().is_some(),
         entries: resolved,
     })
+}
+
+/// Every camera the join placed, in port order, with the key its override
+/// is read under where an open read it: a listed camera's, from `resolved`.
+fn placed_cameras(
+    claims: &Claims<'_>,
+    resolved: &[(UsbDeviceEntry, Result<EnumeratedCamera, String>)],
+) -> Vec<PlacedCamera> {
+    claims
+        .placed()
+        .into_iter()
+        .map(|(_, port)| PlacedCamera {
+            port: port.to_string(),
+            override_key: resolved
+                .iter()
+                .find(|(entry, _)| entry.usb_port == port)
+                .and_then(|(_, outcome)| outcome.as_ref().ok())
+                .map(|cam| cam.serial.clone()),
+        })
+        .collect()
 }
 
 /// Enumerate the SDK on `camera_list` and join what it reports with `scan`:
@@ -671,6 +780,21 @@ fn place_enumerated(
         cameras,
         unplaced: claims.unplaced_notes(),
     })
+}
+
+/// What the no-list default numbers, in port order: each placed camera
+/// whose open read its serial. One whose open failed is served nowhere, so
+/// the pages take it as the join's unplaced (*Setup pages*).
+fn served_cameras(cameras: &[(String, Result<EnumeratedCamera, String>)]) -> Vec<PlacedCamera> {
+    cameras
+        .iter()
+        .filter_map(|(port, outcome)| {
+            outcome.as_ref().ok().map(|cam| PlacedCamera {
+                port: port.clone(),
+                override_key: Some(cam.serial.clone()),
+            })
+        })
+        .collect()
 }
 
 /// Each camera the join placed, in port order, opened through `open` for its
@@ -927,6 +1051,68 @@ mod list_tests {
         let (listed, outcome) = &resolved[0];
         assert_eq!(listed.usb_port, "p2");
         assert_eq!(outcome.as_ref().unwrap().index, 1);
+    }
+
+    #[test]
+    fn the_placed_cameras_carry_a_key_only_where_an_open_read_it() {
+        let (claims, infos) = two_cameras();
+        // p1's camera is unlisted, so never opened; p2's is listed, and its
+        // open fails; p9 holds nothing.
+        let resolved = resolve_list(
+            &claims,
+            &infos,
+            vec![entry(0, "p2"), entry(1, "p9")],
+            |_, _, _| Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError)),
+        );
+        let placed = placed_cameras(&claims, &resolved);
+        assert_eq!(
+            placed,
+            vec![
+                PlacedCamera {
+                    port: "p1".to_string(),
+                    override_key: None,
+                },
+                PlacedCamera {
+                    port: "p2".to_string(),
+                    override_key: None,
+                },
+            ]
+        );
+        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p2")], |index, info, _| {
+            Ok(opened_as(index, info))
+        });
+        assert_eq!(
+            placed_cameras(&claims, &resolved),
+            vec![
+                PlacedCamera {
+                    port: "p1".to_string(),
+                    override_key: None,
+                },
+                PlacedCamera {
+                    port: "p2".to_string(),
+                    override_key: Some("serial-1".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_list_only_a_camera_whose_open_read_its_serial_is_numbered() {
+        let (claims, infos) = two_cameras();
+        let cameras = open_placed(&claims, &infos, |index, info, _| {
+            if index == 0 {
+                Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError))
+            } else {
+                Ok(opened_as(index, info))
+            }
+        });
+        assert_eq!(
+            served_cameras(&cameras),
+            vec![PlacedCamera {
+                port: "p2".to_string(),
+                override_key: Some("serial-1".to_string()),
+            }]
+        );
     }
 
     #[test]

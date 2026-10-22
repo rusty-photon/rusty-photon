@@ -90,8 +90,9 @@ impl Served {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacedCamera {
     pub port: String,
-    /// The key its `devices` override is read under.
-    pub override_key: String,
+    /// The key its `devices` override is read under; `None` when the driver
+    /// learns it only by opening the camera, and this one was not opened.
+    pub override_key: Option<String>,
 }
 
 /// The scan the server page runs. It blocks, so it runs on the blocking
@@ -398,13 +399,13 @@ impl CamerasSection {
     }
 
     /// The key the camera the join placed on `port` reads its override
-    /// under.
+    /// under, when the driver knows it.
     fn placed_key(&self, port: &str) -> Option<&str> {
         self.registry
             .placed
             .iter()
             .find(|p| p.port == port)
-            .map(|p| p.override_key.as_str())
+            .and_then(|p| p.override_key.as_deref())
     }
 
     /// The port of the placed camera whose override key is `key`.
@@ -412,7 +413,7 @@ impl CamerasSection {
         self.registry
             .placed
             .iter()
-            .find(|p| p.override_key == key)
+            .find(|p| p.override_key.as_deref() == Some(key))
             .map(|p| p.port.as_str())
     }
 
@@ -1173,7 +1174,7 @@ mod tests {
     fn placed(port: &str, key: &str) -> PlacedCamera {
         PlacedCamera {
             port: port.to_string(),
-            override_key: key.to_string(),
+            override_key: Some(key.to_string()),
         }
     }
 
@@ -1586,6 +1587,35 @@ mod tests {
             .markup
             .into_string()
             .contains(r#"li class="dropped" data-port="a:9""#));
+    }
+
+    #[test]
+    fn leaving_a_list_drops_the_names_of_a_camera_whose_key_was_never_read() {
+        // The join placed a camera on a:3 too, but its open failed, so a
+        // placeholder holds its number and the driver never read its key.
+        let mut s = section(vec![
+            ("Main", camera("a:1", "K1", true)),
+            ("Three", placeholder("a:3")),
+        ]);
+        s.registry.placed[1].override_key = None;
+        let mut config = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:1", "name": "Main" },
+            { "device_number": 1, "usb_port": "a:3", "name": "Three" }
+        ]});
+        let before = config.clone();
+        let submitted = rows_form(
+            AUTO,
+            &[
+                ("a:1", true, "Main"),
+                ("a:2", false, ""),
+                ("a:3", true, "Three"),
+            ],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        assert_eq!(config, json!({ "devices": { "K1": { "name": "Main" } } }));
+        // Its port still numbers in port order: nothing moves.
+        let confirmation = s.confirmation(&before, &config).expect("dropped names");
+        assert_eq!(confirmation.token, "drop a:3");
     }
 
     #[test]

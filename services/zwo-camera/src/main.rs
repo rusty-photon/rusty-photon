@@ -185,7 +185,7 @@ fn main() -> ServiceResult {
         .map_err(zwo_camera::ZwoCameraError::UsbInventory)?;
     debug!(config = ?config_path, "starting zwo-camera");
 
-    // `config.apply` triggers an in-process reload: the loop re-reads the
+    // A setup-page save triggers an in-process reload: the loop re-reads the
     // effective config, re-enumerates, and rebuilds the server. A failed USB
     // scan's re-scan rebuilds it from the configuration it serves (U6).
     ServiceRunner::new("zwo-camera")

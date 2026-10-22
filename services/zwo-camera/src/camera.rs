@@ -43,8 +43,10 @@ use crate::backend::{
     BackendError, BackendResult, CameraHandle, CaptureRequest, SessionState, StopSignal,
 };
 use crate::config::{DeviceOverride, MaxAduReporting};
-use crate::config_actions::ZwoCameraDriver;
-use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
+use crate::setup::ZwoCameraDriver;
+use ascom_alpaca::{SetupRequest, SetupResponse};
+use rusty_photon_driver::{connected_transition, ConnectedTransition};
+use rusty_photon_setup::SetupPages;
 
 /// `DriverInfo`, which a placeholder at a listed number answers too (U4).
 pub const DRIVER_INFO: &str = "rusty-photon zwo-camera";
@@ -350,8 +352,9 @@ pub struct ZwoCamera {
     /// Which `MaxADU` contract to present (ST3). Service-wide, so it arrives
     /// here rather than through the per-serial `DeviceOverride`.
     max_adu_reporting: MaxAduReporting,
+    /// The setup pages, and the device number its page is served at.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<ZwoCameraDriver>>,
+    pages: Option<(Arc<SetupPages<ZwoCameraDriver>>, u32)>,
 }
 
 impl ZwoCamera {
@@ -385,14 +388,19 @@ impl ZwoCamera {
             description,
             state: Arc::new(DeviceState::new()),
             max_adu_reporting,
-            config_ctx: None,
+            pages: None,
         }
     }
 
-    /// Attach config-action wiring (enables `config.get`/`apply`/`schema`).
+    /// Serve its setup page, `/setup/v1/camera/<number>/setup`, through the
+    /// shared pages.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<ZwoCameraDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<ZwoCameraDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
         self
     }
 
@@ -1160,12 +1168,38 @@ impl Device for ZwoCamera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<ZwoCameraDriver>(&self.config_ctx, action, parameters).await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The camera's setup page, through the shared handler. A camera built
+    /// without the pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some((pages, number)) => {
+                rusty_photon_driver::device_setup_request(pages, "camera", *number, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
