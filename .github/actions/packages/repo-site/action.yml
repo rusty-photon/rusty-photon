@@ -1,0 +1,28 @@
+name: Render and verify the package repositories
+description: >-
+  nightly-packages.yml's repo job: renders the apt and dnf repositories of
+  pkg.rustyphoton.space from the Linux legs' packages and signs them, then
+  installs from them in podman as a client holding only the public key
+  would. The logic is ../repo.mjs's and ../verify-repo.mjs's.
+inputs:
+  dist:
+    description: The directory holding the debs and rpms.
+    required: true
+  site:
+    description: Where the site is rendered.
+    required: false
+    default: site
+  signing-key:
+    description: The armored private key that signs the repositories.
+    required: true
+  pubkey:
+    description: The public key clients are given, which must be the signing key's.
+    required: false
+    default: packaging/gpg/pubkey.asc
+  service:
+    description: The service the verification installs.
+    required: false
+    default: sentinel
+runs:
+  using: node24
+  main: index.mjs

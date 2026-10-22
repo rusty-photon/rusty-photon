@@ -7,8 +7,9 @@ bucket via R2's custom-domain public-bucket feature. Unlike
 [../bazel-cache-worker](../bazel-cache-worker/README.md) there is **no
 Worker** — and therefore no `wrangler.toml` here, nothing deploys: the
 bucket needs no eviction or touch logic because the tree is small and
-fully replaced every night by `scripts/push-packages-repo.sh` (see its
-header for the client-safe upload/flip/delete ordering). Setup is the
+fully replaced every night by the nightly's `packages/push-repo` action
+(see `.github/actions/packages/r2.mjs`'s header for the client-safe
+upload/flip/delete ordering). Setup is the
 handful of one-time commands below.
 
 ## Layout (what the bucket serves)
@@ -17,7 +18,7 @@ handful of one-time commands below.
 pkg.rustyphoton.space/
   pubkey.asc          # repo signing key, public half —
                       # byte-for-byte packaging/gpg/pubkey.asc
-  manifest.txt        # every live object key; push-packages-repo.sh reads it
+  manifest.txt        # every live object key; the publisher reads it
                       # to find stale objects (never lists the bucket, so the
                       # sweep can only touch keys the publisher itself wrote)
   manifest-prev.txt   # the previous publish's tree, retained one extra
@@ -33,7 +34,7 @@ pkg.rustyphoton.space/
 The bucket holds the current generation plus the previous one —
 unique-name objects live exactly two publishes, the grace window that
 makes a mid-publish `apt update`/`dnf makecache` safe;
-`push-packages-repo.sh`'s header documents the full ordering.
+`.github/actions/packages/r2.mjs`'s header documents the full ordering.
 
 Client setup lives in
 [docs/packaging.md](../../docs/packaging.md#nightly-channel).
@@ -95,7 +96,7 @@ gh secret set PACKAGES_GPG_PRIVATE_KEY < private.asc
 ## Caching
 
 Every object is uploaded with `Cache-Control: no-store`
-(`push-packages-repo.sh`), so Cloudflare's edge never serves a stale
+(`.github/actions/packages/r2.mjs`), so Cloudflare's edge never serves a stale
 mix — a cached `Packages.gz` outliving a flipped `InRelease` would be a
 client hash-mismatch. Reads always origin-pull from R2: egress is free,
 and this channel's traffic is a handful of rigs. Do **not** add cache

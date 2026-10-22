@@ -195,7 +195,7 @@ parsers, which its comments name.
 | `maskUrl` | Mask a URL that is the operator's own, such as the LAN cache's: the URL, its host and its hostname. Returns it without trailing slashes; one that does not parse throws without showing it. |
 | `requestFailure` | Why a request failed, without the address it went to: the HTTP status, or the error codes along its causes. `fetch`'s own messages name the address it connected to, which no mask of a host name covers. |
 | `command` | Runs a program with its arguments, never through a shell, and resolves to what it prints. An exit other than 0 rejects with the last line of its stderr, and a program that cannot start with its spawn error (`ENOENT`). |
-| `execute` | Runs a program as the `run:` step it replaces would have: never through a shell, with no stdin, with the environment without the runner's variables unless given another, and its output copied to the log as it comes (stdout left out with `echo: false`). Resolves to what it printed on stdout and rejects as `command` does; when its `signal` aborts, the program is sent SIGTERM and it rejects with an AbortError. |
+| `execute` | Runs a program as the `run:` step it replaces would have: never through a shell, with no stdin, in the directory `cwd` names or the action's own, with the environment without the runner's variables unless given another, and its output copied to the log as it comes (stdout left out with `echo: false`). Resolves to what it printed on stdout and rejects as `command` does; when its `signal` aborts, the program is sent SIGTERM and it rejects with an AbortError. |
 | `withoutRunnerVariables` | An environment without the variables the runner gives a JavaScript action and not a `run:` step, `ACTIONS_*` and `INPUT_*`, for a program the action starts (below). |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `parseRetryAfter` | The wait a Retry-After header asks for, in ms: its seconds, or its HTTP date measured against the server's clock. For a request made without `fetchWithRetry`, as `lib/install.mjs`'s download is. |
@@ -507,8 +507,10 @@ stream's log as a group.
   diff-cover and the coverage scripts' poster so, `cargo-workspace` runs
   Cargo and cargo-msrv so, `conformu-run` runs each service's `cargo
   test` so, `beta-clippy` runs clippy and the census script so,
-  `install-astap`'s smoke test runs ASTAP so, and `install-conformu`
-  runs ConformU's Windows installer and each install's `--version` so. A
+  `install-astap`'s smoke test runs ASTAP so, `install-conformu`
+  runs ConformU's Windows installer and each install's `--version` so,
+  and `packages/repo-site` runs dpkg-scanpackages, apt-ftparchive,
+  createrepo_c, gpg and podman so. A
   JavaScript action gets `ACTIONS_RUNTIME_TOKEN`, which can write the
   repository's caches, and a `run:` step does not (actions/runner,
   `NodeScriptActionHandler.cs`). Its job also runs with `contents: read`
@@ -588,6 +590,12 @@ and says nothing).
 - **Tests run against a fake API** (`serve`) that answers in the shapes
   the real one gives; record a real answer to each read with
   `gh api` and take the writes' from GitHub's REST docs.
+- **Another service's API** has its own client beside the action:
+  `packages/r2.mjs` puts, reads and deletes objects through R2's S3 API,
+  signing each request with Signature Version 4 on `node:crypto`, as the
+  bucket-scoped token R2 gives the nightly can only use that API. Its tests
+  check the signature against the SigV4 test suite's and against the one
+  the aws CLI gave an upload, and publish against a fake bucket.
 
 ### Proving it
 

@@ -47,9 +47,8 @@
 # `cargo ci build-msi` + `cargo ci verify-msi` (shared with msi.yml and
 # release.yml), `cargo ci build-tarballs` + `cargo ci verify-brew` +
 # `cargo ci brew-formulas` (shared with release.yml's stable Homebrew
-# channel), and scripts/build-apt-repo.sh +
-# scripts/build-yum-repo.sh + scripts/verify-packages-repo.sh +
-# scripts/push-packages-repo.sh (the package-repo channel).
+# channel), and the packages/repo-site and packages/push-repo actions (the
+# package-repo channel).
 permissions:
   contents: read
 
@@ -244,20 +243,17 @@ jobs:
           pattern: packages-*
           path: pkgs
           merge-multiple: true
-      - name: Render the apt repository tree
-        env:
-          PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
-        run: scripts/build-apt-repo.sh --dist pkgs --site site
-      - name: Render the dnf repository trees
-        env:
-          PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
-        run: scripts/build-yum-repo.sh --dist pkgs --site site
-      # The consumer proof the manual curl-and-install path never gives:
-      # podman clients holding only the PUBLIC key add the repo exactly as
-      # docs/packaging.md documents and install through the real resolvers
-      # (signature checked; both arches covered per flavor).
-      - name: Verify as a repo consumer (apt + dnf)
-        run: scripts/verify-packages-repo.sh --site site
+      # Rendered and signed, then the consumer proof the manual
+      # curl-and-install path never gives: podman clients holding only the
+      # PUBLIC key add the repo exactly as docs/packaging.md documents and
+      # install through the real resolvers (signature checked; both arches
+      # covered per flavor).
+      - name: Render, sign and verify the apt and dnf repositories
+        uses: ./.github/actions/packages/repo-site
+        with:
+          dist: pkgs
+          site: site
+          signing-key: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
       - name: Upload the repo site tree
         uses: actions/upload-artifact@v7
         with:
@@ -364,16 +360,16 @@ jobs:
       # Last of the channels: the release assets and tap are already live,
       # and the repo tree was consumer-verified in the repo job. The push
       # ordering (content, then the metadata flip, then stale deletes) is
-      # what keeps a client mid-`apt update` safe — see the script header.
-      # aws CLI (preinstalled on ubuntu runners) against R2's S3 endpoint:
-      # the S3 API is the only one a bucket-scoped Object Read & Write
-      # token can authenticate — see the script header.
+      # what keeps a client mid-`apt update` safe — see r2.mjs's header.
+      # R2's S3 API, the only one a bucket-scoped Object Read & Write token
+      # can authenticate against, likewise.
       - name: Push the apt/dnf repos to R2 (pkg.rustyphoton.space)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.PACKAGES_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.PACKAGES_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: scripts/push-packages-repo.sh --site site
+        uses: ./.github/actions/packages/push-repo
+        with:
+          site: site
+          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          access-key-id: ${{ secrets.PACKAGES_R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.PACKAGES_R2_SECRET_ACCESS_KEY }}
 
   notify-on-failure:
     # Tracking issue so a broken nightly channel surfaces without anyone

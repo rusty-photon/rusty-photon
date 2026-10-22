@@ -101,7 +101,7 @@ first in their columns.
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Done (#1585) |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
-| J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
+| J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Done (#1607): the repositories rendered, verified and pushed by `packages` actions |
 | J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Done (#1581) |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` and bazel.yml's `bazel clippy` step | F2, R1 | Done (#1582): removed, and its pin checks became a test |
@@ -940,6 +940,55 @@ proves them. `push-packages-repo.sh` runs only in `publish`, so it falls
 under the publishing rule: tests against a fake store first, then a
 watched nightly. `tools/rusty-photon-packages-r2/README.md` points to the
 push script's header for the upload order, and changes with it.
+
+Done in #1607, in one PR by the owner's choice on 2026-10-22. The repo job
+runs `packages/repo-site` (`repo.mjs`, `verify-repo.mjs`), which renders
+and signs both repositories and installs from them as a client, and the
+publish job `packages/push-repo` (`r2.mjs`). The upload order is
+`r2.mjs`'s header now, which the bucket's README points to. They differ
+from the scripts in seven ways:
+
+- the repo job's three steps are one, which imports the signing key once;
+- `Release` no longer lists itself. The script wrote apt-ftparchive's
+  output into the directory it listed, so its `Release`, the published
+  one included, lists a 177-byte part of itself, which apt never fetches;
+- `Packages.gz` is compressed by Node's zlib at level 9, where the script
+  ran GNU gzip, so its bytes, and its by-hash names, differ; apt reads
+  either;
+- the verifier serves the site with Node's own server, which answers
+  files and nothing else, where python's `http.server` also listed
+  directories, which no client reads. It runs each client command with
+  `podman exec` in a container it starts and removes however the check
+  ends, where the script ran a shell script it wrote; the service is an
+  input passed as an argument, so the script's check that its name could
+  sit in shell text is gone;
+- the push signs R2's S3 requests itself, with Signature Version 4 on
+  `node:crypto`, where the script ran the aws CLI. Its tests check the
+  signature against the SigV4 test suite's and against the one the aws CLI
+  gives an object upload;
+- every request that may pass on a second try is retried, uploads and
+  deletes included, where the script retried only its reads of the
+  manifests. A missing bucket fails the run, as it did in the script,
+  which took only a NoSuchKey answer as a missing manifest;
+- a stale object whose delete fails stays in `manifest.txt`, so that the
+  next run deletes it, where the script left it out and so orphaned it.
+
+The tests run the rendering against fake `dpkg-scanpackages`,
+`apt-ftparchive`, `createrepo_c` and `gpg`, the verification against a
+fake podman and the real loopback server, and the push against a fake
+bucket and a store in memory: the order of every publish, the generation
+kept, a failed delete, an unreadable manifest. On a Fedora dev box, in a
+Debian container, the scripts and the actions rendered sites from one set
+of the nightly's packages whose files, debs, rpms, `Packages` and
+`Release` fields are the same, those two differences aside, and the
+verification installed from the actions' site through podman. Against an
+S3 server (versitygw), the script and the action published three
+generations each into buckets that ended identical, with the same uploads
+in the same order and the same six deletes, and a missing bucket failed
+the action before it uploaded anything. A `dry_run=true` dispatch proves
+the rendering and the verification on a hosted runner. The push runs only
+when a nightly publishes, so the first scheduled nightly after the merge
+is watched.
 
 ### J14 — Crates from the LAN bazel-remote
 
