@@ -107,6 +107,26 @@ node_test(
     ],
 )
 
+# packages: nightly-packages.yml's plan (the nightly tag, the version) and the
+# msi job's fetch of the nightly's MSI. The tests answer the GitHub API from a
+# fake, which redirects an asset's download to a fake storage server.
+node_test(
+    name = "packages_test",
+    size = "small",
+    srcs = [
+        "packages/plan.test.mjs",
+        "packages/prior.test.mjs",
+    ],
+    data = [
+        "lib/github.mjs",
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+        "packages/plan.mjs",
+        "packages/prior.mjs",
+    ],
+)
+
 # shellcheck: shellcheck.yml's pinned shellcheck and its lint of tools/ci. The
 # tests serve a release archive from loopback, made by GNU tar and xz, which
 # each OS leg unpacks with its own tar.

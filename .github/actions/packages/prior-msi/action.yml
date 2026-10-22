@@ -1,0 +1,18 @@
+name: Fetch the nightly's MSI
+description: >-
+  nightly-packages.yml's msi job: downloads the MSI the nightly release
+  carries now, checked against the SHA-256 GitHub gives for it, for the
+  verifier to install first and upgrade over. Sets no path when the channel
+  has no MSI yet; a failed read or download fails the step. The logic is
+  ../prior.mjs's.
+inputs:
+  token:
+    description: A token that can read the repository's releases.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  path:
+    description: The downloaded MSI's absolute path; not set when the nightly release has no MSI.
+runs:
+  using: node24
+  main: index.mjs

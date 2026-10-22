@@ -1,7 +1,7 @@
 // The GitHub REST API, for the actions that call it (tracking-issue,
 // refresh-astap, uncovered-diff-lines, install-conformu, beta-clippy,
-// commit-repin): the run's context, a request that says what failed with
-// GitHub's own answer, the open issues with a label, and an issue that a
+// commit-repin, packages): the run's context, a request that says what failed
+// with GitHub's own answer, the open issues with a label, and an issue that a
 // failure comments on or opens. Conventions: docs/skills/ci-logic.md.
 
 import { HttpError, fetchWithRetry, io } from './helpers.mjs';

@@ -1,0 +1,25 @@
+name: Plan the nightly packages
+description: >-
+  nightly-packages.yml's plan job: whether the nightly tag already names the
+  checked-out commit, and if not, the version every package leg stamps on
+  it. The logic is ../plan.mjs's.
+inputs:
+  token:
+    description: A token that can read the repository's tags.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  skip:
+    description: true when the nightly tag already names the checked-out commit, and false otherwise.
+  sha:
+    description: The checked-out commit.
+  date:
+    description: The nightly's UTC date, YYYYMMDD; not set on a skip.
+  nightly_version:
+    description: >-
+      The nightly's version, <base>+nightly.<YYYYMMDDHHMM>.g<sha>, which the
+      Debian packages, the MSI's file name and the macOS tarballs carry; not
+      set on a skip.
+runs:
+  using: node24
+  main: index.mjs

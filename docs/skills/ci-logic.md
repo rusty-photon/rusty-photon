@@ -516,16 +516,17 @@ write credential.
 ### An action that calls the GitHub API
 
 `lib/github.mjs` holds what `tracking-issue`, `refresh-astap`,
-`uncovered-diff-lines`, `install-conformu`, `beta-clippy` and
-`commit-repin` share: `runContext` (the API, the repository and the
-run's link from the runner's variables), `github` (a request that
-names what failed and carries GitHub's own answer, a POST or PATCH sent
-once; with `missing`, a 404 is no error; with `accept`, the answer in
-another media type, such as a pull request's diff), `openIssues` (every
-page, pull requests left out, a next page on another origin refused) and
-`commentOrOpen` (the open issue with a label and an exact title gets a
-comment, or one is opened; an issue opened without the label fails the
-step, since GitHub drops a label the repository lacks and says nothing).
+`uncovered-diff-lines`, `install-conformu`, `beta-clippy`,
+`commit-repin` and `packages` share: `runContext` (the API, the
+repository and the run's link from the runner's variables), `github` (a
+request that names what failed and carries GitHub's own answer, a POST
+or PATCH sent once; with `missing`, a 404 is no error; with `accept`,
+the answer in another media type, such as a pull request's diff),
+`openIssues` (every page, pull requests left out, a next page on another
+origin refused) and `commentOrOpen` (the open issue with a label and an
+exact title gets a comment, or one is opened; an issue opened without
+the label fails the step, since GitHub drops a label the repository
+lacks and says nothing).
 
 - **The token is an input** (`default: ${{ github.token }}`), and the
   job grants only what the action needs, beside `contents: read`. Without
