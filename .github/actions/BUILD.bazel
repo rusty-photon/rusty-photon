@@ -109,7 +109,8 @@ node_test(
 
 # packages: nightly-packages.yml's plan (the nightly tag, the version), the
 # msi job's fetch of the nightly's MSI, and the publish job's asset names and
-# sums, its tag and release, and its commit to the Homebrew tap. The tests
+# sums, its tag and release, and its commit to the Homebrew tap; and
+# release.yml's check of its tag and its commit to the tap. The tests
 # answer the GitHub API from a fake, which redirects an asset's download to a
 # fake storage server and takes uploads as GitHub's uploads host does.
 node_test(
@@ -120,6 +121,7 @@ node_test(
         "packages/plan.test.mjs",
         "packages/prior.test.mjs",
         "packages/publish.test.mjs",
+        "packages/release.test.mjs",
         "packages/tap.test.mjs",
     ],
     data = [
@@ -131,6 +133,7 @@ node_test(
         "packages/plan.mjs",
         "packages/prior.mjs",
         "packages/publish.mjs",
+        "packages/release.mjs",
         "packages/tap.mjs",
     ],
 )

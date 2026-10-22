@@ -97,7 +97,7 @@ first in their columns.
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
-| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | In progress: the nightly's plan and its MSI job's fetch (#1597), and its publish (#1598); release.yml next |
+| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Done (#1597, #1598, #1599): the nightly's plan, its MSI job's fetch and its publish, and release.yml's tag check and formula commit, as `packages` actions |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Done (#1585) |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
@@ -765,6 +765,19 @@ Done so far:
     `openIssues` now uses.
   - A dry run skips `publish`, so the tests against a fake API carry
     this, and the first nightly after merge is watched.
+- **release.yml** (#1599): the Windows job's tag check is the
+  `packages/release-version` action, and the formula commit is
+  `packages/tap` on its `stable` channel, where the job pushed from a
+  clone of the tap.
+  - The check compares exactly, where PowerShell's `-ne` ignored case,
+    and reads Cargo.toml as the packaging scripts' `sed` does, where
+    `Select-String` also ignored case; the two differ only for a
+    `Version = ` line in the first column, which Cargo.toml has none of.
+  - The stable channel replaces the `.rb` files directly in the tap's
+    Formula directory, where `find` would have gone into a subdirectory;
+    the tap has none.
+  - release.yml runs only on a `v*` tag, so the tests carry this, and the
+    next release is its first run: plan it for one someone is watching.
 
 ### J10 — Bazel remote-cache flags
 

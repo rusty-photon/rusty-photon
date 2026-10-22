@@ -1,0 +1,16 @@
+name: Check the release tag's version
+description: >-
+  release.yml's guard: fails unless the tag being released, its leading v
+  dropped, is the workspace version in the checkout's Cargo.toml, which the
+  packages are stamped with. The logic is ../release.mjs's.
+inputs:
+  tag:
+    description: The tag being released.
+    required: false
+    default: ${{ github.ref_name }}
+outputs:
+  version:
+    description: The version the tag names, without its v.
+runs:
+  using: node24
+  main: index.mjs
