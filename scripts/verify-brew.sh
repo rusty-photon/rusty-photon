@@ -82,6 +82,8 @@ esac
 [ "$(uname -m)" = arm64 ] || die "the formulas are arm64-only (Intel macOS is not a target)"
 [ -f packaging/postinst.common ] || die "run from the repo root"
 command -v brew > /dev/null 2>&1 || die "brew not found"
+# The formulas are rendered by the tools crate's brew-formulas.
+command -v cargo > /dev/null 2>&1 || die "cargo not found"
 
 # Non-interactive brew: no auto-update churn, no cleanup passes, no hints.
 HOMEBREW_NO_AUTO_UPDATE=1
@@ -268,11 +270,11 @@ fi
 mkdir -p "$PREFIX/var/log"
 
 if [ -n "$ONLY_SERVICES" ]; then
-    scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
+    cargo ci brew-formulas --channel "$CHANNEL" --version "$VERSION" \
         --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
         --output "$TAP_DIR/Formula" --services "$ONLY_SERVICES"
 else
-    scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
+    cargo ci brew-formulas --channel "$CHANNEL" --version "$VERSION" \
         --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
         --output "$TAP_DIR/Formula"
 fi

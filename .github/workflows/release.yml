@@ -6,8 +6,8 @@
 # - Windows: one suite .msi for the whole family (x86_64, ADR-015)
 # - Homebrew: regenerates the tap's stable formulas (rusty-photon-<svc>.rb
 #   × every packaged service + the rusty-photon meta-formula) via
-#   scripts/generate-brew-formulas.sh — the same generator the nightly
-#   channel uses for the -nightly siblings
+#   `cargo ci brew-formulas` — the same renderer the nightly channel uses
+#   for the -nightly siblings
 permissions:
   contents: write
 on:
@@ -196,9 +196,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt --dir artifacts
+      # The formula renderer is the tools crate's brew-formulas, which
+      # `cargo ci` builds from this checkout.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
       - name: Render the stable formulas
         run: |
-          scripts/generate-brew-formulas.sh --channel stable \
+          cargo ci brew-formulas --channel stable \
             --version "${GITHUB_REF_NAME#v}" \
             --dist artifacts \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \

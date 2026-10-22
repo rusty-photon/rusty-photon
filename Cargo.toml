@@ -225,6 +225,9 @@ saphyr-parser = { version = "=0.2.2", default-features = false }
 # A TOML reader, for rusty-photon-ci's rust-toolchain-sha256s, which reads Rust's
 # channel manifests. Reading only: no `display`, which writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+# SHA-256, for rusty-photon-ci's brew-formulas, which stamps each Homebrew formula
+# with its tarball's. The 0.11 release Cargo.lock already carries.
+sha2 = "0.11.1"
 base64 = "0.23.0"
 mockall = "0.15.0"
 # The Servo html5ever/selectors stack: CSS-selector assertions on rendered

@@ -4,7 +4,7 @@
 //! A packaged service is a `services/*` workspace member with a `pkg/`
 //! directory or a `[package.metadata.deb]` table. Its .deb and .rpm are built
 //! from that table and `pkg/`, its macOS tarball and Homebrew formula by
-//! `scripts/build-tarballs.sh` and `scripts/generate-brew-formulas.sh`, and
+//! `scripts/build-tarballs.sh` and `cargo ci brew-formulas`, and
 //! its feature of the Windows suite MSI from
 //! `installer/fragments/<service>.wxs` (docs/packaging.md, ADR-012,
 //! ADR-015). Most of what can go wrong there shows only when a nightly
@@ -40,9 +40,9 @@
 //!   the packaging scripts, the shipped helpers, the install actions,
 //!   `libqhyccd-sys`'s `build.rs` and qhy-camera's `PINNED_SDK_VERSION`;
 //!   the zwo packages' license is the one vendored with the SDK headers.
-//! - **macOS.** `build-tarballs.sh` and `generate-brew-formulas.sh` both
-//!   leave svbony-camera out: it has no macOS SDK, so no tarball for a
-//!   formula to point at.
+//! - **macOS.** `build-tarballs.sh` leaves out svbony-camera, the service
+//!   `cargo ci brew-formulas` renders no formula for: it has no macOS SDK,
+//!   so no tarball for a formula to point at.
 //! - **Windows.** Every packaged service but svbony-camera has a fragment
 //!   that installs it as a Windows service of its package's name, from its
 //!   exe, with `--service`, restarting after 5 s with the failure-actions
@@ -137,7 +137,6 @@ const SVBONY: &str = "svbony-camera";
 
 const BUILD_PACKAGES: &str = "scripts/build-packages.sh";
 const BUILD_TARBALLS: &str = "scripts/build-tarballs.sh";
-const BREW_FORMULAS: &str = "scripts/generate-brew-formulas.sh";
 const BUILD_MSI: &str = "scripts/build-msi.ps1";
 const VERIFY_PACKAGES: &str = "scripts/verify-packages.sh";
 const VERIFY_BREW: &str = "scripts/verify-brew.sh";
@@ -992,7 +991,8 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
     );
 }
 
-/// The case arm both macOS scripts leave svbony-camera out with.
+/// The case arm `build-tarballs.sh` leaves svbony-camera out with, the
+/// service `cargo ci brew-formulas` renders no formula for.
 const MACOS_EXCLUSION: &str = r#"*" svbony-camera "*)"#;
 
 fn macos(check: &mut Check, shared: &Shared) {
@@ -1016,14 +1016,6 @@ fn macos(check: &mut Check, shared: &Shared) {
         );
         check.require(tarballs.contains(MACOS_EXCLUSION), || {
             format!("{BUILD_TARBALLS}: svbony-camera exclusion guard missing (no confirmed mac_arm64 SVBony SDK blob)")
-        });
-    }
-    if let Some(formulas) = check.read(BREW_FORMULAS) {
-        check.require(formulas.contains(MACOS_EXCLUSION), || {
-            format!(
-                "{BREW_FORMULAS}: svbony-camera exclusion guard missing — must match \
-                 build-tarballs.sh's, or formula generation will fail on the missing tarball"
-            )
         });
     }
 }
@@ -1647,7 +1639,7 @@ fn names_each_mistake_in_a_name_or_the_service_list() {
                     "[package]\nname = \"new-thing\"\n\n[package.metadata.deb]\nname = \"rusty-photon-new-thing\"\n",
                 ),
             ],
-            &["new-thing"],
+            &["[package.metadata.deb] but no pkg/ directory", "new-thing"],
         ),
         (
             &[Replace(
@@ -1726,16 +1718,18 @@ fn names_each_mistake_in_an_sdk_pin() {
 #[test]
 fn names_each_mistake_for_macos() {
     use Change::Replace;
-    assert_named(&[
-        (
-            &[Replace(BUILD_TARBALLS, MACOS_EXCLUSION, r#"*" svbony "*)"#)],
-            &["scripts/build-tarballs.sh: svbony-camera exclusion guard missing"],
-        ),
-        (
-            &[Replace(BREW_FORMULAS, MACOS_EXCLUSION, r#"*" svbony "*)"#)],
-            &["scripts/generate-brew-formulas.sh: svbony-camera exclusion guard missing"],
-        ),
-    ]);
+    assert_named(&[(
+        &[Replace(BUILD_TARBALLS, MACOS_EXCLUSION, r#"*" svbony "*)"#)],
+        &["scripts/build-tarballs.sh: svbony-camera exclusion guard missing"],
+    )]);
+}
+
+#[test]
+fn leaves_out_the_service_the_formula_renderer_does() {
+    assert_eq!(
+        MACOS_EXCLUSION,
+        format!(r#"*" {} "*)"#, crate::brew_formulas::NO_MACOS_TARBALL)
+    );
 }
 
 #[test]

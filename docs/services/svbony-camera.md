@@ -158,7 +158,7 @@
 > lets the operator-installed copy (`rusty-photon-svbony-sdk-install`)
 > resolve at runtime, exactly as this document's Packaging section always
 > said it would once wired up. `scripts/build-tarballs.sh` (macOS) and
-> `scripts/generate-brew-formulas.sh` now both explicitly exclude
+> the Homebrew formula renderer (`cargo ci brew-formulas`) now both explicitly exclude
 > `svbony-camera`: indi-3rdparty ships no confirmed `mac_arm64` blob, and
 > that script is arm64-only, so there is no real SDK to link there —
 > shipping a `SVBONY_SKIP_NATIVE_LINK=1` (simulation-only) binary as the
@@ -2565,7 +2565,7 @@ phases A–G:
   exposures time out until a reconnect. Re-arming after a capture times out,
   or ending the session on such a timeout, would close it.
 - A confirmed `mac_arm64` SVBony SDK blob — `scripts/build-tarballs.sh` and
-  `scripts/generate-brew-formulas.sh` currently exclude `svbony-camera`
+  `cargo ci brew-formulas` currently exclude `svbony-camera`
   outright (no macOS tarball/formula) rather than ship a
   `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as the "real" release
   artifact; see "Packaging" below.
@@ -2922,9 +2922,10 @@ this leg could ever link against. Rather than fall back to
 `SVBONY_SKIP_NATIVE_LINK=1` (a simulation-only binary — see "Native
 dependency & build gating" above) and ship that as the "real" tarball,
 `build-tarballs.sh` drops `svbony-camera` from its service list entirely,
-with `scripts/generate-brew-formulas.sh` mirroring the same exclusion so no
-Homebrew formula ever points at a tarball that doesn't exist (the packaging
-guard, `tools/rusty-photon-ci/src/pkg_assets.rs`, checks both). Net effect: no
+with `cargo ci brew-formulas` mirroring the same exclusion so no Homebrew
+formula ever points at a tarball that doesn't exist (the packaging guard,
+`tools/rusty-photon-ci/src/pkg_assets.rs`, checks the script leaves out the
+service the renderer does). Net effect: no
 `rusty-photon-svbony-camera` formula ships on macOS today — same posture as
 the Windows exclusion, different platform, same "no SDK for this platform
 at all" reason. Revisit once a verified Apple Silicon blob exists (or
