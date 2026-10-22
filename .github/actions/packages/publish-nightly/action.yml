@@ -1,0 +1,27 @@
+name: Publish the nightly
+description: >-
+  nightly-packages.yml's publish job: moves the nightly tag to the packaged
+  commit, then replaces every asset of the rolling nightly prerelease with
+  the ones SHA256SUMS.txt lists and the sums themselves, and rewrites its
+  notes; or makes the release when there is none. Through the GitHub API.
+  The logic is ../publish.mjs's.
+inputs:
+  sha:
+    description: The packaged commit, which the tag moves to.
+    required: true
+  date:
+    description: The nightly's UTC date, YYYYMMDD.
+    required: true
+  version:
+    description: The nightly's version, <base>+nightly.<YYYYMMDDHHMM>.g<sha>.
+    required: true
+  dir:
+    description: The directory holding the assets and their SHA256SUMS.txt (../nightly-assets).
+    required: true
+  token:
+    description: A token that can write the repository's contents, which its tags and releases are.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs

@@ -1,0 +1,13 @@
+name: Name and sum the nightly's assets
+description: >-
+  nightly-packages.yml's publish job, before anything is published: renders
+  the rpms' `^` as `.` in their names, as GitHub would on upload, then writes
+  SHA256SUMS.txt over every .deb, .rpm, .msi and .tar.gz in the directory. A
+  kind with no asset fails the step. The logic is ../assets.mjs's.
+inputs:
+  dir:
+    description: The directory the legs' packages were downloaded into.
+    required: true
+runs:
+  using: node24
+  main: index.mjs

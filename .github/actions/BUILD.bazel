@@ -107,23 +107,31 @@ node_test(
     ],
 )
 
-# packages: nightly-packages.yml's plan (the nightly tag, the version) and the
-# msi job's fetch of the nightly's MSI. The tests answer the GitHub API from a
-# fake, which redirects an asset's download to a fake storage server.
+# packages: nightly-packages.yml's plan (the nightly tag, the version), the
+# msi job's fetch of the nightly's MSI, and the publish job's asset names and
+# sums, its tag and release, and its commit to the Homebrew tap. The tests
+# answer the GitHub API from a fake, which redirects an asset's download to a
+# fake storage server and takes uploads as GitHub's uploads host does.
 node_test(
     name = "packages_test",
     size = "small",
     srcs = [
+        "packages/assets.test.mjs",
         "packages/plan.test.mjs",
         "packages/prior.test.mjs",
+        "packages/publish.test.mjs",
+        "packages/tap.test.mjs",
     ],
     data = [
         "lib/github.mjs",
         "lib/helpers.mjs",
         "lib/install.mjs",
         "lib/testing.mjs",
+        "packages/assets.mjs",
         "packages/plan.mjs",
         "packages/prior.mjs",
+        "packages/publish.mjs",
+        "packages/tap.mjs",
     ],
 )
 

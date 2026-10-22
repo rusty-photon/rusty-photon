@@ -281,7 +281,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The tag, the release and the tap change through the API, so no step
+      # pushes from a clone.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # Release assets and the repo site tree download separately: the
       # site is pushed to the R2 bucket, not attached to the release, so
       # it must stay out of the merged assets/ dir the checksum and
@@ -307,26 +311,14 @@ jobs:
         with:
           name: repo-site
           path: site
-      # GitHub silently rewrites `^` to `.` in uploaded asset names (N0
-      # findings), so the rpm filenames are dot-rendered HERE, before the
-      # checksums — sums taken over the pre-rename names would never verify
-      # against a downloaded file. Only the filename changes: the rpm
-      # header keeps the true `^` version.
-      - name: Dot-render the rpm asset names
-        run: |
-          cd assets
-          for f in *^*.rpm; do
-            [ -e "$f" ] || continue
-            mv "$f" "$(printf '%s' "$f" | tr '^' '.')"
-          done
-          ls -1 -- *.rpm
-      # One merged sums file across all legs, generated AFTER the renaming
-      # above.
-      - name: Merge checksums
-        run: |
-          cd assets
-          sha256sum -- *.deb *.rpm *.msi *.tar.gz > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+      # The rpms' `^` rendered as `.` in their names, as GitHub would on
+      # upload, before the checksums, so that the sums list the names a
+      # download has (the rpm header keeps the true `^` version); then one
+      # SHA256SUMS.txt across every leg's assets.
+      - name: Dot-render the rpm asset names and merge the checksums
+        uses: ./.github/actions/packages/nightly-assets
+        with:
+          dir: assets
       # Rendered from the merged assets (tarball sha256s + the manifest the
       # meta-formula downloads), pushed to the tap only after the release
       # assets are up — tap and assets move together, assets first, so the
@@ -338,80 +330,36 @@ jobs:
             --dist assets \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly" \
             --output nightly-formulas
-      - name: Checkout the Homebrew tap
-        uses: actions/checkout@v7
+      # Before anything is published: the tap's token must still write the
+      # tap, which writing the commit's tree takes, or the release would move
+      # on while the tap's formulas kept pointing at the assets it deleted.
+      - name: Check the tap's token can commit the -nightly formulas
+        uses: ./.github/actions/packages/tap
         with:
-          repository: rusty-photon/homebrew-rusty-photon
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-      - name: Force-move the nightly tag
-        run: git push --force origin '${{ needs.plan.outputs.sha }}:refs/tags/nightly'
-      - name: Publish the rolling prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ needs.plan.outputs.sha }}
-          DATE: ${{ needs.plan.outputs.date }}
-          NIGHTLY_VERSION: ${{ needs.plan.outputs.nightly_version }}
-        run: |
-          # Same rendering as build-packages.sh derives for the rpm headers:
-          # the body must state the true `^` version because the dot-rendered
-          # asset filenames cannot.
-          RPM_VERSION=$(printf '%s' "$NIGHTLY_VERSION" | sed 's/+nightly\./^/')
-          {
-            echo "Rolling nightly build of \`main\`. Assets are replaced on"
-            echo "every publish — no dated history; fetch \`SHA256SUMS.txt\`"
-            echo "from this release for the current filenames. Install and"
-            echo "channel semantics: [docs/packaging.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging.md#nightly-channel)"
-            echo "(Windows: [docs/packaging-windows.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-windows.md#nightly-channel),"
-            echo "macOS: [docs/packaging-macos.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-macos.md#nightly-channel))."
-            echo
-            echo "- **Source**: ${SHA}"
-            echo "- **Built**: ${DATE} (UTC)"
-            echo "- **Nightly version**: \`${NIGHTLY_VERSION}\` (Debian version, MSI filename, and macOS tarball/formula version; the MSI's Programs & Features version renders as \`${NIGHTLY_VERSION%%+*}.<YYDDD>\`)"
-            echo "- **RPM version**: \`${RPM_VERSION}\` (\`rpm -q\` shows this; the asset filenames render the \`^\` as \`.\` because GitHub rewrites it at upload)"
-            echo "- **macOS**: don't download the tarballs by hand — \`brew tap rusty-photon/rusty-photon && brew install rusty-photon-nightly\` (the formulas point here)"
-            echo
-            echo "| Asset | SHA-256 |"
-            echo "|-------|---------|"
-            while read -r sum file; do
-              echo "| \`${file}\` | \`${sum}\` |"
-            done < assets/SHA256SUMS.txt
-          } > body.md
-          if gh release view nightly --json id --jq .id > /dev/null 2>&1; then
-            # Replace, don't accumulate: a package dropped from the set must
-            # not linger as a stale asset, so delete everything first. The
-            # brief empty-asset window is acceptable on this channel.
-            gh release view nightly --json assets --jq '.assets[].name' |
-              while read -r name; do
-                gh release delete-asset nightly "$name" --yes
-              done
-            gh release edit nightly --prerelease --title "Nightly packages" \
-              --notes-file body.md
-          else
-            gh release create nightly --verify-tag --prerelease \
-              --title "Nightly packages" --notes-file body.md
-          fi
-          gh release upload nightly assets/*.deb assets/*.rpm assets/*.msi assets/*.tar.gz assets/SHA256SUMS.txt
-      - name: Push the -nightly formulas to the tap
-        env:
-          NIGHTLY_VERSION: ${{ needs.plan.outputs.nightly_version }}
-        run: |
-          # Replace, don't accumulate (the asset-replacement reasoning): a
-          # service dropped from the set must not linger as a stale formula.
-          # rusty-photon-nightly.rb (the meta) matches the glob too and is
-          # re-copied with the rest.
-          rm -f homebrew-tap/Formula/*-nightly.rb
-          cp nightly-formulas/*.rb homebrew-tap/Formula/
-          cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula
-          if git diff --cached --quiet; then
-            echo "tap already current"
-          else
-            git commit -m "nightly: ${NIGHTLY_VERSION}"
-            git push
-          fi
+          channel: nightly
+          version: ${{ needs.plan.outputs.nightly_version }}
+          formulas: nightly-formulas
+          check: true
+      # The tag first, then the release: every old asset deleted, the notes
+      # rewritten, the new assets and their sums uploaded.
+      - name: Move the nightly tag and publish the rolling prerelease
+        uses: ./.github/actions/packages/publish-nightly
+        with:
+          sha: ${{ needs.plan.outputs.sha }}
+          date: ${{ needs.plan.outputs.date }}
+          version: ${{ needs.plan.outputs.nightly_version }}
+          dir: assets
+      # After the release assets, so that the formulas never point at files
+      # not yet uploaded; one commit replacing every -nightly formula, so a
+      # service dropped from the set does not linger.
+      - name: Commit the -nightly formulas to the tap
+        uses: ./.github/actions/packages/tap
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          channel: nightly
+          version: ${{ needs.plan.outputs.nightly_version }}
+          formulas: nightly-formulas
       # Last of the channels: the release assets and tap are already live,
       # and the repo tree was consumer-verified in the repo job. The push
       # ordering (content, then the metadata flip, then stale deletes) is
