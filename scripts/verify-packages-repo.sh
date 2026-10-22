@@ -15,7 +15,7 @@
 # for the other architecture (apt multi-arch download / dnf --forcearch)
 # when the tree carries it — no emulation needed; the foreign binary is
 # never executed. Unit/lifecycle behavior is NOT in scope here: that is
-# verify-packages.sh's job on the same packages, before this script runs.
+# `cargo ci verify-packages`'s job on the same packages, before this script runs.
 #
 # Usage: scripts/verify-packages-repo.sh [--site DIR] [--service NAME]
 #   --site DIR      the tree build-apt-repo.sh/build-yum-repo.sh rendered
@@ -142,7 +142,7 @@ if [ -d "$SITE_ABS/rpm" ]; then
     # The fedora base image ships no systemd, but every real Fedora host
     # has it — and the rpm %post scriptlets call systemctl, whose absence
     # (exit 127) makes dnf5 fail the whole transaction. Bake the binary in
-    # (same reasoning as verify-packages.sh's image); no init runs here.
+    # (same reasoning as `cargo ci verify-packages`'s image); no init runs here.
     # dnf5-plugins provides `dnf download` (the foreign-arch proof below);
     # it ships in the current base image, but installing it explicitly
     # keeps the script's dependency real rather than incidental.

@@ -92,7 +92,7 @@ not:
    script asserting convergence. Explicitness wins; `git grep` must find the
    real bytes that ship.
 7. **ARM64 packages are built natively on the rig for now**
-   (`scripts/build-packages.sh`); CI arm64 packaging is deferred.
+   (`cargo ci build-packages`); CI arm64 packaging is deferred.
 
 ## Consequences
 

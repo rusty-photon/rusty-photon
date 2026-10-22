@@ -10,7 +10,7 @@
 //! uninstall that removes the binary and keeps the config, since Homebrew
 //! never purges.
 //!
-//! The kinds of service differ as they do on Linux (`verify-packages.sh`):
+//! The kinds of service differ as they do on Linux ([`crate::verify_packages`]):
 //! - a [`GATED`] service is installed and never started, since macOS has no
 //!   `ConditionPathExists`: started without a config, it would exit and
 //!   launchd would restart it, again and again;
@@ -775,10 +775,8 @@ fn verify_in_tap<R: Runner>(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    use std::collections::VecDeque;
-
     use super::*;
-    use crate::process::Background;
+    use crate::process::Script;
 
     #[test]
     fn finds_the_services_with_a_tarball_of_the_version() {
@@ -838,83 +836,6 @@ mod tests {
         assert_eq!(tail(file.path(), 2), "b\nc");
         assert_eq!(tail(file.path(), 9), "a\nb\nc");
         assert_eq!(tail(Path::new("/no/such/file"), 2), "");
-    }
-
-    /// What a scripted command does: print this, or fail.
-    type Answer = Box<dyn FnMut() -> Result<String, ()>>;
-
-    /// A [`Runner`] that answers each command by the first rule whose prefix
-    /// starts its command line, and records every command.
-    #[derive(Default)]
-    struct Script {
-        rules: Vec<(String, Answer)>,
-        lines: Vec<String>,
-        started: VecDeque<String>,
-    }
-
-    impl Script {
-        fn on(
-            mut self,
-            prefix: &str,
-            answer: impl FnMut() -> Result<String, ()> + 'static,
-        ) -> Self {
-            self.rules.push((prefix.to_owned(), Box::new(answer)));
-            self
-        }
-
-        fn answer(&mut self, cmd: &Cmd) -> Result<String, process::Error> {
-            let line = Cmd {
-                env: Vec::new(),
-                ..cmd.clone()
-            }
-            .to_string();
-            self.lines.push(line.clone());
-            let rule = self
-                .rules
-                .iter_mut()
-                .find(|(prefix, _)| line.starts_with(prefix.as_str()));
-            match rule {
-                Some((_, answer)) => answer().map_err(|()| process::Error::Failed {
-                    command: line,
-                    status: "exit status: 1".to_owned(),
-                }),
-                None => Ok(String::new()),
-            }
-        }
-    }
-
-    struct Alive;
-
-    impl Background for Alive {
-        fn exited(&mut self) -> Option<String> {
-            None
-        }
-
-        fn wait(&mut self) -> Option<String> {
-            None
-        }
-
-        fn stop(&mut self) {}
-    }
-
-    impl Runner for Script {
-        fn run(&mut self, cmd: &Cmd) -> Result<(), process::Error> {
-            self.answer(cmd).map(|_| ())
-        }
-
-        fn read(&mut self, cmd: &Cmd) -> Result<String, process::Error> {
-            self.answer(cmd)
-        }
-
-        fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, process::Error> {
-            Ok(Some(i32::from(self.answer(cmd).is_err())))
-        }
-
-        fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, process::Error> {
-            self.started.push_back(cmd.program.clone());
-            self.answer(cmd)?;
-            Ok(Box::new(Alive))
-        }
     }
 
     /// A repository with `services` packaged and described, their tarballs

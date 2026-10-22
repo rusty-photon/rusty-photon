@@ -2669,7 +2669,8 @@ Closed since:
   `conformance` are clean from there.
 
 - **Packaged-binary RUNPATH end-to-end on a real target install** —
-  closed by issue #704's fix: `scripts/verify-packages.sh` now installs
+  closed by issue #704's fix: the Linux verifier (now `cargo ci
+  verify-packages`) installs
   the package in a systemd container, runs the shipped
   `rusty-photon-svbony-sdk-install`, starts the unit and `ldd`-proves the
   binary resolves the operator-installed blob from
@@ -2895,16 +2896,16 @@ since there is no SONAME to honor) and the packaged
 `rusty-photon-svbony-camera` binary must be linked with
 `-Wl,-rpath,/usr/lib/rusty-photon` for the dynamic linker to find it there
 at runtime with no `ldconfig` run required — **exactly** ZWO's mechanism
-(`scripts/build-packages.sh`'s `RUSTFLAGS="-C
-link-arg=-Wl,-rpath,/usr/lib/rusty-photon"`), applied to QHY's
-download-on-target delivery model. **Wired into `scripts/build-packages.sh`
-as of issue #679 (2026-07-22)**: a `needs_svbony` SDK-staging leg (mirroring
+(the `-C link-arg=-Wl,-rpath,/usr/lib/rusty-photon` `RUSTFLAGS` of
+`cargo ci build-packages`), applied to QHY's
+download-on-target delivery model. **Wired into the Linux package build
+as of issue #679 (2026-07-22)**: an SDK-staging step (mirroring
 QHY/ZWO's) stages the pinned indi-3rdparty blob under a cache dir and
 exports `SVBONY_SDK_LIB_DIR` for the link — but, unlike QHY/ZWO, nothing is
 copied into `services/svbony-camera/pkg/lib/`: per ADR-018 this package
 never bundles the blob, so the staged copy exists purely to satisfy the
 build-time link, and the RUNPATH baked into `RUSTFLAGS` (already applied
-uniformly to every service this script builds, `zwo-camera` included) is
+uniformly to every service it builds, `zwo-camera` included) is
 what lets the *operator-installed* copy resolve at runtime. Verified
 end-to-end locally: staging the real blob + `cargo build --release -p
 svbony-camera` produces a binary whose `readelf -d` shows `NEEDED

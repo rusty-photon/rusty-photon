@@ -28,7 +28,7 @@ cargo_toml_env_vars(
 # The link directives are feature-gated per device (ADR-014: `camera` /
 # `efw` / `focuser`), read by build.rs via CARGO_FEATURE_*. Bazel builds the
 # UNION of what the workspace's services need — the packaging path (cargo,
-# scripts/build-packages.sh) is where per-service narrowing happens; keeping
+# `cargo ci build-packages`) is where per-service narrowing happens; keeping
 # the union here means one shared libzwo-sys/zwo-rs target set (no per-service
 # variant explosion) and keeps every SDK's link path continuously verified in
 # CI, which stages all the blobs anyway (install-zwo-sdk).

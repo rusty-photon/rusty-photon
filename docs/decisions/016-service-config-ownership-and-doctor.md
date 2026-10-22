@@ -309,7 +309,8 @@ blocker, not a size objection.
     doctor.
 
 11. **The catalog is derived, not typed.** `services/<svc>/pkg` existing is
-   already the packaging authority — `build-packages.sh` and the Homebrew
+   already the packaging authority — the package builders (`cargo ci
+   build-packages`, `cargo ci build-tarballs`) and the Homebrew
    formula renderer (`cargo ci brew-formulas`) derive their service lists
    from it. Doctor's catalog comes from the same place, with a CI
    test asserting the table matches the tree, so it does not become the fifth

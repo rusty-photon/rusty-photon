@@ -832,7 +832,7 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
   pkg-config for a system AWS-LC and links it dynamically when it finds one —
   which would give the shipped `.deb`/`.rpm` (built by
-  `scripts/build-packages.sh` with a plain `cargo build --release`) a runtime
+  `cargo ci build-packages` with a plain `cargo build --release`) a runtime
   dependency the field rig does not have. Bazel does not read that file, so the
   same pin is applied there through the `aws-lc-sys` `crate.annotation` in
   `MODULE.bazel`, which additionally keeps the build-script action hermetic:

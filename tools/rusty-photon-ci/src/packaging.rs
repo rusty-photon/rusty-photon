@@ -2,7 +2,8 @@
 //!
 //! The packaged services and what kind of service each one is, the version
 //! a build stamps on its artifacts, the native SDKs' pins and their
-//! download, and the checksum manifest.
+//! download, the cargo runs that build the services, and the checksum
+//! manifest.
 //!
 //! A packaged service is one with a `services/<svc>/pkg` directory, the
 //! packaging's authority since ADR-016 (decision 11). The ZWO and `SVBony`
@@ -313,6 +314,154 @@ pub fn download(runner: &mut impl Runner, url: &str, dest: &Path) -> Result<(), 
     fs::rename(&part, dest).map_err(io(dest))
 }
 
+/// Downloads `url` to `path` unless a previous run has.
+///
+/// # Errors
+///
+/// When it is not there and `offline` forbids the download, or the download
+/// fails.
+pub fn fetch(runner: &mut impl Runner, url: &str, path: &Path, offline: bool) -> Result<(), Error> {
+    if path.is_file() {
+        return Ok(());
+    }
+    if offline {
+        return Err(missing(path));
+    }
+    download(runner, url, path)
+}
+
+fn missing(path: &Path) -> Error {
+    Error::Io {
+        path: path.display().to_string(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "--skip-sdk-staging set, but a previous run has not cached it",
+        ),
+    }
+}
+
+/// Stages a QHYCCD SDK `archive` in `cache` and returns the directory that
+/// holds its `libqhyccd.a`.
+///
+/// Unless a previous run unpacked it to `cache/<extract>`, it downloads the
+/// archive, unless that is cached, checks it has the SHA-256 `sha256` and
+/// unpacks it there.
+///
+/// # Errors
+///
+/// When it must be downloaded and `offline` forbids it, the download or the
+/// SHA-256 is bad, or it holds no `libqhyccd.a`.
+pub fn stage_qhy(
+    runner: &mut impl Runner,
+    cache: &Path,
+    archive: &str,
+    sha256: &str,
+    extract: &str,
+    offline: bool,
+) -> Result<PathBuf, Error> {
+    let extract = cache.join(extract);
+    if !extract.is_dir() {
+        if offline {
+            return Err(missing(&extract));
+        }
+        let path = cache.join(archive);
+        fetch(runner, &qhy::url(archive), &path, false)?;
+        check_sha256(&path, sha256)?;
+        let work = tempfile::tempdir_in(cache).map_err(io(cache))?;
+        let work_arg = work.path().to_string_lossy();
+        let path_arg = path.to_string_lossy();
+        runner.run(&Cmd::new("tar", &["-xzf", &path_arg, "-C", &work_arg]))?;
+        // QHYCCD's archives unpack to a directory named as they are.
+        let unpacked = work.path().join(archive.trim_end_matches(".tar.gz"));
+        fs::rename(&unpacked, &extract).map_err(io(&unpacked))?;
+    }
+    // Found rather than assumed: the archive's layout is QHYCCD's.
+    let lib = find(&extract, "libqhyccd.a")?.ok_or_else(|| Error::Io {
+        path: extract.display().to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::NotFound, "no libqhyccd.a under it"),
+    })?;
+    let dir = lib.parent().map(Path::to_path_buf).unwrap_or_default();
+    println!(
+        "QHYCCD SDK {} staged: QHYCCD_SDK_DIR={}",
+        qhy::VERSION,
+        dir.display()
+    );
+    Ok(dir)
+}
+
+/// The first file named `name` under `dir`, in sorted order.
+fn find(dir: &Path, name: &str) -> Result<Option<PathBuf>, Error> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(io(dir))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if let Some(found) = find(&path, name)? {
+                return Ok(Some(found));
+            }
+        } else if path.file_name().is_some_and(|file| file == name) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+/// The ZWO SDKs the selected services link, by library name: ASI's for
+/// zwo-camera and EAF's for zwo-focuser (ADR-014).
+#[must_use]
+pub fn zwo_sdks(services: &[String]) -> Vec<&'static str> {
+    let mut sdks = Vec::new();
+    if services.iter().any(|service| service == "zwo-camera") {
+        sdks.push("libASICamera2");
+    }
+    if services.iter().any(|service| service == "zwo-focuser") {
+        sdks.push("libEAFFocuser");
+    }
+    sdks
+}
+
+/// The cargo runs that build `services`, as `-p` arguments.
+///
+/// The zwo services build each alone, as cargo unifies features within a run
+/// and would link both binaries to every ZWO SDK, and the rest together,
+/// with doctor when sentinel is among them, since sentinel's package carries
+/// doctor.
+#[must_use]
+pub fn cargo_runs(services: &[String]) -> Vec<Vec<String>> {
+    let mut batched: Vec<String> = Vec::new();
+    let mut alone: Vec<Vec<String>> = Vec::new();
+    for service in services {
+        if service == "zwo-camera" || service == "zwo-focuser" {
+            alone.push(vec!["-p".to_owned(), service.clone()]);
+        } else {
+            batched.extend(["-p".to_owned(), service.clone()]);
+        }
+    }
+    if services.iter().any(|service| service == "sentinel") {
+        batched.extend(["-p".to_owned(), "doctor".to_owned()]);
+    }
+    let mut runs = Vec::new();
+    if !batched.is_empty() {
+        runs.push(batched);
+    }
+    runs.extend(alone);
+    runs
+}
+
+/// The binaries the cargo runs build for `services`: theirs, and doctor's
+/// with sentinel's.
+#[must_use]
+pub fn binaries(services: &[String]) -> Vec<String> {
+    let mut binaries = services.to_vec();
+    if services.iter().any(|service| service == "sentinel") {
+        binaries.push("doctor".to_owned());
+    }
+    binaries
+}
+
 /// `bytes` in lowercase hex.
 #[must_use]
 pub fn hex(bytes: &[u8]) -> String {
@@ -353,18 +502,18 @@ pub fn check_sha256(path: &Path, expected: &str) -> Result<(), Error> {
 }
 
 /// Writes `dir/SHA256SUMS.txt` for every file in `dir` whose name ends with
-/// `suffix`, sorted by name, one `<sha256>  <name>` line each, as
+/// one of `suffixes`, sorted by name, one `<sha256>  <name>` line each, as
 /// `sha256sum` and `shasum -a 256` print them.
 ///
 /// # Errors
 ///
 /// When the directory or a file cannot be read, or the manifest written.
-pub fn write_sums(dir: &Path, suffix: &str) -> Result<(), Error> {
+pub fn write_sums(dir: &Path, suffixes: &[&str]) -> Result<(), Error> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .map_err(io(dir))?
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.ends_with(suffix))
+        .filter(|name| suffixes.iter().any(|suffix| name.ends_with(suffix)))
         .collect();
     names.sort();
     let mut sums = String::new();
@@ -536,28 +685,74 @@ mod tests {
     }
 
     #[test]
-    fn writes_the_checksum_manifest_of_the_files_with_the_suffix() {
+    fn writes_the_checksum_manifest_of_the_files_with_the_suffixes() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("b.tar.gz"), "b").unwrap();
-        fs::write(dir.path().join("a.tar.gz"), "abc").unwrap();
+        fs::write(dir.path().join("b.deb"), "b").unwrap();
+        fs::write(dir.path().join("a.rpm"), "abc").unwrap();
         fs::write(dir.path().join("notes.txt"), "x").unwrap();
-        write_sums(dir.path(), ".tar.gz").unwrap();
+        write_sums(dir.path(), &[".deb", ".rpm"]).unwrap();
         let b = hex(Sha256::digest(b"b").as_slice());
         assert_eq!(
             fs::read_to_string(dir.path().join("SHA256SUMS.txt")).unwrap(),
             format!(
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.tar.gz\n{b}  b.tar.gz\n"
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.rpm\n{b}  b.deb\n"
             )
         );
     }
 
-    /// The archive QHYCCD publishes for the pinned release, which the
-    /// macOS builder downloads and unpacks.
     #[test]
-    fn names_the_qhy_mac_archive_as_qhyccd_does() {
+    fn fetches_only_what_is_not_cached_and_nothing_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let cached = dir.path().join("cached.so");
+        fs::write(&cached, "blob").unwrap();
+        let mut runner = Fake::default();
+        fetch(&mut runner, "https://example.com/x", &cached, true).unwrap();
+        assert!(runner.ran.is_empty(), "{:?}", runner.lines());
+        let absent = dir.path().join("absent.so");
+        let error = fetch(&mut runner, "https://example.com/x", &absent, true).unwrap_err();
+        assert!(
+            error.to_string().contains("--skip-sdk-staging set"),
+            "{error}"
+        );
+        assert!(runner.ran.is_empty(), "{:?}", runner.lines());
+    }
+
+    #[test]
+    fn builds_each_zwo_service_alone_and_doctor_with_sentinel() {
+        let services = ["zwo-focuser", "rp", "sentinel", "zwo-camera"].map(str::to_owned);
+        assert_eq!(
+            cargo_runs(&services),
+            [
+                vec!["-p", "rp", "-p", "sentinel", "-p", "doctor"],
+                vec!["-p", "zwo-focuser"],
+                vec!["-p", "zwo-camera"],
+            ]
+        );
+        assert_eq!(
+            binaries(&services),
+            ["zwo-focuser", "rp", "sentinel", "zwo-camera", "doctor"]
+        );
+        assert_eq!(zwo_sdks(&services), ["libASICamera2", "libEAFFocuser"]);
+        let alone = ["zwo-camera".to_owned()];
+        assert_eq!(cargo_runs(&alone), [vec!["-p", "zwo-camera"]]);
+        assert_eq!(zwo_sdks(&["rp".to_owned()]), Vec::<&str>::new());
+    }
+
+    /// The archives QHYCCD publishes for the pinned release, which the
+    /// builders download and unpack.
+    #[test]
+    fn names_the_qhy_archives_as_qhyccd_does() {
         assert_eq!(
             qhy::mac_archive(),
             format!("sdk_mac_arm_{}.tar.gz", qhy::VERSION)
+        );
+        assert_eq!(
+            qhy::linux_x86_64_archive(),
+            format!("sdk_linux64_{}.tar.gz", qhy::VERSION)
+        );
+        assert_eq!(
+            qhy::linux_aarch64_archive(),
+            format!("sdk_linux_arm64_{}.tar.gz", qhy::VERSION)
         );
     }
 

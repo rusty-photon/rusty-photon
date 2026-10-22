@@ -2630,7 +2630,7 @@ bump.
 Unlike qhy-camera, the native SDK ships **inside the package**: ZWO's
 blobs are MIT-licensed, so `libASICamera2.so` — **exactly the one SDK this
 binary links** (zwo-rs `camera` feature, ADR-014) — is downloaded at
-package-build time by `scripts/build-packages.sh` from the same pinned
+package-build time by `cargo ci build-packages` from the same pinned
 indi-3rdparty commit `.github/actions/install-zwo-sdk` uses, and installed
 at `/usr/lib/rusty-photon/`, with the SDK license at
 `/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`. Because each

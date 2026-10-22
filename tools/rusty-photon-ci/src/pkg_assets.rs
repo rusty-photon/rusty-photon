@@ -31,16 +31,17 @@
 //! - **Each package's own files** ([`OWN_FILES`]): its udev or polkit rule;
 //!   sentinel's doctor binary and TLS renewal units, in both flavors;
 //!   svbony-camera's SDK helper, which installs the SDK into the RUNPATH
-//!   `scripts/build-packages.sh` links with and writes a development udev
-//!   rule of its own, for the packaged rule's vendor and never world-writable.
+//!   the Linux binaries are built with (`build_packages::RUNPATH`) and
+//!   writes a development udev rule of its own, for the packaged rule's
+//!   vendor and never world-writable.
 //! - **Names.** The deb, its systemd unit and the rpm are all
 //!   `rusty-photon-<service>`.
-//! - **SDK pins**, where they are copied: the QHY SDK's version, which
-//!   `packaging::qhy::VERSION` pins, and its Linux sha256s, the ZWO and
-//!   `SVBony` refs and the ZWO Windows URLs agree across the packaging
-//!   scripts, the shipped helpers, the install actions, `libqhyccd-sys`'s
-//!   `build.rs` and qhy-camera's `PINNED_SDK_VERSION`; the zwo packages'
-//!   license is the one vendored with the SDK headers.
+//! - **SDK pins**, where they are copied: the QHY SDK's version and Linux
+//!   sha256s, which `packaging::qhy` pins, agree with the firmware helper's,
+//!   `build-msi.ps1`'s, `libqhyccd-sys`'s `build.rs` and qhy-camera's
+//!   `PINNED_SDK_VERSION`; the `SVBony` helper's ref with `install-svbony-sdk`'s;
+//!   and the ZWO Windows URLs in `build-msi.ps1` with `install-zwo-sdk`'s. The
+//!   zwo packages' license is the one vendored with the SDK headers.
 //! - **Windows.** Every packaged service but svbony-camera has a fragment
 //!   that installs it as a Windows service of its package's name, from its
 //!   exe, with `--service`, restarting after 5 s with the failure-actions
@@ -48,9 +49,8 @@
 //!   on install, or installs it demand-start when it is [`GATED`].
 //!   `Package.wxs` wires each feature, every fragment belongs to a service,
 //!   and doctor rides in sentinel's fragment with its renewal task.
-//! - **Port tables.** `verify-packages.sh`'s port table gives every packaged
-//!   service the port `packaging::PORTS` does, which `cargo ci verify-brew`
-//!   probes and the `WiX` fragments open.
+//! - **Ports.** Every packaged service has one in `packaging::PORTS`, which
+//!   the verifiers probe and the `WiX` fragments open.
 //!
 //! This is the one list of these checks; the packaging docs point here. One
 //! run names every problem it finds.
@@ -66,6 +66,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use crate::build_packages::RUNPATH;
 use crate::packaging::{self, js_const, GATED, SERIAL, SVBONY_MODULE, ZWO_MODULE};
 use crate::repo_root;
 
@@ -110,9 +111,7 @@ const OWN_FILES: &[(&str, &str)] = &[
 /// formula or MSI feature.
 const SVBONY: &str = "svbony-camera";
 
-const BUILD_PACKAGES: &str = "scripts/build-packages.sh";
 const BUILD_MSI: &str = "scripts/build-msi.ps1";
-const VERIFY_PACKAGES: &str = "scripts/verify-packages.sh";
 const QHY_HELPER: &str = "services/qhy-camera/pkg/rusty-photon-qhy-firmware-install";
 const SVBONY_HELPER: &str = "services/svbony-camera/pkg/rusty-photon-svbony-sdk-install";
 const QHY_BUILD_RS: &str = "crates/qhyccd-rs/libqhyccd-sys/build.rs";
@@ -393,11 +392,9 @@ struct Shared {
     postinst: Option<String>,
     postrm: Option<String>,
     udev_stanza: Option<String>,
-    build_packages: Option<String>,
     build_msi: Option<String>,
     zwo_module: Option<String>,
     svbony_module: Option<String>,
-    verify_packages: Option<String>,
 }
 
 fn problems(repo: &Repo) -> Vec<String> {
@@ -410,24 +407,22 @@ fn problems(repo: &Repo) -> Vec<String> {
         postinst: check.read(POSTINST),
         postrm: check.read(POSTRM),
         udev_stanza: check.read(UDEV),
-        build_packages: check.read(BUILD_PACKAGES),
         build_msi: check.read(BUILD_MSI),
         zwo_module: check.read(ZWO_MODULE),
         svbony_module: check.read(SVBONY_MODULE),
-        verify_packages: check.read(VERIFY_PACKAGES),
     };
     let packaged: Vec<&Service> = services.iter().filter(|service| service.packaged).collect();
     for service in &packaged {
         units(&mut check, service);
         groups(&mut check, service);
         maintainer_scripts(&mut check, service, &shared);
-        own_files(&mut check, service, &shared);
+        own_files(&mut check, service);
         names(&mut check, service);
     }
     plugdev(&mut check, &services, &packaged);
     sdk_pins(&mut check, &shared);
     installer(&mut check, &packaged, &shared);
-    port_tables(&mut check, &packaged, &shared);
+    ports(&mut check, &packaged);
     check.problems
 }
 
@@ -613,7 +608,7 @@ fn maintainer_scripts(check: &mut Check, service: &Service, shared: &Shared) {
     }
 }
 
-fn own_files(check: &mut Check, service: &Service, shared: &Shared) {
+fn own_files(check: &mut Check, service: &Service) {
     let (svc, pkg) = (service.name.as_str(), service.pkg());
     let files = check.repo.files(&pkg);
     for (_, file) in OWN_FILES.iter().filter(|(owner, _)| *owner == svc) {
@@ -625,7 +620,7 @@ fn own_files(check: &mut Check, service: &Service, shared: &Shared) {
         sentinel(check, service);
     }
     if svc == SVBONY {
-        svbony_helper(check, service, shared);
+        svbony_helper(check, service);
     }
 }
 
@@ -707,16 +702,6 @@ fn sentinel(check: &mut Check, service: &Service) {
     });
 }
 
-/// The directory `-Wl,-rpath,<dir>"` names in the first line that has one.
-fn rpath(build_packages: &str) -> Option<&str> {
-    build_packages.lines().find_map(|line| {
-        line.rmatch_indices("-Wl,-rpath,").find_map(|(at, flag)| {
-            let rest = line.get(at.checked_add(flag.len())?..)?;
-            rest.split_once('"').map(|(dir, _)| dir)
-        })
-    })
-}
-
 /// The vendor ID of the first `ATTRS{idVendor}=="<id>"` in a udev rule.
 fn vendor_id(rule: &str) -> Option<&str> {
     rule.lines().find_map(|line| {
@@ -730,19 +715,15 @@ fn vendor_id(rule: &str) -> Option<&str> {
 
 /// `SVBony`'s SDK has no license grant, so its package ships a helper that
 /// downloads it on the target (ADR-018).
-fn svbony_helper(check: &mut Check, service: &Service, shared: &Shared) {
+fn svbony_helper(check: &mut Check, service: &Service) {
     let (svc, pkg) = (&service.name, service.pkg());
     if let Some(helper) = check.read(SVBONY_HELPER) {
         // Nothing else makes the loader look in the RUNPATH, which is off
         // ldconfig's path on purpose (ADR-013, ADR-018).
-        let rpath = shared.build_packages.as_deref().and_then(rpath);
         let installs_there = has_line(&helper, "DEST=\"$DEST_DIR/libSVBCameraSDK.so\"")
-            && rpath.is_some_and(|dir| has_line(&helper, &format!("DEST_DIR=\"$ROOT{dir}\"")));
+            && has_line(&helper, &format!("DEST_DIR=\"$ROOT{RUNPATH}\""));
         check.require(installs_there, || {
-            format!(
-                "{svc}: helper must install libSVBCameraSDK.so into build-packages.sh's RUNPATH ({})",
-                rpath.unwrap_or_default()
-            )
+            format!("{svc}: helper must install libSVBCameraSDK.so into the RUNPATH ({RUNPATH})")
         });
         // The development rule must name the packaged rule's vendor, under
         // a name of its own: an /etc rule of the packaged one's name would
@@ -856,23 +837,17 @@ fn preflight_version(preflight: &str) -> Option<String> {
     Some(format!("{:02}.{:02}.{:02}", year?, month?, day?))
 }
 
-/// The SDK pins copied between the packaging scripts, the shipped helpers,
-/// the install actions and the crates, so the SDK CI links is the one the
-/// packages ship and report.
+/// The SDK pins copied between the tools crate, the shipped helpers, the
+/// install actions, `build-msi.ps1` and the crates, so the SDK CI links is the
+/// one the packages ship and report.
 fn sdk_pins(check: &mut Check, shared: &Shared) {
     // The one QHY pin the builders share; each copy must be it.
     const QHY: &str = "packaging::qhy::VERSION";
-    let bp = shared.build_packages.as_deref().unwrap_or_default();
     let zwo = shared.zwo_module.as_deref().unwrap_or_default();
     let svbony = shared.svbony_module.as_deref().unwrap_or_default();
     let qhy_version = Some(packaging::qhy::VERSION);
 
-    agree(
-        check,
-        "QHY SDK version",
-        (QHY, qhy_version),
-        ("build-packages.sh", shell_var(bp, "QHY_SDK_VERSION")),
-    );
+    // The firmware helper downloads the archive the Linux builds link.
     let helper = check.read(QHY_HELPER).unwrap_or_default();
     agree(
         check,
@@ -880,14 +855,14 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
         (QHY, qhy_version),
         ("firmware-install", shell_var(&helper, "VERSION")),
     );
-    for arch in ["X86_64", "AARCH64"] {
+    for (arch, pin) in [
+        ("X86_64", packaging::qhy::SHA256_LINUX_X86_64),
+        ("AARCH64", packaging::qhy::SHA256_LINUX_AARCH64),
+    ] {
         agree(
             check,
             &format!("QHY SDK sha256 ({arch})"),
-            (
-                "build-packages.sh",
-                shell_var(bp, &format!("QHY_SHA256_{arch}")),
-            ),
+            ("packaging::qhy", Some(pin)),
             (
                 "firmware-install",
                 shell_var(&helper, &format!("SHA256_{arch}")),
@@ -918,12 +893,6 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
         ),
     );
 
-    agree(
-        check,
-        "ZWO SDK ref",
-        ("build-packages.sh", shell_var(bp, "ZWO_SDK_REF")),
-        ("install-zwo-sdk's REF", js_const(zwo, "REF")),
-    );
     // No ref exists for ZWO's Windows SDKs, only rolling "latest" links, so
     // the links are the whole pin.
     for (constant, variable) in [
@@ -955,12 +924,6 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
             "rusty-photon-svbony-sdk-install",
             shell_var(&svbony_helper, "REF"),
         ),
-        ("install-svbony-sdk's REF", js_const(svbony, "REF")),
-    );
-    agree(
-        check,
-        "SVBony SDK ref",
-        ("build-packages.sh", shell_var(bp, "SVBONY_SDK_REF")),
         ("install-svbony-sdk's REF", js_const(svbony, "REF")),
     );
 }
@@ -1092,7 +1055,7 @@ fn fragment_contract(check: &mut Check, svc: &str, fragment: &str, port: Option<
     ] {
         check.require(fragment.contains(text), || format!("{svc}: {problem}"));
     }
-    // A service missing from the port table is named by `port_tables`.
+    // A service missing from `packaging::PORTS` is named by `ports`.
     if let Some(port) = port {
         check.require(fragment.contains(&format!("Port=\"{port}\"")), || {
             format!("{svc}: firewall exception port must be {port}")
@@ -1116,44 +1079,14 @@ fn fragment_contract(check: &mut Check, svc: &str, fragment: &str, port: Option<
     }
 }
 
-/// A verify script's `port_of()` entry for `svc`: a `<svc>) echo <port> ;;`
-/// line.
-fn port_of<'a>(script: &'a str, svc: &str) -> Option<&'a str> {
-    let arm = format!("{svc}) echo ");
-    script.lines().find_map(|line| {
-        let port = line
-            .trim_start_matches(' ')
-            .strip_prefix(&arm)?
-            .strip_suffix(" ;;")?;
-        (!port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())).then_some(port)
-    })
-}
-
-/// `verify-packages.sh` keeps a port table of its own. A service missing
-/// from it shows only when the Linux nightly starts the service.
-fn port_tables(check: &mut Check, packaged: &[&Service], shared: &Shared) {
-    let Some(linux) = shared.verify_packages.as_deref() else {
-        return;
-    };
+/// Every packaged service has a port, which its verifiers probe and its `WiX`
+/// fragment opens.
+fn ports(check: &mut Check, packaged: &[&Service]) {
     for service in packaged {
         let svc = &service.name;
-        let Some(port) = packaging::port(svc) else {
-            check.problems.push(format!(
-                "{svc}: no port in packaging::PORTS — its verifiers and WiX fragment need one; extend it"
-            ));
-            continue;
-        };
-        match port_of(linux, svc) {
-            None => check.problems.push(format!(
-                "{svc}: no port mapping in {VERIFY_PACKAGES} port_of() — its verify leg would fail; extend it"
-            )),
-            Some(linux_port) => check.require(linux_port == port.to_string(), || {
-                format!(
-                    "{svc}: port mismatch — {VERIFY_PACKAGES} port_of() says {linux_port}, \
-                     packaging::PORTS says {port}"
-                )
-            }),
-        }
+        check.require(packaging::port(svc).is_some(), || {
+            format!("{svc}: no port in packaging::PORTS — its verifiers and WiX fragment need one; extend it")
+        });
     }
 }
 
@@ -1513,11 +1446,7 @@ fn names_each_mistake_in_svbony_cameras_sdk_helper() {
         ),
         (
             &[Replace(SVBONY_HELPER, "DEST_DIR=\"$ROOT/usr/lib/rusty-photon\"", "DEST_DIR=\"$ROOT/usr/lib\"")],
-            &["svbony-camera: helper must install libSVBCameraSDK.so into build-packages.sh's RUNPATH (/usr/lib/rusty-photon)"],
-        ),
-        (
-            &[Replace(BUILD_PACKAGES, "-Wl,-rpath,/usr/lib/rusty-photon\"", "-Wl,-rpath,/opt/rusty-photon\"")],
-            &["svbony-camera: helper must install libSVBCameraSDK.so into build-packages.sh's RUNPATH (/opt/rusty-photon)"],
+            &["svbony-camera: helper must install libSVBCameraSDK.so into the RUNPATH (/usr/lib/rusty-photon)"],
         ),
         (
             &[Replace(SVBONY_HELPER, "ATTRS{idVendor}==\"", "ATTRS{idVendor}==\"0")],
@@ -1605,10 +1534,6 @@ fn names_each_mistake_in_an_sdk_pin() {
             &["' vs firmware-install='9"],
         ),
         (
-            &[Replace(BUILD_PACKAGES, "QHY_SDK_VERSION=\"", "QHY_SDK_VERSION=\"9")],
-            &["' vs build-packages.sh='9"],
-        ),
-        (
             &[Replace(QHY_HELPER, "SHA256_X86_64=\"", "SHA256_X86_64=\"0")],
             &["QHY SDK sha256 (X86_64) pin mismatch"],
         ),
@@ -1629,10 +1554,6 @@ fn names_each_mistake_in_an_sdk_pin() {
             &["' vs preflight PINNED_SDK_VERSION='"],
         ),
         (
-            &[Replace(BUILD_PACKAGES, "ZWO_SDK_REF=\"", "ZWO_SDK_REF=\"x")],
-            &["ZWO SDK ref pin mismatch: build-packages.sh='x"],
-        ),
-        (
             &[Replace(BUILD_MSI, "app=DeveloperCameraSdk&", "app=DeveloperCameraSdkBeta&")],
             &["ZWO Windows SDK URL (CAMERA_SDK_URL) pin mismatch"],
         ),
@@ -1647,10 +1568,6 @@ fn names_each_mistake_in_an_sdk_pin() {
         (
             &[Replace(SVBONY_HELPER, "\nREF=\"", "\nREF=\"x")],
             &["SVBony SDK ref pin mismatch: rusty-photon-svbony-sdk-install='x"],
-        ),
-        (
-            &[Replace(BUILD_PACKAGES, "SVBONY_SDK_REF=\"", "SVBONY_SDK_REF=\"x")],
-            &["SVBony SDK ref pin mismatch: build-packages.sh='x"],
         ),
     ]);
 }
@@ -1750,29 +1667,6 @@ fn names_each_mistake_in_the_installer() {
         (
             &[Replace(BUILD_MSI, ", \"doctor\"", "")],
             &["installer: build-msi.ps1 $allServices must include doctor"],
-        ),
-    ]);
-}
-
-#[test]
-fn names_each_mistake_in_a_port_table() {
-    use Change::Replace;
-    assert_named(&[
-        (
-            &[Replace(
-                VERIFY_PACKAGES,
-                "ppba-driver) echo ",
-                "ppba-driver-gone) echo ",
-            )],
-            &["ppba-driver: no port mapping in scripts/verify-packages.sh port_of()"],
-        ),
-        (
-            &[Replace(
-                VERIFY_PACKAGES,
-                "ppba-driver) echo ",
-                "ppba-driver) echo 9",
-            )],
-            &["ppba-driver: port mismatch — scripts/verify-packages.sh port_of() says 9"],
         ),
     ]);
 }

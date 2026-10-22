@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603) |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603), the Linux pair (this PR) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -1471,6 +1471,49 @@ Done so far:
   of service's checks, each shown to fail with its behaviour broken. A
   `dry_run=true` dispatch runs both on hosted macOS; `release.yml`'s
   stable run waits for the next tag.
+- **The Linux pair** (this PR): `build-packages.sh` and
+  `verify-packages.sh` are `cargo ci build-packages` and
+  `cargo ci verify-packages` (`build_packages.rs`, `verify_packages.rs`),
+  which the nightly's Linux legs run. The macOS builder's SDK staging and
+  its cargo runs moved into `packaging` for both builders to share, the
+  QHY SDK's Linux sha256s joined `packaging::qhy`, and the ZWO and SVBony
+  blobs come from their install modules' `REF`, which the builder reads.
+  The guard lost its checks of the scripts' pin copies and port table,
+  which no longer exist, and checks the QHY firmware helper's sha256s
+  against `packaging::qhy`; every packaged service must still have a port.
+  The Linux jobs' SDK cache is keyed on the three files that hold the
+  pins. The tools differ from the scripts in five ways:
+  - `--deb-version` is `--version`, which takes the workspace's version
+    or a `+nightly.` stamp on it, as `build-tarballs` does; the script
+    took any string, and refused a plain version with `--rpm`, where the
+    rpm now takes Cargo's;
+  - `SHA256SUMS.txt` lists the debs and rpms in one name order, where the
+    script listed the debs first;
+  - every probe gives up after 5 s, where only the serial drivers' did,
+    so a service that binds its port and never answers fails its probes
+    instead of hanging the leg until the job's timeout;
+  - the verifier installs each package by its file's name, not a glob,
+    and has no trap: an interrupted run leaves its container,
+    `rusty-photon-verify-<pid>`, which docs/packaging.md says to remove;
+  - the verifier installs a deb's runtime libraries beforehand when its
+    Depends names no `libc6`, the mark of a build off Debian, whose
+    `$auto` comes out empty. The script looked for an empty Depends, which
+    no deb has had since each began to depend on `adduser`, so on a
+    non-Debian dev box its deb leg failed on the first service that needs
+    libusb.
+
+  The tests run the builder against a fake runner for each SDK, both
+  architectures and the prerequisites, and the verifier against a scripted
+  container (the scripted runner `verify-brew`'s tests had, now shared in
+  `process.rs`): both flavors' whole lifecycles, each kind of service's
+  checks and each refusal. On a Fedora dev box, the script and the tool built the
+  23 services' debs and rpms from one commit with one stamp, and the
+  packages' contents, control fields, requires and scriptlets are the
+  same. `cargo ci verify-packages` passed both flavors there in podman
+  for every service but zwo-camera, which exits there because the box's
+  own ZWO cameras show in the container and cannot be opened; the hosted
+  runners have none. A `dry_run=true` dispatch runs both on hosted
+  runners of both architectures.
 
 ## S1 — Sweep of the remaining inline blocks
 

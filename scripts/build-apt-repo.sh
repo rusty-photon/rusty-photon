@@ -81,7 +81,7 @@ if [ -z "$DIST" ]; then
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
     DIST="dist/$version"
 fi
-[ -d "$DIST" ] || die "$DIST not found — run scripts/build-packages.sh first"
+[ -d "$DIST" ] || die "$DIST not found — run cargo ci build-packages first"
 
 # ---- prerequisites ------------------------------------------------------
 # dpkg-dev: dpkg-scanpackages; apt-utils: apt-ftparchive; gnupg: signing.

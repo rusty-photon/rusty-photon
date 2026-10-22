@@ -31,7 +31,7 @@
 # system-wide path shared with other packages — and that directory is
 # deliberately NOT on ldconfig's default scan path. So this helper relies
 # on the same mechanism zwo-camera's bundled (also SONAME-less) blob
-# uses: `scripts/build-packages.sh` links the packaged
+# uses: `cargo ci build-packages` links the packaged
 # `rusty-photon-svbony-camera` binary with
 # `-Wl,-rpath,/usr/lib/rusty-photon`, so the dynamic linker finds the
 # bare `libSVBCameraSDK.so` name this helper installs here without any

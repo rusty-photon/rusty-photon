@@ -305,6 +305,76 @@ impl Background for Idle {
     fn stop(&mut self) {}
 }
 
+/// What a [`Script`] answers a command with: what it prints, or a failure.
+#[cfg(test)]
+pub type Answer = Box<dyn FnMut() -> Result<String, ()>>;
+
+/// A [`Runner`] for the tools' tests that answers each command by a rule.
+///
+/// The first rule whose prefix starts the command line, without the
+/// variables it sets, answers it, and the line is recorded. A command no
+/// rule answers succeeds and prints nothing.
+#[cfg(test)]
+#[derive(Default)]
+pub struct Script {
+    rules: Vec<(String, Answer)>,
+    pub lines: Vec<String>,
+}
+
+#[cfg(test)]
+impl Script {
+    #[must_use]
+    pub fn on(
+        mut self,
+        prefix: &str,
+        answer: impl FnMut() -> Result<String, ()> + 'static,
+    ) -> Self {
+        self.rules.push((prefix.to_owned(), Box::new(answer)));
+        self
+    }
+
+    fn answer(&mut self, cmd: &Cmd) -> Result<String, Error> {
+        let line = Cmd {
+            env: Vec::new(),
+            ..cmd.clone()
+        }
+        .to_string();
+        self.lines.push(line.clone());
+        let rule = self
+            .rules
+            .iter_mut()
+            .find(|(prefix, _)| line.starts_with(prefix.as_str()));
+        match rule {
+            Some((_, answer)) => answer().map_err(|()| Error::Failed {
+                command: line,
+                status: "exit status: 1".to_owned(),
+            }),
+            None => Ok(String::new()),
+        }
+    }
+}
+
+/// A failure is exit code 1.
+#[cfg(test)]
+impl Runner for Script {
+    fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {
+        self.answer(cmd).map(|_| ())
+    }
+
+    fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
+        self.answer(cmd)
+    }
+
+    fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error> {
+        Ok(Some(i32::from(self.answer(cmd).is_err())))
+    }
+
+    fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, Error> {
+        self.answer(cmd)?;
+        Ok(Box::new(Idle))
+    }
+}
+
 #[cfg(test)]
 impl Runner for Fake {
     fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {

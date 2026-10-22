@@ -70,7 +70,7 @@ if [ -z "$DIST" ]; then
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
     DIST="dist/$version"
 fi
-[ -d "$DIST" ] || die "$DIST not found — run scripts/build-packages.sh --rpm first"
+[ -d "$DIST" ] || die "$DIST not found — run cargo ci build-packages --rpm first"
 
 # ---- prerequisites ------------------------------------------------------
 SUDO=""

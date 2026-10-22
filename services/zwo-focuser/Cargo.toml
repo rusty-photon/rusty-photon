@@ -79,12 +79,12 @@ depends = "libc6, libgcc-s1, libstdc++6, libudev1, adduser"
 assets = [
     ["target/release/zwo-focuser", "usr/bin/rusty-photon-zwo-focuser", "755"],
     ["pkg/90-rusty-photon-zwo-focuser.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", "644"],
-    # MIT SDK blob: staged into gitignored pkg/lib/ by scripts/build-packages.sh
+    # MIT SDK blob: staged into gitignored pkg/lib/ by `cargo ci build-packages`
     # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
     # never committed (ADR-013). Exactly the one SDK this binary links (ADR-014) —
     # co-installing zwo-camera is conflict-free because each package owns only
     # its own blob. No SONAME, so the binary finds it via the RUNPATH
-    # build-packages.sh injects (-Wl,-rpath,/usr/lib/rusty-photon).
+    # `cargo ci build-packages` injects (-Wl,-rpath,/usr/lib/rusty-photon).
     ["pkg/lib/libEAFFocuser.so", "usr/lib/rusty-photon/libEAFFocuser.so", "644"],
     # The license must travel with the redistributed blob (checker asserts this
     # copy matches the one vendored with the SDK headers in libzwo-sys).

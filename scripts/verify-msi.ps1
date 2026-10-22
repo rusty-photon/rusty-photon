@@ -1,10 +1,10 @@
 # verify-msi.ps1 - lifecycle-verify the built suite MSI on a Windows box
 # (windows-latest CI or a dev VM; requires elevation, which both provide).
-# The Windows analogue of scripts/verify-packages.sh: silent full install ->
+# The Windows analogue of `cargo ci verify-packages`: silent full install ->
 # per-service class checks -> failure-actions proofs -> feature remove -> full
 # uninstall (configs and logs survive, deb-`remove` parity).
 #
-# Service classes mirror verify-packages.sh:
+# Service classes mirror `cargo ci verify-packages`:
 #   - active:  reach RUNNING + HTTP probe (network-only services; the zwo
 #     services serve with zero devices attached, phd2-guider answers 503
 #     without PHD2, so all of them run on a hardware-less box)
@@ -76,7 +76,7 @@ if (-not $Msi) {
 if (-not (Test-Path $Msi)) { Die "$Msi not found - run scripts\build-msi.ps1 first" }
 $Msi = (Resolve-Path $Msi).Path
 
-# ---- service classification (mirrors verify-packages.sh) ------------------
+# ---- service classification (mirrors cargo ci verify-packages) ------------
 $ports = @{
     'filemonitor' = 11111; 'ppba-driver' = 11112; 'qhy-focuser' = 11113
     'sentinel' = 11114; 'rp' = 11115; 'sky-survey-camera' = 11116

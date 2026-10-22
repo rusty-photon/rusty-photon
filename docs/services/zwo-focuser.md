@@ -649,7 +649,7 @@ The MIT-licensed `libEAFFocuser.so` — **exactly the one SDK this binary links*
 (zwo-rs `focuser` feature,
 [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)) —
 ships **inside the package**, staged at build time by
-`scripts/build-packages.sh` from the same pinned indi-3rdparty ref
+`cargo ci build-packages` from the same pinned indi-3rdparty ref
 `.github/actions/install-zwo-sdk` uses, alongside the SDK license. Because
 each zwo package owns only its own blob, this package co-installs cleanly
 with `rusty-photon-zwo-camera` (which ships `libASICamera2.so`). ZWO EAFs
