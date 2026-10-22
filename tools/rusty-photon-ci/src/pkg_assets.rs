@@ -333,7 +333,7 @@ fn services(check: &mut Check) -> Vec<Service> {
         .and_then(|root| table_at(root, &["workspace"]))
         .and_then(|workspace| workspace.get("members"))
         .and_then(Value::as_array)
-        .map(|members| {
+        .map_or_default(|members| {
             members
                 .iter()
                 .filter_map(Value::as_str)
@@ -341,8 +341,7 @@ fn services(check: &mut Check) -> Vec<Service> {
                 .filter(|name| !name.contains('/'))
                 .map(str::to_owned)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     check.require(!members.is_empty(), || {
         "Cargo.toml: no services/* workspace members".to_owned()
     });

@@ -594,13 +594,11 @@ mod tests {
                 .join("services")
                 .join(service)
                 .join("pkg/lib");
-            let mut names: Vec<String> = fs::read_dir(lib)
-                .map(|entries| {
-                    entries
-                        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let mut names: Vec<String> = fs::read_dir(lib).map_or_default(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                    .collect()
+            });
             names.sort();
             names
         };

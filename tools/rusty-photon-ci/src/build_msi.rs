@@ -96,8 +96,7 @@ impl Host {
             cache: packaging::cache_dir(),
             dotnet,
             dotnet_tools: std::env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .unwrap_or_default()
+                .map_or_default(PathBuf::from)
                 .join(".dotnet")
                 .join("tools"),
         }
@@ -284,7 +283,7 @@ fn stage_qhy(runner: &mut impl Runner, host: &Host, offline: bool) -> Result<Pat
     // Found rather than assumed: the archive's layout is QHYCCD's.
     let lib = pick_x64(&extract, "qhyccd.lib")?
         .ok_or_else(|| refused(format!("qhyccd.lib not found under {}", extract.display())))?;
-    let dir = lib.parent().map(Path::to_path_buf).unwrap_or_default();
+    let dir = lib.parent().map_or_default(Path::to_path_buf);
     println!(
         "QHYCCD SDK {} staged: QHYCCD_SDK_DIR={}",
         qhy::VERSION,

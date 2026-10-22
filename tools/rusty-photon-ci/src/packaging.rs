@@ -304,8 +304,7 @@ pub fn module_const(root: &Path, module: &str, name: &'static str) -> Result<Str
 pub fn cache_dir() -> PathBuf {
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_default()
+            .map_or_default(PathBuf::from)
             .join("rusty-photon-pkg");
     }
     std::env::var_os("XDG_CACHE_HOME")
@@ -313,8 +312,7 @@ pub fn cache_dir() -> PathBuf {
         .map_or_else(
             || {
                 std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default()
+                    .map_or_default(PathBuf::from)
                     .join(".cache")
             },
             PathBuf::from,
@@ -453,7 +451,7 @@ pub fn stage_qhy(
         path: extract.display().to_string(),
         source: std::io::Error::new(std::io::ErrorKind::NotFound, "no libqhyccd.a under it"),
     })?;
-    let dir = lib.parent().map(Path::to_path_buf).unwrap_or_default();
+    let dir = lib.parent().map_or_default(Path::to_path_buf);
     println!(
         "QHYCCD SDK {} staged: QHYCCD_SDK_DIR={}",
         qhy::VERSION,

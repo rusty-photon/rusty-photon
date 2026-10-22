@@ -74,11 +74,7 @@ impl Places {
     /// This machine's.
     #[must_use]
     pub fn this() -> Self {
-        let var = |name: &str| {
-            std::env::var_os(name)
-                .map(PathBuf::from)
-                .unwrap_or_default()
-        };
+        let var = |name: &str| std::env::var_os(name).map_or_default(PathBuf::from);
         Self {
             data: var("ProgramData").join("rusty-photon"),
             install: var("ProgramFiles").join("rusty-photon"),
@@ -257,8 +253,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             .max_by_key(|entry| entry.metadata().and_then(|meta| meta.modified()).ok());
         newest
             .and_then(|entry| fs::read(entry.path()).ok())
-            .map(|bytes| last_lines(&text_of(&bytes), count).join("\n"))
-            .unwrap_or_default()
+            .map_or_default(|bytes| last_lines(&text_of(&bytes), count).join("\n"))
     }
 
     /// The service's failure, with the end of its log and what msiexec's

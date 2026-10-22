@@ -227,8 +227,7 @@ impl<R: Runner> Run<'_, R> {
     fn sample(&mut self, pid: u32) -> String {
         self.runner
             .read(&Cmd::new("sample", &[&pid.to_string(), "1"]))
-            .map(|stack| stack.lines().take(40).collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
+            .map_or_default(|stack| stack.lines().take(40).collect::<Vec<_>>().join("\n"))
     }
 
     /// The service's failure, with what can say why on stderr.
@@ -639,8 +638,7 @@ pub fn verify(
     // build-tarballs names the directory after the version it stamps.
     let version = dist
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().into_owned());
     let services = match &request.services {
         Some(services) => services.clone(),
         None => services_in(&dist, &version)?,
