@@ -132,9 +132,8 @@ Three kinds of code are outside this decision:
 - A Rust tool costs a compile on first local use, where a script ran at
   once. In the Bazel legs it comes from the remote cache.
 - A tool that drives Bazel from inside the Bazel legs would meet a job
-  where Cargo may not be on the PATH: the Linux pool template has none
-  until the plan's T1 adds it, and the Windows template has not been
-  checked. The one such tool, `bazel-clippy.sh`, went with Bazel's clippy
+  where Cargo may not be on the PATH: the Linux pool template has carried
+  it since the plan's T1, but the Windows template has not been checked. The one such tool, `bazel-clippy.sh`, went with Bazel's clippy
   instead (the plan's R2), and its checks of the toolchain pins became a
   test, so no tool has had to settle this yet. One that does settles how it
   is launched there, and verifies it.

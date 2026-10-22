@@ -112,7 +112,7 @@ first in their columns.
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
-| T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
+| T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
 started this), J14 and J7 (ten copies, small); F2, then R6 (small, and it
@@ -171,7 +171,7 @@ Done in #1541, as `tools/rusty-photon-ci`, run as `cargo ci <tool>`.
   `MODULE.bazel.lock`, and AGENTS.md rule 10 and the pre-commit hook send
   developers to it. It touches no CI step, so it proves the crate without
   risking one. `repin-bazel.yml`'s "Repin crate index" step runs the same
-  sequence on dependabot PRs, on the Linux pool, which has no Cargo until
+  sequence on dependabot PRs, on the Linux pool, which had no Cargo before
   T1. That step is a fixed sequence of three commands with no control
   flow, which ADR-022 leaves in YAML; its "keep the two in step" comment
   points at the tool.
@@ -204,8 +204,8 @@ operator's WAN, so the job runs it on hosted runners only. This item
 gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
 
 - **Scope: the compile.** On the pool the job's cold clippy passes take
-  about 110 s of its 2m13s. Installing the toolchain takes about 10 s more,
-  over the WAN, because the pool template has no rustup; T1 puts it in the
+  about 110 s of its 2m13s. Installing the toolchain took about 10 s more,
+  over the WAN, because the pool template had no rustup; T1 put it in the
   template. Downloading the crates is J14's.
 - **Store: the LAN bazel-remote**, by the owner's decision of 2026-10-15,
   over the S3-compatible object store chosen on 2026-10-13, which the
@@ -946,7 +946,7 @@ Done in #1519, as `.github/actions/lan-crates`. The pool `stable / clippy`
 reads every crates.io package `Cargo.lock` pins from the LAN bazel-remote's
 HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 `Cargo.lock` records. The owner chose this over a new caching service on
-2026-10-13; T1 does the same for the toolchain.
+2026-10-13; T1 did the same for the toolchain.
 
 - **What it does**, as a step before any Cargo step: for every crates.io
   package in `Cargo.lock`, it reads `/cas/<checksum>` anonymously, fetches
@@ -1583,6 +1583,23 @@ proxy; J14 serves the crates.
   scope bullet, and the comment above check.yml's `stable / clippy` job.
 - **Done when** a pool `stable / clippy` run's toolchain step installs no
   rustup and downloads no toolchain.
+
+Done (#1600), as Linux template 931 on the EPYC host, rolled to every
+Linux slot on 2026-10-22:
+
+- **What it carries:** template 930 with the month's updates (kernel
+  6.8.0-147), plus rustup for `ci` with stable 1.99.1 and its `clippy`
+  and `rustfmt`, and `PATH=/home/ci/.cargo/bin:` ahead of the unit's own
+  PATH in the runner's `.env`.
+- **Why `.env`:** the runner reads its `.path` file only in the
+  service wrapper `svc.sh` installs. The pool's `gha-runner` unit starts
+  `run.sh` itself, and the runner sets each `.env` line in its own
+  environment, which its jobs inherit.
+- **The rest is ADR-022's mentions and the runbook:** the components list
+  says what the template carries, and a rebuild note says how to bring
+  its stable up to date and check it before capture.
+- **Proven** by this PR's own `stable / clippy` run on the pool: the step
+  found rustup on the PATH and reported stable `unchanged`.
 
 ## Not in this plan
 
