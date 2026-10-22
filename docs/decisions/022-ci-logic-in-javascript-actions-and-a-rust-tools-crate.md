@@ -2,10 +2,10 @@
 
 ## Status
 
-Accepted (2026-10-13). The migration is tracked in
-[`docs/plans/ci-shell-to-code.md`](../plans/ci-shell-to-code.md). Until an
-item there lands, the shell it replaces stays authoritative; new CI logic
-follows this decision from now on. Amended 2026-10-18
+Accepted (2026-10-13). The migration,
+[`docs/plans/archive/ci-shell-to-code.md`](../plans/archive/ci-shell-to-code.md),
+was completed on 2026-10-22; new CI logic follows this decision. Amended
+2026-10-18
 ([Amendment A](#amendment-a--2026-10-18-a-developers-install-runs-the-install-actions-module)):
 a developer's install of what an `install-*` action installs is that
 action's JavaScript, not Rust.

@@ -9,7 +9,7 @@ description: >-
   helper in the later steps, which have them from the job's env block
   (LAN_CACHE_WRITE_AUTH, CACHE_WRITE_TOKEN), and this action reads the same
   variables. Run it after the mask step and the checkout, before any Bazel
-  step. Plan item J10 in docs/plans/ci-shell-to-code.md.
+  step. Plan item J10 in docs/plans/archive/ci-shell-to-code.md.
 runs:
   using: node24
   main: index.mjs

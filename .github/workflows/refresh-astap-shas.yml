@@ -28,7 +28,7 @@
 # documents for that row.
 #
 # The logic is the refresh-astap action's (`.github/actions/refresh-astap`,
-# plan item J8 in docs/plans/ci-shell-to-code.md). See
+# plan item J8 in docs/plans/archive/ci-shell-to-code.md). See
 # `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
 # procedure" for the manual procedure this workflow automates.
 

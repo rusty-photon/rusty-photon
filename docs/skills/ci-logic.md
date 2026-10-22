@@ -4,15 +4,15 @@
 decides where CI logic lives: workflow YAML for a step that runs one
 command, a local JavaScript action for logic that runs inside GitHub
 Actions, one Rust tools crate for tools a developer also runs. This doc
-says how to write it there. Moving the existing shell is
-[docs/plans/ci-shell-to-code.md](../plans/ci-shell-to-code.md).
+says how to write it there. The existing shell moved under
+[docs/plans/archive/ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md),
+now complete.
 
 ## When to Read This
 
 - Before adding or changing a workflow step, or a composite action's step,
   that runs more than a few commands or has any control flow
 - Before writing or changing a local action under `.github/actions/`
-- Before picking up an item of the CI shell plan
 
 ## Where it goes
 
@@ -602,6 +602,61 @@ and says nothing).
 A PR's CI only runs the workflows its events trigger. Name every runner
 the code runs on (hosted Linux, Windows and macOS, the pool's Linux and
 Windows templates, the Pi) and show each one green, or say what stays
-unproven until it first runs on main and watch that run. The plan's
-[Working an item](../plans/ci-shell-to-code.md#working-an-item) covers the
-workflows that cannot be dispatched on a branch.
+unproven until it first runs on main and watch that run. For code in a
+nightly or scheduled workflow, dispatch the workflow on the branch
+(`gh workflow run <file> --ref <branch>`) and link the run, except where
+a dispatch must not or cannot run the branch:
+
+- **A workflow that publishes or pushes is never dispatched on a branch
+  unless a dry-run input stops it first.** `nightly-packages.yml` has
+  one: with `dry_run=true` every job but `publish` runs (`plan`, `linux`,
+  `msi`, `macos`, `repo`). `release.yml` runs only on a `v*` tag. Every
+  job in `refresh-astap-shas.yml` checks out `main`, so a branch dispatch
+  runs main's files, and it opens a real pull request.
+- **The Pi cannot run a branch.** `pi-nightly.yml`'s job is gated on
+  `github.ref == 'refs/heads/main'` and checks out `main`, so a dispatch
+  on a branch skips it. A change to code the Pi runs, such as the install
+  actions, proves the arm64 Linux path with the module's tests for that
+  platform and watches the first nightly after merge.
+- **Nor can bazel.yml's macOS leg.** bazel.yml has no
+  `workflow_dispatch`, and macOS joins its matrix only on push to main
+  and the schedule. The install actions also reach hosted macOS from a
+  dispatched `test.yml` (OmniSim, Pebble) or `native.yml` (the ZWO SDK).
+  What only that leg runs, such as the remote-cache flags, is proven by
+  tests, and a change to code the leg runs watches its first push-to-main
+  run. Adding `workflow_dispatch` to bazel.yml would change the matrix
+  and routing expressions ADR-020 reviews, so only the owner decides it.
+- **Code that runs only on an event a PR cannot produce**, such as a
+  failed scheduled run or a push to main, never runs from a dispatch.
+
+There, the tests carry the proof (the logic against a fake GitHub API, a
+fake store, fixture files), the PR names what stays unproven until it
+first runs on main, and someone watches that first run. A change may add
+the dry-run path it needs in a pull request of its own, first.
+
+### Moving what other files read
+
+- **Every mention moves with it.** A PR that renames or deletes a script
+  searches the whole repository for its path, not only the docs: error
+  messages, comments in `MODULE.bazel` and `.bazelrc`, other workflows,
+  ADRs and AGENTS.md (rule 2).
+- **So do its readers and writers.** Other files parse pins and URLs, and
+  some rewrite them in place:
+  - `refresh-astap-shas.yml` reads `install-astap/assets.json` and
+    rewrites it in its pull request, through the `refresh-astap` action;
+  - the packaging tools read the ZWO and SVBony SDKs' `REF` from their
+    install modules (`packaging::sdk_ref`), and `build-msi` reads ZWO's
+    Windows SDK links there (`packaging::module_const`), so the packages
+    link what CI links; the tools crate's guard `pkg_assets.rs` checks
+    that the SDK pins copied between the tools crate, the shipped
+    helpers, the install actions and the crates agree;
+  - the tools crate's test `toolchain_pins.rs` reads `rust.toolchain`'s
+    `versions` and `sha256s` in `MODULE.bazel` and the root Cargo.toml's
+    `rust-version`, and holds the keys to `Release::archives`.
+
+  A PR that moves a pin updates its readers and writers in the same PR,
+  or leaves the pin where they find it.
+
+The CI shell plan's
+[Working an item](../plans/archive/ci-shell-to-code.md#working-an-item),
+where these rules began, records how its items applied them.

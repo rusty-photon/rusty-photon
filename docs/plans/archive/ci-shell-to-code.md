@@ -1,9 +1,25 @@
 # CI shell to JavaScript and Rust
 
+**Status: COMPLETE (archived 2026-10-22).** Every item shipped or was
+settled in review. The JavaScript foundation (F1, #1508) and the Rust
+tools crate (F2, #1541) came first. Then came the cache items J1 (#1534)
+and J14 (#1519), the install actions J2–J6 (#1564, #1566, #1573, #1575,
+#1578), J7 (#1527), J8 (#1580), the publishing glue J9 (#1597, #1598,
+#1599), J10 (#1585), J12 (#1579) and the package repositories J13
+(#1607); R1 (#1581), R2 (#1582, which removed Bazel clippy), R6 (#1544),
+R7 (#1591, #1593) and the packaging scripts R8 (#1601–#1605); the S1
+sweep (#1586–#1589, #1594–#1596); and T1's pool template (#1600). J11's
+parity check was dropped (#1583), and review moved R3, R4 and R5 into
+J11, J12 and S1. #1608 took the optional review findings of #1605 and
+#1607, and #1610 fixed a leak in an R8 test that the nightly sanitizer
+caught. What "Not in this plan" leaves out stays where it is: host
+provisioning, the Python scripts and the git hooks, the pool's validation
+workflow, and the two Cloudflare Workers, whose tests are a later choice.
+
 ## Goal
 
 Move the CI's logic out of shell, into the two homes
-[ADR-022](../decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md)
+[ADR-022](../../decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md)
 chose: **local JavaScript actions** for logic that runs inside GitHub
 Actions, and **one Rust tools crate** for tools a developer also runs. A
 step that runs one command, or a short fixed sequence with no control
@@ -22,6 +38,10 @@ have merged. Two foundation items, F1 (JavaScript) and F2 (Rust), come
 first in their columns.
 
 ## Working an item
+
+The rules here that outlive the plan are
+[ci-logic.md §Proving it](../../skills/ci-logic.md#proving-it) and the
+section after it, which keep them current.
 
 - **One item, one PR**, branched from `main`, with the item's ID in the
   title. The PR sets the item's status in the table below.
@@ -124,7 +144,7 @@ any template rebuild.
 
 ### F1 — JavaScript foundation
 
-Done in #1508. [ci-logic.md](../skills/ci-logic.md) has the conventions it
+Done in #1508. [ci-logic.md](../../skills/ci-logic.md) has the conventions it
 set; what later items build on:
 
 - **Node for tests.** rules_nodejs in `MODULE.bazel` pins a Node 24, the
@@ -157,7 +177,7 @@ Done in #1541, as `tools/rusty-photon-ci`, run as `cargo ci <tool>`.
   by Bazel and Cargo. It sits
   under `tools/`, not `crates/`, because no service links it. A library
   holds the tools and their tests; the binary only parses the command
-  line, as the services' binaries do. [ci-logic.md](../skills/ci-logic.md#the-rust-tools-crate)
+  line, as the services' binaries do. [ci-logic.md](../../skills/ci-logic.md#the-rust-tools-crate)
   has the conventions for adding a tool.
 - **`cargo ci <tool>`:** a Cargo alias in `.cargo/config.toml`
   (`run --package rusty-photon-ci --`), so developers have a short command
@@ -374,7 +394,7 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
 ### J2 — Shared download-verify-extract module, first used by `install-omnisim`
 
 Done in #1564. The module is `.github/actions/lib/install.mjs`, and
-[ci-logic.md](../skills/ci-logic.md#an-action-that-installs-a-tool) says
+[ci-logic.md](../../skills/ci-logic.md#an-action-that-installs-a-tool) says
 how an action uses it. A zip on Linux takes `unzip`, as the shell did,
 rather than a zip reader of our own. The fallback to the previous week's
 download, for a rolling pin, came with J5, its first user (`downloadAll`).
@@ -1080,7 +1100,7 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
   with an error are each a miss there, and the crates come from
   crates.io. The cache is the bazel-remote the pool's Bazel legs build
   from, and with the Remote Asset API on they fail outright while it is
-  unreachable ([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)),
+  unreachable ([proxmox-runner-pool.md](../../skills/proxmox-runner-pool.md)),
   so no PR goes green with it stopped anyway. The owner chose this on
   2026-10-15, in place of the plan's live check that the job passes with
   the cache stopped.

@@ -6,7 +6,7 @@ description: >-
   processes, and the other suites in two more streams. Each stream's output
   is printed as a log group of its own once the streams end, a cancelled or
   timed-out run included. The logic is bdd.mjs's (plan item J12 in
-  docs/plans/ci-shell-to-code.md; why it shards, docs/skills/testing.md §5.5).
+  docs/plans/archive/ci-shell-to-code.md; why it shards, docs/skills/testing.md §5.5).
 
 inputs:
   rp-shards:

@@ -5,7 +5,7 @@ description: >-
   (docs/skills/testing.md §5.6), and export PEBBLE_PATH and
   PEBBLE_CHALLTESTSRV_PATH. The release, its asset table and their SHA-256 pins
   are in pebble.mjs; the download, check and unpack are lib/install.mjs's (plan
-  item J3 in docs/plans/ci-shell-to-code.md).
+  item J3 in docs/plans/archive/ci-shell-to-code.md).
 
 runs:
   using: composite

@@ -5,7 +5,7 @@
 // instead. Either way it comments on install-astap's open tracking issue. It
 // reads main's table and writes the commit through the GitHub API, so the job
 // holds no checkout to push from. Plan item J8 in
-// docs/plans/ci-shell-to-code.md.
+// docs/plans/archive/ci-shell-to-code.md.
 
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';

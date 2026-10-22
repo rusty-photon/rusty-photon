@@ -1,6 +1,6 @@
 // A scheduled workflow's tracking issue: opened when a scheduled run fails,
 // commented on by each later failure while it stays open. Plan item J7 in
-// docs/plans/ci-shell-to-code.md.
+// docs/plans/archive/ci-shell-to-code.md.
 //
 // Only OPEN issues are searched. Closing the issue marks the failure
 // handled, so the next failure opens a fresh issue rather than resurrecting

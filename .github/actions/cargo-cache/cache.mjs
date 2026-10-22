@@ -1,5 +1,5 @@
 // The pool `stable / clippy`'s compiled dependencies, kept in the LAN
-// bazel-remote (plan item J1, docs/plans/ci-shell-to-code.md).
+// bazel-remote (plan item J1, docs/plans/archive/ci-shell-to-code.md).
 //
 // A push to the default branch builds cold, and its post step packs target/,
 // without the workspace's own crates, and $CARGO_HOME/git (the git

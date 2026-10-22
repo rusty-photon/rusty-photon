@@ -195,7 +195,7 @@ jobs:
       # to take the credential; the plan accepts that (J1, "Write key"). A
       # cache that is missing, down or wrong is a cold build, never a failure.
       # A no-op on hosted runners (no RP_LAN_CACHE_URL). Plan item J1 in
-      # docs/plans/ci-shell-to-code.md.
+      # docs/plans/archive/ci-shell-to-code.md.
       - name: Build cache from the LAN
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         uses: ./.github/actions/cargo-cache

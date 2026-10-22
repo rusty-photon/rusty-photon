@@ -94,7 +94,7 @@ failure of the others.
    the `GITHUB_TOKEN` push and the approval click, not to a broken job.
 
    *Amended 2026-10-21:* the push now goes through GitHub's API, from the
-   `commit-repin` JavaScript action (docs/plans/ci-shell-to-code.md, S1),
+   `commit-repin` JavaScript action (docs/plans/archive/ci-shell-to-code.md, S1),
    in place of git and its credential helper. The token is that step's
    input, sent in a request's header: still in that step alone, never on a
    command line or on disk.

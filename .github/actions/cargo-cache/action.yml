@@ -8,7 +8,7 @@ description: >-
   branch. A cache that is missing, down or wrong is a cold build, never a
   failure. Does nothing without RP_LAN_CACHE_URL (hosted runners, fork PRs).
   Run it after the toolchain install and lan-crates, before any Cargo step.
-  Plan item J1 in docs/plans/ci-shell-to-code.md.
+  Plan item J1 in docs/plans/archive/ci-shell-to-code.md.
 inputs:
   write-auth:
     description: >-

@@ -1,7 +1,7 @@
 // The first job of the refresh of install-astap's pins (ADR-005 §"Pinned
 // SHA-256 + refresh procedure"), which refresh-astap-shas.yml runs when the
 // nightly install-astap smoke fails, the sign that SourceForge serves a new
-// release under the old names. Plan item J8 in docs/plans/ci-shell-to-code.md.
+// release under the old names. Plan item J8 in docs/plans/archive/ci-shell-to-code.md.
 //
 // One job per runner downloads the archive the table names for that runner
 // and compares its SHA-256 with the pin. When they differ and the job runs on

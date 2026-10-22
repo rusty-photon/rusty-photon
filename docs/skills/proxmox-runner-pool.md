@@ -292,7 +292,7 @@ Components:
   crates.io and, on push to main, is uploaded with the write credential;
   bazel-remote refuses an upload whose SHA-256 is not its key. A cache that
   is down costs the job a download from crates.io, never a failure
-  ([ci-shell-to-code.md](../plans/ci-shell-to-code.md) J14).
+  ([ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md) J14).
 
   It also keeps that job's compiled dependencies:
   `.github/actions/cargo-cache` restores `target/` (without the
@@ -304,7 +304,7 @@ Components:
   and the paths Cargo records, so a template rebuild starts a new cache
   with nothing to bump by hand, and eviction retires the old one. A cache
   that is missing, down or wrong is a cold build, never a failure
-  ([ci-shell-to-code.md](../plans/ci-shell-to-code.md) J1).
+  ([ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md) J1).
 
 * **Remote Asset API — repository-fetch caching, gated on the
   `RP_LAN_ASSET_API` repo variable.** The same bazel-remote can also serve

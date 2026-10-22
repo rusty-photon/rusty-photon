@@ -6,7 +6,7 @@ description: >-
   crates.io in $CARGO_HOME/config.toml. A crate the store lacks comes from
   crates.io and, given write-auth, is uploaded to the store. Does nothing
   without RP_LAN_CACHE_URL (hosted runners, fork PRs). Run it before any
-  Cargo step. Plan item J14 in docs/plans/ci-shell-to-code.md.
+  Cargo step. Plan item J14 in docs/plans/archive/ci-shell-to-code.md.
 inputs:
   write-auth:
     description: >-
