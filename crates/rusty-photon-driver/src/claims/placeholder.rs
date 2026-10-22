@@ -4,8 +4,8 @@
 //! It reads `Connected == false`, refuses `Connected = true` with the
 //! device-claims error code and the reason, carries the same reason in its
 //! `Description`, answers to its fixed placeholder `UniqueID`, serves its
-//! setup page (or, for a driver still on them, the config actions) connected
-//! or not, and answers every camera member `NOT_CONNECTED`. It never
+//! setup page connected or not, serves no action, as a camera serves none,
+//! and answers every camera member `NOT_CONNECTED`. It never
 //! re-scans: the reason is the one the last start or reload found, and only a
 //! reload turns the number back into a camera.
 
@@ -22,8 +22,6 @@ use http::StatusCode;
 use rusty_photon_config::actions::ConfigurableDriver;
 use rusty_photon_setup::SetupPages;
 use tracing::debug;
-
-use crate::ConfigActionCtx;
 
 /// What a placeholder says about itself.
 ///
@@ -54,7 +52,6 @@ pub struct Placeholder {
 /// A registered Camera that stands in for a listed number's camera.
 pub struct PlaceholderCamera<D: ConfigurableDriver> {
     about: Placeholder,
-    config_ctx: Option<ConfigActionCtx<D>>,
     /// The setup pages, and the device number its page is served at.
     pages: Option<(Arc<SetupPages<D>>, u32)>,
 }
@@ -63,11 +60,7 @@ impl<D: ConfigurableDriver> PlaceholderCamera<D> {
     /// The placeholder `about` describes, serving no config actions.
     #[must_use]
     pub const fn new(about: Placeholder) -> Self {
-        Self {
-            about,
-            config_ctx: None,
-            pages: None,
-        }
+        Self { about, pages: None }
     }
 
     /// Serve its setup page, `/setup/v1/camera/<number>/setup`, through the
@@ -75,13 +68,6 @@ impl<D: ConfigurableDriver> PlaceholderCamera<D> {
     #[must_use]
     pub fn with_setup_pages(mut self, pages: Arc<SetupPages<D>>, number: u32) -> Self {
         self.pages = Some((pages, number));
-        self
-    }
-
-    /// Serve the config actions, as a camera at this number would.
-    #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<D>) -> Self {
-        self.config_ctx = Some(ctx);
         self
     }
 
@@ -151,12 +137,18 @@ where
         Ok(self.about.driver_version.clone())
     }
 
+    /// No custom action, as a camera has none: the configuration is on the
+    /// setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(crate::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        crate::dispatch::<D>(&self.config_ctx, action, parameters).await
+    /// The specification's answer to an unknown action name.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
     }
 
     fn setup_request(
@@ -374,29 +366,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_config_source_it_offers_no_actions() {
+    async fn it_offers_no_action_and_answers_any_as_not_implemented() {
+        let camera = placeholder();
         assert_eq!(
-            placeholder().supported_actions().await.unwrap(),
+            camera.supported_actions().await.unwrap(),
             Vec::<String>::new()
         );
-    }
-
-    #[tokio::test]
-    async fn with_a_config_source_it_offers_and_serves_the_config_actions() {
-        let dir = tempfile::tempdir().unwrap();
-        let camera = placeholder().with_config_actions(ConfigActionCtx {
-            effective: Empty {},
-            path: dir.path().join("zwo-camera.json"),
-            overrides: (),
-            reload: rusty_photon_service_lifecycle::ReloadSignal::new(),
-        });
-        let actions = camera.supported_actions().await.unwrap();
-        assert!(actions.iter().any(|a| a == "config.get"), "{actions:?}");
-        let got = camera
+        let error = camera
             .action("config.get".to_string(), String::new())
             .await
-            .unwrap();
-        assert!(got.contains("\"config\""), "{got}");
+            .unwrap_err();
+        assert_eq!(error.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

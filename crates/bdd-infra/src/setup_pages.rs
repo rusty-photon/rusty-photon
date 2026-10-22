@@ -383,6 +383,16 @@ pub mod dom {
             })
     }
 
+    /// The text of the `<textarea>` named `name`, if any, as a browser
+    /// shows it: the newline right after the opening tag is not part of it.
+    #[must_use]
+    pub fn textarea(html: &str, name: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector("textarea[name]"))
+            .find(|el| el.value().attr("name") == Some(name))
+            .map(|el| el.text().collect())
+    }
+
     /// Whether any element matches `css`.
     #[must_use]
     pub fn matches(html: &str, css: &str) -> bool {
@@ -416,13 +426,13 @@ pub mod dom {
             .collect()
     }
 
-    /// Whether a `div.field.invalid` holding `input[name=field]` shows an
-    /// `.error` containing `message`.
+    /// Whether a `div.field.invalid` holding the `input` or `textarea`
+    /// named `field` shows an `.error` containing `message`.
     #[must_use]
     pub fn field_error(html: &str, field: &str, message: &str) -> bool {
         let doc = Html::parse_document(html);
         let field_sel = selector("div.field.invalid");
-        let input_sel = selector("input[name]");
+        let input_sel = selector("input[name], textarea[name]");
         let error_sel = selector(".error");
         doc.select(&field_sel).any(|fld| {
             let is_target = fld
@@ -475,9 +485,11 @@ pub mod dom {
     }
 
     /// Every control the browser would submit from the page's form, as
-    /// `(name, value)`: each non-`disabled` `input` with a `name`. A checkbox
-    /// or radio contributes only when `checked`; the rest contribute their
-    /// `value`.
+    /// `(name, value)`.
+    ///
+    /// Each non-`disabled` `input` and `textarea` with a `name`: a checkbox
+    /// or radio only when `checked`, the rest of the inputs with their
+    /// `value`, a `textarea` with its text.
     #[must_use]
     pub fn successful_controls(html: &str) -> Vec<(String, String)> {
         let doc = Html::parse_document(html);
@@ -499,6 +511,14 @@ pub mod dom {
                     v.attr("value").unwrap_or_default().to_owned(),
                 )),
             }
+        }
+        for el in doc.select(&selector("form textarea[name]")) {
+            let v = el.value();
+            if v.attr("disabled").is_some() {
+                continue;
+            }
+            let Some(name) = v.attr("name") else { continue };
+            out.push((name.to_owned(), el.text().collect()));
         }
         out
     }
@@ -1103,6 +1123,25 @@ mod tests {
                 ("serial.baud_rate".to_string(), "0".to_string()),
             ]
         );
+    }
+
+    const NAMES: &str = "<form method=\"post\" action=\"\">
+        <div class=\"field invalid\"><textarea name=\"wheel.filter_names\">\nL\n\nR</textarea>
+        <div class=\"error\">filter_names[1] is empty</div></div>
+        <textarea name=\"off\" disabled>x</textarea></form>";
+
+    #[test]
+    fn a_textarea_is_sent_and_read_as_a_browser_does() {
+        assert_eq!(
+            dom::successful_controls(NAMES),
+            vec![("wheel.filter_names".to_string(), "L\n\nR".to_string())]
+        );
+        assert_eq!(
+            dom::textarea(NAMES, "wheel.filter_names").as_deref(),
+            Some("L\n\nR")
+        );
+        assert_eq!(dom::textarea(NAMES, "missing"), None);
+        assert!(dom::field_error(NAMES, "wheel.filter_names", "is empty"));
     }
 
     #[test]

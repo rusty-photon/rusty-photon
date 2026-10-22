@@ -677,7 +677,8 @@ fn place_list(
 
 /// Every camera the join placed, in port order, with the key its override
 /// is read under where an open read it: a listed camera's, from `resolved`.
-/// An unlisted camera is never opened, and a failed open reads nothing.
+/// An unlisted camera is never opened, and a failed open reads nothing; the
+/// no-list default serves either only if the reload's open of it succeeds.
 fn placed_cameras(
     claims: &Claims<'_>,
     resolved: &[(UsbDeviceEntry, Result<EnumeratedCamera, String>)],
@@ -685,13 +686,17 @@ fn placed_cameras(
     claims
         .placed()
         .into_iter()
-        .map(|(_, port)| PlacedCamera {
-            port: port.to_string(),
-            override_key: resolved
+        .map(|(_, port)| {
+            let override_key = resolved
                 .iter()
                 .find(|(entry, _)| entry.usb_port == port)
                 .and_then(|(_, outcome)| outcome.as_ref().ok())
-                .map(|cam| cam.serial.clone()),
+                .map(|cam| cam.serial.clone());
+            PlacedCamera {
+                port: port.to_string(),
+                served_if_opens: override_key.is_none(),
+                override_key,
+            }
         })
         .collect()
 }
@@ -784,8 +789,9 @@ fn place_enumerated(
 }
 
 /// Every camera the no-list default placed, in port order, keyed by the
-/// serial its open read; one whose open failed has no key, and is served
-/// nowhere (*Setup pages*).
+/// serial its open read; one whose open failed has no key, is served
+/// nowhere, and is served by the reload only if its open succeeds then
+/// (*Setup pages*).
 fn placed_without_list(
     cameras: &[(String, Result<EnumeratedCamera, String>)],
 ) -> Vec<PlacedCamera> {
@@ -794,6 +800,7 @@ fn placed_without_list(
         .map(|(port, outcome)| PlacedCamera {
             port: port.clone(),
             override_key: outcome.as_ref().ok().map(|cam| cam.serial.clone()),
+            served_if_opens: outcome.is_err(),
         })
         .collect()
 }
@@ -1058,6 +1065,7 @@ mod list_tests {
         PlacedCamera {
             port: port.to_string(),
             override_key: key.map(str::to_string),
+            served_if_opens: key.is_none(),
         }
     }
 

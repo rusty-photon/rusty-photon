@@ -34,9 +34,9 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usb_devices: Option<Vec<UsbDeviceEntry>>,
     /// Optional per-device overrides keyed by **SDK serial**. A device with no
-    /// entry uses SDK-derived defaults. Named `devices` (not `overrides`) to
-    /// avoid colliding with the `config.get` response's own `overrides[]` field.
-    /// Read only with no `usb_devices` list; beside one it is refused.
+    /// entry uses SDK-derived defaults. Named `devices` (not `overrides`), the
+    /// name every camera driver's map has. Read only with no `usb_devices`
+    /// list; beside one it is refused.
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceOverride>,
     /// HTTP server settings (the shared Alpaca `server` block).
@@ -59,8 +59,8 @@ impl Default for Config {
 impl Config {
     /// Every rule the `usb_devices` list breaks — the shared ones, then the
     /// declared wheels' — and every `devices` override beside it; empty
-    /// without a list. The load and `config.apply` both refuse a config with
-    /// any.
+    /// without a list. The load and every setup-page save refuse a config
+    /// with any.
     #[must_use]
     pub fn list_errors(&self) -> Vec<ListError> {
         let list = self.usb_devices.as_deref();
@@ -206,8 +206,8 @@ pub struct DeviceOverride {
 }
 
 /// CLI overrides layered over the file config. Tracks which fields are pinned by
-/// a command-line flag so the config actions can distinguish the file layer from
-/// the override layer.
+/// a command-line flag so the setup pages can tell the file layer from the
+/// override layer.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `server.port`.
@@ -215,8 +215,8 @@ pub struct CliOverrides {
 }
 
 impl CliOverrides {
-    /// Dotted JSON paths currently pinned by an active override. Reported by
-    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    /// Dotted JSON paths currently pinned by an active override, which the
+    /// setup pages show disabled and a save leaves as the file has them.
     #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
@@ -236,7 +236,7 @@ impl CliOverrides {
 
 /// Load the effective config: the file at `path` if it exists, else
 /// [`Config::default`], with CLI `overrides` applied on top. This is what the
-/// running driver uses and what `config.get` reports.
+/// running driver uses.
 ///
 /// # Errors
 ///

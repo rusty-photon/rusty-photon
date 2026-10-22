@@ -186,7 +186,7 @@ fn main() -> ServiceResult {
     debug!("Using the qhyccd-rs SIMULATION backend");
     debug!("Configuration path: {}", config_path.display());
 
-    // `config.apply` triggers an in-process reload: the loop re-reads the
+    // A setup-page save triggers an in-process reload: the loop re-reads the
     // effective config, re-enumerates, and rebuilds the server. A failed USB
     // scan's re-scan rebuilds it from the configuration it serves (U6).
     ServiceRunner::new("qhy-camera")

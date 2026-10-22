@@ -645,7 +645,10 @@ suite is the reference. The camera drivers also invoke
 `usb_devices_editor_steps!` for their Cameras section: checking or
 unchecking a port's row, the mode, what a row says is served (also after
 the reload), and the moves and dropped names a confirmation lists;
-`svbony-camera`'s suite is the reference for those.
+`svbony-camera`'s suite is the reference for those. A page's `textarea` is
+submitted and read as a browser would (`dom::textarea`), so a driver whose
+page edits a list of lines — `qhy-camera`'s wheel pages, its filter names —
+drives it with its own steps on the same submit.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or

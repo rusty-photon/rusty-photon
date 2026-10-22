@@ -39,6 +39,8 @@ rusty-photon-camera-core = { workspace = true }
 # `claims`: the placeholder Camera and the failed USB scan's re-scan
 # (docs/services/qhy-camera.md U4, U6).
 rusty-photon-driver = { workspace = true, features = ["claims"] }
+# The setup pages' handler (docs/services/qhy-camera.md "Setup pages").
+rusty-photon-setup = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
@@ -145,7 +147,7 @@ require-sh = true
 # [dependencies] entry keeps `filter_wheel` (production-used: real CFW devices).
 ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

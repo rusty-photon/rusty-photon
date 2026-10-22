@@ -6,8 +6,8 @@
 > shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate.
 > `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`,
 > `upbv2-driver`, `star-adventurer-gti`, `filemonitor`,
-> `sky-survey-camera`, `svbony-camera` and `zwo-camera` have made the move
-> and no longer carry the actions;
+> `sky-survey-camera`, `svbony-camera`, `zwo-camera` and `qhy-camera` have
+> made the move and no longer carry the actions;
 > the other drivers follow family by family, and this document goes with
 > the last of them.
 
@@ -212,8 +212,8 @@ rendering and multi-driver routing. The schema walker and the form coercion it
 renders with are `rusty-photon-setup`'s, shared with the drivers' own pages.
 
 `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`,
-`star-adventurer-gti`, `filemonitor`, `sky-survey-camera`, `svbony-camera` and
-`zwo-camera` no longer carry the actions: their `SupportedActions` list no `config.*` (the mount keeps
+`star-adventurer-gti`, `filemonitor`, `sky-survey-camera`, `svbony-camera`,
+`zwo-camera` and `qhy-camera` no longer carry the actions: their `SupportedActions` list no `config.*` (the mount keeps
 its `ApPark` actions) and they configure themselves on their own setup
 pages ([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the
 BFF's roster links there.

@@ -13,14 +13,39 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Device, FilterWheel};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use parking_lot::Mutex;
 use qhyccd_rs::CfwStatus;
 use rusty_photon_driver::claims::Placeholder;
+use rusty_photon_setup::SetupPages;
 use tracing::{debug, warn};
 
 use crate::backend::{BackendError, FilterWheelHandle, Verdict};
 use crate::camera::UNSPECIFIED_ERROR;
+use crate::setup::QhyCameraDriver;
+
+/// The setup pages a wheel serves its page through, and its wheel number.
+type WheelPages = Option<(Arc<SetupPages<QhyCameraDriver>>, u32)>;
+
+/// A wheel's setup page, `/setup/v1/filterwheel/<number>/setup`, through the
+/// shared handler: what the driver knows of it and its filter names. A wheel
+/// built without the pages (a focused unit test) has none.
+fn wheel_setup_request(
+    pages: &WheelPages,
+    request: SetupRequest,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + 'static>> {
+    match pages {
+        Some((pages, number)) => {
+            rusty_photon_driver::device_setup_request(pages, "filterwheel", *number, request)
+        }
+        None => Box::pin(async {
+            SetupResponse::text(
+                axum::http::StatusCode::NOT_FOUND,
+                "This device was built without its setup pages",
+            )
+        }),
+    }
+}
 
 /// The least time between the wheel's last status read returning and the next
 /// move it is sent (FW5). A QHY CFW drops a move commanded within ~10 ms of the
@@ -334,6 +359,8 @@ pub struct QhyFilterWheelDevice {
     state: Arc<FilterWheelState>,
     /// How long a move has to arrive ([`MOVE_DEADLINE`]).
     move_deadline: Duration,
+    #[debug(skip)]
+    pages: WheelPages,
 }
 
 impl QhyFilterWheelDevice {
@@ -362,7 +389,20 @@ impl QhyFilterWheelDevice {
                 reports_moving: AtomicBool::new(false),
             }),
             move_deadline: MOVE_DEADLINE,
+            pages: None,
         }
+    }
+
+    /// Serve its setup page, `/setup/v1/filterwheel/<number>/setup`, through
+    /// the shared pages.
+    #[must_use]
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<QhyCameraDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
+        self
     }
 
     /// Shorten the deadline a move has to arrive, so a test can reach a failed
@@ -646,6 +686,13 @@ impl Device for QhyFilterWheelDevice {
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
+
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        wheel_setup_request(&self.pages, request)
+    }
 }
 
 #[async_trait::async_trait]
@@ -754,17 +801,32 @@ impl FilterWheel for QhyFilterWheelDevice {
 /// `Connected == false`, refuses `Connected = true` with the device-claims
 /// error code and the reason, carries the reason in its `Description`,
 /// answers to its fixed placeholder `UniqueID`, and answers every wheel member
-/// `NOT_CONNECTED`. Like every wheel here it serves no config actions.
-#[derive(Debug, Clone)]
+/// `NOT_CONNECTED`. Its setup page names the port and the reason, and edits
+/// the declared wheel's filter names.
+#[derive(Clone, derive_more::Debug)]
 pub struct PlaceholderFilterWheel {
     about: Placeholder,
+    #[debug(skip)]
+    pages: WheelPages,
 }
 
 impl PlaceholderFilterWheel {
     /// The placeholder `about` describes.
     #[must_use]
     pub const fn new(about: Placeholder) -> Self {
-        Self { about }
+        Self { about, pages: None }
+    }
+
+    /// Serve its setup page, `/setup/v1/filterwheel/<number>/setup`, through
+    /// the shared pages.
+    #[must_use]
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<QhyCameraDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
+        self
     }
 }
 
@@ -813,6 +875,13 @@ impl Device for PlaceholderFilterWheel {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(self.about.driver_version.clone())
+    }
+
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        wheel_setup_request(&self.pages, request)
     }
 }
 

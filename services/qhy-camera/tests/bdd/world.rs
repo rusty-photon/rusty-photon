@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use ascom_alpaca::api::{Camera, FilterWheel, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -67,7 +68,6 @@ pub struct CameraWorld {
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
     pub last_error_message: Option<String>,
-    pub last_response: Option<serde_json::Value>,
     pub last_actions: Option<Vec<String>>,
     /// How the last start that was expected to fail went: `Err` with the
     /// harness's account of the refusal, or `Ok` when the service came up.
@@ -81,6 +81,9 @@ pub struct CameraWorld {
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
 
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
+
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 }
@@ -92,6 +95,12 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for CameraWorld {
 
     fn valid_config(&self) -> serde_json::Value {
         serde_json::json!({ "devices": {}, "server": { "port": 0 } })
+    }
+}
+
+impl SetupPagesWorld for CameraWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 
@@ -187,13 +196,35 @@ impl CameraWorld {
         args
     }
 
-    /// Spawn the service binary and acquire the typed device clients.
+    /// Spawn the service binary, hand its address and config file to the
+    /// setup-page steps, and acquire the typed device clients.
     pub async fn start(&mut self) {
         let args = self.start_args().await;
+        let config_path = PathBuf::from(args.get(1).expect("--config's path follows it"));
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
         self.handle = Some(handle);
         self.acquire().await;
+    }
+
+    /// Spawn the binary through the shared TLS + auth fixture, so the setup
+    /// pages sit behind the credential.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = serde_json::json!({ "devices": {} });
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.handle = Some(handle);
     }
 
     /// Start the service when the scenario expects it to refuse, recording
@@ -394,35 +425,6 @@ impl CameraWorld {
             Ok(()) => self.last_error_code = None,
             Err(e) => self.last_error_code = Some(e.code.raw()),
         }
-    }
-
-    /// Call a vendor config action; stash the parsed JSON (`last_response`) on
-    /// success, or the ASCOM error code (`last_error_code`) on failure.
-    pub async fn call_action(&mut self, action: &str, params: &str) {
-        match self
-            .camera()
-            .action(action.to_string(), params.to_string())
-            .await
-        {
-            Ok(body) => {
-                self.last_error_code = None;
-                self.last_response =
-                    Some(serde_json::from_str(&body).expect("action returned invalid JSON"));
-            }
-            Err(e) => {
-                self.last_error_code = Some(e.code.raw());
-                self.last_response = None;
-            }
-        }
-    }
-
-    /// The `config` object from a `config.get` response.
-    pub async fn config_get(&mut self) -> serde_json::Value {
-        self.call_action("config.get", "").await;
-        self.last_response
-            .as_ref()
-            .and_then(|r| r.get("config").cloned())
-            .expect("config.get response missing `config`")
     }
 }
 
