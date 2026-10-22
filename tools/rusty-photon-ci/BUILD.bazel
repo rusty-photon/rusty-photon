@@ -30,8 +30,39 @@ rust_binary(
     deps = [":rusty-photon-ci_lib"] + all_crate_deps(normal = True),
 )
 
-# pool_routing.rs reads the workflows and actionlint's runner labels, and
-# toolchain_pins.rs MODULE.bazel and the root Cargo.toml. Cargo sets
+# The packaged services, whose Cargo.toml and pkg/ the packaging guard reads
+# (src/pkg_assets.rs). It reads the workspace's members, so a service missing
+# here fails it.
+_SERVICES = [
+    "calibrator-flats",
+    "dsd-fp2",
+    "filemonitor",
+    "focus-model",
+    "pa-falcon-rotator",
+    "pa-scops-oag",
+    "phd2-guider",
+    "planetarium-bridge",
+    "plate-solver",
+    "polar-align",
+    "ppba-driver",
+    "qhy-camera",
+    "qhy-focuser",
+    "rp",
+    "sentinel",
+    "session-runner",
+    "sky-survey-camera",
+    "star-adventurer-gti",
+    "svbony-camera",
+    "ui-htmx",
+    "upbv2-driver",
+    "zwo-camera",
+    "zwo-focuser",
+]
+
+# pool_routing.rs reads the workflows and actionlint's runner labels,
+# toolchain_pins.rs MODULE.bazel and the root Cargo.toml, and pkg_assets.rs the
+# packaging files, among them doctor's Cargo.toml: doctor has no package of its
+# own, it ships in sentinel's. Cargo sets
 # CARGO_MANIFEST_DIR when it runs a test; here it is relative to the runfiles
 # root the test starts in. rust_toolchain_sha256s.rs's tests `include_str!` the
 # saved channel manifests in testdata/.
@@ -48,7 +79,17 @@ rust_test(
         "//:.github/actionlint.yaml",
         "//:Cargo.toml",
         "//:MODULE.bazel",
+        "//.github/actions:install-svbony-sdk/svbony-sdk.mjs",
+        "//.github/actions:install-zwo-sdk/zwo-sdk.mjs",
+        "//:packaging_files",
         "//:workflows",
+        "//crates/qhyccd-rs/libqhyccd-sys:build.rs",
+        "//crates/zwo-rs/libzwo-sys:sdk/include/license.txt",
+        "//services/doctor:Cargo.toml",
+        "//services/qhy-camera:src/preflight.rs",
+    ] + ["//services/%s:Cargo.toml" % service for service in _SERVICES] + [
+        "//services/%s:pkg" % service
+        for service in _SERVICES
     ],
     env = {"CARGO_MANIFEST_DIR": "tools/rusty-photon-ci"},
     proc_macro_deps = all_crate_deps(

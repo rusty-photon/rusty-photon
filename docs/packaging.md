@@ -97,7 +97,8 @@ links — and runs `cargo deb` (and `cargo generate-rpm` with `--rpm`) per
 service. Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt`.
 
 The QHY SDK version/sha256 pins and the ZWO blob ref are pinned in the
-script and cross-checked by `scripts/check-pkg-assets.sh` against the
+script and cross-checked by the tools crate's packaging guard
+([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs)) against the
 firmware helper and the CI SDK action, so shipped and CI-linked SDK bits
 cannot drift apart.
 

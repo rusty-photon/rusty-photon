@@ -158,8 +158,8 @@ port_of() {
 
 # Fail fast on missing port mappings, before the container build: checked
 # only later, a gap would surface minutes into the lifecycle run, one
-# service at a time. check-pkg-assets.sh cross-checks this table against
-# verify-brew.sh's, but only when it is run.
+# service at a time. The packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs)
+# checks this table against verify-brew.sh's on every pull request.
 missing=""
 for s in $SERVICES; do
     [ -n "$(port_of "$s")" ] || missing="$missing $s"

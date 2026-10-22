@@ -6,8 +6,8 @@
   Drivers (optional, one sub-feature per device driver), Automation (optional:
   rp + friends). Every per-service fragment lives in fragments/<svc>.wxs —
   plain committed files, no generator (same explicitness rule as the Linux
-  services/<svc>/pkg/ dirs); scripts/check-pkg-assets.sh asserts the fragment
-  set and its invariants. Build via scripts/build-msi.ps1 (bindpaths: bin =
+  services/<svc>/pkg/ dirs); tools/rusty-photon-ci/src/pkg_assets.rs checks the
+  fragment set and its invariants. Build via scripts/build-msi.ps1 (bindpaths: bin =
   target\release, zwo = staged ZWO SDK DLLs, repo = repo root).
 
   Silent installs pick features with ADDLOCAL, e.g.
@@ -137,7 +137,7 @@
 
     <!-- Feature tree. Level 1 = installed by default (Core is also
          non-deselectable); Level 2 = off by default, selectable in the
-         feature tree / via ADDLOCAL. Feature Ids are the check-pkg-assets.sh
+         feature tree / via ADDLOCAL. Feature Ids are the packaging guard's
          PascalCase mapping of the service directory names. -->
     <Feature Id="Core"
              Title="Core"

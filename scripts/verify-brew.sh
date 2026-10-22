@@ -142,8 +142,8 @@ port_of() {
 
 # Fail fast on missing port mappings, before any install work: checked only
 # later, a gap would surface minutes into the lifecycle run, one service at
-# a time. check-pkg-assets.sh cross-checks this table against
-# verify-packages.sh's, but only when it is run.
+# a time. The packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs)
+# checks this table against verify-packages.sh's on every pull request.
 missing=""
 for s in $SERVICES; do
     [ -n "$(port_of "$s")" ] || missing="$missing $s"

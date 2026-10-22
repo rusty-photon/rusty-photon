@@ -3,7 +3,7 @@
   rusty-photon-phd2-guider — Windows service fragment (suite MSI; ADR-015).
   Port 11130/tcp. The fragment contract (service name, exe rename,
   failure actions + failure-actions flag, firewall port, demand-start set) is
-  asserted by scripts/check-pkg-assets.sh.
+  checked by tools/rusty-photon-ci/src/pkg_assets.rs.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"

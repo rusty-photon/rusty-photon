@@ -33,8 +33,8 @@ pub const QHY_DLL_NAME: &str = "qhyccd.dll";
 ///
 /// Keep in lockstep with the SDK pin in
 /// `crates/qhyccd-rs/libqhyccd-sys/build.rs` (the `sdk_win64_26.06.04`
-/// search-path names) and the CI workflows; the Windows packaging plan's
-/// `check-pkg-assets.sh` assertions (W4) will assert that parity. The
+/// search-path names) and the CI workflows; the tools crate's packaging guard
+/// (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks that parity. The
 /// `doctor` subcommand compares this against the version the *loaded* DLL
 /// reports, making All-in-One ABI skew visible (ADR-015 accepted risk).
 pub const PINNED_SDK_VERSION: PinnedSdkVersion = PinnedSdkVersion {

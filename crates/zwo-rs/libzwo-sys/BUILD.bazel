@@ -70,3 +70,10 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [":build_script"],
 )
+
+# The SDK's license, which the zwo packages ship a copy of: the packaging guard
+# (tools/rusty-photon-ci/src/pkg_assets.rs) checks the copies match it.
+exports_files(
+    ["sdk/include/license.txt"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

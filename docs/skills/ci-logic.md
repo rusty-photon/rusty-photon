@@ -45,6 +45,7 @@ tools/rusty-photon-ci/
   src/<tool>.rs            one module per tool, with its tests
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
+  src/pkg_assets.rs        a guard over the packaging files, likewise
   testdata/                files the tests include_str!: saved channel manifests
 ```
 
@@ -76,6 +77,10 @@ tools/rusty-photon-ci/
   `rust.toolchain` call line by line, in the shape `rust-toolchain-sha256s`
   prints, and fails on any other line inside `versions` and `sha256s`
   rather than skipping it.
+  A guard that reads every service's files, as the packaging guard does,
+  takes the services from the workspace's members and fails on one it
+  cannot read: under Bazel it sees only the files its test's `data`
+  names, so a service left out of `data` would otherwise go unchecked.
 - **The shell it replaces goes in the same PR**, with every mention of it
   (ADR-022): search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the

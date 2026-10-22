@@ -8,14 +8,15 @@
 // Linux and macOS take ZWO's prebuilt libraries as the INDI repository
 // vendors them, under libasi/ at the commit REF: they have no hash of their
 // own, and a commit's content cannot move. Bump REF to adopt a newer SDK.
-// scripts/check-pkg-assets.sh reads REF from its line below, to check that
-// the packages ship the libraries CI links (build-packages.sh's and
-// build-tarballs.sh's ZWO_SDK_REF).
+// The tools crate's packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs)
+// reads REF from its line below, to check that the packages ship the
+// libraries CI links (build-packages.sh's and build-tarballs.sh's
+// ZWO_SDK_REF).
 //
 // Windows takes ZWO's developer SDKs from its CDN, whose links are rolling
 // "latest" ones, with no version to pin or hash to check. The cache keeps a
 // week's download, and when ZWO's CDN fails, as it often does, the newest
-// earlier week's stands in. check-pkg-assets.sh reads CAMERA_SDK_URL and
+// earlier week's stands in. The packaging guard reads CAMERA_SDK_URL and
 // EAF_SDK_URL from their lines below, to check that the MSI's build fetches
 // from the same links (build-msi.ps1).
 

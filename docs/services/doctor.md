@@ -195,8 +195,8 @@ entirely in sentinel's (plan decision 8): sentinel's deb/rpm assets, MSI
 Core feature, and Homebrew formula each carry the `rusty-photon-doctor`
 binary and the renewal scheduling for their platform, so the `services/*/pkg`
 discovery loops and the catalog completeness check never see a doctor
-"service" at all. `scripts/check-pkg-assets.sh` asserts the whole delivery
-contract inside its sentinel case.
+"service" at all. The packaging guard (`tools/rusty-photon-ci/src/pkg_assets.rs`)
+checks the whole delivery contract in its sentinel checks.
 
 ### Config-root resolution
 

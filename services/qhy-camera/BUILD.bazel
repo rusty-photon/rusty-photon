@@ -251,3 +251,18 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# pkg/, which the tools crate's packaging guard reads
+# (tools/rusty-photon-ci/src/pkg_assets.rs).
+filegroup(
+    name = "pkg",
+    srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The SDK version qhy-camera reports, which the packaging guard checks against
+# the packaging scripts' pins.
+exports_files(
+    ["src/preflight.rs"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

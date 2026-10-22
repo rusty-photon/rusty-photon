@@ -474,3 +474,14 @@ node_link_test(
     size = "small",
     src = "link.test.mjs",
 )
+
+# The SDK refs and Windows URLs the packaging scripts copy, which the tools
+# crate's packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs) checks
+# they agree with.
+exports_files(
+    [
+        "install-svbony-sdk/svbony-sdk.mjs",
+        "install-zwo-sdk/zwo-sdk.mjs",
+    ],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
