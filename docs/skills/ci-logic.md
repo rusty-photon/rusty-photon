@@ -86,10 +86,12 @@ tools/rusty-photon-ci/
   instead of taking a large crate: `rust-toolchain-sha256s` runs `gpg` to
   check a signature, where an OpenPGP crate would bring about 150 crates
   into every build of `//...` for a tool run once a Rust release.
-- **CI runs the crate's tests, not its tools, yet.** The Linux pool
-  template has no Cargo until the plan's T1, so a workflow step that does
-  what a tool does stays YAML, and the tool's source names the step to
-  keep in step with.
+- **CI runs the crate's tests, not its tools, yet.** A workflow step that
+  does what a tool does stays YAML, and the tool's source names the step
+  to keep in step with. The Linux pool template has carried Cargo since
+  the plan's T1, so the first step to run a tool there needs no install;
+  it still settles how the tool is launched in every venue it runs in
+  (ADR-022's Consequences).
 
 ## JavaScript actions
 

@@ -121,8 +121,18 @@ Components:
   libraries the `-sys` crates' build scripts use, libclang for the bindgen
   ones, and python3 for its BDD-runner check. A green Bazel leg does not
   prove all of those, so a rebuilt template is proven by running that job
-  too. The template
-  has no rustup, so the job installs stable itself on every run.
+  too. For that job the template also carries rustup for the `ci` user,
+  with the stable toolchain and the `clippy` and `rustfmt` components its
+  toolchain step asks for, and `/home/ci/.cargo/bin` leads the `PATH` line
+  in the runner's `.env`. The step installs rustup only when `rustup` is
+  not on the PATH, so with both in place it installs none, and it
+  downloads no toolchain while the template's stable is current. After a
+  Rust release, every run downloads the new stable until the next rebuild
+  (the rebuild notes below). The line belongs in `.env` because the
+  `gha-runner` unit starts `run.sh` itself, and the runner's `.path` file
+  is read only by the service wrapper `svc.sh` installs, which this pool
+  does not use. The runner sets every `.env` line in its own environment,
+  which its jobs inherit, and a `PATH` line replaces the PATH whole.
   The template also carries the coverage job's annotation tooling:
   `python3-pip`, `diff-cover==10.5.1` pre-installed for the `ci` user
   (matching the pin in the `uncovered-diff-lines` action's `annotate.mjs`,
@@ -1383,6 +1393,35 @@ dangerous combination. The rule bifurcates by runner kind
     `"$(python3 -c 'import site; print(site.USER_BASE)')/bin/diff-cover"
     --version` as `ci` — since the runner's PATH never includes
     `~/.local/bin` and the action does not rely on it.
+  * **Bring the template's stable up to date at every rebuild, and verify
+    it the way the job runs it.** Stable moves every six weeks, and a
+    template whose stable is behind makes every `stable / clippy` run
+    download the new one. As `ci`, run `rustup update stable
+    --no-self-update`, then the job's toolchain step's own command:
+
+    ```sh
+    runuser -u ci -- /home/ci/.cargo/bin/rustup toolchain install stable \
+        --component clippy --component rustfmt --profile minimal \
+        --no-self-update
+    ```
+
+    It must report the toolchain `unchanged`. Then confirm the PATH the
+    job will see: the `.env` line starts with the directory, and `rustup`
+    resolves from it when that line is the whole PATH:
+
+    ```sh
+    grep '^PATH=/home/ci/.cargo/bin:' /home/ci/actions-runner/.env
+    runuser -u ci -- env "$(grep '^PATH=' /home/ci/actions-runner/.env)" \
+        sh -c 'command -v rustup'
+    ```
+
+    The second command must print `/home/ci/.cargo/bin/rustup`. The rest of
+    the `PATH` line is the PATH the `gha-runner` unit gave the runner
+    before the line existed; a rebuild keeps it as it is. Finally, check
+    that `/home/ci/.cargo` holds no `config.toml` and no `registry`:
+    `lan-crates` writes its directory source into the first, and a
+    template that carries either hands every clone a Cargo that is not the
+    one the job sets up.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)

@@ -72,13 +72,12 @@ jobs:
     # It is also the formatting gate: Bazel runs no rustfmt, so `cargo fmt
     # --check` runs here, on the stable toolchain this job installs for clippy
     # anyway. Each check runs even when an earlier one failed, so one push
-    # reports all of them. Not in bazel.yml's Linux leg: the pool template has
-    # no rustup, so there it would add a WAN toolchain download to a job that
-    # otherwise needs none, and a formatting slip on main would stop the
-    # Bazel run that writes the LAN cache. This job pays for its own
-    # toolchain: on the pool, every run fetches rustup and stable over the
-    # operator's WAN, then compiles cold. Its crates come from the LAN
-    # bazel-remote instead (the lan-crates step below).
+    # reports all of them. Not in bazel.yml's Linux leg: a formatting slip on
+    # main would stop the Bazel run that writes the LAN cache. On the pool,
+    # the template carries rustup and stable, so the toolchain step installs
+    # nothing until a Rust release moves stable past the template's (the
+    # template notes in docs/skills/proxmox-runner-pool.md). Its crates come
+    # from the LAN bazel-remote (the lan-crates step below).
     #
     # Two passes, because one feature point cannot lint everything (#988):
     # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
