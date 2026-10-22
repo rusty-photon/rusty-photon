@@ -46,8 +46,8 @@
 # scripts/verify-packages.sh (shared with on-demand builds on the rigs),
 # scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
 # release.yml), scripts/build-tarballs.sh + scripts/verify-brew.sh +
-# scripts/generate-brew-formulas.sh (shared with release.yml's stable
-# Homebrew channel), and scripts/build-apt-repo.sh +
+# `cargo ci brew-formulas` (shared with release.yml's stable Homebrew
+# channel), and scripts/build-apt-repo.sh +
 # scripts/build-yum-repo.sh + scripts/verify-packages-repo.sh +
 # scripts/push-packages-repo.sh (the package-repo channel).
 permissions:
@@ -319,13 +319,17 @@ jobs:
         uses: ./.github/actions/packages/nightly-assets
         with:
           dir: assets
+      # The formula renderer is the tools crate's brew-formulas, which
+      # `cargo ci` builds from this checkout.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
       # Rendered from the merged assets (tarball sha256s + the manifest the
       # meta-formula downloads), pushed to the tap only after the release
       # assets are up — tap and assets move together, assets first, so the
       # formulas never point at not-yet-uploaded files.
       - name: Render the -nightly formulas
         run: |
-          scripts/generate-brew-formulas.sh --channel nightly \
+          cargo ci brew-formulas --channel nightly \
             --version '${{ needs.plan.outputs.nightly_version }}' \
             --dist assets \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly" \

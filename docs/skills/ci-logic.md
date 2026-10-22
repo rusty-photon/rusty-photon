@@ -43,10 +43,12 @@ tools/rusty-photon-ci/
   src/process.rs           Cmd, the Runner trait, System, which runs for real,
                            and Fake, for the tests
   src/<tool>.rs            one module per tool, with its tests
+  src/brew_formulas.rs     the one tool CI runs: the Homebrew formulas
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
   src/pkg_assets.rs        a guard over the packaging files, likewise
-  testdata/                files the tests include_str!: saved channel manifests
+  testdata/                files the tests include_str!: saved channel
+                           manifests, the formulas the shell rendered
 ```
 
 - **One module per tool, one subcommand per module.** `main.rs` parses
@@ -91,11 +93,16 @@ tools/rusty-photon-ci/
   instead of taking a large crate: `rust-toolchain-sha256s` runs `gpg` to
   check a signature, where an OpenPGP crate would bring about 150 crates
   into every build of `//...` for a tool run once a Rust release.
-- **CI runs the crate's tests, not its tools, yet.** A workflow step that
-  does what a tool does stays YAML, and the tool's source names the step
-  to keep in step with. The Linux pool template has carried Cargo since
-  the plan's T1, so the first step to run a tool there needs no install;
-  it still settles how the tool is launched in every venue it runs in
+- **A workflow runs a tool with `cargo ci <tool>`**, which builds it from
+  the checkout. `brew-formulas` is the one so far: the nightly's `publish`
+  job and `release.yml`'s tap job, on hosted Ubuntu, run
+  `dtolnay/rust-toolchain@stable` before it, as every job that builds Rust
+  here does, and `verify-brew.sh` runs it in macOS jobs that have just built
+  the services. A step that does what a tool does but does not run it
+  stays YAML, and the tool's source names the step to keep in step with
+  (`repin-bazel-lock`, `repin-bazel.yml`). The Linux pool template has
+  carried Cargo since the plan's T1, so a tool run there needs no install;
+  a tool that drives Bazel settles how it is launched in the Bazel legs
   (ADR-022's Consequences).
 
 ## JavaScript actions

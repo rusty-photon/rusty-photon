@@ -1,5 +1,5 @@
 // The Homebrew tap's formulas: a channel's formulas in the tap's Formula
-// directory replaced by the ones generate-brew-formulas.sh rendered, in one
+// directory replaced by the ones `cargo ci brew-formulas` rendered, in one
 // commit made through the GitHub API, or none when the tap already holds
 // them. The token reaches this step alone, and no clone of the tap is kept
 // to push from. Conventions: docs/skills/ci-logic.md.

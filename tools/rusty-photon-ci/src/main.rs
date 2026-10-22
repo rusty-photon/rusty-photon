@@ -2,9 +2,11 @@
 //! Run one with `cargo ci <tool>`.
 
 use std::error::Error;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use rusty_photon_ci::brew_formulas::{self, Channel, Request};
 use rusty_photon_ci::process::System;
 use rusty_photon_ci::repin_bazel_lock;
 use rusty_photon_ci::rust_toolchain_sha256s::{self, Release};
@@ -18,6 +20,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Tool {
+    /// Render the Homebrew tap's formulas for one channel from the macOS
+    /// tarballs
+    BrewFormulas {
+        #[arg(long)]
+        channel: Channel,
+        /// The formulas' version: a release's, or the full nightly stamp
+        #[arg(long)]
+        version: String,
+        /// The tarballs and SHA256SUMS.txt
+        #[arg(long)]
+        dist: PathBuf,
+        /// Where the formulas download from, or file://<dir> to verify locally
+        #[arg(long)]
+        url_base: String,
+        /// Where the formulas are written
+        #[arg(long)]
+        output: PathBuf,
+        /// Only these services, comma-separated, and no meta-formula
+        #[arg(long, value_delimiter = ',')]
+        services: Option<Vec<String>>,
+    },
     /// Refresh MODULE.bazel.lock after a change to Cargo.lock or a workspace
     /// Cargo.toml, and stage it
     RepinBazelLock,
@@ -41,6 +64,27 @@ fn main() -> ExitCode {
 
 fn run(tool: Tool) -> Result<(), Box<dyn Error>> {
     match tool {
+        Tool::BrewFormulas {
+            channel,
+            version,
+            dist,
+            url_base,
+            output,
+            services,
+        } => {
+            let root = brew_formulas::repo_root(&mut System)?;
+            let request = Request {
+                channel,
+                version,
+                dist,
+                url_base,
+                output,
+                services,
+            };
+            for path in brew_formulas::render(&root, &request)? {
+                println!("rendered {}", path.display());
+            }
+        }
         Tool::RepinBazelLock => {
             let report =
                 repin_bazel_lock::repin(&mut System, std::env::vars_os().map(|(name, _)| name))?;

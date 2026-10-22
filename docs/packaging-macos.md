@@ -263,7 +263,7 @@ in-process upload is a tracked follow-up.
 Apple Silicon is the only Mac target this project builds for, so there is
 no real SVBony SDK `build-tarballs.sh` could ever link against here.
 Rather than publish a `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as
-the "real" tarball, `build-tarballs.sh`/`generate-brew-formulas.sh` exclude
+the "real" tarball, `build-tarballs.sh` and `cargo ci brew-formulas` exclude
 `svbony-camera` outright — no `rusty-photon-svbony-camera` formula exists
 in the tap. Revisit once a verified Apple Silicon blob exists (or SVBony
 grants a redistribution license). See
@@ -311,7 +311,7 @@ payload) and release-builds with the `@loader_path` rpaths — the zwo
 services each in their own cargo invocation, so feature unification cannot
 re-union their per-device SDK links. `svbony-camera` is skipped entirely
 (no confirmed `mac_arm64` SVBony SDK blob — see "Camera specifics" above).
-`verify-brew.sh` renders the formulas
+`verify-brew.sh` renders the formulas, with `cargo ci brew-formulas`,
 with `file://` URLs into a scratch tap and, per service: install →
 `brew test` → `brew services start` → HTTP probe → config self-created →
 stop → uninstall clean — with the same class exceptions as

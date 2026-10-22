@@ -56,7 +56,6 @@ filegroup(
         "scripts/build-msi.ps1",
         "scripts/build-packages.sh",
         "scripts/build-tarballs.sh",
-        "scripts/generate-brew-formulas.sh",
         "scripts/verify-brew.sh",
         "scripts/verify-packages.sh",
     ] + glob(["installer/fragments/*.wxs"]),

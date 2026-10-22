@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: `check-pkg-assets.sh` is a tools-crate guard (#1601) |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -1428,6 +1428,22 @@ Done so far:
   repository's own files and names the problem it adds, 91 mistakes in
   all. The script fails on each of them too, except the two the
   membership checks add.
+- **The formula renderer** (#1602): `generate-brew-formulas.sh` is
+  `cargo ci brew-formulas` (`brew_formulas.rs`), which `verify-brew.sh`,
+  the nightly's `publish` job and `release.yml`'s tap job run. Its formulas
+  are the script's byte for byte, but the first line, which names the
+  tool: compared for every packaged service on both channels and for a
+  `--services` subset, and kept by tests against eight of the script's
+  formulas. It hashes with the `sha2` crate where the script ran
+  `sha256sum` or `shasum`, and writes a description as a Ruby string
+  where the script inserted it as it was. The `publish` job and the tap
+  job, on hosted Ubuntu, install the toolchain before it; ci-logic.md
+  says how a workflow runs a tool. The guard no longer reads the script:
+  it checks `build-tarballs.sh` leaves out the service the tool does. A
+  `dry_run=true` dispatch proves it on macOS, through `verify-brew.sh`;
+  the `publish` job's run is proven by the first nightly after the merge,
+  whose render step comes before anything is published, and
+  `release.yml`'s by the next tag.
 
 ## S1 — Sweep of the remaining inline blocks
 
