@@ -919,6 +919,12 @@ test("execute gives a program the environment without the runner's variables, un
   });
 });
 
+test('execute runs a program in the directory it is given', async () => {
+  const dir = realpathSync(mkdtempSync(join(process.env.TEST_TMPDIR ?? tmpdir(), 'execute-')));
+  const where = await execute(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { cwd: dir, echo: false });
+  assert.equal(realpathSync(where), dir);
+});
+
 test('execute rejects with the exit code and the last line of stderr, or the code alone', async () => {
   await capture(() =>
     assert.rejects(execute(process.execPath, ['-e', "console.error('first'); console.error('last'); process.exit(2)"]), {

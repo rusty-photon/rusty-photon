@@ -108,11 +108,14 @@ node_test(
 )
 
 # packages: nightly-packages.yml's plan (the nightly tag, the version), the
-# msi job's fetch of the nightly's MSI, and the publish job's asset names and
-# sums, its tag and release, and its commit to the Homebrew tap; and
-# release.yml's check of its tag and its commit to the tap. The tests
-# answer the GitHub API from a fake, which redirects an asset's download to a
-# fake storage server and takes uploads as GitHub's uploads host does.
+# msi job's fetch of the nightly's MSI, the repo job's apt and dnf
+# repositories and their install as a client, and the publish job's asset
+# names and sums, its tag and release, its commit to the Homebrew tap and
+# its push of the repositories to R2; and release.yml's check of its tag and
+# its commit to the tap. The tests answer the GitHub API from a fake, which
+# redirects an asset's download to a fake storage server and takes uploads
+# as GitHub's uploads host does; R2 from a fake bucket; and the repositories'
+# programs (dpkg-scanpackages, createrepo_c, gpg, podman) from fakes.
 node_test(
     name = "packages_test",
     size = "small",
@@ -121,8 +124,11 @@ node_test(
         "packages/plan.test.mjs",
         "packages/prior.test.mjs",
         "packages/publish.test.mjs",
+        "packages/r2.test.mjs",
         "packages/release.test.mjs",
+        "packages/repo.test.mjs",
         "packages/tap.test.mjs",
+        "packages/verify-repo.test.mjs",
     ],
     data = [
         "lib/github.mjs",
@@ -133,8 +139,11 @@ node_test(
         "packages/plan.mjs",
         "packages/prior.mjs",
         "packages/publish.mjs",
+        "packages/r2.mjs",
         "packages/release.mjs",
+        "packages/repo.mjs",
         "packages/tap.mjs",
+        "packages/verify-repo.mjs",
     ],
 )
 

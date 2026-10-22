@@ -1,0 +1,27 @@
+name: Publish the package repositories
+description: >-
+  nightly-packages.yml's publish job, last: replaces the apt and dnf
+  repositories in the R2 bucket behind pkg.rustyphoton.space with the
+  verified site, through R2's S3 API, content first, then the signed
+  metadata, then the stale objects' deletion. The logic is ../r2.mjs's.
+inputs:
+  site:
+    description: The verified site (../repo-site).
+    required: false
+    default: site
+  bucket:
+    description: The R2 bucket.
+    required: false
+    default: rusty-photon-packages
+  account-id:
+    description: The Cloudflare account that holds the bucket, which names R2's endpoint.
+    required: true
+  access-key-id:
+    description: The access key ID of a bucket-scoped Object Read & Write R2 API token.
+    required: true
+  secret-access-key:
+    description: That token's secret access key.
+    required: true
+runs:
+  using: node24
+  main: index.mjs

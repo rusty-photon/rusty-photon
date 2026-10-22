@@ -600,18 +600,18 @@ export function command(cmd, args, { cwd, env } = {}) {
 
 /**
  * Runs `program` with `args` as a `run:` step would have: never through a
- * shell, with no stdin, and with `env`, by default this process's environment
- * without the runner's variables (withoutRunnerVariables). Its output is
- * copied to the step's log as it comes, stdout only when `echo` is true, and
- * it resolves to what it printed on stdout. Rejects when it cannot start, or
- * when it exits other than 0, with the last line of its stderr. When `signal`
- * aborts, the program is sent SIGTERM and the promise rejects with an
- * AbortError.
+ * shell, with no stdin, in `cwd` (by default this process's), and with `env`,
+ * by default this process's environment without the runner's variables
+ * (withoutRunnerVariables). Its output is copied to the step's log as it
+ * comes, stdout only when `echo` is true, and it resolves to what it printed
+ * on stdout. Rejects when it cannot start, or when it exits other than 0,
+ * with the last line of its stderr. When `signal` aborts, the program is sent
+ * SIGTERM and the promise rejects with an AbortError.
  */
-export function execute(program, args, { env = withoutRunnerVariables(process.env), spawn: start = spawn, signal, echo = true } = {}) {
+export function execute(program, args, { env = withoutRunnerVariables(process.env), cwd, spawn: start = spawn, signal, echo = true } = {}) {
   return new Promise((resolve, reject) => {
     // A spawn that throws rejects the promise, as any throw in its executor does.
-    const child = start(program, args, { env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = start(program, args, { env, cwd, signal, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     child.stdout.setEncoding('utf8');
