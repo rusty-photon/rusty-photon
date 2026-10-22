@@ -180,6 +180,17 @@ fn last_lines(text: &str, count: usize) -> Vec<&str> {
         .to_vec()
 }
 
+/// What a command printed, after a colon, for the reason it failed; nothing
+/// when it printed nothing.
+fn printed(output: &str) -> String {
+    let output = output.trim();
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(": {output}")
+    }
+}
+
 /// Whether a line of a verbose msiexec log says what failed: the action
 /// that returned 3, an error's number, a custom action's error, a service
 /// that did not start.
@@ -336,6 +347,24 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         })
     }
 
+    /// Whether `service` is not installed, as sc.exe says of a service that
+    /// does not exist: exit 1060, `ERROR_SERVICE_DOES_NOT_EXIST`. Any other
+    /// failure to query it proves nothing, and fails the check.
+    fn absent(&mut self, service: &str) -> Result<bool, Error> {
+        let name = service_name(service);
+        let (code, said) = self
+            .runner
+            .output(&Cmd::new("sc.exe", &["queryex", &name]))?;
+        match code {
+            Some(0) => Ok(false),
+            Some(1060) => Ok(true),
+            _ => Err(self.fail(
+                service,
+                &format!("sc.exe queryex {name} exited {code:?}{}", printed(&said)),
+            )),
+        }
+    }
+
     fn state_is(&mut self, service: &str, state: u32) -> bool {
         self.status(&service_name(service))
             .is_some_and(|status| status.state == state)
@@ -411,8 +440,14 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "msiexec",
             "timed out after 60s waiting for all seeded services stopped",
         )?;
-        // Gone already is as good.
-        let _ = fs::remove_dir_all(self.logs());
+        // Gone already is as good; a log left behind is not.
+        let logs = self.logs();
+        fs::remove_dir_all(&logs)
+            .or_else(|err| match err.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(err),
+            })
+            .map_err(io(&logs))?;
         println!(
             "== upgrade seed: prior services stopped and logs cleared (the checks now see the \
              upgraded install only)"
@@ -476,8 +511,9 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         );
         let fix = Cmd::new(&doctor.to_string_lossy(), &["--fix", "--json"]);
         let (code, json) = self.runner.output(&fix)?;
-        // 1 is a diagnosis with problems; more is a crash.
-        if code.is_none_or(|code| code > 1) {
+        // 1 is a diagnosis with problems; anything else is a crash, which on
+        // Windows can be a negative NTSTATUS.
+        if !matches!(code, Some(0 | 1)) {
             return Err(self.fail("doctor", &format!("doctor --fix exited {code:?}")));
         }
         let Ok(report) = serde_json::from_str::<Value>(&json) else {
@@ -529,11 +565,19 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         let credential = fs::read_to_string(&path).map_err(io(&path))?;
         self.credential = Some(curl_credential(credential.trim(), &self.places.temp)?);
         // A fix takes effect when its service restarts. A failed restart
-        // shows in the running check that follows, with the service's log.
+        // shows in the running check that follows, with the service's log,
+        // after what net said.
         for service in active {
             let name = service_name(service);
-            self.runner.code(&Cmd::new("net", &["stop", &name]))?;
-            self.runner.code(&Cmd::new("net", &["start", &name]))?;
+            for verb in ["stop", "start"] {
+                let (code, said) = self.runner.output(&Cmd::new("net", &[verb, &name]))?;
+                if code != Some(0) {
+                    eprintln!(
+                        "verify-msi: net {verb} {name} exited {code:?}{}",
+                        printed(&said)
+                    );
+                }
+            }
         }
         println!("== upgrade: OK (doctor --fix converged the install; active services restarted)");
         Ok(())
@@ -806,19 +850,21 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         let installed = doctor.is_file();
         self.require(installed, "doctor", "rusty-photon-doctor.exe not installed")?;
         let doctor = doctor.to_string_lossy();
-        // A diagnosis may find problems on this box (1); more is a crash.
-        let code = self.runner.code(&Cmd::new(&doctor, &["--json"]))?;
+        // A diagnosis may find problems on this box (1); anything else is a
+        // crash, which on Windows can be a negative NTSTATUS. Its report is
+        // stdout; a crash's reason, stderr, reaches the log.
+        let (code, _) = self.runner.output(&Cmd::new(&doctor, &["--json"]))?;
         self.require(
-            code.is_some_and(|code| code <= 1),
+            matches!(code, Some(0 | 1)),
             "doctor",
             &format!("rusty-photon-doctor --json exited {code:?}"),
         )?;
         // With nothing due, the renewal task's steady state.
-        let code = self.runner.code(&Cmd::new(&doctor, &["tls", "renew"]))?;
+        let (code, said) = self.runner.output(&Cmd::new(&doctor, &["tls", "renew"]))?;
         self.require(
             code == Some(0),
             "doctor",
-            &format!("tls renew (nothing due) exited {code:?}"),
+            &format!("tls renew (nothing due) exited {code:?}{}", printed(&said)),
         )?;
         let task = self.renewal_task();
         self.require(
@@ -839,7 +885,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "zwo-camera",
             &format!("feature remove exited {code:?}"),
         )?;
-        let gone = self.status(&service_name("zwo-camera")).is_none();
+        let gone = self.absent("zwo-camera")?;
         self.require(
             gone,
             "zwo-camera",
@@ -891,7 +937,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             &format!("uninstall exited {code:?} (log: {log})"),
         )?;
         for service in services {
-            let gone = self.status(&service_name(service)).is_none();
+            let gone = self.absent(service)?;
             self.require(gone, service, "service still installed after uninstall")?;
         }
         let exes = fs::read_dir(&self.places.install)
@@ -1684,6 +1730,11 @@ mod tests {
             doctor("--json", 2).unwrap_err(),
             "FAIL [doctor]: rusty-photon-doctor --json exited Some(2)"
         );
+        // An access violation's NTSTATUS, as Windows gives a crash.
+        assert_eq!(
+            doctor("--json", -1_073_741_819).unwrap_err(),
+            "FAIL [doctor]: rusty-photon-doctor --json exited Some(-1073741819)"
+        );
         assert_eq!(
             doctor("tls renew", 1).unwrap_err(),
             "FAIL [doctor]: tls renew (nothing due) exited Some(1)"
@@ -1904,23 +1955,26 @@ mod tests {
             result.unwrap_err().to_string(),
             "FAIL [doctor]: provisioned pki\\ca.pem did not survive uninstall (only the manual purge takes it)"
         );
-        // A doctor that crashes, or provisions no credential.
-        let fixture = Fixture::new();
-        let sim = fixture.sim();
-        sim.borrow_mut().arp = vec![nightly.clone()];
-        let line = format!(
-            "{}/rusty-photon-doctor.exe --fix",
-            fixture.places().install.display()
-        );
-        let (result, _) = fixture.verify(
-            &sim,
-            Script::default().on_cmd(&line, |_| Err(2)),
-            &upgrade(&fixture),
-        );
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "FAIL [doctor]: doctor --fix exited Some(2)"
-        );
+        // A doctor that crashes, on Windows with a negative NTSTATUS too, or
+        // provisions no credential.
+        for code in [2, -1_073_741_819] {
+            let fixture = Fixture::new();
+            let sim = fixture.sim();
+            sim.borrow_mut().arp = vec![nightly.clone()];
+            let line = format!(
+                "{}/rusty-photon-doctor.exe --fix",
+                fixture.places().install.display()
+            );
+            let (result, _) = fixture.verify(
+                &sim,
+                Script::default().on_cmd(&line, move |_| Err(code)),
+                &upgrade(&fixture),
+            );
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                format!("FAIL [doctor]: doctor --fix exited Some({code})")
+            );
+        }
         let fixture = Fixture::new();
         let sim = fixture.sim();
         sim.borrow_mut().arp = vec![nightly];
@@ -1976,6 +2030,62 @@ mod tests {
             result.unwrap_err().to_string(),
             "FAIL [msiexec]: prior MSI installed no services: the upgrade proof would prove nothing"
         );
+    }
+
+    /// The seed's logs go before the upgrade, whose checks would read them:
+    /// gone already is as good, and a folder it cannot remove fails the run.
+    #[test]
+    fn the_seeds_logs_go_or_the_upgrade_proves_nothing() {
+        for left in [false, true] {
+            let fixture = Fixture::new();
+            let sim = fixture.sim();
+            sim.borrow_mut().arp = vec![format!("rusty-photon {NIGHTLY}")];
+            let logs = fixture.places().data.join("logs");
+            let answering = Rc::clone(&sim);
+            let at = logs.clone();
+            // The seed stops zwo-focuser last.
+            let script =
+                Script::default().on_cmd("sc.exe stop rusty-photon-zwo-focuser", move |cmd| {
+                    fs::remove_dir_all(&at).unwrap();
+                    if left {
+                        // A file, which remove_dir_all refuses.
+                        fs::write(&at, "").unwrap();
+                    }
+                    answering.borrow_mut().answer(cmd)
+                });
+            let (result, _) = fixture.verify(&sim, script, &upgrade(&fixture));
+            if left {
+                let error = result.unwrap_err().to_string();
+                let path = format!("{}: ", logs.display());
+                assert!(error.starts_with(&path), "{error}");
+            } else {
+                assert_eq!(result.unwrap(), 9);
+            }
+        }
+    }
+
+    /// Only sc.exe's answer for a service that does not exist proves one
+    /// removed; any other failure to query it fails the check.
+    #[test]
+    fn only_a_service_sc_says_does_not_exist_is_gone() {
+        for service in ["zwo-camera", "sentinel"] {
+            let fixture = Fixture::new();
+            let sim = fixture.sim();
+            let answering = Rc::clone(&sim);
+            let query = format!("sc.exe queryex rusty-photon-{service}");
+            // 1722, the RPC server is unavailable, where it would say 1060.
+            let script = Script::default().on_cmd(&query, move |cmd| {
+                let answer = answering.borrow_mut().answer(cmd);
+                answer.map_err(|code| if code == 1060 { 1722 } else { code })
+            });
+            let (result, _) = fixture.verify(&sim, script, &Request::default());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                format!(
+                    "FAIL [{service}]: sc.exe queryex rusty-photon-{service} exited Some(1722)"
+                )
+            );
+        }
     }
 
     #[test]
@@ -2053,6 +2163,12 @@ mod tests {
         ] {
             assert!(!says_what_failed(line), "{line}");
         }
+    }
+
+    #[test]
+    fn puts_what_a_command_printed_after_a_colon() {
+        assert_eq!(printed("  renewal failed\r\n"), ": renewal failed");
+        assert_eq!(printed("\r\n"), "");
     }
 
     #[test]

@@ -39,8 +39,7 @@ pub const LIBUSB: &str = "/opt/homebrew/opt/libusb";
 /// without `LIBCLANG_PATH`.
 pub const CLT_LIBCLANG: &str = "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib";
 
-/// The two rpaths every binary gets. It replaces any `RUSTFLAGS` the caller
-/// has, so the binaries do not depend on the shell they were built from.
+/// The two rpaths every binary gets.
 const RUSTFLAGS: &str =
     "-C link-arg=-Wl,-rpath,@loader_path/../lib -C link-arg=-Wl,-rpath,@loader_path/lib";
 
@@ -173,9 +172,7 @@ fn stage_zwo(
 fn cargo_build(staged: &Staged, root: &Path, packages: &[String]) -> Cmd {
     let mut args = vec!["build", "--release"];
     args.extend(packages.iter().map(String::as_str));
-    let mut cmd = Cmd::new("cargo", &args)
-        .dir(root)
-        .env("RUSTFLAGS", RUSTFLAGS);
+    let mut cmd = packaging::rustflags(Cmd::new("cargo", &args).dir(root), RUSTFLAGS);
     if let Some(dir) = &staged.qhy {
         cmd = cmd.env("QHYCCD_SDK_DIR", &dir.to_string_lossy());
     }
@@ -477,6 +474,15 @@ mod tests {
                 tar("zwo-focuser", "rusty-photon-zwo-focuser lib ZWO-SDK-LICENSE.txt"),
             ]
         );
+        let builds: Vec<&Cmd> = runner
+            .ran
+            .iter()
+            .filter(|cmd| cmd.args.first().is_some_and(|arg| arg == "build"))
+            .collect();
+        assert_eq!(builds.len(), 3);
+        for cmd in builds {
+            assert_eq!(cmd.env_remove, ["CARGO_ENCODED_RUSTFLAGS"]);
+        }
         assert!(dist.join("SHA256SUMS.txt").is_file());
     }
 

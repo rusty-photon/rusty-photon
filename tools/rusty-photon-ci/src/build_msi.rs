@@ -354,13 +354,9 @@ fn cargo_build(root: &Path, qhy: &Path, zwo: &Path, packages: &[String]) -> Cmd 
     let mut args = vec!["build", "--release"];
     args.extend(packages.iter().map(String::as_str));
     let skip: Vec<OsString> = SKIP_NATIVE_LINK.iter().map(OsString::from).collect();
-    // CRT-static, so the exes need no VC++ redistributable. It replaces any
-    // RUSTFLAGS the caller has, so the binaries do not depend on the shell
-    // they were built from.
-    Cmd::new("cargo", &args)
-        .dir(root)
-        .env_remove(&skip)
-        .env("RUSTFLAGS", "-C target-feature=+crt-static")
+    // CRT-static, so the exes need no VC++ redistributable.
+    let cmd = Cmd::new("cargo", &args).dir(root).env_remove(&skip);
+    packaging::rustflags(cmd, "-C target-feature=+crt-static")
         .env("QHYCCD_SDK_DIR", &qhy.to_string_lossy())
         .env("ZWO_SDK_LIB_DIR", &zwo.to_string_lossy())
 }
@@ -682,7 +678,11 @@ mod tests {
             assert_eq!(cmd.dir.as_deref(), Some(fixture.root.path()));
             assert_eq!(
                 cmd.env_remove,
-                ["QHYCCD_SKIP_NATIVE_LINK", "ZWO_SKIP_NATIVE_LINK"]
+                [
+                    "QHYCCD_SKIP_NATIVE_LINK",
+                    "ZWO_SKIP_NATIVE_LINK",
+                    "CARGO_ENCODED_RUSTFLAGS"
+                ]
             );
         }
         let wix = runner.ran.last().unwrap();

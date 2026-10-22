@@ -1607,6 +1607,15 @@ Done so far:
   windows-latest, and a `dry_run=true` dispatch the nightly's stamp and
   its upgrade over the published nightly, which the script built.
 
+  A follow-up took the optional findings of #1605's review, which the
+  script shared: the verifier takes only `sc.exe`'s answer for a service
+  that does not exist (1060) as proof that a removed service is gone;
+  it fails on a doctor exit other than 0 or 1, a crash's negative NTSTATUS
+  included; it shows what doctor and `net` print when they fail; and it
+  fails when it cannot clear the seeded install's logs. The three builders
+  also take `CARGO_ENCODED_RUSTFLAGS` out of the build's environment, since
+  Cargo reads it before the `RUSTFLAGS` they set.
+
 ## S1 — Sweep of the remaining inline blocks
 
 Every workflow block with logic (control flow, or more than five lines)

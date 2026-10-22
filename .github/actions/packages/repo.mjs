@@ -70,10 +70,16 @@ export function fingerprint(colons) {
  * runner's passwordless sudo allows.
  */
 export async function prerequisites({ run = execute, root = process.getuid?.() === 0 } = {}) {
-  const missing = [];
-  for (const name of APT_PACKAGES) {
-    await run('dpkg', ['-s', name], { echo: false }).catch(() => missing.push(name));
-  }
+  // Every package dpkg knows, in one listing: a query for one it does not
+  // know would put its complaint in the log.
+  const listed = await run('dpkg-query', ['-W', '-f', '${Package} ${Status}\n'], { echo: false });
+  const installed = new Set(
+    listed
+      .split('\n')
+      .filter((line) => line.endsWith(' installed'))
+      .map((line) => line.split(' ')[0]),
+  );
+  const missing = APT_PACKAGES.filter((name) => !installed.has(name));
   if (missing.length === 0) return;
   io.stdout(`Installing prerequisites: ${missing.join(' ')}\n`);
   const aptGet = (args) => (root ? run('apt-get', args) : run('sudo', ['apt-get', ...args]));

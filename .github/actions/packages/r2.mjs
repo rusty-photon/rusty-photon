@@ -59,6 +59,7 @@
 // much for a nightly publisher.
 
 import { createHash, createHmac } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -195,6 +196,9 @@ function manifest(set) {
  * and live.
  */
 export async function publishSite({ site, store }) {
+  // A tree without the public key is not a rendered site: published, it
+  // would replace the live repositories, and the next run would sweep them.
+  if (!existsSync(path.join(site, 'pubkey.asc'))) throw new Error(`${site}/pubkey.asc missing: render the site first`);
   const put = async (key, body) => {
     await store.put(key, body);
     io.stdout(`  put ${key}\n`);
@@ -209,7 +213,6 @@ export async function publishSite({ site, store }) {
   const listed = old ?? new Set();
   const kept = prev ?? new Set();
   const tree = (await filesUnder(site)).filter((key) => ![MANIFEST, MANIFEST_PREV].includes(path.posix.basename(key)));
-  if (tree.length === 0) throw new Error(`no files under ${site}`);
   const fresh = new Set(tree);
 
   // 2.

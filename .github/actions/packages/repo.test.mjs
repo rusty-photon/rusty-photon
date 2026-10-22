@@ -36,7 +36,7 @@ function fixture({ debs = ['amd64', 'arm64'], rpms = ['x86_64', 'aarch64'] } = {
 /**
  * A runner for the rendering's programs, which writes what each would and
  * records each call as `[program, ...args]` with its directory and GnuPG home.
- * `installed` lists the apt packages dpkg knows; `publicFpr` is the key the
+ * `installed` lists the apt packages installed; `publicFpr` is the key the
  * public key file holds.
  */
 function fakeRun({ installed = APT_PACKAGES, publicFpr = FPR, importFails = false, noSecret = false } = {}) {
@@ -46,9 +46,12 @@ function fakeRun({ installed = APT_PACKAGES, publicFpr = FPR, importFails = fals
     calls.push({ line: [program, ...args].join(' '), cwd, home: env?.GNUPGHOME });
     if (env?.GNUPGHOME) homes.add(env.GNUPGHOME);
     const at = (file) => path.resolve(cwd ?? '.', file);
-    if (program === 'dpkg') {
-      if (!installed.includes(args[1])) throw new Error(`dpkg exited with 1: package '${args[1]}' is not installed`);
-      return '';
+    if (program === 'dpkg-query') {
+      assert.deepEqual(args, ['-W', '-f', '${Package} ${Status}\n']);
+      const known = ['apt', ...installed].map((name) => `${name} install ok installed\n`);
+      // apt-utils, when not installed, as removed with its config files left.
+      if (!installed.includes('apt-utils')) known.push('apt-utils deinstall ok config-files\n');
+      return known.join('');
     }
     if (program === 'gpg' && args.includes('--import')) {
       if (importFails) throw new Error('gpg exited with 2');
@@ -137,7 +140,7 @@ test('renders and signs the apt and dnf repositories of every architecture', asy
   const where = ({ line, cwd }) =>
     cwd ? `${line} @ ${posix(path.relative(site, cwd))}` : line.split(site).map((part, i) => (i === 0 ? part : posix(part))).join('<site>');
   assert.deepEqual(
-    calls.filter(({ line }) => !line.startsWith('dpkg ') && !line.startsWith('gpg --batch --quiet --import')).map(where),
+    calls.filter(({ line }) => !line.startsWith('dpkg-query ') && !line.startsWith('gpg --batch --quiet --import')).map(where),
     [
       'gpg --batch --list-secret-keys --with-colons',
       `gpg --batch --show-keys --with-colons ${pubkey}`,
@@ -178,22 +181,20 @@ test('renders the architectures it has packages for, afresh', async () => {
 });
 
 test('installs only the prerequisites the runner lacks, through sudo unless root', async () => {
-  const { run, calls } = fakeRun({ installed: ['apt-utils', 'gnupg'] });
+  const listing = 'dpkg-query -W -f ${Package} ${Status}\n';
+  const { run, calls } = fakeRun({ installed: ['gnupg'] });
   await capture(() => prerequisites({ run, root: false }));
   assert.deepEqual(
     calls.map(({ line }) => line),
-    [
-      ...APT_PACKAGES.map((name) => `dpkg -s ${name}`),
-      'sudo apt-get update -qq',
-      'sudo apt-get install -y --no-install-recommends dpkg-dev createrepo-c',
-    ],
+    [listing, 'sudo apt-get update -qq', 'sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils createrepo-c'],
+    'apt-utils with only its config files left is not installed',
   );
   const asRoot = fakeRun({ installed: ['dpkg-dev', 'apt-utils', 'gnupg'] });
   await capture(() => prerequisites({ run: asRoot.run, root: true }));
   assert.deepEqual(asRoot.calls.slice(-2).map(({ line }) => line), ['apt-get update -qq', 'apt-get install -y --no-install-recommends createrepo-c']);
   const all = fakeRun();
   await prerequisites({ run: all.run });
-  assert.equal(all.calls.length, APT_PACKAGES.length);
+  assert.deepEqual(all.calls.map(({ line }) => line), [listing]);
 });
 
 test('signs only with the key clients are given, and leaves no GnuPG home behind', async () => {
