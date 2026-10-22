@@ -1,6 +1,6 @@
 # build-msi.ps1 - build the rusty-photon Windows suite MSI on a Windows box
 # (dev machine or windows-latest CI). The Windows analogue of
-# scripts/build-packages.sh; operator guide: docs/packaging.md (Windows guide
+# `cargo ci build-packages`; operator guide: docs/packaging.md (Windows guide
 # lands in W5); design: docs/plans/archive/windows-packaging.md + ADR-015.
 #
 # Steps:
@@ -51,7 +51,8 @@ function Die([string]$msg) {
 }
 
 # ---- pins -------------------------------------------------------------
-# The QHY version must match scripts/build-packages.sh QHY_SDK_VERSION, the
+# The QHY version must match packaging::qhy::VERSION (in
+# tools/rusty-photon-ci/src/packaging/qhy.rs), the
 # sdk_win64_<ver> root in crates/qhyccd-rs/libqhyccd-sys/build.rs, and
 # PINNED_SDK_VERSION in services/qhy-camera/src/preflight.rs
 # (tools/rusty-photon-ci/src/pkg_assets.rs checks all three): the import lib linked here

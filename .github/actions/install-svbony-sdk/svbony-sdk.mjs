@@ -16,10 +16,11 @@
 // Linux and macOS take SVBony's prebuilt library as the INDI repository
 // vendors it, libsvbony/libSVBCameraSDK_<arch>.bin at the commit REF: it has
 // no hash of its own, and a commit's content cannot move. Bump REF to adopt a
-// newer SDK. The tools crate's packaging guard
-// (tools/rusty-photon-ci/src/pkg_assets.rs) reads REF from its line below, to
-// check that build-packages.sh's SVBONY_SDK_REF and the operator's
-// rusty-photon-svbony-sdk-install take the same commit.
+// newer SDK. The tools crate's Linux builder, `cargo ci build-packages`,
+// links the packages against the blob at REF, which it reads from its line
+// below, and its packaging guard (tools/rusty-photon-ci/src/pkg_assets.rs)
+// checks that the operator's rusty-photon-svbony-sdk-install takes the same
+// commit.
 //
 // The blob has no DT_SONAME, despite the SOVERSION 1 INDI's CMakeLists.txt
 // gives its install, so a binary linked against libSVBCameraSDK.so asks the

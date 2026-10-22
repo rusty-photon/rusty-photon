@@ -94,7 +94,7 @@ pub fn check_host(os: &str, arch: &str) -> Result<(), String> {
     if os != "macos" {
         return Err(
             "the macOS packages are built and verified on macOS only (Linux ships .deb/.rpm — \
-             scripts/build-packages.sh)"
+             `cargo ci build-packages`)"
                 .to_owned(),
         );
     }
@@ -113,82 +113,6 @@ struct Staged {
     zwo: Option<PathBuf>,
     /// `LIBCLANG_PATH`, when bindgen needs Homebrew's.
     libclang: Option<String>,
-}
-
-/// Stages QHYCCD's SDK and returns the directory holding `libqhyccd.a`.
-fn stage_qhy(runner: &mut impl Runner, cache: &Path, offline: bool) -> Result<PathBuf, Error> {
-    let file = qhy::mac_archive();
-    let extract = cache.join(format!("qhy-sdk-{}-mac-arm64", qhy::VERSION));
-    if !extract.is_dir() {
-        if offline {
-            return Err(missing(&extract));
-        }
-        let archive = cache.join(&file);
-        if !archive.is_file() {
-            packaging::download(runner, &qhy::url(&file), &archive)?;
-        }
-        packaging::check_sha256(&archive, qhy::SHA256_MAC_ARM64)?;
-        let work = tempfile::tempdir_in(cache).map_err(io(cache))?;
-        let work_arg = work.path().to_string_lossy();
-        let archive_arg = archive.to_string_lossy();
-        runner.run(&Cmd::new("tar", &["-xzf", &archive_arg, "-C", &work_arg]))?;
-        let unpacked = work.path().join(file.trim_end_matches(".tar.gz"));
-        fs::rename(&unpacked, &extract).map_err(io(&unpacked))?;
-    }
-    // Found rather than assumed: the archive's layout is QHYCCD's.
-    let lib = find(&extract, "libqhyccd.a")?.ok_or_else(|| Error::Io {
-        path: extract.display().to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "no libqhyccd.a under it"),
-    })?;
-    let dir = lib.parent().map(Path::to_path_buf).unwrap_or_default();
-    println!(
-        "QHYCCD SDK {} staged: QHYCCD_SDK_DIR={}",
-        qhy::VERSION,
-        dir.display()
-    );
-    Ok(dir)
-}
-
-/// The first file named `name` under `dir`, in sorted order.
-fn find(dir: &Path, name: &str) -> Result<Option<PathBuf>, Error> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .map_err(io(dir))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            if let Some(found) = find(&path, name)? {
-                return Ok(Some(found));
-            }
-        } else if path.file_name().is_some_and(|file| file == name) {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
-}
-
-fn missing(path: &Path) -> Error {
-    Error::Io {
-        path: path.display().to_string(),
-        source: std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "--skip-sdk-staging set, but a previous run has not cached it",
-        ),
-    }
-}
-
-/// The ZWO dylibs the selected services link.
-fn zwo_dylibs(services: &[String]) -> Vec<&'static str> {
-    let mut dylibs = Vec::new();
-    if services.iter().any(|service| service == "zwo-camera") {
-        dylibs.push("libASICamera2");
-    }
-    if services.iter().any(|service| service == "zwo-focuser") {
-        dylibs.push("libEAFFocuser");
-    }
-    dylibs
 }
 
 /// Stages the ZWO dylibs and returns their directory, and the
@@ -218,16 +142,10 @@ fn stage_zwo(
     let dir = host.cache.join(format!("zwo-{commit}-mac_arm64"));
     fs::create_dir_all(&dir).map_err(io(&dir))?;
     for dylib in dylibs {
-        let path = dir.join(format!("{dylib}.dylib"));
-        if !path.is_file() {
-            if offline {
-                return Err(missing(&path));
-            }
-            let url = format!(
-                "https://github.com/indilib/indi-3rdparty/raw/{commit}/libasi/mac_arm64/{dylib}.bin"
-            );
-            packaging::download(runner, &url, &path)?;
-        }
+        let url = format!(
+            "https://github.com/indilib/indi-3rdparty/raw/{commit}/libasi/mac_arm64/{dylib}.bin"
+        );
+        packaging::fetch(runner, &url, &dir.join(format!("{dylib}.dylib")), offline)?;
     }
     // A no-op once the cached copy is rewritten. EAF's dylib loads only
     // system frameworks.
@@ -250,30 +168,6 @@ fn stage_zwo(
         dir.display()
     );
     Ok((dir, libclang))
-}
-
-/// The cargo runs that build `services`: the zwo services each alone, the
-/// rest together, with doctor when sentinel is among them, since its tarball
-/// carries doctor.
-fn cargo_runs(services: &[String]) -> Vec<Vec<String>> {
-    let mut batched: Vec<String> = Vec::new();
-    let mut alone: Vec<Vec<String>> = Vec::new();
-    for service in services {
-        if service == "zwo-camera" || service == "zwo-focuser" {
-            alone.push(vec!["-p".to_owned(), service.clone()]);
-        } else {
-            batched.extend(["-p".to_owned(), service.clone()]);
-        }
-    }
-    if services.iter().any(|service| service == "sentinel") {
-        batched.extend(["-p".to_owned(), "doctor".to_owned()]);
-    }
-    let mut runs = Vec::new();
-    if !batched.is_empty() {
-        runs.push(batched);
-    }
-    runs.extend(alone);
-    runs
 }
 
 fn cargo_build(staged: &Staged, root: &Path, packages: &[String]) -> Cmd {
@@ -328,7 +222,7 @@ fn pack(
         )?;
         contents.push("rusty-photon-doctor".to_owned());
     }
-    if let Some(dylib) = zwo_dylibs(&[service.to_owned()]).first() {
+    if let Some(dylib) = packaging::zwo_sdks(&[service.to_owned()]).first() {
         let zwo = staged.zwo.as_deref().unwrap_or_else(|| Path::new(""));
         let lib = stage.path().join("lib");
         fs::create_dir(&lib).map_err(io(&lib))?;
@@ -378,7 +272,7 @@ pub fn build(
         );
     }
     let needs_qhy = services.iter().any(|service| service == "qhy-camera");
-    let dylibs = zwo_dylibs(&services);
+    let dylibs = packaging::zwo_sdks(&services);
 
     if (needs_qhy || dylibs.contains(&"libASICamera2"))
         && !host.libusb.join("lib/libusb-1.0.0.dylib").exists()
@@ -400,7 +294,14 @@ pub fn build(
     fs::create_dir_all(&host.cache).map_err(io(&host.cache))?;
     let mut staged = Staged::default();
     if needs_qhy {
-        staged.qhy = Some(stage_qhy(runner, &host.cache, request.skip_sdk_staging)?);
+        staged.qhy = Some(packaging::stage_qhy(
+            runner,
+            &host.cache,
+            &qhy::mac_archive(),
+            qhy::SHA256_MAC_ARM64,
+            &format!("qhy-sdk-{}-mac-arm64", qhy::VERSION),
+            request.skip_sdk_staging,
+        )?);
     }
     if !dylibs.is_empty() {
         let (dir, libclang) = stage_zwo(runner, root, host, &dylibs, request.skip_sdk_staging)?;
@@ -408,15 +309,11 @@ pub fn build(
         staged.libclang = libclang;
     }
 
-    for packages in cargo_runs(&services) {
+    for packages in packaging::cargo_runs(&services) {
         println!("Building release binaries: {}", packages.join(" "));
         runner.run(&cargo_build(&staged, root, &packages))?;
     }
-    let mut binaries = services.clone();
-    if services.iter().any(|service| service == "sentinel") {
-        binaries.push("doctor".to_owned());
-    }
-    for binary in &binaries {
+    for binary in &packaging::binaries(&services) {
         let path = root.join("target/release").join(binary);
         runner.run(&Cmd::new("strip", &[&path.to_string_lossy()]))?;
     }
@@ -426,7 +323,7 @@ pub fn build(
     for service in &services {
         pack(runner, root, &staged, service, &dist, &version)?;
     }
-    packaging::write_sums(&dist, ".tar.gz")?;
+    packaging::write_sums(&dist, &[".tar.gz"])?;
     Ok(dist)
 }
 

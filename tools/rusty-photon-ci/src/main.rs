@@ -2,17 +2,19 @@
 //! Run one with `cargo ci <tool>`.
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use rusty_photon_ci::brew_formulas::{self, Channel};
+use rusty_photon_ci::build_packages;
 use rusty_photon_ci::build_tarballs::{self, Host};
 use rusty_photon_ci::packaging;
 use rusty_photon_ci::process::System;
 use rusty_photon_ci::repin_bazel_lock;
 use rusty_photon_ci::rust_toolchain_sha256s::{self, Release};
 use rusty_photon_ci::verify_brew;
+use rusty_photon_ci::verify_packages::{self, Wall};
 
 #[derive(Parser)]
 #[command(about = "The workspace's developer tools. Run one with `cargo ci <tool>`.")]
@@ -23,6 +25,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Tool {
+    /// Build the services' .deb packages, and with --rpm their .rpm
+    /// packages, into dist/<version>/
+    BuildPackages {
+        /// Only these services, comma-separated
+        #[arg(long, value_delimiter = ',')]
+        services: Option<Vec<String>>,
+        /// The .rpm packages too
+        #[arg(long)]
+        rpm: bool,
+        /// Download nothing: rebuild from the SDKs a previous run cached
+        #[arg(long)]
+        skip_sdk_staging: bool,
+        /// The version to stamp: the workspace's, or a +nightly. stamp on it,
+        /// which an rpm writes with a ^
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Build the per-service macOS arm64 tarballs into dist/<version>/
     BuildTarballs {
         /// Only these services, comma-separated
@@ -48,6 +67,22 @@ enum Tool {
         #[arg(long, default_value = "nightly")]
         channel: Channel,
         /// Leave the scratch tap and the installed formulas, to debug
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Verify the .deb packages, or with --rpm the .rpm packages, through
+    /// their whole lifecycle in a container running systemd
+    VerifyPackages {
+        /// Only these services, comma-separated
+        #[arg(long, value_delimiter = ',')]
+        services: Option<Vec<String>>,
+        /// The packages: dist/<workspace version> when not given
+        #[arg(long)]
+        dist: Option<PathBuf>,
+        /// The .rpm packages, in a Fedora container
+        #[arg(long)]
+        rpm: bool,
+        /// Leave the container, to debug
         #[arg(long)]
         keep: bool,
     },
@@ -93,31 +128,72 @@ fn main() -> ExitCode {
     }
 }
 
+/// Prints what `dir` holds, under `title`.
+fn list(title: &str, dir: &Path) -> Result<(), Box<dyn Error>> {
+    println!("\n{title} in {}:", dir.display());
+    let mut names: Vec<String> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+fn build_linux(request: &build_packages::Request) -> Result<(), Box<dyn Error>> {
+    let arch = build_packages::check_host(std::env::consts::OS, std::env::consts::ARCH)?;
+    let root = packaging::repo_root(&mut System)?;
+    let host = build_packages::Host::this(arch);
+    let dist = build_packages::build(&mut System, &root, &host, request)?;
+    list("Packages", &dist)
+}
+
+fn build_macos(request: &build_tarballs::Request) -> Result<(), Box<dyn Error>> {
+    build_tarballs::check_host(std::env::consts::OS, std::env::consts::ARCH)?;
+    let root = packaging::repo_root(&mut System)?;
+    let dist = build_tarballs::build(&mut System, &root, &Host::this(), request)?;
+    list("Tarballs", &dist)
+}
+
 fn run(tool: Tool) -> Result<(), Box<dyn Error>> {
     match tool {
+        Tool::BuildPackages {
+            services,
+            rpm,
+            skip_sdk_staging,
+            version,
+        } => build_linux(&build_packages::Request {
+            services,
+            rpm,
+            skip_sdk_staging,
+            version,
+        })?,
+        Tool::VerifyPackages {
+            services,
+            dist,
+            rpm,
+            keep,
+        } => {
+            let root = packaging::repo_root(&mut System)?;
+            let request = verify_packages::Request {
+                dist,
+                services,
+                rpm,
+                keep,
+            };
+            verify_packages::verify(&mut System, &mut Wall, &root, &request)?;
+        }
         Tool::BuildTarballs {
             services,
             skip_sdk_staging,
             version,
-        } => {
-            build_tarballs::check_host(std::env::consts::OS, std::env::consts::ARCH)?;
-            let root = packaging::repo_root(&mut System)?;
-            let request = build_tarballs::Request {
-                services,
-                skip_sdk_staging,
-                version,
-            };
-            let dist = build_tarballs::build(&mut System, &root, &Host::this(), &request)?;
-            println!("\nTarballs in {}:", dist.display());
-            let mut names: Vec<String> = std::fs::read_dir(&dist)?
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            for name in names {
-                println!("{name}");
-            }
-        }
+        } => build_macos(&build_tarballs::Request {
+            services,
+            skip_sdk_staging,
+            version,
+        })?,
         Tool::VerifyBrew {
             services,
             dist,

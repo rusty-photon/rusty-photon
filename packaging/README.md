@@ -45,7 +45,7 @@ vehicle);
 qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which
-`scripts/build-packages.sh` stages that service's ONE MIT SDK blob right
+`cargo ci build-packages` stages that service's ONE MIT SDK blob right
 before `cargo deb` runs — libzwo-sys links per device feature (ADR-014), so
 zwo-camera's `lib/` carries exactly `libASICamera2.so` and zwo-focuser's
 exactly `libEAFFocuser.so` (the link-search dir during the build is the
@@ -84,10 +84,9 @@ module comment is the list of checks. Run it after touching anything under
    guards that keep rpm upgrades from stopping the service, since the old
    package's `%preun` runs after the new one's `%post`),
 4. add the service's port to `PORTS` in
-   `tools/rusty-photon-ci/src/packaging.rs` and to `port_of()` in
-   `scripts/verify-packages.sh`, and write its WiX fragment under
-   `installer/fragments/` — the guard checks the table and the fragment's
-   firewall port against `PORTS`,
+   `tools/rusty-photon-ci/src/packaging.rs`, which every verifier probes,
+   and write its WiX fragment under `installer/fragments/` — the guard
+   checks the fragment's firewall port against `PORTS`,
 5. add the service to `_SERVICES` in `tools/rusty-photon-ci/BUILD.bazel`, and
    give its `BUILD.bazel` the `pkg` filegroup the others have: under Bazel
    the guard reads only the files its test declares, and fails on a

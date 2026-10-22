@@ -57,10 +57,10 @@ all-or-nothing anyway.
 3. **Each package ships exactly its own blob** at the shared
    `/usr/lib/rusty-photon/` path (ADR-013's RUNPATH mechanism unchanged):
    zwo-camera → `libASICamera2.so`, zwo-focuser → `libEAFFocuser.so`. No
-   file overlap → the debs co-install. `scripts/build-packages.sh` builds
+   file overlap → the debs co-install. `cargo ci build-packages` builds
    each zwo service in its **own cargo invocation** (cargo unifies features
    per invocation; batching the two would re-union the links) and
-   `scripts/verify-packages.sh` proves via `ldd` that each binary resolves
+   `cargo ci verify-packages` proves via `ldd` that each binary resolves
    its own blob and does **not** link the others'.
 4. **Bazel builds the union** (`crate_features = ["camera", "efw",
    "focuser"]` on the shared `libzwo-sys`/`zwo-rs` targets): one target set

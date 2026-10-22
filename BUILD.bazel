@@ -42,9 +42,9 @@ exports_files(
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 
-# The packaging scripts, the shared maintainer scripts and the MSI's WiX
-# sources, which the tools crate's packaging guard checks agree with each other
-# and with each service's pkg/ (tools/rusty-photon-ci/src/pkg_assets.rs).
+# The MSI's build script and WiX sources and the shared maintainer scripts,
+# which the tools crate's packaging guard checks agree with each other and
+# with each service's pkg/ (tools/rusty-photon-ci/src/pkg_assets.rs).
 # Neither `packaging`, `scripts` nor `installer` has a BUILD file.
 filegroup(
     name = "packaging_files",
@@ -54,8 +54,6 @@ filegroup(
         "packaging/postinst.udev-stanza",
         "packaging/postrm.common",
         "scripts/build-msi.ps1",
-        "scripts/build-packages.sh",
-        "scripts/verify-packages.sh",
     ] + glob(["installer/fragments/*.wxs"]),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

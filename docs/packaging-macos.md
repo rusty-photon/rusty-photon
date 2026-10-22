@@ -316,7 +316,7 @@ re-union their per-device SDK links. `svbony-camera` is skipped entirely
 does, with `file://` URLs into a scratch tap and, per service: install →
 `brew test` → `brew services start` → HTTP probe → config self-created →
 stop → uninstall clean — with the same class exceptions as
-`verify-packages.sh` (gated services are never started; serial drivers
+`cargo ci verify-packages` (gated services are never started; serial drivers
 verify config + handshake-attempted from the log; the zwo binaries prove
 via `otool` that each loads exactly its own bundled dylib). An interrupted
 run leaves its scratch formulas installed; the next run refuses to start

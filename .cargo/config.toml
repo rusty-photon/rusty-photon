@@ -6,7 +6,7 @@
 # Force aws-lc-sys to build its vendored AWS-LC from source. Left unset, the
 # build script probes OPENSSL_DIR / OPENSSL_INCLUDE_DIR / OPENSSL_LIB_DIR and
 # then pkg-config for a system AWS-LC, and links it dynamically if it finds
-# one. `scripts/build-packages.sh` builds the shipped binaries with plain
+# one. `cargo ci build-packages` builds the shipped binaries with plain
 # `cargo build --release`, so on a build host that happens to carry AWS-LC the
 # resulting .deb/.rpm would need a libcrypto at runtime that the target — the
 # Pi 5 field rig — does not have. `force` is left false so an operator can

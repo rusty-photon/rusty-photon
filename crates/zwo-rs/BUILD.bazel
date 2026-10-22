@@ -19,7 +19,7 @@ _LIBZWO_SYS = "//crates/zwo-rs/libzwo-sys:libzwo-sys"
 # Bazel `crate_features` is LITERAL (no Cargo feature resolution), so the
 # per-device features (ADR-014: camera/efw/focuser) are spelled out as the
 # UNION of what the workspace's services need. Per-service link narrowing is a
-# cargo/packaging concern (scripts/build-packages.sh builds each zwo service in
+# cargo/packaging concern (`cargo ci build-packages` builds each zwo service in
 # its own cargo invocation); under Bazel one shared target set linking every
 # SDK keeps CI simple and continuously link-verifies all three blobs, which
 # install-zwo-sdk stages anyway.

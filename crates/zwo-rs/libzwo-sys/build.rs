@@ -167,7 +167,7 @@ fn emit_link_directives() {
                 // DSOs) reference udev. Without a DT_NEEDED on the consumer
                 // binary the loader never loads libudev, and resolving the
                 // blob's udev_* symbols fails at process start (BIND_NOW) —
-                // exactly what scripts/verify-packages.sh caught. This cfg
+                // which `cargo ci verify-packages` checks. This cfg
                 // turns on the `#[used]` keep-alive reference in src/lib.rs,
                 // giving the linker that regular-object reference.
                 println!("cargo:rustc-cfg=zwo_keep_udev");

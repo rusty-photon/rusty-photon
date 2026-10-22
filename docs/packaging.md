@@ -74,20 +74,22 @@ or on demand directly on the rig / a dev box. From a repo checkout on a
 Debian-family machine with Rust installed:
 
 ```sh
-scripts/build-packages.sh                  # all services, .deb only
-scripts/build-packages.sh --rpm            # also .rpm
-scripts/build-packages.sh --services qhy-camera,filemonitor
-scripts/build-packages.sh --skip-sdk-staging   # offline rebuild from cache
-scripts/build-packages.sh --deb-version 0.1.0+nightly.202607120507.gba09dc9
+cargo ci build-packages                    # all services, .deb only
+cargo ci build-packages --rpm              # also .rpm
+cargo ci build-packages --services qhy-camera,filemonitor
+cargo ci build-packages --skip-sdk-staging # offline rebuild from cache
+cargo ci build-packages --version 0.1.0+nightly.202607120507.gba09dc9
                                            # nightly version stamp (CI / rollback builds)
 ```
 
-With `--rpm` and `--deb-version` together, the rpm version is derived
-from the deb stamp by rendering `+nightly.` as rpm's `^` snapshot
-separator (`0.1.0^202607120507.gba09dc9`) — each packager renders its own
-dialect of "sorts after the base release, before the next one".
+`--version` takes the workspace version or a `+nightly.` stamp on it,
+which the deb carries verbatim, with no `-1` revision. With `--rpm`, the
+rpm version is derived from a nightly stamp by rendering `+nightly.` as
+rpm's `^` snapshot separator (`0.1.0^202607120507.gba09dc9`) — each
+packager renders its own dialect of "sorts after the base release, before
+the next one".
 
-The script installs apt build prerequisites, stages the pinned native
+The tool installs apt build prerequisites, stages the pinned native
 SDKs into `~/.cache/rusty-photon-pkg/` (QHYCCD static lib for the
 link; per zwo service its ONE MIT blob, which also becomes that package's
 payload per ADR-013 + ADR-014), then release-builds with the RUNPATH the
@@ -96,11 +98,14 @@ invocation, so feature unification cannot re-union their per-device SDK
 links — and runs `cargo deb` (and `cargo generate-rpm` with `--rpm`) per
 service. Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt`.
 
-The QHY SDK version/sha256 pins and the ZWO blob ref are pinned in the
-script and cross-checked by the tools crate's packaging guard
-([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs)) against the
-firmware helper and the CI SDK action, so shipped and CI-linked SDK bits
-cannot drift apart.
+The QHY SDK's version and sha256s are pinned once, in the tools crate's
+[`packaging/qhy.rs`](../tools/rusty-photon-ci/src/packaging/qhy.rs), which the
+packaging guard
+([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs))
+checks the firmware helper against. The ZWO and SVBony blobs come from the
+commits the CI SDK actions pin (`REF` in `install-zwo-sdk/zwo-sdk.mjs` and
+`install-svbony-sdk/svbony-sdk.mjs`), which the tool reads, so shipped and
+CI-linked SDK bits cannot drift apart.
 
 ## Nightly channel
 
@@ -231,10 +236,11 @@ install that the same downgrade way:
 
 ```sh
 git checkout <known-good-sha>
-scripts/build-packages.sh --deb-version "<base>+nightly.<datetime>.g<short-sha>"
+cargo ci build-packages --version "<base>+nightly.<datetime>.g<short-sha>"
 ```
 
-(`<base>` = the workspace version at that commit.)
+(`<base>` = the workspace version at that commit. A commit from before
+the tool existed has `scripts/build-packages.sh --deb-version` instead.)
 
 ## Installing
 
@@ -720,9 +726,9 @@ to fully clean up after an erase, delete
 ## Verifying a build
 
 ```sh
-scripts/verify-packages.sh            # all debs in dist/<version>/
-scripts/verify-packages.sh --rpm      # the rpms, in a Fedora container
-scripts/verify-packages.sh --services filemonitor,zwo-camera --keep
+cargo ci verify-packages              # all debs in dist/<version>/
+cargo ci verify-packages --rpm        # the rpms, in a Fedora container
+cargo ci verify-packages --services filemonitor,zwo-camera --keep
 ```
 
 Runs a podman `--systemd=always` debian:trixie container and, per package:
@@ -743,9 +749,10 @@ probe applies to them only once a driver settles into a steady `active`
 additionally proves via `ldd` that each zwo binary resolves exactly its own
 bundled blob through the RUNPATH — and does not link the other services'
 SDKs (ADR-014). Rootless podman cannot apply the units' sandboxing, so
-the script resets the hardening inside the container — hardening is
+the tool resets the hardening inside the container — hardening is
 verified on real hosts with `systemd-analyze security
-rusty-photon-<svc>.service`.
+rusty-photon-<svc>.service`. An interrupted run leaves its container,
+`rusty-photon-verify-<pid>`, running; `podman rm -f` it.
 
 Expected `lintian` findings (accepted, not bugs):
 `custom-library-search-path` on every package (the RUNPATH is injected

@@ -73,7 +73,7 @@ deployment work. Remote dev loop: see
 ## 2. Known risks
 
 - **SDK pin vs new camera model.** The bundled `libASICamera2` comes from
-  the pinned indi-3rdparty ref in `scripts/build-packages.sh`; a
+  the indi-3rdparty ref `install-zwo-sdk` pins (`REF` in `zwo-sdk.mjs`); a
   just-released camera model may need a newer blob. Symptom: camera
   enumerates on USB but the SDK lists no device. Fix: bump the pin (and
   SHAs) per ADR-013/ADR-014, rebuild the zwo debs on the rig.

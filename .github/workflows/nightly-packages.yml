@@ -42,8 +42,8 @@
 #   notify-on-failure — tracking issue on scheduled failures, label
 #              `nightly-packages` (same pattern as scheduled.yml).
 #
-# Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
-# scripts/verify-packages.sh (shared with on-demand builds on the rigs),
+# Thin workflow, thick scripts: the legs drive `cargo ci build-packages` +
+# `cargo ci verify-packages` (shared with on-demand builds on the rigs),
 # scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
 # release.yml), `cargo ci build-tarballs` + `cargo ci verify-brew` +
 # `cargo ci brew-formulas` (shared with release.yml's stable Homebrew
@@ -86,8 +86,8 @@ jobs:
       date: ${{ steps.plan.outputs.date }}
       # The canonical +nightly string: the Debian version verbatim, the
       # MSI filename/ARP-comments string (build-msi.ps1 renders the MSI
-      # ProductVersion from it), and the stamp build-packages.sh derives
-      # the rpm ^ dialect from.
+      # ProductVersion from it), and the stamp `cargo ci build-packages`
+      # derives the rpm ^ dialect from.
       nightly_version: ${{ steps.plan.outputs.nightly_version }}
     steps:
       - uses: actions/checkout@v7
@@ -121,26 +121,29 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       # cache-bin (rust-cache's default) also keeps the cargo-installed
-      # cargo-deb binary, so build-packages.sh skips the install when warm.
+      # cargo-deb binary, so `cargo ci build-packages` skips the install when
+      # warm.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: nightly-packages-${{ matrix.arch }}
-      # Keyed on the script because it embeds the SDK pins: the cache
-      # invalidates exactly when a pin (or the staging logic) changes,
-      # keeping qhyccd.com off the nightly critical path.
+      # Keyed on the files that pin the SDKs, the tools crate's
+      # packaging/qhy.rs (QHY's) and the install modules (the ZWO and SVBony
+      # commits): the cache invalidates when a pin changes, which keeps
+      # qhyccd.com off the nightly's critical path. The cache's directories
+      # are named by version and commit, so a staging change needs no new key.
       - name: Cache staged SDKs
         uses: actions/cache@v6
         with:
           path: ~/.cache/rusty-photon-pkg
-          key: rusty-photon-pkg-${{ matrix.arch }}-${{ hashFiles('scripts/build-packages.sh') }}
+          key: rusty-photon-pkg-${{ matrix.arch }}-${{ hashFiles('tools/rusty-photon-ci/src/packaging/qhy.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs', '.github/actions/install-svbony-sdk/svbony-sdk.mjs') }}
       - name: Build packages
-        # --rpm rides on the same release build; the script derives the rpm
-        # ^ dialect from the canonical +nightly stamp itself.
-        run: scripts/build-packages.sh --rpm --deb-version '${{ needs.plan.outputs.nightly_version }}'
+        # --rpm rides on the same release build; the tool derives the rpm ^
+        # dialect from the canonical +nightly stamp itself.
+        run: cargo ci build-packages --rpm --version '${{ needs.plan.outputs.nightly_version }}'
       - name: Verify deb packages (full install lifecycle)
-        run: scripts/verify-packages.sh --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
+        run: cargo ci verify-packages --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
       - name: Verify rpm packages (full install lifecycle, Fedora)
-        run: scripts/verify-packages.sh --rpm --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
+        run: cargo ci verify-packages --rpm --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:

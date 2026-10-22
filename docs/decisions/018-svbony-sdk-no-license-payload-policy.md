@@ -71,7 +71,7 @@ mechanical delivery differs in one respect worth flagging (see
    with exit 127 and the unit's `Restart=on-failure`/`RestartSec=5`
    retries — the same shape as a serial driver retrying an absent device,
    and self-healing within seconds of the helper finishing, with no
-   operator `systemctl` step. `scripts/verify-packages.sh` walks that
+   operator `systemctl` step. `cargo ci verify-packages` walks that
    whole bootstrap on both package flavors — blob absent from the payload,
    helper, service active, Alpaca probe, plus an `ldd` proof that the
    installed blob resolves through the RUNPATH. Removing the asymmetry
@@ -114,11 +114,12 @@ mechanical delivery differs in one respect worth flagging (see
    RUNPATH, matching ZWO's mechanism exactly: the packaged
    `rusty-photon-svbony-camera` binary is linked with
    `-Wl,-rpath,/usr/lib/rusty-photon` (mirroring
-   `scripts/build-packages.sh`'s existing ZWO handling), and the helper
+   the Linux package build's existing ZWO handling), and the helper
    installs the bare `libSVBCameraSDK.so` linker name with no SOVERSION/
    symlink pair — see `docs/services/svbony-camera.md`'s Packaging section
    and `install-svbony-sdk/svbony-sdk.mjs`'s header comment for the full trace.
-   **Update (issue #679, 2026-07-22): wired into `scripts/build-packages.sh`.**
+   **Update (issue #679, 2026-07-22): wired into the Linux package build,
+   now `cargo ci build-packages`.**
    A `needs_svbony` SDK-staging leg now stages the pinned blob for the link
    only (mirroring QHY/ZWO's staging, but — per this ADR — never copying it
    into `pkg/lib/` or bundling it in the package); the RUNPATH-linked binary
@@ -207,10 +208,10 @@ mechanical delivery differs in one respect worth flagging (see
   rule, so "the SDK is installed" and "the SDK can see the camera" can
   never drift apart.
 - The SDK ref is pinned in the helper script
-  (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) AND in
-  `scripts/build-packages.sh` (issue #679), both cross-checked by
-  the packaging guard (`tools/rusty-photon-ci/src/pkg_assets.rs`) against `REF` in
-  `.github/actions/install-svbony-sdk/svbony-sdk.mjs`, mirroring QHY's version/sha256 pin parity-check pattern — a
+  (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`), which
+  the packaging guard (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks against `REF` in
+  `.github/actions/install-svbony-sdk/svbony-sdk.mjs`, the pin
+  `cargo ci build-packages` links against, mirroring QHY's version/sha256 pin parity-check pattern — a
   version bump is a deliberate,
   checked PR.
 - `svbony-camera`'s Bazel build still bakes `SVBONY_SKIP_NATIVE_LINK=1`
