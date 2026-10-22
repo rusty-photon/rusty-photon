@@ -26,9 +26,11 @@ function json(res, status, value) {
 // release), listed `perPage` to a page. `fail` maps a request, as `METHOD
 // path` without the query, to the statuses its first answers take; an upload
 // named in `lost` is stored before its first answer fails with a 502, as when
-// the answer to a stored upload is lost. With `renames`, an upload is stored
-// under its name with each `+` as `.`.
-async function fakeGitHub({ tag = OLD, assets, perPage = 100, fail = {}, lost = [], renames = false } = {}) {
+// the answer to a stored upload is lost, and one named in `limited` is first
+// refused as GitHub refuses a request over its secondary rate limit, asking
+// for a wait of a second. With `renames`, an upload is stored under its name
+// with each `+` as `.`.
+async function fakeGitHub({ tag = OLD, assets, perPage = 100, fail = {}, lost = [], limited = [], renames = false } = {}) {
   const state = { tag, release: assets && { id: 1, assets: assets.map((name, i) => ({ id: 100 + i, name })) }, uploaded: [] };
   const seen = {};
   let next = 500;
@@ -78,6 +80,11 @@ async function fakeGitHub({ tag = OLD, assets, perPage = 100, fail = {}, lost = 
       else res.writeHead(204).end();
     } else if (key === 'POST /uploads/repos/o/r/releases/1/assets') {
       const requested = url.searchParams.get('name');
+      if (limited.includes(requested) && seen[`limited ${requested}`] === undefined) {
+        seen[`limited ${requested}`] = 1;
+        res.writeHead(403, { 'content-type': 'application/json', 'retry-after': '1' }).end(JSON.stringify({ message: 'You have exceeded a secondary rate limit' }));
+        return;
+      }
       const name = renames ? requested.replaceAll('+', '.') : requested;
       const stored = { id: next++, name };
       if (state.release.assets.some((a) => a.name === name)) {
@@ -239,6 +246,14 @@ test('an upload whose answer was lost is retried, once what it left under its na
   assert.equal(api.state.uploaded.filter(({ name }) => name === 'new.msi').length, 2);
   assert.equal(calls(api).filter((c) => c.startsWith('DELETE ')).length, 1);
   assert.match(stdout, /upload new\.msi: attempt 1 of 3 failed/);
+});
+
+test('an upload over the rate limit waits as long as GitHub asks, then is retried', async (t) => {
+  const api = await fakeGitHub({ assets: [], limited: ['new.deb'] });
+  t.after(api.close);
+  const { stdout } = await publish(api, files(['new.deb']));
+  assert.deepEqual(api.state.release.assets.map(({ name }) => name), ['new.deb']);
+  assert.match(stdout, /upload new\.deb: attempt 1 of 3 failed \(.*\); retrying in 1000 ms\n/);
 });
 
 test('an upload GitHub refuses is not retried, and fails the publish', async (t) => {

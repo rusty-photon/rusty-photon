@@ -519,16 +519,17 @@ write credential.
 `uncovered-diff-lines`, `install-conformu`, `beta-clippy`,
 `commit-repin` and `packages` share: `runContext` (the API, the
 repository and the run's link from the runner's variables), `github` (a
-request that names what failed and carries GitHub's own answer, a POST
-or PATCH sent once; with `json` or `upload`, a body, such as a release
-asset's bytes; with `missing`, a 404 is no error; with `accept`, the
-answer in another media type, such as a pull request's diff),
-`everyPage` (every item of a paged list, a next page on another origin
-refused), `openIssues` (every page of the open issues with a label, pull
-requests left out) and `commentOrOpen` (the open issue with a label and
-an exact title gets a comment, or one is opened; an issue opened without
-the label fails the step, since GitHub drops a label the repository
-lacks and says nothing).
+request that names what failed and carries GitHub's own answer, and a
+rate limit's wait as its `retryAfterMs` for `retry`; a POST or PATCH
+sent once; with `json` or `upload`, a body, such as a release asset's
+bytes; with `missing`, a 404 is no error; with `accept`, the answer in
+another media type, such as a pull request's diff), `everyPage` (every
+item of a paged list, a next page on another origin refused),
+`openIssues` (every page of the open issues with a label, pull requests
+left out) and `commentOrOpen` (the open issue with a label and an exact
+title gets a comment, or one is opened; an issue opened without the
+label fails the step, since GitHub drops a label the repository lacks
+and says nothing).
 
 - **The token is an input** (`default: ${{ github.token }}`), and the
   job grants only what the action needs, beside `contents: read`. Without

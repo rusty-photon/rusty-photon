@@ -330,6 +330,17 @@ jobs:
             --dist assets \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly" \
             --output nightly-formulas
+      # Before anything is published: the tap's token must still write the
+      # tap, which writing the commit's tree takes, or the release would move
+      # on while the tap's formulas kept pointing at the assets it deleted.
+      - name: Check the tap's token can commit the -nightly formulas
+        uses: ./.github/actions/packages/tap
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          channel: nightly
+          version: ${{ needs.plan.outputs.nightly_version }}
+          formulas: nightly-formulas
+          check: true
       # The tag first, then the release: every old asset deleted, the notes
       # rewritten, the new assets and their sums uploaded.
       - name: Move the nightly tag and publish the rolling prerelease

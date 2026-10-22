@@ -754,10 +754,15 @@ Done so far:
     as a fast-forward; a tree equal to the tip's commits nothing, where
     `git diff --cached --quiet` did. `HOMEBREW_TAP_TOKEN` reaches that
     step alone, where the clone kept it in its `.git/config` for the rest
-    of the job. Its `stable` channel is tested here and wired into
+    of the job. A step before the tag moves writes the commit's tree with
+    it, which takes the same right, so a token that can no longer write
+    the tap fails the job before anything is published, as the clone of
+    the tap did. Its `stable` channel is tested here and wired into
     release.yml by the next PR.
-  - `lib/github.mjs`'s `github` takes an `upload` body and any method, and
-    `everyPage` follows a paged list, which `openIssues` now uses.
+  - `lib/github.mjs`'s `github` takes an `upload` body and any method,
+    and its error carries the wait a rate limit asked for, which `retry`
+    honours around an upload; `everyPage` follows a paged list, which
+    `openIssues` now uses.
   - A dry run skips `publish`, so the tests against a fake API carry
     this, and the first nightly after merge is watched.
 

@@ -63,8 +63,14 @@ async function answer(what, url, options) {
  * rather than lose what it gained. When the tap already holds exactly these
  * formulas, nothing is committed. Resolves to `{ outcome }`, 'current' or
  * 'committed', with the commit's `sha`.
+ *
+ * With `check`, it stops once it has written the tree, which takes the same
+ * right to write the tap as the commit: a run can thus find a token that
+ * can no longer write the tap before it publishes anything the formulas
+ * point at. The tree is named by its content, and nothing points at it.
+ * Resolves to `{ outcome: 'checked' }`.
  */
-export async function commitFormulas({ api, token, channel, version, formulas, tap = TAP, branch = BRANCH, ...options }) {
+export async function commitFormulas({ api, token, channel, version, formulas, check = false, tap = TAP, branch = BRANCH, ...options }) {
   if (!Object.hasOwn(MESSAGES, channel)) throw new Error(`no channel ${JSON.stringify(channel)}; it is nightly or stable`);
   if (formulas.length === 0) throw new Error(`no ${channel} formula to commit`);
   const strays = formulas.filter(({ name }) => !belongsTo(channel, name)).map(({ name }) => name);
@@ -92,6 +98,10 @@ export async function commitFormulas({ api, token, channel, version, formulas, t
     json: { base_tree: tree.sha, tree: entries },
     ...REPEATABLE,
   });
+  if (check) {
+    io.stdout(`The token can write ${tap}: it wrote the tree of the ${channel} formulas, ${made.sha}. Nothing is committed yet.\n`);
+    return { outcome: 'checked' };
+  }
   if (made.sha === tree.sha) {
     io.stdout(`${tap} already holds these ${channel} formulas; nothing to commit.\n`);
     return { outcome: 'current' };

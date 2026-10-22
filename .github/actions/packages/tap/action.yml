@@ -18,6 +18,12 @@ inputs:
   token:
     description: A token that can write the tap's contents; the repository's own token cannot.
     required: true
+  check:
+    description: >-
+      true to stop once the tree is written, committing nothing: a check,
+      before anything is published, that the token can still write the tap.
+    required: false
+    default: "false"
 runs:
   using: node24
   main: index.mjs

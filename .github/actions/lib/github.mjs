@@ -30,11 +30,12 @@ export function runContext(env = process.env) {
  * that media type, such as a release asset; `method` names another method,
  * with either or neither. Its JSON error says why it refused, which
  * HttpError keeps out of its message; GitHub's own answer is safe to show, so
- * the error says `what` failed and carries it. With `missing`, a 404 resolves
- * to undefined. With `accept`, the answer comes in that media type, such as a
- * pull request's diff (`application/vnd.github.diff`). A POST or PATCH is
- * sent once (fetchWithRetry). Without a token the request goes
- * unauthenticated, as a developer's install reads a public repository.
+ * the error says `what` failed and carries it, with the wait a rate limit
+ * asked for as its own `retryAfterMs`, which retry() reads. With `missing`, a
+ * 404 resolves to undefined. With `accept`, the answer comes in that media
+ * type, such as a pull request's diff (`application/vnd.github.diff`). A
+ * POST or PATCH is sent once (fetchWithRetry). Without a token the request
+ * goes unauthenticated, as a developer's install reads a public repository.
  */
 export async function github(what, url, { token, json, upload, method, accept = 'application/vnd.github+json', missing = false, ...options }) {
   const headers = {
@@ -56,7 +57,9 @@ export async function github(what, url, { token, json, upload, method, accept = 
   } catch (err) {
     if (missing && err instanceof HttpError && err.status === 404) return undefined;
     const answer = err instanceof HttpError && err.body ? ` (GitHub answered: ${err.body})` : '';
-    throw new Error(`${what} failed${answer}`, { cause: err });
+    const failed = new Error(`${what} failed${answer}`, { cause: err });
+    if (err?.retryAfterMs !== undefined) failed.retryAfterMs = err.retryAfterMs;
+    throw failed;
   }
 }
 

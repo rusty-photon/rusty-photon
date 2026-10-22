@@ -164,6 +164,23 @@ test('a tap that already holds the formulas gets no commit', async (t) => {
   assert.equal(stdout, `${TAP} already holds these nightly formulas; nothing to commit.\n`);
 });
 
+test('a check writes the tree, which takes the right to write the tap, and commits nothing', async (t) => {
+  for (const unchanged of [false, true]) {
+    const api = await fakeTap({ unchanged });
+    t.after(api.close);
+    const { value, stdout } = await commit(api, { check: true });
+    assert.deepEqual(value, { outcome: 'checked' });
+    assert.equal(calls(api).at(-1), `POST ${repos}/git/trees`);
+    assert.match(stdout, /^The token can write rusty-photon\/homebrew-rusty-photon: it wrote the tree of the nightly formulas, tree[01]\. Nothing is committed yet\.\n$/);
+  }
+});
+
+test('a check with a token that cannot write the tap fails', async (t) => {
+  const api = await fakeTap({ fail: { [`POST ${repos}/git/trees`]: [403] } });
+  t.after(api.close);
+  await assert.rejects(commit(api, { check: true }), /^Error: Writing the tree with the nightly formulas failed/);
+});
+
 test('a tap with no Formula directory gets one, with nothing to delete', async (t) => {
   const api = await fakeTap({ present: null });
   t.after(api.close);
