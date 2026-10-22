@@ -3,15 +3,17 @@
 #
 # Cadence: paths-filtered push to main + pull_request, and workflow_dispatch
 # (manual). It lints only these files, and they change rarely, so it runs only
-# when one of them, or this workflow (its pin), changes. ADR-022 leaves this
-# shell in bash, so the job keeps the same work after the CI shell plan.
+# when one of them changes, or this workflow, or the action that holds the
+# job's pin and logic, or the helpers it imports. ADR-022 leaves this shell in
+# bash, so the job keeps the same work after the CI shell plan.
 #
 # Not a required check, and it cannot be one while it is path-filtered: a
 # workflow the filter skips leaves its check pending, and a required check
 # would block every pull request that does not touch these files.
 #
-# The paths below are the files the lint step's `find` lists. Widening what it
-# lints means widening them too, or a change to a new file runs nothing.
+# The first two paths below are the files the action lints (its `scripts`).
+# Widening what it lints means widening them too, or a change to a new file
+# runs nothing.
 permissions:
   contents: read
 on:
@@ -21,11 +23,15 @@ on:
       - "tools/ci/**/*.sh"
       - "tools/ci/runner-guest/rp-set-hostname"
       - ".github/workflows/shellcheck.yml"
+      - ".github/actions/shellcheck/**"
+      - ".github/actions/lib/**"
   pull_request:
     paths:
       - "tools/ci/**/*.sh"
       - "tools/ci/runner-guest/rp-set-hostname"
       - ".github/workflows/shellcheck.yml"
+      - ".github/actions/shellcheck/**"
+      - ".github/actions/lib/**"
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -46,56 +52,11 @@ jobs:
     # not a reason to delay this.
     runs-on: ubuntu-latest
     name: stable / shellcheck
-    env:
-      # PINNED, and not merely for reproducibility: shellcheck's finding set
-      # moves between releases, so an unpinned gate lints different code on
-      # different days. The runner image ships 0.9.0, which reports the harness
-      # stubs under SC2317 where 0.11 reports them under SC2329 — so a suppression
-      # written against a locally-installed 0.11 passes locally and fails here,
-      # for a difference that has nothing to do with the code. Same reasoning as
-      # buildifier being pinned through MODULE.bazel: the developer's run and
-      # CI's must be the same run. Bump deliberately, with the checksum.
-      SHELLCHECK_VERSION: v0.11.0
-      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@v7
-      # Into RUNNER_TEMP rather than /usr/local/bin: that directory is
-      # root-owned on some hosted images, so installing there needs elevation
-      # and makes the gate depend on the image's filesystem ownership — the
-      # same class of dependency the pin above exists to remove. RUNNER_TEMP is
-      # ours by construction, needs no sudo, and is outside the checkout, so
-      # the download cannot land anywhere the lint step then walks.
-      - name: Install pinned shellcheck
-        run: |
-          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/shellcheck.tar.xz" "$url"
-          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
-          mkdir -p "$RUNNER_TEMP/bin"
-          install -m 755 "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$RUNNER_TEMP/bin/shellcheck"
-          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
-          # By absolute path: GITHUB_PATH applies to LATER steps, not this one,
-          # so a bare `shellcheck` here would report the image's version and
-          # quietly defeat the point of pinning.
-          "$RUNNER_TEMP/bin/shellcheck" --version
+      # shellcheck at the release the action pins (shellcheck.mjs says why it
+      # is pinned), checked against its SHA-256 and the version it reports,
+      # and run by its path, so no other shellcheck on the PATH can lint in
+      # its place. The logic is the action's (docs/skills/ci-logic.md).
       - name: shellcheck tools/ci
-        run: |
-          # Assert the pinned binary is the one PATH resolves. GITHUB_PATH
-          # prepends, so it should be — but if it ever is not, the image's own
-          # copy lints instead, with a different finding set and no sign that
-          # anything is wrong. A silent wrong-version is precisely what pinning
-          # is here to prevent, so make it loud.
-          #
-          # (No comment line here may begin with the linter's name: it would be
-          # read as a `disable=`-style directive and fail to parse.)
-          got=$(shellcheck --version | awk '/^version:/ {print "v" $2}')
-          if [ "$got" != "$SHELLCHECK_VERSION" ]; then
-            echo "::error::expected shellcheck $SHELLCHECK_VERSION on PATH, got $got ($(command -v shellcheck))"
-            exit 1
-          fi
-          mapfile -t scripts < <(
-            find tools/ci -type f \( -name '*.sh' -o -name 'rp-set-hostname' \) | sort
-          )
-          printf 'linting %d script(s):\n' "${#scripts[@]}"
-          printf '  %s\n' "${scripts[@]}"
-          shellcheck "${scripts[@]}"
+        uses: ./.github/actions/shellcheck

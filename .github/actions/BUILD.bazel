@@ -107,6 +107,21 @@ node_test(
     ],
 )
 
+# shellcheck: shellcheck.yml's pinned shellcheck and its lint of tools/ci. The
+# tests serve a release archive from loopback, made by GNU tar and xz, which
+# each OS leg unpacks with its own tar.
+node_test(
+    name = "shellcheck_test",
+    size = "small",
+    srcs = ["shellcheck/shellcheck.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/install.mjs",
+        "lib/testing.mjs",
+        "shellcheck/shellcheck.mjs",
+    ],
+)
+
 # bazel-coverage: the coverage job's `bazel coverage` run. The tests start a
 # fake Bazel as a Node process of its own, and read .bazelrc for the configs.
 node_test(

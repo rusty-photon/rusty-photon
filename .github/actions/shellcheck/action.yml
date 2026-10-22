@@ -1,0 +1,10 @@
+name: shellcheck tools/ci
+description: >-
+  shellcheck.yml's job: downloads shellcheck at the release shellcheck.mjs pins,
+  checks it against its SHA-256 and the version it reports, and runs it by its
+  path over every *.sh under tools/ci and the runner guest's rp-set-hostname.
+  It installs into RUNNER_TEMP, outside the checkout, so the download cannot
+  land anywhere the lint walks. The logic is shellcheck.mjs's.
+runs:
+  using: node24
+  main: index.mjs

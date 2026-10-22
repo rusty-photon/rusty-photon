@@ -111,7 +111,7 @@ first in their columns.
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | In progress: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594) and repin-bazel.yml's commit (#1595) done |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
@@ -1350,7 +1350,8 @@ together, in one (#1589):
 - shellcheck.yml: "Install pinned shellcheck" and its script list. They were
   check.yml's until the owner chose on 2026-10-21 to give the job a workflow
   of its own, which runs only when a file it lints changes: ADR-022 leaves
-  that shell in bash, so the job keeps its work after this plan.
+  that shell in bash, so the job keeps its work after this plan (done,
+  below).
 
 The "Mask runner-provided cache endpoint" steps stay in YAML for the
 reason J10 gives.
@@ -1467,6 +1468,18 @@ Done so far:
     first run is on the next dependabot cargo PR. Its tests run the
     action against a fake API, and its reads were checked against
     GitHub's (the root tree's entry for the lock, and its blob's SHA-1).
+- **shellcheck.yml's install and lint** (#1596): the owner chose on
+  2026-10-21 to move them too, though the job serves one workflow. The
+  `shellcheck` action downloads the pinned release through
+  `lib/install.mjs`, checks its SHA-256 and the version it reports, and
+  runs it by its path from `RUNNER_TEMP` over the scripts it lists, the
+  same 11 the `find` listed. Run by its path, no other shellcheck on the
+  PATH can lint in its place, so the step's check of which one PATH
+  resolved goes. It caches nothing, as the step did not; the job runs
+  only when a file it lints changes. The pin and its reason move from the
+  workflow's `env` to the action's module, and the workflow's paths
+  filter takes the action and the helpers it imports. An empty script
+  list is now an error rather than shellcheck's usage message.
 
 ## T1 — The Linux pool template carries rustup and stable
 
