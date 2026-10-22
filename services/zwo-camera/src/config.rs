@@ -3,8 +3,8 @@
 //! The shared `server` block (`AlpacaServerConfig`) binds the listener; the
 //! `devices` override map (keyed by
 //! SDK serial — applied to each `ZwoCamera` at registration) is live as of
-//! Phase E, and the whole `Config` is exposed through the
-//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). EFW filter
+//! Phase E, and the whole `Config` is edited on the setup pages (see
+//! `setup.rs`). EFW filter
 //! wheels are out of scope: they belong to a future separate service
 //! (ADR-014), so there is no filter-wheel config surface here.
 
@@ -61,7 +61,7 @@ impl Default for Config {
 
 impl Config {
     /// Every rule the `usb_devices` list breaks, and every `devices` override
-    /// beside it; empty without a list. The load and `config.apply` both
+    /// beside it; empty without a list. The load and every setup-page save
     /// refuse a config with any.
     #[must_use]
     pub fn list_errors(&self) -> Vec<ListError> {

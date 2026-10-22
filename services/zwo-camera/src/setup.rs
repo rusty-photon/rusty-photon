@@ -1,26 +1,25 @@
-//! `ConfigurableDriver` impl for zwo-camera — wires the cross-driver
-//! `config.get` / `config.apply` / `config.schema` protocol
-//! (`docs/services/config-actions.md`) to this service's [`Config`].
+//! zwo-camera's [`ConfigurableDriver`] implementation — the driver-specific
+//! half behind its setup pages.
 //!
-//! Editability tiers:
-//! - **Locked (identity):** none. ASCOM `UniqueID`s are derived from the
-//!   camera SDK serial (see `docs/services/zwo-camera.md` "Device identity"),
-//!   not minted into config, so there is no identity field to lock.
-//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** the `usb_devices` list, the per-serial `devices` map
-//!   (`name` / `description`) and `max_adu_reporting`. The latter is baked
-//!   into each device at construction, so it takes effect on the reload
-//!   `config.apply` fires — which rebuilds the server and re-creates every
-//!   device — not on the live objects.
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the confirmation, the reload) are `rusty-photon-setup`'s,
+//! and the camera drivers' own part of them — the Cameras section that edits
+//! `usb_devices`, and each camera's page — is `rusty-photon-driver`'s
+//! `claims` module, which `lib.rs` feeds what the build registered. This
+//! module supplies what is the service's own: its `Config` type, validation,
+//! its secret, and the `--port` pin. No field is locked: `UniqueID`s are
+//! derived from the camera SDK serial, not minted into config.
+//! `max_adu_reporting` is baked into each device at construction, so it
+//! takes effect on the reload a save fires, which re-creates every device.
+//! See [`docs/services/zwo-camera.md`] "Setup pages".
+//!
+//! [`docs/services/zwo-camera.md`]: ../../../docs/services/zwo-camera.md
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
-use rusty_photon_doctor_checks::claims;
 
 use crate::config::{CliOverrides, Config};
 
-/// Zero-sized marker implementing [`ConfigurableDriver`] for the zwo-camera
-/// [`Config`]. The generic `rusty_photon_driver::dispatch` routes the three
-/// config actions against this.
+/// Driver marker wiring zwo-camera's [`Config`] into the shared setup pages.
 pub struct ZwoCameraDriver;
 
 impl ConfigurableDriver for ZwoCameraDriver {
@@ -29,15 +28,12 @@ impl ConfigurableDriver for ZwoCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// The `usb_devices` rules the load applies (U9), plus the one only an
-    /// apply has: an empty list is refused, because it registers no device, so
-    /// none would be left to serve the config actions. The per-serial overrides
-    /// are free-form name/description strings. (The former `filter_names`
-    /// validation left with the EFW config surface — ADR-014.)
+    /// The `usb_devices` rules the load applies (U9), each named by its
+    /// entry's field. An empty list is legal: the server page outlives it.
+    /// The per-serial overrides are free-form name/description strings.
     fn validate(config: &Config) -> Vec<FieldError> {
-        let mut errors = config.list_errors();
-        errors.extend(claims::apply_errors(config.usb_devices.as_deref()));
-        errors
+        config
+            .list_errors()
             .into_iter()
             .map(|error| FieldError {
                 path: error.path,
@@ -46,8 +42,9 @@ impl ConfigurableDriver for ZwoCameraDriver {
             .collect()
     }
 
-    /// The one secret: the server-auth password hash. `TlsConfig` stores file
-    /// *paths*, not key material, so there is nothing to redact there.
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows. `TlsConfig` stores file
+    /// *paths*, not key material.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -58,13 +55,6 @@ impl ConfigurableDriver for ZwoCameraDriver {
 
     fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
         overrides.apply(config);
-    }
-
-    // `locked_paths()` intentionally not overridden (defaults to `&[]`): the
-    // hardware-derived UniqueID means there is no locked identity field.
-
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port"]
     }
 }
 
@@ -109,21 +99,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_is_refused_at_the_list() {
+    fn an_empty_list_is_saved_like_any_other() {
         let config = Config {
             usb_devices: Some(Vec::new()),
             ..Config::default()
         };
-        let errors = ZwoCameraDriver::validate(&config);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].path, "usb_devices");
-        assert!(
-            errors[0]
-                .msg
-                .starts_with("an empty list registers no camera"),
-            "{}",
-            errors[0].msg
-        );
+        assert_eq!(ZwoCameraDriver::validate(&config), Vec::<FieldError>::new());
     }
 
     #[test]
@@ -160,15 +141,10 @@ mod tests {
     }
 
     #[test]
-    fn port_is_read_only() {
-        assert_eq!(ZwoCameraDriver::read_only_paths(), &["server.port"]);
-    }
-
-    #[test]
     fn port_override_is_pinned_and_applied() {
         let overrides = CliOverrides { port: Some(12321) };
         assert_eq!(
-            ZwoCameraDriver::override_paths(&overrides),
+            ZwoCameraDriver::pinned_paths(&Config::default(), &overrides),
             vec!["server.port".to_string()]
         );
         let mut config = Config::default();

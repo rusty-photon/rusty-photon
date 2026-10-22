@@ -8,7 +8,7 @@
 > pulse-guiding, and the snap-mode exposure state machine (start, abort
 > *discards* / graceful stop *preserves*, `ImageArray`, `CameraState`,
 > `PercentCompleted`, mid-exposure `Error`), plus serial-derived identity and the
-> `config.get`/`apply`/`schema` actions. The blocking SDK chain runs on
+> setup pages. The blocking SDK chain runs on
 > `spawn_blocking` inside a detached task, with a generation counter +
 > `result_lock` so abort/disconnect invalidate a late-completing capture; the
 > camera lock is released during the integration so concurrent reads (and the
@@ -201,7 +201,7 @@ graph TD;
     BB --> RS[zwo-rs Sdk/Camera];
     RS -->|FFI| SDK[libzwo-sys → ZWO ASI camera SDK];
     SDK -->|libusb-1.0| HW[ASI camera over USB];
-    C --> CA[config_actions.rs<br/>config.get/apply/schema];
+    B --> SP[setup.rs + rusty-photon-driver claims pages<br/>/setup, /setup/v1/camera/n/setup];
     M[main.rs<br/>ServiceRunner] --> B;
 ```
 
@@ -255,8 +255,9 @@ graph TD;
   what `doctor --devices` can say about each camera without opening it (U8).
   The rest is shared (*Device claims*).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
-- **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the
-  devices delegate to (`config.get`/`config.apply`/`config.schema`).
+- **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages; `lib.rs`
+  records what the running server registered, which the camera pages and the
+  Cameras section read (*Setup pages*).
 - **`mock.rs`** (feature `simulation`/`mock`) — the hardware-free test backend
   (the `zwo-rs` `simulation` camera/EFW + a tiny in-crate trait seam over the SDK
   for unit tests).
@@ -434,8 +435,9 @@ ASI C API exposes and what `zwo-rs` will wrap.
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
   work on every model (a divergence from `qhy-camera`, which rejects darks on
   shutterless models).
-- `config.get`/`config.apply`/`config.schema` actions; hardware-derived
-  `UniqueID` (camera SDK serial); in-process reload.
+- Setup pages (`/setup` with the Cameras section, a page per camera —
+  *Setup pages*); hardware-derived `UniqueID` (camera SDK serial);
+  in-process reload.
 - ConformU integration test driven against the `zwo-rs` `simulation` backend
   (SDK installed in CI, no physical camera).
 
@@ -469,8 +471,7 @@ port is never opened (U1-U9).
 {
   // Optional per-device overrides, keyed by SDK serial. A device with no entry
   // uses SDK-derived defaults (name from model+serial). Named `devices` (not
-  // `overrides`) to avoid colliding with the config.get response's own
-  // `overrides[]` (CLI-pinned paths) field.
+  // `overrides`), the name every camera driver's map has.
   "devices": {
     "ASI2600MM-0A1B2C3D4E5F6071": {
       "name": "Main Imaging",
@@ -530,9 +531,9 @@ Sections:
   - **description** — optional description for the camera. A placeholder's
     `Description` is always its reason (U4), so it does not use this one.
 
-  Validated at load, before any USB or SDK work, and again by `config.apply`
-  (U9); a list that fails either is named entry by entry and nothing starts
-  from it:
+  Validated at load, before any USB or SDK work, and again by every
+  setup-page save (U9); a list that fails either is named entry by entry and
+  nothing starts from it:
 
   - `usb_port` is non-blank, carries no leading or trailing whitespace, and is
     unique across entries. A padded port is rejected, not trimmed: the scan
@@ -556,9 +557,9 @@ Sections:
   **`"usb_devices": []` registers nothing** — legal in the file, logged at
   `warn!` at every start, and it needs no USB scan or SDK enumeration, so it
   opens nothing. It is how an operator hands every ASI camera to another
-  application for a night. A server with no device has nowhere for the config
-  actions to live, so `[]` is left by editing the file and reloading;
-  `config.apply` refuses it (U9).
+  application for a night. The server page is the server's, not a device's,
+  so it outlives the last camera: unchecking every row saves `[]`, and
+  checking one again undoes it (*Setup pages*).
 
   **No list is the default, permanently.** With no `usb_devices` key the
   service registers every camera the USB scan can place, numbered in port
@@ -572,52 +573,167 @@ Sections:
   exposes none — see *Device identity*). Lets an operator give a friendly
   `name`/`description` to a specific camera. Any device without an entry uses
   SDK-derived defaults. It serves the no-list default only: beside a list it is
-  refused (above). v0 does **not** carry per-camera connect-time tuning
+  refused (above), and each camera's page edits its own entry (*Setup
+  pages*). v0 does **not** carry per-camera connect-time tuning
   (gain/offset/target temperature) — with heterogeneous cameras those are
   per-serial concerns and clients set them over ASCOM; per-serial defaults are
   deferred (see *Future Work*).
 - **max_adu_reporting** — Which `MaxADU` contract to present, service-wide:
   `saturation_threshold` (default, the accurate reachable value) or
   `container_full_scale` (a flat 65535 in `Raw16`, matching ZWO's own ASCOM
-  driver for clients written against it). Editable, but baked into each device
-  at construction, so it takes effect on the reload `config.apply` fires rather
-  than on the live objects. See ST3 *the compatibility switch* — the compat mode
+  driver for clients written against it). Edited in the file — the setup
+  page names it as file-only (*Setup pages*) — and baked into each device at
+  construction, so it takes effect on the next reload or restart rather than
+  on the live objects. See ST3 *the compatibility switch* — the compat mode
   disables saturation detection on sub-16-bit sensors.
 - **server.port** — Listening port (**11122**, next free in the 1112x family;
-  11121 is `qhy-camera`). One port hosts all enumerated devices. Hard read-only
-  (self-lockout: a port change would make the BFF lose the devices).
+  11121 is `qhy-camera`). One port hosts all enumerated devices. `--port`
+  pins it. Editable on the server page, whose save answers with the address
+  the page moves to.
 
 *(The former `filterwheel.enabled` toggle and per-serial `filter_names`
 override left with the EFW re-scope — ADR-014; they will reappear in the
 future `zwo-filterwheel` service's own config.)*
 
-### Config actions
+### Setup pages
 
-Standard cross-driver protocol ([`config-actions.md`](config-actions.md)),
-implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
-[`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
-supplies `ConfigurableDriver for ZwoCameraDriver`:
+The service configures itself on the two HTML pages the Alpaca Management
+API defines, served on its own listener behind its own TLS and Basic Auth:
+`/setup` for the whole server and `/setup/v1/camera/{n}/setup` for each
+camera it serves. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section, the
+confirmation and the reload wait. The camera drivers' own parts — the
+**Cameras** section that edits `usb_devices`, and the camera pages — are
+`rusty-photon-driver`'s `claims` module, which `svbony-camera` and
+`qhy-camera` share; `setup.rs` supplies the rest
+(`ConfigurableDriver for ZwoCameraDriver`): the `Config`, the validation,
+the secret, the `--port` pin, and what the running server registered. No
+field is locked: `UniqueID`s are hardware-derived and not stored in config
+(*Device identity*). The `config.get` / `config.apply` / `config.schema`
+actions are gone: a camera's and a placeholder's `SupportedActions` is
+empty, and any `Action` answers `ActionNotImplemented`.
 
-- **Secrets redacted/carried forward:** `server.auth.password_hash` (the one
-  secret; `server.tls` stores file *paths*, not key material).
-- **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
-  stored in config, so there is no identity field to lock (a deliberate
-  divergence from the minted-identity convention; see *Device identity*).
-- **Hard read-only fields:** `/server/port` (self-lockout — a BFF could not
-  follow the rebind).
-- **Editable fields:** `usb_devices`, the `devices` map (per-serial `name` /
-  `description`) and `max_adu_reporting`.
-- **Validation** at load (parse-don't-validate): the `usb_devices` rules above
-  run at load and in `config.apply` alike (U9). `devices` keys are free-form
-  serial strings and the override values are free-form display strings, so
-  there is nothing semantic to validate in them — but unknown keys are
-  **rejected at deserialize** (`deny_unknown_fields`, as in zwo-focuser), so
-  typos and removed keys (notably a pre-ADR-014 `filterwheel` section) fail
-  loudly at load instead of being silently ignored.
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| | `max_adu_reporting` | named as file-only (below) |
+| | Cameras | `usb_devices`, and `devices` when the mode changes (below) |
+| `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
 
-`config.apply` persists atomically, returns `status:"applying"` when a field
-changed, and fires the in-process reload (`main.rs` runs under
-`with_reload().run_with_reload(...)`).
+**`max_adu_reporting` is edited in the file.** It is a string enum, which
+the shared form does not render (the crate's field shapes), so the page
+names it as edited in the configuration file, as `star-adventurer-gti`'s
+`tracking_rate` is, and a save leaves it as the file has it. Each device
+reads it at construction, so a hand edit applies at the next reload — a
+save that changes something, `SIGHUP` — or restart.
+
+**The Cameras section** is the device-claims plan's C8, settled as
+[driver-setup-pages.md](../plans/driver-setup-pages.md) D11, the same
+section `svbony-camera` serves:
+
+- **Two modes**, chosen by a radio: *serve every ZWO camera the USB scan
+  places, numbered in port order* — no list (U10) — and *serve only the
+  checked cameras* — a list (U1–U5).
+- **One row per port**, in port order (U8's): each port that holds an
+  `03c3` record the normalizer can count as a camera now (U2: an observed
+  model, or a product id the ASI SDK's own table accepts, a lookup that
+  opens nothing, which keeps the EAF and the EFW out), and each listed port
+  that holds none, a placeholder's. The rows come from a USB scan run for
+  the page — the passive scan a start takes (U1) — so nothing is opened. A
+  row names the port, what the bus calls the device (its product string,
+  else `03c3:<pid>`), and what the running service serves there:
+  `camera <n>`, `placeholder <n>`, or nothing.
+- **With a list**, each row has a checkbox — checked is served — and its
+  entry's `name` and `description`. The numbers are kept by the page, never
+  typed: the checked rows keep the order of the numbers they have now and
+  take `0..N-1` in it, and a newly checked row takes the next number, in
+  port order. Unchecking any camera but the highest-numbered moves the
+  numbers after it down; checking one adds it at the end. A kept entry's
+  other keys stay as the file has them.
+- **The numbers a row has now** are the list's or, with no list, the port
+  order the running service serves, so changing the mode without touching
+  a row moves no number.
+- **Changing to a list** carries each camera's `devices` name and
+  description into its row — the rows show them, filled in — and deletes the
+  `devices` map, which a list refuses (*Configuration*). **Changing to no
+  list** deletes the list and carries each row's name and description into a
+  `devices` entry under the camera's serial (or `noserial-<port>`). The page
+  knows a serial only where the last start or reload read it, by opening the
+  camera (*Device identity*): every camera it served, which with a list is a
+  listed camera whose open succeeded. A placeholder's names have no camera
+  whose serial the page could know, and neither has a listed camera whose
+  open failed, which a placeholder holds; the confirmation names them as
+  dropped.
+- **Every row unchecked** with a list saves `"usb_devices": []` (above).
+- **A save that moves a number is confirmed first.** It answers with the
+  form as submitted, each port whose camera would be served at another
+  number (from → to), each number a dropped camera held that another
+  camera would take (a camera unchecked and another checked in one save,
+  or a placeholder's number served once the list goes), and that rp's
+  camera entries bound to those numbers must be renumbered to match — an
+  entry without a `unique_id` pin would otherwise open the wrong camera
+  with no error; rp's own page shows which entries those are, which this
+  driver cannot. The same confirmation names each name and description the
+  save would drop: an entry's no longer listed (every row unchecked
+  included — a row checked again later starts without them), a `devices`
+  entry no row carries into the list, and the names leaving a list drops
+  (above). Nothing is written until the operator saves it again from that
+  page; a confirmation covers the changes it showed, so a submission whose
+  changes differ is asked again.
+- **With no list after a save**, the numbers it is checked against are the
+  ones the reload it fires would give the bus as the page's scan finds it:
+  in port order, each camera the last start or reload placed whose port
+  still holds a record, and each port that has gained a record since that
+  start's scan. The page opens nothing, so it takes a new record for a
+  camera; the reload's own scan, join and opens decide. A camera the start
+  placed but did not open — unlisted, such as a guide camera another
+  application holds, or one whose open failed — may open on the reload or
+  not, which the page cannot tell. The reload serves each camera it opens
+  in its place in port order, so the confirmation names those cameras and
+  lists the moves for none of them opening and, where they differ, for
+  all of them opening, and it asks even when only the second list moves.
+  So a camera plugged into an earlier port since the start is confirmed as
+  the move it causes, whether the save leaves a list or the service
+  already has none, and the confirmation says the bus has changed. A camera page's save reloads too,
+  so it is checked the same way; its page scans the bus only for a save, so
+  showing it costs no scan. Only a save that changes something is asked:
+  one that changes nothing fires no reload, so nothing it could confirm
+  would happen. A reload by `SIGHUP`, or a restart, numbers a changed bus
+  afresh unasked: without a list, a camera added or removed moves the
+  numbers after it (U10).
+- **A failed scan** is said, with the collector's error, and the rows are
+  the listed ports and what the running service serves.
+
+**A camera's page** depends on what its number serves:
+
+- **a listed camera**: its model, port and `UniqueID`, and a link to its
+  row in the server page's Cameras section, where its name and description
+  are edited;
+- **a placeholder** (U4): the port it stands in for and why no camera is
+  served there, and a link to the Cameras section;
+- **a camera served without a list** (U10): its `devices` entry's `name`
+  and `description`, with its model, port and `UniqueID`. The first save
+  that names either creates the entry, under the camera's serial; a save
+  that clears both deletes it.
+
+- **Secrets:** `/server/auth/password_hash`, edited through the Security
+  section and never shown.
+- **Validation** on every save is the load's: unknown keys are rejected at
+  deserialize (`deny_unknown_fields`, as in zwo-focuser), so typos and
+  removed keys (notably a pre-ADR-014 `filterwheel` section) fail loudly
+  instead of being silently ignored, and the `usb_devices` rules above run
+  at load and on every save alike (U9). `devices` keys are free-form serial
+  strings and the override values free-form display strings, so there is
+  nothing semantic to validate in them. The Cameras section builds only
+  lists the rules accept.
+
+A save that changes anything persists atomically, answers that the
+service is reloading, and fires the in-process reload after the response
+has flushed (`main.rs` runs under `with_reload().run_with_reload(...)`):
+the reload re-scans, re-places and re-registers every camera (U1), which
+closes and re-opens every camera the service serves. A save that changes
+nothing says so and fires no reload.
 
 ### Device identity (UniqueID)
 
@@ -709,7 +825,7 @@ EAF; those belong to the other zwo services.)
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state or any other
-  actuation on startup, connect, or `config.apply` (workspace tenet
+  actuation on startup, connect, or a setup-page save (workspace tenet
   [*no actuation on connect*](../workspace.md#project-tenets)); cooler commands
   are issued only by explicit ASCOM setters, and no cooler setpoint is restored
   on connect. The C0 serial read runs only `ASIOpenCamera` +
@@ -717,8 +833,8 @@ EAF; those belong to the other zwo services.)
   (`zwo_rs::Sdk::open_uninitialised` + `UninitialisedCamera::serial`)
   on every camera the configuration serves — every enumerated camera with no
   `usb_devices` list, only those placed on listed ports with one (U1) — at
-  *service start* and on every reload (`config.apply`'s, `SIGHUP`'s, or U6's
-  own) —
+  *service start* and on every reload (a setup-page save's, `SIGHUP`'s, or
+  U6's own) —
   `ASIOpenCamera` is documented by the vendor SDK as not affecting a capturing
   camera. It deliberately never calls `ASIInitCamera` (which resets controls,
   e.g. the cooler, to SDK defaults); that call is reserved for the per-device
@@ -935,8 +1051,8 @@ on its own (U5).
   close this. An SDK enumeration that fails after a scan that ran fails the
   start or reload, with or without a list, as it always has (C0). Only the
   scan, which the list adds, is made non-fatal and retried. None of these
-  steps initialises a camera, let alone actuates one, and a reload —
-  `config.apply`'s, `SIGHUP`'s, or U6's own — runs the same path (tenet 3,
+  steps initialises a camera, let alone actuates one, and a reload — a
+  setup-page save's, `SIGHUP`'s, or U6's own — runs the same path (tenet 3,
   C5).
 - **U2. Placing a camera on a port is a join.** No ASI SDK call reports a USB
   location: `ASI_CAMERA_INFO` carries a name, a camera id and the sensor's
@@ -1061,10 +1177,10 @@ on its own (U5).
     can take, so a client that remembers devices by `UniqueID` never mistakes
     the stand-in for the camera, and central doctor can recognise it in
     `configureddevices` (plan C5).
-  - `SupportedActions` lists the config actions and `Action` serves them,
-    connected or not — an rp camera entry bound to this number is how
-    `ui-htmx` reaches the service, and a missing camera is exactly when the
-    operator needs that page to fix the list.
+  - Its setup page, `/setup/v1/camera/<n>/setup`, says which port it stands
+    in for and why, and links to the server page's Cameras section, where
+    the list is fixed (*Setup pages*). `SupportedActions` is empty and
+    `Action` answers `ActionNotImplemented`, as for a camera.
   - `DriverInfo`, `DriverVersion` and `InterfaceVersion` answer as for a
     camera; every other member answers `NOT_CONNECTED`.
   - The service logs `warn!` at start naming the number, the port and the
@@ -1127,7 +1243,7 @@ on its own (U5).
   stop the next server. Nobody asked for this rebuild, though, so it is built
   from the configuration the stopped server was serving, not from the config
   file: an edit to the file that no reload has applied — a list removed, a
-  port or a certificate changed — waits for the reload (`config.apply`,
+  port or a certificate changed — waits for the reload (a setup-page save,
   `SIGHUP`) or restart that applies it, rather than moving or ending the
   service. A rebuild whose SDK enumeration fails would still end it — with
   the first scan failed, the rebuild is the first enumeration since the start
@@ -1232,20 +1348,20 @@ on its own (U5).
   reproducing a refused list would only be pasted back. Text only:
   `--devices` does not combine with `--json`. U11's checks close the
   listing.
-- **U9. The list over `config.apply`.** `usb_devices` is an editable field.
-  `config.apply` runs the load-time validation and answers a bad list with
-  field errors naming the entry (`usb_devices.1.usb_port`,
-  `usb_devices.0.device_number`) or the `devices` key beside it
-  (`devices.<serial>`), persisting nothing. It refuses `"usb_devices": []`
-  with an error saying why: an empty list registers no device, so none would
-  be left to serve the config actions, and no apply could undo it. A shorter
-  list is accepted: it can retire the number the apply arrived through, but
-  its remaining devices still carry the actions. A changed list applies
-  through the ordinary in-process reload, which closes and re-opens every
-  camera on the service — an operator editing the list is re-cabling or
-  re-assigning cameras, not mid-exposure. Placeholders carry the actions
-  (U4), so a list whose camera went missing can be fixed from `ui-htmx`
-  through the placeholder at that camera's number.
+- **U9. The list over the setup pages.** `usb_devices` is edited in the
+  server page's Cameras section (*Setup pages*). Every save runs the
+  load-time validation and answers a list that breaks a rule with errors
+  naming the entry (`usb_devices.1.usb_port`, `usb_devices.0.device_number`)
+  or the `devices` key beside it (`devices.<serial>`), persisting nothing;
+  the section itself builds only lists that pass. `"usb_devices": []` is
+  saved like any other list: the server page is not a device's page, so it
+  outlives the last camera and can undo it. A changed list applies through
+  the ordinary in-process reload, which closes and re-opens every camera on
+  the service — an operator editing the list is re-cabling or re-assigning
+  cameras, not mid-exposure — and a save that moves a number is confirmed
+  first. The server page is on the service's listener, so a list whose
+  camera went missing is fixed there whatever the list serves; the
+  placeholder's page links to it.
 - **U10. Without a list, every camera the scan can place is served, in port
   order.** With no `usb_devices` key, `build()` takes U1's steps — the host's
   USB scan, the SDK enumeration, the join (U2) — and opens, uninitialised and
@@ -1264,8 +1380,8 @@ on its own (U5).
   whose port cannot be read cannot be numbered by it: the error is logged at
   `error!`, the SDK is not enumerated, and the service re-scans in the
   background and rebuilds on the first success, exactly as U6 does for a
-  list. Until then the server serves no Camera at all, so no config action is
-  reachable over Alpaca either; the re-scan needs none.
+  list. Until then the server serves no Camera at all; its setup page is
+  still served, and the re-scan needs nothing from it.
 
   Each registered camera is the same `ZwoCamera` a list serves, with its
   `UniqueID` (*Device identity*, `noserial-{usb_port}` for one with no serial
@@ -2082,7 +2198,7 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   view of which gain a frame armed), cooling (K1–K4), sensor type & signal
   (ST1–ST3), pulse-guiding (PG1–PG2), the
   capability surface a disconnected driver may not describe (E12), and
-  config actions, driven against the `zwo-rs` `simulation` backend.
+  the setup pages, driven against the `zwo-rs` `simulation` backend.
   (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
 - **A camera that leaves the bus (C6)** — `camera_departure.feature` starts the
   `simulation` binary with the hidden `--simulation-departure-file <path>`
@@ -2168,11 +2284,19 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   at its number with its entry's name; a placeholder for an empty port, a
   ZWO focuser's port, a fault, a look-alike, a camera that cannot be opened
   and a failed scan, with its `0x540` connect error, `Description`, `UniqueID`
-  form, `NOT_CONNECTED` members and config actions; the failed scan's re-scan
-  that rebuilds the server, from the configuration it serves rather than a
-  hand edit to the file; the empty list; the list's validation at start and
-  over `config.apply`; a camera that cannot be opened failing a start without
-  a list (C0); and `doctor --devices`' listing and block. The join, the
+  form, `NOT_CONNECTED` members and empty action list; the failed scan's
+  re-scan that rebuilds the server, from the configuration it serves rather
+  than a hand edit to the file; the empty list; the list's validation at
+  start; a camera that cannot be opened at a start without a list, left
+  unregistered while the service starts (C0); and `doctor --devices`'
+  listing and block. `setup_pages.feature` covers
+  the pages: the server page and its Cameras section in both modes — a row
+  checked, a number moved and confirmed, the mode changed with its names
+  carried, every row unchecked and the page still served — and each camera
+  page by what its number serves, the names a listed camera whose open
+  failed drops when the list goes, a changed bus confirmed, the config
+  actions gone, the cross-site refusal, the port move and the pages behind
+  TLS and auth. The join, the
   reasons, port order and the listing are unit-tested once, in
   `rusty-photon-doctor-checks`' `claims` module; the placeholder device and
   the re-scan's schedule in `rusty-photon-driver`'s; the normalizer over the

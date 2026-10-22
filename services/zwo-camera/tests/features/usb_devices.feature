@@ -16,7 +16,8 @@ Feature: Device claims -- the usb_devices list
   reads Connected as false, refuses Connected = true with ASCOM error 0x540
   naming the reason, carries the same reason in its Description, answers to
   the UniqueID placeholder:zwo-camera:<usb_port>, refuses every camera
-  member with NOT_CONNECTED, and still serves the config actions. Its reason
+  member with NOT_CONNECTED, and serves no action, as a camera serves none:
+  its own setup page says why (setup_pages.feature). Its reason
   is the first that applies: the scan failed; a record on the port that is
   not a working device; a camera the join cannot tell apart from another
   (U3); a working record no SDK camera is placed on; no working camera on the
@@ -27,8 +28,8 @@ Feature: Device claims -- the usb_devices list
   it serves (U6). An empty list
   registers nothing. A list that breaks a rule -- numbers not running 0..N-1,
   a port listed twice, a blank or padded port, a devices override beside it
-  -- refuses the start, and config.apply answers it with field errors and
-  persists nothing (U9).
+  -- refuses the start (U9); the setup pages' Cameras section builds none,
+  and setup_pages.feature covers saving a list there.
 
   `zwo-camera doctor --devices` lists every ASI camera the join placed on a
   port, in port order, with the number the running configuration serves it
@@ -84,15 +85,13 @@ Feature: Device claims -- the usb_devices list
     When I connect camera device 1
     Then camera device 1 reports Connected as true
 
-  Scenario: A placeholder serves the config actions and refuses every camera member
+  Scenario: A placeholder serves no action and refuses every camera member
     Given the configuration lists these USB devices:
       | device_number | usb_port            |
       | 0             | simulated-usbv3-0:9 |
     When the zwo-camera service starts
     And the supported actions are queried on camera device 0
-    Then the supported actions should include config.get, config.apply, and config.schema
-    When config.get is called
-    Then the config lists the USB port "simulated-usbv3-0:9" as device 0
+    Then the supported actions are empty
     And reading these members from camera device 0 is rejected with ASCOM NOT_CONNECTED:
       | member           |
       | CameraXSize      |
@@ -272,26 +271,6 @@ Feature: Device claims -- the usb_devices list
       | {"usb_devices": [{"device_number": 0, "usb_port": ""}]}                                                                                      | usb_devices[0]: usb_port is blank                                    |
       | {"usb_devices": [{"device_number": 0, "usb_port": " a"}]}                                                                                    | usb_devices[0]: usb_port has leading or trailing whitespace          |
       | {"usb_devices": [{"device_number": 0, "usb_port": "simulated-usbv3-0:1"}], "devices": {"0a1b2c3d4e5f6071": {"name": "Main"}}}                | devices.0a1b2c3d4e5f6071: move its fields into the usb_devices entry |
-
-  Scenario: config.apply persists a valid list and applies it through a reload
-    Given a running zwo-camera service with the simulation backend
-    When config.apply sets usb_devices to [{"device_number": 0, "usb_port": "simulated-usbv3-0:1"}]
-    Then the apply status should be applying
-    And the reload list should include usb_devices
-
-  Scenario: config.apply refuses an empty list
-    Given a running zwo-camera service with the simulation backend
-    When config.apply sets usb_devices to []
-    Then the apply status should be invalid
-    And the apply errors name usb_devices saying "an empty list registers no camera"
-
-  Scenario: config.apply names the entry that breaks a rule and persists nothing
-    Given a running zwo-camera service with the simulation backend
-    When config.apply sets usb_devices to [{"device_number": 0, "usb_port": "a"}, {"device_number": 0, "usb_port": "b"}]
-    Then the apply status should be invalid
-    And the apply errors name usb_devices.1.device_number saying "device_number 0 is also usb_devices[0]'s"
-    When config.get is called
-    Then the config has no usb_devices list
 
   Scenario: doctor --devices lists the camera by port and prints the list to paste
     Given the configuration JSON {}

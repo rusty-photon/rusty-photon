@@ -596,7 +596,7 @@ impl ServerBuilder {
                 .filter_map(|(index, port)| {
                     cameras.get(index).map(|cam| PlacedCamera {
                         port: port.to_string(),
-                        override_key: claims::override_key(&cam.info, port),
+                        override_key: Some(claims::override_key(&cam.info, port)),
                     })
                 })
                 .collect(),

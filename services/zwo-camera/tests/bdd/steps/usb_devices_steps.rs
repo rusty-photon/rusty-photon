@@ -215,55 +215,6 @@ async fn rejection_says(world: &mut CameraWorld, expected: String) {
     );
 }
 
-// --- config actions --------------------------------------------------------------
-
-#[then(regex = r#"^the config lists the USB port "([^"]+)" as device (\d+)$"#)]
-async fn config_lists_port(world: &mut CameraWorld, port: String, device: u64) {
-    let response = world.last_response.as_ref().expect("no response stashed");
-    let list = response["config"]["usb_devices"]
-        .as_array()
-        .unwrap_or_else(|| panic!("config.get has no usb_devices list: {response}"));
-    assert!(
-        list.iter()
-            .any(|e| e["usb_port"] == port.as_str() && e["device_number"] == device),
-        "usb_devices {list:?} does not list {port} as device {device}"
-    );
-}
-
-#[then("the config has no usb_devices list")]
-async fn config_has_no_list(world: &mut CameraWorld) {
-    let response = world.last_response.as_ref().expect("no response stashed");
-    assert!(
-        response["config"].get("usb_devices").is_none(),
-        "config.get reports a usb_devices list: {response}"
-    );
-}
-
-#[when(regex = r"^config\.apply sets usb_devices to (.+)$")]
-async fn apply_usb_devices(world: &mut CameraWorld, json: String) {
-    let list: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or_else(|e| panic!("the step's list is not JSON: {e}: {json}"));
-    let mut config = world.config_get().await;
-    config
-        .as_object_mut()
-        .expect("config.get's config is an object")
-        .insert("usb_devices".to_string(), list);
-    world.call_action("config.apply", &config.to_string()).await;
-}
-
-#[then(regex = r#"^the apply errors name (\S+) saying "([^"]+)"$"#)]
-async fn apply_errors_name(world: &mut CameraWorld, path: String, expected: String) {
-    let response = world.last_response.as_ref().expect("no response stashed");
-    let errors = response["errors"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the apply response has no errors: {response}"));
-    assert!(
-        errors.iter().any(|e| e["path"] == path.as_str()
-            && e["msg"].as_str().is_some_and(|m| m.contains(&expected))),
-        "no apply error at {path} saying {expected:?}: {errors:?}"
-    );
-}
-
 // --- doctor -------------------------------------------------------------------------
 
 /// Run the service binary's `doctor` with `args`, against the scenario's
