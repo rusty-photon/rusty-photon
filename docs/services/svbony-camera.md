@@ -989,11 +989,24 @@ gone: a camera's and a placeholder's `SupportedActions` is empty, and any
   must be renumbered to match — an entry without a `unique_id` pin would
   otherwise open the wrong camera with no error; rp's own page shows which
   entries those are, which this driver cannot. The same confirmation names
-  each name and description the save would drop: a `devices` entry no row
-  carries into the list, and a placeholder's names when the list goes.
-  Nothing is written until the operator saves it again from that page; a
-  confirmation covers the changes it showed, so a submission whose changes
-  differ is asked again.
+  each name and description the save would drop: an entry's no longer
+  listed (every row unchecked included — a row checked again later starts
+  without them), a `devices` entry no row carries into the list, and a
+  placeholder's names when the list goes. Nothing is written until the
+  operator saves it again from that page; a confirmation covers the
+  changes it showed, so a submission whose changes differ is asked again.
+- **With no list after a save**, the numbers it is checked against are the
+  ones the reload it fires would give the bus as the page's scan finds it:
+  in port order, each camera the last start or reload placed whose port
+  still holds a record, and each port that has gained a record since that
+  start's scan. The page makes no SDK call, so it takes a new record for a
+  camera; the reload's own scan and join decide. So a camera plugged into
+  an earlier port since the start is confirmed as the move it causes,
+  whether the save leaves a list or the service already has none, and the
+  confirmation says the bus has changed. A camera page's save also
+  reloads, and numbers a changed bus afresh the same way unconfirmed — as
+  `SIGHUP` does: without a list, a camera added or removed moves the
+  numbers after it (U10).
 - **A failed scan** is said, with the collector's error, and the rows are
   the listed ports and what the running service serves.
 

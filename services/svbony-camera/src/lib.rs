@@ -319,6 +319,7 @@ impl ServerBuilder {
         server: &mut Server,
     ) -> Result<Registered, SvbonyCameraError> {
         let (scan, cameras) = self.scan_and_enumerate().await?;
+        let seen = seen_ports(&scan);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -337,7 +338,7 @@ impl ServerBuilder {
         for note in claims.unplaced_notes() {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
-        self.record_placed(&claims, &cameras);
+        self.record_placed(&claims, &cameras, seen);
         // The join places only what the SDK enumerated, so every index is in
         // `cameras`.
         let placed = claims
@@ -413,13 +414,14 @@ impl ServerBuilder {
                  succeeds"
             );
         }
+        let seen = seen_ports(&scan);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
             scan,
             claims::sdk_cameras(cameras.iter().map(|c| &c.info)),
         );
-        self.record_placed(&claims, &cameras);
+        self.record_placed(&claims, &cameras, seen);
 
         let mut registered = Registered::default();
         let mut entries: Vec<&UsbDeviceEntry> = list.iter().collect();
@@ -575,10 +577,18 @@ impl ServerBuilder {
         })
     }
 
-    /// Tell the pages every camera the join placed, listed or not: what the
-    /// no-list default would serve, in port order.
-    fn record_placed(&self, claims: &Claims<'_>, cameras: &[EnumeratedCamera]) {
-        let Some(pages) = &self.pages else { return };
+    /// Tell the pages every camera the join placed, listed or not — what the
+    /// no-list default would serve, in port order — and the ports the scan
+    /// `seen` records on. A failed scan (`seen` is `None`) tells nothing.
+    fn record_placed(
+        &self,
+        claims: &Claims<'_>,
+        cameras: &[EnumeratedCamera],
+        seen: Option<Vec<String>>,
+    ) {
+        let (Some(pages), Some(seen)) = (&self.pages, seen) else {
+            return;
+        };
         pages.claims.placed(
             claims
                 .placed()
@@ -590,8 +600,20 @@ impl ServerBuilder {
                     })
                 })
                 .collect(),
+            seen,
         );
     }
+}
+
+/// Every port `scan` holds a record on that can be an `SVBony` camera, placed
+/// or not; `None` for a failed scan.
+fn seen_ports(scan: &Result<rusty_photon_doctor_checks::UsbScan, String>) -> Option<Vec<String>> {
+    scan.as_ref().ok().map(|scan| {
+        claims::bus_cameras(scan)
+            .into_iter()
+            .map(|c| c.port)
+            .collect()
+    })
 }
 
 /// The setup pages one build serves: the shared handler, and the camera

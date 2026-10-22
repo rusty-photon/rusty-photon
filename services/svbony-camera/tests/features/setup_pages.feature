@@ -12,8 +12,11 @@ Feature: Setup pages
   service serves there. With a list, the checked rows keep the order of the
   numbers they have now, and a newly checked row takes the next number. A
   save that would move a served camera to another number, or give a
-  dropped camera's number to another, answers 409 with the change, writing
-  nothing until the operator saves that page again. A
+  dropped camera's number to another, or drop names, answers 409 with the
+  change, writing nothing until the operator saves that page again. With
+  no list after the save, the numbers are the port order the reload would
+  give the bus as the page's own scan finds it, a record new since the
+  start taken for a camera. A
   change of mode carries the names across: to a list, each camera's devices
   override fills its row and the devices map goes; to no list, each listed
   camera's names become an override under its CameraSN, and any name the
@@ -147,16 +150,38 @@ Feature: Setup pages
     And the page warns that the rp camera entries bound to those numbers must be renumbered
     And the configuration file holds "simulated-usbv3-0:1" at "/usb_devices/0/usb_port"
 
-  Scenario: Unchecking every row saves an empty list, and the server page is still served
+  Scenario: Unchecking every row asks before dropping the names, saves an empty list, and the server page is still served
     Given the configuration lists these USB devices:
-      | device_number | usb_port            |
-      | 0             | simulated-usbv3-0:1 |
+      | device_number | usb_port            | name |
+      | 0             | simulated-usbv3-0:1 | Main |
     When the svbony-camera service starts
     And I submit the server setup page unchecking the row for port "simulated-usbv3-0:1"
+    Then the page asks to confirm dropping the names of "simulated-usbv3-0:1"
+    And the configuration file holds "Main" at "/usb_devices/0/name"
+    When I save the confirmation
     Then the page reports the configuration was saved and the service is reloading
     And the configuration file holds [] at "/usb_devices"
     And after the reload the Cameras section lists the port "simulated-usbv3-0:1" as "not served"
     And the running service registers no Camera device
+
+  Scenario: Leaving the list after a record appeared on an earlier port asks to confirm the move
+    Given the staged USB inventory:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:2" } ] }
+      """
+    And the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:2 |
+    When the svbony-camera service starts
+    And the staged USB inventory becomes:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9b00", "port": "simulated-usbv3-0:1" },
+                 { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:2" } ] }
+      """
+    And I submit the server setup page setting "usb_devices.mode" to "auto"
+    Then the page asks to confirm that the camera on "simulated-usbv3-0:2" moves from 0 to 1
+    And the page says "The bus has changed since the service last started"
+    And the configuration file holds "simulated-usbv3-0:2" at "/usb_devices/0/usb_port"
 
   Scenario: Changing to no list carries each listed camera's names into its override
     Given the configuration lists these USB devices:

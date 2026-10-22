@@ -106,6 +106,10 @@ struct Registry {
     /// number.
     served: Vec<(String, Served)>,
     placed: Vec<PlacedCamera>,
+    /// Every port the build's scan saw a record on that can be one of the
+    /// driver's cameras, placed or not; `None` when the build took no scan
+    /// (an empty list) or the scan failed.
+    seen: Option<Vec<String>>,
 }
 
 /// A camera driver's own part of its setup pages, built once per start or
@@ -148,9 +152,14 @@ impl ClaimsPages {
         u32::try_from(registry.served.len().saturating_sub(1)).unwrap_or(u32::MAX)
     }
 
-    /// Record every camera the join placed, listed or not, in port order.
-    pub fn placed(&self, placed: Vec<PlacedCamera>) {
-        self.lock().placed = placed;
+    /// Record every camera the join placed, listed or not, in port order,
+    /// and every port the scan saw a record on that can be a camera, placed
+    /// or not: what the server page compares the bus with, to tell what the
+    /// reload a save fires would number afresh.
+    pub fn placed(&self, placed: Vec<PlacedCamera>, seen: Vec<String>) {
+        let mut registry = self.lock();
+        registry.placed = placed;
+        registry.seen = Some(seen);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
@@ -376,20 +385,79 @@ impl CamerasSection {
             .map(|p| p.port.as_str())
     }
 
-    /// The numbers `config` serves each port at: its list's, or with no
-    /// list the port order of the cameras the join placed.
+    /// The numbers the running service serves each port at under `config`:
+    /// its list's, or with no list the port order of the cameras the last
+    /// start placed.
     fn numbers(&self, config: &Value) -> BTreeMap<String, u64> {
         entries(config).map_or_else(
             || {
-                self.registry
-                    .placed
-                    .iter()
-                    .zip(0_u64..)
-                    .map(|(p, n)| (p.port.clone(), n))
-                    .collect()
+                Self::in_order(
+                    self.registry
+                        .placed
+                        .iter()
+                        .map(|p| p.port.clone())
+                        .collect(),
+                )
             },
             |list| list.into_iter().map(|e| (e.port, e.number)).collect(),
         )
+    }
+
+    /// The numbers the reload a save of `config` fires would serve each port
+    /// at: its list's, or with no list the port order the no-list default
+    /// gives the bus as it is now (`predicted`).
+    fn numbers_after(&self, config: &Value) -> BTreeMap<String, u64> {
+        entries(config).map_or_else(
+            || Self::in_order(self.predicted()),
+            |list| list.into_iter().map(|e| (e.port, e.number)).collect(),
+        )
+    }
+
+    /// `ports`, already in port order, numbered from 0.
+    fn in_order(ports: Vec<String>) -> BTreeMap<String, u64> {
+        ports.into_iter().zip(0_u64..).collect()
+    }
+
+    /// The ports the no-list default would serve a camera on after a reload,
+    /// in port order: each camera the last start placed whose port the bus
+    /// still shows, and each port that has gained a record since that start
+    /// — which the page, making no SDK call, takes for a camera. A record the
+    /// start saw and did not place stays unplaced; a failed scan predicts
+    /// what the start placed.
+    fn predicted(&self) -> Vec<String> {
+        let placed = self.registry.placed.iter().map(|p| p.port.clone());
+        let Ok(bus) = &self.bus else {
+            return placed.collect();
+        };
+        let on_bus = |port: &str| bus.iter().any(|c| c.port == port);
+        let seen = |port: &str| {
+            self.registry.seen.as_ref().map_or_else(
+                || self.placed_key(port).is_some(),
+                |seen| seen.iter().any(|p| p == port),
+            )
+        };
+        let mut ports: Vec<String> = placed.filter(|port| on_bus(port)).collect();
+        ports.extend(
+            bus.iter()
+                .filter(|c| !seen(&c.port))
+                .map(|c| c.port.clone()),
+        );
+        ports.sort_by(|a, b| (self.order)(a, b));
+        ports.dedup();
+        ports
+    }
+
+    /// Whether the bus differs from what the last start's scan saw: a placed
+    /// camera's port gone, or a port gained since.
+    fn bus_changed(&self) -> bool {
+        let predicted = self.predicted();
+        let placed: Vec<&str> = self
+            .registry
+            .placed
+            .iter()
+            .map(|p| p.port.as_str())
+            .collect();
+        predicted.len() != placed.len() || predicted.iter().zip(&placed).any(|(a, b)| a != b)
     }
 
     fn label(&self, port: &str) -> Option<&str> {
@@ -568,7 +636,7 @@ impl CamerasSection {
 
     /// Each port served at one number in `before` and another in `after`.
     fn moves(&self, before: &Value, after: &Value) -> Vec<(String, u64, u64)> {
-        let to = self.numbers(after);
+        let to = self.numbers_after(after);
         let mut moves: Vec<(String, u64, u64)> = self
             .numbers(before)
             .into_iter()
@@ -597,7 +665,7 @@ impl CamerasSection {
             .map(|(port, number)| (number, port))
             .collect();
         let mut retaken: Vec<(u64, String, String)> = self
-            .numbers(after)
+            .numbers_after(after)
             .into_iter()
             .filter_map(|(port, number)| {
                 let old = held.get(&number)?;
@@ -611,10 +679,16 @@ impl CamerasSection {
 
     /// The names `before` holds that `after` keeps nowhere: an entry's,
     /// leaving a list, whose camera has no override key the page knows; an
+    /// entry's no longer listed, every row unchecked included; an
     /// override's, entering a list, whose camera's row is not listed. Each
     /// is named by its port, else by its override key.
     fn dropped(&self, before: &Value, after: &Value) -> Vec<Dropped> {
         let mut dropped: Vec<Dropped> = match (entries(before), entries(after)) {
+            (Some(list), Some(kept)) => list
+                .into_iter()
+                .filter(|e| e.has_names() && !kept.iter().any(|k| k.port == e.port))
+                .map(|e| Dropped::Unlisted(e.port))
+                .collect(),
             (Some(list), None) => list
                 .into_iter()
                 .filter(|e| e.has_names() && self.placed_key(&e.port).is_none())
@@ -636,11 +710,11 @@ impl CamerasSection {
         };
         // In port order, then the keys: a map's own order is serde_json's
         // feature choice, and the confirmation's token must not depend on it.
-        dropped.sort_by(|a, b| match (a, b) {
-            (Dropped::Port(a), Dropped::Port(b)) => (self.order)(a, b),
-            (Dropped::Port(_), Dropped::Key(_)) => Ordering::Less,
-            (Dropped::Key(_), Dropped::Port(_)) => Ordering::Greater,
-            (Dropped::Key(a), Dropped::Key(b)) => a.cmp(b),
+        dropped.sort_by(|a, b| match (a.port(), b.port()) {
+            (Some(a), Some(b)) => (self.order)(a, b),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => a.key().cmp(&b.key()),
         });
         dropped
     }
@@ -649,10 +723,29 @@ impl CamerasSection {
 /// Names a save would drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Dropped {
-    /// The names of the camera on, or the entry for, this port.
+    /// The names of the camera on, or the entry for, this port, which no
+    /// override can take.
     Port(String),
+    /// The names of the entry for this port, which is no longer listed.
+    Unlisted(String),
     /// The override under this key, whose camera the join placed nowhere.
     Key(String),
+}
+
+impl Dropped {
+    fn port(&self) -> Option<&str> {
+        match self {
+            Self::Port(port) | Self::Unlisted(port) => Some(port),
+            Self::Key(_) => None,
+        }
+    }
+
+    fn key(&self) -> Option<&str> {
+        match self {
+            Self::Key(key) => Some(key),
+            Self::Port(_) | Self::Unlisted(_) => None,
+        }
+    }
 }
 
 impl CustomSection for CamerasSection {
@@ -802,9 +895,10 @@ impl CustomSection for CamerasSection {
                 .map(|(number, old, new)| format!("number {number} {old}>{new}")),
         );
         tokens.extend(dropped.iter().map(|d| match d {
-            Dropped::Port(port) => format!("drop {port}"),
+            Dropped::Port(port) | Dropped::Unlisted(port) => format!("drop {port}"),
             Dropped::Key(key) => format!("drop key {key}"),
         }));
+        let afresh = entries(after).is_none() && self.bus_changed();
         let markup = html! {
             ul {
                 @for (port, from, to) in &moves {
@@ -823,10 +917,19 @@ impl CustomSection for CamerasSection {
                         Dropped::Port(port) => li.dropped data-port=(port) {
                             "drop the name and description of " code { (port) } ", which has no camera whose override the page could write"
                         },
+                        Dropped::Unlisted(port) => li.dropped data-port=(port) {
+                            "drop the name and description of the entry for " code { (port) } ", which is no longer listed"
+                        },
                         Dropped::Key(key) => li.dropped data-key=(key) {
                             "drop the " code { "devices" } " override " code { (key) } ", whose camera is on no port this start placed"
                         },
                     }
+                }
+            }
+            @if afresh && (!moves.is_empty() || !retaken.is_empty()) {
+                p {
+                    "The bus has changed since the service last started, so the reload numbers the cameras afresh, in port order. "
+                    "The page opens nothing, so it takes a record new since then for a camera; the reload's own scan decides."
                 }
             }
             @if !moves.is_empty() || !retaken.is_empty() {
@@ -1040,6 +1143,12 @@ mod tests {
                     .map(|(name, s)| (name.to_string(), s))
                     .collect(),
                 placed: vec![placed("a:1", "K1"), placed("a:3", "K3")],
+                // The start saw all three; a:2 is no SDK camera's.
+                seen: Some(vec![
+                    "a:1".to_string(),
+                    "a:2".to_string(),
+                    "a:3".to_string(),
+                ]),
             },
             order: str::cmp,
         }
@@ -1273,6 +1382,102 @@ mod tests {
         );
     }
 
+    fn with_bus(mut s: CamerasSection, ports: &[&str]) -> CamerasSection {
+        s.bus = Ok(ports.iter().map(|p| bus(p, "SVBONY SV605CC")).collect());
+        s
+    }
+
+    #[test]
+    fn leaving_a_list_after_a_camera_was_plugged_in_ahead_asks_to_confirm_the_move() {
+        // The start served a:3 from the list; a:0 has appeared since.
+        let s = with_bus(
+            section(vec![("Main", camera("a:3", "K3", true))]),
+            &["a:0", "a:1", "a:2", "a:3"],
+        );
+        let mut config = json!({ "usb_devices": [ { "device_number": 0, "usb_port": "a:3" } ] });
+        let before = config.clone();
+        let submitted = rows_form(
+            AUTO,
+            &[
+                ("a:0", false, ""),
+                ("a:1", false, ""),
+                ("a:2", false, ""),
+                ("a:3", true, ""),
+            ],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        let confirmation = s.confirmation(&before, &config).expect("a move to confirm");
+        // a:1 was placed and is still there; a:0 is new; a:2 was seen and
+        // not placed, so stays unplaced. a:3 moves, and its number goes to
+        // the camera new on a:0.
+        assert_eq!(confirmation.token, "move a:3 0>2; number 0 a:3>a:0");
+        let html = confirmation.markup.into_string();
+        assert!(html.contains("The bus has changed"), "{html}");
+    }
+
+    #[test]
+    fn a_save_without_a_list_asks_when_the_bus_changed_the_port_order() {
+        let s = with_bus(
+            section(vec![
+                ("One", camera("a:1", "K1", false)),
+                ("Three", camera("a:3", "K3", false)),
+            ]),
+            &["a:1", "a:2", "a:3", "a:4"],
+        );
+        // a:1 is gone, so a:3 takes its number on the reload any save fires.
+        let s = with_bus(s, &["a:2", "a:3"]);
+        let mut config = json!({ "server": { "port": 1 } });
+        let before = config.clone();
+        let submitted = rows_form(AUTO, &[("a:2", false, ""), ("a:3", true, "")]);
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        assert_eq!(
+            s.confirmation(&before, &config).expect("a move").token,
+            "move a:3 1>0"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_bus_or_a_failed_scan_predicts_what_the_start_placed() {
+        let mut s = section(vec![
+            ("One", camera("a:1", "K1", false)),
+            ("Three", camera("a:3", "K3", false)),
+        ]);
+        let config = json!({});
+        assert!(s.confirmation(&config, &config).is_none());
+        assert!(!s.bus_changed());
+        s.bus = Err("no".to_string());
+        assert_eq!(s.predicted(), vec!["a:1".to_string(), "a:3".to_string()]);
+        assert!(s.confirmation(&config, &config).is_none());
+    }
+
+    #[test]
+    fn unchecking_a_named_entry_names_the_names_it_drops() {
+        let s = section(vec![("Main", camera("a:1", "K1", true))]);
+        let mut config = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:1", "name": "Main" }
+        ]});
+        let before = config.clone();
+        let submitted = rows_form(
+            LISTED,
+            &[
+                ("a:1", false, "Main"),
+                ("a:2", false, ""),
+                ("a:3", false, ""),
+            ],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        assert_eq!(config["usb_devices"], json!([]));
+        let confirmation = s.confirmation(&before, &config).expect("names to confirm");
+        assert_eq!(confirmation.token, "drop a:1");
+        assert!(
+            confirmation
+                .markup
+                .into_string()
+                .contains("no longer listed"),
+            "the reason is the unlisting"
+        );
+    }
+
     #[test]
     fn unchecking_every_row_saves_an_empty_list() {
         let s = section(vec![("Main", camera("a:1", "K1", true))]);
@@ -1501,7 +1706,7 @@ mod tests {
         );
         assert_eq!(pages.register("Main", camera("a:1", "K1", false)), 0);
         assert_eq!(pages.register("Held", placeholder("a:9")), 1);
-        pages.placed(vec![placed("a:1", "K1")]);
+        pages.placed(vec![placed("a:1", "K1")], vec!["a:1".to_string()]);
         pages
     }
 

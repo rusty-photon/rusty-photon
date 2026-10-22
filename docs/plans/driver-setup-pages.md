@@ -634,6 +634,13 @@ device, and the empty list cut it off — do not exist on a server page.
   override names fill its row and the `devices` map goes; to no list, each
   listed camera's names become an override under its key. Any name the
   change would drop is named in the same confirmation.
+- From the first PR's reviews, on the owner's word: the confirmation also
+  covers a number a dropped camera held passing to another camera, and
+  names an unchecked entry's names it drops, every row unchecked included.
+  With no list after a save, the numbers are checked against the port
+  order the reload would give the bus as the page's scan finds it now — a
+  record new since the start taken for a camera, since the page makes no
+  SDK call — so a camera plugged in ahead of the others is confirmed too.
 
 ### D12. Restart
 
