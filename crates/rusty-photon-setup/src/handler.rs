@@ -404,19 +404,14 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             render::field(spec, shown, state)
         };
         let placed = Self::placed_controls(page, &fields, auth_pointer.is_some());
-        // An error a driver's section shows beside its own control is not
-        // repeated above the form.
-        let banner_errors: Vec<FieldError> = errors
-            .iter()
-            .filter(|e| !drawn.custom.iter().any(|c| c.shows_error(&e.path)))
-            .cloned()
-            .collect();
+        let banner_errors = Self::banner_errors(errors, drawn.custom);
         let view = SectionView {
             config: shown,
             submitted,
             errors,
         };
         let custom = html! { @for section in drawn.custom { (section.render(view)) } };
+        let security_errors = Self::security_errors(errors, submitted, drawn.confirm.is_some());
         let top = html! {
             @if !errors.is_empty() { (render::rejected_banner(&banner_errors, &placed)) }
             (Self::confirm_banner(drawn.confirm))
@@ -448,7 +443,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                                 }
                             }
                             (custom)
-                            @if let Some(auth) = &auth { (security::render(auth, submitted, errors)) }
+                            @if let Some(auth) = &auth { (security::render(auth, submitted, &security_errors)) }
                             (actions)
                         }
                         (render::device_list(&devices))
@@ -493,6 +488,37 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }
         };
         render::document(&self.service, &page.title(), &self.generation, &body)
+    }
+
+    /// The errors named above the form: every one but those a driver's
+    /// section shows beside its own control.
+    fn banner_errors(errors: &[FieldError], custom: &[Box<dyn CustomSection>]) -> Vec<FieldError> {
+        errors
+            .iter()
+            .filter(|e| !custom.iter().any(|c| c.shows_error(&e.path)))
+            .cloned()
+            .collect()
+    }
+
+    /// The Security section's errors. A page never carries a password back,
+    /// so a confirmation page asks again beside the field for a password
+    /// the submission typed: saved without it, the stored one stays.
+    fn security_errors(
+        errors: &[FieldError],
+        submitted: Option<&FormValues>,
+        confirming: bool,
+    ) -> Vec<FieldError> {
+        let mut errors = errors.to_vec();
+        let typed = submitted
+            .and_then(|form| form.get(security::PASSWORD))
+            .is_some_and(|password| !password.is_empty());
+        if confirming && typed && !errors.iter().any(|e| e.path == security::PASSWORD) {
+            errors.push(FieldError {
+                path: security::PASSWORD.to_string(),
+                msg: "Type the password and its repeat again before saving: a page never carries a password back, and a save without one keeps the stored password.".to_string(),
+            });
+        }
+        errors
     }
 
     /// What a save waiting for its confirmation would change, above the
@@ -617,16 +643,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             .auth_pointer
             .as_deref()
             .filter(|_| matches!(page, Page::Server { .. }));
-        let auth_change = auth_pointer.and_then(|pointer| {
-            let stored = security::AuthView::from_config(&file, pointer).has_hash;
-            match security::parse(&form, stored) {
-                Ok(change) => Some((pointer, change)),
-                Err(e) => {
-                    errors.extend(e);
-                    None
-                }
-            }
-        });
+        let auth_change = Self::credential_change(auth_pointer, &file, &form, &mut errors);
         Self::overlay_fields(
             page,
             model,
@@ -654,13 +671,27 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }),
         }
         Self::place_variant_errors(&page.fields(model), &file, &mut errors);
+        let confirmation = Self::confirmation(drawn, &form, &file_before, &file);
         if !errors.is_empty() {
+            // A submission that confirmed what it changes keeps the
+            // confirmation through a rejection, so fixing the field — the
+            // password a confirmation page cannot carry, say — is one save,
+            // not another round of the confirmation.
+            let carried = confirmation
+                .as_ref()
+                .filter(|(_, confirmed)| *confirmed)
+                .map(|(confirm, _)| confirm);
+            let drawn = Drawn {
+                confirm: carried,
+                ..drawn
+            };
             return PageResponse::html(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 self.render(page, model, &shown, pins, &errors, Some(&form), &[], drawn),
             );
         }
-        if let Some(confirm) = Self::unconfirmed(drawn, &form, &file_before, &file) {
+        if let Some((confirm, false)) = confirmation {
+            debug!("a setup-page save waits for its confirmation");
             let drawn = Drawn {
                 confirm: Some(&confirm),
                 ..drawn
@@ -694,27 +725,44 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         self.persist(page, typed, effective, &baseline, &request.headers)
     }
 
-    /// The confirmation a save from `before` to `after` waits for: what the
-    /// driver's sections want confirmed, when `form` does not carry the
-    /// tokens it produces now — so a submission whose changes differ, or
+    /// What the Security section's submission asks of the credential block
+    /// at `pointer`, judged against what `file` stores; its errors join
+    /// `errors`. `None` for a page without the section, or a refusal.
+    fn credential_change<'p>(
+        pointer: Option<&'p str>,
+        file: &Value,
+        form: &FormValues,
+        errors: &mut Vec<FieldError>,
+    ) -> Option<(&'p str, security::AuthChange)> {
+        let pointer = pointer?;
+        let stored = security::AuthView::from_config(file, pointer).has_hash;
+        match security::parse(form, stored) {
+            Ok(change) => Some((pointer, change)),
+            Err(e) => {
+                errors.extend(e);
+                None
+            }
+        }
+    }
+
+    /// What the driver's sections want confirmed of a save from `before` to
+    /// `after`, and whether `form` confirms it: whether it carries the tokens
+    /// the save produces now — so a submission whose changes differ, or
     /// whose file moved on, is asked again.
-    fn unconfirmed(
+    fn confirmation(
         drawn: Drawn<'_>,
         form: &FormValues,
         before: &Value,
         after: &Value,
-    ) -> Option<Confirm> {
+    ) -> Option<(Confirm, bool)> {
         let confirmations = drawn
             .custom
             .iter()
             .filter_map(|section| section.confirmation(before, after))
             .collect();
         let confirm = Confirm::of(confirmations)?;
-        if form.get(CONFIRM) == Some(confirm.token.as_str()) {
-            return None;
-        }
-        debug!("a setup-page save waits for its confirmation");
-        Some(confirm)
+        let confirmed = form.get(CONFIRM) == Some(confirm.token.as_str());
+        Some((confirm, confirmed))
     }
 
     /// What the service would run without this save. For a service that
@@ -2569,5 +2617,131 @@ mod tests {
             rejected.body
         );
         assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/mock");
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_page_asks_again_for_a_typed_password() {
+        let mut stored = config();
+        stored.server.auth = Some(Auth {
+            username: "obs".to_string(),
+            password_hash: "$argon2id$stored".to_string(),
+        });
+        let fx = fixture(&stored);
+        let p = pages(&fx, stored, Overrides::default()).with_driver_pages(Arc::new(OwnPart));
+        let mut pairs = own_form("/dev/other");
+        pairs.extend([
+            ("auth.username", "obs"),
+            ("auth.password", "new"),
+            ("auth.password_repeat", "new"),
+        ]);
+        let asked = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert!(
+            asked
+                .body
+                .contains("Type the password and its repeat again"),
+            "{}",
+            asked.body
+        );
+        // The password is asked for, never carried back.
+        assert!(!asked.body.contains(r#"value="new""#), "{}", asked.body);
+        assert_eq!(
+            on_disk(&fx)["server"]["auth"]["password_hash"],
+            "$argon2id$stored"
+        );
+
+        let token = confirm_token(&asked.body);
+        pairs.push((CONFIRM, &token));
+        let saved = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        let hash = on_disk(&fx)["server"]["auth"]["password_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(rp_auth::credentials::verify_password("new", &hash));
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/other");
+    }
+
+    #[tokio::test]
+    async fn a_rejection_keeps_the_confirmation_the_submission_carried() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let mut pairs = own_form("/dev/other");
+        pairs.extend([
+            ("auth.username", "obs"),
+            ("auth.password", "pw"),
+            ("auth.password_repeat", "pw"),
+        ]);
+        let asked = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        let token = confirm_token(&asked.body);
+
+        // Saved from the confirmation page as it stands: no password, none
+        // stored, so the save is refused — and keeps its confirmation.
+        let mut retyped_nothing = own_form("/dev/other");
+        retyped_nothing.extend([
+            ("auth.username", "obs"),
+            ("auth.password", ""),
+            ("auth.password_repeat", ""),
+            (CONFIRM, &token),
+        ]);
+        let refused = p.handle(PageScope::Server, post(&retyped_nothing)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+        assert!(
+            refused.body.contains("a username needs a password"),
+            "{}",
+            refused.body
+        );
+        assert_eq!(confirm_token(&refused.body), token);
+        assert!(refused.body.contains(r#"id="confirm""#), "{}", refused.body);
+
+        // The password typed there saves in one step.
+        let mut fixed = own_form("/dev/other");
+        fixed.extend([
+            ("auth.username", "obs"),
+            ("auth.password", "pw"),
+            ("auth.password_repeat", "pw"),
+            (CONFIRM, &token),
+        ]);
+        let saved = p.handle(PageScope::Server, post(&fixed)).await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/other");
+        assert_eq!(on_disk(&fx)["server"]["auth"]["username"], "obs");
+    }
+
+    #[tokio::test]
+    async fn a_rejection_does_not_carry_a_confirmation_it_did_not_see() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        // An error with a change to confirm, but no token: the rejection
+        // shows no confirmation, which the corrected save then asks for.
+        let mut pairs = own_form("/dev/other");
+        pairs.extend([
+            ("auth.username", "obs"),
+            ("auth.password", ""),
+            ("auth.password_repeat", ""),
+        ]);
+        let refused = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+        assert!(
+            !refused.body.contains(r#"id="confirm""#),
+            "{}",
+            refused.body
+        );
+        assert!(
+            !refused.body.contains(&format!(r#"name="{CONFIRM}""#)),
+            "{}",
+            refused.body
+        );
     }
 }

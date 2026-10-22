@@ -11,8 +11,9 @@ Feature: Setup pages
   port that holds an SVBony record now or is listed, saying what the running
   service serves there. With a list, the checked rows keep the order of the
   numbers they have now, and a newly checked row takes the next number. A
-  save that would move a served camera to another number answers 409 with
-  the moves, writing nothing until the operator saves that page again. A
+  save that would move a served camera to another number, or give a
+  dropped camera's number to another, answers 409 with the change, writing
+  nothing until the operator saves that page again. A
   change of mode carries the names across: to a list, each camera's devices
   override fills its row and the devices map goes; to no list, each listed
   camera's names become an override under its CameraSN, and any name the
@@ -130,6 +131,21 @@ Feature: Setup pages
     Then the page reports the configuration was saved and the service is reloading
     And the configuration file holds [{"device_number": 0, "usb_port": "simulated-usbv3-0:1"}] at "/usb_devices"
     And within 30 seconds camera device 0 reports the UniqueID "SVBONY:SV605CC-Simulated:SVB0123456789AB"
+
+  Scenario: A dropped camera's number given to another camera is confirmed first
+    Given the staged USB inventory:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:1" },
+                 { "vendor": "f266", "product": "9b00", "port": "simulated-usbv3-0:2" } ] }
+      """
+    And the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:1 |
+    When the svbony-camera service starts
+    And I submit the server setup page unchecking the row for port "simulated-usbv3-0:1" and checking the row for port "simulated-usbv3-0:2"
+    Then the page asks to confirm that number 0 passes from the camera on "simulated-usbv3-0:1" to the one on "simulated-usbv3-0:2"
+    And the page warns that the rp camera entries bound to those numbers must be renumbered
+    And the configuration file holds "simulated-usbv3-0:1" at "/usb_devices/0/usb_port"
 
   Scenario: Unchecking every row saves an empty list, and the server page is still served
     Given the configuration lists these USB devices:

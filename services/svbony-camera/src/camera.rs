@@ -1764,7 +1764,7 @@ impl Camera for SvbonyCamera {
     // K5 (tenet 3): this is the ONLY code path in this file that may write
     // SVB_COOLER_ENABLE, and it is reachable solely from an explicit
     // operator ASCOM `CoolerOn` call — never from `connect`/`disconnect`/
-    // `open_handshake`/`config.apply`.
+    // `open_handshake`/a setup-page save.
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
         if !self.sensor()?.caps.supports_control_temp {

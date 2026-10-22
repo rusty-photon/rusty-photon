@@ -916,6 +916,46 @@ macro_rules! usb_devices_editor_steps {
             .await;
         }
 
+        #[::cucumber::when(
+            expr = "I submit the server setup page unchecking the row for port {string} and checking the row for port {string}"
+        )]
+        async fn usb_devices_swap_rows(world: &mut $world, dropped: String, added: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            $crate::setup_pages::submit_with(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                None,
+                |html, controls| {
+                    let serve = |port: &str| {
+                        let index = $crate::setup_pages::dom::row_index(html, port)
+                            .unwrap_or_else(|| panic!("no row for {port} in:\n{html}"));
+                        format!("usb_devices.{index}.serve")
+                    };
+                    let (off, on) = (serve(&dropped), serve(&added));
+                    controls.retain(|(k, _)| *k != off && *k != on);
+                    controls.push((on, "on".to_string()));
+                },
+            )
+            .await;
+        }
+
+        #[::cucumber::then(
+            expr = "the page asks to confirm that number {int} passes from the camera on {string} to the one on {string}"
+        )]
+        fn usb_devices_confirm_retaken(world: &mut $world, number: u32, from: String, to: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(409), "{}", state.last_body);
+            let css = format!(
+                r#"#confirm li.retaken[data-number="{number}"][data-from="{from}"][data-to="{to}"]"#
+            );
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, &css),
+                "no number {number} passing from {from} to {to}:\n{}",
+                state.last_body
+            );
+        }
+
         #[::cucumber::then(expr = "the Cameras section's mode is {string}")]
         fn usb_devices_mode(world: &mut $world, mode: String) {
             use $crate::setup_pages::SetupPagesWorld as _;

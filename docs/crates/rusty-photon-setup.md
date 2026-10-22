@@ -225,6 +225,13 @@ operator who saves that page again confirms what it showed. A
 confirmation covers the change it showed and no other: a submission
 whose changes differ, or a file that moved on in between, asks again.
 
+A page never carries a password back, so a confirmation page asks again,
+beside the field, for a password the submission typed: saved without it,
+the stored one stays (and with none stored, the save is refused as any
+username without a password is). A submission that carries the current
+tokens keeps its confirmation through a rejection, so fixing the field —
+that password, say — is one save, not another round of the
+confirmation.
 ## Credentials
 
 The server page's **Security** section edits `server.auth` through three

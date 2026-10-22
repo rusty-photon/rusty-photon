@@ -982,7 +982,10 @@ gone: a camera's and a placeholder's `SupportedActions` is empty, and any
 - **Every row unchecked** with a list saves `"usb_devices": []` (above).
 - **A save that moves a number is confirmed first.** It answers with the
   form as submitted, each port whose camera would be served at another
-  number (from → to), and that rp's camera entries bound to those numbers
+  number (from → to), each number a dropped camera held that another
+  camera would take (a camera unchecked and another checked in one save,
+  or a placeholder's number served once the list goes), and that rp's
+  camera entries bound to those numbers
   must be renumbered to match — an entry without a `unique_id` pin would
   otherwise open the wrong camera with no error; rp's own page shows which
   entries those are, which this driver cannot. The same confirmation names

@@ -350,8 +350,8 @@ impl ServerBuilder {
                 port, "an SVBony camera is placed on a port"
             );
             // `devices` overrides are keyed by the bare SDK serial, or
-            // `noserial-<port>` (matching the config-actions `devices.{key}`
-            // paths), NOT the prefixed `SVBONY:{name}:{key}` UniqueID.
+            // `noserial-<port>` (the key a camera's setup page writes its
+            // override under), NOT the prefixed `SVBONY:{name}:{key}` UniqueID.
             let key = claims::override_key(&cam.info, port);
             self.register_camera(server, cam, port, self.config.devices.get(&key), false)?;
             registered.cameras = registered.cameras.saturating_add(1);

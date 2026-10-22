@@ -581,6 +581,34 @@ impl CamerasSection {
         moves
     }
 
+    /// Each number `before` and `after` both serve at different ports,
+    /// where the new port did not move there from another number: a number
+    /// a dropped camera held, given to a camera new to the numbering. Like a
+    /// move, it leaves an rp entry bound to the number on another camera.
+    fn retaken(
+        &self,
+        before: &Value,
+        after: &Value,
+        moves: &[(String, u64, u64)],
+    ) -> Vec<(u64, String, String)> {
+        let held: BTreeMap<u64, String> = self
+            .numbers(before)
+            .into_iter()
+            .map(|(port, number)| (number, port))
+            .collect();
+        let mut retaken: Vec<(u64, String, String)> = self
+            .numbers(after)
+            .into_iter()
+            .filter_map(|(port, number)| {
+                let old = held.get(&number)?;
+                let moved_in = moves.iter().any(|(p, _, to)| *p == port && *to == number);
+                (*old != port && !moved_in).then(|| (number, old.clone(), port))
+            })
+            .collect();
+        retaken.sort_by_key(|(number, _, _)| *number);
+        retaken
+    }
+
     /// The names `before` holds that `after` keeps nowhere: an entry's,
     /// leaving a list, whose camera has no override key the page knows; an
     /// override's, entering a list, whose camera's row is not listed. Each
@@ -759,14 +787,20 @@ impl CustomSection for CamerasSection {
 
     fn confirmation(&self, before: &Value, after: &Value) -> Option<Confirmation> {
         let moves = self.moves(before, after);
+        let retaken = self.retaken(before, after, &moves);
         let dropped = self.dropped(before, after);
-        if moves.is_empty() && dropped.is_empty() {
+        if moves.is_empty() && retaken.is_empty() && dropped.is_empty() {
             return None;
         }
         let mut tokens: Vec<String> = moves
             .iter()
             .map(|(port, from, to)| format!("move {port} {from}>{to}"))
             .collect();
+        tokens.extend(
+            retaken
+                .iter()
+                .map(|(number, old, new)| format!("number {number} {old}>{new}")),
+        );
         tokens.extend(dropped.iter().map(|d| match d {
             Dropped::Port(port) => format!("drop {port}"),
             Dropped::Key(key) => format!("drop key {key}"),
@@ -776,6 +810,12 @@ impl CustomSection for CamerasSection {
                 @for (port, from, to) in &moves {
                     li.move data-port=(port) data-from=(from) data-to=(to) {
                         "move the camera on " code { (port) } " from number " (from) " to " (to)
+                    }
+                }
+                @for (number, old, new) in &retaken {
+                    li.retaken data-number=(number) data-from=(old) data-to=(new) {
+                        "give number " (number) ", which the camera on " code { (old) }
+                        " held, to the camera on " code { (new) }
                     }
                 }
                 @for d in &dropped {
@@ -789,7 +829,7 @@ impl CustomSection for CamerasSection {
                     }
                 }
             }
-            @if !moves.is_empty() {
+            @if !moves.is_empty() || !retaken.is_empty() {
                 p {
                     "rp's camera entries bound to the numbers that move must be renumbered to match: an entry without a "
                     code { "unique_id" } " pin would otherwise open the wrong camera, with no error. rp's own page shows which entries those are."
@@ -1191,6 +1231,49 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_cameras_number_given_to_another_asks_to_confirm() {
+        let s = section(vec![("Main", camera("a:1", "K1", true))]);
+        let mut config = json!({ "usb_devices": [ { "device_number": 0, "usb_port": "a:1" } ] });
+        let before = config.clone();
+        let submitted = rows_form(
+            LISTED,
+            &[("a:1", false, ""), ("a:2", false, ""), ("a:3", true, "")],
+        );
+        assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
+        assert_eq!(
+            config["usb_devices"],
+            json!([{ "device_number": 0, "usb_port": "a:3" }])
+        );
+        let confirmation = s
+            .confirmation(&before, &config)
+            .expect("a number to confirm");
+        assert_eq!(confirmation.token, "number 0 a:1>a:3");
+        let html = confirmation.markup.into_string();
+        assert!(
+            html.contains(r#"data-number="0" data-from="a:1" data-to="a:3""#),
+            "{html}"
+        );
+        assert!(html.contains("must be renumbered"), "{html}");
+    }
+
+    #[test]
+    fn a_number_a_moved_camera_takes_is_named_once_as_its_move() {
+        let s = section(vec![
+            ("Hold", placeholder("a:2")),
+            ("Main", camera("a:1", "K1", true)),
+        ]);
+        let before = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:2" },
+            { "device_number": 1, "usb_port": "a:1" }
+        ]});
+        let after = json!({ "usb_devices": [ { "device_number": 0, "usb_port": "a:1" } ] });
+        assert_eq!(
+            s.confirmation(&before, &after).expect("a move").token,
+            "move a:1 1>0"
+        );
+    }
+
+    #[test]
     fn unchecking_every_row_saves_an_empty_list() {
         let s = section(vec![("Main", camera("a:1", "K1", true))]);
         let mut config = json!({ "usb_devices": [ { "device_number": 0, "usb_port": "a:1" } ] });
@@ -1241,7 +1324,9 @@ mod tests {
         assert_eq!(s.apply(&submitted, &mut config), Vec::<FieldError>::new());
         assert_eq!(config, json!({ "devices": { "K1": { "name": "Main" } } }));
         let confirmation = s.confirmation(&before, &config).expect("dropped names");
-        assert_eq!(confirmation.token, "drop a:9");
+        // Without the list, the unlisted camera on a:3 is served at the
+        // number the placeholder held.
+        assert_eq!(confirmation.token, "number 1 a:9>a:3; drop a:9");
         assert!(confirmation
             .markup
             .into_string()
