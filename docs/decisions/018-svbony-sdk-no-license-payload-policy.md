@@ -129,7 +129,7 @@ mechanical delivery differs in one respect worth flagging (see
    discovered `svbony-camera` via its `pkg/` directory but staged no SDK for
    it). The Bazel-side SDK-fetch rule remains separately deferred — see
    `docs/plans/archive/svbony-camera.md`'s Status section. On macOS,
-   `scripts/build-tarballs.sh` and `cargo ci brew-formulas` exclude
+   `cargo ci build-tarballs` and `cargo ci brew-formulas` exclude
    `svbony-camera` outright instead (no confirmed `mac_arm64` blob).
 5. **If SVBony ever grants written redistribution permission** (worth an
    email — they are responsive to indi-3rdparty issues), this collapses to

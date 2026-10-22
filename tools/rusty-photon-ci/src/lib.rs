@@ -7,6 +7,8 @@
 //! of its own that only the tests compile.
 
 pub mod brew_formulas;
+pub mod build_tarballs;
+pub mod packaging;
 #[cfg(test)]
 mod pkg_assets;
 #[cfg(test)]
@@ -16,6 +18,7 @@ pub mod repin_bazel_lock;
 pub mod rust_toolchain_sha256s;
 #[cfg(test)]
 mod toolchain_pins;
+pub mod verify_brew;
 
 /// The repository's root, two levels above the crate, where the guards find
 /// the files they read. Cargo sets `CARGO_MANIFEST_DIR` when it runs a test.

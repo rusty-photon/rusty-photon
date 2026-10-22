@@ -55,8 +55,6 @@ filegroup(
         "packaging/postrm.common",
         "scripts/build-msi.ps1",
         "scripts/build-packages.sh",
-        "scripts/build-tarballs.sh",
-        "scripts/verify-brew.sh",
         "scripts/verify-packages.sh",
     ] + glob(["installer/fragments/*.wxs"]),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],

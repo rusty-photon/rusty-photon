@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "macos" => {
             // Explicit override first, mirroring the Windows/Linux branches:
             // point QHYCCD_SDK_DIR at the directory containing libqhyccd.a
-            // (scripts/build-tarballs.sh stages the SDK outside the
+            // (`cargo ci build-tarballs` stages the SDK outside the
             // workspace). A set-but-empty value is treated as unset so the
             // fallbacks below still apply.
             if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {

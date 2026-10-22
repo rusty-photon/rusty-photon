@@ -4,7 +4,7 @@
 //! A packaged service is a `services/*` workspace member with a `pkg/`
 //! directory or a `[package.metadata.deb]` table. Its .deb and .rpm are built
 //! from that table and `pkg/`, its macOS tarball and Homebrew formula by
-//! `scripts/build-tarballs.sh` and `cargo ci brew-formulas`, and
+//! `cargo ci build-tarballs` and `cargo ci brew-formulas`, and
 //! its feature of the Windows suite MSI from
 //! `installer/fragments/<service>.wxs` (docs/packaging.md, ADR-012,
 //! ADR-015). Most of what can go wrong there shows only when a nightly
@@ -35,24 +35,22 @@
 //!   rule of its own, for the packaged rule's vendor and never world-writable.
 //! - **Names.** The deb, its systemd unit and the rpm are all
 //!   `rusty-photon-<service>`.
-//! - **SDK pins**, where they are copied: the QHY SDK's version and
-//!   sha256s, the ZWO and `SVBony` refs and the ZWO Windows URLs agree across
-//!   the packaging scripts, the shipped helpers, the install actions,
-//!   `libqhyccd-sys`'s `build.rs` and qhy-camera's `PINNED_SDK_VERSION`;
-//!   the zwo packages' license is the one vendored with the SDK headers.
-//! - **macOS.** `build-tarballs.sh` leaves out svbony-camera, the service
-//!   `cargo ci brew-formulas` renders no formula for: it has no macOS SDK,
-//!   so no tarball for a formula to point at.
+//! - **SDK pins**, where they are copied: the QHY SDK's version, which
+//!   `packaging::qhy::VERSION` pins, and its Linux sha256s, the ZWO and
+//!   `SVBony` refs and the ZWO Windows URLs agree across the packaging
+//!   scripts, the shipped helpers, the install actions, `libqhyccd-sys`'s
+//!   `build.rs` and qhy-camera's `PINNED_SDK_VERSION`; the zwo packages'
+//!   license is the one vendored with the SDK headers.
 //! - **Windows.** Every packaged service but svbony-camera has a fragment
 //!   that installs it as a Windows service of its package's name, from its
 //!   exe, with `--service`, restarting after 5 s with the failure-actions
-//!   flag, its firewall port as `verify-packages.sh` gives it, and starts it
+//!   flag, its firewall port as `packaging::PORTS` gives it, and starts it
 //!   on install, or installs it demand-start when it is [`GATED`].
 //!   `Package.wxs` wires each feature, every fragment belongs to a service,
 //!   and doctor rides in sentinel's fragment with its renewal task.
-//! - **Port tables.** `verify-packages.sh` and `verify-brew.sh` each give
-//!   every packaged service a port (the brew table all but svbony-camera),
-//!   and they agree.
+//! - **Port tables.** `verify-packages.sh`'s port table gives every packaged
+//!   service the port `packaging::PORTS` does, which `cargo ci verify-brew`
+//!   probes and the `WiX` fragments open.
 //!
 //! This is the one list of these checks; the packaging docs point here. One
 //! run names every problem it finds.
@@ -68,19 +66,8 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use crate::packaging::{self, js_const, GATED, SERIAL, SVBONY_MODULE, ZWO_MODULE};
 use crate::repo_root;
-
-/// Serial drivers. Debian puts USB serial adapters in plugdev, which
-/// rpm-family hosts do not have, so each keeps a unit per flavor.
-const SERIAL: &[&str] = &[
-    "ppba-driver",
-    "upbv2-driver",
-    "qhy-focuser",
-    "pa-falcon-rotator",
-    "pa-scops-oag",
-    "dsd-fp2",
-    "star-adventurer-gti",
-];
 
 /// Services that reload their config on SIGHUP.
 const RELOADING: &[&str] = &[
@@ -97,18 +84,6 @@ const RELOADING: &[&str] = &[
     "zwo-camera",
     "zwo-focuser",
     "svbony-camera",
-];
-
-/// Services with no config they can default. Their units wait for one, and
-/// the MSI installs them demand-start, where a fresh install would otherwise
-/// start a service that can only fail.
-const GATED: &[&str] = &[
-    "sky-survey-camera",
-    "plate-solver",
-    "calibrator-flats",
-    "focus-model",
-    "session-runner",
-    "polar-align",
 ];
 
 /// Camera-class packages: their udev rules give the devices to the service's
@@ -136,12 +111,8 @@ const OWN_FILES: &[(&str, &str)] = &[
 const SVBONY: &str = "svbony-camera";
 
 const BUILD_PACKAGES: &str = "scripts/build-packages.sh";
-const BUILD_TARBALLS: &str = "scripts/build-tarballs.sh";
 const BUILD_MSI: &str = "scripts/build-msi.ps1";
 const VERIFY_PACKAGES: &str = "scripts/verify-packages.sh";
-const VERIFY_BREW: &str = "scripts/verify-brew.sh";
-const ZWO_MODULE: &str = ".github/actions/install-zwo-sdk/zwo-sdk.mjs";
-const SVBONY_MODULE: &str = ".github/actions/install-svbony-sdk/svbony-sdk.mjs";
 const QHY_HELPER: &str = "services/qhy-camera/pkg/rusty-photon-qhy-firmware-install";
 const SVBONY_HELPER: &str = "services/svbony-camera/pkg/rusty-photon-svbony-sdk-install";
 const QHY_BUILD_RS: &str = "crates/qhyccd-rs/libqhyccd-sys/build.rs";
@@ -340,11 +311,6 @@ fn shell_var<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     value(text, &format!("{name}=\""), "\"")
 }
 
-/// A module's one-line `export const NAME = '<value>';`.
-fn js_const<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    value(text, &format!("export const {name} = '"), "';")
-}
-
 /// A PowerShell assignment's value: `$Name = "<value>"`.
 fn ps_var<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     value(text, &format!("${name} = \""), "\"")
@@ -460,7 +426,6 @@ fn problems(repo: &Repo) -> Vec<String> {
     }
     plugdev(&mut check, &services, &packaged);
     sdk_pins(&mut check, &shared);
-    macos(&mut check, &shared);
     installer(&mut check, &packaged, &shared);
     port_tables(&mut check, &packaged, &shared);
     check.problems
@@ -895,16 +860,24 @@ fn preflight_version(preflight: &str) -> Option<String> {
 /// the install actions and the crates, so the SDK CI links is the one the
 /// packages ship and report.
 fn sdk_pins(check: &mut Check, shared: &Shared) {
+    // The one QHY pin the builders share; each copy must be it.
+    const QHY: &str = "packaging::qhy::VERSION";
     let bp = shared.build_packages.as_deref().unwrap_or_default();
     let zwo = shared.zwo_module.as_deref().unwrap_or_default();
     let svbony = shared.svbony_module.as_deref().unwrap_or_default();
-    let qhy_version = shell_var(bp, "QHY_SDK_VERSION");
+    let qhy_version = Some(packaging::qhy::VERSION);
 
+    agree(
+        check,
+        "QHY SDK version",
+        (QHY, qhy_version),
+        ("build-packages.sh", shell_var(bp, "QHY_SDK_VERSION")),
+    );
     let helper = check.read(QHY_HELPER).unwrap_or_default();
     agree(
         check,
         "QHY SDK version",
-        ("build-packages.sh", qhy_version),
+        (QHY, qhy_version),
         ("firmware-install", shell_var(&helper, "VERSION")),
     );
     for arch in ["X86_64", "AARCH64"] {
@@ -925,10 +898,11 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
     agree(
         check,
         "QHY SDK version",
-        ("build-packages.sh", qhy_version),
+        (QHY, qhy_version),
         ("build-msi.ps1", ps_var(msi, "QhySdkVersion")),
     );
-    if let (Some(build_rs), Some(version)) = (check.read(QHY_BUILD_RS), qhy_version) {
+    if let Some(build_rs) = check.read(QHY_BUILD_RS) {
+        let version = packaging::qhy::VERSION;
         check.require(build_rs.contains(&format!("sdk_win64_{version}")), || {
             format!("QHY SDK version pin mismatch: libqhyccd-sys build.rs has no sdk_win64_{version} search path")
         });
@@ -937,7 +911,7 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
     agree(
         check,
         "QHY SDK version",
-        ("build-packages.sh", qhy_version),
+        (QHY, qhy_version),
         (
             "preflight PINNED_SDK_VERSION",
             preflight_version(&preflight).as_deref(),
@@ -991,35 +965,6 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
     );
 }
 
-/// The case arm `build-tarballs.sh` leaves svbony-camera out with, the
-/// service `cargo ci brew-formulas` renders no formula for.
-const MACOS_EXCLUSION: &str = r#"*" svbony-camera "*)"#;
-
-fn macos(check: &mut Check, shared: &Shared) {
-    let bp = shared.build_packages.as_deref().unwrap_or_default();
-    if let Some(tarballs) = check.read(BUILD_TARBALLS) {
-        // Only the version is shared: the sha256s pin the macOS archives.
-        agree(
-            check,
-            "QHY SDK version",
-            ("build-packages.sh", shell_var(bp, "QHY_SDK_VERSION")),
-            ("build-tarballs.sh", shell_var(&tarballs, "QHY_SDK_VERSION")),
-        );
-        agree(
-            check,
-            "ZWO SDK ref",
-            ("build-tarballs.sh", shell_var(&tarballs, "ZWO_SDK_REF")),
-            (
-                "install-zwo-sdk's REF",
-                js_const(shared.zwo_module.as_deref().unwrap_or_default(), "REF"),
-            ),
-        );
-        check.require(tarballs.contains(MACOS_EXCLUSION), || {
-            format!("{BUILD_TARBALLS}: svbony-camera exclusion guard missing (no confirmed mac_arm64 SVBony SDK blob)")
-        });
-    }
-}
-
 /// A `WiX` fragment's `Name` for its `<element ...>`: the first `Name=` line
 /// after the element's opening line, as the fragments write one attribute
 /// per line and `Id` on the opening one.
@@ -1050,7 +995,6 @@ fn installer(check: &mut Check, packaged: &[&Service], shared: &Shared) {
     let Some(package_wxs) = check.read(PACKAGE_WXS) else {
         return;
     };
-    let linux_ports = shared.verify_packages.as_deref().unwrap_or_default();
     let windows: Vec<&str> = packaged
         .iter()
         .map(|service| service.name.as_str())
@@ -1060,7 +1004,7 @@ fn installer(check: &mut Check, packaged: &[&Service], shared: &Shared) {
         let Some(fragment) = check.read(&format!("{FRAGMENTS}/{svc}.wxs")) else {
             continue;
         };
-        fragment_contract(check, svc, &fragment, port_of(linux_ports, svc));
+        fragment_contract(check, svc, &fragment, packaging::port(svc));
         let feature = feature_id(svc);
         check.require(
             package_wxs.contains(&format!("ComponentGroupRef Id=\"{feature}Components\"")),
@@ -1114,7 +1058,7 @@ fn installer(check: &mut Check, packaged: &[&Service], shared: &Shared) {
 }
 
 /// What one service's fragment must say.
-fn fragment_contract(check: &mut Check, svc: &str, fragment: &str, port: Option<&str>) {
+fn fragment_contract(check: &mut Check, svc: &str, fragment: &str, port: Option<u16>) {
     for element in ["ServiceInstall", "ServiceControl"] {
         let name = element_name(fragment, element);
         check.require(
@@ -1185,32 +1129,28 @@ fn port_of<'a>(script: &'a str, svc: &str) -> Option<&'a str> {
     })
 }
 
-/// Each verify script keeps a port table. A service missing from one shows
-/// only when that platform's nightly starts it.
+/// `verify-packages.sh` keeps a port table of its own. A service missing
+/// from it shows only when the Linux nightly starts the service.
 fn port_tables(check: &mut Check, packaged: &[&Service], shared: &Shared) {
-    let (Some(linux), Some(brew)) = (shared.verify_packages.as_deref(), check.read(VERIFY_BREW))
-    else {
+    let Some(linux) = shared.verify_packages.as_deref() else {
         return;
     };
     for service in packaged {
         let svc = &service.name;
-        let Some(port) = port_of(linux, svc) else {
+        let Some(port) = packaging::port(svc) else {
             check.problems.push(format!(
-                "{svc}: no port mapping in {VERIFY_PACKAGES} port_of() — its verify leg would fail; extend it"
+                "{svc}: no port in packaging::PORTS — its verifiers and WiX fragment need one; extend it"
             ));
             continue;
         };
-        if svc == SVBONY {
-            continue;
-        }
-        match port_of(&brew, svc) {
+        match port_of(linux, svc) {
             None => check.problems.push(format!(
-                "{svc}: no port mapping in {VERIFY_BREW} port_of() — the macOS verify leg would fail; extend it"
+                "{svc}: no port mapping in {VERIFY_PACKAGES} port_of() — its verify leg would fail; extend it"
             )),
-            Some(brew_port) => check.require(brew_port == port, || {
+            Some(linux_port) => check.require(linux_port == port.to_string(), || {
                 format!(
-                    "{svc}: port mismatch — {VERIFY_PACKAGES} port_of() says {port}, \
-                     {VERIFY_BREW} port_of() says {brew_port}"
+                    "{svc}: port mismatch — {VERIFY_PACKAGES} port_of() says {linux_port}, \
+                     packaging::PORTS says {port}"
                 )
             }),
         }
@@ -1639,7 +1579,11 @@ fn names_each_mistake_in_a_name_or_the_service_list() {
                     "[package]\nname = \"new-thing\"\n\n[package.metadata.deb]\nname = \"rusty-photon-new-thing\"\n",
                 ),
             ],
-            &["[package.metadata.deb] but no pkg/ directory", "new-thing"],
+            &[
+                "[package.metadata.deb] but no pkg/ directory",
+                "new-thing: no port in packaging::PORTS",
+                "new-thing",
+            ],
         ),
         (
             &[Replace(
@@ -1658,7 +1602,11 @@ fn names_each_mistake_in_an_sdk_pin() {
     assert_named(&[
         (
             &[Replace(QHY_HELPER, "VERSION=\"", "VERSION=\"9")],
-            &["QHY SDK version pin mismatch: build-packages.sh='"],
+            &["' vs firmware-install='9"],
+        ),
+        (
+            &[Replace(BUILD_PACKAGES, "QHY_SDK_VERSION=\"", "QHY_SDK_VERSION=\"9")],
+            &["' vs build-packages.sh='9"],
         ),
         (
             &[Replace(QHY_HELPER, "SHA256_X86_64=\"", "SHA256_X86_64=\"0")],
@@ -1681,16 +1629,8 @@ fn names_each_mistake_in_an_sdk_pin() {
             &["' vs preflight PINNED_SDK_VERSION='"],
         ),
         (
-            &[Replace(BUILD_TARBALLS, "QHY_SDK_VERSION=\"", "QHY_SDK_VERSION=\"9")],
-            &["' vs build-tarballs.sh='9"],
-        ),
-        (
             &[Replace(BUILD_PACKAGES, "ZWO_SDK_REF=\"", "ZWO_SDK_REF=\"x")],
             &["ZWO SDK ref pin mismatch: build-packages.sh='x"],
-        ),
-        (
-            &[Replace(BUILD_TARBALLS, "ZWO_SDK_REF=\"", "ZWO_SDK_REF=\"x")],
-            &["ZWO SDK ref pin mismatch: build-tarballs.sh='x"],
         ),
         (
             &[Replace(BUILD_MSI, "app=DeveloperCameraSdk&", "app=DeveloperCameraSdkBeta&")],
@@ -1713,23 +1653,6 @@ fn names_each_mistake_in_an_sdk_pin() {
             &["SVBony SDK ref pin mismatch: build-packages.sh='x"],
         ),
     ]);
-}
-
-#[test]
-fn names_each_mistake_for_macos() {
-    use Change::Replace;
-    assert_named(&[(
-        &[Replace(BUILD_TARBALLS, MACOS_EXCLUSION, r#"*" svbony "*)"#)],
-        &["scripts/build-tarballs.sh: svbony-camera exclusion guard missing"],
-    )]);
-}
-
-#[test]
-fn leaves_out_the_service_the_formula_renderer_does() {
-    assert_eq!(
-        MACOS_EXCLUSION,
-        format!(r#"*" {} "*)"#, crate::brew_formulas::NO_MACOS_TARBALL)
-    );
 }
 
 #[test]
@@ -1845,31 +1768,11 @@ fn names_each_mistake_in_a_port_table() {
         ),
         (
             &[Replace(
-                VERIFY_BREW,
-                "ppba-driver) echo ",
-                "ppba-driver-gone) echo ",
-            )],
-            &["ppba-driver: no port mapping in scripts/verify-brew.sh port_of()"],
-        ),
-        (
-            &[Replace(
-                VERIFY_BREW,
-                "ppba-driver) echo ",
-                "ppba-driver) echo 9",
-            )],
-            &["ppba-driver: port mismatch — scripts/verify-packages.sh port_of() says"],
-        ),
-        // The fragment's firewall port is the Linux table's.
-        (
-            &[Replace(
                 VERIFY_PACKAGES,
                 "ppba-driver) echo ",
                 "ppba-driver) echo 9",
             )],
-            &[
-                "ppba-driver: firewall exception port must be 9",
-                "ppba-driver: port mismatch — scripts/verify-packages.sh port_of() says 9",
-            ],
+            &["ppba-driver: port mismatch — scripts/verify-packages.sh port_of() says 9"],
         ),
     ]);
 }

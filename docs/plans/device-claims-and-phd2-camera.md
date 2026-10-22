@@ -1814,7 +1814,7 @@ all.
   notes, and the **other shipped registries that hard-code 11130** —
   `docs/packaging-windows.md`, `installer/Package.wxs`, and the
   packaging guard (`tools/rusty-photon-ci/src/pkg_assets.rs`), and the
-  `verify-packages.sh`, `verify-brew.sh` and `verify-msi.ps1` reachability
+  `verify-packages.sh`, `cargo ci verify-brew` and `verify-msi.ps1` reachability
   checks, each of which needs the
   facade's *optional* nature expressed (a port that exists only when
   `camera.enabled` is true, not a second unconditional one) — and **a catalog schema that can express an optional second
