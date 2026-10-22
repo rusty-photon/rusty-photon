@@ -3,18 +3,24 @@
 //!
 //! It reads `Connected == false`, refuses `Connected = true` with the
 //! device-claims error code and the reason, carries the same reason in its
-//! `Description`, answers to its fixed placeholder `UniqueID`, serves the
-//! config actions connected or not, and answers every camera member
-//! `NOT_CONNECTED`. It never re-scans: the reason is the one the last start or
-//! reload found, and only a reload turns the number back into a camera.
+//! `Description`, answers to its fixed placeholder `UniqueID`, serves its
+//! setup page (or, for a driver still on them, the config actions) connected
+//! or not, and answers every camera member `NOT_CONNECTED`. It never
+//! re-scans: the reason is the one the last start or reload found, and only a
+//! reload turns the number back into a camera.
 
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
+use http::StatusCode;
 use rusty_photon_config::actions::ConfigurableDriver;
+use rusty_photon_setup::SetupPages;
 use tracing::debug;
 
 use crate::ConfigActionCtx;
@@ -49,6 +55,8 @@ pub struct Placeholder {
 pub struct PlaceholderCamera<D: ConfigurableDriver> {
     about: Placeholder,
     config_ctx: Option<ConfigActionCtx<D>>,
+    /// The setup pages, and the device number its page is served at.
+    pages: Option<(Arc<SetupPages<D>>, u32)>,
 }
 
 impl<D: ConfigurableDriver> PlaceholderCamera<D> {
@@ -58,7 +66,16 @@ impl<D: ConfigurableDriver> PlaceholderCamera<D> {
         Self {
             about,
             config_ctx: None,
+            pages: None,
         }
+    }
+
+    /// Serve its setup page, `/setup/v1/camera/<number>/setup`, through the
+    /// shared pages: the port it stands in for, and why.
+    #[must_use]
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<D>>, number: u32) -> Self {
+        self.pages = Some((pages, number));
+        self
     }
 
     /// Serve the config actions, as a camera at this number would.
@@ -140,6 +157,21 @@ where
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
         crate::dispatch::<D>(&self.config_ctx, action, parameters).await
+    }
+
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> Pin<Box<dyn Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some((pages, number)) => crate::device_setup_request(pages, "camera", *number, request),
+            None => Box::pin(async {
+                SetupResponse::text(
+                    StatusCode::NOT_FOUND,
+                    "This placeholder was built without its setup page",
+                )
+            }),
+        }
     }
 }
 

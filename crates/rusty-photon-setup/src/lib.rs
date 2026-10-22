@@ -38,6 +38,7 @@
     )
 )]
 
+pub mod custom;
 pub mod form;
 pub mod handler;
 pub mod origin;
@@ -45,6 +46,7 @@ pub mod render;
 pub mod schema;
 pub mod security;
 
+pub use custom::{BoxFuture, Confirmation, CustomSection, DriverPages, SectionView, CONFIRM};
 pub use form::FormValues;
 pub use handler::{PageRequest, PageResponse, PageScope, SetupPages, RELOAD_AFTER_RESPONSE_DELAY};
 pub use schema::{FieldKind, FieldModel, FieldSpec};

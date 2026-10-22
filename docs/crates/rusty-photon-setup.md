@@ -33,7 +33,9 @@ What it leaves to the service: the config type and its validation
 (`ConfigurableDriver` in `rusty-photon-config`), which config section each
 device edits (`device_sections`), which fields a command-line flag pins,
 which fields the service itself writes at runtime (`file_only_pointers`),
-and where the file lives.
+where the file lives, and — for a driver whose configuration the walker
+cannot render, or whose devices its configuration alone cannot name — its
+own part of the pages ([A driver's own part](#a-drivers-own-part)).
 
 ## The pages
 
@@ -122,6 +124,7 @@ headers and a body. The statuses:
 | `GET` | `200` with the form |
 | `POST` that saved | `200` with the saved page |
 | `POST` whose values were rejected | `422 Unprocessable Content`, the form again with each error beside its field and the submitted values kept; an error on a field this page does not show (the file's other section failing validation) is named above the form, with its path |
+| `POST` whose save a driver's section asks to confirm first (a renumbering) | `409 Conflict`, the form again with the submitted values, what the save would change, and the button that saves it ([Confirmation](#confirmation)) |
 | `POST` that fails the origin check | `403` with a sentence saying why |
 | `POST` whose save failed (the file could not be written, the file on disk is not valid JSON) | `500` with the reason |
 | a device page for a device the config has no section for | `404` with a sentence; the crate in front answers `403` first for a device it does not serve |
@@ -134,13 +137,18 @@ A `POST` to a page submits that page's fields. The handler:
    config; a file that is not valid JSON refuses the save, so a typo is
    never overwritten), and overlays the submitted fields onto the page's
    section alone — a save of a device page cannot alter the server section,
-   and a save of the server page cannot alter a device's;
+   and a save of the server page cannot alter a device's — and has each of
+   the driver's own sections on the page apply its part
+   ([A driver's own part](#a-drivers-own-part));
 2. skips every field a command-line flag pins: the file's value stays;
 3. parses the result as the typed config, then `normalize` and `validate`;
    a failure re-renders the form with each error beside its field and the
    file untouched;
-4. persists with `rusty_photon_config::save` (atomic, owner and mode kept);
-5. answers with a page that says what was saved, and
+4. asks the driver's sections whether the change needs confirming, and
+   answers `409` with what it would change when it does and the submission
+   does not confirm it ([Confirmation](#confirmation));
+5. persists with `rusty_photon_config::save` (atomic, owner and mode kept);
+6. answers with a page that says what was saved, and
    - for a service that reloads in process (`ApplyDisposition::Reload`),
      that it is reloading: the reload is fired after the response has
      flushed, and the page waits for the listener to come back. Whether
@@ -171,6 +179,51 @@ page saves to the one file, and two saves interleaving would have the later
 one persist its stale copy of the other's section.
 
 Nothing a `GET` does changes state.
+
+## A driver's own part
+
+A driver whose configuration the walker cannot render, or whose devices
+its configuration alone cannot name, adds its own part to its pages: a
+`DriverPages` the handler is built with (`SetupPages::with_driver_pages`).
+The camera drivers are the first: their `usb_devices` list is an array of
+objects, which the walker names as file-only, and the devices a camera
+server serves follow the USB placement its last start or reload found, not
+the file (the driver-setup-pages plan's D11). A `DriverPages` says:
+
+- **which top-level keys its sections edit.** The walker leaves them off
+  every page, so no field is edited in two places, and no file-only note
+  stands for a key a section edits.
+- **which devices the server serves**, when the driver knows better than
+  its configuration does: the server page's device list and the device
+  pages follow these instead of `device_sections`. A device with no section
+  of the file's own has an empty pointer, and its page is the driver's
+  sections alone: what the driver knows about it, and whatever of it the
+  driver lets a page edit. A page whose every part submits nothing — a
+  page that only shows — has no form and no Save button.
+- **its sections on a page**, asked for on every request, so a section can
+  read the host as it is now (the camera drivers' USB scan).
+
+A section draws its markup inside the page's form — from the file as the
+page shows it, or, re-rendering a save, from the submission and its errors
+— and applies a submission onto the file the save is building, naming any
+error by a control it draws. An error a section draws beside its control is
+not repeated above the form; any other is named there with its path, as
+for a field the page does not show.
+
+### Confirmation
+
+A section can ask that a save be confirmed before it is written: one that
+moves a camera to another device number, which every client bound to the
+old number must follow (D11). After the save has passed validation, each
+section on the page is shown the file before and after it; one that wants
+the change confirmed answers what it would change and a token naming
+exactly that. When the submission's `confirm` field does not carry the
+tokens the same submission produces now, nothing is written: the page
+answers `409 Conflict` with the form as submitted, what the save would
+change above it, and a hidden `confirm` field carrying the tokens, so the
+operator who saves that page again confirms what it showed. A
+confirmation covers the change it showed and no other: a submission
+whose changes differ, or a file that moved on in between, asks again.
 
 ## Credentials
 
@@ -223,9 +276,6 @@ the actions retire.
 
 - Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
   `setup_request` hook to the handler is `rusty-photon-driver`'s.
-- No custom sections yet: a section the walker cannot render, with its own
-  markup and its own parse (the camera drivers' `usb_devices` editor), is
-  the plan's D11 and lands with the camera family.
 - No navigation between services: a page links to its own server page and
   its own device pages, nothing else.
 
@@ -239,7 +289,11 @@ origin check, and the handler against a fake driver (the overlay onto one
 section, the skipped pinned field — inside a tagged enum too — the
 rejected save leaving the file untouched, a `validate` error re-pointed at
 a variant's control, the persisted file, the reload fired, the credential
-rules, one save waiting for another).
+rules, one save waiting for another), and a driver's own part (its keys
+left off every page, the device list it gives, a page it draws alone with
+no form when nothing on it submits, its section's apply and errors, and
+the confirmation: the `409` with its token, the save the token confirms,
+and a token that no longer matches asking again).
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

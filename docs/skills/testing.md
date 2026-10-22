@@ -638,9 +638,14 @@ address and config file through `adopt_plain` or `adopt_tls_auth`. The When
 and Then steps are service-neutral — opening either page, submitting it the
 way its own form would (the rendered controls, the edit, the `Origin` of the
 page itself or of another site), the reload wait, the file's contents at a
-pointer, a field's error under `422`, the credential's absence from a page —
+pointer, a field's error under `422`, the credential's absence from a page,
+a page that only shows, saving a confirmation page again after its `409` —
 so field names, values and statuses live in the feature file. `dsd-fp2`'s
-suite is the reference.
+suite is the reference. The camera drivers also invoke
+`usb_devices_editor_steps!` for their Cameras section: checking or
+unchecking a port's row, the mode, what a row says is served (also after
+the reload), and the moves and dropped names a confirmation lists;
+`svbony-camera`'s suite is the reference for those.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or

@@ -205,6 +205,15 @@ impl FieldModel {
         self
     }
 
+    /// Drop every field whose top-level section is one of `sections`: the
+    /// keys a driver's own sections edit, which no generated field may edit
+    /// too.
+    #[must_use]
+    pub fn without_sections(mut self, sections: &[String]) -> Self {
+        self.fields.retain(|f| !sections.contains(&f.section));
+        self
+    }
+
     /// The ordered fields.
     #[must_use]
     pub fn fields(&self) -> &[FieldSpec] {

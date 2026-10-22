@@ -435,6 +435,17 @@ impl Normalizer<'_> {
         record.vendor == self.vendor && self.is_camera_product(&record.product)
     }
 
+    /// The working records in `scan` that can be one of this driver's
+    /// cameras — its vendor's, under a product id that can be a camera's —
+    /// with no SDK call: the rows of the camera drivers' Cameras section.
+    #[must_use]
+    pub fn camera_records<'s>(&self, scan: &'s UsbScan) -> Vec<&'s UsbDevice> {
+        scan.devices
+            .iter()
+            .filter(|record| self.is_own_record(record))
+            .collect()
+    }
+
     /// Whether a fault could be this driver's camera: it carries no real
     /// vendor id — none could be read, or it is the `0000` Windows gives a
     /// device whose enumeration failed (doctor.md, "USB inventory") — or it
@@ -1652,6 +1663,29 @@ mod tests {
     fn with_serial(mut device: UsbDevice, serial: &str) -> UsbDevice {
         device.serial = Some(serial.to_string());
         device
+    }
+
+    #[test]
+    fn camera_records_are_the_vendors_records_that_can_be_cameras() {
+        let mut other_vendor = record("9a0a", "p:4");
+        other_vendor.vendor = "03c3".to_string();
+        let scan = UsbScan {
+            devices: vec![
+                record("9a0a", "p:1"),
+                record("1001", "p:2"),
+                record("77aa", "p:3"),
+                other_vendor,
+            ],
+            faults: Vec::new(),
+        };
+        let ports: Vec<_> = SVB
+            .camera_records(&scan)
+            .into_iter()
+            .filter_map(|r| r.port.as_deref())
+            .collect();
+        // A known non-camera and another vendor's record are not; an
+        // unassigned product id with no SDK check could be.
+        assert_eq!(ports, vec!["p:1", "p:3"]);
     }
 
     fn camera(model: &str) -> SdkCamera {

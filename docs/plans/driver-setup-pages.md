@@ -8,8 +8,11 @@ way: the serial family merged
 ([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)), the
 `GTi` merged
 ([#1557](https://github.com/rusty-photon/rusty-photon/pull/1557)),
-`filemonitor` and `sky-survey-camera` in review (the Phases table has the
-state). On the owner's direction the servers are
+`filemonitor` and `sky-survey-camera` merged
+([#1558](https://github.com/rusty-photon/rusty-photon/pull/1558)), the
+camera family under way in three PRs, `svbony-camera` first with the
+shared crate's driver hook (D11, settled with the owner on 2026-10-22; the
+Phases table has the state). On the owner's direction the servers are
 specification-compliant from the first phase, and the `ascom-alpaca`
 crate is fixed properly — its setup hooks take a request (D10, P1); the
 owner decided on 2026-10-17 that the fork's fixes are **not offered
@@ -268,7 +271,16 @@ devices depend on its `usb_devices` list) and defaults to none, so the
 fourteen implementors still on the actions compile unchanged; the two tier
 lists stay on the trait until P5, because `config.schema` reads them, and
 the pages ignore them. `custom_sections` lands with its first user, the
-camera family's `usb_devices` editor (D11, P3). The tagged-enum selector
+camera family's `usb_devices` editor (D11, P3). *As built in P3:* the hook is not a trait method but a `DriverPages`
+the driver hands its `SetupPages` (`with_driver_pages`), because the
+camera family's part reads what the running server registered and a
+live USB scan, which `ConfigurableDriver`'s static functions cannot
+reach. It names the top-level keys its sections edit (the walker leaves
+them off every page), the devices the server serves when the
+configuration alone cannot name them, and its sections on each page,
+each with its markup, its parse and an optional confirmation
+([rusty-photon-setup.md](../crates/rusty-photon-setup.md), "A driver's
+own part"). The tagged-enum selector
 is built and unit-tested in the crate (one radio button per variant, the
 chosen variant's fields shown by CSS, no script); `star-adventurer-gti`
 proves it on a page in P3. A page shows the configuration file (through
@@ -603,6 +615,26 @@ The device-claims plan's deferred C8 (`ui-htmx` editing of
 The two problems that held C8 — the page was reachable only through a
 device, and the empty list cut it off — do not exist on a server page.
 
+*Settled with the owner for P3 (2026-10-22):*
+
+- **Three PRs**, one driver each: `svbony-camera` with the crate's hook and
+  the shared editor, then `zwo-camera`, then `qhy-camera` with the declared
+  wheel number.
+- **A camera's own page follows the mode.** A listed camera's page shows
+  what the driver knows about it and links to its row on the server page,
+  where its name and description are edited, so each field has one place.
+  A camera served without a list edits its `devices` override's name and
+  description, and the first save that names either creates the override.
+  A placeholder's page is D1's.
+- **The renumbering is confirmed, not previewed by script.** A save that
+  would move a served camera's number answers with the moves and the
+  warning about `rp`'s entries, and writes nothing until the operator saves
+  that page again; the pages stay without script beyond the reload wait.
+- Changing the mode carries the names across: to a list, each camera's
+  override names fill its row and the `devices` map goes; to no list, each
+  listed camera's names become an override under its key. Any name the
+  change would drop is named in the same confirmation.
+
 ### D12. Restart
 
 Reload services need no restart affordance. For the two `Restart`
@@ -705,7 +737,7 @@ Small, each mergeable alone, in this order.
 | P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | Plan merged; the ADRs wait on the decisions | `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) |
 | P1 | **Specification compliance first.** The `ascom-alpaca` fork, in the two changes D10 describes (not offered upstream yet, the owner's call): the paths and statuses — the specification's device setup path routed, linked from `/setup`, the old path redirected, the statuses the specifications give, with tests — and the request-taking hooks, `setup_request` on a device and a setup handler on `Server`, routed for `GET` and `POST`, with their defaults. The workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default pages until P2 | Merged | `feature/setup-pages-p1` ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)) |
 | P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), the shared handler behind the pages (the render, the save, the origin check, the reload hook) and its tagged-enum and file-only rules, the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, whose device and server hooks (D10) call that handler, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands. `ui-htmx`'s own config-page suites move their vehicle from `dsd-fp2` to `qhy-focuser`, which still carries the actions, until P4 retires those pages | Merged | `feature/setup-pages-p2` ([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)) |
-| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | In progress | Serial family merged: `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver` ([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)). `star-adventurer-gti` merged on its own ([#1557](https://github.com/rusty-photon/rusty-photon/pull/1557)), the tagged-enum gaps below closed in the crate first. `filemonitor` and `sky-survey-camera` together (`feature/setup-pages-p3-filemonitor-sky-survey`): no overrides, so nothing pinned; `filemonitor`'s rules list and the camera's follow-mode blocks are file-only on the page. `qhy-focuser` is the BFF's BDD vehicle for its config pages and keeps the actions until P4 retires those pages. |
+| P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | In progress | Serial family merged: `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver` ([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)). `star-adventurer-gti` merged on its own ([#1557](https://github.com/rusty-photon/rusty-photon/pull/1557)), the tagged-enum gaps below closed in the crate first. `filemonitor` and `sky-survey-camera` merged together ([#1558](https://github.com/rusty-photon/rusty-photon/pull/1558)): no overrides, so nothing pinned; `filemonitor`'s rules list and the camera's follow-mode blocks are file-only on the page. The camera family in three PRs (the owner's choice, 2026-10-22), each a driver with its `usb_devices` editor: `svbony-camera` first, with the shared crate's `DriverPages` hook and the editor and camera pages shared in `rusty-photon-driver`'s `claims` module (`feature/setup-pages-p3-cameras`), then `zwo-camera`, then `qhy-camera` with its declared wheel number. `qhy-focuser` is the BFF's BDD vehicle for its config pages and keeps the actions until P4 retires those pages. |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Not started | |
 | P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Not started | |
 

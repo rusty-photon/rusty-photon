@@ -2,11 +2,12 @@
 //! the reload after the response.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::header::{CONTENT_TYPE, HOST};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
-use maud::html;
+use maud::{html, Markup};
 use rusty_photon_config::actions::{
     ApplyDisposition, ConfigurableDriver, DeviceSection, FieldError,
 };
@@ -15,6 +16,7 @@ use rusty_photon_service_lifecycle::ReloadSignal;
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use crate::custom::{Confirmation, CustomSection, DriverPages, SectionView, CONFIRM};
 use crate::form::{changed_paths, overlay_field_except, set_pointer, FormValues};
 use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
 use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
@@ -105,6 +107,35 @@ pub struct SetupPages<D: ConfigurableDriver> {
     /// the service saves to the one file, and two saves interleaving would
     /// have the later one persist its stale copy of the other's section.
     saving: tokio::sync::Mutex<()>,
+    /// The driver's own part of the pages, when it has one.
+    driver_pages: Option<Arc<dyn DriverPages>>,
+}
+
+/// A save waiting for its confirmation: the tokens the confirmation page
+/// carries, and what the save would change.
+struct Confirm {
+    token: String,
+    changes: Vec<Markup>,
+}
+
+impl Confirm {
+    /// The confirmation `confirmations` ask for together, `None` when none
+    /// asks. Each token is one line, so the joined token survives a form's
+    /// line-break normalisation.
+    fn of(confirmations: Vec<Confirmation>) -> Option<Self> {
+        if confirmations.is_empty() {
+            return None;
+        }
+        let token = confirmations
+            .iter()
+            .map(|c| c.token.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        Some(Self {
+            token,
+            changes: confirmations.into_iter().map(|c| c.markup).collect(),
+        })
+    }
 }
 
 /// The fields the command-line overrides pin, in both spellings a page
@@ -161,6 +192,7 @@ impl<D: ConfigurableDriver> std::fmt::Debug for SetupPages<D> {
             .field("reload", &self.reload.is_some())
             .field("https", &self.https)
             .field("generation", &self.generation)
+            .field("driver_pages", &self.driver_pages.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -185,7 +217,17 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             auth_pointer: Some(DEFAULT_AUTH_POINTER.to_string()),
             generation: next_generation(),
             saving: tokio::sync::Mutex::new(()),
+            driver_pages: None,
         }
+    }
+
+    /// The driver's own part of the pages: its sections, the keys they
+    /// edit, and the devices it serves when its configuration alone cannot
+    /// name them.
+    #[must_use]
+    pub fn with_driver_pages(mut self, pages: Arc<dyn DriverPages>) -> Self {
+        self.driver_pages = Some(pages);
+        self
     }
 
     /// The reload a save fires after its response, for a service that
@@ -232,10 +274,20 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
+        let owned = self
+            .driver_pages
+            .as_ref()
+            .map(|p| p.owned_keys())
+            .unwrap_or_default();
         let model = FieldModel::from_schema(&schema)
             .with_secrets(D::secret_pointers())
-            .with_file_only(D::file_only_pointers());
-        let sections = D::device_sections(&self.effective);
+            .with_file_only(D::file_only_pointers())
+            .without_sections(&owned);
+        let sections = self
+            .driver_pages
+            .as_ref()
+            .and_then(|p| p.devices())
+            .unwrap_or_else(|| D::device_sections(&self.effective));
         let page = match scope {
             PageScope::Server => Page::Server { sections },
             PageScope::Device {
@@ -259,15 +311,26 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             &effective,
             D::pinned_paths(&self.effective, &self.overrides),
         );
+        let custom = match &self.driver_pages {
+            Some(pages) => pages.sections(scope).await,
+            None => Vec::new(),
+        };
+        let drawn = Drawn {
+            custom: &custom,
+            confirm: None,
+        };
         match request.method {
             Method::GET => {
                 let (shown, pending) = self.current_view(&effective, &pins.paths);
                 PageResponse::html(
                     StatusCode::OK,
-                    self.render(&page, &model, &shown, &pins, &[], None, &pending),
+                    self.render(&page, &model, &shown, &pins, &[], None, &pending, drawn),
                 )
             }
-            Method::POST => self.save(&page, &model, &effective, &pins, request).await,
+            Method::POST => {
+                self.save(&page, &model, &effective, &pins, drawn, request)
+                    .await
+            }
             _ => PageResponse::text(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "This setup page takes GET and POST",
@@ -312,8 +375,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         }
     }
 
-    /// The form, filled from `shown`, with `errors` beside their fields and
-    /// `pending` the saved fields waiting for a restart.
+    /// The form, filled from `shown`, with `errors` beside their fields,
+    /// `pending` the saved fields waiting for a restart, and `drawn` the
+    /// driver's own sections and the confirmation a save waits for.
     #[allow(clippy::too_many_arguments)]
     fn render(
         &self,
@@ -324,6 +388,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         errors: &[FieldError],
         submitted: Option<&FormValues>,
         pending: &[String],
+        drawn: Drawn<'_>,
     ) -> String {
         let auth_pointer = self.auth_pointer.as_deref();
         let fields: Vec<&FieldSpec> = page
@@ -339,17 +404,25 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             render::field(spec, shown, state)
         };
         let placed = Self::placed_controls(page, &fields, auth_pointer.is_some());
-        let pending_banner = html! {
-            @if !pending.is_empty() {
-                div class="banner warn" id="pending-restart" {
-                    span.dot {}
-                    span {
-                        "Saved and waiting for the service's restart: "
-                        span.mono { (pending.join(", ")) }
-                    }
-                }
-            }
+        // An error a driver's section shows beside its own control is not
+        // repeated above the form.
+        let banner_errors: Vec<FieldError> = errors
+            .iter()
+            .filter(|e| !drawn.custom.iter().any(|c| c.shows_error(&e.path)))
+            .cloned()
+            .collect();
+        let view = SectionView {
+            config: shown,
+            submitted,
+            errors,
         };
+        let custom = html! { @for section in drawn.custom { (section.render(view)) } };
+        let top = html! {
+            @if !errors.is_empty() { (render::rejected_banner(&banner_errors, &placed)) }
+            (Self::confirm_banner(drawn.confirm))
+            (Self::pending_banner(pending))
+        };
+        let actions = Self::actions(drawn.confirm);
         let body = match page {
             Page::Server { sections } => {
                 let mut section_names: Vec<&str> = Vec::new();
@@ -364,8 +437,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                     div.card {
                         h1 { (self.service) " setup" }
                         p.subtitle { "The whole server. Each device it serves has its own page, listed below." }
-                        @if !errors.is_empty() { (render::rejected_banner(errors, &placed)) }
-                        (pending_banner)
+                        (top)
                         form method="post" action="" {
                             @for section in &section_names {
                                 fieldset {
@@ -375,8 +447,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                                     }
                                 }
                             }
+                            (custom)
                             @if let Some(auth) = &auth { (security::render(auth, submitted, errors)) }
-                            div.actions { button.primary type="submit" { "Save" } }
+                            (actions)
                         }
                         (render::device_list(&devices))
                     }
@@ -386,32 +459,87 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 let (identity, plain): (Vec<&FieldSpec>, Vec<&FieldSpec>) = fields
                     .iter()
                     .partition(|f| f.name().ends_with(".unique_id"));
+                // A page whose every part only shows has nothing to save.
+                let has_form = !fields.is_empty() || drawn.custom.iter().any(|c| c.has_controls());
                 html! {
                     p { a href="../../../../setup" { "← Server setup" } }
                     div.card {
                         h1 { (section.name) }
                         p.subtitle { (section.device_type) " " (section.device_number) " · " (self.service) }
-                        @if !errors.is_empty() { (render::rejected_banner(errors, &placed)) }
-                        (pending_banner)
-                        form method="post" action="" {
-                            fieldset {
-                                legend { (humanize(section.section())) }
-                                @for spec in &plain { (field_markup(spec)) }
-                            }
-                            @if !identity.is_empty() {
-                                details.identity {
-                                    summary { "Identity" }
-                                    p.hint { "The driver owns and mints this id; editing it is an escape hatch for a misbehaving driver, not routine configuration." }
-                                    @for spec in &identity { (field_markup(spec)) }
+                        (top)
+                        @if has_form {
+                            form method="post" action="" {
+                                @if !plain.is_empty() {
+                                    fieldset {
+                                        legend { (humanize(section.section())) }
+                                        @for spec in &plain { (field_markup(spec)) }
+                                    }
                                 }
+                                @if !identity.is_empty() {
+                                    details.identity {
+                                        summary { "Identity" }
+                                        p.hint { "The driver owns and mints this id; editing it is an escape hatch for a misbehaving driver, not routine configuration." }
+                                        @for spec in &identity { (field_markup(spec)) }
+                                    }
+                                }
+                                (custom)
+                                (actions)
                             }
-                            div.actions { button.primary type="submit" { "Save" } }
+                        } @else {
+                            (custom)
                         }
                     }
                 }
             }
         };
         render::document(&self.service, &page.title(), &self.generation, &body)
+    }
+
+    /// What a save waiting for its confirmation would change, above the
+    /// form.
+    fn confirm_banner(confirm: Option<&Confirm>) -> Markup {
+        html! {
+            @if let Some(confirm) = confirm {
+                div class="banner warn confirm" id="confirm" {
+                    span.dot {}
+                    div {
+                        p { "Nothing is saved yet. This save would also:" }
+                        @for change in &confirm.changes { (change) }
+                        p { "Save again to make these changes, or change the form first." }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The saved fields waiting for a restart, above the form.
+    fn pending_banner(pending: &[String]) -> Markup {
+        html! {
+            @if !pending.is_empty() {
+                div class="banner warn" id="pending-restart" {
+                    span.dot {}
+                    span {
+                        "Saved and waiting for the service's restart: "
+                        span.mono { (pending.join(", ")) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The form's end: the confirmation's tokens, when it asks for one, and
+    /// the button.
+    fn actions(confirm: Option<&Confirm>) -> Markup {
+        html! {
+            @if let Some(confirm) = confirm {
+                input type="hidden" name=(CONFIRM) value=(confirm.token);
+            }
+            div.actions {
+                button.primary type="submit" {
+                    @if confirm.is_some() { "Save these changes" } @else { "Save" }
+                }
+            }
+        }
     }
 
     /// Every control the page shows, so the banner can name an error on any
@@ -462,6 +590,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         model: &FieldModel,
         effective: &Value,
         pins: &Pins,
+        drawn: Drawn<'_>,
         request: PageRequest,
     ) -> PageResponse {
         if let Err(refused) = origin::check(&request.headers) {
@@ -507,6 +636,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             &mut file,
             &mut errors,
         );
+        for section in drawn.custom {
+            errors.extend(section.apply(&form, &mut file));
+        }
         // What a re-render shows: the submitted values, with a pinned field
         // still showing what the running service uses.
         let mut shown = file.clone();
@@ -525,14 +657,24 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         if !errors.is_empty() {
             return PageResponse::html(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                self.render(page, model, &shown, pins, &errors, Some(&form), &[]),
+                self.render(page, model, &shown, pins, &errors, Some(&form), &[], drawn),
+            );
+        }
+        if let Some(confirm) = Self::unconfirmed(drawn, &form, &file_before, &file) {
+            let drawn = Drawn {
+                confirm: Some(&confirm),
+                ..drawn
+            };
+            return PageResponse::html(
+                StatusCode::CONFLICT,
+                self.render(page, model, &shown, pins, &[], Some(&form), &[], drawn),
             );
         }
         if let Some((pointer, change)) = auth_change {
             if let Err(e) = security::apply(change, &mut file, pointer).await {
                 return PageResponse::html(
                     StatusCode::UNPROCESSABLE_ENTITY,
-                    self.render(page, model, &shown, pins, &[e], Some(&form), &[]),
+                    self.render(page, model, &shown, pins, &[e], Some(&form), &[], drawn),
                 );
             }
         }
@@ -548,21 +690,48 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        // What the service would run without this save. For a service that
-        // reloads, the file as it was read, with the overrides applied: a
-        // runtime writer (a mount's `SetPark`) may have moved the file on
-        // since the start, and a reload carries that whether or not this
-        // save changes anything, so a save that changes nothing must not
-        // reload for it. For a service that restarts, the running
-        // configuration, so its list of fields waiting for the restart
-        // stays cumulative across saves.
-        let baseline = match D::apply_disposition() {
+        let baseline = self.baseline(&file_before, effective);
+        self.persist(page, typed, effective, &baseline, &request.headers)
+    }
+
+    /// The confirmation a save from `before` to `after` waits for: what the
+    /// driver's sections want confirmed, when `form` does not carry the
+    /// tokens it produces now — so a submission whose changes differ, or
+    /// whose file moved on, is asked again.
+    fn unconfirmed(
+        drawn: Drawn<'_>,
+        form: &FormValues,
+        before: &Value,
+        after: &Value,
+    ) -> Option<Confirm> {
+        let confirmations = drawn
+            .custom
+            .iter()
+            .filter_map(|section| section.confirmation(before, after))
+            .collect();
+        let confirm = Confirm::of(confirmations)?;
+        if form.get(CONFIRM) == Some(confirm.token.as_str()) {
+            return None;
+        }
+        debug!("a setup-page save waits for its confirmation");
+        Some(confirm)
+    }
+
+    /// What the service would run without this save. For a service that
+    /// reloads, the file as it was read (`file_before`), with the overrides
+    /// applied: a runtime writer (a mount's `SetPark`) may have moved the
+    /// file on since the start, and a reload carries that whether or not
+    /// this save changes anything, so a save that changes nothing must not
+    /// reload for it. For a service that restarts, the running
+    /// configuration, so its list of fields waiting for the restart stays
+    /// cumulative across saves.
+    fn baseline(&self, file_before: &Value, effective: &Value) -> Value {
+        match D::apply_disposition() {
             ApplyDisposition::Reload => self
-                .effective_of(&file_before)
+                .effective_of(file_before)
                 .unwrap_or_else(|| effective.clone()),
             ApplyDisposition::Restart => effective.clone(),
-        };
-        self.persist(page, typed, effective, &baseline, &request.headers)
+        }
     }
 
     /// The configuration the service would run from `file`: parsed,
@@ -758,6 +927,14 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             note,
         })
     }
+}
+
+/// The driver's own sections on a page, and the confirmation a save waits
+/// for.
+#[derive(Clone, Copy)]
+struct Drawn<'a> {
+    custom: &'a [Box<dyn CustomSection>],
+    confirm: Option<&'a Confirm>,
 }
 
 /// Which page, with what it needs to render.
@@ -2125,5 +2302,272 @@ mod tests {
         let section = Fake::device_sections(&config()).remove(0);
         assert_eq!(section.section(), "panel");
         assert_eq!(json!(section.enabled), json!(true));
+    }
+
+    // --- a driver's own part --------------------------------------------------
+
+    /// The server page's own section: it edits `serial.port` through a
+    /// control of its own, refuses an empty port beside that control, and
+    /// wants a change of port confirmed.
+    struct PortSection;
+
+    impl CustomSection for PortSection {
+        fn render(&self, view: SectionView<'_>) -> Markup {
+            let value = view
+                .submitted
+                .and_then(|form| form.get("own.port"))
+                .map_or_else(
+                    || crate::form::text_at(view.config, "/serial/port"),
+                    str::to_string,
+                );
+            html! {
+                fieldset #own {
+                    input type="text" name="own.port" value=(value);
+                    @for e in view.errors.iter().filter(|e| e.path == "own.port") {
+                        div.section-error { (e.msg) }
+                    }
+                }
+            }
+        }
+
+        fn has_controls(&self) -> bool {
+            true
+        }
+
+        fn apply(&self, form: &FormValues, config: &mut Value) -> Vec<FieldError> {
+            match form.get("own.port") {
+                Some(port) if !port.trim().is_empty() => {
+                    set_pointer(config, "/serial/port", json!(port));
+                    Vec::new()
+                }
+                _ => vec![FieldError {
+                    path: "own.port".to_string(),
+                    msg: "must not be empty".to_string(),
+                }],
+            }
+        }
+
+        fn shows_error(&self, path: &str) -> bool {
+            path == "own.port"
+        }
+
+        fn confirmation(&self, before: &Value, after: &Value) -> Option<Confirmation> {
+            let (from, to) = (
+                before.pointer("/serial/port")?,
+                after.pointer("/serial/port")?,
+            );
+            (from != to).then(|| Confirmation {
+                token: format!("port {from} > {to}"),
+                markup: html! { ul { li.move { "the port moves" } } },
+            })
+        }
+    }
+
+    /// A device page that only shows.
+    struct About;
+
+    impl CustomSection for About {
+        fn render(&self, _: SectionView<'_>) -> Markup {
+            html! { p #about { "Camera 3 on port a:1" } }
+        }
+
+        fn has_controls(&self) -> bool {
+            false
+        }
+
+        fn apply(&self, _: &FormValues, _: &mut Value) -> Vec<FieldError> {
+            Vec::new()
+        }
+    }
+
+    /// Owns `serial`, serves a camera the configuration names no section
+    /// for, and draws a section on each page.
+    struct OwnPart;
+
+    impl DriverPages for OwnPart {
+        fn owned_keys(&self) -> Vec<String> {
+            vec!["serial".to_string()]
+        }
+
+        fn devices(&self) -> Option<Vec<DeviceSection>> {
+            Some(vec![DeviceSection {
+                device_type: "camera".to_string(),
+                device_number: 3,
+                pointer: String::new(),
+                name: "Camera 3".to_string(),
+                enabled: true,
+            }])
+        }
+
+        fn sections<'a>(
+            &'a self,
+            scope: PageScope<'a>,
+        ) -> crate::custom::BoxFuture<'a, Vec<Box<dyn CustomSection>>> {
+            Box::pin(async move {
+                let sections: Vec<Box<dyn CustomSection>> = match scope {
+                    PageScope::Server => vec![Box::new(PortSection)],
+                    PageScope::Device { .. } => vec![Box::new(About)],
+                };
+                sections
+            })
+        }
+    }
+
+    const CAMERA: PageScope<'static> = PageScope::Device {
+        device_type: "camera",
+        device_number: 3,
+    };
+
+    fn own_pages(fx: &Fixture) -> SetupPages<Fake> {
+        pages(fx, config(), Overrides::default()).with_driver_pages(Arc::new(OwnPart))
+    }
+
+    /// The server page's submission with the own section's port.
+    fn own_form(port: &str) -> Vec<(&str, &str)> {
+        let mut pairs: Vec<(&str, &str)> = server_base()
+            .into_iter()
+            .filter(|(k, _)| !k.starts_with("serial."))
+            .collect();
+        pairs.push(("own.port", port));
+        pairs
+    }
+
+    /// The token a confirmation page carries in its hidden `confirm` input.
+    fn confirm_token(body: &str) -> String {
+        let marker = format!(r#"name="{CONFIRM}" value=""#);
+        let (_, rest) = body.split_once(&marker).expect("a confirm input");
+        let (value, _) = rest.split_once('"').expect("the value ends");
+        value
+            .replace("&quot;", "\"")
+            .replace("&gt;", ">")
+            .replace("&lt;", "<")
+            .replace("&amp;", "&")
+    }
+
+    #[tokio::test]
+    async fn a_drivers_part_takes_its_keys_off_the_pages_and_names_the_devices() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let server = p.handle(PageScope::Server, get()).await;
+        assert_eq!(server.status, StatusCode::OK, "{}", server.body);
+        assert!(
+            !server.body.contains(r#"name="serial.port""#),
+            "{}",
+            server.body
+        );
+        assert!(!server.body.contains("serial.baud_rate"), "{}", server.body);
+        assert!(
+            server.body.contains(r#"name="own.port" value="/dev/mock""#),
+            "{}",
+            server.body
+        );
+        assert!(
+            server.body.contains("setup/v1/camera/3/setup"),
+            "{}",
+            server.body
+        );
+        assert!(!server.body.contains("covercalibrator"), "{}", server.body);
+
+        let camera = p.handle(CAMERA, get()).await;
+        assert_eq!(camera.status, StatusCode::OK, "{}", camera.body);
+        assert!(camera.body.contains(r#"id="about""#), "{}", camera.body);
+        assert!(!camera.body.contains("<form"), "{}", camera.body);
+        assert!(!camera.body.contains("type=\"submit\""), "{}", camera.body);
+
+        let panel = p.handle(DEVICE, get()).await;
+        assert_eq!(panel.status, StatusCode::NOT_FOUND, "{}", panel.body);
+    }
+
+    #[tokio::test]
+    async fn a_change_a_section_wants_confirmed_waits_for_the_confirmation() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let asked = p
+            .handle(PageScope::Server, post(&own_form("/dev/other")))
+            .await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert!(asked.body.contains(r#"id="confirm""#), "{}", asked.body);
+        assert!(asked.body.contains("the port moves"), "{}", asked.body);
+        // The form is the submission, so saving it again saves this change.
+        assert!(
+            asked.body.contains(r#"name="own.port" value="/dev/other""#),
+            "{}",
+            asked.body
+        );
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/mock");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), fx.reload.recv())
+                .await
+                .is_err(),
+            "a save waiting for its confirmation fired the reload"
+        );
+
+        let token = confirm_token(&asked.body);
+        assert_eq!(token, r#"port "/dev/mock" > "/dev/other""#);
+        let mut confirmed = own_form("/dev/other");
+        confirmed.push((CONFIRM, &token));
+        let saved = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        assert!(
+            saved.body.contains(r#"id="saved-reloading""#),
+            "{}",
+            saved.body
+        );
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/other");
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_covers_only_the_change_it_showed() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let mut stale = own_form("/dev/third");
+        stale.push((CONFIRM, r#"port "/dev/mock" > "/dev/other""#));
+        let asked = p.handle(PageScope::Server, post(&stale)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/mock");
+    }
+
+    #[tokio::test]
+    async fn a_save_no_section_wants_confirmed_saves_at_once() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let mut pairs = own_form("/dev/mock");
+        pairs.retain(|(k, _)| *k != "server.port");
+        pairs.push(("server.port", "11120"));
+        let saved = p.handle(PageScope::Server, post(&pairs)).await;
+        assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+        assert_eq!(on_disk(&fx)["server"]["port"], 11120);
+    }
+
+    #[tokio::test]
+    async fn a_sections_error_is_shown_by_the_section_and_writes_nothing() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let rejected = p.handle(PageScope::Server, post(&own_form("  "))).await;
+        assert_eq!(
+            rejected.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            rejected.body
+        );
+        assert!(
+            rejected
+                .body
+                .contains(r#"<div class="section-error">must not be empty</div>"#),
+            "{}",
+            rejected.body
+        );
+        // Shown beside its control, so not named again above the form.
+        assert!(
+            !rejected.body.contains("<code>own.port</code>"),
+            "{}",
+            rejected.body
+        );
+        assert!(
+            rejected.body.contains(r#"id="rejected""#),
+            "{}",
+            rejected.body
+        );
+        assert_eq!(on_disk(&fx)["serial"]["port"], "/dev/mock");
     }
 }

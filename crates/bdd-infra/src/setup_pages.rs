@@ -56,6 +56,9 @@ pub struct SetupPagesState {
     pub last_status: Option<u16>,
     /// The last response's body.
     pub last_body: String,
+    /// The path the last request went to: the page a confirmation is saved
+    /// from again.
+    pub last_path: Option<String>,
     /// The port a `server.port` save moved the pages to.
     pub moved_port: Option<u16>,
     /// The handler generation the page carried before the last submission:
@@ -144,6 +147,7 @@ pub async fn get(state: &mut SetupPagesState, path: &str, with_credential: bool)
     let response = request.send().await.expect("the setup page GET failed");
     state.last_status = Some(response.status().as_u16());
     state.last_body = response.text().await.unwrap_or_default();
+    state.last_path = Some(path.to_string());
 }
 
 /// Submit a page the way its own form would: `GET` it, take every control
@@ -160,6 +164,33 @@ pub async fn submit(
     changes: &[(&str, &str)],
     origin: Option<&str>,
 ) {
+    submit_with(state, path, origin, |_, controls| {
+        for (name, value) in changes {
+            controls.retain(|(k, _)| k != name);
+            controls.push(((*name).to_string(), (*value).to_string()));
+        }
+    })
+    .await;
+}
+
+/// Submit a page the way its own form would, with what `edit` makes of the
+/// controls.
+///
+/// `GET` the page, take every control the browser would send, hand them to
+/// `edit` beside the page's HTML, and `POST` the result with the `Origin` of
+/// `origin` (the service's own when `None`). A box unticked is a control
+/// `edit` removes.
+///
+/// # Panics
+///
+/// Panics when the page to submit does not render, the service was not
+/// started, or a request fails to send.
+pub async fn submit_with(
+    state: &mut SetupPagesState,
+    path: &str,
+    origin: Option<&str>,
+    edit: impl FnOnce(&str, &mut Vec<(String, String)>),
+) {
     get(state, path, true).await;
     assert_eq!(
         state.last_status,
@@ -169,11 +200,25 @@ pub async fn submit(
     );
     state.generation_before_save = dom::generation(&state.last_body);
     let mut controls = dom::successful_controls(&state.last_body);
-    for (name, value) in changes {
-        controls.retain(|(k, _)| k != name);
-        controls.push(((*name).to_string(), (*value).to_string()));
-    }
+    edit(&state.last_body, &mut controls);
     post(state, path, &controls, origin).await;
+}
+
+/// Save the last page again as it stands — every control it would send —
+/// to the path it came from: what saving a confirmation page does.
+///
+/// # Panics
+///
+/// Panics when no page was requested yet, the service was not started, or
+/// the request fails to send.
+pub async fn resubmit(state: &mut SetupPagesState) {
+    let path = state
+        .last_path
+        .clone()
+        .expect("no page was requested to save again");
+    state.generation_before_save = dom::generation(&state.last_body);
+    let controls = dom::successful_controls(&state.last_body);
+    post(state, &path, &controls, None).await;
 }
 
 /// `POST` `pairs` as a form to a page, from `origin`.
@@ -200,10 +245,29 @@ pub async fn post(
     let response = request.send().await.expect("the setup page POST failed");
     state.last_status = Some(response.status().as_u16());
     state.last_body = response.text().await.unwrap_or_default();
+    state.last_path = Some(path.to_string());
 }
 
 /// Poll a page until the **rebuilt** server renders the input `name` with
 /// `value`.
+///
+/// # Panics
+///
+/// As [`wait_until`].
+pub async fn wait_until_input_shows(
+    state: &mut SetupPagesState,
+    path: &str,
+    name: &str,
+    value: &str,
+) {
+    wait_until(state, path, &format!("{name}={value:?}"), |body| {
+        dom::input(body, name).is_some_and(|i| i.value == value)
+    })
+    .await;
+}
+
+/// Poll a page until the **rebuilt** server renders it so that `done`
+/// holds, `what` saying what is awaited.
 ///
 /// Only a page whose handler generation differs from the one recorded
 /// before the save counts, so an answer from the old listener (which
@@ -214,11 +278,11 @@ pub async fn post(
 ///
 /// Panics when the budget runs out, naming the last answer, or when the
 /// service was not started.
-pub async fn wait_until_input_shows(
+pub async fn wait_until(
     state: &mut SetupPagesState,
     path: &str,
-    name: &str,
-    value: &str,
+    what: &str,
+    done: impl Fn(&str) -> bool,
 ) {
     let url = format!("{}{path}", state.base_url());
     let before = state.generation_before_save.clone();
@@ -234,12 +298,10 @@ pub async fn wait_until_input_shows(
                 let status = response.status().as_u16();
                 let body = response.text().await.unwrap_or_default();
                 let rebuilt = dom::generation(&body).is_some_and(|g| Some(g) != before);
-                if status == 200
-                    && rebuilt
-                    && dom::input(&body, name).is_some_and(|i| i.value == value)
-                {
+                if status == 200 && rebuilt && done(&body) {
                     state.last_status = Some(status);
                     state.last_body = body;
+                    state.last_path = Some(path.to_string());
                     return;
                 }
                 Ok((status, body))
@@ -249,7 +311,7 @@ pub async fn wait_until_input_shows(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     panic!(
-        "{path} did not show {name}={value:?} from a rebuilt server (generation before the save: {before:?}) within {:?} (last: {last:?})",
+        "{path} did not show {what} from a rebuilt server (generation before the save: {before:?}) within {:?} (last: {last:?})",
         started.elapsed()
     );
 }
@@ -370,6 +432,45 @@ pub mod dom {
                 && fld
                     .select(&error_sel)
                     .any(|e| e.text().collect::<String>().contains(message))
+        })
+    }
+
+    /// The value of the checked radio button or checkbox named `name`, if
+    /// one is checked.
+    #[must_use]
+    pub fn checked_value(html: &str, name: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector("input[name][checked]"))
+            .find(|el| el.value().attr("name") == Some(name))
+            .map(|el| el.value().attr("value").unwrap_or("on").to_owned())
+    }
+
+    /// The index of the camera drivers' Cameras-section row for `port`: the
+    /// `N` of the row's hidden `usb_devices.N.port` input that holds it.
+    #[must_use]
+    pub fn row_index(html: &str, port: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector("input[name]")).find_map(|el| {
+            let v = el.value();
+            let index = v
+                .attr("name")?
+                .strip_prefix("usb_devices.")?
+                .strip_suffix(".port")?;
+            (v.attr("value") == Some(port)).then(|| index.to_owned())
+        })
+    }
+
+    /// The text of the first element matching `css`, its whitespace
+    /// collapsed to single spaces.
+    #[must_use]
+    pub fn text_of(html: &str, css: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector(css)).next().map(|el| {
+            el.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         })
     }
 
@@ -712,6 +813,225 @@ macro_rules! setup_pages_steps {
                 state.last_body
             );
         }
+
+        #[::cucumber::then(expr = "the configuration file has nothing at {string}")]
+        fn setup_pages_file_lacks(world: &mut $world, pointer: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let on_disk = $crate::setup_pages::config_on_disk(world.setup_pages());
+            assert_eq!(
+                on_disk.pointer(&pointer),
+                None,
+                "the configuration file holds something at {pointer}:\n{on_disk}"
+            );
+        }
+
+        #[::cucumber::then(expr = "the page says {string}")]
+        fn setup_pages_says(world: &mut $world, needle: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert!(
+                $crate::setup_pages::dom::text_contains(&state.last_body, "main", &needle),
+                "the page does not say {needle:?}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then("the page offers no Save button")]
+        fn setup_pages_no_save(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(200), "{}", state.last_body);
+            assert!(
+                !$crate::setup_pages::dom::matches(&state.last_body, "form, button[type=submit]"),
+                "the page offers a form:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::when("I save the confirmation")]
+        async fn setup_pages_save_confirmation(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(
+                state.last_status,
+                Some(409),
+                "the last page asks for no confirmation:\n{}",
+                state.last_body
+            );
+            $crate::setup_pages::resubmit(state).await;
+        }
+    };
+}
+
+/// Expands the steps on the camera drivers' Cameras section against
+/// `$world`.
+///
+/// The section is the `usb_devices` editor `rusty-photon-driver`'s `claims`
+/// module draws on their server page. `$world` must implement
+/// [`SetupPagesWorld`]; invoke beside
+/// [`setup_pages_steps!`](crate::setup_pages_steps).
+#[macro_export]
+macro_rules! usb_devices_editor_steps {
+    ($world:ident) => {
+        #[::cucumber::when(
+            expr = "I submit the server setup page checking the row for port {string}"
+        )]
+        async fn usb_devices_check_row(world: &mut $world, port: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            $crate::setup_pages::submit_with(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                None,
+                |html, controls| {
+                    let index = $crate::setup_pages::dom::row_index(html, &port)
+                        .unwrap_or_else(|| panic!("no row for {port} in:\n{html}"));
+                    let serve = format!("usb_devices.{index}.serve");
+                    controls.retain(|(k, _)| *k != serve);
+                    controls.push((serve, "on".to_string()));
+                },
+            )
+            .await;
+        }
+
+        #[::cucumber::when(
+            expr = "I submit the server setup page unchecking the row for port {string}"
+        )]
+        async fn usb_devices_uncheck_row(world: &mut $world, port: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            $crate::setup_pages::submit_with(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                None,
+                |html, controls| {
+                    let index = $crate::setup_pages::dom::row_index(html, &port)
+                        .unwrap_or_else(|| panic!("no row for {port} in:\n{html}"));
+                    let serve = format!("usb_devices.{index}.serve");
+                    assert!(
+                        controls.iter().any(|(k, _)| *k == serve),
+                        "the row for {port} is not checked:\n{html}"
+                    );
+                    controls.retain(|(k, _)| *k != serve);
+                },
+            )
+            .await;
+        }
+
+        #[::cucumber::then(expr = "the Cameras section's mode is {string}")]
+        fn usb_devices_mode(world: &mut $world, mode: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(
+                $crate::setup_pages::dom::checked_value(&state.last_body, "usb_devices.mode"),
+                Some(mode),
+                "{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(expr = "the Cameras section lists the port {string} as {string}")]
+        fn usb_devices_row_serves(world: &mut $world, port: String, serves: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            let css = format!(r#"tr[data-port="{port}"] td.serves"#);
+            assert_eq!(
+                $crate::setup_pages::dom::text_of(&state.last_body, &css),
+                Some(serves),
+                "{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(
+            expr = "after the reload the Cameras section lists the port {string} as {string}"
+        )]
+        async fn usb_devices_row_serves_after_reload(
+            world: &mut $world,
+            port: String,
+            serves: String,
+        ) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let css = format!(r#"tr[data-port="{port}"] td.serves"#);
+            $crate::setup_pages::wait_until(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                &format!("{port} as {serves:?}"),
+                |body| {
+                    $crate::setup_pages::dom::text_of(body, &css).as_deref()
+                        == Some(serves.as_str())
+                },
+            )
+            .await;
+        }
+
+        #[::cucumber::then(expr = "after the reload the Cameras section's mode is {string}")]
+        async fn usb_devices_mode_after_reload(world: &mut $world, mode: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            $crate::setup_pages::wait_until(
+                world.setup_pages(),
+                $crate::setup_pages::SERVER_PATH,
+                &format!("the mode {mode:?}"),
+                |body| {
+                    $crate::setup_pages::dom::checked_value(body, "usb_devices.mode").as_deref()
+                        == Some(mode.as_str())
+                },
+            )
+            .await;
+        }
+
+        #[::cucumber::then(
+            expr = "the page asks to confirm that the camera on {string} moves from {int} to {int}"
+        )]
+        fn usb_devices_confirm_move(world: &mut $world, port: String, from: u32, to: u32) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(409), "{}", state.last_body);
+            let css = format!(
+                r#"#confirm li.move[data-port="{port}"][data-from="{from}"][data-to="{to}"]"#
+            );
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, &css),
+                "no move of {port} from {from} to {to}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(expr = "the page asks to confirm dropping the names of {string}")]
+        fn usb_devices_confirm_dropped(world: &mut $world, port: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(409), "{}", state.last_body);
+            let css = format!(r#"#confirm li.dropped[data-port="{port}"]"#);
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, &css),
+                "no dropped names of {port}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(
+            "the page warns that the rp camera entries bound to those numbers must be renumbered"
+        )]
+        fn usb_devices_confirm_warns(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert!(
+                $crate::setup_pages::dom::text_contains(&state.last_body, "#confirm", "renumbered"),
+                "no renumbering warning:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then("the page links to the Cameras section of the server page")]
+        fn usb_devices_links_cameras(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            let hrefs = $crate::setup_pages::dom::hrefs(&state.last_body, "a[href]");
+            assert!(
+                hrefs.iter().any(|h| h.ends_with("setup#cameras")),
+                "no link to the Cameras section among {hrefs:?}:\n{}",
+                state.last_body
+            );
+        }
     };
 }
 
@@ -765,6 +1085,36 @@ mod tests {
         assert!(dom::text_contains(PAGE, ".error", "must be"));
         assert_eq!(dom::generation(PAGE).as_deref(), Some("1700000000-3"));
         assert_eq!(dom::generation("<p>no meta</p>"), None);
+    }
+
+    const CAMERAS: &str = r#"<form method="post" action="">
+        <input type="radio" name="usb_devices.mode" value="auto">
+        <input type="radio" name="usb_devices.mode" value="list" checked>
+        <table><tr data-port="a:1">
+          <td><input type="hidden" name="usb_devices.0.port" value="a:1">
+              <input type="checkbox" name="usb_devices.0.serve" checked></td>
+          <td class="serves">camera
+            0</td></tr>
+        <tr data-port="a:2">
+          <td><input type="hidden" name="usb_devices.1.port" value="a:2">
+              <input type="checkbox" name="usb_devices.1.serve"></td>
+          <td class="serves">not served</td></tr></table>
+        </form>"#;
+
+    #[test]
+    fn the_cameras_helpers_find_the_mode_a_row_and_its_status() {
+        assert_eq!(
+            dom::checked_value(CAMERAS, "usb_devices.mode").as_deref(),
+            Some("list")
+        );
+        assert_eq!(dom::checked_value(CAMERAS, "missing"), None);
+        assert_eq!(dom::row_index(CAMERAS, "a:2").as_deref(), Some("1"));
+        assert_eq!(dom::row_index(CAMERAS, "a:3"), None);
+        assert_eq!(
+            dom::text_of(CAMERAS, r#"tr[data-port="a:1"] td.serves"#).as_deref(),
+            Some("camera 0")
+        );
+        assert_eq!(dom::text_of(CAMERAS, "td.none"), None);
     }
 
     #[test]
