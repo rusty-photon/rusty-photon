@@ -97,7 +97,7 @@ first in their columns.
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Done (#1578) |
 | J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Done (#1580) |
-| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
+| J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | In progress: the nightly's plan and its MSI job's fetch (#1597); its publish, then release.yml, next |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Done (#1585) |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Dropped (#1583): the check went, its workflow keeps the rules_rust guards |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Done (#1579) |
@@ -708,6 +708,32 @@ add a dry run that goes as far as computing what it would publish and
 printing it. The PR names what stays unproven, and someone watches the
 next nightly after merge. The release half's first live run is a real
 release; plan it for one that someone is watching.
+
+Split in three PRs, each proven where it can be:
+
+1. **The nightly's plan and its MSI job's fetch**, which a dispatch with
+   `dry_run=true` runs.
+2. **The nightly's publish**: the rpm asset names, the checksums, the
+   tag, the prerelease and the tap's formulas. Tests against a fake API
+   carry it, and the next nightly is watched.
+3. **release.yml's tag-version check and its formula push**, on the
+   second's tap code. Its first live run is a real release.
+
+Done so far:
+
+- **The plan and the fetch** (#1597), as the `packages/plan` and
+  `packages/prior-msi` actions.
+  - The plan reads the nightly tag through the API, where it ran
+    `git ls-remote`, and peels an annotated tag through `git/tags`. The
+    version's short commit is the commit's first seven hex digits, as
+    `git rev-parse --short=7` gave them unless another object in the job's
+    depth-1 clone shared them.
+  - The fetch downloads the MSI through the API by the asset's id, into
+    `RUNNER_TEMP`, and checks it against the SHA-256 GitHub gives for the
+    asset, which `gh release download` did not. An asset with no SHA-256
+    fails the leg, as an unreadable release does.
+  - The plan's checkout keeps no token: nothing in the job pushes or
+    reads the remote with git any more.
 
 ### J10 — Bazel remote-cache flags
 
