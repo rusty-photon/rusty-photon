@@ -44,11 +44,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::build_packages::RUNPATH;
 use crate::packaging::{self, io, GATED, HEALTH_PROBED, NO_CONFIG_FILE, SERIAL};
-use crate::process::{self, Cmd, Runner};
+use crate::process::{self, Clock, Cmd, Runner};
 
 /// The packages a run verifies, and how.
 #[derive(Clone, Debug, Default)]
@@ -81,26 +81,6 @@ pub enum Error {
 
 fn refused(reason: impl Into<String>) -> Error {
     Error::Refused(reason.into())
-}
-
-/// What a run waits with, so that its tests need not wait.
-pub trait Clock {
-    fn now(&self) -> Instant;
-
-    fn sleep(&mut self, duration: Duration);
-}
-
-/// The machine's clock.
-pub struct Wall;
-
-impl Clock for Wall {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-
-    fn sleep(&mut self, duration: Duration) {
-        std::thread::sleep(duration);
-    }
 }
 
 /// The service the package only ships the helper for: the operator installs
@@ -997,23 +977,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::process::Script;
-
-    /// A clock that moves only when the run sleeps.
-    struct Stopped {
-        start: Instant,
-        slept: Duration,
-    }
-
-    impl Clock for Stopped {
-        fn now(&self) -> Instant {
-            self.start.checked_add(self.slept).unwrap()
-        }
-
-        fn sleep(&mut self, duration: Duration) {
-            self.slept = self.slept.saturating_add(duration);
-        }
-    }
+    use crate::process::{Script, Stopped};
 
     fn container_name() -> String {
         format!("rusty-photon-verify-{}", std::process::id())
@@ -1068,10 +1032,7 @@ mod tests {
         }
 
         fn verify(&self, runner: &mut Script, request: &Request) -> Result<usize, Error> {
-            let mut clock = Stopped {
-                start: Instant::now(),
-                slept: Duration::ZERO,
-            };
+            let mut clock = Stopped::default();
             verify(runner, &mut clock, self.root(), request)
         }
 

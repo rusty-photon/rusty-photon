@@ -110,7 +110,7 @@ first in their columns.
 | R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript; done there (#1589) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Done (#1544) |
 | R7  | ConformU install and parallel run, now JavaScript | `scripts/test-conformance.sh`, conformu.yml's install, its "Export CONFORMU_PATH" blocks and its parallel run | F1 | Done (#1591, #1593): the install action, the script deleted, and the parallel run an action |
-| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | In progress: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603), the Linux pair (#1604) |
+| R8  | Packaging scripts a developer runs, in five PRs | 8 scripts in `scripts/` | F2 | Done: the asset checker a tools-crate guard (#1601), the formula renderer a tool (#1602), the macOS pair (#1603), the Linux pair (#1604) and the Windows pair (#1605) |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Done: bazel.yml (#1586), bazel-coverage.yml (#1587, #1588), the small blocks of nine more (#1589), check.yml's beta clippy (#1594), repin-bazel.yml's commit (#1595) and shellcheck.yml's install and lint (#1596) |
 | T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Done (#1600): template 931 |
 
@@ -1514,6 +1514,49 @@ Done so far:
   own ZWO cameras show in the container and cannot be opened; the hosted
   runners have none. A `dry_run=true` dispatch runs both on hosted
   runners of both architectures.
+- **The Windows pair** (#1605): `build-msi.ps1` and `verify-msi.ps1` are
+  `cargo ci build-msi` and `cargo ci verify-msi` (`build_msi.rs`,
+  `verify_msi.rs`), which msi.yml, release.yml and the nightly's MSI job
+  run. The nightly's "Verify the MSI lifecycle" step is one command: an
+  empty `--upgrade-from`, which the step passes when the channel holds no
+  MSI yet, installs nothing first. The QHY SDK's Windows sha256 joined
+  `packaging::qhy`, the builder downloads ZWO's SDKs for Windows from the
+  links `install-zwo-sdk`'s module holds, and `packaging::cargo_runs`
+  builds doctor with sentinel, so the guard lost its checks of the
+  script's copies of all three. svbony-camera, which the MSI leaves out,
+  is `packaging::NO_WINDOWS_SDK`. The tools differ from the scripts in
+  six ways:
+  - the options are the other tools' (`--version`, `--skip-sdk-staging`,
+    `--skip-build`, `--msi`, `--upgrade-from`, `--keep`), and `--version`
+    takes the workspace's version as well as a nightly stamp on it;
+  - `SHA256SUMS.txt` lists the MSIs in its directory, where the script
+    replaced its own MSI's line and kept any other;
+  - a ZWO library is picked by its path inside the download, where the
+    script matched the whole path, so a cache under a directory named like
+    `demo` or `static` passed over every build; and the downloads unpack in
+    a scratch directory that goes however the staging ends, where the
+    script reused one and removed it only on success;
+  - a `wix` the builder installs runs by its path, where the script put
+    the .NET tools directory first on `PATH`;
+  - the verifier runs from any shell, and an upgrade needs no PowerShell
+    7: its probes are curl's, which reads the observatory credential from
+    a config file, never a command line. It asks `sc.exe` for a service's
+    state, start type and failure actions, PowerShell only for the list of
+    `rusty-photon-*` services and the Programs and Features entries, and
+    `fltmc` whether it runs elevated, and restarts a service with
+    `net stop` and `net start`;
+  - it reads every probed service's scheme and credential from its config,
+    where the script did so after an upgrade only: a fresh install's
+    configs turn neither on.
+
+  The tests run the builder against a fake runner: the build, `WiX` and
+  its install, a nightly's ProductVersion, each refusal, and the staging
+  of both SDKs from downloads laid out as ZWO's and QHYCCD's are. The
+  verifier runs against a simulated Windows box: a fresh install and an
+  upgrade through the uninstall, and each check shown to fail with its
+  behaviour broken. The pull request's msi.yml run proves both on
+  windows-latest, and a `dry_run=true` dispatch the nightly's stamp and
+  its upgrade over the published nightly, which the script built.
 
 ## S1 — Sweep of the remaining inline blocks
 

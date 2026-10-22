@@ -178,7 +178,7 @@ and install it:
 
 ```powershell
 git checkout <known-good-sha>
-scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<datetime>.g<short-sha>"
+cargo ci build-msi --version "<base>+nightly.<datetime>.g<short-sha>"
 ```
 
 (`<base>` = the workspace version at that commit — the stamp's base must
@@ -276,39 +276,41 @@ From a repo checkout on an x86_64 Windows box with Rust (MSVC host) and
 the .NET SDK:
 
 ```powershell
-scripts\build-msi.ps1                    # stage SDKs, build, wix build
-scripts\build-msi.ps1 -SkipSdkStaging    # offline rebuild from cache
-scripts\build-msi.ps1 -SkipBuild         # re-run wix only (installer loop)
-scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<datetime>.g<sha>"
+cargo ci build-msi                       # stage SDKs, build, wix build
+cargo ci build-msi --skip-sdk-staging    # offline rebuild from cache
+cargo ci build-msi --skip-build          # re-run wix only (installer loop)
+cargo ci build-msi --version "<base>+nightly.<datetime>.g<sha>"
                                          # nightly stamp (see Nightly channel)
-scripts\verify-msi.ps1                   # elevated, on a disposable box
-scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi
+cargo ci verify-msi                      # elevated, on a disposable box
+cargo ci verify-msi --msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi
                                          # (nightly builds land under the FULL
-                                         # version; the -Msi default assumes a
+                                         # version; the --msi default assumes a
                                          # release build)
 ```
 
-(`-UpgradeFrom <prior msi>` installs a previously published MSI first, so
-the main install runs as an in-place upgrade over it, then runs the
+(`--upgrade-from <prior msi>` installs a previously published MSI first,
+so the main install runs as an in-place upgrade over it, then runs the
 shipped doctor's `--fix` — the §Upgrading migration path — before the
 lifecycle asserts, which probe provisioned services over HTTPS with the
-observatory credential. Needs PowerShell 7. The mode was suspended
-2026-07-18 while doctor was not yet in the packages and re-enabled once
-D7 shipped it,
+observatory credential. The mode was suspended 2026-07-18 while doctor
+was not yet in the packages and re-enabled once D7 shipped it,
 [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
 
-`build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the
-delay-load link; the ZWO MIT DLLs that become payloads), release-builds
-all services CRT-static (no VC++ redistributable needed), and runs WiX
-v5 over `installer/`. Artifacts land in `dist/<version>/` with a
-`SHA256SUMS.txt`. `verify-msi.ps1` proves the full lifecycle — silent
-install, per-service-class checks, failure-actions proofs, feature
-remove, uninstall — and expects a box with no prior rusty-photon state
-(CI uses `windows-latest`; don't run it on your imaging box).
+`cargo ci build-msi` stages the pinned native SDKs (QHYCCD import lib for
+the delay-load link; the ZWO MIT DLLs that become payloads, from the
+links `install-zwo-sdk` holds), release-builds all services CRT-static
+(no VC++ redistributable needed), and runs WiX v5 over `installer/`,
+installing the pinned `wix` as a .NET tool first when `PATH` has another.
+Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt` of the MSIs
+there. `cargo ci verify-msi` proves the full lifecycle — silent install,
+per-service-class checks, failure-actions proofs, feature remove,
+uninstall — and expects a box with no prior rusty-photon state (CI uses
+`windows-latest`; don't run it on your imaging box). Both run from any
+shell: `cargo ci` builds them from the checkout.
 
-CI runs both scripts in the `msi` workflow (PRs touching the packaging
+CI runs both tools in the `msi` workflow (PRs touching the packaging
 inputs, plus `workflow_dispatch`) and in `release.yml`, where
-`verify-msi.ps1` gates the release upload. The nightly channel's `msi`
+`cargo ci verify-msi` gates the release upload. The nightly channel's `msi`
 leg (`nightly-packages.yml`; see [Nightly channel](#nightly-channel))
 runs them on a schedule with the nightly version stamp — so packaging
 rot (a vendor SDK URL going stale, a runner image change) surfaces

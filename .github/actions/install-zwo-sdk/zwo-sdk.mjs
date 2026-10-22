@@ -16,9 +16,9 @@
 // Windows takes ZWO's developer SDKs from its CDN, whose links are rolling
 // "latest" ones, with no version to pin or hash to check. The cache keeps a
 // week's download, and when ZWO's CDN fails, as it often does, the newest
-// earlier week's stands in. The packaging guard reads CAMERA_SDK_URL and
-// EAF_SDK_URL from their lines below, to check that the MSI's build fetches
-// from the same links (build-msi.ps1).
+// earlier week's stands in. `cargo ci build-msi` reads CAMERA_SDK_URL and
+// EAF_SDK_URL from their lines below and downloads the SDKs the MSI ships
+// from them, so the MSI ships what CI links.
 
 import { existsSync, readdirSync } from 'node:fs';
 import { copyFile, mkdir, rename, rm } from 'node:fs/promises';

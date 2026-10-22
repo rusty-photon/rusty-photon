@@ -2719,7 +2719,7 @@ diagnosable instead:
   Bazel/rules_rust likewise only `-l`/`-L` propagate from dep build scripts).
   The hand-written `BUILD.bazel` mirrors the flags on the real-SDK binary and
   unit-test targets via a `rustc_flags` `select()` for CI parity; the
-  *shipped* exe comes from the Cargo path (`scripts/build-msi.ps1`, plan W4).
+  *shipped* exe comes from the Cargo path (`cargo ci build-msi`, plan W4).
 - **WD3.** `simulation` builds take **no** delay-load args: the real FFI is
   `cfg`'d out, so no `qhyccd.dll` imports exist to delay (and `/DELAYLOAD`
   with zero imports draws linker warning LNK4199).
@@ -2733,7 +2733,8 @@ with the SCM and reports `Running` before invoking the closure, so a
 missing-DLL failure is a clean `ServiceSpecific(1)` stop that the failure
 actions restart every 5 s — whereas a process exit before SCM registration
 is a start *failure*, which aborts an entire MSI install with error 1920
-during `StartServices` (found by `verify-msi.ps1`, plan W4):
+during `StartServices` (found by the MSI's verifier, now
+`cargo ci verify-msi`, plan W4):
 
 - **PF1.** Probe an **ordered candidate list** of directories for
   `qhyccd.dll`: (1) the exe's own directory, then (2) a **best-effort seed**
@@ -2763,7 +2764,7 @@ during `StartServices` (found by `verify-msi.ps1`, plan W4):
   reason** (the 2 a.m. log says both *what* was tried and *why* it failed),
   then a clean non-zero exit. SCM/systemd failure actions restart the service
   every 5 s — the same contract as a missing serial device: the unit comes up
-  by itself once the pack is installed. (`scripts/verify-msi.ps1`, plan W4,
+  by itself once the pack is installed. (`cargo ci verify-msi`, plan W4,
   asserts this line on a DLL-less runner.)
 - **PF5.** `simulation` builds skip the preflight entirely: the real FFI is
   `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not required

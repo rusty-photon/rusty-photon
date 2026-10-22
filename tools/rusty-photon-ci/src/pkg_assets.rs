@@ -38,10 +38,9 @@
 //!   `rusty-photon-<service>`.
 //! - **SDK pins**, where they are copied: the QHY SDK's version and Linux
 //!   sha256s, which `packaging::qhy` pins, agree with the firmware helper's,
-//!   `build-msi.ps1`'s, `libqhyccd-sys`'s `build.rs` and qhy-camera's
-//!   `PINNED_SDK_VERSION`; the `SVBony` helper's ref with `install-svbony-sdk`'s;
-//!   and the ZWO Windows URLs in `build-msi.ps1` with `install-zwo-sdk`'s. The
-//!   zwo packages' license is the one vendored with the SDK headers.
+//!   `libqhyccd-sys`'s `build.rs` and qhy-camera's `PINNED_SDK_VERSION`; and
+//!   the `SVBony` helper's ref with `install-svbony-sdk`'s. The zwo packages'
+//!   license is the one vendored with the SDK headers.
 //! - **Windows.** Every packaged service but svbony-camera has a fragment
 //!   that installs it as a Windows service of its package's name, from its
 //!   exe, with `--service`, restarting after 5 s with the failure-actions
@@ -67,7 +66,7 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 use crate::build_packages::RUNPATH;
-use crate::packaging::{self, js_const, GATED, SERIAL, SVBONY_MODULE, ZWO_MODULE};
+use crate::packaging::{self, js_const, GATED, SERIAL, SVBONY_MODULE};
 use crate::repo_root;
 
 /// Services that reload their config on SIGHUP.
@@ -111,7 +110,6 @@ const OWN_FILES: &[(&str, &str)] = &[
 /// formula or MSI feature.
 const SVBONY: &str = "svbony-camera";
 
-const BUILD_MSI: &str = "scripts/build-msi.ps1";
 const QHY_HELPER: &str = "services/qhy-camera/pkg/rusty-photon-qhy-firmware-install";
 const SVBONY_HELPER: &str = "services/svbony-camera/pkg/rusty-photon-svbony-sdk-install";
 const QHY_BUILD_RS: &str = "crates/qhyccd-rs/libqhyccd-sys/build.rs";
@@ -310,11 +308,6 @@ fn shell_var<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     value(text, &format!("{name}=\""), "\"")
 }
 
-/// A PowerShell assignment's value: `$Name = "<value>"`.
-fn ps_var<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    value(text, &format!("${name} = \""), "\"")
-}
-
 /// Records a problem unless the two copies of a pin are the same, and not
 /// empty.
 fn agree(
@@ -392,8 +385,6 @@ struct Shared {
     postinst: Option<String>,
     postrm: Option<String>,
     udev_stanza: Option<String>,
-    build_msi: Option<String>,
-    zwo_module: Option<String>,
     svbony_module: Option<String>,
 }
 
@@ -407,8 +398,6 @@ fn problems(repo: &Repo) -> Vec<String> {
         postinst: check.read(POSTINST),
         postrm: check.read(POSTRM),
         udev_stanza: check.read(UDEV),
-        build_msi: check.read(BUILD_MSI),
-        zwo_module: check.read(ZWO_MODULE),
         svbony_module: check.read(SVBONY_MODULE),
     };
     let packaged: Vec<&Service> = services.iter().filter(|service| service.packaged).collect();
@@ -421,7 +410,7 @@ fn problems(repo: &Repo) -> Vec<String> {
     }
     plugdev(&mut check, &services, &packaged);
     sdk_pins(&mut check, &shared);
-    installer(&mut check, &packaged, &shared);
+    installer(&mut check, &packaged);
     ports(&mut check, &packaged);
     check.problems
 }
@@ -838,12 +827,11 @@ fn preflight_version(preflight: &str) -> Option<String> {
 }
 
 /// The SDK pins copied between the tools crate, the shipped helpers, the
-/// install actions, `build-msi.ps1` and the crates, so the SDK CI links is the
-/// one the packages ship and report.
+/// install actions and the crates, so the SDK CI links is the one the
+/// packages ship and report.
 fn sdk_pins(check: &mut Check, shared: &Shared) {
     // The one QHY pin the builders share; each copy must be it.
     const QHY: &str = "packaging::qhy::VERSION";
-    let zwo = shared.zwo_module.as_deref().unwrap_or_default();
     let svbony = shared.svbony_module.as_deref().unwrap_or_default();
     let qhy_version = Some(packaging::qhy::VERSION);
 
@@ -869,13 +857,6 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
             ),
         );
     }
-    let msi = shared.build_msi.as_deref().unwrap_or_default();
-    agree(
-        check,
-        "QHY SDK version",
-        (QHY, qhy_version),
-        ("build-msi.ps1", ps_var(msi, "QhySdkVersion")),
-    );
     if let Some(build_rs) = check.read(QHY_BUILD_RS) {
         let version = packaging::qhy::VERSION;
         check.require(build_rs.contains(&format!("sdk_win64_{version}")), || {
@@ -892,20 +873,6 @@ fn sdk_pins(check: &mut Check, shared: &Shared) {
             preflight_version(&preflight).as_deref(),
         ),
     );
-
-    // No ref exists for ZWO's Windows SDKs, only rolling "latest" links, so
-    // the links are the whole pin.
-    for (constant, variable) in [
-        ("CAMERA_SDK_URL", "ZwoCameraSdkUrl"),
-        ("EAF_SDK_URL", "ZwoEafSdkUrl"),
-    ] {
-        agree(
-            check,
-            &format!("ZWO Windows SDK URL ({constant})"),
-            ("install-zwo-sdk", js_const(zwo, constant)),
-            ("build-msi.ps1", ps_var(msi, variable)),
-        );
-    }
     if let Some(license) = check.read(ZWO_LICENSE) {
         for svc in ["zwo-camera", "zwo-focuser"] {
             if let Some(copy) = check.read(&format!("services/{svc}/pkg/ZWO-SDK-LICENSE.txt")) {
@@ -954,7 +921,7 @@ fn feature_id(svc: &str) -> String {
 }
 
 /// The suite MSI: a feature per packaged service but svbony-camera.
-fn installer(check: &mut Check, packaged: &[&Service], shared: &Shared) {
+fn installer(check: &mut Check, packaged: &[&Service]) {
     let Some(package_wxs) = check.read(PACKAGE_WXS) else {
         return;
     };
@@ -1009,15 +976,6 @@ fn installer(check: &mut Check, packaged: &[&Service], shared: &Shared) {
             format!("installer: {problem}")
         });
     }
-    let msi = shared.build_msi.as_deref().unwrap_or_default();
-    let builds_doctor = msi
-        .lines()
-        .skip_while(|line| !line.contains("$allServices = @("))
-        .take_while(|line| !line.starts_with(')'))
-        .any(|line| line.contains("\"doctor\""));
-    check.require(builds_doctor, || {
-        "installer: build-msi.ps1 $allServices must include doctor".to_owned()
-    });
 }
 
 /// What one service's fragment must say.
@@ -1542,24 +1500,12 @@ fn names_each_mistake_in_an_sdk_pin() {
             &["QHY SDK sha256 (AARCH64) pin mismatch"],
         ),
         (
-            &[Replace(BUILD_MSI, "$QhySdkVersion = \"", "$QhySdkVersion = \"9")],
-            &["' vs build-msi.ps1='9"],
-        ),
-        (
             &[Replace(QHY_BUILD_RS, "\"sdk_win64_", "\"sdk_win64_x")],
             &["QHY SDK version pin mismatch: libqhyccd-sys build.rs has no sdk_win64_"],
         ),
         (
             &[Replace(QHY_PREFLIGHT, "    day: ", "    day: 1")],
             &["' vs preflight PINNED_SDK_VERSION='"],
-        ),
-        (
-            &[Replace(BUILD_MSI, "app=DeveloperCameraSdk&", "app=DeveloperCameraSdkBeta&")],
-            &["ZWO Windows SDK URL (CAMERA_SDK_URL) pin mismatch"],
-        ),
-        (
-            &[Replace(BUILD_MSI, "app=DeveloperEafSdk&", "app=DeveloperEafSdkBeta&")],
-            &["ZWO Windows SDK URL (EAF_SDK_URL) pin mismatch"],
         ),
         (
             &[Replace("services/zwo-focuser/pkg/ZWO-SDK-LICENSE.txt", "ZWO Company", "ZWO Co.")],
@@ -1663,10 +1609,6 @@ fn names_each_mistake_in_the_installer() {
         (
             &[Replace(PACKAGE_WXS, "tls renew", "tls check")],
             &["installer: the renewal task must run rusty-photon-doctor tls renew"],
-        ),
-        (
-            &[Replace(BUILD_MSI, ", \"doctor\"", "")],
-            &["installer: build-msi.ps1 $allServices must include doctor"],
         ),
     ]);
 }

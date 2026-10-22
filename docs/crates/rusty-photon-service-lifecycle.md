@@ -386,7 +386,7 @@ In the common case a dead-handle write would merely sink (Rust's
 Windows stdio treats absent handles as successful sinks) — but sunk
 means *lost diagnostics*, and gating is also belt-and-braces against a
 genuinely invalid (non-NULL, closed) handle. Confirming benign
-std-handle behavior under a real SCM stays a `verify-msi.ps1` smoke
+std-handle behavior under a real SCM stays a `cargo ci verify-msi` smoke
 item (windows-packaging plan, W4/W5).
 
 ### Why the runner owns the runtime
@@ -612,9 +612,9 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   succeeds when invoked by the actual SCM (it returns
   `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` otherwise). SCM mode is
   manually validated via filemonitor's existing Windows install/run
-  procedure on each release; the windows-packaging plan's
-  `verify-msi.ps1` (W4/W5) adds an installed-service smoke including
-  a kill-and-observe restart check.
+  procedure on each release; `cargo ci verify-msi` (the
+  windows-packaging plan's W4/W5) adds an installed-service smoke
+  including a kill-and-observe restart check.
 - **SCM logging** — the rolling-file helpers in `mod scm_file` are
   gated on the `scm` feature alone (not `cfg(windows)`), so their
   unit tests run cross-platform: ProgramData resolution is

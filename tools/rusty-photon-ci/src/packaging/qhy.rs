@@ -23,6 +23,11 @@ pub const SHA256_LINUX_X86_64: &str =
 pub const SHA256_LINUX_AARCH64: &str =
     "d28795977311fba1cb7a4fdc48bbd6d5f994716674b2154d9a860d1fdf2f5e0e";
 
+/// The SHA-256 of the Windows x64 archive, whose import library the MSI's
+/// build links. The DLL is the operator's, from QHYCCD's All-in-One pack
+/// (ADR-013).
+pub const SHA256_WIN64: &str = "dd696bce5f3a702ef55ad6ad7ae10a8f424879156675916387955170c3455347";
+
 /// The macOS arm64 archive, as QHYCCD names it; it unpacks to a directory
 /// of the same name, as the Linux ones do.
 #[must_use]
@@ -40,6 +45,12 @@ pub fn linux_x86_64_archive() -> String {
 #[must_use]
 pub fn linux_aarch64_archive() -> String {
     format!("sdk_linux_arm64_{VERSION}.tar.gz")
+}
+
+/// The Windows x64 archive, as QHYCCD names it.
+#[must_use]
+pub fn win64_archive() -> String {
+    format!("sdk_win64_{VERSION}.zip")
 }
 
 /// Where QHYCCD publishes `file`: from 26.06.04 on, in a directory named

@@ -1,5 +1,5 @@
 // release.yml's guard on its tag: the tag being released must name the
-// workspace's version, which build-msi.ps1 stamps into the MSI, or a
+// workspace's version, which `cargo ci build-msi` stamps into the MSI, or a
 // right-named tag would carry wrongly versioned packages. Conventions:
 // docs/skills/ci-logic.md.
 

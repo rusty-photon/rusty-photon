@@ -1,11 +1,13 @@
 # Windows suite MSI — build + lifecycle verify (windows-packaging W4/W5).
 #
-# Runs scripts/build-msi.ps1 (SDK staging, CRT-static release build, wix
-# build) and scripts/verify-msi.ps1 (silent install -> per-service-class
+# Runs `cargo ci build-msi` (SDK staging, CRT-static release build, wix
+# build) and `cargo ci verify-msi` (silent install -> per-service-class
 # checks -> failure-actions proofs -> feature remove -> uninstall) on
 # windows-latest. Triggers: PRs that touch the packaging inputs (the
-# iteration loop) and workflow_dispatch for on-demand runs. release.yml
-# runs the same two scripts as the release gate, and the msi leg of
+# iteration loop): the installer, the two tools and what they share, and
+# install-zwo-sdk's module, whose links the build downloads ZWO's SDKs
+# from; and workflow_dispatch for on-demand runs. release.yml runs the
+# same two tools as the release gate, and the msi leg of
 # nightly-packages.yml runs them nightly with the nightly version stamp
 # (phase N3 of docs/plans/archive/nightly-releases.md) — the schedule lives
 # there, not here.
@@ -16,8 +18,12 @@ on:
   pull_request:
     paths:
       - installer/**
-      - scripts/build-msi.ps1
-      - scripts/verify-msi.ps1
+      - tools/rusty-photon-ci/src/build_msi.rs
+      - tools/rusty-photon-ci/src/verify_msi.rs
+      - tools/rusty-photon-ci/src/packaging.rs
+      - tools/rusty-photon-ci/src/packaging/**
+      - tools/rusty-photon-ci/src/process.rs
+      - .github/actions/install-zwo-sdk/zwo-sdk.mjs
       - .github/workflows/msi.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -35,11 +41,9 @@ jobs:
         with:
           shared-key: windows-msi
       - name: Build the suite MSI
-        shell: pwsh
-        run: scripts\build-msi.ps1
+        run: cargo ci build-msi
       - name: Verify the MSI lifecycle
-        shell: pwsh
-        run: scripts\verify-msi.ps1
+        run: cargo ci verify-msi
       - name: Upload the MSI
         uses: actions/upload-artifact@v7
         with:

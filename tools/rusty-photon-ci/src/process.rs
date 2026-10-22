@@ -7,6 +7,7 @@ use std::fmt;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// A command for a [`Runner`] to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +104,26 @@ pub enum Error {
     },
 }
 
+/// What a verifier waits with, so that its tests need not wait.
+pub trait Clock {
+    fn now(&self) -> Instant;
+
+    fn sleep(&mut self, duration: Duration);
+}
+
+/// The machine's clock.
+pub struct Wall;
+
+impl Clock for Wall {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// A process a [`Runner`] started in the background.
 pub trait Background {
     /// How it exited, once it has; `None` while it runs.
@@ -139,6 +160,15 @@ pub trait Runner {
     ///
     /// When it cannot be started.
     fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error>;
+
+    /// Runs `cmd` and returns its exit code, `None` when a signal ended it,
+    /// and what it printed on stdout, however it exited. Its stderr goes to
+    /// the terminal.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be started or prints something that is not UTF-8.
+    fn output(&mut self, cmd: &Cmd) -> Result<(Option<i32>, String), Error>;
 
     /// Starts `cmd` in the background, its stdout and stderr appended to
     /// `log`.
@@ -224,6 +254,21 @@ impl Runner for System {
         Ok(status.code())
     }
 
+    fn output(&mut self, cmd: &Cmd) -> Result<(Option<i32>, String), Error> {
+        let output = cmd
+            .command()
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|source| Error::Spawn {
+                command: cmd.to_string(),
+                source,
+            })?;
+        let stdout = String::from_utf8(output.stdout).map_err(|_| Error::NotUtf8 {
+            command: cmd.to_string(),
+        })?;
+        Ok((output.status.code(), stdout))
+    }
+
     fn start(&mut self, cmd: &Cmd, log: &Path) -> Result<Box<dyn Background>, Error> {
         let open = || OpenOptions::new().create(true).append(true).open(log);
         let (stdout, stderr) =
@@ -305,9 +350,10 @@ impl Background for Idle {
     fn stop(&mut self) {}
 }
 
-/// What a [`Script`] answers a command with: what it prints, or a failure.
+/// What a [`Script`] answers a command with: what it prints, or the code it
+/// fails with.
 #[cfg(test)]
-pub type Answer = Box<dyn FnMut() -> Result<String, ()>>;
+pub type Answer = Box<dyn FnMut(&Cmd) -> Result<String, i32>>;
 
 /// A [`Runner`] for the tools' tests that answers each command by a rule.
 ///
@@ -323,17 +369,30 @@ pub struct Script {
 
 #[cfg(test)]
 impl Script {
+    /// A rule whose failure is exit code 1.
     #[must_use]
     pub fn on(
+        self,
+        prefix: &str,
+        mut answer: impl FnMut() -> Result<String, ()> + 'static,
+    ) -> Self {
+        self.on_cmd(prefix, move |_| answer().map_err(|()| 1))
+    }
+
+    /// A rule that reads the command it answers, and fails with the code it
+    /// gives.
+    #[must_use]
+    pub fn on_cmd(
         mut self,
         prefix: &str,
-        answer: impl FnMut() -> Result<String, ()> + 'static,
+        answer: impl FnMut(&Cmd) -> Result<String, i32> + 'static,
     ) -> Self {
         self.rules.push((prefix.to_owned(), Box::new(answer)));
         self
     }
 
-    fn answer(&mut self, cmd: &Cmd) -> Result<String, Error> {
+    /// What the command prints, or the code it fails with.
+    fn answer(&mut self, cmd: &Cmd) -> Result<String, i32> {
         let line = Cmd {
             env: Vec::new(),
             ..cmd.clone()
@@ -345,33 +404,73 @@ impl Script {
             .iter_mut()
             .find(|(prefix, _)| line.starts_with(prefix.as_str()));
         match rule {
-            Some((_, answer)) => answer().map_err(|()| Error::Failed {
-                command: line,
-                status: "exit status: 1".to_owned(),
-            }),
+            Some((_, answer)) => answer(cmd),
             None => Ok(String::new()),
+        }
+    }
+
+    fn failed(cmd: &Cmd, code: i32) -> Error {
+        Error::Failed {
+            command: cmd.to_string(),
+            status: format!("exit status: {code}"),
         }
     }
 }
 
-/// A failure is exit code 1.
 #[cfg(test)]
 impl Runner for Script {
     fn run(&mut self, cmd: &Cmd) -> Result<(), Error> {
-        self.answer(cmd).map(|_| ())
+        self.answer(cmd)
+            .map(|_| ())
+            .map_err(|code| Self::failed(cmd, code))
     }
 
     fn read(&mut self, cmd: &Cmd) -> Result<String, Error> {
-        self.answer(cmd)
+        self.answer(cmd).map_err(|code| Self::failed(cmd, code))
     }
 
     fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error> {
-        Ok(Some(i32::from(self.answer(cmd).is_err())))
+        Ok(Some(self.answer(cmd).err().unwrap_or(0)))
+    }
+
+    fn output(&mut self, cmd: &Cmd) -> Result<(Option<i32>, String), Error> {
+        Ok(self.answer(cmd).map_or_else(
+            |code| (Some(code), String::new()),
+            |stdout| (Some(0), stdout),
+        ))
     }
 
     fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, Error> {
-        self.answer(cmd)?;
+        self.answer(cmd).map_err(|code| Self::failed(cmd, code))?;
         Ok(Box::new(Idle))
+    }
+}
+
+/// A clock for the tools' tests that moves only when a run sleeps.
+#[cfg(test)]
+pub struct Stopped {
+    start: Instant,
+    slept: Duration,
+}
+
+#[cfg(test)]
+impl Default for Stopped {
+    fn default() -> Self {
+        Self {
+            start: Instant::now(),
+            slept: Duration::ZERO,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Clock for Stopped {
+    fn now(&self) -> Instant {
+        self.start.checked_add(self.slept).unwrap()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        self.slept = self.slept.saturating_add(duration);
     }
 }
 
@@ -389,6 +488,15 @@ impl Runner for Fake {
     /// 1 for the command `fail_at` names, 0 for the rest.
     fn code(&mut self, cmd: &Cmd) -> Result<Option<i32>, Error> {
         Ok(Some(i32::from(self.record(cmd).is_err())))
+    }
+
+    /// The next answer from the queue, with the code [`Fake::code`] gives.
+    fn output(&mut self, cmd: &Cmd) -> Result<(Option<i32>, String), Error> {
+        let code = i32::from(self.record(cmd).is_err());
+        Ok((
+            Some(code),
+            self.stdout.pop_front().unwrap_or_default().to_owned(),
+        ))
     }
 
     fn start(&mut self, cmd: &Cmd, _log: &Path) -> Result<Box<dyn Background>, Error> {
@@ -509,6 +617,20 @@ mod tests {
     }
 
     #[test]
+    fn system_output_is_the_exit_code_and_stdout_however_it_exits() {
+        let name = "process::tests::system_output_is_the_exit_code_and_stdout_however_it_exits";
+        let (code, stdout) = System
+            .output(&this_test_binary(&["--list", "--exact", name]))
+            .unwrap();
+        assert_eq!(code, Some(0));
+        assert!(stdout.contains(&format!("{name}: test")), "{stdout}");
+        let (code, _) = System
+            .output(&this_test_binary(&["--no-such-option"]))
+            .unwrap();
+        assert!(code.is_some_and(|code| code != 0), "{code:?}");
+    }
+
+    #[test]
     fn system_start_appends_the_output_to_the_log() {
         let name = "process::tests::system_start_appends_the_output_to_the_log";
         let dir = tempfile::tempdir().unwrap();
@@ -537,6 +659,7 @@ mod tests {
         );
         assert!(matches!(System.read(&cmd), Err(Error::Spawn { .. })));
         assert!(matches!(System.code(&cmd), Err(Error::Spawn { .. })));
+        assert!(matches!(System.output(&cmd), Err(Error::Spawn { .. })));
         let log = tempfile::NamedTempFile::new().unwrap();
         assert!(matches!(
             System.start(&cmd, log.path()),
