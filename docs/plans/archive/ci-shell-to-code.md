@@ -39,6 +39,10 @@ first in their columns.
 
 ## Working an item
 
+The rules here that outlive the plan are
+[ci-logic.md §Proving it](../../skills/ci-logic.md#proving-it) and the
+section after it, which keep them current.
+
 - **One item, one PR**, branched from `main`, with the item's ID in the
   title. The PR sets the item's status in the table below.
 - **The shell goes in the same PR.** An item deletes what it replaces; no
