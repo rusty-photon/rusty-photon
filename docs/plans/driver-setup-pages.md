@@ -670,12 +670,14 @@ camera takes its wheel with it. The filter names are edited on each wheel's
 own page, `/setup/v1/filterwheel/{n}/setup`, one name per line: in the
 camera's entry with a list, in its `devices` override without one; a mode
 change carries them across with the names. A QHY camera's key is its SDK
-id, read without an open, so every placed camera's is known; the cameras a
-start placed and did not serve — unlisted, or failing the no-list CFW
-probe — are marked as served only if the reload opens them, a flag of their
-own beside the key. Without a list the reload serves the wheels its probe
-finds, which the page cannot tell, so a save that leaves a list declaring a
-wheel is always confirmed, saying so.
+id, read without an open, so every placed camera's is known, and whether
+the no-list reload serves a camera is a flag of its own beside the key: the
+QHY SDK does not refuse an open of a camera another application holds, so
+a list's unlisted cameras are taken as served, and only a camera a no-list
+start's CFW probe could not open or close is served only if the reload's
+opens it. Without a list the reload serves the wheels its probe finds,
+which the page cannot tell, so a save that leaves a list declaring a wheel
+is always confirmed, saying so.
 
 ### D12. Restart
 

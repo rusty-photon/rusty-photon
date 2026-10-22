@@ -135,8 +135,9 @@ pub struct PlacedCamera {
     pub override_key: Option<String>,
     /// Whether the no-list default serves it only if the reload's open of it
     /// succeeds, which the page cannot tell: the driver opens a camera to
-    /// serve it, and the start did not serve this one — unlisted, or its
-    /// open failed.
+    /// serve it, and the start did not serve this one — its open failed, or
+    /// it is unlisted and the driver's open of a camera another application
+    /// holds fails.
     pub served_if_opens: bool,
 }
 
@@ -906,7 +907,7 @@ impl CamerasSection {
             }
             tbody {
                 @if rows.is_empty() {
-                    tr { td colspan="7" { "No " (sdk) " camera is on the bus, and none is listed." } }
+                    tr { td colspan=(if self.wheels { "7" } else { "6" }) { "No " (sdk) " camera is on the bus, and none is listed." } }
                 }
                 @for (i, row) in rows.iter().enumerate() {
                     @let serves = self
@@ -1049,7 +1050,10 @@ impl CamerasSection {
                 .into_iter()
                 .filter_map(|e| match kept.iter().find(|k| k.port == e.port) {
                     None => e.has_names().then_some(Dropped::Unlisted(e.port)),
-                    Some(k) => (has_filter_names(Some(&e.object))
+                    // Only an undeclared wheel's: a wheel page that clears
+                    // its names drops nothing it was not asked to.
+                    Some(k) => (k.wheel.is_none()
+                        && has_filter_names(Some(&e.object))
                         && !has_filter_names(Some(&k.object)))
                     .then_some(Dropped::FilterNames(e.port)),
                 })
@@ -2699,6 +2703,33 @@ mod tests {
         let html = s.render(view(&json!({}))).into_string();
         assert!(!html.contains("usb_devices.0.wheel"), "{html}");
         assert!(!html.contains("Filter wheel"), "{html}");
+    }
+
+    #[test]
+    fn an_empty_table_spans_the_columns_it_has() {
+        let mut s = section(Vec::new());
+        s.bus = Ok(Vec::new());
+        s.registry.placed = Vec::new();
+        let html = s.render(view(&json!({}))).into_string();
+        assert!(html.contains(r#"td colspan="6""#), "{html}");
+        s.wheels = true;
+        let html = s.render(view(&json!({}))).into_string();
+        assert!(html.contains(r#"td colspan="7""#), "{html}");
+    }
+
+    #[test]
+    fn clearing_a_declared_wheels_filter_names_asks_nothing() {
+        let s = wheel_section(
+            vec![("One", camera("a:1", "K1", true))],
+            vec![wheel("a:1", "K1")],
+        );
+        let before = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:1", "filter_wheel_number": 0, "filter_names": ["L"] }
+        ]});
+        let after = json!({ "usb_devices": [
+            { "device_number": 0, "usb_port": "a:1", "filter_wheel_number": 0 }
+        ]});
+        assert!(s.confirmation(&before, &after).is_none());
     }
 
     #[test]

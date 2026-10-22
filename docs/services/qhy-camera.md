@@ -569,17 +569,18 @@ stored in config (*Device identity*). The `config.get` / `config.apply` /
   in port order, each camera the last start or reload placed whose port
   still holds a record, and each port that has gained a record since that
   start's scan. The page opens nothing, so it takes a new record for a
-  camera; the reload's own scan, join and CFW probe decide. A camera the
-  start placed but did not serve — unlisted, since a list's start opens
-  nothing and the guide camera another application holds fails the
-  probe's open, or one the probe could not open or close (U11) — may be
-  served by the reload or not, which the page cannot tell. The reload
+  camera; the reload's own scan, join and CFW probe decide. The probe
+  opens every camera the join placed, and the QHY SDK does not refuse an
+  open of a camera another application holds (U11's measurement), so every
+  placed camera is taken as served by the reload, a list's unlisted ones
+  too — the guide camera PHD2 streams among them, served with no wheel.
+  Only a camera a no-list start's probe could not open or close (U11) may
+  be served by the reload or not, which the page cannot tell. The reload
   serves each camera it opens in its place in port order, so the
   confirmation names those cameras and lists the moves for none of them
-  opening and, where they differ, for all of them opening. A listed camera
-  the start served is taken as served: no other application should hold
-  it. A camera plugged into an earlier port since the start is confirmed
-  as the move it causes, and the confirmation says the bus has changed.
+  opening and, where they differ, for all of them opening. A camera
+  plugged into an earlier port since the start is confirmed as the move
+  it causes, and the confirmation says the bus has changed.
 - **The wheels without a list** are the ones the reload's CFW probe finds,
   numbered in their cameras' port order. The page forecasts a wheel on
   each camera the running service serves one on and no other, so a camera

@@ -435,7 +435,6 @@ impl ServerBuilder {
 
         let mut registered = Registered::default();
         let mut wheels = Vec::new();
-        let mut camera_ports = Vec::new();
         for (entry, outcome) in resolve_list(&claims, list) {
             let camera = outcome.and_then(|index| {
                 let model = cameras
@@ -466,7 +465,6 @@ impl ServerBuilder {
                         true,
                     );
                     registered.cameras = registered.cameras.saturating_add(1);
-                    camera_ports.push(entry.usb_port.clone());
                     Ok(conn)
                 }
                 Err(reason) => {
@@ -479,7 +477,7 @@ impl ServerBuilder {
                 wheels.push((number, entry, wheel));
             }
         }
-        self.record_placed(placed_with_list(&claims, &cameras, &camera_ports), seen);
+        self.record_placed(placed_with_list(&claims, &cameras), seen);
         self.register_declared_wheels(server, wheels, &mut registered);
         if claims.scan_error().is_some() {
             registered.rescan = Some(self.rescan());
@@ -729,15 +727,12 @@ fn placed_without_list(
 }
 
 /// Every camera the join placed with a list, in port order, keyed by its SDK
-/// id. One on a port `served` does not hold — an unlisted camera, which a
-/// list's start never opens — is served by the no-list default only if the
-/// reload's CFW probe opens it, which another application holding it stops
-/// (*Setup pages*).
-fn placed_with_list(
-    claims: &Claims<'_>,
-    cameras: &[claims::Enumerated],
-    served: &[String],
-) -> Vec<PlacedCamera> {
+/// id. A list's start opens none of them, listed or not, but the no-list
+/// reload's CFW probe opens each, and the QHY SDK does not refuse an open of
+/// a camera another application holds — measured, U11 — so each is taken as
+/// served by that reload: an unlisted one too, with no wheel while another
+/// application holds it (*Setup pages*).
+fn placed_with_list(claims: &Claims<'_>, cameras: &[claims::Enumerated]) -> Vec<PlacedCamera> {
     claims
         .placed()
         .into_iter()
@@ -746,7 +741,7 @@ fn placed_with_list(
             Some(PlacedCamera {
                 port: port.to_string(),
                 override_key: Some(camera.id.clone()),
-                served_if_opens: !served.iter().any(|p| p == port),
+                served_if_opens: false,
             })
         })
         .collect()
@@ -1025,7 +1020,7 @@ mod list_tests {
     }
 
     #[test]
-    fn with_a_list_every_placed_camera_is_keyed_and_an_unlisted_one_is_served_only_if_it_opens() {
+    fn with_a_list_every_placed_camera_is_keyed_and_taken_as_served_without_one() {
         let cameras = vec![
             enumerated("QHY5III678M-1", "QHY5III678M"),
             enumerated("QHY600M-1", "QHY600M"),
@@ -1039,13 +1034,13 @@ mod list_tests {
             }),
             claims::sdk_cameras(&cameras),
         );
-        // The list serves p1's QHY600M; the guide camera on p2 is unlisted,
-        // so a list's start never opened it.
+        // Whichever the list serves, the guide camera on p2 too: the probe's
+        // open of a camera another application holds succeeds.
         assert_eq!(
-            placed_with_list(&claims, &cameras, &["p1".to_string()]),
+            placed_with_list(&claims, &cameras),
             vec![
                 placed("p1", "QHY600M-1", false),
-                placed("p2", "QHY5III678M-1", true)
+                placed("p2", "QHY5III678M-1", false)
             ]
         );
     }
