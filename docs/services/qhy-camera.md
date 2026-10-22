@@ -149,7 +149,7 @@ graph TD;
     BB --> RS[qhyccd-rs Sdk/Camera/FilterWheel];
     RS -->|FFI| SDK[libqhyccd-sys → QHYCCD SDK static lib];
     SDK -->|libusb-1.0| HW[QHY camera / CFW over USB];
-    C --> CA[config_actions.rs<br/>config.get/apply/schema];
+    B --> SP[setup.rs + rusty-photon-driver claims pages<br/>/setup, /setup/v1/camera/n/setup, /setup/v1/filterwheel/n/setup];
     M[main.rs<br/>ServiceRunner] --> B;
 ```
 
@@ -211,8 +211,9 @@ graph TD;
   declared wheel, and the `--devices` listing. The rest is shared (see
   *Device claims*).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
-- **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the devices
-  delegate to (`config.get`/`config.apply`/`config.schema`).
+- **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages; `lib.rs`
+  records what the running server registered, which the camera and wheel
+  pages and the Cameras section read (*Setup pages*).
 - **`mock.rs`** (feature `simulation`/`mock`) — the hardware-free test backend
   (the `qhyccd-rs` `simulation` camera + a tiny in-crate trait seam over the SDK
   for unit tests).
@@ -316,8 +317,9 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
   reports `CamMechanicalShutter` presence, for a device the driver is holding
   open (E11).
-- `config.get`/`config.apply`/`config.schema` actions; hardware-derived
-  `UniqueID` (camera/CFW SDK serial); in-process reload.
+- Setup pages (`/setup` with the Cameras section, a page per camera and per
+  wheel — *Setup pages*); hardware-derived `UniqueID` (camera/CFW SDK
+  serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
   (SDK installed in CI, no physical camera).
 
@@ -402,9 +404,9 @@ Sections:
   - **filter_names** — optional names for the declared wheel's slots, replacing
     `Filter0..N`. Only beside a `filter_wheel_number`.
 
-  Validated at load, before any USB or SDK work, and again by `config.apply`
-  (U9); a list that fails either is named entry by entry and nothing starts
-  from it:
+  Validated at load, before any USB or SDK work, and again by every
+  setup-page save (U9); a list that fails either is named entry by entry and
+  nothing starts from it:
 
   - `usb_port` is non-blank, carries no leading or trailing whitespace, and is
     unique across entries. A padded port is rejected, not trimmed: the scan
@@ -432,9 +434,10 @@ Sections:
 
   **`"usb_devices": []` registers nothing** — legal in the file, logged at
   `warn!` at every start, and it needs no USB scan or SDK enumeration. It is
-  how an operator hands every QHY camera to another application for a night. A
-  server with no device has nowhere for the config actions to live, so `[]` is
-  left by editing the file and reloading; `config.apply` refuses it (U9).
+  how an operator hands every QHY camera to another application for a night.
+  The server page is the server's, not a device's, so it outlives the last
+  camera: unchecking every row saves `[]`, and checking one again undoes it
+  (*Setup pages*).
 
   **No list is the default, permanently.** With no `usb_devices` key the
   service registers every camera the USB scan can place, numbered in port
@@ -448,8 +451,9 @@ Sections:
   `name`/`description` to a specific camera and human `filter_names` to the CFW
   on it (the wheel shares its camera's id). Any device without an entry uses
   SDK-derived defaults. It serves the no-list default only: beside a list it is
-  rejected (above). Named `devices` (not `overrides`) to avoid colliding with
-  the config.get response's own `overrides[]` (CLI-pinned paths) field. v0 does
+  rejected (above). Each camera's page edits its `name` and `description`, and
+  each wheel's page its `filter_names` (*Setup pages*). Named `devices` (not
+  `overrides`), the name every camera driver's map has. v0 does
   **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
   with heterogeneous cameras those are per-serial concerns and clients set them
   over ASCOM; per-serial defaults are deferred (see *Future Work*).
@@ -469,35 +473,169 @@ Sections:
   with no phantom device, so no opt-in flag is needed. With a list, a wheel is
   registered exactly when its entry declares one (U10).
 - **server.port** — Listening port (**11121**, next free in the 1112x family;
-  11111–11120 and 11131 are taken). One port hosts all enumerated devices. Hard
-  read-only (self-lockout: a port change would make the BFF lose the devices).
+  11111–11120 and 11131 are taken). One port hosts all enumerated devices.
+  `--port` pins it. Editable on the server page, whose save answers with the
+  address the page moves to.
 
-### Config actions
+### Setup pages
 
-Standard cross-driver protocol ([`config-actions.md`](config-actions.md)),
-implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
-[`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
-supplies `ConfigurableDriver for QhyCameraDriver`:
+The service configures itself on the HTML pages the Alpaca Management API
+defines, served on its own listener behind its own TLS and Basic Auth:
+`/setup` for the whole server, `/setup/v1/camera/{n}/setup` for each camera
+it serves and `/setup/v1/filterwheel/{n}/setup` for each filter wheel. The
+pages are the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md)
+crate's — the render, the save, the cross-site check, the Security section,
+the confirmation and the reload wait. The camera drivers' own parts — the
+**Cameras** section that edits `usb_devices`, the camera pages and, for this
+driver, the wheel column and the wheel pages — are `rusty-photon-driver`'s
+`claims` module, which `svbony-camera` and `zwo-camera` share; `setup.rs`
+supplies the rest (`ConfigurableDriver for QhyCameraDriver`): the `Config`,
+the validation, the secret, the `--port` pin, and what the running server
+registered. No field is locked: `UniqueID`s are hardware-derived and not
+stored in config (*Device identity*). The `config.get` / `config.apply` /
+`config.schema` actions are gone: a camera's and a placeholder's
+`SupportedActions` is empty, and any `Action` answers
+`ActionNotImplemented`.
 
-- **Secrets redacted/carried forward:** `server.auth.password_hash` (the one
-  secret; `server.tls` stores file *paths*, not key material).
-- **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
-  stored in config, so there is no identity field to lock (a deliberate
-  divergence from the minted-identity convention; see *Device identity*).
-- **Hard read-only fields:** `/server/port` (a port change would make the BFF
-  lose the devices → restart-required, not a live apply).
-- **Editable fields:** `usb_devices` and the `devices` map (per-id `name` /
-  `description` / `filter_names`).
-- **Validation** at load (parse-don't-validate): `filter_names` entries are
-  non-empty strings; `devices` keys are free-form SDK id strings. Unknown keys
-  are **rejected at deserialize** (`deny_unknown_fields`, as in zwo-camera and
-  the other newer services), so typos and removed keys fail loudly at load
-  instead of being silently ignored. The `usb_devices` rules above run at load
-  and in `config.apply` alike (U9).
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| | Cameras | `usb_devices`, each entry's declared wheel included, and `devices` when the mode changes (below) |
+| `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
+| `/setup/v1/filterwheel/{n}/setup` | Filter names | the wheel's `filter_names`, in its camera's entry or override (below) |
 
-`config.apply` persists atomically, returns `status:"applying"` when a field
-changed, and fires the in-process reload (`main.rs` runs under
-`with_reload().run_with_reload(...)`).
+**The Cameras section** is the device-claims plan's C8, settled as
+[driver-setup-pages.md](../plans/driver-setup-pages.md) D11, the section
+`svbony-camera` and `zwo-camera` serve, with a wheel column:
+
+- **Two modes**, chosen by a radio: *serve every QHY camera the USB scan
+  places, numbered in port order* — no list (U11), with the wheels the CFW
+  probe finds — and *serve only the checked cameras* — a list (U1–U5, U10).
+- **One row per port**, in port order (U8's): each port that holds a `1618`
+  record the normalizer can count as a camera now (U2: the QHY SDK has no
+  passive check of a product id, so every QHYCCD product id that is not a
+  firmware loader's), and each listed port that holds none, a
+  placeholder's. The rows come from a USB scan run for the page — the
+  passive scan a start takes (U1) — so nothing is opened. A row names the
+  port, what the bus calls the device (its product string, else
+  `1618:<pid>`), what the running service serves there — `camera <n>`,
+  `placeholder <n>`, or nothing — and, in its wheel column, the wheel it
+  serves on that camera: `filter wheel <m>`, `placeholder <m>`, or
+  `no wheel`.
+- **With a list**, each row has a checkbox — checked is served — its
+  entry's `name` and `description`, and a wheel box, which declares the
+  camera's CFW (U10). The numbers are kept by the page, never typed: the
+  checked rows keep the order of the numbers they have now and take
+  `0..N-1` in it, and a newly checked row takes the next number, in port
+  order. The checked wheels are numbered the same way among the wheels:
+  they keep the order of their wheel numbers and take `0..M-1`, and a
+  newly checked wheel takes the next, in port order. Unchecking a camera
+  takes its wheel with it; unchecking a wheel drops its entry's
+  `filter_names` with it, since the load refuses names beside no wheel.
+  Unchecking any camera or wheel but the highest-numbered moves the
+  numbers after it down. A kept entry's other keys stay as the file has
+  them.
+- **The numbers a row has now** are the list's or, with no list, the port
+  order the running service serves, and the rows' wheel boxes are checked
+  where it serves a wheel now, so changing the mode without touching a row
+  moves no camera and no wheel.
+- **Changing to a list** carries each camera's `devices` name and
+  description into its row — the rows show them, filled in — and its
+  `filter_names` into its entry when the row's wheel is checked, and
+  deletes the `devices` map, which a list refuses (*Configuration*).
+  **Changing to no list** deletes the list and carries each row's name and
+  description, and its entry's `filter_names`, into a `devices` entry under
+  the camera's SDK id. A QHY camera's id is read without an open (*Device
+  identity*), so the page knows the key of every camera the join placed,
+  listed or not; a placeholder's names have no camera to go to, and the
+  confirmation names them as dropped.
+- **Every row unchecked** with a list saves `"usb_devices": []` (above).
+- **A save that moves a number is confirmed first.** It answers with the
+  form as submitted, each port whose camera would be served at another
+  number (from → to), each number a dropped camera held that another
+  camera would take, the same two for the wheels, and that rp's camera and
+  filter wheel entries bound to those numbers must be renumbered to match
+  — an entry without a `unique_id` pin would otherwise open the wrong
+  device with no error; rp's own page shows which entries those are, which
+  this driver cannot. The same confirmation names each name, description
+  and filter name the save would drop: an entry's no longer listed (every
+  row unchecked included), a wheel's no longer declared, a `devices` entry
+  no row carries into the list, and a placeholder's when the list goes.
+  Nothing is written until the operator saves it again from that page; a
+  confirmation covers the changes it showed, so a submission whose changes
+  differ is asked again.
+- **With no list after a save**, the numbers it is checked against are the
+  ones the reload it fires would give the bus as the page's scan finds it:
+  in port order, each camera the last start or reload placed whose port
+  still holds a record, and each port that has gained a record since that
+  start's scan. The page opens nothing, so it takes a new record for a
+  camera; the reload's own scan, join and CFW probe decide. A camera the
+  start placed but did not serve — unlisted, since a list's start opens
+  nothing and the guide camera another application holds fails the
+  probe's open, or one the probe could not open or close (U11) — may be
+  served by the reload or not, which the page cannot tell. The reload
+  serves each camera it opens in its place in port order, so the
+  confirmation names those cameras and lists the moves for none of them
+  opening and, where they differ, for all of them opening. A listed camera
+  the start served is taken as served: no other application should hold
+  it. A camera plugged into an earlier port since the start is confirmed
+  as the move it causes, and the confirmation says the bus has changed.
+- **The wheels without a list** are the ones the reload's CFW probe finds,
+  numbered in their cameras' port order. The page forecasts a wheel on
+  each camera the running service serves one on and no other, so a camera
+  that leaves the bus moves the wheels after it, confirmed. **Leaving a
+  list that declares a wheel is always confirmed**, saying why: a declared
+  wheel the probe misses — the miss a declared wheel exists to cover
+  (U10) — or one on a camera that declared none moves the wheel numbers
+  after it, and the page cannot tell which the probe will find.
+- A camera page's or a wheel page's save reloads too, so it is checked the
+  same way; those pages scan the bus only for a save, so showing them costs
+  no scan. Only a save that changes something is asked: one that changes
+  nothing fires no reload. A reload by `SIGHUP`, or a restart, numbers a
+  changed bus afresh unasked (U11).
+- **A failed scan** is said, with the collector's error, and the rows are
+  the listed ports and what the running service serves.
+
+**A camera's page** depends on what its number serves:
+
+- **a listed camera**: its model, port and `UniqueID`, and a link to its
+  row in the server page's Cameras section, where its name, description
+  and wheel are edited;
+- **a placeholder** (U4): the port it stands in for and why no camera is
+  served there, and a link to the Cameras section;
+- **a camera served without a list** (U11): its `devices` entry's `name`
+  and `description`, with its model, port and `UniqueID`. The first save
+  that names either creates the entry, under the camera's SDK id; a save
+  that clears both deletes it, unless its wheel's filter names keep it.
+
+**A wheel's page** shows the port of the camera it hangs off and its
+`UniqueID` (`CFW-<id>`) — or, for a placeholder wheel (U10), the port and
+why no wheel is served — and edits the wheel's filter names, one per line
+from the first slot: in its camera's `usb_devices` entry with a list (a
+placeholder wheel's too, since the names are the entry's), and in its
+camera's `devices` override, under the SDK id, without one — created by the
+first save that names a filter and deleted when nothing is left in it.
+Blank keeps the names the wheel reports (`Filter0..N`). Trailing blank
+lines are dropped, but a blank line among the names is kept, so the save's
+validation refuses it beside the box rather than letting the next name
+take its slot. A file edited since the start so that it no longer declares
+the wheel is said, and the save refused.
+
+- **Secrets:** `/server/auth/password_hash`, edited through the Security
+  section and never shown.
+- **Validation** on every save is the load's: unknown keys are rejected at
+  deserialize (`deny_unknown_fields`, as in zwo-camera and the other newer
+  services), the `usb_devices` rules above run at load and on every save
+  alike (U9), and every filter name is non-empty, in an entry or a
+  `devices` override. `devices` keys are free-form SDK id strings. The
+  Cameras section builds only lists the rules accept.
+
+A save that changes anything persists atomically, answers that the
+service is reloading, and fires the in-process reload after the response
+has flushed (`main.rs` runs under `with_reload().run_with_reload(...)`):
+the reload re-scans, re-places and re-registers every camera and wheel (U1)
+— without a list probing each placed camera for its CFW again (U11). A save
+that changes nothing says so and fires no reload.
 
 ### Device identity (UniqueID)
 
@@ -656,7 +794,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
-  any other actuation on startup, connect, or `config.apply` (workspace tenet
+  any other actuation on startup, connect, or a setup-page save (workspace tenet
   [*no actuation on connect*](../workspace.md#project-tenets)). Startup and
   every reload run no `InitQHYCCD` at all: the enumeration opens nothing, a list
   opens nothing (U1), and the no-list CFW probe opens each camera only to ask
@@ -1101,7 +1239,7 @@ which a list replaces with the declaration.
   list leaves out, say — costs no other camera its number, and is logged at
   `warn!`. Only the
   scan, which the list adds, is made non-fatal and retried. None of these steps
-  is an open, let alone an actuation, and a reload — `config.apply`'s,
+  is an open, let alone an actuation, and a reload — a setup-page save's,
   `SIGHUP`'s, or U6's own — runs the same path (tenet 3, C5).
 - **U2. Placing a camera on a port is a join.** No QHY SDK call reports a USB
   location: `GetQHYCCDId` gives `<model>-<serial>` and `GetQHYCCDModel` the
@@ -1232,10 +1370,10 @@ which a list replaces with the declaration.
     take, so a client that remembers devices by `UniqueID` never mistakes the
     stand-in for the camera, and central doctor can recognise it in
     `configureddevices` (plan C5).
-  - `SupportedActions` lists the config actions and `Action` serves them,
-    connected or not — an rp camera entry bound to this number is how `ui-htmx`
-    reaches the service, and a missing camera is exactly when the operator
-    needs that page to fix the list.
+  - Its setup page, `/setup/v1/camera/<n>/setup`, says which port it stands
+    in for and why, and links to the server page's Cameras section, where
+    the list is fixed (*Setup pages*). `SupportedActions` is empty and
+    `Action` answers `ActionNotImplemented`, as for a camera.
   - `DriverInfo`, `DriverVersion` and `InterfaceVersion` answer as for a camera;
     every other member answers `NOT_CONNECTED`.
   - The service logs `warn!` at start naming the number, the port and the
@@ -1282,7 +1420,7 @@ which a list replaces with the declaration.
   asked for this rebuild, though, so it is built from the configuration the
   stopped server was serving, not from the config file: an edit to the file
   that no reload has applied — a list removed, a port or a certificate changed
-  — waits for the reload (`config.apply`, `SIGHUP`) or restart that applies it,
+  — waits for the reload (a setup-page save, `SIGHUP`) or restart that applies it,
   rather than moving or ending the service. A rebuild whose SDK enumeration
   fails would still end it — with the first scan failed, the rebuild is the
   first enumeration since the start — so each try takes the scan, then checks
@@ -1411,23 +1549,24 @@ which a list replaces with the declaration.
   with the list's errors first and no block, since a block reproducing a refused
   list would only be pasted back. Text only: `--devices` does not combine with
   `--json`. U12's checks close the listing.
-- **U9. The list over `config.apply`.** `usb_devices` is an editable field.
-  `config.apply` runs the load-time validation and answers a bad list with field
+- **U9. The list over the setup pages.** `usb_devices` is edited in the
+  server page's Cameras section, each entry's declared wheel with it, and a
+  wheel's `filter_names` on the wheel's own page (*Setup pages*). Every save
+  runs the load-time validation and answers a list that breaks a rule with
   errors naming the entry (`usb_devices.1.usb_port`,
   `usb_devices.0.device_number`, `usb_devices.2.filter_wheel_number`,
   `usb_devices.0.filter_names`) or the `devices` key beside it
-  (`devices.<id>`), persisting nothing. It refuses `"usb_devices": []` with an
-  error saying why: an empty list registers no device, so none would be left to
-  serve the config actions, and no apply could undo it. A shorter list is
-  accepted: it can retire the number the apply arrived through, but its
-  remaining devices still carry the actions. A changed list applies through the
-  ordinary in-process reload, which closes and re-opens every camera on the
-  service — an operator editing the list is re-cabling or re-assigning cameras,
-  not mid-exposure — and which, with the list applied, opens none of them
-  before a client connects (U1). Placeholders carry the actions (U4), so a list
-  whose camera went missing can be fixed from `ui-htmx` through the placeholder
-  at that camera's number. (Wheels, placeholder or not, carry no config
-  actions, as no FilterWheel here ever has.)
+  (`devices.<id>`), persisting nothing; the section itself builds only lists
+  that pass. `"usb_devices": []` is saved like any other list: the server
+  page is not a device's page, so it outlives the last camera and can undo
+  it. A changed list applies through the ordinary in-process reload, which
+  closes and re-opens every camera on the service — an operator editing the
+  list is re-cabling or re-assigning cameras, not mid-exposure — and which,
+  with the list applied, opens none of them before a client connects (U1); a
+  save that moves a camera's or a wheel's number is confirmed first. The
+  server page is on the service's listener, so a list whose camera went
+  missing is fixed there whatever the list serves; the placeholder's page,
+  and its wheel's, link to it.
 - **U10. A listed camera's wheel is declared, and pinned to its own number.**
   An entry with a `filter_wheel_number` registers a FilterWheel at that number,
   in `filter_wheel_number` order, so the server's position for each wheel is its
@@ -1482,8 +1621,8 @@ which a list replaces with the declaration.
   whose port cannot be read cannot be numbered by it: the error is logged at
   `error!`, the SDK is not enumerated, and the service re-scans in the
   background and rebuilds on the first success, exactly as U6 does for a
-  list. Until then the server serves no device at all, so no config action is
-  reachable over Alpaca either; the re-scan needs none.
+  list. Until then the server serves no device at all; its setup page is
+  still served, and the re-scan needs nothing from it.
 
   Each registered camera is the same `QhyCameraDevice` a list serves, and
   each wheel the same `QhyFilterWheelDevice`, with the `UniqueID` it always

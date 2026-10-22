@@ -597,6 +597,9 @@ impl ServerBuilder {
                     cameras.get(index).map(|cam| PlacedCamera {
                         port: port.to_string(),
                         override_key: Some(claims::override_key(&cam.info, port)),
+                        // Serving a camera opens nothing: the no-list
+                        // default serves every one the join places.
+                        served_if_opens: false,
                     })
                 })
                 .collect(),

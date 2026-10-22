@@ -11,15 +11,16 @@
 //! a listed number whose camera it cannot serve, the background re-scan a
 //! failed USB scan starts, the run loop that rebuilds the server after a
 //! reload or a re-scan, and the driver's own part of its setup pages — the
-//! Cameras section that edits the list, and each camera's page. `rusty-photon-camera-core` is by its own rule no
-//! home for a `Camera` implementation.
+//! Cameras section that edits the list, each camera's page, and each filter
+//! wheel's where the list declares them. `rusty-photon-camera-core` is by its
+//! own rule no home for a `Camera` implementation.
 
 mod pages;
 mod placeholder;
 mod rescan;
 mod serve;
 
-pub use pages::{BusCamera, ClaimsPages, PlacedCamera, ScanCameras, Served};
+pub use pages::{BusCamera, ClaimsPages, PlacedCamera, ScanCameras, Served, ServedWheel};
 pub use placeholder::{Placeholder, PlaceholderCamera};
 pub use rescan::{rescan_waits, stop_or_rescanned, Blocker, Ended, Rescan, StopCause};
 pub use serve::{serve_and_rebuild, Stop};

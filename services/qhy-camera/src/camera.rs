@@ -30,18 +30,18 @@ use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use parking_lot::Mutex;
 use qhyccd_rs::{BayerPattern, CCDChipArea, ControlType};
 use rusty_photon_camera_core::{
     self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
 };
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_setup::SetupPages;
 use tracing::{debug, warn};
 
 use crate::backend::{BackendError, CameraHandle, ImageData, Verdict};
 use crate::config::DeviceOverride;
-use crate::config_actions::QhyCameraDriver;
+use crate::setup::QhyCameraDriver;
 
 /// 0x500 — driver-specific catch-all for an asynchronous operation that
 /// failed, surfaced lazily: a capture's via `image_array`, a wheel move's via
@@ -754,8 +754,9 @@ pub struct QhyCameraDevice {
     name: String,
     description: String,
     state: Arc<DeviceState>,
+    /// The setup pages, and the device number its page is served at.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<QhyCameraDriver>>,
+    pages: Option<(Arc<SetupPages<QhyCameraDriver>>, u32)>,
     /// How long an abort/disconnect waits for the capture task to leave the SDK
     /// ([`CAPTURE_DRAIN_TIMEOUT`]); for a disconnect, the budget for every round
     /// of it. A field so tests can shorten it and exercise the refuse-to-close
@@ -781,7 +782,7 @@ impl QhyCameraDevice {
             name,
             description,
             state: Arc::new(DeviceState::new()),
-            config_ctx: None,
+            pages: None,
             drain_timeout: CAPTURE_DRAIN_TIMEOUT,
         }
     }
@@ -794,10 +795,15 @@ impl QhyCameraDevice {
         self
     }
 
-    /// Attach config-action wiring (enables `config.get`/`apply`/`schema`).
+    /// Serve its setup page, `/setup/v1/camera/<number>/setup`, through the
+    /// shared pages.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<QhyCameraDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub fn with_setup_pages(
+        mut self,
+        pages: Arc<SetupPages<QhyCameraDriver>>,
+        number: u32,
+    ) -> Self {
+        self.pages = Some((pages, number));
         self
     }
 
@@ -2753,12 +2759,38 @@ impl Device for QhyCameraDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// No custom action: the configuration moved to the setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(Vec::new())
     }
 
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<QhyCameraDriver>(&self.config_ctx, action, parameters).await
+    /// The specification's answer to an unknown action name is
+    /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
+    /// defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
+    }
+
+    /// The camera's setup page, through the shared handler. A camera built
+    /// without the pages (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some((pages, number)) => {
+                rusty_photon_driver::device_setup_request(pages, "camera", *number, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -6084,8 +6116,20 @@ mod tests {
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(device.description().await.unwrap(), "QHYCCD camera");
-        // Delegates to rusty_photon_driver; exercise the path (always Ok).
-        device.supported_actions().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let device = connected_device(MockCameraHandle::default()).await;
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        let error = device
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

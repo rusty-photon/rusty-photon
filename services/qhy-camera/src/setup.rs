@@ -1,23 +1,24 @@
-//! `ConfigurableDriver` impl for qhy-camera — wires the cross-driver
-//! `config.get` / `config.apply` / `config.schema` protocol
-//! (`docs/services/config-actions.md`) to this service's [`Config`].
+//! qhy-camera's [`ConfigurableDriver`] implementation — the driver-specific
+//! half behind its setup pages.
 //!
-//! Editability tiers:
-//! - **Locked (identity):** none. ASCOM `UniqueID`s are derived from the
-//!   camera/CFW SDK serial (see `docs/services/qhy-camera.md` "Device identity"),
-//!   not minted into config, so there is no identity field to lock.
-//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** `usb_devices` and the per-serial `devices` map (`name` /
-//!   `description` / `filter_names`).
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the confirmation, the reload) are `rusty-photon-setup`'s,
+//! and the camera drivers' own part of them — the Cameras section that edits
+//! `usb_devices` with each camera's declared wheel, each camera's page and
+//! each wheel's — is `rusty-photon-driver`'s `claims` module, which `lib.rs`
+//! feeds what the build registered. This module supplies what is the
+//! service's own: its `Config` type, validation, its secret, and the `--port`
+//! pin. No field is locked: `UniqueID`s are derived from the camera/CFW SDK
+//! id, not minted into config. See [`docs/services/qhy-camera.md`] "Setup
+//! pages".
+//!
+//! [`docs/services/qhy-camera.md`]: ../../../docs/services/qhy-camera.md
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
-use rusty_photon_doctor_checks::claims;
 
 use crate::config::{CliOverrides, Config};
 
-/// Zero-sized marker implementing [`ConfigurableDriver`] for the qhy-camera
-/// [`Config`]. The generic `rusty_photon_driver::dispatch` routes the three
-/// config actions against this.
+/// Driver marker wiring qhy-camera's [`Config`] into the shared setup pages.
 pub struct QhyCameraDriver;
 
 impl ConfigurableDriver for QhyCameraDriver {
@@ -26,14 +27,12 @@ impl ConfigurableDriver for QhyCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// The `usb_devices` rules the load applies (U9), plus the one only an
-    /// apply has: an empty list is refused, because it registers no device, so
-    /// none would be left to serve the config actions. Then the `devices`
-    /// overrides' filter names, each non-empty.
+    /// The `usb_devices` rules the load applies (U9), each named by its
+    /// entry's field — an empty list is legal: the server page outlives it —
+    /// then the `devices` overrides' filter names, each non-empty.
     fn validate(config: &Config) -> Vec<FieldError> {
-        let mut list_errors = config.list_errors();
-        list_errors.extend(claims::apply_errors(config.usb_devices.as_deref()));
-        let mut errors: Vec<FieldError> = list_errors
+        let mut errors: Vec<FieldError> = config
+            .list_errors()
             .into_iter()
             .map(|error| FieldError {
                 path: error.path,
@@ -55,8 +54,9 @@ impl ConfigurableDriver for QhyCameraDriver {
         errors
     }
 
-    /// The one secret: the server-auth password hash. `TlsConfig` stores file
-    /// *paths*, not key material, so there is nothing to redact there.
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows. `TlsConfig` stores file
+    /// *paths*, not key material.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -67,13 +67,6 @@ impl ConfigurableDriver for QhyCameraDriver {
 
     fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
         overrides.apply(config);
-    }
-
-    // `locked_paths()` intentionally not overridden (defaults to `&[]`): the
-    // hardware-derived UniqueID means there is no locked identity field.
-
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port"]
     }
 }
 
@@ -109,10 +102,7 @@ mod tests {
                 filter_names: None,
             },
         );
-        assert_eq!(
-            QhyCameraDriver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
-        );
+        assert_eq!(QhyCameraDriver::validate(&config), Vec::<FieldError>::new());
     }
 
     fn entry(device_number: u32, usb_port: &str) -> crate::config::UsbDeviceEntry {
@@ -127,21 +117,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_is_refused_over_apply() {
+    fn an_empty_list_is_saved_like_any_other() {
         let config = Config {
             usb_devices: Some(Vec::new()),
             ..Config::default()
         };
-        let errors = QhyCameraDriver::validate(&config);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].path, "usb_devices");
-        assert!(
-            errors[0]
-                .msg
-                .starts_with("an empty list registers no camera"),
-            "{}",
-            errors[0].msg
-        );
+        assert_eq!(QhyCameraDriver::validate(&config), Vec::<FieldError>::new());
     }
 
     #[test]
@@ -165,6 +146,21 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_filter_name_in_an_entry_is_named_by_its_field() {
+        let mut named = entry(0, "a");
+        named.filter_wheel_number = Some(0);
+        named.filter_names = Some(vec!["L".to_string(), String::new()]);
+        let config = Config {
+            usb_devices: Some(vec![named]),
+            ..Config::default()
+        };
+        let errors = QhyCameraDriver::validate(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "usb_devices.0.filter_names");
+        assert_eq!(errors[0].msg, "filter_names[1] is empty");
+    }
+
+    #[test]
     fn a_valid_list_has_no_errors() {
         let config = Config {
             usb_devices: Some(vec![entry(0, "a")]),
@@ -179,18 +175,12 @@ mod tests {
     }
 
     #[test]
-    fn port_is_read_only() {
-        let read_only = QhyCameraDriver::read_only_paths();
-        assert!(read_only.contains(&"server.port"));
-    }
-
-    #[test]
     fn port_override_is_pinned_and_applied() {
         let overrides = CliOverrides {
             server_port: Some(12321),
         };
         assert_eq!(
-            QhyCameraDriver::override_paths(&overrides),
+            QhyCameraDriver::pinned_paths(&Config::default(), &overrides),
             vec!["server.port".to_string()]
         );
         let mut config = Config::default();

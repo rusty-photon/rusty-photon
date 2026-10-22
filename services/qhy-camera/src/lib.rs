@@ -53,11 +53,11 @@ pub mod backend;
 pub mod camera;
 pub mod claims;
 pub mod config;
-pub mod config_actions;
 pub mod doctor;
 pub mod error;
 pub mod filterwheel;
 pub mod preflight;
+pub mod setup;
 
 pub use camera::QhyCameraDevice;
 pub use claims::UsbSource;
@@ -65,22 +65,23 @@ pub use config::{
     load_effective_config, read_effective_config, AlpacaServerConfig, CliOverrides, Config,
     DeviceOverride, UsbDeviceEntry,
 };
-pub use config_actions::QhyCameraDriver;
 pub use error::{QhyCameraError, Result};
 pub use filterwheel::{PlaceholderFilterWheel, QhyFilterWheelDevice};
 pub use rusty_photon_driver::claims::{serve_and_rebuild, Ended};
+pub use setup::QhyCameraDriver;
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ascom_alpaca::api::CargoServerInfo;
+use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
-use rusty_photon_driver::claims::Rescan;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_doctor_checks::UsbScan;
+use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served, ServedWheel};
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, error, info, warn};
 
@@ -113,6 +114,9 @@ pub struct ServerBuilder {
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
+    /// The setup pages, set by [`Self::build`] when there is a config
+    /// source and a reload path.
+    pages: Option<Pages>,
 }
 
 impl ServerBuilder {
@@ -127,8 +131,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the config source (persist path + CLI overrides) for the config
-    /// actions. Together with [`Self::with_reload_signal`], enables editing.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], serves them.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
@@ -136,7 +140,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response flushes.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -197,10 +202,16 @@ impl ServerBuilder {
         let injected = self.injected_sdk.take();
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
+        self.pages = self.setup_pages();
         let (registered, sdk) = match &self.config.usb_devices {
             None => self.register_enumerated(&mut server, injected).await?,
             Some(list) => self.register_list(&mut server, list, injected).await?,
         };
+        if let Some(pages) = &self.pages {
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                &pages.setup,
+            ))));
+        }
 
         let tls = self.config.server.tls.clone();
         let router = axum::Router::new().fallback_service(server.into_service());
@@ -292,6 +303,7 @@ impl ServerBuilder {
                 return Ok((registered, None));
             }
         };
+        let seen = seen_ports(&scan);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -302,24 +314,25 @@ impl ServerBuilder {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
         // The join places only what the SDK enumerated, so every index is in
-        // `cameras`; their ids, in port order, are the cameras to probe.
-        let placed: Vec<String> = claims
+        // `cameras`; they, in port order, are the cameras to probe.
+        let placed: Vec<(String, claims::Enumerated)> = claims
             .placed()
             .into_iter()
             .filter_map(|(index, port)| {
                 let camera = cameras.get(index)?;
                 debug!(camera = %camera.id, port, "a QHY camera is placed on a port");
-                Some(camera.id.clone())
+                Some((port.to_string(), camera.clone()))
             })
             .collect();
         // The probe is SDK calls, a USB round trip each, so it runs on the
         // blocking pool.
-        let probed = placed.clone();
+        let probed: Vec<String> = placed.iter().map(|(_, camera)| camera.id.clone()).collect();
         let (sdk, unprobed) = tokio::task::spawn_blocking(move || {
             let unprobed = probe_cameras(&mut sdk, &probed);
             (sdk, unprobed)
         })
         .await?;
+        self.record_placed(placed_without_list(&placed, &unprobed), Some(seen));
 
         // Ids of cameras that report a filter wheel (each CFW wraps a Camera with
         // the same SDK id). Every discovered CFW is registered — detection is the
@@ -329,25 +342,33 @@ impl ServerBuilder {
         // handle (see SharedCameraConnection).
         let cfw_ids: std::collections::HashSet<String> =
             sdk.filter_wheels().map(|w| w.id().to_string()).collect();
-        let cameras: Vec<qhyccd_rs::Camera> = placed
-            .iter()
-            .filter(|id| !unprobed.contains(*id))
-            .filter_map(|id| sdk.cameras().find(|camera| camera.id() == id).cloned())
-            .collect();
-        for camera in cameras {
-            let id = camera.id().to_string();
-            let conn = self.register_camera(server, camera, self.config.devices.get(&id));
+        for (port, enumerated) in &placed {
+            let id = &enumerated.id;
+            if unprobed.contains(id) {
+                continue;
+            }
+            let Some(camera) = sdk.cameras().find(|camera| camera.id() == id).cloned() else {
+                continue;
+            };
+            let conn = self.register_camera(
+                server,
+                camera,
+                port,
+                &enumerated.model,
+                self.config.devices.get(id),
+                false,
+            );
             registered.cameras = registered.cameras.saturating_add(1);
-            if cfw_ids.contains(&id) {
+            if cfw_ids.contains(id) {
                 // The CFW shares the camera's SDK id, so the per-serial override's
                 // `name`/`description` belong to the camera, not the wheel — only
                 // `filter_names` applies here. The wheel keeps its derived name.
                 let filter_names = self
                     .config
                     .devices
-                    .get(&id)
+                    .get(id)
                     .and_then(|d| d.filter_names.clone());
-                register_wheel(server, conn, filter_names);
+                self.register_wheel(server, conn, port, filter_names);
                 registered.filter_wheels = registered.filter_wheels.saturating_add(1);
             }
         }
@@ -386,7 +407,7 @@ impl ServerBuilder {
             return Ok((Registered::default(), None));
         }
         let (scan, sdk, cameras) = match self.scan_and_enumerate(injected).await? {
-            Ok((scan, sdk, cameras)) => (Ok(scan), Some(sdk), cameras),
+            Ok((scan, sdk, cameras)) => (Ok::<UsbScan, String>(scan), Some(sdk), cameras),
             Err(error) => {
                 error!(
                     %error,
@@ -396,6 +417,7 @@ impl ServerBuilder {
                 (Err(error), None, Vec::new())
             }
         };
+        let seen = scan.as_ref().ok().map(seen_ports);
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -413,39 +435,42 @@ impl ServerBuilder {
 
         let mut registered = Registered::default();
         let mut wheels = Vec::new();
+        let mut camera_ports = Vec::new();
         for (entry, outcome) in resolve_list(&claims, list) {
             let camera = outcome.and_then(|index| {
+                let model = cameras
+                    .get(index)
+                    .map(|c| c.model.clone())
+                    .unwrap_or_default();
                 sdk.as_ref()
                     .and_then(|sdk| sdk.cameras().nth(index).cloned())
+                    .map(|camera| (camera, model))
                     .ok_or_else(|| {
                         format!("the join placed SDK camera {index}, which is not enumerated")
                     })
             });
             let wheel = match camera {
-                Ok(camera) => {
+                Ok((camera, model)) => {
                     debug!(
                         device = entry.device_number,
                         port = %entry.usb_port,
                         camera = %camera.id(),
                         "a listed port holds a QHY camera"
                     );
-                    let conn =
-                        self.register_camera(server, camera, Some(&DeviceOverride::from(&entry)));
+                    let conn = self.register_camera(
+                        server,
+                        camera,
+                        &entry.usb_port,
+                        &model,
+                        Some(&DeviceOverride::from(&entry)),
+                        true,
+                    );
                     registered.cameras = registered.cameras.saturating_add(1);
+                    camera_ports.push(entry.usb_port.clone());
                     Ok(conn)
                 }
                 Err(reason) => {
-                    warn!(
-                        device = entry.device_number,
-                        port = %entry.usb_port,
-                        %reason,
-                        "a listed number is held by a placeholder"
-                    );
-                    let mut placeholder = claims::placeholder(&entry, reason.clone());
-                    if let Some(ctx) = self.config_actions() {
-                        placeholder = placeholder.with_config_actions(ctx);
-                    }
-                    server.devices.register(placeholder);
+                    self.register_placeholder(server, &entry, &reason);
                     registered.placeholders = registered.placeholders.saturating_add(1);
                     Err(reason)
                 }
@@ -454,27 +479,73 @@ impl ServerBuilder {
                 wheels.push((number, entry, wheel));
             }
         }
+        self.record_placed(placed_with_list(&claims, &cameras, &camera_ports), seen);
+        self.register_declared_wheels(server, wheels, &mut registered);
+        if claims.scan_error().is_some() {
+            registered.rescan = Some(self.rescan());
+        }
+        Ok((registered, sdk))
+    }
+
+    /// Register the placeholder that holds `entry`'s camera number for
+    /// `reason` (U4), with its setup page.
+    fn register_placeholder(&self, server: &mut Server, entry: &UsbDeviceEntry, reason: &str) {
+        warn!(
+            device = entry.device_number,
+            port = %entry.usb_port,
+            %reason,
+            "a listed number is held by a placeholder"
+        );
+        let mut placeholder = claims::placeholder(entry, reason.to_string());
+        if let Some(pages) = &self.pages {
+            let number = pages.claims.register(
+                placeholder.static_name(),
+                Served::Placeholder {
+                    port: entry.usb_port.clone(),
+                    reason: reason.to_string(),
+                },
+            );
+            placeholder = placeholder.with_setup_pages(Arc::clone(&pages.setup), number);
+        }
+        server.devices.register(placeholder);
+    }
+
+    /// Register the wheels a list declares, in wheel-number order: each on
+    /// its camera's connection, or as a placeholder with its camera's
+    /// reason (U10).
+    fn register_declared_wheels(
+        &self,
+        server: &mut Server,
+        mut wheels: Vec<(u32, UsbDeviceEntry, DeclaredWheel)>,
+        registered: &mut Registered,
+    ) {
         wheels.sort_by_key(|(number, _, _)| *number);
         for (number, entry, wheel) in wheels {
             match wheel {
                 Ok(conn) => {
                     debug!(filter_wheel = number, port = %entry.usb_port, "a declared filter wheel is served on its camera's connection");
-                    register_wheel(server, conn, entry.filter_names);
+                    self.register_wheel(server, conn, &entry.usb_port, entry.filter_names);
                     registered.filter_wheels = registered.filter_wheels.saturating_add(1);
                 }
                 Err(reason) => {
                     debug!(filter_wheel = number, port = %entry.usb_port, "a declared filter wheel is held by a placeholder, as its camera is");
-                    server
-                        .devices
-                        .register(claims::placeholder_wheel(&entry, reason));
+                    let mut placeholder = claims::placeholder_wheel(&entry, reason.clone());
+                    if let Some(pages) = &self.pages {
+                        let number = pages.claims.register_wheel(
+                            placeholder.static_name(),
+                            ServedWheel::Placeholder {
+                                port: entry.usb_port.clone(),
+                                reason,
+                            },
+                        );
+                        placeholder =
+                            placeholder.with_setup_pages(Arc::clone(&pages.setup), number);
+                    }
+                    server.devices.register(placeholder);
                     registered.placeholders = registered.placeholders.saturating_add(1);
                 }
             }
         }
-        if claims.scan_error().is_some() {
-            registered.rescan = Some(self.rescan());
-        }
-        Ok((registered, sdk))
     }
 
     /// This build's USB scan, and — only once the scan runs (U6) — the SDK,
@@ -502,13 +573,17 @@ impl ServerBuilder {
         Ok(Ok((scan, sdk, cameras)))
     }
 
-    /// Register `camera` with its display overrides, and return the physical
-    /// connection a wheel on it shares.
+    /// Register `camera`, of `model` and placed on `port`, with its display
+    /// overrides — `listed` when a `usb_devices` entry lists it — and return
+    /// the physical connection a wheel on it shares.
     fn register_camera(
         &self,
         server: &mut Server,
         camera: qhyccd_rs::Camera,
+        port: &str,
+        model: &str,
         overrides: Option<&DeviceOverride>,
+        listed: bool,
     ) -> Arc<SharedCameraConnection> {
         let id = camera.id().to_string();
         // One shared physical connection per camera; the Camera device and (if
@@ -516,24 +591,90 @@ impl ServerBuilder {
         let conn = SharedCameraConnection::new(camera);
         let handle: Arc<dyn CameraHandle> = Arc::new(QhyCameraHandle::new(Arc::clone(&conn)));
         let mut device = QhyCameraDevice::new(handle, overrides);
-        if let Some(ctx) = self.config_actions() {
-            device = device.with_config_actions(ctx);
+        if let Some(pages) = &self.pages {
+            // A QHY camera's `devices` override is keyed by its SDK id, which
+            // is its `UniqueID` too.
+            let number = pages.claims.register(
+                device.static_name(),
+                Served::Camera {
+                    port: port.to_string(),
+                    model: model.to_string(),
+                    unique_id: device.unique_id().to_string(),
+                    override_key: id.clone(),
+                    listed,
+                },
+            );
+            device = device.with_setup_pages(Arc::clone(&pages.setup), number);
         }
         server.devices.register(device);
         debug!(camera = %id, "registered Camera device");
         conn
     }
 
-    /// The config-action context every registered camera carries, when the
-    /// builder has a config source and a reload path.
-    fn config_actions(&self) -> Option<ConfigActionCtx<QhyCameraDriver>> {
+    /// Register a `FilterWheel` on `conn`, the physical connection of the
+    /// camera placed on `port` it hangs off.
+    fn register_wheel(
+        &self,
+        server: &mut Server,
+        conn: Arc<SharedCameraConnection>,
+        port: &str,
+        filter_names: Option<Vec<String>>,
+    ) {
+        let id = conn.camera().id().to_string();
+        let handle: Arc<dyn FilterWheelHandle> = Arc::new(QhyFilterWheelHandle::new(conn));
+        let mut device = QhyFilterWheelDevice::new(handle, filter_names, None);
+        if let Some(pages) = &self.pages {
+            let number = pages.claims.register_wheel(
+                device.static_name(),
+                ServedWheel::Wheel {
+                    port: port.to_string(),
+                    unique_id: device.unique_id().to_string(),
+                    override_key: id.clone(),
+                },
+            );
+            device = device.with_setup_pages(Arc::clone(&pages.setup), number);
+        }
+        server.devices.register(device);
+        debug!(filter_wheel = %id, "registered FilterWheel device");
+    }
+
+    /// The setup pages this build serves, when the builder has a config
+    /// source and a reload path: the shared handler, saving to the file and
+    /// rendering what this build runs, and the camera drivers' own part of
+    /// the pages, with the wheels this driver's entries declare, which
+    /// registration fills.
+    fn setup_pages(&self) -> Option<Pages> {
         let (path, reload) = (self.config_path.clone()?, self.reload.clone()?);
-        Some(ConfigActionCtx {
-            effective: self.config.clone(),
+        let claims = Arc::new(
+            ClaimsPages::new(
+                claims::SDK_NAME,
+                claims::scan_cameras(self.usb_source()),
+                rusty_photon_doctor_checks::claims::compare_ports,
+            )
+            .with_wheels(),
+        );
+        let setup = SetupPages::<QhyCameraDriver>::new(
+            claims::SERVICE,
+            self.config.clone(),
             path,
-            overrides: self.overrides.clone(),
-            reload,
+            self.overrides.clone(),
+        )
+        .with_reload(reload)
+        .with_https(self.config.server.tls.is_some())
+        .with_driver_pages(Arc::<ClaimsPages>::clone(&claims));
+        Some(Pages {
+            setup: Arc::new(setup),
+            claims,
         })
+    }
+
+    /// Tell the pages the cameras the join `placed`, in port order, and the
+    /// ports the scan `seen` records on. A failed scan (`seen` is `None`)
+    /// tells nothing.
+    fn record_placed(&self, placed: Vec<PlacedCamera>, seen: Option<Vec<String>>) {
+        if let (Some(pages), Some(seen)) = (&self.pages, seen) {
+            pages.claims.placed(placed, seen);
+        }
     }
 
     /// The background re-scan after a failed USB scan (U6): each try takes
@@ -560,19 +701,63 @@ impl ServerBuilder {
     }
 }
 
-/// Register a `FilterWheel` on `conn`, the physical connection of the camera
-/// it hangs off.
-fn register_wheel(
-    server: &mut Server,
-    conn: Arc<SharedCameraConnection>,
-    filter_names: Option<Vec<String>>,
-) {
-    let id = conn.camera().id().to_string();
-    let handle: Arc<dyn FilterWheelHandle> = Arc::new(QhyFilterWheelHandle::new(conn));
-    server
-        .devices
-        .register(QhyFilterWheelDevice::new(handle, filter_names, None));
-    debug!(filter_wheel = %id, "registered FilterWheel device");
+/// Every port `scan` holds a record on that can be a QHY camera, placed or
+/// not.
+fn seen_ports(scan: &UsbScan) -> Vec<String> {
+    claims::bus_cameras(scan)
+        .into_iter()
+        .map(|c| c.port)
+        .collect()
+}
+
+/// Every camera the no-list default `placed`, in port order, keyed by its
+/// SDK id, which the enumeration reads without an open. One the CFW probe
+/// could not open or close — in `unprobed` — is served nowhere, and is
+/// served by the reload only if its probe succeeds then (*Setup pages*).
+fn placed_without_list(
+    placed: &[(String, claims::Enumerated)],
+    unprobed: &std::collections::HashSet<String>,
+) -> Vec<PlacedCamera> {
+    placed
+        .iter()
+        .map(|(port, camera)| PlacedCamera {
+            port: port.clone(),
+            override_key: Some(camera.id.clone()),
+            served_if_opens: unprobed.contains(&camera.id),
+        })
+        .collect()
+}
+
+/// Every camera the join placed with a list, in port order, keyed by its SDK
+/// id. One on a port `served` does not hold — an unlisted camera, which a
+/// list's start never opens — is served by the no-list default only if the
+/// reload's CFW probe opens it, which another application holding it stops
+/// (*Setup pages*).
+fn placed_with_list(
+    claims: &Claims<'_>,
+    cameras: &[claims::Enumerated],
+    served: &[String],
+) -> Vec<PlacedCamera> {
+    claims
+        .placed()
+        .into_iter()
+        .filter_map(|(index, port)| {
+            let camera = cameras.get(index)?;
+            Some(PlacedCamera {
+                port: port.to_string(),
+                override_key: Some(camera.id.clone()),
+                served_if_opens: !served.iter().any(|p| p == port),
+            })
+        })
+        .collect()
+}
+
+/// The setup pages one build serves: the shared handler, and the camera
+/// drivers' own part of them, which registration fills.
+#[derive(Clone)]
+struct Pages {
+    setup: Arc<SetupPages<QhyCameraDriver>>,
+    claims: Arc<ClaimsPages>,
 }
 
 /// Each entry of `list`, in number order, with the SDK camera the join placed
@@ -607,6 +792,10 @@ type Scanned = std::result::Result<
     ),
     String,
 >;
+
+/// A declared wheel's camera connection, or the reason its camera is a
+/// placeholder.
+type DeclaredWheel = std::result::Result<Arc<SharedCameraConnection>, String>;
 
 /// What a build registered, and the re-scan to run when the USB scan failed.
 #[derive(Default)]
@@ -818,6 +1007,64 @@ mod list_tests {
             "{reason}"
         );
         assert!(reason.contains("reload or restart qhy-camera"), "{reason}");
+    }
+
+    fn enumerated(id: &str, model: &str) -> claims::Enumerated {
+        claims::Enumerated {
+            id: id.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    fn placed(port: &str, key: &str, served_if_opens: bool) -> PlacedCamera {
+        PlacedCamera {
+            port: port.to_string(),
+            override_key: Some(key.to_string()),
+            served_if_opens,
+        }
+    }
+
+    #[test]
+    fn with_a_list_every_placed_camera_is_keyed_and_an_unlisted_one_is_served_only_if_it_opens() {
+        let cameras = vec![
+            enumerated("QHY5III678M-1", "QHY5III678M"),
+            enumerated("QHY600M-1", "QHY600M"),
+        ];
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            Ok(UsbScan {
+                devices: vec![record("c601", "p1"), record("0679", "p2")],
+                faults: Vec::new(),
+            }),
+            claims::sdk_cameras(&cameras),
+        );
+        // The list serves p1's QHY600M; the guide camera on p2 is unlisted,
+        // so a list's start never opened it.
+        assert_eq!(
+            placed_with_list(&claims, &cameras, &["p1".to_string()]),
+            vec![
+                placed("p1", "QHY600M-1", false),
+                placed("p2", "QHY5III678M-1", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_list_a_camera_the_probe_could_not_open_is_served_only_if_it_opens() {
+        let placed_cameras = vec![
+            ("p1".to_string(), enumerated("QHY600M-1", "QHY600M")),
+            ("p2".to_string(), enumerated("QHY5III678M-1", "QHY5III678M")),
+        ];
+        let unprobed: std::collections::HashSet<String> =
+            std::iter::once("QHY5III678M-1".to_string()).collect();
+        assert_eq!(
+            placed_without_list(&placed_cameras, &unprobed),
+            vec![
+                placed("p1", "QHY600M-1", false),
+                placed("p2", "QHY5III678M-1", true)
+            ]
+        );
     }
 
     #[test]
