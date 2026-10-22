@@ -1427,22 +1427,19 @@ dangerous combination. The rule bifurcates by runner kind
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
     cannot run on the pool even though `bazel build` is green. Three parts,
     all measured the hard way:
-    * **.NET SDK** — the wix CLI is a dotnet global tool; `build-msi.ps1`
-      fails its own `dotnet not found` precondition without it.
+    * **.NET SDK** — the wix CLI is a dotnet global tool; `cargo ci
+      build-msi` refuses to start without it (`dotnet not found`).
     * **`DOTNET_ROOT` set machine-wide** — not optional. `wix.exe` is a
       framework-dependent apphost and resolves the runtime through this
       variable, never through PATH, so `dotnet --version` can succeed while
       every global tool dies with "You must install .NET to run this
       application / .NET location: Not found".
-    * **wix at the pinned version** (matching `$WixVersion` in
-      `build-msi.ps1`) on a machine-wide tool path — `--tool-path`, not
-      `--global`, so the job's user sees it.
+    * **wix at the pinned version** (matching `WIX_VERSION` in
+      `tools/rusty-photon-ci/src/build_msi.rs`) on a machine-wide tool path
+      — `--tool-path`, not `--global`, so the job's user sees it, and
+      `cargo ci build-msi` takes the one on `PATH` at that version.
 
-    Provision alongside the other `C:\ci` toolchain, machine-scoped. `msi.yml`
-    runs these scripts under `pwsh` (PowerShell 7); the scripts are kept pure
-    ASCII so they also parse under Windows PowerShell 5.1, whose ANSI codepage
-    would otherwise mangle any non-ASCII punctuation into parse errors — keep
-    them that way.
+    Provision alongside the other `C:\ci` toolchain, machine-scoped.
   * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
     template's `machine-id` wipe, but its specialize pass runs on every clone
     boot and would add minutes to a pool whose whole value is fast pickup —

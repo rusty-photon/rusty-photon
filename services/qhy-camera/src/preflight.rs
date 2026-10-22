@@ -166,8 +166,8 @@ pub enum DllResolution {
 /// Preflight failure: `qhyccd.dll` could not be resolved anywhere (PF4).
 ///
 /// The `Display` text is THE one distinctive, actionable operator message —
-/// `scripts/verify-msi.ps1` (plan W4) greps the service log for it, so keep
-/// its leading phrase stable.
+/// `cargo ci verify-msi` looks for it in the service log, so keep its
+/// leading phrase stable.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PreflightError {
     #[error(
@@ -311,8 +311,8 @@ pub fn ensure_qhyccd_dll() -> Result<DllResolution, PreflightError> {
                 failures: failures.clone(),
             };
             // The one distinctive, actionable error (PF4) — deliberately
-            // error!, not debug!: this is the line an operator (and plan-W4's
-            // verify-msi.ps1) looks for.
+            // error!, not debug!: this is the line an operator (and
+            // `cargo ci verify-msi`) looks for.
             error!("{failure}");
             return Err(failure);
         }

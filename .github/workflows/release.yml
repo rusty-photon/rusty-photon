@@ -113,8 +113,8 @@ jobs:
           if-no-files-found: error
 
   # The suite MSI (ADR-015): every service in one installer, built by the same
-  # scripts the msi workflow exercises on PRs. verify-msi.ps1 is the release
-  # gate — the full install -> per-service-class checks -> feature-remove ->
+  # tools the msi workflow exercises on PRs. `cargo ci verify-msi` is the
+  # release gate — the full install -> per-service-class checks -> feature-remove ->
   # uninstall lifecycle must pass before the MSI can ship.
   build-windows:
     runs-on: windows-latest
@@ -127,17 +127,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msi
-      # build-msi.ps1 stamps the MSI with the workspace version, so a tag
+      # `cargo ci build-msi` stamps the MSI with the workspace version, so a tag
       # that names another would release wrongly versioned binaries under a
       # right-named tag.
       - name: Check tag matches the workspace version
         uses: ./.github/actions/packages/release-version
       - name: Build the suite MSI
-        shell: pwsh
-        run: scripts\build-msi.ps1
+        run: cargo ci build-msi
       - name: Verify the MSI lifecycle (release gate)
-        shell: pwsh
-        run: scripts\verify-msi.ps1
+        run: cargo ci verify-msi
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:

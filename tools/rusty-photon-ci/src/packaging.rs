@@ -106,8 +106,15 @@ pub fn port(service: &str) -> Option<u16> {
 /// (docs/services/svbony-camera.md, Packaging).
 pub const NO_MACOS_SDK: &str = "svbony-camera";
 
-/// The QHY SDK's pins, in a file of their own: the macOS jobs' SDK cache is
-/// keyed on it.
+/// The service the suite MSI has no feature for.
+///
+/// `SVBony`'s SDK for Windows downloads only through a CAPTCHA, and the
+/// project's private mirror holds the one copy CI links (ADR-018 §7), which
+/// nothing may ship (docs/services/svbony-camera.md, Windows).
+pub const NO_WINDOWS_SDK: &str = "svbony-camera";
+
+/// The QHY SDK's pins, in a file of their own: the packaging jobs' SDK
+/// caches are keyed on it.
 pub mod qhy;
 
 /// The install modules whose `REF` pins the ZWO and `SVBony` SDKs.
@@ -269,21 +276,38 @@ pub fn js_const<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 ///
 /// When the module cannot be read or has no `REF`.
 pub fn sdk_ref(root: &Path, module: &str) -> Result<String, Error> {
+    module_const(root, module, "REF")
+}
+
+/// An install module's `export const <name> = '<value>';`, which must not be
+/// empty.
+///
+/// # Errors
+///
+/// When the module cannot be read or has no such line.
+pub fn module_const(root: &Path, module: &str, name: &'static str) -> Result<String, Error> {
     let path = root.join(module);
     let text = fs::read_to_string(&path).map_err(io(&path))?;
-    js_const(&text, "REF")
-        .filter(|commit| !commit.is_empty())
+    js_const(&text, name)
+        .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| Error::NoPin {
             module: module.to_owned(),
-            name: "REF",
+            name,
         })
 }
 
 /// Where the builders keep the SDKs they download, between runs:
-/// `$XDG_CACHE_HOME/rusty-photon-pkg`, or `~/.cache/rusty-photon-pkg`.
+/// `$XDG_CACHE_HOME/rusty-photon-pkg`, or `~/.cache/rusty-photon-pkg`, and
+/// on Windows `%LOCALAPPDATA%\rusty-photon-pkg`.
 #[must_use]
 pub fn cache_dir() -> PathBuf {
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("rusty-photon-pkg");
+    }
     std::env::var_os("XDG_CACHE_HOME")
         .filter(|dir| !dir.is_empty())
         .map_or_else(
@@ -330,7 +354,10 @@ pub fn fetch(runner: &mut impl Runner, url: &str, path: &Path, offline: bool) ->
     download(runner, url, path)
 }
 
-fn missing(path: &Path) -> Error {
+/// The error for an SDK a `--skip-sdk-staging` run needs and no previous run
+/// cached at `path`.
+#[must_use]
+pub fn missing(path: &Path) -> Error {
     Error::Io {
         path: path.display().to_string(),
         source: std::io::Error::new(
@@ -340,18 +367,40 @@ fn missing(path: &Path) -> Error {
     }
 }
 
-/// Stages a QHYCCD SDK `archive` in `cache` and returns the directory that
-/// holds its `libqhyccd.a`.
+/// Unpacks the zip at `zip` into `dest` with PowerShell's `Expand-Archive`.
 ///
-/// Unless a previous run unpacked it to `cache/<extract>`, it downloads the
-/// archive, unless that is cached, checks it has the SHA-256 `sha256` and
-/// unpacks it there.
+/// Windows' own `tar.exe` fails on a name the code page cannot hold, as
+/// ZWO's SDKs have (docs/skills/ci-logic.md, "An action that installs a
+/// tool"). The paths reach PowerShell as variables, so nothing in them is
+/// read as code.
 ///
 /// # Errors
 ///
-/// When it must be downloaded and `offline` forbids it, the download or the
-/// SHA-256 is bad, or it holds no `libqhyccd.a`.
-pub fn stage_qhy(
+/// When PowerShell cannot start or the archive cannot be unpacked.
+pub fn expand_zip(runner: &mut impl Runner, zip: &Path, dest: &Path) -> Result<(), Error> {
+    let script = "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; \
+                  Expand-Archive -LiteralPath $env:RP_ZIP -DestinationPath $env:RP_DEST -Force";
+    let cmd = Cmd::new(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    )
+    .env("RP_ZIP", &zip.to_string_lossy())
+    .env("RP_DEST", &dest.to_string_lossy());
+    Ok(runner.run(&cmd)?)
+}
+
+/// Unpacks a QHYCCD SDK `archive` in `cache` and returns where:
+/// `cache/<extract>`.
+///
+/// Unless a previous run unpacked it there, it downloads the archive, unless
+/// that is cached, checks it has the SHA-256 `sha256` and unpacks it, a
+/// `.zip` with [`expand_zip`] and a `.tar.gz` with tar.
+///
+/// # Errors
+///
+/// When it must be downloaded and `offline` forbids it, or the download or
+/// the SHA-256 is bad.
+pub fn unpack_qhy(
     runner: &mut impl Runner,
     cache: &Path,
     archive: &str,
@@ -360,21 +409,45 @@ pub fn stage_qhy(
     offline: bool,
 ) -> Result<PathBuf, Error> {
     let extract = cache.join(extract);
-    if !extract.is_dir() {
-        if offline {
-            return Err(missing(&extract));
-        }
-        let path = cache.join(archive);
-        fetch(runner, &qhy::url(archive), &path, false)?;
-        check_sha256(&path, sha256)?;
-        let work = tempfile::tempdir_in(cache).map_err(io(cache))?;
+    if extract.is_dir() {
+        return Ok(extract);
+    }
+    if offline {
+        return Err(missing(&extract));
+    }
+    let path = cache.join(archive);
+    fetch(runner, &qhy::url(archive), &path, false)?;
+    check_sha256(&path, sha256)?;
+    let work = tempfile::tempdir_in(cache).map_err(io(cache))?;
+    // QHYCCD's archives unpack to a directory named as they are.
+    let unpacked = if let Some(name) = archive.strip_suffix(".zip") {
+        expand_zip(runner, &path, work.path())?;
+        work.path().join(name)
+    } else {
         let work_arg = work.path().to_string_lossy();
         let path_arg = path.to_string_lossy();
         runner.run(&Cmd::new("tar", &["-xzf", &path_arg, "-C", &work_arg]))?;
-        // QHYCCD's archives unpack to a directory named as they are.
-        let unpacked = work.path().join(archive.trim_end_matches(".tar.gz"));
-        fs::rename(&unpacked, &extract).map_err(io(&unpacked))?;
-    }
+        work.path().join(archive.trim_end_matches(".tar.gz"))
+    };
+    fs::rename(&unpacked, &extract).map_err(io(&unpacked))?;
+    Ok(extract)
+}
+
+/// Stages a QHYCCD SDK `archive` in `cache`, as [`unpack_qhy`] does, and
+/// returns the directory that holds its `libqhyccd.a`.
+///
+/// # Errors
+///
+/// When [`unpack_qhy`] fails, or the archive holds no `libqhyccd.a`.
+pub fn stage_qhy(
+    runner: &mut impl Runner,
+    cache: &Path,
+    archive: &str,
+    sha256: &str,
+    extract: &str,
+    offline: bool,
+) -> Result<PathBuf, Error> {
+    let extract = unpack_qhy(runner, cache, archive, sha256, extract, offline)?;
     // Found rather than assumed: the archive's layout is QHYCCD's.
     let lib = find(&extract, "libqhyccd.a")?.ok_or_else(|| Error::Io {
         path: extract.display().to_string(),
@@ -599,6 +672,17 @@ mod tests {
         }
     }
 
+    /// `cargo ci build-msi` downloads ZWO's SDKs for Windows from the links
+    /// install-zwo-sdk's module holds.
+    #[test]
+    fn the_zwo_module_holds_the_windows_links() {
+        let root = crate::repo_root();
+        for name in ["CAMERA_SDK_URL", "EAF_SDK_URL"] {
+            let url = module_const(&root, ZWO_MODULE, name).unwrap();
+            assert!(url.starts_with("https://dl.zwoastro.com/"), "{name}: {url}");
+        }
+    }
+
     #[test]
     fn selects_every_packaged_service_but_svbony_camera_or_the_ones_asked_for() {
         let packaged = ["filemonitor", "svbony-camera", "zwo-camera"].map(str::to_owned);
@@ -698,6 +782,59 @@ mod tests {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.rpm\n{b}  b.deb\n"
             )
         );
+    }
+
+    /// The Windows archive is a zip, which Expand-Archive unpacks.
+    #[test]
+    fn unpacks_a_qhy_zip_with_expand_archive() {
+        let cache = tempfile::tempdir().unwrap();
+        let sha256 = hex(Sha256::digest(b"zip").as_slice());
+        let mut runner = crate::process::Script::default()
+            .on_cmd("curl", |cmd| {
+                fs::write(&cmd.args[2], "zip").unwrap();
+                Ok(String::new())
+            })
+            .on_cmd("powershell", |cmd| {
+                let dest = &cmd
+                    .env
+                    .iter()
+                    .find(|(name, _)| name == "RP_DEST")
+                    .unwrap()
+                    .1;
+                let lib = Path::new(dest).join("sdk_win64_26.06.04/x64");
+                fs::create_dir_all(&lib).unwrap();
+                fs::write(lib.join("qhyccd.lib"), "lib").unwrap();
+                Ok(String::new())
+            });
+        let archive = "sdk_win64_26.06.04.zip";
+        let extract = unpack_qhy(
+            &mut runner,
+            cache.path(),
+            archive,
+            &sha256,
+            "qhy-win64",
+            false,
+        )
+        .unwrap();
+        assert_eq!(extract, cache.path().join("qhy-win64"));
+        assert!(extract.join("x64/qhyccd.lib").is_file());
+        let programs: Vec<&str> = runner
+            .lines
+            .iter()
+            .map(|line| line.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(programs, ["curl", "powershell"]);
+        // Unpacked once: a later run takes it as it is.
+        unpack_qhy(
+            &mut runner,
+            cache.path(),
+            archive,
+            &sha256,
+            "qhy-win64",
+            false,
+        )
+        .unwrap();
+        assert_eq!(runner.lines.len(), 2);
     }
 
     #[test]

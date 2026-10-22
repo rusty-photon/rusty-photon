@@ -1,5 +1,5 @@
 # Provisions the Windows runner template with the MSI packaging toolchain, so
-# a pool clone can run the msi job (scripts/build-msi.ps1 + verify-msi.ps1) as
+# a pool clone can run the msi job (`cargo ci build-msi` + `verify-msi`) as
 # well as the bazel job. Run once during a Windows template rebuild, after the
 # base image and the C:\ci toolchain are in place. Idempotent.
 #
@@ -13,12 +13,12 @@ $ProgressPreference = 'SilentlyContinue'
 # worst outcome, since every pool job then inherits it.
 $ErrorActionPreference = 'Stop'
 
-$WixVersion = '5.0.2'   # must match $WixVersion in scripts/build-msi.ps1
+$WixVersion = '5.0.2'   # must match WIX_VERSION in tools/rusty-photon-ci/src/build_msi.rs
 $dotnetDir  = 'C:\ci\dotnet'
 $toolsDir   = 'C:\ci\dotnet-tools'
 
-# 1. .NET SDK. The wix CLI is a dotnet global tool; build-msi.ps1 fails its
-#    own `dotnet not found` precondition without it. Hosted windows-latest
+# 1. .NET SDK. The wix CLI is a dotnet global tool; `cargo ci build-msi`
+#    refuses to start without it (`dotnet not found`). Hosted windows-latest
 #    ships the SDK preinstalled, which is why this is only needed on the pool.
 if (-not (Test-Path "$dotnetDir\dotnet.exe")) {
   Write-Output "installing .NET SDK 8 -> $dotnetDir"
@@ -49,7 +49,7 @@ $env:Path = "$env:Path;$dotnetDir;$toolsDir"
 
 # 4. wix at the pinned version, on a machine-wide tool path. --tool-path rather
 #    than --global so the job's user sees it regardless of which profile runs
-#    this. build-msi.ps1 skips its own wix install when a matching version is
+#    this. `cargo ci build-msi` skips its own wix install when a matching version is
 #    already on PATH, keeping the SDK fetch off the job's critical path.
 $have = ''
 if (Get-Command wix -ErrorAction SilentlyContinue) { $have = "$(wix --version 2>$null)" }

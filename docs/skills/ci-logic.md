@@ -41,12 +41,17 @@ tools/rusty-photon-ci/
   src/main.rs              clap: one subcommand per tool, nothing else
   src/lib.rs
   src/process.rs           Cmd, the Runner trait, System, which runs for real,
-                           and Fake, for the tests
+                           the Clock a verifier waits with, and for the
+                           tests Fake, Script and a Stopped clock
   src/<tool>.rs            one module per tool, with its tests
   src/packaging.rs         what the packaging tools share: the services, the
                            SDK pins, the ports, downloads, checksums
-  src/build_tarballs.rs    the macOS tarballs, a tool CI runs
+  src/build_packages.rs    the Linux debs and rpms, a tool CI runs
+  src/verify_packages.rs   their lifecycle in a container, likewise
+  src/build_tarballs.rs    the macOS tarballs, likewise
   src/verify_brew.rs       their Homebrew lifecycle, likewise
+  src/build_msi.rs         the Windows suite MSI, likewise
+  src/verify_msi.rs        its install-to-uninstall lifecycle, likewise
   src/brew_formulas.rs     the Homebrew tap's formulas, likewise
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
@@ -65,7 +70,13 @@ tools/rusty-photon-ci/
   queue, so they check what the tool would run, in what order and with what
   environment, and what it does when a command fails, with no Bazel, git,
   curl or gpg on the test's host. A download is a `read` of `curl`, so a
-  test can answer it with a saved file.
+  test can answer it with a saved file. A tool that drives a system, as
+  the packaging verifiers drive podman, Homebrew or Windows' service
+  manager, is tested with `process::Script`, whose rules answer each
+  command by its prefix and can read the command, its exit code included,
+  so a test can stand in for the system and break it one way at a time;
+  and a verifier waits through a `Clock`, which the tests' `Stopped`
+  advances only when the run sleeps.
   `process.rs`'s own tests run `System` on the test binary itself, the one
   program every OS and Bazel's sandbox are sure to have.
 - **A test's fixture is a file in `testdata/`** that the test
@@ -99,8 +110,10 @@ tools/rusty-photon-ci/
   into every build of `//...` for a tool run once a Rust release.
 - **A workflow runs a tool with `cargo ci <tool>`**, which builds it from
   the checkout. The packaging tools are the ones so far:
+  `build-packages` and `verify-packages` in the Linux jobs,
   `build-tarballs`, `verify-brew` and `brew-formulas` in the macOS jobs,
-  which install the toolchain to build the services anyway, and
+  and `build-msi` and `verify-msi` in the Windows ones, which install the
+  toolchain to build the services anyway, and
   `brew-formulas` in the nightly's `publish` job and `release.yml`'s tap
   job too, on hosted Ubuntu, after `dtolnay/rust-toolchain@stable`, as
   every job that builds Rust here runs it. A tool that builds the

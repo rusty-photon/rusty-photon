@@ -44,7 +44,7 @@
 #
 # Thin workflow, thick scripts: the legs drive `cargo ci build-packages` +
 # `cargo ci verify-packages` (shared with on-demand builds on the rigs),
-# scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
+# `cargo ci build-msi` + `cargo ci verify-msi` (shared with msi.yml and
 # release.yml), `cargo ci build-tarballs` + `cargo ci verify-brew` +
 # `cargo ci brew-formulas` (shared with release.yml's stable Homebrew
 # channel), and scripts/build-apt-repo.sh +
@@ -85,8 +85,8 @@ jobs:
       sha: ${{ steps.plan.outputs.sha }}
       date: ${{ steps.plan.outputs.date }}
       # The canonical +nightly string: the Debian version verbatim, the
-      # MSI filename/ARP-comments string (build-msi.ps1 renders the MSI
-      # ProductVersion from it), and the stamp `cargo ci build-packages`
+      # MSI filename/ARP-comments string (`cargo ci build-msi` renders the
+      # MSI ProductVersion from it), and the stamp `cargo ci build-packages`
       # derives the rpm ^ dialect from.
       nightly_version: ${{ steps.plan.outputs.nightly_version }}
     steps:
@@ -177,25 +177,18 @@ jobs:
         id: prior
         uses: ./.github/actions/packages/prior-msi
       - name: Build the suite MSI (nightly stamp)
-        shell: pwsh
-        run: scripts\build-msi.ps1 -NightlyVersion '${{ needs.plan.outputs.nightly_version }}'
+        run: cargo ci build-msi --version '${{ needs.plan.outputs.nightly_version }}'
       # Nightly-over-nightly upgrade proof: install the prior published
       # MSI, upgrade over it, run the shipped doctor's --fix (the operator
       # migration path — deletes keys the new services retired, provisions
       # TLS + the observatory credential), then verify the converged
       # lifecycle. Absorbs pre-1.0 config-schema churn without hand-written
       # shims; a redden here means a breaking config change shipped without
-      # its doctor remedy.
+      # its doctor remedy. An empty --upgrade-from, when the channel holds no
+      # MSI yet, installs nothing first. The option and its path are one
+      # quoted word, which PowerShell passes on as it is, empty or not.
       - name: Verify the MSI lifecycle (incl. upgrade over the prior nightly)
-        shell: pwsh
-        run: |
-          $msi = 'dist\${{ needs.plan.outputs.nightly_version }}\rusty-photon-${{ needs.plan.outputs.nightly_version }}-x64.msi'
-          $prior = '${{ steps.prior.outputs.path }}'
-          if ($prior) {
-            scripts\verify-msi.ps1 -Msi $msi -UpgradeFrom $prior
-          } else {
-            scripts\verify-msi.ps1 -Msi $msi
-          }
+        run: cargo ci verify-msi --msi 'dist\${{ needs.plan.outputs.nightly_version }}\rusty-photon-${{ needs.plan.outputs.nightly_version }}-x64.msi' '--upgrade-from=${{ steps.prior.outputs.path }}'
       - name: Upload the MSI
         uses: actions/upload-artifact@v7
         with:

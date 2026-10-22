@@ -7,6 +7,7 @@
 //! of its own that only the tests compile.
 
 pub mod brew_formulas;
+pub mod build_msi;
 pub mod build_packages;
 pub mod build_tarballs;
 pub mod packaging;
@@ -20,6 +21,7 @@ pub mod rust_toolchain_sha256s;
 #[cfg(test)]
 mod toolchain_pins;
 pub mod verify_brew;
+pub mod verify_msi;
 pub mod verify_packages;
 
 /// The repository's root, two levels above the crate, where the guards find

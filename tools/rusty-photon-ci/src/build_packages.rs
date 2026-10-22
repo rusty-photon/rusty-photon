@@ -144,7 +144,7 @@ pub fn check_host(os: &str, arch: &str) -> Result<Arch, String> {
     if os != "linux" {
         return Err(
             "deb and rpm packages are built and verified on Linux only (macOS ships tarballs — \
-             `cargo ci build-tarballs`; Windows an MSI — scripts/build-msi.ps1)"
+             `cargo ci build-tarballs`; Windows an MSI — `cargo ci build-msi`)"
                 .to_owned(),
         );
     }

@@ -7,7 +7,7 @@
   rp + friends). Every per-service fragment lives in fragments/<svc>.wxs —
   plain committed files, no generator (same explicitness rule as the Linux
   services/<svc>/pkg/ dirs); tools/rusty-photon-ci/src/pkg_assets.rs checks the
-  fragment set and its invariants. Build via scripts/build-msi.ps1 (bindpaths: bin =
+  fragment set and its invariants. Build via `cargo ci build-msi` (bindpaths: bin =
   target\release, zwo = staged ZWO SDK DLLs, repo = repo root).
 
   Silent installs pick features with ADDLOCAL, e.g.

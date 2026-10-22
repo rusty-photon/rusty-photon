@@ -46,8 +46,9 @@ pin parity) on every pull request. Run it after any edit here, with
   eager-validation exit (`SERVICE_STOPPED` + `ServiceSpecific(1)`, see
   `rusty-photon-service-lifecycle`) never triggers the restart. WiX warns
   WIX1149 on the native element (an MSI SDK caveat about its *other* config
-  types); `build-msi.ps1` suppresses it — the util element cannot express
-  the flag, and `verify-msi.ps1` behaviorally proves the combination works.
+  types); `cargo ci build-msi` suppresses it — the util element cannot
+  express the flag, and `cargo ci verify-msi` behaviorally proves the
+  combination works.
 - **Demand-start** (`Start="demand"`, no `Start="install"`) is the
   `ConditionPathExists=` translation for the six no-defaultable-config
   services: sky-survey-camera, plate-solver, calibrator-flats,
@@ -63,17 +64,17 @@ pin parity) on every pull request. Run it after any edit here, with
 ## Building and verifying
 
 ```powershell
-scripts\build-msi.ps1     # stage SDKs, cargo build (CRT-static), wix build
-scripts\verify-msi.ps1    # elevated: install -> class checks -> uninstall
+cargo ci build-msi     # stage SDKs, cargo build (CRT-static), wix build
+cargo ci verify-msi    # elevated: install -> class checks -> uninstall
 ```
 
 CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
 `windows-latest` on PRs touching the packaging inputs and on demand;
-`release.yml` runs the same two scripts with `verify-msi.ps1` gating the
-release upload; and the `msi` leg of `nightly-packages.yml` runs them
-nightly with `build-msi.ps1 -NightlyVersion`, installing over the
-previously published nightly MSI with the shipped doctor's `--fix` in
-the loop (`verify-msi.ps1 -UpgradeFrom`;
+`release.yml` runs the same two tools with `cargo ci verify-msi` gating
+the release upload; and the `msi` leg of `nightly-packages.yml` runs them
+nightly with `cargo ci build-msi --version <nightly stamp>`, installing
+over the previously published nightly MSI with the shipped doctor's
+`--fix` in the loop (`cargo ci verify-msi --upgrade-from`;
 `docs/plans/archive/nightly-releases.md` N3).
 Operator guide: `docs/packaging-windows.md`.
 
