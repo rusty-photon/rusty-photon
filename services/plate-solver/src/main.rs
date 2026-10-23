@@ -128,7 +128,7 @@ fn main() -> ExitCode {
                 })?;
 
             let addr = server.listen_addr();
-            // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
+            // `bound_addr=` is parsed by `bdd-infra::follow_bound_port` to
             // discover the test-spawned service's port. Must be on stdout.
             // Console mode only: stdout is a dead handle under the Windows SCM,
             // and the only stdout consumer (bdd-infra's port parser) never runs
