@@ -65,7 +65,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(Box::<dyn std::error::Error>::from)?;
 
     println!("::group::ConformU Compliance Test Results");
-    let camera = bdd_infra::run_conformu("camera", &handle.base_url, 0, None)
+    let camera = bdd_infra::run_conformu("camera", &handle.base_url(), 0, None)
         .await
         .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
     println!("::endgroup::");

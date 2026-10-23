@@ -61,7 +61,7 @@ async fn alpaca_management_responds_https(world: &mut QhyFocuserWorld) {
         .focuser_handle
         .as_ref()
         .expect("qhy-focuser not started")
-        .port;
+        .port();
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     let mut ok = false;

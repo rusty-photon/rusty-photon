@@ -139,10 +139,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     println!("::group::ConformU Telescope Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Telescope compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
-    let result = run_conformu("telescope", &handle.base_url, 0, None).await;
+    let result = run_conformu("telescope", &handle.base_url(), 0, None).await;
 
     handle.stop().await;
 

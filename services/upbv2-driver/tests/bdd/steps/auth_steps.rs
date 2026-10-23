@@ -11,7 +11,11 @@ fn pki(world: &Upbv2World) -> &PkiFixture {
 }
 
 fn management_url(world: &Upbv2World) -> String {
-    let port = world.upbv2.as_ref().expect("upbv2-driver not started").port;
+    let port = world
+        .upbv2
+        .as_ref()
+        .expect("upbv2-driver not started")
+        .port();
     format!("https://localhost:{port}/management/v1/configureddevices")
 }
 
@@ -58,7 +62,7 @@ async fn upbv2_started_with_tls_and_auth(world: &mut Upbv2World) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port));
+    world.base_url = Some(format!("https://localhost:{}", handle.port()));
     world.upbv2 = Some(handle);
 }
 
@@ -83,7 +87,7 @@ async fn upbv2_started_without_auth(world: &mut Upbv2World) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("http://127.0.0.1:{}", handle.port));
+    world.base_url = Some(format!("http://127.0.0.1:{}", handle.port()));
     world.upbv2 = Some(handle);
 }
 
@@ -142,7 +146,11 @@ async fn response_includes_www_authenticate(world: &mut Upbv2World) {
 
 #[then("the Alpaca management endpoint should respond without credentials")]
 async fn alpaca_responds_without_credentials(world: &mut Upbv2World) {
-    let port = world.upbv2.as_ref().expect("upbv2-driver not started").port;
+    let port = world
+        .upbv2
+        .as_ref()
+        .expect("upbv2-driver not started")
+        .port();
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     wait_for_http_200(http_client(), &url).await;

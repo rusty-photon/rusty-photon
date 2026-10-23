@@ -100,11 +100,11 @@ impl QhyFocuserWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
+    pub fn bound_port(&self) -> u16 {
         self.focuser_handle
             .as_ref()
             .expect("service not started")
-            .port
+            .port()
     }
 
     /// Call `config.get`, stash the parsed response, and return the `config`
@@ -152,7 +152,7 @@ impl QhyFocuserWorld {
 
     /// Poll until the server returns a Focuser device via the Alpaca client.
     async fn acquire_focuser(&self, handle: &ServiceHandle) -> Arc<dyn Focuser> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
         let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;

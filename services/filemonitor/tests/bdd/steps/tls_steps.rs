@@ -40,7 +40,7 @@ async fn alpaca_management_responds_https(world: &mut FilemonitorWorld) {
         .filemonitor
         .as_ref()
         .expect("filemonitor not started")
-        .port;
+        .port();
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     // No auth is configured in this scenario, so the credentials the probe

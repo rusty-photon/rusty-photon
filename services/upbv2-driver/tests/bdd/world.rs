@@ -116,7 +116,11 @@ impl Upbv2World {
         let mut args = vec!["--config", config_path.as_str()];
         args.extend_from_slice(extra);
         let handle = ServiceHandle::start_with_env(env!("CARGO_PKG_NAME"), &args, envs).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.into(),
+        );
         self.adopt(handle).await;
     }
 
@@ -136,7 +140,7 @@ impl Upbv2World {
         let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
             .expect("the TLS fixture staged a config file");
         setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
-        self.base_url = Some(handle.base_url.clone());
+        self.base_url = Some(handle.base_url());
         self.upbv2 = Some(handle);
     }
 
@@ -161,7 +165,7 @@ impl Upbv2World {
     /// Record a spawned plain-HTTP service: wait for it, then discover its
     /// devices through the typed ASCOM client.
     async fn adopt(&mut self, handle: ServiceHandle) {
-        self.base_url = Some(handle.base_url.clone());
+        self.base_url = Some(handle.base_url());
         self.upbv2 = Some(handle);
 
         // Wait for the server to be ready

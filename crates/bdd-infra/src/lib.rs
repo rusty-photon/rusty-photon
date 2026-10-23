@@ -62,7 +62,7 @@
 //!     "path/to/config.json",
 //! ).await;
 //!
-//! // handle.port, handle.base_url are available
+//! // handle.port() and handle.base_url() follow the port it announces
 //! // ...
 //! handle.stop().await;
 //! ```
@@ -615,10 +615,9 @@ fn child_coverage_profile_path(
 #[derive(Debug)]
 pub struct ServiceHandle {
     child: Option<tokio::process::Child>,
-    /// The port the service bound to (parsed from stdout).
-    pub port: u16,
-    /// The base URL of the running service (e.g., `http://127.0.0.1:12345`).
-    pub base_url: String,
+    /// The port the service announced last on stdout.
+    bound_port: BoundPort,
+    /// Reads stdout to its end, moving `bound_port` to each announcement.
     stdout_drain: Option<tokio::task::JoinHandle<()>>,
     stderr_forward: Option<tokio::task::JoinHandle<()>>,
     /// Service name (for log/error messages).
@@ -684,14 +683,13 @@ impl ServiceHandle {
             .stdout
             .take()
             .unwrap_or_else(|| panic!("failed to capture {package_name} stdout"));
-        let (port, stdout_drain) = parse_bound_port(stdout)
+        let (bound_port, stdout_drain) = follow_bound_port(stdout)
             .await
             .unwrap_or_else(|| panic!("failed to parse bound port from {package_name} output"));
 
         Self {
             child: Some(child),
-            port,
-            base_url: format!("http://127.0.0.1:{port}"),
+            bound_port,
             stdout_drain: Some(stdout_drain),
             stderr_forward: Some(stderr_forward),
             name: package_name.to_string(),
@@ -765,11 +763,10 @@ impl ServiceHandle {
             .take()
             .ok_or_else(|| format!("failed to capture {package_name} stdout"))?;
 
-        match tokio::time::timeout(Duration::from_secs(30), parse_bound_port(stdout)).await {
-            Ok(Some((port, stdout_drain))) => Ok(Self {
+        match tokio::time::timeout(Duration::from_secs(30), follow_bound_port(stdout)).await {
+            Ok(Some((bound_port, stdout_drain))) => Ok(Self {
                 child: Some(child),
-                port,
-                base_url: format!("http://127.0.0.1:{port}"),
+                bound_port,
                 stdout_drain: Some(stdout_drain),
                 stderr_forward: Some(stderr_forward),
                 name: package_name.to_string(),
@@ -783,6 +780,27 @@ impl ServiceHandle {
                 Err(format!("timeout waiting for {package_name} to bind"))
             }
         }
+    }
+
+    /// The port the service announced last: a service that rebuilds its
+    /// own server on port 0 moves to another (see [`BoundPort`]).
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.bound_port.get()
+    }
+
+    /// The service's base URL at [`port`](Self::port), e.g.
+    /// `http://127.0.0.1:12345`.
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port())
+    }
+
+    /// A [`BoundPort`] that follows this service's announcements, for state
+    /// that keeps the port apart from the handle.
+    #[must_use]
+    pub fn bound_port(&self) -> BoundPort {
+        self.bound_port.clone()
     }
 
     /// Returns `true` if the service process is currently running.
@@ -1337,56 +1355,105 @@ async fn join_or_abort(mut handle: tokio::task::JoinHandle<()>) {
     }
 }
 
-/// Parse the bound port from a service's stdout.
+/// The port a service announced last, followed for the service's life.
 ///
-/// Scans each line for `bound_addr=<host>:<port>` and extracts the port.
-/// After finding it, spawns a background task to drain remaining stdout so
-/// the service process never blocks on a full pipe buffer.
+/// A service prints `bound_addr=<host>:<port>` each time it binds, and one
+/// configured with port 0 that rebuilds its own server (a camera's re-scan
+/// after a failed USB scan, a reload) binds a new port each time. The task
+/// reading the service's stdout moves this to every announcement, so a test
+/// never has to pick a port ahead of the service (docs/skills/testing.md
+/// §5.1). Clones follow the same announcements.
+#[derive(Debug, Clone)]
+pub struct BoundPort(tokio::sync::watch::Receiver<u16>);
+
+impl BoundPort {
+    /// A port that never moves, for a service a suite starts some other way
+    /// (in process, say) and learns the port of itself.
+    #[must_use]
+    pub fn fixed(port: u16) -> Self {
+        Self(tokio::sync::watch::channel(port).1)
+    }
+
+    /// The port announced last.
+    #[must_use]
+    pub fn get(&self) -> u16 {
+        *self.0.borrow()
+    }
+}
+
+/// Follow a service's stdout for its `bound_addr=<host>:<port>` lines,
+/// whatever text precedes `bound_addr=` on them.
 ///
-/// This is a universal parser — it works regardless of what human-readable
-/// text precedes `bound_addr=` in the output line.
-pub async fn parse_bound_port(
+/// Waits for the first and returns it as a [`BoundPort`], with the task
+/// that reads the rest of stdout to its end: it moves the `BoundPort` to
+/// each later announcement, and by reading keeps the service from ever
+/// blocking on a full pipe.
+///
+/// Returns `None` at the end of output without an announcement.
+pub async fn follow_bound_port(
     stdout: tokio::process::ChildStdout,
-) -> Option<(u16, tokio::task::JoinHandle<()>)> {
-    parse_port_after(stdout, "bound_addr=").await
+) -> Option<(BoundPort, tokio::task::JoinHandle<()>)> {
+    follow_port_after(stdout, "bound_addr=").await
 }
 
 /// Parse the bound port from the stdout of a child that announces its
 /// address after `marker`.
 ///
-/// [`parse_bound_port`] is this for our services' `bound_addr=`; this
-/// form is for a third-party binary told to bind port 0 that prints the
+/// This is for a third-party binary told to bind port 0 that prints the
 /// address it got under its own wording, such as geckodriver's
-/// `Listening on `. The text after `marker` on the first line carrying it
-/// ends in `:<port>`.
+/// `Listening on `; our services' `bound_addr=` goes through
+/// [`follow_bound_port`]. The text after `marker` on the first line
+/// carrying it ends in `:<port>`.
 ///
 /// Returns `None` at end of output without a match, and otherwise drains
-/// the rest of stdout in a background task, as [`parse_bound_port`] does.
+/// the rest of stdout in a background task, as [`follow_bound_port`] does.
 pub async fn parse_port_after(
     stdout: tokio::process::ChildStdout,
     marker: &str,
 ) -> Option<(u16, tokio::task::JoinHandle<()>)> {
+    let (port, drain) = follow_port_after(stdout, marker).await?;
+    Some((port.get(), drain))
+}
+
+/// [`follow_bound_port`] for announcements after `marker`, on any output.
+async fn follow_port_after<R>(
+    stdout: R,
+    marker: &str,
+) -> Option<(BoundPort, tokio::task::JoinHandle<()>)>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
 
-    while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some((_, after)) = line.split_once(marker) {
-            let addr_str = after.trim();
-            if let Some(port_str) = addr_str.split(':').next_back() {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    let drain_handle = tokio::spawn(async move {
-                        let mut buf = String::new();
-                        while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
-                            buf.clear();
-                        }
-                    });
-                    return Some((port, drain_handle));
-                }
-            }
+    let first = loop {
+        if reader.read_line(&mut line).await.ok()? == 0 {
+            return None;
+        }
+        if let Some(port) = announced_port(&line, marker) {
+            break port;
         }
         line.clear();
-    }
-    None
+    };
+    let (announcements, port) = tokio::sync::watch::channel(first);
+    let marker = marker.to_owned();
+    let drain = tokio::spawn(async move {
+        line.clear();
+        while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+            if let Some(port) = announced_port(&line, &marker) {
+                debug!(port, "a child announced another bound port");
+                announcements.send_replace(port);
+            }
+            line.clear();
+        }
+    });
+    Some((BoundPort(port), drain))
+}
+
+/// The port at the end of the address after `marker` on `line`, if any.
+fn announced_port(line: &str, marker: &str) -> Option<u16> {
+    let (_, after) = line.split_once(marker)?;
+    after.trim().split(':').next_back()?.parse().ok()
 }
 
 /// What [`send_sigterm`] actually delivers, and what the timeout escalates to.
@@ -1469,43 +1536,43 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_bound_port tests
+    // follow_bound_port tests
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_parse_bound_port_alpaca_prefix() {
+    async fn test_follow_bound_port_alpaca_prefix() {
         let mut child =
             spawn_piped("echo", &["Bound Alpaca server bound_addr=0.0.0.0:54321"]).await;
         let stdout = child.stdout.take().unwrap();
 
-        let (port, drain) = parse_bound_port(stdout).await.unwrap();
-        assert_eq!(port, 54321);
+        let (port, drain) = follow_bound_port(stdout).await.unwrap();
+        assert_eq!(port.get(), 54321);
         drain.abort();
     }
 
     #[tokio::test]
-    async fn test_parse_bound_port_rp_prefix() {
+    async fn test_follow_bound_port_rp_prefix() {
         let mut child = spawn_piped("echo", &["Bound rp server bound_addr=127.0.0.1:9999"]).await;
         let stdout = child.stdout.take().unwrap();
 
-        let (port, drain) = parse_bound_port(stdout).await.unwrap();
-        assert_eq!(port, 9999);
+        let (port, drain) = follow_bound_port(stdout).await.unwrap();
+        assert_eq!(port.get(), 9999);
         drain.abort();
     }
 
     #[tokio::test]
-    async fn test_parse_bound_port_arbitrary_prefix() {
+    async fn test_follow_bound_port_arbitrary_prefix() {
         let mut child =
             spawn_piped("echo", &["some future service bound_addr=10.0.0.1:8080"]).await;
         let stdout = child.stdout.take().unwrap();
 
-        let (port, drain) = parse_bound_port(stdout).await.unwrap();
-        assert_eq!(port, 8080);
+        let (port, drain) = follow_bound_port(stdout).await.unwrap();
+        assert_eq!(port.get(), 8080);
         drain.abort();
     }
 
     #[tokio::test]
-    async fn test_parse_bound_port_with_preceding_lines() {
+    async fn test_follow_bound_port_with_preceding_lines() {
         // printf outputs multiple lines; the port line comes after noise
         let mut child = spawn_piped(
             "printf",
@@ -1514,26 +1581,26 @@ mod tests {
         .await;
         let stdout = child.stdout.take().unwrap();
 
-        let (port, drain) = parse_bound_port(stdout).await.unwrap();
-        assert_eq!(port, 11111);
+        let (port, drain) = follow_bound_port(stdout).await.unwrap();
+        assert_eq!(port.get(), 11111);
         drain.abort();
     }
 
     #[tokio::test]
-    async fn test_parse_bound_port_no_match_returns_none() {
+    async fn test_follow_bound_port_no_match_returns_none() {
         let mut child = spawn_piped("echo", &["no port info here"]).await;
         let stdout = child.stdout.take().unwrap();
 
-        let result = parse_bound_port(stdout).await;
+        let result = follow_bound_port(stdout).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn test_parse_bound_port_empty_output_returns_none() {
+    async fn test_follow_bound_port_empty_output_returns_none() {
         let mut child = spawn_piped("true", &[]).await;
         let stdout = child.stdout.take().unwrap();
 
-        let result = parse_bound_port(stdout).await;
+        let result = follow_bound_port(stdout).await;
         assert!(result.is_none());
     }
 
@@ -2300,6 +2367,51 @@ mod tests {
     /// pre-built binaries, which keeps it out of every per-PR run. These are
     /// hermetic — one `kill(2)` at a pid that cannot exist, no subprocess,
     /// no filesystem.
+    /// How the stdout reader follows a service's announcements, on output
+    /// held in memory: hermetic and the same on every platform, so
+    /// `:bdd-infra_bound_port_unit_test` runs it on every PR.
+    mod bound_port {
+        use super::*;
+
+        fn output(text: &str) -> std::io::Cursor<Vec<u8>> {
+            std::io::Cursor::new(text.as_bytes().to_vec())
+        }
+
+        #[tokio::test]
+        async fn a_later_announcement_moves_the_port_and_its_clones() {
+            // A camera rebuilding its server on port 0 after a re-scan.
+            let stdout = output(
+                "bound_addr=0.0.0.0:11111\nre-scan found the camera\nbound_addr=0.0.0.0:22222\n",
+            );
+
+            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
+            let clone = port.clone();
+            drain.await.unwrap();
+            assert_eq!((port.get(), clone.get()), (22222, 22222));
+        }
+
+        #[tokio::test]
+        async fn lines_that_announce_no_port_leave_it_where_it_was() {
+            let stdout = output("bound_addr=0.0.0.0:11111\nbound_addr=not-an-address\nstopping\n");
+
+            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
+            drain.await.unwrap();
+            assert_eq!(port.get(), 11111);
+        }
+
+        #[tokio::test]
+        async fn output_that_ends_without_an_announcement_gives_none() {
+            let stdout = output("starting up\nbound_addr=not-an-address\n");
+
+            assert!(follow_port_after(stdout, "bound_addr=").await.is_none());
+        }
+
+        #[test]
+        fn a_fixed_port_never_moves() {
+            assert_eq!(BoundPort::fixed(4242).get(), 4242);
+        }
+    }
+
     #[cfg(unix)]
     mod signals {
         use super::*;

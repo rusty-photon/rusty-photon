@@ -735,7 +735,7 @@ async fn start_polar_align_service(world: &mut PolarAlignWorld) {
     // every `POST /runs` run connects to. The standalone scenarios run
     // without rp and never start a run.
     if let Some(rp) = world.rp.as_ref() {
-        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url));
+        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url()));
     }
     let config_path = write_temp_config_file("polar-align-config", &config).await;
     world.polar_align = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);

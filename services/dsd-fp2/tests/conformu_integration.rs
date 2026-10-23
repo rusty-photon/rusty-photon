@@ -90,12 +90,12 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("::group::ConformU CoverCalibrator Compliance Test Results");
     println!(
         "Running ASCOM Alpaca CoverCalibrator compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
     let result = bdd_infra::run_conformu(
         "covercalibrator",
-        &handle.base_url,
+        &handle.base_url(),
         0,
         Some(&conformu_settings),
     )

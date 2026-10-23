@@ -60,7 +60,7 @@ async fn management_responds_https(world: &mut ScopsWorld) {
         .focuser_handle
         .as_ref()
         .expect("pa-scops-oag not started")
-        .port;
+        .port();
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     for _ in 0..60 {

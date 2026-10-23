@@ -124,7 +124,7 @@ pub async fn timeout_report(
             let _ = writeln!(
                 report,
                 "  session-runner /health: {}",
-                probe(&handle.base_url).await
+                probe(&handle.base_url()).await
             );
         }
         None => {

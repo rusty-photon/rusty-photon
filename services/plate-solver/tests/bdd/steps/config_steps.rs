@@ -150,7 +150,7 @@ async fn then_wrapper_prints_bound_addr(world: &mut PlateSolverWorld) {
         .service_handle
         .as_ref()
         .expect("service handle missing — wrapper didn't start?");
-    assert!(handle.port > 0, "expected non-zero bound port");
+    assert!(handle.port() > 0, "expected non-zero bound port");
 }
 
 #[then("the wrapper /health returns 200")]

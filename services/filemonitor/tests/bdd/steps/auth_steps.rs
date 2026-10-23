@@ -12,7 +12,7 @@ fn management_url(world: &FilemonitorWorld) -> String {
         .filemonitor
         .as_ref()
         .expect("filemonitor not started")
-        .port;
+        .port();
     format!("https://localhost:{port}/management/v1/configureddevices")
 }
 
@@ -148,7 +148,7 @@ async fn alpaca_responds_without_credentials(world: &mut FilemonitorWorld) {
         .filemonitor
         .as_ref()
         .expect("filemonitor not started")
-        .port;
+        .port();
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     let mut ok = false;

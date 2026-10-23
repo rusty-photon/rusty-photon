@@ -159,7 +159,7 @@ impl FilemonitorWorld {
         let handle =
             ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
     }
@@ -201,14 +201,14 @@ impl FilemonitorWorld {
         let handle =
             ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
     }
 
     /// Poll until the server returns a `SafetyMonitor` device via the typed client.
     pub async fn acquire_monitor(&self, handle: &ServiceHandle) -> Arc<dyn SafetyMonitor> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
         let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;

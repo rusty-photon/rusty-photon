@@ -103,10 +103,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         println!("::group::ConformU Switch Compliance Test Results");
         println!(
             "Running ASCOM Alpaca Switch compliance tests on port {}...",
-            handle.port
+            handle.port()
         );
 
-        match run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings)).await? {
+        match run_conformu("switch", &handle.base_url(), 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch: CONFORMU_PATH not set, skipping.");
             }
@@ -119,12 +119,12 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         println!("::group::ConformU ObservingConditions Compliance Test Results");
         println!(
             "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
-            handle.port
+            handle.port()
         );
 
         match run_conformu(
             "observingconditions",
-            &handle.base_url,
+            &handle.base_url(),
             0,
             Some(&conformu_settings),
         )
@@ -169,10 +169,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         println!("::group::ConformU Switch Compliance Test Results (auto-dew on A and B)");
         println!(
             "Running ASCOM Alpaca Switch compliance tests on port {}...",
-            gated.port
+            gated.port()
         );
 
-        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings)).await? {
+        match run_conformu("switch", &gated.base_url(), 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch (auto-dew): CONFORMU_PATH not set, skipping.");
             }

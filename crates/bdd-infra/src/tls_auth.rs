@@ -219,7 +219,7 @@ pub struct TlsAuthState {
     pub config_dir: Option<TempDir>,
     /// The bound port, whatever the launch mechanism. Set by
     /// [`spawn_service_handle`]; custom launch paths record it themselves.
-    pub port: Option<u16>,
+    pub port: Option<crate::BoundPort>,
 }
 
 impl TlsAuthState {
@@ -233,14 +233,27 @@ impl TlsAuthState {
         self.pki.as_deref().expect("TLS certs not generated")
     }
 
-    /// The bound port, recorded by the start-with-TLS-and-auth When.
+    /// The port the service announced last, recorded by the
+    /// start-with-TLS-and-auth When.
     ///
     /// # Panics
     ///
     /// Panics if the service has not been started with TLS and auth.
     #[must_use]
-    pub const fn port(&self) -> u16 {
-        self.port.expect("service not started with TLS and auth")
+    pub fn port(&self) -> u16 {
+        self.bound_port().get()
+    }
+
+    /// The [`BoundPort`](crate::BoundPort) behind [`port`](Self::port).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the service has not been started with TLS and auth.
+    #[must_use]
+    pub fn bound_port(&self) -> crate::BoundPort {
+        self.port
+            .clone()
+            .expect("service not started with TLS and auth")
     }
 }
 
@@ -318,7 +331,7 @@ pub async fn spawn_service_handle(
 ) -> crate::ServiceHandle {
     let path = stage_config_file(state, config);
     let handle = crate::ServiceHandle::start(package_name, path.to_str().unwrap()).await;
-    state.port = Some(handle.port);
+    state.port = Some(handle.bound_port());
     handle
 }
 

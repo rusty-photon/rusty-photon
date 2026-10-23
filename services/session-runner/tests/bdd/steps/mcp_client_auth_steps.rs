@@ -33,8 +33,8 @@ fn pki(world: &SessionRunnerWorld) -> &PkiFixture {
         .expect("TLS certs not generated")
 }
 
-const fn rp_port(world: &SessionRunnerWorld) -> u16 {
-    world.rp.as_ref().expect("rp not started").port
+fn rp_port(world: &SessionRunnerWorld) -> u16 {
+    world.rp.as_ref().expect("rp not started").port()
 }
 
 #[given("rp is started with TLS and auth enabled")]
@@ -91,7 +91,7 @@ async fn validate_standalone(world: &mut SessionRunnerWorld, workflow: String) {
         .session_runner
         .as_ref()
         .expect("session-runner not started")
-        .base_url
+        .base_url()
         .clone();
     let response = reqwest::Client::new()
         .post(format!("{base_url}/validate"))

@@ -148,7 +148,7 @@ impl CalibratorFlatsWorld {
     pub fn rp_url(&self) -> String {
         self.rp
             .as_ref()
-            .map(|h| h.base_url.clone())
+            .map(ServiceHandle::base_url)
             .expect("rp must be started before accessing its URL")
     }
 
@@ -159,7 +159,7 @@ impl CalibratorFlatsWorld {
     pub fn calibrator_flats_url(&self) -> String {
         self.calibrator_flats
             .as_ref()
-            .map(|h| h.base_url.clone())
+            .map(ServiceHandle::base_url)
             .expect("calibrator-flats must be started before accessing its URL")
     }
 

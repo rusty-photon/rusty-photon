@@ -73,7 +73,11 @@ async fn sentinel_started_with_tls(world: &mut SentinelWorld) {
 async fn dashboard_health_https(world: &mut SentinelWorld) {
     let pki = world.pki();
     let client = pki.https_client();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let port = world
+        .sentinel
+        .as_ref()
+        .expect("sentinel not started")
+        .port();
     let url = format!("https://localhost:{port}/health");
 
     // No auth is configured in this scenario, so the credentials the probe
@@ -114,7 +118,7 @@ fn sentinel_configured_with_ca(world: &mut SentinelWorld) {
         "type": "alpaca_safety_monitor",
         "name": "Roof Monitor",
         "host": "localhost",
-        "port": fm.port,
+        "port": fm.port(),
         "device_number": 0,
         "polling_interval": "1s",
         "scheme": "https"

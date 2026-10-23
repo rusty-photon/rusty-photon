@@ -282,7 +282,7 @@ impl BridgeWorld {
     }
 
     async fn acquire(&mut self) {
-        let port = self.handle.as_ref().expect("service handle").port;
+        let port = self.handle.as_ref().expect("service handle").port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         // Built on the suite's client so its deadline reaches every device
         // call made through the handles this hands out, and built once so
@@ -349,7 +349,7 @@ impl BridgeWorld {
     /// `GET /health` on the Alpaca listener, parsed; `None` while the
     /// endpoint is unreachable or not JSON.
     pub async fn try_health(&self) -> Option<serde_json::Value> {
-        let port = self.handle.as_ref().expect("service handle").port;
+        let port = self.handle.as_ref().expect("service handle").port();
         http_client()
             .get(format!("http://127.0.0.1:{port}/health"))
             .send()

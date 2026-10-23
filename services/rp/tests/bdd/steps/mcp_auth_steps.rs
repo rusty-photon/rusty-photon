@@ -18,7 +18,7 @@ use super::tool_steps::{add_camera, ensure_omnisim};
 /// the TLS scenarios address the same port over https, like the
 /// health-endpoint steps do.
 fn mcp_url_https(world: &RpWorld) -> String {
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     format!("https://localhost:{port}/mcp")
 }
 

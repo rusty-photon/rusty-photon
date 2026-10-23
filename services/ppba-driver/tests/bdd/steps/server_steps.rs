@@ -124,7 +124,7 @@ async fn oc_name_endpoint_returns(world: &mut PpbaWorld, expected: String) {
 #[then("the server should be reachable on the bound port")]
 async fn server_reachable_on_bound_port(world: &mut PpbaWorld) {
     let handle = world.ppba.as_ref().expect("server not started");
-    let port = handle.port;
+    let port = handle.port();
     assert_ne!(port, 0, "OS should have assigned a real port");
     let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
     assert!(

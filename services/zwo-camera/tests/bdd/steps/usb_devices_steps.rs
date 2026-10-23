@@ -163,17 +163,24 @@ async fn camera_reports_unique_id_within(
     device: u32,
     expected: String,
 ) {
-    // The service rebuilds its server on the reload, so each poll asks the
-    // management API afresh, and a poll the rebuild refuses is "not yet"
+    // The service rebuilds its server on the reload, on the new port it
+    // announces, so each poll asks the management API afresh at the port
+    // announced last, and a poll the rebuild refuses is "not yet"
     // (testing.md §5.9).
     let budget = Duration::from_secs(seconds);
     let start = Instant::now();
     let index = usize::try_from(device).expect("device number fits usize");
     loop {
-        let seen = registered_cameras(world.port())
-            .await
+        let cameras = registered_cameras(world.port()).await;
+        let seen = cameras
+            .as_ref()
             .and_then(|cameras| cameras.get(index).map(|c| c.unique_id().to_string()));
         if seen.as_deref() == Some(expected.as_str()) {
+            // The later steps talk to the rebuilt server's cameras.
+            if let Some(cameras) = cameras {
+                world.camera = cameras.first().cloned();
+                world.cameras = cameras;
+            }
             return;
         }
         let waited = start.elapsed();

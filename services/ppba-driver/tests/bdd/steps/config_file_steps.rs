@@ -90,7 +90,7 @@ async fn driver_starts_with_config_file(world: &mut PpbaWorld) {
     let path = path.to_str().expect("utf-8 scratch path");
     match ServiceHandle::try_start(env!("CARGO_PKG_NAME"), path).await {
         Ok(handle) => {
-            world.base_url = Some(handle.base_url.clone());
+            world.base_url = Some(handle.base_url());
             world.ppba = Some(handle);
         }
         Err(_) => {

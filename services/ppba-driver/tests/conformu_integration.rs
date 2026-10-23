@@ -143,10 +143,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         println!("::group::ConformU Switch Compliance Test Results");
         println!(
             "Running ASCOM Alpaca Switch compliance tests on port {}...",
-            handle.port
+            handle.port()
         );
 
-        match run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings)).await? {
+        match run_conformu("switch", &handle.base_url(), 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch: CONFORMU_PATH not set, skipping.");
             }
@@ -159,12 +159,12 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         println!("::group::ConformU ObservingConditions Compliance Test Results");
         println!(
             "Running ASCOM Alpaca ObservingConditions compliance tests on port {}...",
-            handle.port
+            handle.port()
         );
 
         match run_conformu(
             "observingconditions",
-            &handle.base_url,
+            &handle.base_url(),
             0,
             Some(&conformu_settings),
         )
@@ -204,15 +204,15 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await?;
 
     let gated_result: TestResult = async {
-        engage_auto_dew(&gated.base_url).await?;
+        engage_auto_dew(&gated.base_url()).await?;
 
         println!("::group::ConformU Switch Compliance Test Results (auto-dew on)");
         println!(
             "Running ASCOM Alpaca Switch compliance tests on port {}...",
-            gated.port
+            gated.port()
         );
 
-        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings)).await? {
+        match run_conformu("switch", &gated.base_url(), 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch (auto-dew on): CONFORMU_PATH not set, skipping.");
             }

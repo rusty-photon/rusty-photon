@@ -189,7 +189,7 @@ impl UiWorld {
             &["--config", &config_path, "--port", serial_port],
         )
         .await;
-        self.driver_port = handle.port;
+        self.driver_port = handle.port();
         self.driver = Some(handle);
         self.wait_for_driver_ready().await;
         self.roster_driver_and_start_rp(DEVICE_ID).await;
@@ -504,10 +504,10 @@ impl UiWorld {
         .expect("failed to write rp config");
         let handle = ServiceHandle::start("rp", path.to_str().unwrap()).await;
         assert!(
-            bdd_infra::rp_harness::wait_for_rp_healthy(&handle.base_url).await,
+            bdd_infra::rp_harness::wait_for_rp_healthy(&handle.base_url()).await,
             "rp did not become healthy"
         );
-        self.rp_port = handle.port;
+        self.rp_port = handle.port();
         self.rp = Some(handle);
         self.rp_config_path = Some(path);
     }
@@ -591,7 +591,7 @@ impl UiWorld {
     ) {
         let config_path = self.write_driver_config(serial_port, max_step);
         let handle = ServiceHandle::start("qhy-focuser", &config_path).await;
-        self.driver_port = handle.port;
+        self.driver_port = handle.port();
         self.driver = Some(handle);
         self.wait_for_driver_ready().await;
         self.roster_driver_and_start_rp(id).await;
@@ -619,7 +619,7 @@ impl UiWorld {
     pub async fn start_panel_and_rp_with_cover_calibrator(&mut self, id: &str) {
         let config_path = self.write_panel_config(None);
         let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.panel_port = handle.port;
+        self.panel_port = handle.port();
         self.panel_scheme = "http";
         self.panel = Some(handle);
         let url = format!("http://127.0.0.1:{}", self.panel_port);
@@ -636,7 +636,7 @@ impl UiWorld {
         let pki = bdd_infra::tls_auth::shared_pki("dsd-fp2").await;
         let config_path = self.write_panel_config(Some(pki.server_block(0)));
         let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.panel_port = handle.port;
+        self.panel_port = handle.port();
         self.panel_scheme = "https";
         self.panel = Some(handle);
         let url = format!("https://localhost:{}", self.panel_port);
@@ -697,7 +697,7 @@ impl UiWorld {
         }
         if let Some(sentinel) = &self.sentinel {
             config["sentinel"] = json!({
-                "base_url": format!("http://127.0.0.1:{}", sentinel.port)
+                "base_url": format!("http://127.0.0.1:{}", sentinel.port())
             });
         }
         let path = self.temp_path("ui-htmx.json");
@@ -796,9 +796,10 @@ impl UiWorld {
     /// result or the tool-error message.
     pub async fn rp_tool(&self, tool: &str, args: Value) -> Result<Value, String> {
         let rp = self.rp.as_ref().expect("rp not started");
-        let client = bdd_infra::rp_harness::McpTestClient::connect(&format!("{}/mcp", rp.base_url))
-            .await
-            .expect("MCP connect to rp failed");
+        let client =
+            bdd_infra::rp_harness::McpTestClient::connect(&format!("{}/mcp", rp.base_url()))
+                .await
+                .expect("MCP connect to rp failed");
         client.call_tool(tool, args).await
     }
 
@@ -836,7 +837,7 @@ impl UiWorld {
 
     fn ui_url(&self, path: &str) -> String {
         let ui = self.ui.as_ref().expect("BFF not started");
-        format!("{}{}", ui.base_url, path)
+        format!("{}{}", ui.base_url(), path)
     }
 
     /// The `HX-*` request headers htmx attaches to a swap request, so a captured

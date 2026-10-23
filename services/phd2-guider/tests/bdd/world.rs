@@ -122,7 +122,7 @@ impl TlsAuthSmokeWorld for GuiderWorld {
             &["--config", path.to_str().unwrap(), "serve"],
         )
         .await;
-        self.tls_auth.port = Some(handle.port);
+        self.tls_auth.port = Some(handle.bound_port());
         // The cucumber `after` hook in `tests/bdd.rs` stops the handle here.
         self.service_handle = Some(handle);
     }
@@ -226,7 +226,7 @@ impl GuiderWorld {
             .service_handle
             .as_ref()
             .expect("guider service not started — Given step missing?");
-        format!("http://127.0.0.1:{}", handle.port)
+        format!("http://127.0.0.1:{}", handle.port())
     }
 
     /// Spawn `mock_phd2` with an auto-assigned port and the given

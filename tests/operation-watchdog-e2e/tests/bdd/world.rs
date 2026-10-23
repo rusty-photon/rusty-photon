@@ -80,13 +80,13 @@ impl WatchdogE2eWorld {
     pub fn rp_base_url(&self) -> String {
         self.rp
             .as_ref()
-            .map(|h| h.base_url.clone())
+            .map(ServiceHandle::base_url)
             .expect("rp not started")
     }
 
     pub fn sentinel_dashboard_url(&self, path: &str) -> String {
         let s = self.sentinel.as_ref().expect("sentinel not started");
-        format!("{}{}", s.base_url, path)
+        format!("{}{}", s.base_url(), path)
     }
 
     pub async fn ensure_omnisim(&mut self) {
@@ -276,7 +276,7 @@ impl WatchdogE2eWorld {
 
         let rp_config = self.build_rp_config();
         let rp = bdd_infra::rp_harness::start_rp(&rp_config).await;
-        let rp_url = rp.base_url.clone();
+        let rp_url = rp.base_url();
         self.rp = Some(rp);
         assert!(
             bdd_infra::rp_harness::wait_for_rp_healthy(&rp_url).await,
