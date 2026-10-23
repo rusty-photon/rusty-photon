@@ -16,7 +16,7 @@ fn management_url(world: &QhyFocuserWorld) -> String {
         .focuser_handle
         .as_ref()
         .expect("qhy-focuser not started")
-        .port;
+        .port();
     format!("https://localhost:{port}/management/v1/configureddevices")
 }
 
@@ -142,7 +142,7 @@ async fn alpaca_responds_without_credentials(world: &mut QhyFocuserWorld) {
         .focuser_handle
         .as_ref()
         .expect("qhy-focuser not started")
-        .port;
+        .port();
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     let mut ok = false;

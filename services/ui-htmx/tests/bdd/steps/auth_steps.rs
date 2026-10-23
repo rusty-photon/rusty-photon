@@ -59,7 +59,7 @@ async fn started_plain(world: &mut UiWorld) {
 }
 
 fn health_url(world: &UiWorld, scheme: &str) -> String {
-    let port = world.ui.as_ref().expect("BFF not started").port;
+    let port = world.ui.as_ref().expect("BFF not started").port();
     format!("{scheme}://localhost:{port}/health")
 }
 
@@ -127,7 +127,7 @@ async fn response_includes_www_authenticate(world: &mut UiWorld) {
 #[then("the health endpoint should respond without credentials")]
 async fn responds_without_credentials(world: &mut UiWorld) {
     let client = reqwest::Client::new();
-    let port = world.ui.as_ref().expect("BFF not started").port;
+    let port = world.ui.as_ref().expect("BFF not started").port();
     let url = format!("http://127.0.0.1:{port}/health");
     // No auth is configured, so the server ignores the Authorization header
     // the shared readiness probe attaches; readiness still proves liveness.

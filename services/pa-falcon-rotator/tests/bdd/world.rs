@@ -143,7 +143,7 @@ impl TlsAuthSmokeWorld for FalconRotatorWorld {
         // Torn down by `World::shutdown` from the cucumber `after` hook.
         self.server_handle = Some(server_handle);
         self.server_addr = Some(SocketAddr::from(([127, 0, 0, 1], local_addr.port())));
-        self.tls_auth.port = Some(local_addr.port());
+        self.tls_auth.port = Some(bdd_infra::BoundPort::fixed(local_addr.port()));
     }
 }
 
@@ -303,9 +303,13 @@ impl FalconRotatorWorld {
     /// Record a spawned plain-HTTP process: acquire both device clients and
     /// hand the setup-page steps its address and config file.
     async fn adopt_process(&mut self, handle: ServiceHandle, config_path: String) {
-        let http_addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let http_addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
         let (rotator, status_switch) = acquire_devices(http_addr).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.into(),
+        );
         self.rotator = Some(rotator);
         self.status_switch = Some(status_switch);
         self.server_addr = Some(http_addr);

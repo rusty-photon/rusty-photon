@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use scraper::{Html, Selector};
 
 use crate::tls_auth::TlsAuthState;
+use crate::BoundPort;
 
 /// How long a step waits for a reloaded service to serve a page again, on
 /// the slowest runner the suites meet; a wall clock, not a poll count.
@@ -39,10 +40,11 @@ pub fn device_path(device_type: &str, device_number: u32) -> String {
 /// `World`.
 #[derive(Debug, Default)]
 pub struct SetupPagesState {
-    /// The service's address, scheme and port included (`http://127.0.0.1:1234`).
-    pub base_url: Option<String>,
-    /// The bound port.
-    pub port: Option<u16>,
+    /// The service's scheme and host (`http://127.0.0.1`), its port apart.
+    pub host: Option<&'static str>,
+    /// The port the service announced last, which a reload or a re-scan on
+    /// port 0 moves.
+    pub port: Option<BoundPort>,
     /// The client requests go through: CA-trusting when the service serves TLS.
     pub client: Option<reqwest::Client>,
     /// The credential the service requires, if any.
@@ -74,10 +76,18 @@ pub trait SetupPagesWorld {
 }
 
 impl SetupPagesState {
-    fn base_url(&self) -> &str {
-        self.base_url
-            .as_deref()
+    /// The service's address at the port it announced last
+    /// (`http://127.0.0.1:1234`).
+    fn base_url(&self) -> String {
+        let host = self.host.expect("the service was not started");
+        format!("{host}:{}", self.bound_port())
+    }
+
+    fn bound_port(&self) -> u16 {
+        self.port
+            .as_ref()
             .expect("the service was not started")
+            .get()
     }
 
     const fn client(&self) -> &reqwest::Client {
@@ -92,7 +102,7 @@ impl SetupPagesState {
 
     /// The service's own origin — what a page's own form submits from.
     fn own_origin(&self) -> String {
-        self.base_url().to_string()
+        self.base_url()
     }
 }
 
@@ -109,8 +119,8 @@ fn plain_client() -> reqwest::Client {
 
 /// Record a service started without TLS or auth at `port`, saving to
 /// `config_path`.
-pub fn adopt_plain(state: &mut SetupPagesState, port: u16, config_path: PathBuf) {
-    state.base_url = Some(format!("http://127.0.0.1:{port}"));
+pub fn adopt_plain(state: &mut SetupPagesState, port: BoundPort, config_path: PathBuf) {
+    state.host = Some("http://127.0.0.1");
     state.port = Some(port);
     state.client = Some(plain_client());
     state.credential = None;
@@ -122,8 +132,8 @@ pub fn adopt_plain(state: &mut SetupPagesState, port: u16, config_path: PathBuf)
 /// `config_path`.
 pub fn adopt_tls_auth(state: &mut SetupPagesState, tls: &TlsAuthState, config_path: PathBuf) {
     let pki = tls.pki();
-    state.base_url = Some(format!("https://localhost:{}", tls.port()));
-    state.port = Some(tls.port());
+    state.host = Some("https://localhost");
+    state.port = Some(tls.bound_port());
     state.client = Some(pki.https_client());
     state.credential = Some((pki.username().to_string(), pki.password().to_string()));
     state.stored_hash = Some(pki.password_hash().to_string());
@@ -284,11 +294,12 @@ pub async fn wait_until(
     what: &str,
     done: impl Fn(&str) -> bool,
 ) {
-    let url = format!("{}{path}", state.base_url());
     let before = state.generation_before_save.clone();
     let started = Instant::now();
     let mut last: Result<(u16, String), String> = Err("not asked yet".to_string());
     while started.elapsed() < RELOAD_BUDGET {
+        // Asked afresh each poll: a rebuild on port 0 announces another port.
+        let url = format!("{}{path}", state.base_url());
         let mut request = state.client().get(&url);
         if let Some((user, pass)) = &state.credential {
             request = request.basic_auth(user, Some(pass));
@@ -325,7 +336,7 @@ pub async fn wait_until(
 /// Panics when the service was not started, or the file cannot be read,
 /// is not JSON, has no `server` object, or cannot be written.
 pub fn pin_port_in_file(state: &SetupPagesState) {
-    let port = state.port.expect("the service was not started");
+    let port = state.bound_port();
     let path = state.config_path();
     let mut file = config_on_disk(state);
     let server = file

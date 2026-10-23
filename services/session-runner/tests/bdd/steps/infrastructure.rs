@@ -157,7 +157,7 @@ pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, e
         "safety_poll_interval": "250ms",
     });
     if let Some(rp) = world.rp.as_ref() {
-        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url));
+        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url()));
     }
     if let Value::Object(extra) = extra {
         let map = config.as_object_mut().expect("config is an object");
@@ -192,7 +192,7 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
 
     let config = world.build_rp_config();
     let rp = start_rp(&config).await;
-    world.rp_port = Some(rp.port);
+    world.rp_port = Some(rp.port());
     world.rp = Some(rp);
 
     assert!(

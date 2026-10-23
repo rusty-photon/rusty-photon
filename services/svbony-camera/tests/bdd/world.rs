@@ -63,9 +63,6 @@ pub struct CameraWorld {
     /// How the last start that was expected to fail went: `Err` with the
     /// harness's account of the refusal, or `Ok` when the service came up.
     pub start_refusal: Option<Result<(), String>>,
-    /// The port a list configuration is written with, reserved once per
-    /// scenario so every rewrite of the file names the same one.
-    pub config_port: Option<u16>,
     /// The last `doctor` run's output (`doctor --json` or `doctor --devices`).
     pub doctor_output: Option<std::process::Output>,
 
@@ -118,29 +115,19 @@ impl TlsAuthSmokeWorld for CameraWorld {
 impl CameraWorld {
     /// Write the scenario's configuration and return its path.
     ///
-    /// Port 0 (OS-assigned) by default; the real port is read from the
-    /// `bound_addr=` line on stdout by `ServiceHandle`. A configuration with a
-    /// `usb_devices` list, or a staged USB scan, takes a reserved port instead,
-    /// because only those can rebuild the service on their own (U6, and the
-    /// no-list default's failed scan): a reload rebinds
-    /// the configured port, and port 0 would move the service to a port the
-    /// harness never learns. The port is reserved once per scenario, so a
-    /// later rewrite (a doctor run, say, or a hand edit) keeps the port a
-    /// reload of the running service would rebind.
+    /// Always port 0 (OS-assigned): `ServiceHandle` reads the real port from
+    /// the `bound_addr=` lines on stdout, and follows the service to the port
+    /// a rebuild of its own server binds (U6, and the no-list default's
+    /// failed scan) as it does a reload's.
     pub async fn write_config(&mut self) -> String {
         let mut config = self
             .config_json
             .clone()
             .unwrap_or_else(|| serde_json::json!({ "devices": {} }));
-        let port = if config.get("usb_devices").is_some() || self.usb_inventory.is_some() {
-            bdd_infra::reserved_port_once(&mut self.config_port).await
-        } else {
-            0
-        };
         config
             .as_object_mut()
             .expect("the scenario's configuration is a JSON object")
-            .insert("server".to_string(), serde_json::json!({ "port": port }));
+            .insert("server".to_string(), serde_json::json!({ "port": 0 }));
         let path = self.scratch_dir().join("svbony-camera.json");
         tokio::fs::write(
             &path,
@@ -188,7 +175,7 @@ impl CameraWorld {
         let config_path = PathBuf::from(args.get(1).expect("--config's path follows it"));
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.handle = Some(handle);
         self.acquire().await;
     }
@@ -275,21 +262,17 @@ impl CameraWorld {
     }
 
     /// The port the running service listens on.
-    pub const fn port(&self) -> u16 {
-        self.handle.as_ref().expect("service handle").port
+    pub fn port(&self) -> u16 {
+        self.handle.as_ref().expect("service handle").port()
     }
 
     pub fn base_url(&self) -> String {
-        self.handle
-            .as_ref()
-            .expect("service handle")
-            .base_url
-            .clone()
+        self.handle.as_ref().expect("service handle").base_url()
     }
 
     /// The management API answers a `get_devices` request (server is healthy).
     pub async fn management_responds(&self) -> bool {
-        let port = self.handle.as_ref().expect("service handle").port;
+        let port = self.handle.as_ref().expect("service handle").port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         AlpacaClient::new_from_addr(addr)
             .get_devices()

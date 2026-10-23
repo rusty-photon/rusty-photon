@@ -248,7 +248,7 @@ impl StarAdventurerWorld {
         args.extend_from_slice(flags);
         let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
         let mount = acquire_mount(&handle).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.config = Some(cfg);
         self.mount = Some(mount);
         self.service_handle = Some(handle);
@@ -276,11 +276,11 @@ impl StarAdventurerWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
+    pub fn bound_port(&self) -> u16 {
         self.service_handle
             .as_ref()
             .expect("service not started")
-            .port
+            .port()
     }
 
     /// POST the queued state seed to `/debug/v1/mock-state`. No-op when
@@ -300,7 +300,7 @@ impl StarAdventurerWorld {
             .service_handle
             .as_ref()
             .expect("service not started — cannot apply seed");
-        let url = format!("http://127.0.0.1:{}/debug/v1/mock-state", handle.port);
+        let url = format!("http://127.0.0.1:{}/debug/v1/mock-state", handle.port());
         let body = serde_json::Value::Object(self.pending_seed.clone());
         // Retry transport failures for the same reason
         // `wait_for_command_log` does: a request that loses the scheduler
@@ -357,7 +357,7 @@ impl StarAdventurerWorld {
             .service_handle
             .as_ref()
             .expect("service not started — call start_service first");
-        let url = format!("http://127.0.0.1:{}/debug/v1/mock-commands", handle.port);
+        let url = format!("http://127.0.0.1:{}/debug/v1/mock-commands", handle.port());
         let body: Value = debug_client()
             .get(&url)
             .send()
@@ -608,7 +608,7 @@ fn default_test_config() -> Config {
 /// announces itself to mDNS / discovery once the binary's listener is
 /// up; we keep retrying until then.
 async fn acquire_mount(handle: &ServiceHandle) -> Arc<dyn Telescope> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
     let client = AlpacaClient::new_from_addr(addr);
     for _ in 0..60 {
         sleep(Duration::from_millis(500)).await;

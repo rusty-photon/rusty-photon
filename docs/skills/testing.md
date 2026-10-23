@@ -487,13 +487,18 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 
 **Key types (default feature set):**
 
-- `ServiceHandle` — spawns a service binary, parses its bound port from stdout,
-  provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
-  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM. Its async starts
-  spawn on the blocking pool, so a step that starts a service never blocks
-  the poll loop
+- `ServiceHandle` — spawns a service binary, follows the port it announces on
+  stdout (`port()` and `base_url()` read the latest), provides `stop()` for
+  graceful SIGTERM shutdown, and drains stdout to prevent pipe deadlocks. On
+  `Drop`, sends a best-effort SIGTERM. Its async starts spawn on the blocking
+  pool, so a step that starts a service never blocks the poll loop
   ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
-- `parse_bound_port()` — standalone function also usable by ConformU tests.
+- `BoundPort` — the port a service announced last, from
+  `ServiceHandle::bound_port()`; it follows the same announcements, for state
+  kept apart from the handle (the setup-page and TLS helpers hold one).
+- `follow_bound_port()` — the stdout reader behind `ServiceHandle`, standalone
+  for a test that spawns its own child; `parse_port_after()` is its one-shot
+  form for a third-party binary's own wording.
 - `run_once_async()` / `run_once()` — run a binary once (a `doctor` subcommand,
   a `--help`) and reap its output. Steps use the async form; see
   [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
@@ -677,7 +682,7 @@ plugins land — Bazel only re-runs the plugin test whose code (or deps) changed
 use bdd_infra::ServiceHandle;
 
 let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
-// handle.port, handle.base_url are available
+// handle.port() and handle.base_url() follow the port it announces
 handle.stop().await;
 ```
 
@@ -745,15 +750,25 @@ A local `bazel build //...` pre-builds the affected packages; the nightly
 
 **Port discovery:** All services print `bound_addr=<host>:<port>` to stdout when
 they bind. The parser looks for `bound_addr=` in any line (the human-readable
-prefix before it can vary per service).
+prefix before it can vary per service), and keeps reading for the life of the
+child: a service on port 0 that binds again — a reload, a camera rebuilding its
+server after a re-scan — announces its new port, and `ServiceHandle::port()`,
+`base_url()` and the setup-page and TLS helpers all move to it. A client a
+step built for the old port does not move: take a new one from the new port.
 
 **Picking a port a child process will bind.** Default to the announced-port
-pattern above: let the child `bind(0)` and print what the kernel gave it. When a
-test genuinely has to know the port *first* — because the port is an input to the
-API under test, or because the test needs a port with **nothing** listening —
-take it from a reserved band **below the platform's ephemeral floor** (32768 on
-Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
-test binaries do not march in step. `bdd_infra::reserved_test_port_async()`
+pattern above: let the child `bind(0)` and print what the kernel gave it. A
+service that rebuilds its own server is no exception: the rebuild announces
+its new port, and the harness follows it. When a test genuinely has to know the
+port *first* — because the port is an input to the API under test, or because
+the test needs a port with **nothing** listening — take it from a reserved
+band **below the platform's ephemeral floor** (32768 on Linux, 49152 on
+Windows and macOS), entered at a per-process start so concurrent test binaries
+do not march in step. That makes a collision rare, not impossible: two
+processes whose starts coincide still walk the band together, and the connect
+probe cannot see a port the other has reserved but not yet bound, so each
+reserved port is a small race the announced-port pattern does not have.
+`bdd_infra::reserved_test_port_async()`
 is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
 pins rp's port with it so the provider's config can name rp before rp
 starts). It probes on the blocking pool, and has no synchronous form outside

@@ -46,7 +46,7 @@ async fn upbv2_started_with_tls(world: &mut Upbv2World) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port));
+    world.base_url = Some(format!("https://localhost:{}", handle.port()));
     world.upbv2 = Some(handle);
 }
 
@@ -57,7 +57,11 @@ async fn alpaca_management_responds_https(world: &mut Upbv2World) {
         .as_ref()
         .expect("TLS certs not generated")
         .https_client();
-    let port = world.upbv2.as_ref().expect("upbv2-driver not started").port;
+    let port = world
+        .upbv2
+        .as_ref()
+        .expect("upbv2-driver not started")
+        .port();
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     wait_for_http_200(&client, &url).await;

@@ -76,7 +76,7 @@ fn management_url(world: &ScopsWorld) -> String {
         .focuser_handle
         .as_ref()
         .expect("pa-scops-oag not started")
-        .port;
+        .port();
     format!("https://localhost:{port}/management/v1/configureddevices")
 }
 
@@ -137,7 +137,7 @@ async fn responds_without_credentials(world: &mut ScopsWorld) {
         .focuser_handle
         .as_ref()
         .expect("pa-scops-oag not started")
-        .port;
+        .port();
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     for _ in 0..60 {

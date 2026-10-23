@@ -249,7 +249,7 @@ impl SentinelWorld {
             "type": "alpaca_safety_monitor",
             "name": name,
             "host": "127.0.0.1",
-            "port": fm.port,
+            "port": fm.port(),
             "device_number": 0,
             "polling_interval": "1s"
         }));
@@ -472,7 +472,7 @@ impl SentinelWorld {
     /// Build the dashboard URL for a given path.
     pub fn dashboard_url(&self, path: &str) -> String {
         let sentinel = self.sentinel.as_ref().expect("sentinel not started");
-        format!("{}{}", sentinel.base_url, path)
+        format!("{}{}", sentinel.base_url(), path)
     }
 
     /// Wait until sentinel has polled at least once (`last_poll_epoch_ms` > 0).

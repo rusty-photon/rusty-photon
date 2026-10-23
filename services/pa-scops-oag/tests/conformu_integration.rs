@@ -92,14 +92,14 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     println!("::group::ConformU Focuser Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Focuser compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
     // Capture both builder-construction and run-time errors so `handle.stop()`
     // below is unconditional and the service gets a graceful SIGTERM with a
     // chance to flush coverage data.
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-        match run_conformu("focuser", &handle.base_url, 0, Some(&conformu_settings)).await? {
+        match run_conformu("focuser", &handle.base_url(), 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("CONFORMU_PATH not set; skipped");
             }

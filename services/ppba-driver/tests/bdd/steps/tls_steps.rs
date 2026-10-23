@@ -46,7 +46,7 @@ async fn ppba_started_with_tls(world: &mut PpbaWorld) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port));
+    world.base_url = Some(format!("https://localhost:{}", handle.port()));
     world.ppba = Some(handle);
 }
 
@@ -57,7 +57,7 @@ async fn alpaca_management_responds_https(world: &mut PpbaWorld) {
         .as_ref()
         .expect("TLS certs not generated")
         .https_client();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
+    let port = world.ppba.as_ref().expect("ppba-driver not started").port();
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     let mut ok = false;

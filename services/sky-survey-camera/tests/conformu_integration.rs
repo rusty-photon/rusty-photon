@@ -101,10 +101,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("::group::ConformU Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Camera compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
-    let result = bdd_infra::run_conformu("camera", &handle.base_url, 0, None)
+    let result = bdd_infra::run_conformu("camera", &handle.base_url(), 0, None)
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { e })?;
 

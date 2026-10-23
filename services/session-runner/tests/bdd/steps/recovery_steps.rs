@@ -173,7 +173,7 @@ async fn runner_healthy_blackboard_kept(world: &mut SessionRunnerWorld) {
         .expect("session-runner not started");
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
-        let response = reqwest::get(format!("{}/health", handle.base_url))
+        let response = reqwest::get(format!("{}/health", handle.base_url()))
             .await
             .expect("session-runner did not answer /health after rp died");
         assert!(response.status().is_success(), "{}", response.status());

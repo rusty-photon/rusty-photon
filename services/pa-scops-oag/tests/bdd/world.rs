@@ -156,14 +156,18 @@ impl ScopsWorld {
     /// hand the setup-page steps its address and config file.
     async fn adopt(&mut self, handle: ServiceHandle, config_path: String) {
         let focuser = self.acquire_focuser(&handle).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.into(),
+        );
         self.focuser = Some(focuser);
         self.focuser_handle = Some(handle);
     }
 
     /// Poll until the server returns a Focuser device via the Alpaca client.
     async fn acquire_focuser(&self, handle: &ServiceHandle) -> Arc<dyn Focuser> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+        let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
         let client = AlpacaClient::new_from_addr(addr);
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(500)).await;

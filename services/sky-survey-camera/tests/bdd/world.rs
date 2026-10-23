@@ -530,7 +530,11 @@ impl SkySurveyCameraWorld {
             .to_str()
             .expect("temp config path must be valid UTF-8 for ServiceHandle::start");
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path_str).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.clone());
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.clone(),
+        );
         self.config_path = Some(config_path);
         self.service = Some(handle);
     }
@@ -557,12 +561,12 @@ impl SkySurveyCameraWorld {
 
     pub fn base_url(&self) -> String {
         let handle = self.service.as_ref().expect("service not started");
-        format!("http://127.0.0.1:{}", handle.port)
+        format!("http://127.0.0.1:{}", handle.port())
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub const fn bound_port(&self) -> u16 {
-        self.service.as_ref().expect("service not started").port
+    pub fn bound_port(&self) -> u16 {
+        self.service.as_ref().expect("service not started").port()
     }
 
     /// Acquire a typed ASCOM Camera client, polling until the device is

@@ -123,7 +123,7 @@ impl FocuserWorld {
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.handle = Some(handle);
         self.acquire().await;
     }
@@ -148,7 +148,7 @@ impl FocuserWorld {
     }
 
     async fn acquire(&mut self) {
-        let port = self.handle.as_ref().expect("service handle").port;
+        let port = self.handle.as_ref().expect("service handle").port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         for _ in 0..80 {
             let client = AlpacaClient::new_from_addr(addr);
@@ -200,7 +200,7 @@ impl FocuserWorld {
 
     /// The management API answers a `get_devices` request (server is healthy).
     pub async fn management_responds(&self) -> bool {
-        let port = self.handle.as_ref().expect("service handle").port;
+        let port = self.handle.as_ref().expect("service handle").port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         AlpacaClient::new_from_addr(addr)
             .get_devices()

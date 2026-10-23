@@ -11,7 +11,7 @@ fn pki(world: &PpbaWorld) -> &PkiFixture {
 }
 
 fn management_url(world: &PpbaWorld) -> String {
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
+    let port = world.ppba.as_ref().expect("ppba-driver not started").port();
     format!("https://localhost:{port}/management/v1/configureddevices")
 }
 
@@ -58,7 +58,7 @@ async fn ppba_started_with_tls_and_auth(world: &mut PpbaWorld) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port));
+    world.base_url = Some(format!("https://localhost:{}", handle.port()));
     world.ppba = Some(handle);
 }
 
@@ -83,7 +83,7 @@ async fn ppba_started_without_auth(world: &mut PpbaWorld) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("http://127.0.0.1:{}", handle.port));
+    world.base_url = Some(format!("http://127.0.0.1:{}", handle.port()));
     world.ppba = Some(handle);
 }
 
@@ -143,7 +143,7 @@ async fn response_includes_www_authenticate(world: &mut PpbaWorld) {
 #[then("the Alpaca management endpoint should respond without credentials")]
 async fn alpaca_responds_without_credentials(world: &mut PpbaWorld) {
     let client = reqwest::Client::new();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
+    let port = world.ppba.as_ref().expect("ppba-driver not started").port();
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     let mut ok = false;

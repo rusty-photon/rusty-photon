@@ -436,7 +436,7 @@ impl RpWorld {
     pub fn rp_url(&self) -> String {
         self.rp.as_ref().map_or_else(
             || "http://localhost:11115".to_string(),
-            |h| h.base_url.clone(),
+            ServiceHandle::base_url,
         )
     }
 

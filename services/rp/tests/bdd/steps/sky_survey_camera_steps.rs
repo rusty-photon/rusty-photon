@@ -52,7 +52,7 @@ async fn sky_survey_camera_follows(world: &mut RpWorld, offset_ra: f64, offset_d
         .build();
 
     let (handle, cache) = start_sky_survey_camera(&cfg).await;
-    let cam_url = handle.base_url.clone();
+    let cam_url = handle.base_url();
 
     world.sky_survey_camera = Some(handle);
     world.sky_survey_camera_cache = Some(cache);
@@ -89,7 +89,7 @@ async fn arm_one_shot_override(world: &mut RpWorld, ra_deg: f64, dec_deg: f64) {
         .sky_survey_camera
         .as_ref()
         .expect("sky-survey-camera handle missing — was the Given step run?")
-        .base_url
+        .base_url()
         .clone();
     let url = format!("{cam_url}/sky-survey/position");
     let resp = reqwest::Client::new()

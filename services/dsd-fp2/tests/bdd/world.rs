@@ -166,7 +166,11 @@ impl Fp2World {
     /// hand the setup-page steps its address and config file.
     async fn adopt(&mut self, handle: ServiceHandle, config_path: String) {
         let device = acquire_device(&handle).await;
-        setup_pages::adopt_plain(&mut self.setup_pages, handle.port, config_path.into());
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.into(),
+        );
         self.device = Some(device);
         self.handle = Some(handle);
     }
@@ -211,7 +215,7 @@ impl Fp2World {
 /// advertised. The freshly-spawned server may take a few hundred ms to
 /// finish binding and registering the device.
 async fn acquire_device(handle: &ServiceHandle) -> Arc<dyn CoverCalibrator> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
     let client = AlpacaClient::new_from_addr(addr);
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_millis(500)).await;

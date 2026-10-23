@@ -7,7 +7,11 @@ use crate::world::SentinelWorld;
 
 /// The dashboard health URL of the running sentinel over HTTPS.
 fn health_url(world: &SentinelWorld) -> String {
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let port = world
+        .sentinel
+        .as_ref()
+        .expect("sentinel not started")
+        .port();
     format!("https://localhost:{port}/health")
 }
 
@@ -115,7 +119,11 @@ async fn dashboard_401_includes_www_authenticate(world: &mut SentinelWorld) {
 #[then("the dashboard health endpoint should respond without credentials")]
 async fn dashboard_responds_without_credentials(world: &mut SentinelWorld) {
     let client = reqwest::Client::new();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    let port = world
+        .sentinel
+        .as_ref()
+        .expect("sentinel not started")
+        .port();
     let url = format!("http://127.0.0.1:{port}/health");
 
     let mut ok = false;
@@ -171,7 +179,7 @@ fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
         "type": "alpaca_safety_monitor",
         "name": "Auth Monitor",
         "host": "localhost",
-        "port": fm.port,
+        "port": fm.port(),
         "device_number": 0,
         "polling_interval": "1s",
         "scheme": "https",

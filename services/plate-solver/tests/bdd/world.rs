@@ -208,7 +208,7 @@ impl PlateSolverWorld {
             .service_handle
             .as_ref()
             .expect("wrapper not started — Given step missing?");
-        format!("http://127.0.0.1:{}", handle.port)
+        format!("http://127.0.0.1:{}", handle.port())
     }
 
     /// Build a config pointing at `mock_astap` with the configured

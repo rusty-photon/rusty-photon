@@ -34,7 +34,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
     // credentials the shared readiness probe sends are ignored.
     let pki = world.pki();
     let client = pki.https_client();
-    let port = world.rp.as_ref().unwrap().port;
+    let port = world.rp.as_ref().unwrap().port();
     let url = format!("https://localhost:{port}/health");
     wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
@@ -42,7 +42,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
 #[then("the health endpoint should respond over HTTPS")]
 async fn health_responds_https(world: &mut RpWorld) {
     let client = world.pki().https_client();
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     let url = format!("https://localhost:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();

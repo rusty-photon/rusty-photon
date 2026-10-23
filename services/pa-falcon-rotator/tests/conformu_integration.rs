@@ -103,12 +103,13 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
     println!("::group::ConformU Rotator Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Rotator compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
-    let result = bdd_infra::run_conformu("rotator", &handle.base_url, 0, Some(&conformu_settings))
-        .await
-        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
+    let result =
+        bdd_infra::run_conformu("rotator", &handle.base_url(), 0, Some(&conformu_settings))
+            .await
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
     handle.stop().await;
 
@@ -188,10 +189,10 @@ async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Er
     println!("::group::ConformU Switch Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Switch compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
-    let result = bdd_infra::run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings))
+    let result = bdd_infra::run_conformu("switch", &handle.base_url(), 0, Some(&conformu_settings))
         .await
         .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 

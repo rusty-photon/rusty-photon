@@ -33,7 +33,7 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
     // Wait for healthy over HTTPS with valid credentials.
     let pki = world.pki();
     let client = pki.https_client();
-    let port = world.rp.as_ref().unwrap().port;
+    let port = world.rp.as_ref().unwrap().port();
     let url = format!("https://localhost:{port}/health");
     wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
@@ -46,7 +46,7 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
 async fn health_responds_with_auth(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     let url = format!("https://localhost:{port}/health");
 
     let resp = client
@@ -62,7 +62,7 @@ async fn health_responds_with_auth(world: &mut RpWorld) {
 async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     let url = format!("https://localhost:{port}/health");
 
     let resp = client
@@ -77,7 +77,7 @@ async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
 #[then("the health endpoint should reject missing credentials with 401")]
 async fn health_rejects_missing_credentials(world: &mut RpWorld) {
     let client = world.pki().https_client();
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     let url = format!("https://localhost:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();
@@ -87,7 +87,7 @@ async fn health_rejects_missing_credentials(world: &mut RpWorld) {
 #[then("the rp 401 response should include a WWW-Authenticate header")]
 async fn rp_401_includes_www_authenticate(world: &mut RpWorld) {
     let client = world.pki().https_client();
-    let port = world.rp.as_ref().expect("rp not started").port;
+    let port = world.rp.as_ref().expect("rp not started").port();
     let url = format!("https://localhost:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();

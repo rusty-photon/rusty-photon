@@ -71,8 +71,11 @@ async fn test_start_discovers_port_and_base_url() {
 
     let mut handle = ServiceHandle::start("test-service", config.path().to_str().unwrap()).await;
 
-    assert!(handle.port > 0);
-    assert_eq!(handle.base_url, format!("http://127.0.0.1:{}", handle.port));
+    assert!(handle.port() > 0);
+    assert_eq!(
+        handle.base_url(),
+        format!("http://127.0.0.1:{}", handle.port())
+    );
 
     handle.stop().await;
 }
@@ -113,8 +116,11 @@ async fn test_start_with_args_discovers_port() {
     )
     .await;
 
-    assert!(handle.port > 0);
-    assert_eq!(handle.base_url, format!("http://127.0.0.1:{}", handle.port));
+    assert!(handle.port() > 0);
+    assert_eq!(
+        handle.base_url(),
+        format!("http://127.0.0.1:{}", handle.port())
+    );
     handle.stop().await;
 }
 
@@ -167,7 +173,7 @@ async fn test_try_start_succeeds_with_valid_binary() {
     let result = ServiceHandle::try_start("test-service", config.path().to_str().unwrap()).await;
 
     let mut handle = result.unwrap();
-    assert!(handle.port > 0);
+    assert!(handle.port() > 0);
     assert!(handle.is_running());
     handle.stop().await;
 }
@@ -207,7 +213,7 @@ async fn test_drop_cleans_up_process() {
 
     let handle = ServiceHandle::start("test-service", config.path().to_str().unwrap()).await;
 
-    let port = handle.port;
+    let port = handle.port();
 
     // Drop the handle — should send SIGTERM
     drop(handle);
@@ -234,7 +240,7 @@ async fn test_port_is_actually_listening() {
     let mut handle = ServiceHandle::start("test-service", config.path().to_str().unwrap()).await;
 
     // The test_service binary binds a TcpListener, so we should be able to connect
-    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", handle.port)).await;
+    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", handle.port())).await;
     assert!(result.is_ok(), "should be able to connect to the service");
 
     handle.stop().await;

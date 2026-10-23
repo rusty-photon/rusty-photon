@@ -138,7 +138,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             "ServiceType": "Http",
             "ServerName": "127.0.0.1",
             "IpAddress": "127.0.0.1",
-            "IpPort": handle.port,
+            "IpPort": handle.port(),
             "InterfaceVersion": 1,
             "AscomDeviceType": "Telescope",
             "AlpacaDeviceNumber": 0,
@@ -205,7 +205,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     println!("::group::ConformU Telescope Compliance Test Results");
     println!(
         "Running ASCOM Alpaca Telescope compliance tests on port {}...",
-        handle.port
+        handle.port()
     );
 
     // Capture both builder-construction and run-time errors so `handle.stop()`
