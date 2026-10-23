@@ -38,23 +38,32 @@ pub mod device;
 pub mod doctor;
 pub mod epoch;
 pub mod import;
+pub mod setup;
 pub mod spool;
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris};
+use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::{load_config, Config};
 use crate::device::BridgeTelescope;
-use crate::import::{ImportWorker, RpTarget};
+use crate::import::{HealthState, ImportWorker, RpTarget};
+use crate::setup::PlanetariumBridgeDriver;
+
+/// How long a stop waits for the import worker to finish the delivery in
+/// flight before aborting it.
+const WORKER_STOP_BOUND: Duration = Duration::from_secs(10);
 
 /// Resolve the spool file location: the configured path, or the platform
 /// default `<config root>/planetarium-bridge/spool.jsonl`.
@@ -79,12 +88,49 @@ pub fn resolve_spool_path(
 /// Builder for the Alpaca server plus the import pipeline.
 pub struct ServerBuilder {
     config: Config,
+    /// Where a setup-page save persists and reload re-reads. `Some` enables
+    /// the setup pages (together with `reload`).
+    config_path: Option<PathBuf>,
+    /// Reload trigger a setup-page save fires after its response flushes.
+    reload: Option<ReloadSignal>,
+    /// The `/health` counters, handed from one reload's server to the next.
+    health: Option<Arc<HealthState>>,
 }
 
 impl ServerBuilder {
     #[must_use]
     pub const fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            config_path: None,
+            reload: None,
+            health: None,
+        }
+    }
+
+    /// Set the config source (persist path) the setup pages save to. Together
+    /// with [`Self::with_reload_signal`], this enables the pages.
+    #[must_use]
+    pub fn with_config_source(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes. Together with [`Self::with_config_source`], this enables the
+    /// pages.
+    #[must_use]
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
+        self
+    }
+
+    /// Count into `health` rather than a fresh state, so the totals `/health`
+    /// reports span a reload.
+    #[must_use]
+    pub fn with_health(mut self, health: Arc<HealthState>) -> Self {
+        self.health = Some(health);
+        self
     }
 
     /// Consume the builder: warm up ERFA, resolve the spool, start the
@@ -98,7 +144,13 @@ impl ServerBuilder {
     /// cannot be bound or its address read, or the config opts into
     /// Alpaca discovery and the responder's UDP port cannot be bound.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        let config = self.config;
+        let Self {
+            config,
+            config_path,
+            reload,
+            health,
+        } = self;
+        let health = health.unwrap_or_default();
 
         // Warm up ERFA's lazily-initialized tables single-threaded, before
         // concurrent Alpaca polls can race the first initialization.
@@ -113,7 +165,7 @@ impl ServerBuilder {
         let spool_path = resolve_spool_path(&config)?;
         debug!(spool = %spool_path.display(), "spool location resolved");
         let cancel = CancellationToken::new();
-        let (importer, health, worker) = import::pipeline(
+        let (importer, worker) = import::pipeline(
             spool_path,
             config.spool.max_entries.get(),
             config.spool.replay_backoff_max,
@@ -122,11 +174,12 @@ impl ServerBuilder {
                 service_auth: config.rp.service_auth.clone(),
                 ca_cert: config.rp.ca_cert.clone(),
             },
+            &health,
             cancel.clone(),
         );
 
         let last_client: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
-        let telescope = BridgeTelescope::new(
+        let mut telescope = BridgeTelescope::new(
             &config.device,
             &config.site,
             ephemeris,
@@ -136,6 +189,18 @@ impl ServerBuilder {
 
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = config.server.socket_addr();
+
+        // The setup pages: one handler behind the server page and the
+        // Telescope's page, present when the builder was given a config
+        // source and a reload signal (the normal path through
+        // `run_server_loop`).
+        if let (Some(path), Some(reload)) = (config_path, reload) {
+            let pages = setup_pages(&config, path, reload);
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
+                &pages,
+            ))));
+            telescope = telescope.with_setup_pages(pages);
+        }
         server.devices.register(telescope);
         info!("registered the virtual Telescope device");
 
@@ -197,6 +262,20 @@ impl ServerBuilder {
             cancel,
         })
     }
+}
+
+/// The setup pages over the file at `path`, built from the running
+/// `config`; a save that changes a field fires `reload`.
+fn setup_pages(
+    config: &Config,
+    path: PathBuf,
+    reload: ReloadSignal,
+) -> Arc<SetupPages<PlanetariumBridgeDriver>> {
+    Arc::new(
+        SetupPages::<PlanetariumBridgeDriver>::new("planetarium-bridge", config.clone(), path, ())
+            .with_reload(reload)
+            .with_https(config.server.tls.is_some()),
+    )
 }
 
 /// Remember the peer address of every Alpaca request — the import
@@ -287,17 +366,86 @@ impl BoundServer {
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
 
         // Stop the import worker after serving ends; the spool keeps any
-        // undelivered backlog durable across the restart. The wait is
-        // bounded so a wedged rp session can never hold the service's stop
-        // hostage (the Windows SCM escalates a slow stop into an uninstall
-        // failure) — an abandoned worker's backlog is already on disk.
+        // undelivered backlog durable across the stop. The worker stops
+        // after the delivery in flight, and the wait for it is bounded so a
+        // wedged rp session can never hold the service's stop hostage (the
+        // Windows SCM escalates a slow stop into an uninstall failure).
+        // Past the bound it is aborted, and the abort waited for: after a
+        // reload the next server's worker loads the same spool file, and
+        // two workers rewriting it from their own copies would lose
+        // entries. The spool is written only between awaits, so the abort
+        // never cuts a write short. It drops the import it cuts off
+        // mid-delivery and any queued behind it unspooled, as a process
+        // exit at that point would.
         cancel.cancel();
-        match tokio::time::timeout(std::time::Duration::from_secs(10), worker_handle).await {
+        let mut worker_handle = worker_handle;
+        match tokio::time::timeout(WORKER_STOP_BOUND, &mut worker_handle).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!("import worker task ended abnormally: {e}"),
-            Err(_) => tracing::warn!("import worker did not stop within 10s; abandoning it"),
+            Ok(Err(e)) => warn!("import worker task ended abnormally: {e}"),
+            Err(_) => {
+                warn!(
+                    "import worker did not stop within {}s; aborting it",
+                    WORKER_STOP_BOUND.as_secs()
+                );
+                worker_handle.abort();
+                if let Err(e) = worker_handle.await {
+                    if !e.is_cancelled() {
+                        warn!("import worker task ended abnormally: {e}");
+                    }
+                }
+            }
         }
         debug!("planetarium-bridge shut down");
         serve_result
+    }
+}
+
+/// Run the bridge in a config-reload loop until `shutdown` fires.
+///
+/// Both `shutdown` and the `reload` a setup-page save fires are fed into the
+/// *same* stop future passed to `bound.start()`, so either one drives the
+/// serve loop's graceful shutdown — draining in-flight requests and closing
+/// keep-alive connections — and the import worker's stop before the loop
+/// rebuilds from the freshly-persisted config. One `HealthState` spans the
+/// iterations, so `/health`'s totals stay process-lifetime.
+///
+/// # Errors
+///
+/// Returns an error if a config load, a rebuild, or the serve loop fails; a
+/// failure on any reload iteration ends the loop.
+pub async fn run_server_loop(
+    config_path: &Path,
+    shutdown: CancellationToken,
+    reload: ReloadSignal,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let health = Arc::new(HealthState::default());
+    loop {
+        let config = load_config(config_path)?;
+        let bound = ServerBuilder::new(config)
+            .with_config_source(config_path.to_path_buf())
+            .with_reload_signal(reload.clone())
+            .with_health(Arc::clone(&health))
+            .build()
+            .await?;
+
+        let reloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = {
+            let reloaded = Arc::clone(&reloaded);
+            let shutdown = shutdown.clone().cancelled_owned();
+            let reload = reload.clone();
+            async move {
+                tokio::select! {
+                    () = shutdown => {}
+                    () = reload.recv() => reloaded.store(true, std::sync::atomic::Ordering::SeqCst),
+                }
+            }
+        };
+        bound.start(stop).await?;
+
+        if reloaded.load(std::sync::atomic::Ordering::SeqCst) {
+            info!("Reloading configuration");
+            continue;
+        }
+        return Ok(());
     }
 }

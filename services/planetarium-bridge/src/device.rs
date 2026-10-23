@@ -17,16 +17,18 @@ use ascom_alpaca::api::telescope::{
     AlignmentMode, DriveRate, EquatorialCoordinateType, PierSide, Telescope, TelescopeAxis,
 };
 use ascom_alpaca::api::Device;
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, Site};
+use rusty_photon_setup::SetupPages;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::config::{AssumeEpoch, DeviceConfig, SiteConfig};
 use crate::epoch;
 use crate::import::{ImportRequest, ImportSource, Importer, SOURCE_KIND};
+use crate::setup::{PlanetariumBridgeDriver, DEVICE_TYPE};
 
 /// The exact device name — pinned by `device_contract.feature`. It states
 /// loudly that connecting planetarium clients are not driving a mount.
@@ -72,6 +74,10 @@ pub struct BridgeTelescope {
     /// Peer address of the most recent Alpaca request — the import
     /// provenance's `client` field (single-client in practice; P3a).
     last_client: Arc<Mutex<Option<SocketAddr>>>,
+    /// The setup pages behind `/setup/v1/telescope/0/setup`: `Some` when the
+    /// device was built with a config source (the normal path through
+    /// `ServerBuilder`); `None` for a device built without them.
+    pages: Option<Arc<SetupPages<PlanetariumBridgeDriver>>>,
 }
 
 impl BridgeTelescope {
@@ -116,7 +122,16 @@ impl BridgeTelescope {
                 .map(super::config::FloorDeg::degrees),
             importer,
             last_client,
+            pages: None,
         })
+    }
+
+    /// Attach the shared setup pages, so the device's setup page renders and
+    /// saves the `device` section.
+    #[must_use]
+    pub fn with_setup_pages(mut self, pages: Arc<SetupPages<PlanetariumBridgeDriver>>) -> Self {
+        self.pages = Some(pages);
+        self
     }
 
     /// Run `f` against the folded-forward mount state.
@@ -332,6 +347,26 @@ impl Device for BridgeTelescope {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_owned())
+    }
+
+    /// The device's setup page, `/setup/v1/telescope/0/setup`, for `GET` and
+    /// `POST`, through the shared handler. A device built without the pages
+    /// has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        match &self.pages {
+            Some(pages) => {
+                rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
+            }
+            None => Box::pin(async {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup pages",
+                )
+            }),
+        }
     }
 }
 
@@ -636,5 +671,173 @@ mod tests {
             "Planetarium Bridge (virtual target entry — NOT a mount)"
         );
         assert!(DESCRIPTION.contains("NOT a mount"));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod setup_page_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::import::{self, HealthState, RpTarget};
+    use rusty_photon_service_lifecycle::ReloadSignal;
+    use tokio_util::sync::CancellationToken;
+
+    fn test_config() -> Config {
+        let mut config = Config::default();
+        config.device.unique_id = "bridge-test-id".to_string();
+        config
+    }
+
+    /// The virtual Telescope wired with the setup pages over a temp file
+    /// seeded with `config`, its import pipeline spooling into the same temp
+    /// dir (the worker is never run). Returns the reload handle, so a test
+    /// can assert the fire-after-response reload, and the `TempDir`/path.
+    fn telescope_with_setup_pages(
+        config: Config,
+    ) -> (
+        BridgeTelescope,
+        ReloadSignal,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("planetarium-bridge.json");
+        std::fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
+        let (importer, _worker) = import::pipeline(
+            dir.path().join("spool.jsonl"),
+            config.spool.max_entries.get(),
+            config.spool.replay_backoff_max,
+            RpTarget {
+                mcp_server_url: config.rp.mcp_server_url.as_str().to_owned(),
+                service_auth: None,
+                ca_cert: None,
+            },
+            &Arc::new(HealthState::default()),
+            CancellationToken::new(),
+        );
+        let reload = ReloadSignal::new();
+        let pages = SetupPages::<PlanetariumBridgeDriver>::new(
+            "planetarium-bridge",
+            config.clone(),
+            path.clone(),
+            (),
+        )
+        .with_reload(reload.clone());
+        let telescope = BridgeTelescope::new(
+            &config.device,
+            &config.site,
+            ErfarsEphemeris::new(),
+            importer,
+            Arc::new(Mutex::new(None)),
+        )
+        .unwrap()
+        .with_setup_pages(Arc::new(pages));
+        (telescope, reload, dir, path)
+    }
+
+    fn get_request() -> SetupRequest {
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers: axum::http::HeaderMap::new(),
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    /// A `POST` of the device page's form, from the page itself.
+    fn post_request(form: &[(&str, &str)]) -> SetupRequest {
+        let mut headers = axum::http::HeaderMap::new();
+        _ = headers.insert(
+            "sec-fetch-site",
+            axum::http::HeaderValue::from_static("same-origin"),
+        );
+        SetupRequest {
+            method: axum::http::Method::POST,
+            headers,
+            query: Vec::new(),
+            form: form
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    fn file_at(path: &std::path::Path, pointer: &str) -> serde_json::Value {
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        file.pointer(pointer).cloned().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn the_device_page_renders_the_device_section_alone() {
+        let (telescope, _reload, _dir, _path) = telescope_with_setup_pages(test_config());
+        let response = telescope.setup_request(get_request()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.body();
+        for control in [
+            r#"name="device.unique_id" value="bridge-test-id""#,
+            r#"name="device.slew_duration" value="3s""#,
+            r#"name="device.report_altitude_floor_deg" value="10.0""#,
+        ] {
+            assert!(body.contains(control), "{control} missing from {body}");
+        }
+        assert!(!body.contains(r#"name="rp.mcp_server_url""#), "{body}");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the save fsyncs the config's parent directory, which Miri cannot open
+    async fn clearing_the_floor_persists_the_null_that_disables_it_and_fires_the_reload() {
+        let (telescope, reload, _dir, path) = telescope_with_setup_pages(test_config());
+        let response = telescope
+            .setup_request(post_request(&[
+                ("device.unique_id", "bridge-test-id"),
+                ("device.slew_duration", "3s"),
+                ("device.report_altitude_floor_deg", ""),
+            ]))
+            .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "{}",
+            response.body()
+        );
+        assert_eq!(
+            file_at(&path, "/device/report_altitude_floor_deg"),
+            serde_json::Value::Null
+        );
+        // The file's other sections are as they were.
+        assert_eq!(
+            file_at(&path, "/rp/mcp_server_url"),
+            "http://127.0.0.1:11115/mcp"
+        );
+        tokio::time::timeout(Duration::from_secs(2), reload.recv())
+            .await
+            .expect("a changed save fires the reload");
+    }
+
+    #[tokio::test]
+    async fn a_floor_out_of_range_is_refused_naming_it_and_the_file_is_left() {
+        let (telescope, _reload, _dir, path) = telescope_with_setup_pages(test_config());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let response = telescope
+            .setup_request(post_request(&[
+                ("device.unique_id", "bridge-test-id"),
+                ("device.slew_duration", "3s"),
+                ("device.report_altitude_floor_deg", "95"),
+            ]))
+            .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(
+            response
+                .body()
+                .contains("device.report_altitude_floor_deg must be within [-90, 90]"),
+            "{}",
+            response.body()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 }

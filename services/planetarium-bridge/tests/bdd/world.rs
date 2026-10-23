@@ -14,6 +14,7 @@ use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
 use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::doctor_smoke::{DoctorSmokeState, DoctorSmokeWorld};
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -117,6 +118,8 @@ pub struct BridgeWorld {
     pub doctor_smoke: DoctorSmokeState,
     /// Throwaway PKI and credentials for the shared TLS + auth smoke.
     pub tls_auth: TlsAuthState,
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
 
     // Config knobs set by Given steps before the service starts.
     pub floor: FloorSetting,
@@ -131,6 +134,9 @@ pub struct BridgeWorld {
     /// reserved-band URL is used, so scenarios that never look at imports
     /// need no stub (their Aligns spool into the scenario temp dir).
     pub rp_url: Option<String>,
+    /// The `rp.service_auth` credential (username, password) the bridge
+    /// presents to rp, when a Given sets one.
+    pub rp_service_auth: Option<(String, String)>,
 
     /// Config file path of the running bridge — reused verbatim by the
     /// restart step so the spool location survives.
@@ -226,6 +232,11 @@ impl BridgeWorld {
             spool.insert("replay_backoff_max".into(), backoff.clone().into());
         }
 
+        let mut rp = serde_json::json!({ "mcp_server_url": rp_url });
+        if let Some((username, password)) = &self.rp_service_auth {
+            rp["service_auth"] = serde_json::json!({ "username": username, "password": password });
+        }
+
         let config = serde_json::json!({
             // Port 0 → OS-assigned; the real port is read from the
             // `bound_addr=` line on stdout by ServiceHandle.
@@ -235,7 +246,7 @@ impl BridgeWorld {
                 "site_longitude_deg": self.site_longitude_deg.unwrap_or(-117.0),
                 "site_elevation_m": 0.0,
             },
-            "rp": { "mcp_server_url": rp_url },
+            "rp": rp,
             "device": device,
             "spool": spool,
         });
@@ -255,8 +266,27 @@ impl BridgeWorld {
     pub async fn start(&mut self) {
         let config_path = self.write_config();
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            PathBuf::from(&config_path),
+        );
         self.handle = Some(handle);
         self.acquire().await;
+    }
+
+    /// Spawn the service behind TLS and auth and point the setup-page steps
+    /// at it, with the spool in the scenario temp dir as the smoke's launch
+    /// hook has it.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = Self::smoke_base_config();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        self.start_with_tls_auth(config).await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
     }
 
     /// Stop the bridge process, keeping the scenario config and spool.
@@ -277,6 +307,11 @@ impl BridgeWorld {
             .clone()
             .expect("the bridge was never started");
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            PathBuf::from(&config_path),
+        );
         self.handle = Some(handle);
         self.acquire().await;
     }
@@ -358,6 +393,12 @@ impl BridgeWorld {
             .json()
             .await
             .ok()
+    }
+}
+
+impl SetupPagesWorld for BridgeWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 

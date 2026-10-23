@@ -2,11 +2,12 @@ Feature: Import spooling and health
   rp being down must never lose an Align. Delivery failures append the import
   request to a bounded on-disk FIFO spool — one JSON request per line,
   fsynced per append — replayed in order once rp is reachable again, and the
-  spool survives bridge restarts. At the bound the oldest entry is dropped
-  with an error log and a counter increment. Requests rp actively rejected
-  (tool errors) are never spooled: they would fail identically on replay.
-  GET /health on the Alpaca listener reports rp reachability, the durable
-  backlog length, and process-lifetime replay and drop totals.
+  spool survives bridge restarts and the in-process reload a setup-page save
+  fires. At the bound the oldest entry is dropped with an error log and a
+  counter increment. Requests rp actively rejected (tool errors) are never
+  spooled: they would fail identically on replay. GET /health on the Alpaca
+  listener reports rp reachability, the durable backlog length, and
+  process-lifetime replay and drop totals, which a reload keeps.
 
   Scenario: An Align while rp is unreachable spools durably
     Given rp is unreachable
@@ -48,6 +49,41 @@ Feature: Import spooling and health
     And the bridge is restarted with the same configuration
     Then the stub rp should receive 1 add_target call
     And the import should carry ra_hours 3.0 and dec_degrees 30.0
+
+  Scenario: The spool replays across a reload
+    Given rp is unreachable
+    And the spool replay backoff is capped at "2s"
+    And the bridge is running
+    And the bound port is pinned in the configuration file so a reload keeps the address
+    And a connected planetarium client
+    When the client aligns at ra 3.0 hours dec 30.0 degrees
+    And I submit the server setup page setting "spool.replay_backoff_max" to "3s"
+    Then the page reports the configuration was saved and the service is reloading
+    And after the reload the server setup page shows "spool.replay_backoff_max" as "3s"
+    When the stub rp comes up at the configured rp address
+    Then the stub rp should receive 1 add_target call
+    And the import should carry ra_hours 3.0 and dec_degrees 30.0
+
+  Scenario: The health totals span a reload
+    Given rp is unreachable
+    And the spool is bounded to 1 entries
+    And the spool replay backoff is capped at "2s"
+    And the bridge is running
+    And the bound port is pinned in the configuration file so a reload keeps the address
+    And a connected planetarium client
+    When the client aligns at ra 1.0 hours dec 10.0 degrees
+    And the client aligns at ra 2.0 hours dec 20.0 degrees
+    Then the health endpoint should report:
+      | field         | value |
+      | spooled       | 1     |
+      | dropped_total | 1     |
+    When I submit the server setup page setting "spool.replay_backoff_max" to "3s"
+    Then the page reports the configuration was saved and the service is reloading
+    And after the reload the server setup page shows "spool.replay_backoff_max" as "3s"
+    And the health endpoint should report:
+      | field         | value |
+      | spooled       | 1     |
+      | dropped_total | 1     |
 
   Scenario: Spool overflow drops the oldest entry and counts the drop
     Given rp is unreachable

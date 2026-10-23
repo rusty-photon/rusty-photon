@@ -45,6 +45,7 @@ doubles as the PHD2 CLI via subcommands.)
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout; deb adds plugdev) |
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
+| svbony-camera | 11125 | USB camera; its SDK installed on the target by a helper (below) |
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below); its opt-in camera facade adds 11128 on loopback only ([below](#phd2-guider-the-camera-facade)) |
@@ -344,7 +345,8 @@ sudo systemctl restart rusty-photon-<svc>   # the rest
 
 Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver, qhy-focuser,
 sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
-star-adventurer-gti, qhy-camera, zwo-camera. Note that services with `config.apply` support
+star-adventurer-gti, qhy-camera, zwo-camera, svbony-camera, zwo-focuser,
+planetarium-bridge. Note that services with `config.apply` support
 (via ui-htmx) rewrite these files at runtime — hand-edits and UI edits
 share the same file.
 

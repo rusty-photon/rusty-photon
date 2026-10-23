@@ -45,7 +45,8 @@ pub struct ImportSource {
     pub received_at: String,
 }
 
-/// Process-lifetime counters behind `GET /health`.
+/// Process-lifetime counters behind `GET /health`. A reload builds a new
+/// pipeline around the same state, so the totals span reloads.
 #[derive(Debug, Default)]
 pub struct HealthState {
     rp_reachable: AtomicBool,
@@ -135,18 +136,22 @@ pub struct ImportWorker {
     cancel: CancellationToken,
 }
 
-/// Build the pipeline: the device-facing [`Importer`], the shared
-/// [`HealthState`], and the worker to spawn.
+/// Build the pipeline around `health`: the device-facing [`Importer`] and
+/// the worker to spawn.
+///
+/// Reachability starts false, as at a process start: the `rp` block may
+/// name another rp than the pipeline before it did.
 #[must_use]
 pub fn pipeline(
     spool_path: PathBuf,
     max_entries: usize,
     replay_backoff_max: Duration,
     rp: RpTarget,
+    health: &Arc<HealthState>,
     cancel: CancellationToken,
-) -> (Importer, Arc<HealthState>, ImportWorker) {
+) -> (Importer, ImportWorker) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let health = Arc::new(HealthState::default());
+    health.set_reachable(false);
     let (spool, dropped_at_load) = Spool::load(spool_path, max_entries);
     for _ in 0..dropped_at_load {
         health.count_drop();
@@ -155,16 +160,16 @@ pub fn pipeline(
     let worker = ImportWorker {
         rx,
         spool,
-        health: Arc::clone(&health),
+        health: Arc::clone(health),
         rp,
         replay_backoff_max,
         cancel,
     };
     let importer = Importer {
         tx,
-        health: Arc::clone(&health),
+        health: Arc::clone(health),
     };
-    (importer, health, worker)
+    (importer, worker)
 }
 
 enum Delivery {
@@ -194,7 +199,10 @@ impl ImportWorker {
             return;
         }
 
-        loop {
+        // Stop between deliveries, never in one: a backlog replaying would
+        // otherwise run on past the stop, and after a reload the next
+        // pipeline's worker loads the same spool file.
+        while !self.cancel.is_cancelled() {
             if self.spool.is_empty() {
                 // Idle: drop the client. Clients live only across a
                 // delivery burst — a standing idle client holds an open

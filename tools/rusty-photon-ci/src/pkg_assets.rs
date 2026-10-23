@@ -84,6 +84,7 @@ const RELOADING: &[&str] = &[
     "zwo-camera",
     "zwo-focuser",
     "svbony-camera",
+    "planetarium-bridge",
 ];
 
 /// Camera-class packages: their udev rules give the devices to the service's

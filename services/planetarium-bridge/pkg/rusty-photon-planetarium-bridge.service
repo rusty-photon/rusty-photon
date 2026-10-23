@@ -9,6 +9,7 @@ Type=simple
 # unreachable is not fatal: Align imports spool on disk and replay once rp is
 # back, so no ConditionPathExists gate is needed.
 ExecStart=/usr/bin/rusty-photon-planetarium-bridge
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 User=rusty-photon

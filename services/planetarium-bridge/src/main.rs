@@ -33,8 +33,8 @@ use clap::Parser;
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 
-use planetarium_bridge::config::{load_config, Config};
-use planetarium_bridge::ServerBuilder;
+use planetarium_bridge::config::Config;
+use planetarium_bridge::run_server_loop;
 
 #[derive(Parser)]
 #[command(name = "planetarium-bridge")]
@@ -117,12 +117,12 @@ fn main() -> ServiceResult {
 
     info!("Starting planetarium-bridge");
 
+    // A setup-page save reloads the service in process, as SIGHUP and the
+    // SCM's ParamChange do.
     ServiceRunner::new("planetarium-bridge")
+        .with_reload()
         .scm_mode(args.service)
-        .run(move |shutdown| async move {
-            let config = load_config(&config_path)?;
-            let bound = ServerBuilder::new(config).build().await?;
-            bound.start(shutdown.cancelled()).await?;
-            Ok(())
+        .run_with_reload(move |shutdown, reload| async move {
+            run_server_loop(&config_path, shutdown.token(), reload).await
         })
 }

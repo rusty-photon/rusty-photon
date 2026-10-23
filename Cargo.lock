@@ -3565,6 +3565,7 @@ dependencies = [
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-tls",
  "schemars",
  "serde",
