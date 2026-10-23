@@ -206,9 +206,10 @@ fn file_only(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldState<
     }
 }
 
-/// A tagged enum: one radio per variant, the chosen variant's fields shown.
-/// A pin on the enum disables the selector and every field; a pin on one
-/// field disables that field alone.
+/// A tagged enum: one radio per variant, the chosen variant's fields shown,
+/// each variant's fields in a fieldset [`VARIANT_SWITCH_SCRIPT`] switches
+/// off while it is not chosen. A pin on the enum disables the selector and
+/// every field; a pin on one field disables that field alone.
 fn variants_field(
     spec: &FieldSpec,
     tag: &str,
@@ -238,7 +239,7 @@ fn variants_field(
                             checked[chosen(&variant.name)] disabled[pinned];
                         label for=(id) { (variant.name) }
                     }
-                    div.variant-fields {
+                    fieldset.variant-fields {
                         @for inner in &variant.fields {
                             @let pointer = format!("{enum_pointer}{}", inner.pointer());
                             @let shown = if chosen(&variant.name) { config } else { &Value::Null };
@@ -255,9 +256,29 @@ fn variants_field(
             @if pinned {
                 div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
             }
+            script { (PreEscaped(VARIANT_SWITCH_SCRIPT)) }
         }
     }
 }
+
+/// A tagged enum's switch, run in the group it closes: every fieldset but
+/// the chosen variant's is disabled, so the browser neither checks nor
+/// sends a hidden variant's fields, and a value typed there before the
+/// switch cannot hold up the save. It syncs on each change in the group and
+/// on `pageshow`, by when the browser has put back any choice it restores;
+/// until then every fieldset is on, as it stays without script, and the
+/// save reads the chosen variant's fields alone. A field's own `disabled`
+/// (a pin) is left as it is.
+const VARIANT_SWITCH_SCRIPT: &str = r#"(function (group) {
+  function sync() {
+    group.querySelectorAll(":scope > .variant").forEach(function (variant) {
+      var choice = variant.querySelector(":scope > .choice input");
+      variant.querySelector(":scope > .variant-fields").disabled = !choice.checked;
+    });
+  }
+  group.addEventListener("change", sync);
+  window.addEventListener("pageshow", sync);
+})(document.currentScript.parentElement);"#;
 
 /// A device the server page lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -645,6 +666,25 @@ mod tests {
         assert!(
             chosen.contains(r#"name="transport:usb.baud_rate" value="9600""#),
             "{chosen}"
+        );
+    }
+
+    #[test]
+    fn each_variants_fields_sit_in_a_fieldset_the_groups_script_switches() {
+        let markup = render("transport", FieldState::default());
+        // Every fieldset is drawn on: the script switches the unchosen one
+        // off, and without script the save ignores its fields.
+        assert_eq!(
+            markup
+                .matches(r#"<fieldset class="variant-fields">"#)
+                .count(),
+            2,
+            "{markup}"
+        );
+        assert_eq!(markup.matches("<script>").count(), 1, "{markup}");
+        assert!(
+            markup.ends_with(&format!("<script>{VARIANT_SWITCH_SCRIPT}</script></div>")),
+            "the script closes the group it switches: {markup}"
         );
     }
 

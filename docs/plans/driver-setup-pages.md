@@ -289,8 +289,9 @@ each with its markup, its parse and an optional confirmation
 ([rusty-photon-setup.md](../crates/rusty-photon-setup.md), "A driver's
 own part"). The tagged-enum selector
 is built and unit-tested in the crate (one radio button per variant, the
-chosen variant's fields shown by CSS, no script); `star-adventurer-gti`
-proves it on a page in P3. A page shows the configuration file (through
+chosen variant's fields shown by CSS, the others' switched off by a few
+lines of script so a value typed there cannot block the save);
+`star-adventurer-gti` proves it on a page in P3. A page shows the configuration file (through
 the typed config, so a default shows) with the pinned fields as the running
 service has them — the base the next save overlays — and a `Restart`
 service's page names the saved fields still waiting for its restart.
@@ -636,7 +637,8 @@ device, and the empty list cut it off — do not exist on a server page.
 - **The renumbering is confirmed, not previewed by script.** A save that
   would move a served camera's number answers with the moves and the
   warning about `rp`'s entries, and writes nothing until the operator saves
-  that page again; the pages stay without script beyond the reload wait.
+  that page again; the pages stay without script beyond the reload wait
+  and the tagged-enum switch.
 - Changing the mode carries the names across: to a list, each camera's
   override names fill its row and the `devices` map goes; to no list, each
   listed camera's names become an override under its key. Any name the
@@ -736,9 +738,12 @@ link `rp` can already compute makes the lift unnecessary for this plan.
   everywhere on a doctor-wired rig. `ui-htmx` hid both costs by being
   the only origin; it also could not reach an authenticated driver.
 - **Drivers render HTML.** Each gains `maud` (compile-time templates,
-  no runtime cost) and two hook implementations. No JavaScript: the pages are plain
-  forms, the only script is the reload wait's poll (D3) with a
-  no-script fallback, and the look comes from one embedded stylesheet in
+  no runtime cost) and two hook implementations. No JavaScript beyond two
+  inline scripts, each with a no-script fallback: the pages are plain
+  forms, the reload wait polls (D3), and the tagged-enum switch disables
+  the fields of a variant not chosen, which a browser would otherwise
+  still check — a value typed there before switching away would block
+  the save without a word. The look comes from one embedded stylesheet in
   the shared crate using the mocks' tokens. `rp.md`'s footprint tenet
   (5) is unchanged in kind — a page is a string.
 - **The recovery model holds.** A service that cannot start has no

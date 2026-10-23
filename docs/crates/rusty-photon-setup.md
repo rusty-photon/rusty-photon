@@ -41,8 +41,9 @@ own part of the pages ([A driver's own part](#a-drivers-own-part)).
 
 Both pages answer `GET` with the form and `POST` with the save. Each is one
 HTML document with its stylesheet inline (the dark theme and tokens of the
-`ui-htmx` mocks), no script except the reload wait's, and a form whose
-`action` is the page's own path, so the page works at any mount.
+`ui-htmx` mocks), no script except the reload wait's and the tagged-enum
+switch's, and a form whose `action` is the page's own path, so the page
+works at any mount.
 
 **The server page** holds, in this order:
 
@@ -97,7 +98,7 @@ key order so the rendered order is the same on every host:
 | a plain object | recursed | — |
 | `$ref` into `$defs` | resolved | — |
 | `Option<T>` where `T` is an object (`anyOf [T, null]`) | file-only (below) | — |
-| an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property; `schemars` renders a newtype variant around a struct this way too) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS; an unchosen variant's fields start from their schema `default`s, so a switch to it is the selector plus the fields it requires | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored. A variant's field is a control named by the variant (`transport:usb.port`): a driver `validate` error naming it by its config path (`transport.port`) is shown beside that control; a pinned path inside the enum pins that control alone, a pinned enum pins the selector and every field; `secret_pointers` reach a variant's fields |
+| an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property; `schemars` renders a newtype variant around a struct this way too) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS; each variant's fields sit in a fieldset that a few lines of script in the group disable while it is not chosen, so the browser neither checks nor sends a hidden variant's fields and a value typed there before switching away cannot block the save (without script every fieldset stays on); an unchosen variant's fields start from their schema `default`s, so a switch to it is the selector plus the fields it requires | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored. A variant's field is a control named by the variant (`transport:usb.port`): a driver `validate` error naming it by its config path (`transport.port`) is shown beside that control; a pinned path inside the enum pins that control alone, a pinned enum pins the selector and every field; `secret_pointers` reach a variant's fields |
 | anything else (`allOf`, `enum`, `const`, arrays of objects, custom-serde types) | file-only | — |
 
 **File-only** is never silent: the page names the field, says it is edited
