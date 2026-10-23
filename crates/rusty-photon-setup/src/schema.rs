@@ -127,6 +127,34 @@ impl FieldSpec {
         }
     }
 
+    /// The `step` of the field's number input: `any` for a floating-point
+    /// field — `type="number"` alone steps by 1 from the value the input
+    /// starts at, and a browser refuses to submit any other, so a latitude
+    /// that showed 33.0 could not be saved as 34.05 — and `None` for every
+    /// other kind, an integer keeping that default.
+    #[must_use]
+    pub const fn step(&self) -> Option<&'static str> {
+        match self.kind {
+            FieldKind::Num { .. } => Some("any"),
+            _ => None,
+        }
+    }
+
+    /// The schema bounds of a number field, as its input's `min` and `max`,
+    /// so the browser checks them as the save does.
+    #[must_use]
+    pub fn bounds(&self) -> (Option<String>, Option<String>) {
+        match self.kind {
+            FieldKind::Int { min, max, .. } => {
+                (min.map(|v| v.to_string()), max.map(|v| v.to_string()))
+            }
+            FieldKind::Num { min, max, .. } => {
+                (min.map(|v| v.to_string()), max.map(|v| v.to_string()))
+            }
+            _ => (None, None),
+        }
+    }
+
     /// The pointer's segments (`["serial", "port"]`).
     #[must_use]
     pub fn pointer_segments(&self) -> Vec<&str> {
@@ -733,6 +761,32 @@ mod tests {
                 max: None
             }
         );
+    }
+
+    #[test]
+    fn a_number_input_takes_any_step_and_both_number_kinds_carry_their_bounds() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "site": { "type": "object", "properties": {
+                "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+                "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                "label": { "type": "string" },
+            } } },
+        });
+        let model = FieldModel::from_schema(&schema);
+        let field = |name: &str| model.field(name).unwrap();
+        assert_eq!(field("site.latitude").step(), Some("any"));
+        assert_eq!(
+            field("site.latitude").bounds(),
+            (Some("-90".to_string()), Some("90".to_string()))
+        );
+        assert_eq!(field("site.port").step(), None);
+        assert_eq!(
+            field("site.port").bounds(),
+            (Some("0".to_string()), Some("65535".to_string()))
+        );
+        assert_eq!(field("site.label").step(), None);
+        assert_eq!(field("site.label").bounds(), (None, None));
     }
 
     #[test]

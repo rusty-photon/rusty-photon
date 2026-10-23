@@ -171,21 +171,14 @@ fn scalar_field(
                         autocomplete="off";
                     div.hint { "Blank keeps the stored value." }
                 }
-                // `type="number"` alone steps by 1 from the value the input
-                // starts at, and a browser refuses to submit any other: a
-                // latitude that showed 33.0 could not be saved as 34.05.
-                // A floating-point field takes any value; an integer keeps
-                // the default step. Its schema bounds, when it has them, are
-                // the browser's to check too.
-                FieldKind::Num { min, max, .. } => {
-                    label for=(name) { (spec.label()) }
-                    input type="number" step="any" id=(name) name=(name) min=[*min] max=[*max]
-                        value=(text_of(value)) disabled[disabled];
-                }
+                // A number input carries its `step` and its schema bounds
+                // (`FieldSpec::step`, `FieldSpec::bounds`); a text input
+                // carries neither.
                 _ => {
+                    @let (min, max) = spec.bounds();
                     label for=(name) { (spec.label()) }
-                    input type=(spec.input_type()) id=(name) name=(name)
-                        value=(text_of(value)) disabled[disabled];
+                    input type=(spec.input_type()) step=[spec.step()] min=[min] max=[max]
+                        id=(name) name=(name) value=(text_of(value)) disabled[disabled];
                 }
             }
             @if let Some(e) = error { div.error { (e) } }
@@ -506,8 +499,12 @@ mod tests {
             "{markup}"
         );
         let integer = render("serial.baud_rate", FieldState::default());
-        assert!(integer.contains(r#"type="number""#), "{integer}");
-        assert!(!integer.contains("step="), "{integer}");
+        assert!(
+            integer.contains(
+                r#"<input type="number" min="0" id="serial.baud_rate" name="serial.baud_rate" value="9600">"#
+            ),
+            "{integer}"
+        );
     }
 
     #[test]
@@ -515,7 +512,7 @@ mod tests {
         let markup = render("serial.tilt", FieldState::default());
         assert!(
             markup.contains(
-                r#"<input type="number" step="any" id="serial.tilt" name="serial.tilt" min="-90" max="90" value="12.5">"#
+                r#"<input type="number" step="any" min="-90" max="90" id="serial.tilt" name="serial.tilt" value="12.5">"#
             ),
             "{markup}"
         );
