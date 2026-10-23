@@ -251,9 +251,9 @@ the port.
 ```jsonc
 {
   // Optional per-device overrides, keyed by SDK serial. A device with no entry
-  // uses SDK-derived defaults (name from model+serial).
+  // uses SDK-derived defaults (its model as its name).
   "devices": {
-    "EAF-0a1b2c3d4e5f6071": {
+    "0a1b2c3d4e5f6071": {
       "name": "Main Focuser",
       "description": "ZWO EAF on the Askar 60F"
     }
