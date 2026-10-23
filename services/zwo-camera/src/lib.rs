@@ -313,7 +313,7 @@ impl ServerBuilder {
         };
 
         // Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
-        // handshake that `bdd-infra::parse_bound_port` waits on for port
+        // handshake that `bdd-infra::follow_bound_port` waits on for port
         // discovery (see rusty-photon-service-lifecycle's logging docs); every
         // peer service emits it. Logs go to stderr, so this stays parseable.
         // Console mode only: stdout is a dead handle under the Windows SCM,

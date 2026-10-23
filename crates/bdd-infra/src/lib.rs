@@ -1067,7 +1067,7 @@ pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
 /// answer?" adopts as the child. A caller therefore proves that what
 /// answers on each port is its own child, and starts again on fresh ports
 /// when it cannot. A child that binds port 0 and prints its port needs
-/// none of this ([`parse_bound_port`], [`parse_port_after`]), and
+/// none of this ([`follow_bound_port`], [`parse_port_after`]), and
 /// [`reserved_test_port_async`] is the other shape, a band below the
 /// ephemeral floor probed by connecting, for a port a test must know
 /// before the child starts.
@@ -1626,6 +1626,51 @@ mod tests {
 
         let result = parse_port_after(stdout, "Listening on ").await;
         assert!(result.is_none());
+    }
+
+    /// How the stdout reader follows a service's announcements, on output
+    /// held in memory: hermetic and the same on every platform, so
+    /// `:bdd-infra_bound_port_unit_test` runs it on every PR.
+    mod bound_port {
+        use super::*;
+
+        fn output(text: &str) -> std::io::Cursor<Vec<u8>> {
+            std::io::Cursor::new(text.as_bytes().to_vec())
+        }
+
+        #[tokio::test]
+        async fn a_later_announcement_moves_the_port_and_its_clones() {
+            // A camera rebuilding its server on port 0 after a re-scan.
+            let stdout = output(
+                "bound_addr=0.0.0.0:11111\nre-scan found the camera\nbound_addr=0.0.0.0:22222\n",
+            );
+
+            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
+            let clone = port.clone();
+            drain.await.unwrap();
+            assert_eq!((port.get(), clone.get()), (22222, 22222));
+        }
+
+        #[tokio::test]
+        async fn lines_that_announce_no_port_leave_it_where_it_was() {
+            let stdout = output("bound_addr=0.0.0.0:11111\nbound_addr=not-an-address\nstopping\n");
+
+            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
+            drain.await.unwrap();
+            assert_eq!(port.get(), 11111);
+        }
+
+        #[tokio::test]
+        async fn output_that_ends_without_an_announcement_gives_none() {
+            let stdout = output("starting up\nbound_addr=not-an-address\n");
+
+            assert!(follow_port_after(stdout, "bound_addr=").await.is_none());
+        }
+
+        #[test]
+        fn a_fixed_port_never_moves() {
+            assert_eq!(BoundPort::fixed(4242).get(), 4242);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2367,51 +2412,6 @@ mod tests {
     /// pre-built binaries, which keeps it out of every per-PR run. These are
     /// hermetic — one `kill(2)` at a pid that cannot exist, no subprocess,
     /// no filesystem.
-    /// How the stdout reader follows a service's announcements, on output
-    /// held in memory: hermetic and the same on every platform, so
-    /// `:bdd-infra_bound_port_unit_test` runs it on every PR.
-    mod bound_port {
-        use super::*;
-
-        fn output(text: &str) -> std::io::Cursor<Vec<u8>> {
-            std::io::Cursor::new(text.as_bytes().to_vec())
-        }
-
-        #[tokio::test]
-        async fn a_later_announcement_moves_the_port_and_its_clones() {
-            // A camera rebuilding its server on port 0 after a re-scan.
-            let stdout = output(
-                "bound_addr=0.0.0.0:11111\nre-scan found the camera\nbound_addr=0.0.0.0:22222\n",
-            );
-
-            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
-            let clone = port.clone();
-            drain.await.unwrap();
-            assert_eq!((port.get(), clone.get()), (22222, 22222));
-        }
-
-        #[tokio::test]
-        async fn lines_that_announce_no_port_leave_it_where_it_was() {
-            let stdout = output("bound_addr=0.0.0.0:11111\nbound_addr=not-an-address\nstopping\n");
-
-            let (port, drain) = follow_port_after(stdout, "bound_addr=").await.unwrap();
-            drain.await.unwrap();
-            assert_eq!(port.get(), 11111);
-        }
-
-        #[tokio::test]
-        async fn output_that_ends_without_an_announcement_gives_none() {
-            let stdout = output("starting up\nbound_addr=not-an-address\n");
-
-            assert!(follow_port_after(stdout, "bound_addr=").await.is_none());
-        }
-
-        #[test]
-        fn a_fixed_port_never_moves() {
-            assert_eq!(BoundPort::fixed(4242).get(), 4242);
-        }
-    }
-
     #[cfg(unix)]
     mod signals {
         use super::*;

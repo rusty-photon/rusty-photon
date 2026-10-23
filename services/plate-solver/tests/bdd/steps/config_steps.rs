@@ -145,7 +145,7 @@ async fn then_wrapper_stderr_references_readme(world: &mut PlateSolverWorld) {
 async fn then_wrapper_prints_bound_addr(world: &mut PlateSolverWorld) {
     // ServiceHandle::start only returns when bound_addr was parsed
     // from stdout — its presence in world.service_handle is the
-    // assertion. The .port field is a u16 set by parse_bound_port.
+    // assertion. handle.port() is the port follow_bound_port read there.
     let handle = world
         .service_handle
         .as_ref()

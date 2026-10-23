@@ -286,7 +286,7 @@ impl ServerBuilder {
         };
 
         // Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
-        // handshake that `bdd-infra::parse_bound_port` waits on for port
+        // handshake that `bdd-infra::follow_bound_port` waits on for port
         // discovery. Console mode only: stdout is a dead handle under the
         // Windows SCM, and the only stdout consumer never runs services with
         // `--service`.
