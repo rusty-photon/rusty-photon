@@ -31,8 +31,13 @@ pub enum FieldKind {
         max: Option<i64>,
     },
     /// A `number` (floating-point) leaf. `nullable` persists `null` when
-    /// cleared.
-    Num { nullable: bool },
+    /// cleared; `min`/`max` (schema bounds) gate the parsed value, which must
+    /// be finite.
+    Num {
+        nullable: bool,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
     /// An `array` whose `items` are an integer `enum` — a checkbox group, one
     /// checkbox per enumerated value in schema order. Checked values are
     /// written back in `options` order; nothing checked ⇒ an empty array.
@@ -548,7 +553,11 @@ fn join(prefix: &str, name: &str) -> String {
 fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec {
     let kind = match base {
         "boolean" => FieldKind::Bool,
-        "number" => FieldKind::Num { nullable },
+        "number" => FieldKind::Num {
+            nullable,
+            min: node.get("minimum").and_then(Value::as_f64),
+            max: node.get("maximum").and_then(Value::as_f64),
+        },
         "integer" => FieldKind::Int {
             nullable,
             min: node.get("minimum").and_then(Value::as_i64),
@@ -696,6 +705,34 @@ mod tests {
         assert_eq!(auth.kind(), &FieldKind::FileOnly);
         assert_eq!(auth.pointer(), "/server/auth");
         assert!(!auth.is_editable_scalar());
+    }
+
+    #[test]
+    fn a_number_carries_its_schemas_bounds() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "site": { "type": "object", "properties": {
+                "latitude": { "type": "number", "minimum": -90, "maximum": 90.0 },
+                "elevation": { "type": ["number", "null"] },
+            } } },
+        });
+        let model = FieldModel::from_schema(&schema);
+        assert_eq!(
+            model.field("site.latitude").unwrap().kind(),
+            &FieldKind::Num {
+                nullable: false,
+                min: Some(-90.0),
+                max: Some(90.0)
+            }
+        );
+        assert_eq!(
+            model.field("site.elevation").unwrap().kind(),
+            &FieldKind::Num {
+                nullable: true,
+                min: None,
+                max: None
+            }
+        );
     }
 
     #[test]

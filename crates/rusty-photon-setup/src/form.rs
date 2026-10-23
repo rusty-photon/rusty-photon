@@ -170,7 +170,7 @@ fn overlay_at(
                 }
             }
         }
-        FieldKind::Num { nullable } => {
+        FieldKind::Num { nullable, min, max } => {
             let Some(raw) = form.get(name) else {
                 return;
             };
@@ -182,9 +182,17 @@ fn overlay_at(
                     errors.push(field_error(name, "is required"));
                 }
             } else {
+                // `parse` takes "inf" and "NaN", which JSON cannot hold: they
+                // would be written as `null`, unsetting the field unasked.
                 match trimmed.parse::<f64>() {
-                    Ok(n) => set_pointer(config, pointer, Value::from(n)),
-                    Err(_) => errors.push(field_error(name, "must be a number")),
+                    Ok(n)
+                        if n.is_finite()
+                            && min.is_none_or(|lo| n >= lo)
+                            && max.is_none_or(|hi| n <= hi) =>
+                    {
+                        set_pointer(config, pointer, Value::from(n));
+                    }
+                    _ => errors.push(field_error(name, &num_error(*min, *max))),
                 }
             }
         }
@@ -250,6 +258,15 @@ fn int_error(min: Option<i64>, max: Option<i64>) -> String {
     match (min, max) {
         (Some(lo), Some(hi)) => format!("must be a whole number between {lo} and {hi}"),
         _ => "must be a whole number".to_string(),
+    }
+}
+
+fn num_error(min: Option<f64>, max: Option<f64>) -> String {
+    match (min, max) {
+        (Some(lo), Some(hi)) => format!("must be a number between {lo} and {hi}"),
+        (Some(lo), None) => format!("must be a number of at least {lo}"),
+        (None, Some(hi)) => format!("must be a number of at most {hi}"),
+        (None, None) => "must be a number".to_string(),
     }
 }
 
@@ -406,6 +423,7 @@ mod tests {
                         "baud_rate": { "type": "integer", "minimum": 0 },
                         "label": { "type": ["string", "null"] },
                         "gain": { "type": "number" },
+                        "tilt": { "type": "number", "minimum": -90, "maximum": 90 },
                         "enabled": { "type": "boolean" },
                         "key": { "type": "string" },
                     },
@@ -583,6 +601,55 @@ mod tests {
             &form_from(&[("serial.gain", "lots")]),
         );
         assert_eq!(errors[0].msg, "must be a number");
+    }
+
+    #[test]
+    fn a_float_that_is_not_finite_is_a_field_error_and_the_file_keeps_its_value() {
+        for raw in ["inf", "-infinity", "NaN"] {
+            let mut config = json!({ "serial": { "gain": 1.0 } });
+            let errors = overlay(
+                &mut config,
+                "serial.gain",
+                &form_from(&[("serial.gain", raw)]),
+            );
+            assert_eq!(errors.len(), 1, "{raw}: {errors:?}");
+            assert_eq!(errors[0].msg, "must be a number", "{raw}");
+            assert_eq!(config["serial"]["gain"], 1.0, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_float_outside_its_schema_bounds_is_a_field_error() {
+        let mut config = json!({ "serial": { "tilt": 10.0 } });
+        let errors = overlay(
+            &mut config,
+            "serial.tilt",
+            &form_from(&[("serial.tilt", "-90")]),
+        );
+        assert_eq!(errors, Vec::new());
+        assert_eq!(config["serial"]["tilt"], -90.0);
+        for raw in ["90.5", "-340.5"] {
+            let errors = overlay(
+                &mut config,
+                "serial.tilt",
+                &form_from(&[("serial.tilt", raw)]),
+            );
+            assert_eq!(errors.len(), 1, "{raw}: {errors:?}");
+            assert_eq!(
+                errors[0].msg, "must be a number between -90 and 90",
+                "{raw}"
+            );
+        }
+        assert_eq!(config["serial"]["tilt"], -90.0);
+    }
+
+    #[test]
+    fn a_one_sided_float_bound_is_named_in_its_error() {
+        assert_eq!(
+            num_error(Some(0.5), None),
+            "must be a number of at least 0.5"
+        );
+        assert_eq!(num_error(None, Some(2.0)), "must be a number of at most 2");
     }
 
     #[test]

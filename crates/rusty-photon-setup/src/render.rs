@@ -175,10 +175,11 @@ fn scalar_field(
                 // starts at, and a browser refuses to submit any other: a
                 // latitude that showed 33.0 could not be saved as 34.05.
                 // A floating-point field takes any value; an integer keeps
-                // the default step.
-                FieldKind::Num { .. } => {
+                // the default step. Its schema bounds, when it has them, are
+                // the browser's to check too.
+                FieldKind::Num { min, max, .. } => {
                     label for=(name) { (spec.label()) }
-                    input type="number" step="any" id=(name) name=(name)
+                    input type="number" step="any" id=(name) name=(name) min=[*min] max=[*max]
                         value=(text_of(value)) disabled[disabled];
                 }
                 _ => {
@@ -412,6 +413,7 @@ mod tests {
                     "port": { "type": "string" },
                     "baud_rate": { "type": "integer", "minimum": 0 },
                     "gain": { "type": "number" },
+                    "tilt": { "type": "number", "minimum": -90, "maximum": 90 },
                     "enabled": { "type": "boolean" },
                     "key": { "type": "string" },
                     "targets": { "type": "array", "items": { "type": "integer", "enum": [-10, 0] } },
@@ -430,7 +432,7 @@ mod tests {
 
     fn config() -> Value {
         json!({
-            "serial": { "port": "/dev/a", "baud_rate": 9600, "gain": 1.5, "enabled": true, "key": "stored", "targets": [0] },
+            "serial": { "port": "/dev/a", "baud_rate": 9600, "gain": 1.5, "tilt": 12.5, "enabled": true, "key": "stored", "targets": [0] },
             "server": { "tls": null },
             "transport": { "kind": "udp", "host": "mount.local" },
         })
@@ -506,6 +508,17 @@ mod tests {
         let integer = render("serial.baud_rate", FieldState::default());
         assert!(integer.contains(r#"type="number""#), "{integer}");
         assert!(!integer.contains("step="), "{integer}");
+    }
+
+    #[test]
+    fn a_number_fields_schema_bounds_are_its_min_and_max() {
+        let markup = render("serial.tilt", FieldState::default());
+        assert!(
+            markup.contains(
+                r#"<input type="number" step="any" id="serial.tilt" name="serial.tilt" min="-90" max="90" value="12.5">"#
+            ),
+            "{markup}"
+        );
     }
 
     #[test]
