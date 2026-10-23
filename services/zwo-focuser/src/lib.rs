@@ -58,17 +58,17 @@
 
 pub mod backend;
 mod config;
-mod config_actions;
 pub mod doctor;
 mod error;
 mod focuser;
+mod setup;
 
 pub use config::{
     load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride, DEFAULT_PORT,
 };
-pub use config_actions::ZwoFocuserDriver;
 pub use error::ZwoFocuserError;
 pub use focuser::ZwoFocuser;
+pub use setup::ZwoFocuserDriver;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -77,7 +77,9 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
+use rusty_photon_driver::overrides::{OverrideDevice, OverridePages};
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -128,8 +130,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Set the config source (persist path + CLI overrides) for the config
-    /// actions. Together with [`Self::with_reload_signal`], enables editing.
+    /// Set the config source (persist path + CLI overrides) the setup pages
+    /// save to. Together with [`Self::with_reload_signal`], serves the pages.
     #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
@@ -137,7 +139,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Provide the reload trigger `config.apply` fires after its response flushes.
+    /// Provide the reload trigger a setup-page save fires after its response
+    /// flushes.
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
@@ -200,7 +203,7 @@ impl ServerBuilder {
         // One set for every device: an open looking for its EAF skips the
         // ones the others hold (C5).
         let held = HeldFocusers::default();
-        let mut server = Server::new(CargoServerInfo!());
+        let mut devices = Vec::with_capacity(focusers.len());
         for eaf in &focusers {
             let handle: Arc<dyn FocuserHandle> = Arc::new(ZwoFocuserHandle::new(
                 self.sdk()?,
@@ -211,20 +214,26 @@ impl ServerBuilder {
                 eaf.hardware_serial.clone(),
                 Arc::clone(&held),
             ));
-            // `devices` overrides are keyed by the bare SDK serial (matching the
-            // config-actions `devices.{serial}` paths), NOT the prefixed
+            // `devices` overrides are keyed by the bare SDK serial (the key an
+            // EAF's setup page saves its override under), NOT the prefixed
             // `ZWO:{name}:{serial}` UniqueID.
-            let mut device = ZwoFocuser::new(handle, self.config.devices.get(&eaf.serial));
-            if let (Some(path), Some(reload)) = (self.config_path.clone(), self.reload.clone()) {
-                device = device.with_config_actions(rusty_photon_driver::ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides: self.overrides.clone(),
-                    reload,
-                });
+            let device = ZwoFocuser::new(handle, self.config.devices.get(&eaf.serial));
+            devices.push((eaf, device));
+        }
+
+        // Each device's number is its place in registration order, which the
+        // pages number their devices by too.
+        let pages = self.setup_pages(&devices);
+        let mut server = Server::new(CargoServerInfo!());
+        for ((eaf, mut device), number) in devices.into_iter().zip(0_u32..) {
+            if let Some(pages) = &pages {
+                device = device.with_setup_pages(Arc::clone(pages), number);
             }
             debug!(device = eaf.index, name = %device.static_name(), "registering ZWO EAF");
             server.devices.register(device);
+        }
+        if let Some(pages) = pages {
+            server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(pages)));
         }
 
         // Use the shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like
@@ -284,6 +293,46 @@ impl ServerBuilder {
             tls: self.config.server.tls.clone(),
             discovery,
         })
+    }
+
+    /// The setup pages this build serves, when the builder has a config
+    /// source and a reload path: the shared handler, saving to the file and
+    /// rendering what this build runs, with a page per EAF in `devices` — in
+    /// registration order — editing its `devices` override.
+    fn setup_pages(
+        &self,
+        devices: &[(&EnumeratedFocuser, ZwoFocuser)],
+    ) -> Option<Arc<SetupPages<ZwoFocuserDriver>>> {
+        let (path, reload) = (self.config_path.clone()?, self.reload.clone()?);
+        let pages = OverridePages::new(
+            "focuser",
+            "focuser",
+            devices
+                .iter()
+                .map(|(eaf, device)| OverrideDevice {
+                    name: device.static_name().to_string(),
+                    key: eaf.serial.clone(),
+                    facts: vec![
+                        ("Model".to_string(), eaf.info.name.clone()),
+                        (
+                            "Travel limit (MaxStep)".to_string(),
+                            eaf.max_step.to_string(),
+                        ),
+                        ("UniqueID".to_string(), eaf.unique_id.clone()),
+                    ],
+                })
+                .collect(),
+        );
+        let setup = SetupPages::<ZwoFocuserDriver>::new(
+            "zwo-focuser",
+            self.config.clone(),
+            path,
+            self.overrides.clone(),
+        )
+        .with_reload(reload)
+        .with_https(self.config.server.tls.is_some())
+        .with_driver_pages(Arc::new(pages));
+        Some(Arc::new(setup))
     }
 }
 

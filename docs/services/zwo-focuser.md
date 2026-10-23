@@ -95,7 +95,8 @@ graph TD;
     BB --> RS[zwo-rs Sdk/Focuser];
     RS -->|FFI| SDK[libzwo-sys → libEAFFocuser];
     SDK -->|libusb-1.0| HW[ZWO EAF over USB];
-    C --> CA[config_actions.rs<br/>config.get/apply/schema];
+    B --> SP[Setup pages<br/>/setup, /setup/v1/focuser/n/setup];
+    SP --> ST[setup.rs<br/>ConfigurableDriver];
     M[main.rs<br/>ServiceRunner] --> B;
 ```
 
@@ -127,8 +128,8 @@ graph TD;
   `Device` + `Focuser` against the `FocuserHandle` seam. Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`.
 - **`config.rs`** — typed `Config` (per-serial device overrides + server port).
-- **`config_actions.rs`** — `ConfigurableDriver` impl for `config.get`/`apply`/
-  `schema`.
+- **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages (see
+  *Setup pages*).
 
 **Concurrency.** The EAF SDK is blocking C FFI and is not safe to call
 concurrently on a single handle, so every SDK call funnels through
@@ -250,9 +251,9 @@ the port.
 ```jsonc
 {
   // Optional per-device overrides, keyed by SDK serial. A device with no entry
-  // uses SDK-derived defaults (name from model+serial).
+  // uses SDK-derived defaults (its model as its name).
   "devices": {
-    "EAF-0a1b2c3d4e5f6071": {
+    "0a1b2c3d4e5f6071": {
       "name": "Main Focuser",
       "description": "ZWO EAF on the Askar 60F"
     }
@@ -277,31 +278,51 @@ Sections:
   16-hex `EAFGetSerialNumber` value, or `noserial-{index}` when unsupported).
   Any device without an entry uses SDK-derived defaults.
 - **server.port** — Listening port (**11124**, next free in the 1112x family;
-  11123 is `pa-scops-oag`). Hard read-only (self-lockout: a port change would
-  make the BFF lose the devices).
+  11123 is `pa-scops-oag`). Editable on the server page, which names the new
+  address after the save; `--port` pins it.
 
 **Deferred** (see *MVP scope*): `EAFSetMaxStep` as a live, config-editable
 knob — v0 reads the `EAFGetMaxStep` working limit once, during enumeration's
 brief open, and never writes it.
 
-### Config actions
+### Setup pages
 
-Standard cross-driver protocol ([`config-actions.md`](config-actions.md)),
-implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
-[`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
-supplies `ConfigurableDriver for ZwoFocuserDriver`:
+The service configures itself on the two HTML pages the Alpaca Management
+API defines, served on its own listener behind its own TLS and Basic Auth
+([driver-setup-pages.md](../plans/driver-setup-pages.md)): `/setup` for the
+whole server and `/setup/v1/focuser/{n}/setup` for each EAF it serves. The
+pages are the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md)
+crate's — the render, the save, the cross-site check, the Security section
+and the reload wait, which [`dsd-fp2.md`](dsd-fp2.md) "Setup Pages"
+describes in full. The EAF pages are `rusty-photon-driver`'s `overrides`
+module, fed the EAFs the build registered; `setup.rs` supplies the rest
+(`ConfigurableDriver for ZwoFocuserDriver`): the `Config`, the secret
+(`server.auth.password_hash`, never shown), and the `--port` pin. No field
+is locked: `UniqueID`s are hardware-derived and not stored in config
+(*Device identity*). The `config.get` / `config.apply` / `config.schema`
+actions are gone: `SupportedActions` is empty and any `Action` answers
+`ActionNotImplemented`.
 
-- **Secrets redacted/carried forward:** `server.auth.password_hash`.
-- **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
-  stored in config, so there is no identity field to lock (same divergence as
-  `zwo-camera`; see *Device identity*).
-- **Hard read-only fields:** `server.port` (the BFF cannot follow a port
-  rebind).
-- **Editable fields:** the `devices` map (per-serial `name`/`description`).
+| Page | Holds |
+|------|-------|
+| `/setup` | The `server` section (port, bind address, discovery port; `tls` is named as file-only, doctor writes it), the **Security** section (username, password, repeat → `server.auth`), and the EAFs the start enumerated, each linking to its page. With no EAF connected the page is still served, and says the server serves no device. |
+| `/setup/v1/focuser/{n}/setup` | What the driver knows about the EAF — its model, its working travel limit (`MaxStep`) and its `UniqueID` — and its `devices` override's **name** and **description**. |
 
-`config.apply` persists atomically, returns `status:"applying"` when a field
-changed, and fires the in-process reload (`main.rs` runs under
-`with_reload().run_with_reload(...)`).
+**The overrides are edited on the EAF pages alone.** The hardware names the
+devices, so no page lists the `devices` map as a whole: an EAF's page edits
+the override under that EAF's serial (the key *Device identity* gives it),
+and the server page leaves the map out. A blank field keeps what the EAF
+gives itself; the first save that names either field creates the override,
+and a save that clears both deletes it. The override of an EAF that is not
+connected has no page, and every save leaves it as the file has it, so it
+applies again at the first start or reload that finds that EAF.
+
+A save that changes something persists atomically and fires the in-process
+reload (`main.rs` runs under `with_reload().run_with_reload(...)`): the loop
+re-reads the file, re-enumerates the EAFs and rebuilds the server. Each EAF
+takes its number from that enumeration, as at every start; no setting
+places it. A field `--port` pins shows the running value, disabled, and a
+save never persists it.
 
 ### Device identity (UniqueID)
 
@@ -317,7 +338,8 @@ cameras — but with a **simpler fallback chain**, since the EAF SDK exposes no
 Consequences (same as `zwo-camera`): **no `unique_id` field in config**, an
 **empty identity-pointer list** passed to `resolve_and_init` (no minting; the
 bootstrap still materializes the default config file on first start), and **no
-locked identity field** in the config-actions tiers.
+identity field on the setup pages**: an EAF's page shows its `UniqueID` and
+edits only its override's name and description.
 
 ## MVP scope
 
@@ -330,8 +352,8 @@ locked identity field** in the config-actions tiers.
   serial; per-device connect/disconnect lifecycle re-opens on demand.
 - Absolute `Move` validated against `0..=MaxStep`; `Halt`; `Position`;
   `IsMoving`; live `Temperature`.
-- `config.get`/`config.apply`/`config.schema` actions; hardware-derived
-  `UniqueID`; in-process reload.
+- Setup pages (`/setup` and a page per EAF); hardware-derived `UniqueID`;
+  in-process reload.
 - ConformU integration test driven against the `zwo-rs` `simulation` backend.
 
 **Deferred (Future Work)**
@@ -539,7 +561,8 @@ structure:
   fallback).
 - **BDD** (`bdd-infra::ServiceHandle`, `tests/features/*.feature`) — enumeration/
   connection lifecycle (C0–C4), an EAF that leaves the bus (C5,
-  `focuser_departure.feature`), movement (M1–M14), and config actions, driven
+  `focuser_departure.feature`), movement (M1–M14), and the setup pages
+  (`setup_pages.feature`), driven
   against the `zwo-rs` `simulation` backend. For C5 the service is started
   with the hidden `--simulation-departure-file <path>`: while that file
   exists the simulated EAF is off the bus. The `zwo-rs` simulation answers as

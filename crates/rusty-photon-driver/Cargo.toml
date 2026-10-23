@@ -17,7 +17,7 @@ default = []
 # docs/plans/driver-setup-pages.md D11). Only the camera drivers with a
 # `usb_devices` list turn it on, so no other driver's graph gains
 # ascom-alpaca's `Camera` trait through this crate.
-claims = ["ascom-alpaca/camera", "dep:async-trait", "dep:tokio-util", "dep:maud"]
+claims = ["ascom-alpaca/camera", "dep:async-trait", "dep:tokio-util"]
 
 [lints]
 workspace = true
@@ -27,8 +27,9 @@ async-trait = { workspace = true, optional = true }
 # `rt` for `task::AbortOnDropHandle`, which ends the re-scan with the server it
 # belongs to.
 tokio-util = { workspace = true, features = ["rt"], optional = true }
-# The camera pages' markup, as `rusty-photon-setup` draws its own.
-maud = { workspace = true, optional = true }
+# The markup of a driver's own part of its pages (the `overrides` module, the
+# camera pages), as `rusty-photon-setup` draws its own.
+maud = { workspace = true }
 # Only the core ASCOM error types (`ASCOMError`/`ASCOMResult`/`ASCOMErrorCode`,
 # unfeatured in `errors.rs`) are used. lib.rs `compile_error!`s unless one device
 # and one network feature are on. The device guard keys off the empty `__anydevice`

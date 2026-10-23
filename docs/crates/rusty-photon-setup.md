@@ -188,7 +188,11 @@ its configuration alone cannot name, adds its own part to its pages: a
 The camera drivers are the first: their `usb_devices` list is an array of
 objects, which the walker names as file-only, and the devices a camera
 server serves follow the USB placement its last start or reload found, not
-the file (the driver-setup-pages plan's D11). A `DriverPages` says:
+the file (the driver-setup-pages plan's D11). `zwo-focuser`'s devices are
+the EAFs its SDK enumerates, which the file only renames through a
+`devices` map of overrides, so its part (`rusty-photon-driver`'s
+`overrides` module) is a page per EAF that edits that EAF's override. A
+`DriverPages` says:
 
 - **which top-level keys its sections edit.** The walker leaves them off
   every page, so no field is edited in two places, and no file-only note

@@ -38,6 +38,7 @@ rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-setup = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
@@ -171,7 +172,7 @@ zwo-rs = { workspace = true, features = ["simulation"] }
 # Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
 ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

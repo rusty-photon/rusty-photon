@@ -24,15 +24,20 @@ use rusty_photon_setup::{
 use serde_json::{Map, Value};
 use tracing::debug;
 
+use crate::overrides::{
+    apply_override, facts, override_fields, override_of, overrides_mut, set_text, text_in,
+    OVERRIDES,
+};
+
 /// The camera device type in its Alpaca path spelling.
 const DEVICE_TYPE: &str = "camera";
 
 /// The filter wheel device type in its Alpaca path spelling.
 const WHEEL_TYPE: &str = "filterwheel";
 
-/// The configuration keys the Cameras section edits.
+/// The `usb_devices` list the Cameras section edits, beside the `devices`
+/// overrides.
 const LIST: &str = "usb_devices";
-const OVERRIDES: &str = "devices";
 
 /// An entry's declared wheel, and the wheel's filter names, in an entry or
 /// an override.
@@ -49,10 +54,6 @@ const LISTED: &str = "list";
 
 /// A camera page's link to the Cameras section of the server page.
 const CAMERAS_LINK: &str = "../../../../setup#cameras";
-
-/// A camera's override, edited on its own page.
-const OVERRIDE_NAME: &str = "override.name";
-const OVERRIDE_DESCRIPTION: &str = "override.description";
 
 /// A device on the bus that can be one of the driver's cameras, as a scan
 /// found it.
@@ -439,38 +440,6 @@ fn entries(config: &Value) -> Option<Vec<Entry>> {
             })
             .collect(),
     )
-}
-
-/// The `devices` override under `key` in `config`, if any.
-fn override_of<'a>(config: &'a Value, key: &str) -> Option<&'a Map<String, Value>> {
-    config.get(OVERRIDES)?.get(key)?.as_object()
-}
-
-fn text_in(object: Option<&Map<String, Value>>, key: &str) -> String {
-    object
-        .and_then(|o| o.get(key))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// Set `key` in `object` to `value`, trimmed; a blank value removes it.
-fn set_text(object: &mut Map<String, Value>, key: &str, value: &str) {
-    let value = value.trim();
-    if value.is_empty() {
-        _ = object.remove(key);
-    } else {
-        _ = object.insert(key.to_string(), Value::String(value.to_string()));
-    }
-}
-
-/// The `devices` map in `config`, created when the file has none.
-fn overrides_mut(config: &mut Value) -> Option<&mut Map<String, Value>> {
-    let object = config.as_object_mut()?;
-    object
-        .entry(OVERRIDES)
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()
 }
 
 /// A port whose camera a save moves: the port, the number it has, the
@@ -1498,18 +1467,6 @@ impl CamerasSection {
     }
 }
 
-/// The facts a camera's page shows.
-fn facts(rows: &[(&str, &str)]) -> Markup {
-    html! {
-        dl.facts {
-            @for (term, value) in rows {
-                dt { (term) }
-                dd { (value) }
-            }
-        }
-    }
-}
-
 /// A listed camera's page: what the driver knows, and where its names are
 /// edited.
 struct ListedPage {
@@ -1582,32 +1539,13 @@ struct OverridePage {
 
 impl CustomSection for OverridePage {
     fn render(&self, view: SectionView<'_>) -> Markup {
-        let stored = override_of(view.config, &self.key);
-        let value = |control: &str, key: &str| {
-            view.submitted
-                .and_then(|form| form.get(control))
-                .map_or_else(|| text_in(stored, key), str::to_string)
+        let note = html! {
+            "Served without a list, numbered in port order; to pin its number, list it in the server page's "
+            a href=(CAMERAS_LINK) { "Cameras section" } "."
         };
         html! {
             (facts(&[("Model", &self.model), ("USB port", &self.port), ("UniqueID", &self.unique_id)]))
-            fieldset {
-                legend { "Override" }
-                div.field {
-                    label for=(OVERRIDE_NAME) { "Name" }
-                    input type="text" id=(OVERRIDE_NAME) name=(OVERRIDE_NAME) value=(value(OVERRIDE_NAME, "name"));
-                    div.hint { "Blank keeps the name the camera gives itself." }
-                }
-                div.field {
-                    label for=(OVERRIDE_DESCRIPTION) { "Description" }
-                    input type="text" id=(OVERRIDE_DESCRIPTION) name=(OVERRIDE_DESCRIPTION)
-                        value=(value(OVERRIDE_DESCRIPTION, "description"));
-                }
-                div.hint {
-                    "Saved under " code { (self.key) } " in the " code { "devices" } " map. Served without a list, "
-                    "numbered in port order; to pin its number, list it in the server page's "
-                    a href=(CAMERAS_LINK) { "Cameras section" } "."
-                }
-            }
+            (override_fields(&self.key, "camera", view, Some(note)))
         }
     }
 
@@ -1616,33 +1554,7 @@ impl CustomSection for OverridePage {
     }
 
     fn apply(&self, form: &FormValues, config: &mut Value) -> Vec<FieldError> {
-        let Some(overrides) = overrides_mut(config) else {
-            return vec![FieldError {
-                path: String::new(),
-                msg: "the configuration file is not a JSON object".to_string(),
-            }];
-        };
-        let mut names = overrides
-            .get(&self.key)
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        set_text(
-            &mut names,
-            "name",
-            form.get(OVERRIDE_NAME).unwrap_or_default(),
-        );
-        set_text(
-            &mut names,
-            "description",
-            form.get(OVERRIDE_DESCRIPTION).unwrap_or_default(),
-        );
-        if names.is_empty() {
-            _ = overrides.remove(&self.key);
-        } else {
-            _ = overrides.insert(self.key.clone(), Value::Object(names));
-        }
-        Vec::new()
+        apply_override(&self.key, form, config)
     }
 
     /// The reload this page's save fires numbers the bus as it is now, so a
@@ -1860,6 +1772,7 @@ impl CustomSection for WheelPage {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::overrides::{OVERRIDE_DESCRIPTION, OVERRIDE_NAME};
     use serde_json::json;
 
     fn bus(port: &str, label: &str) -> BusCamera {
