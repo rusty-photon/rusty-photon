@@ -51,9 +51,11 @@ impl Default for Config {
     }
 }
 
-/// The startup-default observing site. A client site push (`SkySafari` sends
-/// its GPS-derived coordinates after connect) overrides these live; a
-/// restart reverts to them.
+/// The startup-default observing site.
+///
+/// A client site push (`SkySafari` sends its GPS-derived coordinates after
+/// connect) overrides these live; a restart, or a reload after a setup-page
+/// save, reverts to them.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
@@ -231,7 +233,13 @@ pub struct DeviceConfig {
     /// `Declination` report the zenith idle point instead (the P3a wedge
     /// defense). Explicit `null` disables the policy and reports raw
     /// virtual pointing.
+    ///
+    /// The schema spells it as an optional number, so the device's setup
+    /// page renders a number input whose cleared submission persists the
+    /// `null` that disables the policy; the range stays the newtype's,
+    /// checked when the submission is parsed.
     #[serde(default = "default_floor")]
+    #[schemars(with = "Option<f64>")]
     pub report_altitude_floor_deg: Option<FloorDeg>,
 }
 

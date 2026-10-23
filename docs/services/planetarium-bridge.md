@@ -12,8 +12,8 @@ The P3a verification-spike findings that ground it are preserved in the
 [P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)
 (run 2026-07-30) overturned the below-horizon story and **flipped the
 import gesture from GoTo to Align** (Decision 2's second amendment).
-The [Testing](#testing) section's six feature files run live in the
-default suite (69 scenarios), the device passes ConformU (see
+The [Testing](#testing) section's seven feature files run live in the
+default suite (83 scenarios), the device passes ConformU (see
 [ConformU](#conformu) for the harness specifics), and the throwaway
 P3a spike crate is deleted. What this service sends rp is final; the
 rp-side `source` semantics landed in rp as their own P3 slice
@@ -78,7 +78,9 @@ provenance and nothing else.
 
 Standard service scaffolding applies
 ([service-lifecycle.md](../skills/service-lifecycle.md)): `ServiceRunner`
-with SCM feature, `init_service_tracing`, `resolve_and_init` config
+with SCM feature and its in-process reload (`run_with_reload`, which a
+[setup-page](#setup-pages) save fires), `init_service_tracing`,
+`resolve_and_init` config
 bootstrap minting the Alpaca `UniqueID`, `pkg/doctor.toml`
 (`class = "alpaca"`, port 11126), workspace/Bazel registration, and the
 hand-typed port-table updates (workspace.md, packaging docs, doctor.md)
@@ -253,7 +255,8 @@ P3a: SkySafari pushes its own GPS-derived site
   config, and using it keeps the bridge's horizon math consistent with
   the client's own — exactly what the floor policy wants. Adoption is
   logged at `info!`; the configured site is the startup default, and a
-  restart reverts to it. Latitude/longitude writes are range-checked
+  restart, or the reload a [setup-page](#setup-pages) save fires, reverts
+  to it. Latitude/longitude writes are range-checked
   (`InvalidValue` outside them); `SiteElevation` writes accept the
   ASCOM range `[-300, 10000]` meters.
 - **`SetUTCDate` stays `NOT_IMPLEMENTED`** — the host clock is
@@ -369,7 +372,8 @@ on-disk FIFO spool**:
   `<platform config root>/planetarium-bridge/spool.jsonl` beside the
   service's other state), one request per line, `fsync`ed per append —
   a Ctrl-C or crash loses nothing, and the spool **replays across
-  bridge restarts**.
+  bridge restarts** and the in-process reload a
+  [setup-page](#setup-pages) save fires.
 - Replay runs in order (FIFO) whenever rp is reachable again, paced by
   exponential backoff between reconnect attempts (1 s doubling to
   `spool.replay_backoff_max`, default `5m`). Replayed entries carry
@@ -396,7 +400,8 @@ listener), returning:
 ```
 
 `spooled` is the durable backlog length; the totals are
-process-lifetime counters. This is the plan's "sentinel-visible
+process-lifetime counters, which a [setup-page](#setup-pages) reload
+keeps. This is the plan's "sentinel-visible
 counter" hook: curl-able immediately; teaching sentinel's supervisor to
 scrape it is a documented follow-up, not MVP (sentinel today probes
 alpaca-class services at the Alpaca `connected` endpoint only).
@@ -620,6 +625,64 @@ Config invariants follow parse-don't-validate
 latitude/floor ranges, positive `max_entries`, a well-formed
 `mcp_server_url` — all rejected at load with the field named.
 
+## Setup pages
+
+The bridge configures itself on the two HTML pages the Alpaca Management
+API defines, served on its own listener behind its own TLS and Basic Auth:
+`/setup` for the whole server and `/setup/v1/telescope/0/setup` for the
+virtual Telescope. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section and the
+reload wait — and `setup.rs` supplies the bridge's half
+(`ConfigurableDriver for PlanetariumBridgeDriver`): its `Config`, the
+rules a save adds, its two secrets, and which section the Telescope's page
+edits. The binary has no command-line overrides beyond `--config` /
+`--log-level`, so `Overrides = ()` and no field is ever pinned. The bridge
+never carried config actions; its `SupportedActions` stays empty.
+
+| Page | Section | Fields |
+|------|---------|--------|
+| `/setup` | `rp` | `mcp_server_url`, `ca_cert`; `service_auth` is named as edited in the configuration file — an optional block the form does not render, which doctor's client wiring writes |
+| | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
+| | `site` | `site_latitude_deg`, `site_longitude_deg`, `site_elevation_m` — the startup default a client's site push overrides |
+| | `spool` | `path` (cleared, the platform default location), `max_entries`, `replay_backoff_max` |
+| `/setup/v1/telescope/0/setup` | `device` | `slew_duration`, `report_altitude_floor_deg` — cleared, it saves the `null` that disables the floor — and `unique_id` under the Identity disclosure; `assume_epoch` is named as edited in the configuration file (a choice of two words, which the form does not render) |
+
+- **Secrets:** `/server/auth/password_hash`, edited through the Security
+  section and never shown, and `/rp/service_auth/password`, the plaintext
+  password the bridge presents to rp, which no page carries.
+- **Validation.** The ranges, the URL's shape and the spool bound are the
+  config newtypes', checked when the submission is parsed: a value out of
+  range is refused (`422`) with the newtype's message, which names the
+  field, above the form, and the file is left as it was. A save adds two
+  rules: `device.unique_id` must be non-empty — the bootstrap mints an id
+  only when the process starts, so a reload would serve a cleared one as
+  it is — and `spool.replay_backoff_max` must be greater than zero, since
+  the replay backoff doubles from one second up to it and a zero cap would
+  retry a down rp in a tight loop. These two are the page's: the load does
+  not apply them, so a file already holding a zero cap starts as before,
+  and every save is refused, naming the field, until it is fixed.
+
+A save that changes a field persists atomically, answers that the service
+is reloading, and fires the in-process reload after the response has
+flushed — a reload rather than a restart (`ApplyDisposition::Reload`):
+`main.rs` runs under `ServiceRunner::with_reload().run_with_reload(...)`,
+whose loop (`run_server_loop`) rebuilds the server from the
+freshly-persisted file. The spool is what makes the stop matter. A reload
+stops the serve loop, draining in-flight requests and closing keep-alive
+connections, then the import worker: it stops after the delivery in
+flight, never in one, spools any Align still queued, and is waited for —
+aborted past 10 s, so a wedged rp cannot hold the stop — before the next
+server loads the spool file, so two workers never rewrite one spool from
+their own copies. An import the abort cuts off mid-delivery is lost, as a
+process exit at that point loses it; an entry already in the spool stays
+there. A reload therefore keeps what a restart keeps, and resets what a
+restart resets: the client's connection (it reconnects), the session's
+`Target*`, and a client-pushed site, back to the configured one until the
+client pushes again. `/health`'s totals span it: one `HealthState` outlives
+the reloads, with `rp_reachable` false until the new worker's startup
+probe settles it. A save that changes nothing says so and fires no reload.
+
 ## Doctor integration
 
 **Landed** (with the fake-mount slice, which also registered the
@@ -697,7 +760,8 @@ the real store.
 | `device_contract.feature` | Capability matrix; sync sets pointing + Target*; slew Target* propagation; abort ends motion; site push adoption; UTCDate write rejected |
 | `target_import.feature` | Align → `add_target` (both sync verbs); slews never import; epoch conversion under `assume_epoch: jnow`; below-horizon Align imported; repeated Aligns each submitted (rp dedup collapses) |
 | `position_policy.feature` | Floor snap to idle point; below-floor slew converges but reports idle; below-floor Align imports but reports idle; `null` floor reports raw pointing |
-| `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
+| `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; replay across a setup-page reload; the health totals span a reload; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
+| `setup_pages.feature` | The [setup pages](#setup-pages): the server page's sections and its link to the Telescope's page; the Telescope's page shows the device section alone, `assume_epoch` named as file-only; a valid save persists, reloads and is served back; clearing the floor saves `null`; an out-of-range value refused naming the field; the zero backoff cap and the empty `unique_id` refused beside their fields; a save that changes nothing; a cross-site `POST` refused; a port change answers with the new address; the rp password never on a page; with TLS and auth, `401` without the credential and no hash on the page |
 | `doctor.feature` | The shared doctor smoke (testing.md § Doctor smoke): a valid config yields a clean report, an unknown key fails the report and is named. Rides `bdd_infra::doctor_smoke`; the world's `valid_config()` spells out all five config blocks, so the clean-report scenario covers the whole typed load path |
 | `auth.feature` | The shared TLS + auth smoke (testing.md § TLS/auth): with `server.tls` and `server.auth` configured the bridge serves HTTPS and answers 401 without credentials, 200 with them. Rides `bdd_infra::tls_auth`; the world's launch hook points `spool.path` at the scenario temp dir, since an absent path resolves to — and creates — the platform config dir |
 
