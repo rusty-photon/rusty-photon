@@ -92,7 +92,7 @@ key order so the rendered order is the same on every host:
 | `string` | text input | verbatim; an optional (`["string","null"]`) string cleared persists `null`, a required one persists `""` |
 | `boolean` | checkbox | present ⇒ `true`, absent ⇒ `false` |
 | `integer` with optional `minimum`/`maximum` | number input | parsed and range-checked; out of range or not a number is a field error; an optional one cleared persists `null`, a required one cleared is a field error |
-| `number` | number input | parsed; an optional one cleared persists `null`, a required one cleared is a field error |
+| `number` | number input taking any value (`step="any"`: without it a browser accepts only whole steps from the value the input starts at) | parsed; an optional one cleared persists `null`, a required one cleared is a field error |
 | `array` of an integer `enum` | one checkbox per enumerated value, in schema order | the checked values, in schema order; none checked ⇒ `[]` |
 | a plain object | recursed | — |
 | `$ref` into `$defs` | resolved | — |
