@@ -374,8 +374,9 @@ impl BoundServer {
         // reload the next server's worker loads the same spool file, and
         // two workers rewriting it from their own copies would lose
         // entries. The spool is written only between awaits, so the abort
-        // never cuts a write short; an import it cuts off mid-delivery is
-        // lost, as a process exit at that point would lose it.
+        // never cuts a write short. It drops the import it cuts off
+        // mid-delivery and any queued behind it unspooled, as a process
+        // exit at that point would.
         cancel.cancel();
         let mut worker_handle = worker_handle;
         match tokio::time::timeout(WORKER_STOP_BOUND, &mut worker_handle).await {

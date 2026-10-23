@@ -202,7 +202,8 @@ Restart-Service rusty-photon-<svc>              # the rest
 
 Reload-capable (SCM `ParamChange`, the SIGHUP analogue): filemonitor,
 ppba-driver, qhy-focuser, sky-survey-camera, pa-falcon-rotator,
-pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera, zwo-camera.
+pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera, zwo-camera,
+zwo-focuser.
 Services with `config.apply` support (via ui-htmx) rewrite these files at
 runtime — hand-edits and UI edits share the same file.
 

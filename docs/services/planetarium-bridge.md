@@ -671,12 +671,12 @@ whose loop (`run_server_loop`) rebuilds the server from the
 freshly-persisted file. The spool is what makes the stop matter. A reload
 stops the serve loop, draining in-flight requests and closing keep-alive
 connections, then the import worker: it stops after the delivery in
-flight, never in one, spools any Align still queued, and is waited for —
+flight, never in one, spooling any Align still queued, and is waited for —
 aborted past 10 s, so a wedged rp cannot hold the stop — before the next
 server loads the spool file, so two workers never rewrite one spool from
-their own copies. An import the abort cuts off mid-delivery is lost, as a
-process exit at that point loses it; an entry already in the spool stays
-there. A reload therefore keeps what a restart keeps, and resets what a
+their own copies. An abort drops the import it cuts off mid-delivery and
+any Align queued behind it unspooled, as a process exit at that point
+does; an entry already in the spool stays there. A reload therefore keeps what a restart keeps, and resets what a
 restart resets: the client's connection (it reconnects), the session's
 `Target*`, and a client-pushed site, back to the configured one until the
 client pushes again. `/health`'s totals span it: one `HealthState` outlives
