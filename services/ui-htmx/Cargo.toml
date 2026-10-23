@@ -155,7 +155,7 @@ insta = { version = "1.48", features = ["filters", "redactions"] }
 # Its defaults minus `manager`, the driver auto-download: the tests spawn
 # geckodriver themselves, and `manager` pulls in `zip` 8, whose extraction
 # code has security advisories fixed only in `zip` 9.
-thirtyfour = { version = "0.37", default-features = false, features = ["reqwest", "rustls", "component", "cdp"] }
+thirtyfour = { version = "0.38", default-features = false, features = ["reqwest", "rustls", "component", "cdp"] }
 # Layer C Tier 0 step 4 (§9): the kill-the-tree reaper for the @browser worst-case
 # scenario — killpg of geckodriver's process group + a /proc orphan scan, both
 # unix-only (the @browser layer runs on Linux). Test-only.

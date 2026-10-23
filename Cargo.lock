@@ -5815,13 +5815,13 @@ dependencies = [
 
 [[package]]
 name = "thirtyfour"
-version = "0.37.8"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9c6d349d6b4a7243df43b9852fd0f93ef113c23ada67201374c1af904b1263"
+checksum = "1bebc7053089abdda0ba51400135cf25b8231c0cf673a780ecdb82586d2772b1"
 dependencies = [
  "arc-swap",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "cfg-if",
  "const_format",
