@@ -187,20 +187,6 @@ impl BrowserSession {
         false
     }
 
-    /// Poll until a CSS match exists **and** is enabled; returns success. Used
-    /// to observe an htmx swap landing (a disabled field becomes editable).
-    pub async fn wait_enabled(&self, css: &str, max_iters: usize) -> bool {
-        for _ in 0..max_iters {
-            if let Ok(el) = self.driver.find(By::Css(css)).await {
-                if el.is_enabled().await.unwrap_or(false) {
-                    return true;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        false
-    }
-
     /// Click the first element matching `css`.
     pub async fn click(&self, css: &str) {
         let element = self

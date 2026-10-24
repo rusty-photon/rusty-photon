@@ -24,13 +24,12 @@ fn selector(css: &str) -> Selector {
     Selector::parse(css).unwrap_or_else(|e| panic!("invalid CSS selector {css:?}: {e}"))
 }
 
-/// The decoded `value` (empty if the attribute is absent) and the `disabled`
-/// state of an `<input>` — what the BDD assertions need about a single control,
-/// read as owned data so the parsed tree can be dropped.
+/// The decoded `value` (empty if the attribute is absent) of an `<input>` —
+/// what the BDD assertions need about a single control, read as owned data so
+/// the parsed tree can be dropped.
 #[derive(Debug, Clone)]
 pub struct InputState {
     pub value: String,
-    pub disabled: bool,
 }
 
 /// The `<input>` whose `name` attribute equals `name`, or `None` if there is no
@@ -45,7 +44,6 @@ pub fn input(html: &str, name: &str) -> Option<InputState> {
             let v = el.value();
             InputState {
                 value: v.attr("value").unwrap_or_default().to_owned(),
-                disabled: v.attr("disabled").is_some(),
             }
         })
 }
@@ -104,30 +102,6 @@ pub fn field_error(html: &str, field: &str, message: &str) -> bool {
 /// form to.
 pub fn form_post_url(html: &str) -> Option<String> {
     attr(html, "form[hx-post]", "hx-post")
-}
-
-/// Whether the page renders a checkbox named `name` carrying `value` — one
-/// member of a checkbox group (e.g. a camera's `cooler_targets_c` grid).
-pub fn has_checkbox(html: &str, name: &str, value: &str) -> bool {
-    let doc = Html::parse_document(html);
-    doc.select(&selector(&format!(
-        r#"input[type="checkbox"][name="{name}"][value="{value}"]"#
-    )))
-    .next()
-    .is_some()
-}
-
-/// The `hx-get` URL of the "Unlock to edit" affordance for `field`, if present —
-/// the affordance the page actually renders, so a follow request goes where the
-/// browser would go rather than to a hard-coded `?unlock=` URL. It is a
-/// `<button hx-get>` (plan §7: the no-JS `<a href>` fallback was dropped).
-pub fn unlock_url(html: &str, field: &str) -> Option<String> {
-    let doc = Html::parse_document(html);
-    let suffix = format!("unlock={field}");
-    doc.select(&selector("button[hx-get]"))
-        .filter_map(|el| el.value().attr("hx-get"))
-        .find(|href| href.ends_with(&suffix))
-        .map(str::to_owned)
 }
 
 /// Every form control the browser would submit, as `(name, value)`: each

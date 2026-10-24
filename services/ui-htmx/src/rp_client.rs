@@ -1,19 +1,28 @@
-//! rp's non-config REST surface: live equipment status.
+//! rp's REST surface the BFF reads: live equipment status.
 //!
-//! The equipment page joins `GET /api/equipment` (live `{id, connected}` per
-//! device) with rp's *config* (the authoritative roster, read through the
-//! [`ConfigClient`](crate::driver_client::ConfigClient) REST transport); the
-//! stream page reads the same endpoint for its LED panel and to learn
-//! whether rp is reachable. This module owns the wire mirror of that
-//! endpoint (`rp.md` "REST Endpoints") behind the mockable [`RpApi`] trait.
+//! The stream page reads `GET /api/equipment` (live `{id, connected}` per
+//! device) for its LED panel and to learn whether rp is reachable. This
+//! module owns the wire mirror of that endpoint (`rp.md` "REST Endpoints")
+//! behind the mockable [`RpApi`] trait.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::driver_client::ConfigClientError;
 use crate::io::HttpClient;
+
+/// A failed read of rp's REST surface.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RpApiError {
+    /// Network failure, or a non-2xx HTTP status (rp is down, or its
+    /// auth/TLS layer refused us).
+    #[error("could not reach rp: {0}")]
+    Transport(String),
+    /// rp answered with a body that does not decode.
+    #[error("could not decode rp's response: {0}")]
+    Decode(String),
+}
 
 /// Live status of one configured device — the per-entry shape of
 /// `GET /api/equipment` (`rp.md`).
@@ -84,17 +93,17 @@ impl EquipmentStatus {
     }
 }
 
-/// rp's non-config REST surface, behind a trait so page handlers can be unit
-/// tested with canned responses (mirrors the `ConfigClient` seam).
+/// rp's REST surface, behind a trait so page handlers can be unit tested
+/// with canned responses.
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait RpApi: Send + Sync {
     /// `GET /api/equipment` — live connection state of the configured roster.
-    async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError>;
+    async fn equipment_status(&self) -> Result<EquipmentStatus, RpApiError>;
 }
 
 /// Production [`RpApi`] over the shared [`HttpClient`] (rusty-photon-tls CA trust +
-/// optional Basic auth — the same client the `RestConfigClient` uses).
+/// optional Basic auth).
 pub struct RestRpApi {
     http: Arc<dyn HttpClient>,
     base_url: String,
@@ -108,30 +117,27 @@ impl RestRpApi {
         }
     }
 
-    async fn get_json<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> Result<T, ConfigClientError> {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, RpApiError> {
         let url = format!("{}{path}", self.base_url);
         let response = self
             .http
             .get(&url)
             .await
-            .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
+            .map_err(|e| RpApiError::Transport(e.to_string()))?;
         if !(200..300).contains(&response.status) {
             let detail = response.body.chars().take(200).collect::<String>();
-            return Err(ConfigClientError::Transport(format!(
+            return Err(RpApiError::Transport(format!(
                 "HTTP {} from {url}: {detail}",
                 response.status
             )));
         }
-        serde_json::from_str(&response.body).map_err(|e| ConfigClientError::Decode(e.to_string()))
+        serde_json::from_str(&response.body).map_err(|e| RpApiError::Decode(e.to_string()))
     }
 }
 
 #[async_trait]
 impl RpApi for RestRpApi {
-    async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError> {
+    async fn equipment_status(&self) -> Result<EquipmentStatus, RpApiError> {
         self.get_json("/api/equipment").await
     }
 }
@@ -201,7 +207,7 @@ mod tests {
         });
         let api = RestRpApi::new(Arc::new(http), "http://rp:11115");
         let err = api.equipment_status().await.unwrap_err();
-        assert!(matches!(err, ConfigClientError::Transport(_)), "{err:?}");
+        assert!(matches!(err, RpApiError::Transport(_)), "{err:?}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 Feature: Client-target joins (#607)
   A service's config can point a URL at another catalog service —
-  ui-htmx's rp/sentinel targets, rp's plate-solver/guider clients, every
+  ui-htmx's rp target, rp's plate-solver/guider clients, every
   rp equipment.<kind>[].alpaca_url entry including the singular
   equipment.mount.alpaca_url (#663), sentinel's Alpaca monitors, and
   sentinel's operation-watchdog rp_url. These checks join that URL

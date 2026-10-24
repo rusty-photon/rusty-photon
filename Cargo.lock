@@ -6346,6 +6346,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-setup",
  "rusty-photon-tls",
+ "schemars",
  "scraper",
  "serde",
  "serde_json",
@@ -6355,6 +6356,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

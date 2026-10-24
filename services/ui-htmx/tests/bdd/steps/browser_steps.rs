@@ -1,10 +1,10 @@
 //! Step definitions for browser.feature (`@browser`) — Layer C / P3.
 //!
 //! These drive a real headless Firefox via `WebDriver` to prove behaviors only a
-//! browser can establish: that `htmx.min.js` actually loads and executes the
-//! declared swaps. They reuse the `Given a qhy-focuser driver running …` setup from
-//! [`super::config_page_steps`]; only the When/Then verbs here touch the browser.
-//! The whole feature is gated behind `UI_BROWSER_TESTS=1` (see `tests/bdd.rs`).
+//! browser can establish: that `htmx.min.js` and its SSE extension actually load
+//! and execute the declared swaps. They reuse the rp and BFF setup steps of the
+//! stream suite; only the When/Then verbs here touch the browser. The whole
+//! feature is gated behind `UI_BROWSER_TESTS=1` (see `tests/bdd.rs`).
 
 use std::time::Duration;
 
@@ -25,45 +25,35 @@ const MAX_POLLS: usize = 50;
 /// between the two: well above a real graceful stop, below the 5s SIGKILL point.
 const GRACEFUL_STOP_BUDGET: Duration = Duration::from_secs(4);
 
-#[when("I load the qhy-focuser config page in a browser")]
+#[when("I load the stream page in a browser")]
 async fn load_in_browser(world: &mut UiWorld) {
-    let path = UiWorld::device_config_path();
-    world.browser_goto(&path).await;
+    world.browser_goto("/stream").await;
 }
 
-#[then("the browser renders the configuration form")]
-async fn renders_form(world: &mut UiWorld) {
-    // The Apply button is server-rendered inside the form; seeing it in the
+#[then("the browser renders the activity stream")]
+async fn renders_stream(world: &mut UiWorld) {
+    // The fold strip is server-rendered inside the page; seeing it in the
     // *live* DOM proves Firefox fetched the page and rendered it.
     assert!(
         world
             .browser()
-            .wait_present("button.primary", MAX_POLLS)
+            .wait_present("#stream-page .fold-strip", MAX_POLLS)
             .await,
-        "the Apply button never appeared in the live DOM"
+        "the stream page's fold strip never appeared in the live DOM"
     );
 }
 
-#[when("I click the unlock link for focuser.unique_id")]
-async fn click_unlock(world: &mut UiWorld) {
-    // The unlock affordance is a `<button hx-get>` (plan §7: the no-JS `<a href>`
-    // fallback was dropped), so the selector targets the button.
-    world
-        .browser()
-        .click(r#"button[hx-get$="unlock=focuser.unique_id"]"#)
-        .await;
-}
-
-#[then("the browser shows focuser.unique_id editable")]
-async fn shows_unique_id_editable(world: &mut UiWorld) {
-    // Proves real htmx executed the hx-get → outerHTML swap: the re-rendered
-    // #config-card replaces the disabled identity input with an enabled one.
+#[then(expr = "the browser's feed shows a card mentioning {string}")]
+async fn feed_shows_card(world: &mut UiWorld, needle: String) {
+    // Proves the vendored SSE extension connected and htmx executed the
+    // `sse-swap="feed"` afterbegin swap: the card exists only in the live DOM,
+    // never in the page the server rendered.
     assert!(
         world
             .browser()
-            .wait_enabled(r#"input[name="focuser.unique_id"]"#, MAX_POLLS)
+            .wait_text_contains("#feed", &needle, MAX_POLLS)
             .await,
-        "focuser.unique_id never became editable after the htmx swap"
+        "no feed card mentioning {needle:?} reached the live DOM"
     );
 }
 

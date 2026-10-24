@@ -1,36 +1,36 @@
 //! Configuration for the `ui-htmx` BFF.
 //!
-//! The BFF is not an ASCOM device; this is its own small config, and its
-//! source of truth is **rp's roster** (ADR-016 decision 9, tightened by
-//! issue #569): the config is the listening port plus the required
-//! [`RpTarget`], and every config target comes from the roster at request
-//! time — there is no second, hand-maintained device list. The retired
-//! `drivers` override map fails loudly at load (`deny_unknown_fields`);
-//! doctor's `config.retired-keys` fix deletes it (see
-//! `docs/services/ui-htmx.md`).
+//! The BFF is not an ASCOM device; this is its own small config: the
+//! listening server plus the required [`RpTarget`], edited on the BFF's own
+//! setup page ([`crate::setup`]). The retired `drivers` override map and
+//! `sentinel` block fail loudly at load (`deny_unknown_fields`); doctor's
+//! `config.retired-keys` fix deletes them (see `docs/services/ui-htmx.md`).
 
 use std::path::{Path, PathBuf};
 
 pub use rusty_photon_server_config::ServerConfig;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Top-level BFF configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_server")]
     pub server: ServerConfig,
-    /// The rp orchestrator — the roster source of truth for every surface
-    /// (`/` settings page, `/equipment` roster, `/stream` feed, and the
-    /// roster-derived device config pages). **Required**: an rp-less BFF has
-    /// no purpose, so a config without the block (or with `"rp": null`)
-    /// fails loudly at load instead of starting a useless server.
+    /// The rp orchestrator every surface reads: the `/stream` feed, the
+    /// `/targets` inbox, and the navigation's link to rp's setup page.
+    /// **Required**: an rp-less BFF has no purpose, so a config without the
+    /// block (or with `"rp": null`) fails loudly at load instead of starting
+    /// a useless server.
     pub rp: RpTarget,
-    /// Where Sentinel's dashboard/REST API lives. Absent (the default) means
-    /// no restart affordances are rendered anywhere — Sentinel is optional
-    /// infrastructure. See `docs/services/ui-htmx.md` §Restart via Sentinel.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sentinel: Option<SentinelTarget>,
+}
+
+/// The command-line overrides the BFF runs with: `--port` pins
+/// `server.port`, which the setup page then shows as pinned and never saves.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CliOverrides {
+    pub port: Option<u16>,
 }
 
 impl rusty_photon_config::ConfigFile for Config {}
@@ -40,7 +40,6 @@ impl Default for Config {
         Self {
             server: default_server(),
             rp: RpTarget::default(),
-            sentinel: None,
         }
     }
 }
@@ -51,22 +50,8 @@ const fn default_server() -> ServerConfig {
     ServerConfig::new(11120)
 }
 
-/// How to reach Sentinel's dashboard/REST API (the restart endpoint).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SentinelTarget {
-    #[serde(default = "default_sentinel_base_url")]
-    pub base_url: String,
-    /// Optional HTTP Basic credentials for an auth-enabled dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<DriverAuth>,
-    /// Optional PEM CA path for a TLS-enabled dashboard (trusted via `rusty-photon-tls`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ca_cert_path: Option<PathBuf>,
-}
-
-/// HTTP Basic credentials the BFF presents to a driver.
-#[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
+/// HTTP Basic credentials the BFF presents to rp.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, derive_more::Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DriverAuth {
     pub username: String,
@@ -76,9 +61,10 @@ pub struct DriverAuth {
     pub password: String,
 }
 
-/// How to reach the rp orchestrator's REST API (`/api/config`, `/api/equipment`,
-/// `/api/events/subscribe`, …).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// How to reach the rp orchestrator: its REST API (`/api/equipment`,
+/// `/api/events/subscribe`), its MCP endpoint (`/mcp`) and its setup page
+/// (`/setup`), all under `base_url`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RpTarget {
     #[serde(default = "default_rp_base_url")]
@@ -104,10 +90,6 @@ impl Default for RpTarget {
 fn default_rp_base_url() -> String {
     // rp's default server port (services/rp/src/config/server.rs).
     "http://127.0.0.1:11115".to_string()
-}
-
-fn default_sentinel_base_url() -> String {
-    "http://127.0.0.1:11114".to_string()
 }
 
 /// Load BFF configuration from a JSON file.
@@ -179,31 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn sentinel_block_absent_by_default() {
-        let c = Config::default();
-        assert!(c.sentinel.is_none());
-    }
-
-    #[test]
-    fn deserialises_sentinel_block() {
-        let json = r#"{
-            "rp": {},
-            "sentinel": {
-                "base_url": "http://127.0.0.1:19114",
-                "auth": { "username": "obs", "password": "secret" }
-            }
-        }"#;
-        let c: Config = serde_json::from_str(json).unwrap();
-        let sentinel = c.sentinel.unwrap();
-        assert_eq!(sentinel.base_url, "http://127.0.0.1:19114");
-        assert_eq!(sentinel.auth.unwrap().username, "obs");
-    }
-
-    #[test]
-    fn sentinel_base_url_defaults_to_dashboard_port() {
-        let json = r#"{ "rp": {}, "sentinel": {} }"#;
-        let c: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(c.sentinel.unwrap().base_url, "http://127.0.0.1:11114");
+    fn retired_sentinel_block_is_rejected() {
+        // The BFF no longer restarts services, so a config still naming
+        // where Sentinel is fails loudly instead of being silently ignored.
+        let err = serde_json::from_str::<Config>(r#"{ "rp": {}, "sentinel": {} }"#).unwrap_err();
+        assert!(err.to_string().contains("sentinel"), "{err}");
     }
 
     #[test]
@@ -266,13 +228,6 @@ mod tests {
     fn config_rejects_unknown_top_level_field() {
         let err = serde_json::from_str::<Config>(r#"{"plugins": []}"#).unwrap_err();
         assert!(err.to_string().contains("plugins"), "{err}");
-    }
-
-    #[test]
-    fn sentinel_target_rejects_unknown_field() {
-        let json = r#"{"sentinel": {"webhook_url": "http://x"}}"#;
-        let err = serde_json::from_str::<Config>(json).unwrap_err();
-        assert!(err.to_string().contains("webhook_url"), "{err}");
     }
 
     #[test]

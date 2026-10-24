@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use maud::Markup;
@@ -43,15 +43,7 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// `GET /stream/events`.
 pub async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(rp) = state.rp() else {
-        debug!("SSE proxy requested but no rp target is configured");
-        return (
-            StatusCode::NOT_FOUND,
-            "no rp orchestrator is configured; the activity stream is unavailable",
-        )
-            .into_response();
-    };
-    let rp = Arc::clone(rp);
+    let rp = Arc::clone(state.rp());
     let cursor = browser_cursor(&headers);
     let shutdown = state.sse_shutdown().clone();
 
@@ -332,16 +324,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use axum::http::header;
+    use axum::http::StatusCode;
     use axum::routing::get;
     use axum::Router;
-    use serde_json::Value;
     use tokio::time::timeout;
 
     use super::*;
-    use crate::driver_client::{
-        ConfigApplyResponse, ConfigClient, ConfigClientError, ConfigGetResponse,
-        ConfigSchemaResponse,
-    };
     use crate::rp_client::MockRpApi;
 
     /// Every await in these tests is bounded — a wedged stream must fail the
@@ -477,33 +465,9 @@ mod tests {
 
     // --- proxy-level tests against an in-test axum stub (ADR-004) --------------
 
-    /// A `ConfigClient` the proxy never calls (state plumbing only).
-    struct UnusedConfigClient;
-
-    #[async_trait::async_trait]
-    impl ConfigClient for UnusedConfigClient {
-        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-        async fn apply_config(
-            &self,
-            _config: &Value,
-        ) -> Result<ConfigApplyResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-    }
-
     /// rp-target state pointed at an in-test stub base URL.
     fn state_for(stub_base_url: &str) -> AppState {
-        AppState::with_rp_parts(
-            Arc::new(UnusedConfigClient),
-            Arc::new(MockRpApi::new()),
-            Arc::new(crate::probe::MockProbeHttp::new()),
-        )
-        .with_rp_base_url(stub_base_url)
+        AppState::with_rp_api(Arc::new(MockRpApi::new())).with_rp_base_url(stub_base_url)
     }
 
     /// Serve `app` on 127.0.0.1:0; returns its base URL.
@@ -755,18 +719,6 @@ mod tests {
         // Only the end-of-stream unreachable frame comes out.
         assert_eq!(blocks.len(), 1, "{collected}");
         assert!(blocks[0].contains("rp unreachable"), "{collected}");
-    }
-
-    /// No rp target → 404, not a stream.
-    #[tokio::test]
-    async fn proxy_without_rp_target_is_404() {
-        let state = AppState::with_client("dsd-fp2", Arc::new(UnusedConfigClient));
-        let bff = spawn_bff(state).await;
-        let response = timeout(TEST_TIMEOUT, reqwest::get(format!("{bff}/stream/events")))
-            .await
-            .expect("connect timed out")
-            .expect("connect failed");
-        assert_eq!(response.status().as_u16(), 404);
     }
 
     /// The shutdown token ends an open proxy stream (axum #2673: graceful

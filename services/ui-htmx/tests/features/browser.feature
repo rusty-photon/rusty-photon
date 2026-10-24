@@ -8,24 +8,29 @@ Feature: Real-browser behavior
   the cross-OS guarantee, so behavior proven correct here holds on every OS
   without a browser on every OS.
 
-  Scenario: The configuration form renders in a real browser
-    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
-    When I load the qhy-focuser config page in a browser
-    Then the browser renders the configuration form
+  Scenario: The stream page renders in a real browser
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I load the stream page in a browser
+    Then the browser renders the activity stream
 
-  Scenario: Unlocking the identity field swaps the card via htmx
-    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
-    When I load the qhy-focuser config page in a browser
-    And I click the unlock link for focuser.unique_id
-    Then the browser shows focuser.unique_id editable
+  # rp replays its retained history to a fresh subscriber, so the card arrives
+  # whether the flip lands before or after the browser's EventSource connects.
+  Scenario: An rp event lands in the feed through htmx's SSE swap
+    Given a running rp with a stub safety monitor and an empty roster
+    And a BFF pointed at rp
+    When I load the stream page in a browser
+    And the safety monitor reports unsafe on rp
+    Then the browser's feed shows a card mentioning "Safety: UNSAFE"
 
   # Tier 0 step 3 (plan §9): quitting the browser before stopping the BFF lets the
   # BFF shut down gracefully, so it runs its atexit handler and flushes coverage.
   # Reversing the order would block the BFF on the browser's held connection until
   # the 5s SIGKILL grace and silently zero its BDD coverage (testing.md §5.4).
   Scenario: The BFF flushes coverage on graceful shutdown with a browser attached
-    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
-    When I load the qhy-focuser config page in a browser
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I load the stream page in a browser
     And I quit the browser and then stop the BFF
     Then the BFF shuts down gracefully before the 5s SIGKILL grace elapses
 
@@ -37,8 +42,9 @@ Feature: Real-browser behavior
   # Linux CI + dev; macOS/Windows browser support is plan §9 step 5 (deferred), and
   # forcing UI_BROWSER_TESTS=1 there fails loud rather than silently passing.
   Scenario: A crashed browser session is reaped with no orphaned processes
-    Given a qhy-focuser driver running with serial.port "/dev/ttyACM0" and max_step 60000
-    When I load the qhy-focuser config page in a browser
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I load the stream page in a browser
     And the geckodriver process is killed and the session is reaped
     Then the reaper leaves no orphaned browser processes
     And the failure artifacts were captured at an absolute path before the reap

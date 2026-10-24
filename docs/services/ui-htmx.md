@@ -2,76 +2,52 @@
 
 ## Overview
 
-`ui-htmx` is the browser-facing, **server-rendered web UI** for rusty-photon —
-the web UI described in
-[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
-with the chosen visual direction in
+`ui-htmx` is the browser-facing, **server-rendered web UI** over the running
+rusty-photon system, in the visual direction of
 [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md). It
-is a **standalone backend-for-frontend (BFF)**: a client of the rest of the
-system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
-HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
-is no npm, no WASM, no client-side framework.
+is a **standalone backend-for-frontend (BFF)**: a client of `rp` that holds no
+UI logic inside `rp` (`rp.md` tenet 7). The service renders HTML on the server
+with [axum] + [Maud] and adds interactivity with [HTMX]; there is no npm, no
+WASM, no client-side framework.
 
-It serves four surfaces, one nav:
+It serves two surfaces, one nav:
 
-1. **Configuration** (`/`, deep pages at `/config/{service}`) — `/` *is*
-   rp's settings page (the same schema-driven form `/config/rp` serves).
-   Per-device configuration is reached from the equipment page's Configure
-   buttons, not from here — the device list lives in one place.
-   `/config/{service}` resolves the two target kinds: the literal `rp` and
-   roster-derived `rp:{kind}:{id}` (rp's equipment roster is the **only**
-   device source — #569, ADR-016 amendment 6; there is no static drivers
-   map).
-2. **Equipment page** (`/equipment`) — `rp`'s equipment roster: live
-   connection state, a managed/foreign capability tier per device, and
-   add / edit / remove of roster entries by editing `rp`'s config over REST.
-3. **Targets inbox** (`/targets`) — rp's [Target
+1. **Activity stream** (`/stream`, also the front page `/`) — the live session
+   narrative from the
+   [`7-stream-fold.html`](../plans/ui-design/mocks/7-stream-fold.html) mock:
+   `rp`'s real-time event stream rendered server-side and pushed to the
+   browser over SSE, with the equipment's live connection LEDs in its fold
+   panel.
+2. **Targets inbox** (`/targets`) — rp's [Target
    Store](rp.md#target-store) as an operator surface: review pending
    (paused) targets — typically planetarium imports
    ([planetarium-bridge.md](planetarium-bridge.md)) — edit their
    acquisition goals and framing position angle, and activate them into
-   the planner's rotation or discard them. The BFF's first **MCP**
-   surface: target CRUD is deliberately MCP-only on rp (rp.md Tenet 8),
-   so this page drives rp's target tools through
+   the planner's rotation or discard them. The BFF's **MCP** surface:
+   target CRUD is deliberately MCP-only on rp (rp.md Tenet 8), so this
+   page drives rp's target tools through
    [`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md).
-4. **Activity stream** (`/stream`) — the live session narrative from the
-   [`7-stream-fold.html`](../plans/ui-design/mocks/7-stream-fold.html) mock:
-   `rp`'s real-time event stream rendered server-side and pushed to the
-   browser over SSE.
+
+Configuration is not one of them. Every service configures itself on its own
+`/setup` page ([driver-setup-pages.md](../plans/driver-setup-pages.md)): the
+nav's **Setup** link leads to rp's — the equipment roster and rp's settings,
+from which each driver's own pages are linked — and the BFF's own
+configuration is edited on its own `/setup` ([Setup page](#setup-page)).
 
 The [`rp` target](#configuration) is **required** — every surface is
 rp-backed, so an rp-less BFF has no purpose and a config without the block
 fails loudly at load.
 
 **JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
-form submits via `hx-post` (no `method`/`action`), and the unlock/lock/retry
-affordances are `<button hx-get>` (no `<a href>`), so without htmx loaded the page
-renders but is inert. This is a deliberate decision (UI-testing plan §7): the UI is
-**optional** — rusty-photon runs fully headless — and the genuine recovery path is
-ssh + editing the config file, strictly more capable than a degraded web form; a
-whole-app no-JS guarantee is also incompatible with the future real-time stream UI.
-Direct navigation/refresh still returns a full styled page (the `HX-Request`
-full-page-vs-fragment branch is core htmx, not a no-JS feature).
-
-It renders a configuration page for **any** rostered device's driver,
-**generated from the driver's own JSON Schema** (`config.schema`) rather than
-a hand-built form: read the driver's current configuration, edit it, and
-apply changes — all by calling the driver's `config.get` / `config.schema` /
-`config.apply` ASCOM actions over HTTP (the cross-driver protocol; see
-[`config-actions.md`](config-actions.md)). One BFF serves every device in
-rp's roster, each addressed under `/config/rp:{kind}:{id}`.
-
-Phase 2 shipped a hand-built `dsd-fp2`-only page; Phase 3b (this design) replaced
-the hardcoded field lists with a **schema-driven renderer** that walks any
-driver's `config.schema` into a form and reads its editability tiers
-(`locked_fields` / `read_only_fields`) from the schema, so a new driver needs **no
-BFF changes** to get a config page. The walker and the form coercion now live
-in the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate,
-which the drivers' own setup pages render from too; the BFF keeps the tiers,
-the hidden blob and the htmx wiring. The config pages are on their way out:
-[driver-setup-pages.md](../plans/driver-setup-pages.md) retires them once
-every driver serves its own pages (P4), and the roster's probe already links
-to a driver's own setup page where it has one.
+targets forms submit via `hx-post` (no `method`/`action`), and the row
+affordances are `<button hx-post>` (no `<a href>`), so without htmx loaded the
+page renders but is inert. This is a deliberate decision (UI-testing plan §7):
+the UI is **optional** — rusty-photon runs fully headless — and the genuine
+recovery path is ssh + editing the config file; a whole-app no-JS guarantee is
+also incompatible with the real-time stream UI. Direct navigation/refresh still
+returns a full styled page (the `HX-Request` full-page-vs-fragment branch is
+core htmx, not a no-JS feature). The setup pages are the exception: they are the
+shared crate's plain HTML forms, which need no JavaScript.
 
 [axum]: https://github.com/tokio-rs/axum
 [Maud]: https://maud.lambda.xyz/
@@ -95,483 +71,111 @@ A tech name (`htmx`, `leptos`) implies the browser target; a target name (`ios`,
 `android`) implies native delivery. With HTMX the BFF and the frontend are
 **fused** — the server renders the HTML directly — so `ui-htmx` is simultaneously
 "the web BFF" and "the HTMX frontend". When a second expression appears, the
-driver-client + config-model logic (target/tech-agnostic) is extracted into
+rp clients and the page models (target/tech-agnostic) are extracted into
 `ui-core`; it would be premature with a single consumer today.
 
 ## Architecture
 
 ```
-                 ┌────────────────────────────────────────┐
-   browser ────► │  ui-htmx  (services/ui-htmx)            │  server-rendered HTML
-   (HTMX)        │                                         │
-                 │  main.rs ─► lib.rs (build_router)        │
-                 │      │                                   │
-                 │      ▼                                   │
-                 │  pages/  (Maud templates + HTMX attrs)   │
-                 │      │  renders form / fragments         │
-                 │      ▼                                   │
-                 │  ConfigClient (driver_client.rs)         │
-                 │      │  get_config() / apply_config()    │
-                 │      │  speaks the ASCOM action protocol │
-                 │      ▼                                   │
-                 │  HttpClient (io.rs)                      │
-                 │      │  get() / put_form()  (reqwest,    │
-                 │      │  rusty-photon-tls CA trust + Basic auth)    │
-                 └──────┼──────────────────────────────────┘
-                        │  PUT /api/v1/covercalibrator/0/action
-                        │     Action=config.get | config.apply
-                        ▼
-                  [ dsd-fp2 ]   (ASCOM Alpaca driver, port 11119)
+                 ┌─────────────────────────────────────────────┐
+   browser ────► │  ui-htmx  (services/ui-htmx)                 │  server-rendered HTML
+   (HTMX)        │                                              │
+                 │  main.rs ─► lib.rs (build_router, AppState)   │
+                 │      │                                        │
+                 │      ├─► pages/stream.rs ──► RpApi ───────────┼──► rp  GET /api/equipment
+                 │      ├─► sse_proxy.rs ───► reqwest stream ────┼──► rp  GET /api/events/subscribe
+                 │      ├─► pages/targets.rs ► TargetsClient ────┼──► rp  /mcp (target tools)
+                 │      └─► setup.rs ───────► SetupPages ────────┼──► the BFF's own config file
+                 └─────────────────────────────────────────────┘
 ```
 
-Two thin, independently mockable seams keep the handlers testable without a live
-driver (the pattern `sentinel` uses for its Alpaca polling — see
+Three thin, independently mockable seams keep the handlers testable without a
+live rp (the pattern `sentinel` uses for its Alpaca polling — see
 [`sentinel.md`](sentinel.md)):
 
-- **`HttpClient`** (`io.rs`) — `get(url)` / `put_form(url, params)`. Production
-  impl wraps `reqwest` and is built through `rusty_photon_tls::client::build_reqwest_client`
-  so it trusts the Rusty Photon CA, with optional HTTP Basic auth. Requests send
-  `Connection: close` (no keep-alive pooling): a driver applies config by
-  reloading — tearing its server down and rebinding — which leaves a pooled
-  connection stale, and a non-idempotent `PUT` is not retried. A fresh connection
-  per request lets the reconnect poll recover the instant the driver is back;
-  config actions are low-frequency, so the lost pooling is immaterial. Mocked
-  with `mockall` for unit tests of the layer above.
-- **`ConfigClient`** (`driver_client.rs`) — `get_config()` / `get_schema()` /
-  `apply_config(Value)`. Knows the ASCOM action protocol: shapes the
-  `PUT .../action` request, unwraps the Alpaca envelope, and parses the inner
-  JSON into the shared `rusty_photon_config::actions` wire types. The page handlers depend on `Arc<dyn ConfigClient>`, so a handler unit
-  test can inject a stub (via `AppState::with_client`) to cover an error state
-  a live driver won't produce — see [Testing Strategy](#testing-strategy). The
-  end-to-end BDD suite, by contrast, runs against a real driver, not a stub.
+- **`HttpClient`** (`io.rs`) — `get(url)`. The production impl wraps `reqwest`
+  and is built through `rusty_photon_tls::client::build_reqwest_client` so it
+  trusts the Rusty Photon CA, with optional HTTP Basic auth. Requests send
+  `Connection: close` (no keep-alive pooling): a fresh connection per request
+  survives rp restarting between calls, and the reads are low-frequency.
+  Mocked with `mockall` for unit tests of the layer above.
+- **`RpApi`** (`rp_client.rs`) — `equipment_status()`, the wire mirror of rp's
+  `GET /api/equipment` (`rp.md` "REST Endpoints"), which the stream page's LED
+  panel renders from.
+- **`TargetsClient`** (`targets_client.rs`) — rp's target tools over
+  `rp-mcp-client`, one session per request ([Targets inbox](#targets-inbox-targets)).
 
-### The driver config-action client (wire contract)
-
-Each driver exposes config over the standard ASCOM `Action` mechanism. The BFF
-calls:
-
-```
-GET  /api/v1/{type}/{n}/supportedactions
-   → Alpaca envelope, Value = ["config.get","config.apply", …]
-
-PUT  /api/v1/{type}/{n}/action
-       Action=config.get      Parameters=     ClientID=… ClientTransactionID=…
-   → Alpaca envelope, Value = "<ConfigGetResponse as a JSON string>"
-
-PUT  /api/v1/{type}/{n}/action
-       Action=config.apply    Parameters=<full Config JSON>   ClientID=… …
-   → Alpaca envelope, Value = "<ConfigApplyResponse as a JSON string>"
-```
-
-The **Alpaca envelope** wraps every response:
-
-```jsonc
-{ "Value": <result>, "ClientTransactionID": 0, "ServerTransactionID": 12,
-  "ErrorNumber": 0, "ErrorMessage": "" }
-```
-
-`AlpacaConfigClient` parsing rules:
-
-1. **HTTP non-2xx** → transport error (the driver's auth/TLS rejected us, or it is
-   down). Rendered as a "driver unreachable / refused" banner.
-2. **`ErrorNumber != 0`** → an ASCOM action error. `0x40C` (1036,
-   `ACTION_NOT_IMPLEMENTED`) means the target is not a config-capable driver;
-   surfaced as "this driver does not expose configuration". Other codes surface
-   `ErrorMessage`.
-3. **`ErrorNumber == 0`** → `Value` is a **JSON string**; parse it into the typed
-   `ConfigGetResponse` / `ConfigApplyResponse`. (For `supportedactions`, `Value`
-   is a JSON array, not a string.)
-
-For `config.get` the inner body is `{ "config": <effective Config, secrets
-redacted>, "overrides": ["serial.port"] }`. For `config.apply` it is the
-classification body documented in [`dsd-fp2.md`](dsd-fp2.md) "config.apply"
-(`status`, `applied`, `reload`, `restart_required`, `skipped_override`,
-`persisted_to`, `errors`).
-
-The config blob is treated as an **opaque `serde_json::Value`** by the transport
-layer; the page discovers field paths from the driver's `config.schema` at
-request time, so it hardcodes **no** driver-specific field knowledge. This keeps
-the BFF decoupled from every driver crate — it depends only on the light,
-driver-agnostic `rusty-photon-config` crate for the shared wire types, and pulls
-in no driver's serial/transport dependencies.
+The SSE proxy holds a raw `reqwest` client of its own (the buffered
+`HttpClient` seam cannot stream); its unit tests run it against an in-test axum
+stub of rp's stream (ADR-004).
 
 ## Routes
 
-The config routes are **service-scoped** (`{service}` is the literal `rp` or
-a roster-derived `rp:{kind}:{id}` key — see
-[Config-page targets](#config-page-targets)), so one BFF serves rp and every
-rostered device.
-
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/` | The Configuration surface: rp's settings page — identical to `GET /config/rp`, form posts and restart affordances included (device links live on the equipment page as its per-device Configure buttons). |
-| `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. Resolve failures render honest, distinct cards: unknown `{service}` ("no configured driver"), rp unreachable while resolving a roster key (retryable), or a roster entry no client can be built from (e.g. malformed `alpaca_url` — links to the Equipment page to fix it). |
-| `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
-| `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
-| `POST` | `/config/{service}/restart` | Ask Sentinel to restart the target's process and render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). The Sentinel-side name is `rp` for rp's own page; for a roster-derived device it is the discovered service whose `probe_port` matches the device's `alpaca_url` port. |
-| `GET`  | `/equipment` | The [equipment page](#equipment-page-equipment): rp's roster with live connection LEDs, capability tiers, and add/edit/remove affordances. |
-| `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `switches`, `rotators`, `observing_conditions`, `domes`, `mount`). |
-| `POST` | `/equipment/{kind}/new` | Insert the new entry into rp's config (`GET /api/config` → splice → `PUT /api/config`); render the roster with the apply outcome. |
-| `GET`  | `/equipment/{kind}/{id}/edit` | Edit form for one roster entry, prefilled from rp's config (the singular `mount` uses the fixed id `mount`). |
-| `POST` | `/equipment/{kind}/{id}/edit` | Replace that entry in rp's config and apply. |
-| `POST` | `/equipment/{kind}/{id}/delete` | Remove that entry from rp's config and apply. |
-| `GET`  | `/targets` | The [targets inbox](#targets-inbox-targets): pending targets awaiting review plus the active roster, from rp's `list_targets` MCP tool joined with the filter roster and train position-angle defaults from `GET /api/config`. |
+| `GET`  | `/` | `303 See Other` to `/stream`: the activity stream is the front page. |
+| `GET`  | `/stream` | The [activity stream](#activity-stream-stream) page. |
+| `GET`  | `/stream/events` | The SSE proxy: rp's event stream rendered as HTML fragments (see [SSE proxy](#the-sse-proxy-streamevents)). |
+| `GET`  | `/stream/equipment` | Fold-panel equipment-LED fragment; the panel re-fetches it on an htmx timer. |
+| `GET`  | `/targets` | The [targets inbox](#targets-inbox-targets): pending targets awaiting review plus the active roster, from rp's `list_targets` MCP tool joined with `get_target_context`'s filter roster and train position-angle defaults. |
 | `GET`  | `/targets/{slug}` | The per-target review form: editable display name, priority, position angle (blank = inherit), notes, and the acquisition-goals editor; coordinates and provenance are display-only. |
 | `POST` | `/targets/{slug}` | Save the review form: `update_target` (scalar fields, with the position angle's blank ⇒ explicit-`null` mapping) then `set_goals` (full replacement); rp-side validation errors re-render field-level with values preserved. |
 | `POST` | `/targets/{slug}/active` | Activate (`active=true` — accept a pending target into the rotation) or pause (`active=false`) via `update_target`. |
 | `POST` | `/targets/{slug}/delete` | Discard the target via `delete_target`. |
 | `GET`  | `/targets/goal-row` | Goal-editor fragment: a blank goal row for the "Add goal" affordance, or an empty body for the per-row "Remove" swap. |
-| `GET`  | `/stream` | The [activity stream](#activity-stream-stream) page. |
-| `GET`  | `/stream/events` | The SSE proxy: rp's event stream rendered as HTML fragments (see [SSE proxy](#the-sse-proxy-streamevents)). |
-| `GET`  | `/stream/equipment` | Fold-panel equipment-LED fragment; the panel re-fetches it on an htmx timer. |
+| `GET`  | `/setup` | The BFF's own [setup page](#setup-page). |
+| `POST` | `/setup` | Save it: accepted only from the page itself (the origin check), validated, persisted; the change takes effect at the next start. |
 | `GET`  | `/health` | Liveness; returns `OK`. |
 | `GET`  | `/assets/app.css`, `/assets/htmx.min.js`, `/assets/htmx-ext-sse.js` | Embedded static assets (`include_str!`). The SSE extension ([htmx-ext-sse] 2.2.3, vendored) is loaded only by pages that stream. |
 
 [htmx-ext-sse]: https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse
 
-Every page shares the [`layout`] shell, whose top nav carries the four
-surfaces — **Activity** (`/stream`), **Equipment** (`/equipment`),
-**Targets** (`/targets`), **Configuration** (`/`) — with the active tab
-highlighted, plus the mock's pure-CSS **night-vision toggle** (a
-page-level red filter preserving dark adaptation; no JavaScript).
+Every page but the setup page shares the [`layout`] shell, whose top nav
+carries the two surface tabs — **Activity** (`/stream`), **Targets**
+(`/targets`) — with the active tab highlighted; **Setup**, the link to rp's
+setup page; **UI settings**, the BFF's own `/setup`; and the mock's pure-CSS
+**night-vision toggle** (a page-level red filter preserving dark adaptation; no
+JavaScript).
 
 [`layout`]: ../../services/ui-htmx/src/pages/mod.rs
 
-### Schema-driven rendering (`FieldModel`)
+## Setup page
 
-The form is **generated from the driver's `config.schema`**, not a hardcoded
-field list. `rusty_photon_setup::FieldModel::from_schema` (wrapped here with
-the tiers) walks the JSON Schema into a flat, ordered list of leaves, of which
-the BFF renders the scalar ones:
+**rp's page, from the nav.** The **Setup** link is rp's `/setup` at the
+address the BFF reads rp by (`rp.base_url`). On the single-box rig that address
+is a loopback one (`http://127.0.0.1:11115`), which a browser on the operator's
+laptop would follow to itself, so the link keeps rp's scheme and port and, when
+rp's host is a loopback address (`127.0.0.1`, `::1`, `localhost`), carries the
+host the browser reached the BFF by — the request's `Host` header without its
+port. Any other host is used as written. The rule is the shared crate's
+`origin::link_for`, which rp's own roster page links its drivers by too
+(driver-setup-pages D5). On a doctor-issued certificate the substituted
+hostname is a SAN; an IP address is one only when doctor was given
+`--extra-san`.
 
-- **`$ref` into `$defs` is resolved**, and plain objects are recursed, so nested
-  config sections (`serial.port`, `server.discovery_port`, …) become dotted leaf
-  paths.
-- **`oneOf` / `anyOf` / `allOf` / `enum` / `const` subtrees are not rendered
-  here** — the walker names an optional nested struct
-  (`Option<TlsConfig>`/`Option<AuthConfig>`) or a custom-serde type as a
-  file-only leaf and a tagged enum (`star-adventurer`'s `transport`) as a
-  variants leaf, which the drivers' own pages render; the BFF leaves both out
-  of the form, so they **round-trip untouched** through the hidden blob. This
-  is exactly how redacted secrets (which live inside such optional structs) stay
-  safe — they are never rendered, only carried through.
-- **One array shape renders: `array` whose `items` are an integer `enum`**
-  (e.g. rp's per-camera `cooler_targets_c` grid) becomes a **checkbox
-  group** — one checkbox per enumerated value, in the schema's `enum` order,
-  checked when the config array contains the value; submitted values are
-  written back in `enum` order. Nothing field-specific lives in the BFF: the
-  allowed values come from the schema. Every other array (arrays of objects,
-  `$ref` items) still skips and round-trips via the blob.
-- Each leaf's **`FieldKind`** is inferred from the schema: `string` → text,
-  `boolean` → checkbox, `integer`/`number` → numeric input, integer-enum
-  array → checkbox group, with the schema's `minimum`/`maximum` and
-  nullability (`type:["integer","null"]`) driving coercion. A numeric input
-  carries those bounds as `min`/`max`, and a `number`'s takes any value
-  (`step="any"`), since the browser's default step of 1 would refuse a
-  decimal. Fields are
-  grouped into a `<fieldset>` per top-level section.
+**The BFF's own page.** The BFF's configuration — the listening server and
+where rp is — is edited on its own `/setup`, the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's server page
+over the BFF's `Config` (`setup.rs`), so the rule "a service's configuration is
+edited on that service's `/setup`" holds for the BFF too (driver-setup-pages
+D9). It is a plain form with the crate's Security section, origin check and
+password rules:
 
-The form edits a subset of fields; the rest must round-trip unchanged so
-`config.apply` receives a complete `Config`. The page therefore carries the full
-`config.get` blob (already secret-redacted) in a **hidden field**, and on POST
-re-fetches `config.schema` to rebuild the `FieldModel`, then overlays each
-editable leaf onto the blob by JSON pointer and sends the merged value as
-`Parameters` to `config.apply`. This is the round-trip the protocol was designed
-for:
-
-- **Override-pinned fields** (reported in `config.get`'s `overrides[]`) are
-  rendered **read-only** with an explanation; the driver skips them on persist
-  regardless (`skipped_override[]`), so even though the hidden blob carries the
-  effective value, a transient `--port` is never baked into the file.
-- **Redacted secrets** are never rendered (they live inside the `anyOf`/optional
-  subtrees the walker skips) and round-trip as the `********` sentinel in the
-  hidden blob; `config.apply` treats the sentinel as "leave unchanged", so a
-  saved form never blanks a password hash.
-- **Numeric fields are parsed into their bounded types** (`u16` ports, `u32`
-  baud/brightness). An out-of-range or non-numeric value becomes a field-level
-  error (re-rendered, not sent), rather than silently coercing to `0` or
-  producing a non-field driver parse error. An empty *required* number is a
-  field error ("is required"), so a cleared port can neither silently become
-  OS-assigned nor silently keep its value; an empty *optional* number
-  (`discovery_port`) persists `null`.
-- **Clearing an optional field unsets it, in the spelling that means it.**
-  A cleared *optional* text box persists `null`, exactly as a cleared optional
-  number does — `""` and absent are different states, and only `null` is the
-  one that means "unset". Drivers are entitled to distinguish them: rp reads an
-  absent `session.file_naming_pattern` as "no templated naming" but an empty
-  one as malformed, so sending `""` would turn a clear into a config rp
-  refuses to load. A cleared *required* text box still sends `""`, leaving the
-  driver to reject its own empty required field.
-- **Read-only fields come from the driver, not a BFF list.** The hard-read-only
-  tier is whatever the driver reports in `config.schema`'s `read_only_fields`
-  (e.g. `server.port` — a rebind the BFF can't follow — and a device `enabled`
-  flag — disabling the device unregisters the very endpoint the config actions
-  live on). The BFF renders these disabled and `merge_form` never overlays them
-  (they round-trip from the blob), so the UI can't edit away its own
-  reachability. A new driver decides its own self-lockout guards by listing them
-  in `read_only_fields`; the BFF needs no change. (This governs the **UI path**
-  only — a hand-crafted POST that edits a read-only field inside the `__config`
-  blob is equivalent to any forged config and is the driver's job to reject.)
-
-#### Field-editability tiers
-
-The form classifies each field into one of four tiers, evaluated in this order
-(the first that applies wins for the `disabled` state, and `merge_form` mirrors
-the same precedence when deciding whether to overlay a submitted value). **Every
-tier is sourced from the driver** — `config.get`'s `overrides[]` and
-`config.schema`'s `locked_fields` / `read_only_fields` — never a BFF-side list:
-
-| Tier | Source | Disabled? | Overlaid by `merge_form`? |
-|------|--------|-----------|---------------------------|
-| **Override-pinned** | `config.get` `overrides[]` (CLI flags) | yes | never (driver skips it anyway) |
-| **Hard read-only** | `config.schema` `read_only_fields` (e.g. `server.port`, a device `enabled`) | yes, always — no escape hatch | never |
-| **Locked / identity** | `config.schema` `locked_fields` (e.g. a device `unique_id`) | yes **by default**; no once unlocked | only when unlocked **and** not pinned |
-| **Editable** | every other schema leaf | no | yes (unless pinned/read-only) |
-
-Pinned always wins: an override-pinned field stays read-only even if it is also a
-locked/identity field that the user unlocked.
-
-- **A device `unique_id` is a *locked / identity* field — read-only by default
-  behind a deliberate escape hatch**, distinct from the hard read-only tier
-  above. The driver **owns and generates** its ASCOM `UniqueID`, so editing it
-  from the page is an escape hatch for a *misbehaving driver*, not routine
-  configuration. By default the field renders **disabled** with the hint
-  *"Identity — the driver owns this. Editing is an escape hatch for a misbehaving
-  driver."* and an **"Unlock to edit"** link
-  (`GET /config/{service}?unlock=<field>`). Following it re-renders the same card
-  with the field **enabled**, a warning, and a **"Lock again"** affordance
-  (`GET /config/{service}`, no query). The unlock state is carried with **no
-  bespoke client-side JavaScript** (htmx performs the GET + swap; there is no
-  hand-written JS):
-  - On a **GET**, the `?unlock=<field>` query (axum `Query`) names the field to
-    unlock; only a name in the schema's `locked_fields` is honoured (a
-    hard-read-only field, a typo, or no query unlocks nothing).
-  - The rendered card emits a hidden `__unlocked` field
-    (`serde_json::to_string` of the unlocked set) alongside `__config` /
-    `__overrides`, so on **POST** the unlocked set round-trips. `merge_form`
-    overlays a locked field from its form value **only if** `__unlocked` lists it
-    **and** it is not override-pinned; otherwise it round-trips from the hidden
-    blob untouched. An invalid submission re-renders with the field still
-    unlocked (the operator's in-progress edit is preserved); a successful apply
-    re-locks it. Unlike `__config` / `__overrides` (required and validated),
-    `__unlocked` is **optional** and a malformed value is treated as "nothing
-    unlocked" — the safe default keeps the field read-only, and the overlay gate
-    still requires the name to be present, so a forged or absent `__unlocked` can
-    never *edit* a locked field. The set is filtered to the schema's
-    `locked_fields`, so a forged `__unlocked` can only ever unlock a field that is
-    genuinely a locked/identity field — never a hard-read-only one.
-
-  (As with the read-only tier, this governs the **UI path** only. A hand-crafted
-  POST that edits a locked field inside the `__config` blob is equivalent to any
-  forged config and is the driver's job to reject — driver-side identity
-  validation lands separately.)
-
-## Config-page targets
-
-`/config/{service}` resolves its target in two ways; the page machinery
-(schema walk, tiers, merge, apply states) is identical for both. (The former
-third kind — a static `drivers`-map entry — was retired by #569: rp's roster
-is the only device source.)
-
-1. **`rp` itself** — the literal key `rp`; the client is `RestConfigClient`
-   speaking the same protocol as plain REST (`GET /api/config`,
-   `GET /api/config/schema`, `PUT /api/config` — see
-   [`config-actions.md`](config-actions.md) "REST transport"). Because rp
-   classifies every change as `restart_required` (it has no in-process
-   reload), the apply result renders the **restart callout** instead of the
-   reconnect poll: "Saved — restart rp to apply:" plus the changed paths,
-   with the "Restart via Sentinel" affordance inline. rp's equipment arrays
-   are `oneOf`-free but *array-typed* — arrays of objects, which the schema
-   walker skips — so on the rp config page they round-trip untouched via the
-   hidden blob, and are edited on the
-   [equipment page](#equipment-page-equipment) instead (where a camera
-   entry's integer-enum `cooler_targets_c` array renders as a checkbox group
-   like any other walked field). rp's optional blocks
-   (`site`, `guider`, `plate_solver`, `planner`) blob-round-trip the same way
-   under the standard composite-skip rule; the page edits the scalar leaves
-   (`session`, `safety`, `imaging`, `centering`, `cooling`, `server`).
-2. **Roster-derived device** — a key of the form `rp:{kind}:{id}` (e.g.
-   `rp:cameras:main-cam`, `rp:mount:mount`), synthesized on demand from rp's
-   config: the device's `alpaca_url` + device number come from its roster
-   entry, and the ASCOM device type from which array it sits in
-   (`cameras`→`camera`, `filter_wheels`→`filterwheel`,
-   `cover_calibrators`→`covercalibrator`, `focusers`→`focuser`,
-   `safety_monitors`→`safetymonitor`, `switches`→`switch`, `rotators`→`rotator`,
-   `observing_conditions`→`observingconditions`, `domes`→`dome`,
-   `mount`→`telescope`). The BFF calls the
-   device **without credentials** (rp redacts per-device auth, rightly), so a
-   driver behind auth renders the transport-error banner; the doctor-minted
-   service credential (D6) is the path to authenticated devices, not a
-   second device list.
-
-## Behavioral contracts
-
-### Rendering the page (`GET /config/{service}`)
-
-- **Unknown service:** a `{service}` that is neither `rp` nor a roster
-  entry's key → render an error card ("No configured driver named …").
-- **Happy path:** `config.schema` + `config.get` succeed → render the
-  schema-generated form filled with the effective config. Fields listed in
-  `overrides[]` are disabled and annotated "pinned by a command-line override".
-- **Locked/identity escape hatch:** a `locked_fields` entry (e.g. a device
-  `unique_id`) is disabled by default with an "Unlock to edit" link.
-  `GET /config/{service}?unlock=<field>` re-renders the card with that locked
-  field editable (only names in the schema's `locked_fields` are honoured); the
-  no-query URL re-locks it. See
-  [Field-editability tiers](#field-editability-tiers).
-- **Driver unreachable / refused:** `HttpClient` transport error or HTTP non-2xx
-  (on either `config.schema` or `config.get`) → render an error banner naming the
-  driver URL, with a retry link. The form is not shown (there is nothing to edit).
-- **Non-config driver:** `ErrorNumber == ACTION_NOT_IMPLEMENTED` → render an
-  explanation that the target driver does not expose configuration actions.
-
-### Applying changes (`POST /config/{service}`)
-
-- **`status:"applying"`** (a field needed a reload): render a "Saved — the driver
-  is reloading…" state that **polls** `GET /config/{service}/status` via
-  `hx-trigger="every 1s"`. When the poll's `config.get` succeeds, swap the
-  reconnecting fragment for the refreshed form plus a "reconnected" confirmation.
-  This is the same brief blip a process restart would cause; the BFF treats it as
-  expected (see the reload mechanics in the plan).
-- **`status:"ok"`** (persisted, nothing needed a reload): render "Saved." with the
-  refreshed form; no reconnect poll. When `restart_required[]` is non-empty
-  (the `rp` target — `ApplyDisposition::Restart`), the banner becomes the
-  **restart callout**: "Saved — restart rp to apply:" with the changed paths
-  listed; the form re-renders from the *running* (pre-restart) config, which is
-  honest about what is currently in effect.
-- **`status:"invalid"`** (validation failed, file unchanged): re-render the form
-  with each `errors[]` entry shown next to its field (`path` → field), preserving
-  the submitted values so the user can correct them in place.
-- **Transport / ASCOM error:** same banners as the GET path.
-
-### Reconnect poll (`GET /config/{service}/status`)
-
-- `config.get` **succeeds** → 200 with the refreshed form fragment (HTMX swaps it
-  in and the polling stops).
-- `config.get` **fails** (driver still down mid-reload) → 200 with the same
-  reconnecting fragment so HTMX keeps polling. The blip is normally well under a
-  second; the poll is bounded only by the user leaving the page.
-
-### Restart via Sentinel (`POST /config/{service}/restart`)
-
-Sentinel owns *process* restart (the config-actions plan's service-lifecycle
-split); the BFF is just an authorised client of Sentinel's
-[Service Restart API](sentinel.md#service-restart-api). Its `POST` carries
-an `Origin` naming Sentinel's own origin, as that endpoint requires of a
-client that is not a browser (Sentinel refuses a restart a page on another
-site could have posted). Two affordances lead
-here, both rendered only when the BFF has a `sentinel` block configured:
-
-- **The recovery hammer**: a config card carries a "Restart via Sentinel"
-  button (`hx-post="/config/{service}/restart"`, swapping `#config-card`) in
-  its footer — for a wedged or misbehaving driver, independent of any config
-  edit. On rp's page the Sentinel-side name is the `rp` convention. On a
-  roster-derived device page the name is **derived, not configured**: the
-  BFF matches the device's `alpaca_url` port (explicit only — a portless
-  URL never matches via the scheme default) against Sentinel's discovered
-  services (`GET /api/services` `probe_port` —
-  [sentinel.md](sentinel.md#get-apiservices)), guarded to the sentinel
-  target's own host (loopback spellings are treated as one host) — Sentinel
-  restarts processes on its own box, so a device on another host must never
-  grow a button that would bounce an unrelated local service. No match, or
-  Sentinel unreachable at render time, degrades to no button.
-- **The `restart_required` escalation**: when `config.apply` returns a
-  non-empty `restart_required[]`, the restart callout listing those paths
-  offers the same restart button inline. rp reaches this on every apply
-  (`ApplyDisposition::Restart` — no in-process reload); no driver classifies
-  fields this way *today*, so the driver-side path is covered by handler unit
-  tests with a stub `ConfigClient`.
-
-Outcome rendering (the Sentinel wire contract is
-[sentinel.md §Behavioral contract](sentinel.md#behavioral-contract)):
-
-- **`status:"ok"`** (any `recovery` value) → the driver's process was
-  restarted; render the same reconnecting fragment the reload flow uses, which
-  polls `GET /config/{service}/status` until the driver serves its config
-  again. `recovery:"timeout"` additionally warns that Sentinel could not
-  confirm recovery within the budget (the poll may still succeed — the budget
-  is Sentinel's, not the driver's).
-- **`status:"failed"`** → render an error banner with Sentinel's `detail`
-  and a retry button; the form is re-rendered untouched underneath.
-- **HTTP 404 / 409 / transport error** → error banner naming Sentinel and the
-  reason (unknown service name, not restartable, restart already in flight,
-  Sentinel unreachable).
-- **No `sentinel` block configured** → the route answers with an error card
-  ("no Sentinel configured"); the buttons that would reach it are not rendered.
-
-## Equipment page (`/equipment`)
-
-The roster view of the observatory, per the
-[federated-roster design](../plans/archive/config-actions.md#federated-roster-managed-own-vs-foreign-devices).
-Its two data sources are joined by device `id`:
-
-- **`GET /api/config`** (rp) — the authoritative device list: every equipment
-  entry with its `alpaca_url`, device number, and settings (secrets redacted).
-- **`GET /api/equipment`** (rp) — live state per device: `id` and
-  `connected`, which the page reads, plus the bound device's
-  `device_name` and `unique_id` (the singular mount has no id).
-
-Per device the page renders: name/id, kind, address, a **connected LED**, the
-**capability tier**, and Edit / Remove / Configure affordances. The tier comes
-from a bounded, concurrent **capability probe** against the device's own Alpaca
-server (short per-probe timeout, all devices probed in parallel at render
-time):
-
-| Probe result | Tier | Affordance |
-|---|---|---|
-| `supportedactions` lists `config.get` | **Managed** | "Configure" → `/config/rp:{kind}:{id}` |
-| no `config.*` (or `401` on the actions); `/setup/v1/{type}/{n}/setup` answers 2xx or `401` | **Setup page** | external link to the device's own setup page (a `401` there means the browser will ask for the credential) |
-| 2xx but no `config.*`, no setup page | **Control only** | badge |
-| 401/403 on the actions, no setup page | **Auth required** | badge + hint that the BFF holds no credentials for it |
-| transport error / timeout | **Unreachable** | badge |
-
-Because `config.*` is self-advertising, any third-party server adopting the
-convention auto-upgrades to *Managed* — the probe is the capability detection,
-not a hardcoded table. The actions come first so a driver still carrying
-them keeps its Configure form while the drivers move to their own setup
-pages, family by family; a driver that has made the move (`dsd-fp2` first)
-gets the setup-page link in the same step, on an auth-on rig too.
-
-**The setup-page link's host.** A roster entry on the single-box rig names
-its driver by a loopback address (`http://127.0.0.1:11119`), which a browser
-on the operator's laptop would follow to itself. The link therefore keeps the
-entry's scheme and port and, when the entry's host is a loopback address
-(`127.0.0.1`, `::1`, `localhost`), carries the host the browser reached the
-BFF by — the request's `Host` header without its port. Any other host is
-used as written. The rule is the shared crate's `origin::link_for`, which
-`rp`'s own roster page links its drivers by too.
-
-**Editing the roster edits rp's config.** Add / edit / remove perform a
-read-modify-write on the equipment arrays: `GET /api/config` → splice the entry
-→ `PUT /api/config`, surfacing the apply outcome (validation errors render
-field-level, re-anchored from rp's absolute paths onto the entry form; success
-renders the restart callout, since roster changes take effect on the next rp
-start). **The list always shows the roster rp is *running***: `GET /api/config`
-returns the effective config, so a just-persisted entry appears (or a removed
-one disappears) only after rp's next start — the callout names the pending
-paths; restart rp from its own config page's
-[Restart via Sentinel](#restart-via-sentinel-post-configservicerestart) button
-(when a `sentinel` block is configured). An
-empty form input means "unset — rp's default applies"; it is never sent as an
-empty string (which would fail rp's typed parses, e.g. a humantime
-`poll_interval`). The add/edit forms are **schema-generated per
-kind**: the field list comes from walking that kind's item subschema inside
-`GET /api/config/schema` (the same `FieldModel` walker the config pages use,
-entered at the array's item definition), so a new field on, say,
-`CameraConfig` appears on the form with **no BFF change**. Composite leaves
-(e.g. a device's optional `auth` block) follow the same rule as config pages —
-skipped by the walker, preserved on edit, absent on add — and are edited in
-rp's config file when needed. The mount is singular: "add" is offered only
-when `mount` is `null`, and its routes use the fixed id `mount`.
-
-**Deferred:** per-device **connect/disconnect** buttons — rp's registry is
-built once at startup and has no runtime connect/disconnect endpoints yet
-(marked *(planned)* in [`rp.md`](rp.md)); the LEDs show live truth and the
-roster edits the config, which is what exists today. ASCOM UDP discovery
-pre-fill remains low-priority per the plan.
-
-**rp unreachable:** the page renders the same error banner + retry as a config
-page whose driver is down; roster mutations are disabled with the banner shown.
+- **Fields.** `server.port`, `server.bind_address`, and `rp.base_url` render
+  as inputs; `server.tls` and `rp.auth` are optional blocks the page names as
+  edited in the configuration file, the latter's password never reaching the
+  page; `server.auth` is edited in the Security section. A `--port` flag pins
+  `server.port`: the page shows it pinned and never saves it.
+- **Validation.** On top of the config's own parse, `rp.base_url` must be an
+  `http` or `https` URL carrying no credentials (`user:pass@…` — they would
+  reach error messages and logs; the credential belongs in `rp.auth`), the rule
+  the BFF's start holds it to.
+- **Saving.** The BFF has no in-process reload, so a save is persisted
+  atomically and takes effect at the next start (`ApplyDisposition::Restart`):
+  the saved page names the fields that wait for it and says how to restart
+  (`systemctl restart rusty-photon-ui-htmx`, the SCM, `brew services`).
+  Sentinel's dashboard has a restart button per service for an operator who
+  prefers a click.
 
 ## Targets inbox (`/targets`)
 
@@ -604,7 +208,7 @@ burst of tool calls, and drops the client — the BFF never holds a
 standing MCP client. This is the planetarium-bridge's own lesson made
 policy: an idle rmcp client holds an open POST that stalls rp's
 graceful stop (the transport is session-less, ADR-021, so that is the
-only reason left). It is also the same philosophy as the config pages'
+only reason left). It is also the same philosophy as the REST reads'
 `Connection: close` — target review is low-frequency; connection reuse
 buys nothing.
 
@@ -615,19 +219,20 @@ input), and `Malformed` renders a generic error banner.
 
 ### The inbox page (`GET /targets`)
 
-Two data fetches back the page, both against the one configured rp: the
-MCP `list_targets` call (no `active_only` filter — the page shows both
-populations), and REST `GET /api/config` for two joins rp's target rows
-don't carry:
+Two data fetches back the page, both MCP calls on the one configured rp:
+`list_targets` (no `active_only` filter — the page shows both
+populations), and `get_target_context` for two joins rp's target rows
+don't carry (rp.md § Target MCP tools):
 
-- **The filter roster** — the union of every
-  `equipment.filter_wheels[].filters` entry's name (an entry is a bare
-  name or `{name, wavelength_nm}`; rp.md § Train optics), the same
-  union rp validates goals against at write time (rp.md § Target
-  Store, Decision 10).
-- **Train position-angle defaults** —
-  `equipment.optical_trains[].default_position_angle_degrees`
-  (rp.md § Position angle), for the PA field's inherit hint.
+- **The filter roster** — each name in every
+  `equipment.filter_wheels[].filters`, the same list rp validates goals
+  against at write time (rp.md § Target Store, Decision 10).
+- **Train position-angle defaults** — each imaging train's
+  `default_position_angle_degrees` (rp.md § Position angle), for the PA
+  field's inherit hint.
+
+Both are rp's to state: the BFF reads them as rp runs them, and never
+reads rp's configuration.
 
 Behavioral contract:
 
@@ -662,8 +267,8 @@ Behavioral contract:
   the import path (press Align in the planetarium — or `add_target`
   over MCP); an empty pending section with active rows → a short
   "inbox empty" note in that section.
-- **rp unavailable:** either fetch failing (the MCP connect/call or the
-  REST config read — one rp, one health state) renders an honest card
+- **rp unavailable:** either fetch failing (`list_targets` or
+  `get_target_context` — one rp, one health state) renders an honest card
   with a retry link carrying the failure detail. The target tools are
   ungated (rp.md § Safety → In-Flight Tool Calls: reads and
   target-store writes answer while conditions are unsafe), so the card
@@ -839,19 +444,18 @@ terminates the browser's `EventSource` and holds its own connection to rp's
 
 ## Configuration
 
-The BFF has its own small config (it is not an ASCOM device), and its
-**source of truth is rp's roster** (ADR-016 decision 9, tightened by #569 /
-amendment 6): the config is the listening port and where rp is
-(`http://127.0.0.1:11115` — the single-box default), and every config target
-comes from the roster at request time — there is no second, hand-maintained
-device list. The `rp` target is **required**: an rp-less BFF has no purpose,
-so a config without the block (or with `"rp": null`) fails loudly at load.
-The retired `drivers` override map fails loudly the same way
-(`deny_unknown_fields` — the sentinel `services`-map precedent), with the
-deletion in doctor's `config.retired-keys` fix catalog. Every block
+The BFF has its own small config (it is not an ASCOM device), edited on its
+[setup page](#setup-page) or in the file: the listening server and where rp is
+(`http://127.0.0.1:11115` — the single-box default). The `rp` target is
+**required**: an rp-less BFF has no purpose, so a config without the block (or
+with `"rp": null`) fails loudly at load. Two retired keys fail loudly the same
+way (`deny_unknown_fields` — the sentinel `services`-map precedent), with their
+deletion in doctor's `config.retired-keys` fix catalog: the `drivers` override
+map (rp's equipment roster is the only device list) and the `sentinel` block
+(the BFF restarts nothing since its configuration pages retired). Every block
 (`Config` and each nested target/auth struct) rejects unknown keys at
-deserialize, so a typo or a key removed by a schema change fails loudly at
-load instead of being silently ignored.
+deserialize, so a typo or a key removed by a schema change fails loudly at load
+instead of being silently ignored.
 
 ```jsonc
 {
@@ -861,21 +465,14 @@ load instead of being silently ignored.
     "tls": null,               // optional { "cert": "...", "key": "..." } — serves HTTPS when set
     "auth": null               // optional { "username": "...", "password_hash": "..." } — HTTP Basic on every route
   },
-  // The rp roster is the source of truth; the block is REQUIRED (a config
-  // without it fails at load). All fields inside it have defaults. The same
-  // block backs every rp transport: REST (config/equipment/SSE), and the
-  // targets inbox's MCP client (base_url + /mcp, same auth + CA).
+  // REQUIRED (a config without it fails at load); every field inside has a
+  // default. The same block backs every rp transport — REST (equipment, SSE)
+  // and the targets inbox's MCP client (base_url + /mcp, same auth + CA) —
+  // and the nav's link to rp's setup page (base_url + /setup).
   "rp": {
     "base_url": "http://127.0.0.1:11115",    // rp's base URL
     "auth": null,                            // optional Basic credentials for rp
     "ca_cert_path": null                     // optional PEM CA for a TLS-enabled rp
-  },
-  // Optional: where Sentinel's dashboard/REST API lives. Absent (the default)
-  // means no restart affordances are rendered anywhere.
-  "sentinel": {
-    "base_url": "http://127.0.0.1:11114",
-    "auth": null,            // optional Basic credentials for an auth-enabled dashboard
-    "ca_cert_path": null     // optional PEM CA for a TLS-enabled dashboard
   }
 }
 ```
@@ -884,25 +481,16 @@ The `server` block is the shared `ServerConfig` from
 `crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
 (default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` — the
 default — means plain, unauthenticated HTTP. When `auth` is set, HTTP Basic
-credentials are required on **every** route (`/health` included); when `tls`
-is set, the BFF itself serves HTTPS with the named certificate/key (enabling
-`auth` without `tls` logs a cleartext-credentials warning). The former `bind`
-key was renamed to `bind_address` with this adoption — a config still carrying
-`bind` fails loudly at load (`deny_unknown_fields`) — and the default bind
-moved from loopback to all interfaces.
-
-The restart button's Sentinel-side name is derived, never configured: `rp`
-on rp's own page, and on a device page the discovered service whose
-`probe_port` matches the device's `alpaca_url` (see
-[Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)) —
-there is no per-driver wiring anywhere in this file.
+credentials are required on **every** route (`/health` and `/setup` included);
+when `tls` is set, the BFF itself serves HTTPS with the named certificate/key
+(enabling `auth` without `tls` logs a cleartext-credentials warning).
 
 ### CLI Arguments
 
 | Argument | Description |
 |----------|-------------|
 | `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, rp at `http://127.0.0.1:11115`). An explicit `--config` naming a missing file stays a hard error. |
-| `--port`           | BFF listen port (overrides `server.port`). |
+| `--port`           | BFF listen port (overrides `server.port`; the setup page shows the field pinned and never saves it). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms). |
 
@@ -913,54 +501,32 @@ combined with the subcommand (the mixed form would silently ignore them).
 
 ## Security
 
-- **The BFF holds rp's and Sentinel's credentials** in its own config, never
-  in the page. It authenticates with HTTP Basic auth and trusts the Rusty
-  Photon CA via `rusty-photon-tls` — the same client construction `sentinel`
-  uses. Config actions are protected by whatever server-wide
-  `rp-auth`/`rusty-photon-tls` the target runs; the BFF is just an authorised client (see
-  the plan's Security section). Roster-derived config targets are called
-  without credentials (rp redacts per-device auth) — the doctor-minted
-  service credential (D6) is the path to authenticated devices.
+- **The BFF holds rp's credential** in its own config, never in a page. It
+  authenticates with HTTP Basic auth and trusts the Rusty Photon CA via
+  `rusty-photon-tls` — the same client construction `sentinel` uses. Its setup
+  page draws `rp.auth` as edited in the file, so the password never reaches the
+  browser.
 - **The MCP leg follows ADR-017's credential policy.** The targets inbox's
   `rp-mcp-client` presents `rp.auth` as HTTP Basic **only over verified
   HTTPS** (a configured `ca_cert_path` and an `https` base URL); any other
   combination connects unauthenticated with a loud warning — plaintext
   credentials never travel over cleartext. On the single-box plain-HTTP
   default this matches rp's own unauthenticated default.
-- **Secrets are already redacted** by `config.get` (`********`), so they never
-  reach the browser; the round-trip sentinel keeps them unchanged on apply.
 - **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI
   over HTTPS and `server.auth` puts every route (`/health` included) behind
   HTTP Basic auth — the same `rusty-photon-tls`/`rp-auth` stack every other service uses.
   Absent both — the default — the BFF serves **plain unauthenticated HTTP** on
   `0.0.0.0:11120`, so on a shared network either enable `tls` + `auth` or set
   `bind_address` to `127.0.0.1` and reach it via an SSH tunnel. Enabling `auth`
-  without `tls` logs a warning: credentials would travel in cleartext. (The
-  driver credentials the BFF holds are unaffected — the BFF is a client, and
-  each driver still enforces its own `rp-auth`/`rusty-photon-tls`.)
+  without `tls` logs a warning: credentials would travel in cleartext.
+- **The setup page refuses a cross-site save.** Its `POST` is accepted only
+  from the page itself (the shared crate's origin check), so a page on another
+  site cannot write the BFF's config through a browser holding its credential.
 
-## MVP Scope
+## Scope
 
 ### In Scope
 
-- A working configuration page for **any** rostered device's driver,
-  generated from its `config.schema`: `GET` renders the current config,
-  `POST` applies edits via `config.apply`. One BFF serves the whole roster
-  at `/config/rp:{kind}:{id}`.
-- Validation surfacing (`status:"invalid"` → field-level errors, values
-  preserved), plus BFF-side numeric coercion (schema-bounded) before apply.
-- The applying/reconnecting flow (`status:"applying"` → HTMX poll until the driver
-  is back).
-- Editability tiers (override-pinned, hard read-only, locked/identity) sourced
-  from the driver's `config.get`/`config.schema`, with the "unlock to edit"
-  escape hatch.
-- Driver-unreachable / non-config-driver / unknown-service error states.
-- **The `rp` config page** over REST (`RestConfigClient`), with the
-  restart-callout apply result.
-- **The equipment page**: roster from rp's config joined with live
-  `GET /api/equipment` state, capability tiers via probe, roster-derived
-  config targets (`rp:{kind}:{id}`), and schema-generated add/edit/remove of
-  roster entries via `PUT /api/config`.
 - **The activity stream**: the feed + status strip + fold panel from the
   chosen mock, live over the SSE proxy with cursor passthrough, `stream_gap`
   rendering, rp-unreachable self-healing, and the shared-nav night-vision
@@ -970,11 +536,8 @@ combined with the subcommand (the mixed form would silently ignore them).
   position-angle field, activate/pause/discard), all driven through
   `rp-mcp-client` per-request sessions (see
   [Targets inbox](#targets-inbox-targets)).
-- The **Restart via Sentinel** affordance (button per config card when a
-  `sentinel` block is configured; device pages derive the target service by
-  the `probe_port` match) and the restart callout's inline restart button,
-  both posting to `/config/{service}/restart` (Phase 4 of the
-  config-actions plan).
+- **The navigation's link to rp's setup page** with the loopback host rule,
+  and **the BFF's own setup page** (see [Setup page](#setup-page)).
 - **BFF-side TLS + HTTP Basic auth** via the shared `server` block
   (`rusty-photon-tls`/`rp-auth`, wrapping the whole router — see
   [Configuration](#configuration) and [Security](#security)).
@@ -986,11 +549,6 @@ combined with the subcommand (the mixed form would silently ignore them).
 
 ### Deferred
 
-- **Roster connect/disconnect buttons** — rp has no runtime
-  connect/disconnect endpoints yet (its registry is built once at startup;
-  the endpoints are *(planned)* in `rp.md`). The LEDs show live state.
-- **ASCOM UDP discovery pre-fill** for the roster (low-priority per the plan;
-  manual entry is the primary path).
 - **Telemetry charts** — the mock's guider graph and HFR/temp/sky/dew trend
   cards need telemetry history rp does not expose; the fold panel ships with
   the equipment LEDs, and the strip carries the last guide RMS from
@@ -998,16 +556,6 @@ combined with the subcommand (the mixed form would silently ignore them).
 - **Image thumbnails in the feed** — `exposure_complete` links a document id;
   rendering pixels (`GET /api/images/{id}/pixels` ImageBytes → browser image)
   is a follow-up.
-- **Composite-field rendering.** The schema walker skips `oneOf`/`anyOf`/`enum`
-  subtrees (tagged enums like `star-adventurer`'s `transport`, optional nested
-  structs — including a roster entry's optional `auth` block), so those fields
-  round-trip read-only via the hidden blob rather than rendering an editable
-  discriminated form. A generic `oneOf`/enum renderer (and a dedicated password
-  input for redacted-secret leaves) is a follow-up; until then such fields are
-  edited in the config file. The array-of-integer-`enum` case is **no longer
-  deferred** — it renders as a checkbox group (see
-  [Schema-driven rendering](#schema-driven-rendering-fieldmodel)); scalar
-  `enum` leaves and `oneOf` forms remain follow-ups.
 - **Targets-inbox follow-ups**: per-goal progress columns (rp's
   frame-scan derivation now supplies real `good`/`total`; the page has
   yet to render them); per-target
@@ -1024,21 +572,14 @@ Follows [`docs/skills/testing.md`](../skills/testing.md).
 
 ### BDD Tests (Cucumber)
 
-`config_page.feature` is the canonical contract for the page behaviour, and —
-like every other service — it exercises the **real binaries end to end**. Each
-scenario spawns the real `ui-htmx` process, a real `rp` with the driver
-rostered as focuser `qhy-focuser`, and a real `qhy-focuser` driver in mock
-mode (via `bdd_infra::ServiceHandle`), and drives the BFF over HTTP at the
-roster-derived `/config/rp:focusers:qhy-focuser`, asserting on the HTML
-it actually renders. (`qhy-focuser` is the vehicle because it still carries
-the config actions; `dsd-fp2`, the first driver with its own setup pages,
-now stands in for the equipment page's setup-page tier instead.) There is no
-in-process router and no stubbed `ConfigClient`: the production
-`ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
-`config.get` / `config.apply` / in-process reload all run for real. The entry
-point therefore uses `bdd_infra::bdd_main!` (child-process spawning, skipped
-under Miri), and the driver binaries are built with their mock transports
-(feature-gated):
+Like every other service, the BDD suite exercises the **real binaries end to
+end**. Each scenario spawns the real `ui-htmx` process and, where it reads one,
+a real **`rp`** (via `bdd_infra::rp_harness` — `RpConfigBuilder` + the
+launcher; `bdd_infra::ServiceHandle` for both), and drives the BFF over HTTP,
+asserting on the HTML it actually renders. There is no in-process router and no
+stubbed client: the production REST, SSE and MCP clients reach rp for real, an
+all-first-party stack with **no OmniSim dependency**. The entry point therefore
+uses `bdd_infra::bdd_main!` (child-process spawning, skipped under Miri):
 
 ```
 bazel test //services/ui-htmx:bdd
@@ -1046,16 +587,14 @@ bazel test //services/ui-htmx:bdd
 
 **Assertions are DOM-based, and the helpers follow the htmx contract.** The
 Then-steps parse each response with [`scraper`] (the Servo html5ever/selectors
-stack browsers ship) and assert with CSS selectors — `input[name="…"]`
-editability, the `div.banner.applying` reload state, the `#config-card`
-`hx-get`/`hx-trigger` poll wiring — rather than `String::contains` substrings
-(which mishandle attribute order, boolean attributes, and the value buried in the
-hidden `__config` blob). The request helpers drive the BFF the way htmx would:
-`submit_form` reads the hidden blobs and enabled controls from the **rendered**
-form and POSTs them with the `HX-*` header set (disabled fields are omitted, just
-as a browser omits them); the unlock step follows the page's own rendered
-`hx-get` link; and the reconnect poll matches the refreshed input's `value`. This
-is Layer A of the [UI-testing plan](../plans/archive/ui-testing.md), proving the page's
+stack browsers ship) and assert with CSS selectors — the stream page's
+`sse-connect`/`sse-swap` wiring, the fold panel's `hx-get`/`hx-trigger` poll,
+a target row's affordances — rather than `String::contains` substrings (which
+mishandle attribute order and boolean attributes). The request helpers drive the
+BFF the way htmx would: `submit_rendered_form` reads the enabled controls from
+the **rendered** form and POSTs them to its own `hx-post` URL with the `HX-*`
+header set (disabled fields are omitted, just as a browser omits them), and a
+row button is followed by its own rendered `hx-post` URL. This is Layer A of the [UI-testing plan](../plans/archive/ui-testing.md), proving the page's
 markup and `hx-*` wiring are correct (obligation P1) without a browser; `scraper`
 is a test-only dev-dependency and is never compiled into the shipped binary.
 
@@ -1065,11 +604,11 @@ is a test-only dev-dependency and is never compiled into the shipped binary.
 Then-steps also capture the response's exact bytes as committed [`insta`] goldens
 under `tests/snapshots/` — the server's output is the *cross-OS-comparable*
 artifact, since htmx swaps a fragment verbatim, so byte-identical output across
-OSes implies identical browser behavior without a browser on every OS. The
-driver's OS-assigned `:0` bound port is filtered to `<port>` (the only
-run-varying token); the driver-unreachable error card is *not* snapshotted (its
-banner carries an OS-specific connection-refused string — the case where the P1
-DOM check stands in for P2). Goldens are updated Cargo-locally (`cargo insta
+OSes implies identical browser behavior without a browser on every OS. rp's
+OS-assigned `:0` bound port, which the navigation's link to rp's setup page
+carries, is filtered to `<port>` (the only run-varying token); the rp-unreachable
+card is *not* snapshotted (its detail carries an OS-specific connection-refused
+string — the case where the P1 DOM check stands in for P2). Goldens are updated Cargo-locally (`cargo insta
 review` / `accept`, then commit) and compared read-only under Bazel
 (`INSTA_UPDATE=no`, goldens shipped via the `bdd` target's `data`); a runtime
 resolver finds them under both build systems' layouts.
@@ -1086,7 +625,7 @@ the P1/P2 server-bytes layers carry the cross-OS guarantee. geckodriver is an
 external system tool (`GECKODRIVER_BINARY`, like `OMNISIM_PATH`), 0.34 or later:
 the harness starts it with `--port 0` and reads back the port it announces on
 stdout, so no other process's geckodriver can stand in for it; teardown quits
-the browser before the BFF/driver stop. Run them under Bazel via the standalone
+the browser before the BFF and rp stop. Run them under Bazel via the standalone
 `--config=browser` (it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and
 forwards `FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
 
@@ -1113,8 +652,11 @@ browser flake never reddens a PR; the per-PR P1/P2 layers carry correctness.
 
 [`ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
 
-`browser.feature` carries four scenarios. Two prove htmx executes — a smoke render
-(proves `htmx.min.js` loads) and an unlock-click `outerHTML` swap. Two are Tier 0
+`browser.feature` carries four scenarios, all on the activity stream page. Two
+prove htmx executes — a smoke render (proves `htmx.min.js` loads) and an rp event
+landing in the feed through the SSE extension's `sse-swap` (a safety monitor
+flipped unsafe on rp; rp replays its history to a fresh subscriber, so the card
+arrives whether the flip lands before or after the browser connects). Two are Tier 0
 robustness checks from the [UI-testing plan](../plans/archive/ui-testing.md) §9 that harden
 teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
 [`testing.md`](../skills/testing.md)):
@@ -1131,13 +673,11 @@ teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
   an absolute, chdir-safe path before the reap.
 
 > **Determinism note.** `thirtyfour` hard-requires `serde_json`'s `preserve_order`
-> feature, which unifies across the workspace under `--all-features`. Because the
-> form is generated by walking a `serde_json::Value` schema and the hidden blob is
-> a serialized `Value`, that feature would otherwise reorder the rendered output
-> (map iteration order changes). `pages/mod.rs` therefore sorts schema properties
-> explicitly and serializes the blob through `canonical_json`, so the output is
-> byte-identical regardless of the feature — keeping the P2 snapshots stable across
-> Cargo (`--all-features`) and Bazel (where the binary has no dev-deps).
+> feature, which unifies across the workspace under `--all-features`, and changes a
+> `serde_json::Value` map's iteration order. The stream page's payload dumps go
+> through `canonical_json`, so the output is byte-identical regardless of the
+> feature — keeping the P2 snapshots stable across Cargo (`--all-features`) and
+> Bazel (where the binary has no dev-deps).
 
 [`thirtyfour`]: https://docs.rs/thirtyfour/
 
@@ -1180,54 +720,6 @@ binary carries both `test-fixtures` and `test-sse` (cargo `--all-features`; Baze
 
 [`sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
 
-The driver binds port 0, so the OS assigns a free port atomically (no racy
-preselection); the test discovers it from the driver's `bound_addr=` stdout line.
-The one scenario that reloads and reconnects first pins that bound port into the
-driver's config via a direct `config.apply`, so the in-process reload rebinds the
-*same* port and the BFF can reconnect (the override scenario additionally spawns
-the driver with `--port` via `ServiceHandle::start_with_args`). Because the form
-is now schema-driven, these scenarios also exercise the real `config.schema`
-call end to end. Scenarios:
-
-- The config page renders the driver's current configuration.
-- A serial-port override is shown read-only with an explanation.
-- The `cover_calibrator.unique_id` identity field is read-only by default with an
-  "unlock to edit" affordance, and becomes editable when opened with
-  `?unlock=cover_calibrator.unique_id` (the read-only-by-default escape hatch).
-- A valid change is applied and the page reports the driver is reloading + polls
-  `…/status`.
-- The reloaded driver's new configuration is served back through the page —
-  drives the real `config.apply` → reload → rebind → `config.get` round trip.
-- An unchanged submission reports it was saved with no reload (`status:"ok"` —
-  the only no-reload path, since the driver classifies *any* changed field as a
-  reload).
-- An invalid change re-renders the form with the driver's field-level error,
-  the submitted value preserved.
-- An unreachable driver surfaces an error banner.
-
-**Restart scenarios spawn a real Sentinel too** (`restart.feature`): the same
-`bdd_infra::ServiceHandle` pattern starts the workspace's real `sentinel`
-binary (dashboard on port 0, `bound_addr=` discovery) with
-`SENTINEL_SERVICE_MANAGER_DIR` pointing at a stub service-manager directory
-(see [sentinel.md §The test seam](sentinel.md#the-test-seam-sentinel_service_manager_dir))
-that lists the driver's unit; sentinel's config dir is seeded with a sibling
-`qhy-focuser.json` carrying the driver's real bound port, so discovery derives
-the `probe_port` the BFF's restart match resolves against. Scenarios:
-
-- The device config card offers "Restart via Sentinel" when a sentinel block
-  is configured (the port match names the discovered service), and clicking
-  it restarts the discovered unit (the stub's `restarts.log` records it) and
-  swaps in the reconnecting fragment, which then serves the form again (the
-  qhy-focuser driver never actually died — the stub restart is a stand-in — so
-  the poll reconnects immediately).
-- A failing restart (the stub's `restart-fail` marker) surfaces Sentinel's
-  `status:"failed"` detail in an error banner.
-- A device whose driver Sentinel has not discovered renders no restart
-  button (no port match); rp's own restart against a Sentinel that has not
-  discovered rp surfaces the 404 reason.
-- With no `sentinel` block configured, the config card renders no restart
-  affordance.
-
 **TLS/auth scenarios** (`auth.feature`, `tls.feature`) spawn the BFF with a
 generated CA + service certificate (`rusty_photon_tls::test_cert`) and probe `/health` over
 `rusty_photon_tls::client::build_reqwest_client`: with `server.auth` configured, valid
@@ -1235,31 +727,18 @@ Basic credentials answer 200 while wrong or missing ones answer 401 with the
 `WWW-Authenticate` challenge; without it, no credentials are needed; with
 `server.tls` configured, the BFF answers over HTTPS.
 
-### Phase 5 BDD (`equipment_page.feature`, `rp_config_page.feature`, `stream_page.feature`)
+**Setup page scenarios** (`setup_pages.feature`) spawn the BFF on a temp config
+file, its `rp` block pointing at an address nothing answers on (the page reads no
+rp), and drive the page through the shared `bdd_infra::setup_pages_steps!`: the
+page shows rp's address; a changed address is saved and waits for the restart;
+an address carrying credentials is refused with the file untouched; the `rp.auth`
+block is named as edited in the file with its password off the page; and a save
+posted from another site is refused.
 
-The rp-backed surfaces follow the same real-binaries rule: scenarios spawn the
-real `ui-htmx`, a real **`rp`** (via `bdd_infra::rp_harness` —
-`RpConfigBuilder` + `start_rp`), and where the roster needs a live device, a
-real mock-mode `dsd-fp2` registered in rp's config as a `cover_calibrator`
-entry — an all-first-party stack with **no OmniSim dependency**, so these
-suites run everywhere the existing one does. Coverage:
+**Activity stream scenarios** (`stream_page.feature`) cover the page's SSE and
+fold-panel wiring, the front page answering with the stream, the navigation's
+link to rp's setup page carrying the host the browser used, and the proxy:
 
-- `rp_config_page.feature`: `/config/rp` renders rp's config over REST
-  (secrets redacted, `server.port` read-only); an edit persists to rp's config
-  file and renders the restart callout listing the changed paths; an invalid
-  edit renders the driver-side field error with the file untouched; rp down →
-  error banner.
-- `equipment_page.feature`: the roster lists rp's devices with live
-  connected LEDs; a qhy-focuser-backed entry probes as **Managed** and links
-  to `/config/rp:focusers:{id}`, which renders that device's real
-  schema-driven form end to end; a dsd-fp2-backed entry — a driver with its
-  own setup pages and no config actions — probes as **Setup page** and links
-  to `/setup/v1/covercalibrator/0/setup` on the driver, with the link's host
-  following the browser's `Host` header for a loopback entry, and behind the
-  TLS + auth fixture too (the probe meets a `401` and still links); add /
-  edit / remove splice rp's config and render the restart callout; an entry
-  pointing nowhere shows **Unreachable**; no rp configured → the "no rp
-  configured" card.
 - `stream_page.feature`: drives `/stream/events` directly over HTTP (SSE is
   server bytes — no browser needed for P1): a safety monitor flipping
   unsafe and back on rp produces `safety_changed` envelopes that arrive
@@ -1267,7 +746,8 @@ suites run everywhere the existing one does. Coverage:
   reconnecting with `Last-Event-ID` replays only the missed tail; rp down → the
   "rp unreachable" status frame and stream end. The BDD client drops its SSE
   connection before stopping the BFF (testing.md §5.4). Browser-level SSE
-  swap behaviour stays proven by the existing `@browser` `sse.feature` spike.
+  swap behaviour is proven by the `@browser` layer: `browser.feature`'s stream
+  scenario and the `sse.feature` spike.
 
 ### Targets-inbox BDD (`targets_page.feature`)
 
@@ -1276,7 +756,8 @@ and a real `rp` (`bdd_infra::rp_harness`), and seed the store through
 **rp's own MCP tools** (`bdd_infra`'s `McpTestClient` calling
 `add_target` — including the import form with a `source` block, so
 provenance rows are the real thing, not fixtures). Target CRUD needs no
-live devices; the filter roster and train PA defaults are config-level.
+live devices; the filter roster and train PA defaults are config-level,
+read back through `get_target_context`.
 Coverage:
 
 - A pending import renders in the inbox with its provenance line,
@@ -1302,7 +783,7 @@ Coverage:
 Assertions are DOM-based (`scraper`), like every other suite. Snapshot
 goldens cover the byte-stable empty-state page only — target rows carry
 run-varying store timestamps, so the dynamic pages rely on the DOM layer
-(the same reasoning that keeps the driver-unreachable banner out of the
+(the same reasoning that keeps the rp-unreachable card out of the
 snapshot set). The unavailable-card presentation is a unit-level
 concern (a stubbed client error), not a BDD scenario — driving rp's real
 safety gate needs an OmniSim SafetyMonitor this suite deliberately
@@ -1310,42 +791,19 @@ avoids.
 
 ### Unit Tests
 
-- `driver_client.rs`: `AlpacaConfigClient` shapes the `PUT .../action` request
-  (form fields, device path) and parses the Alpaca envelope — `Value`-as-JSON-
-  string extraction for `config.get`/`config.schema`/`config.apply`,
-  `ErrorNumber != 0` → error, `ACTION_NOT_IMPLEMENTED` mapping, HTTP-non-2xx →
-  transport error. Mocks `HttpClient`. (The wire types are re-exported from
-  `rusty_photon_config::actions`, so there is nothing driver-specific to test.)
-- `lib.rs`: `AppState::from_config` (builds the rp handle; rejects
-  URL-embedded credentials); the roster-derived restart match
-  (`resolve_sentinel_service` — port match, same-host guard, no-match and
-  sentinel-down degradation, restart POST targeting the matched name); the
-  handler renders the "this driver does not expose configuration" banner on
-  `ACTION_NOT_IMPLEMENTED` and the "no configured driver" card for an
-  unknown `{service}` — error states the end-to-end suite can't produce —
-  driven in-process through `AppState::with_client` with a stub
-  `ConfigClient`. The `restart_required` escalation banner (no driver emits
-  the classification today) and the `recovery:"timeout"` warning are
-  likewise driven through stub `ConfigClient` / `SentinelClient`
-  implementations.
-- `sentinel_client.rs`: `HttpSentinelClient` shapes the restart POST and parses
-  each outcome (`ok`+recovery variants, `failed`+detail, 404, 409, transport
-  error), and parses `GET /api/services` into `SentinelService` entries
-  (`probe_port` present, absent, null). Mocks `HttpClient`.
-- `pages`: the schema walker (`$ref` resolution, plain-object recursion,
-  `anyOf`/`oneOf` skipping, `FieldKind` inference, the integer-enum-array →
-  checkbox-group case incl. object-array skipping); schema-driven form ⇆ Config
-  reconstruction (hidden blob + editable overlay by JSON pointer; override-pinned
-  and read-only not overlaid; numeric coercion against schema bounds; float
-  leaves; multi-value checkbox-group merge incl. empty selection → empty array;
-  redacted-secret round-trip); the locked/identity tier (disabled by
-  default, editable when `__unlocked`/`?unlock=` names it, pinned still wins, a
-  forged `__unlocked` can't unlock a non-locked field).
 - `config.rs`: defaults, the required `rp` target (missing/null rejected),
-  the retired `drivers` key rejection, and JSON load.
+  the retired `drivers` and `sentinel` keys' rejection, and JSON load.
+- `setup.rs`: the `UiHtmxDriver` rules — rp's address must be an `http`/`https`
+  URL without credentials, it is trimmed, and `--port` pins `server.port`.
+- `lib.rs`: `AppState::from_config` (rejects URL-embedded credentials, trims
+  rp's address); the link to rp's setup page following the browser's host for a
+  loopback rp and written as is otherwise; `/` answering `303` to `/stream`;
+  `/setup` served once the pages are attached.
 - `io.rs`: `ReqwestHttpClient` connection-refused error path (mirrors sentinel).
-- `driver_client.rs` (`RestConfigClient`): REST request shaping, 200-body
-  parsing, 400/500 mapping — mocked `HttpClient`.
+- `rp_client.rs`: `GET /api/equipment` parsing (every kind, the singular
+  mount) and the non-2xx → transport error mapping — mocked `HttpClient`.
+- `pages/mod.rs`: the shell's navigation (both tabs, rp's setup link, the UI
+  settings link; none on the bare shell).
 - `pages/stream.rs`: table-driven `EventEnvelope → Markup` renderers — one case
   per event family from the rp catalog (started/terminal/failed payload
   fields, severity classes, elapsed formatting, unknown-event fallback,
@@ -1355,47 +813,40 @@ avoids.
   proxy against an in-test axum stub serving a canned rp stream (ADR-004's
   escape hatch — streaming is beyond mockall): cursor forwarding, frame `id`
   placement, gap + disconnect translation.
-- `probe.rs`: tier classification per probe outcome (mocked responses),
-  timeout → Unreachable, 401 → Auth required.
 - `pages/targets.rs`: the PA tri-state (blank → explicit `null`,
   number passthrough, non-numeric → field error), goal-row parsing
   (zip in row order, blank-row dropping, string passthrough), the
-  stale-goal flag (roster union membership; empty union flags
-  nothing), the config join (wheel union + imaging-train defaults) and
-  the inherit hint, inbox ordering (pending by `updated_at` desc,
-  active by name), and — through a stub `TargetsClient` for the states
+  stale-goal flag (roster membership; an empty roster flags nothing),
+  the `get_target_context` join (the filter roster and the imaging trains'
+  defaults) and the inherit hint, inbox ordering (pending by `updated_at`
+  desc, active by name), and — through a stub `TargetsClient` for the states
   the end-to-end suite can't produce — the unavailable card naming the
-  safety gate and the `Malformed` error banner.
-- `pages/equipment.rs`: roster join (config ⨝ status by id, mount pairing),
-  config surgery (insert/replace/remove per kind incl. the singular mount),
-  and the per-kind subschema field generation.
+  safety gate, a failed context read, and the `Malformed` error banner.
+- `targets_client.rs`: the MCP URL and credential mapping, the three-way error
+  split, and the unwired test default.
 
 ## Module Structure
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the required `RpTarget` + optional `SentinelTarget`, defaults + JSON load. |
+| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the required `RpTarget`, `CliOverrides`, defaults + JSON load. |
+| `setup.rs` | The BFF's own setup page: `UiHtmxDriver` (the `ConfigurableDriver` the shared crate's page runs on — validation, secrets, the `--port` pin, the `Restart` disposition) and the `/setup` routes. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rusty-photon-tls CA trust + optional Basic auth). |
-| `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
-| `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing, and `GET /api/services` (the `probe_port` listing the restart match resolves against). |
-| `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
-| `targets_client.rs` | `TargetsClient` trait (mockable seam) + `McpTargetsClient`: per-request `rp-mcp-client` sessions driving rp's target tools (`list_targets` / `get_target` / `update_target` / `set_goals` / `delete_target`), with the `McpCallError` → `TargetsError` mapping the pages render from. |
-| `pages/targets.rs` | The targets inbox: pending/active listing (provenance, stale-goal flags, goal summaries), the review form (goals editor + goal-row fragment, PA field with inherit hint), the form parsing (PA tri-state, goal-row zip), its handlers, and the roster/train-default join over rp's config value. |
-| `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
-| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
-| `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |
+| `rp_client.rs` | rp's REST surface the BFF reads: the `RpApi` trait (`equipment_status`) + its reqwest impl — the seam the stream page's LED panel renders from. |
+| `targets_client.rs` | `TargetsClient` trait (mockable seam) + `McpTargetsClient`: per-request `rp-mcp-client` sessions driving rp's target tools (`list_targets` / `get_target` / `update_target` / `set_goals` / `delete_target` / `get_target_context`), with the `McpCallError` → `TargetsError` mapping the pages render from. |
+| `pages/mod.rs` | The shared `layout` shell: the nav tabs, rp's setup link, the UI settings link and the night-vision toggle. |
+| `pages/targets.rs` | The targets inbox: pending/active listing (provenance, stale-goal flags, goal summaries), the review form (goals editor + goal-row fragment, PA field with inherit hint), the form parsing (PA tri-state, goal-row zip), its handlers, and the `get_target_context` join. |
 | `pages/stream.rs` | The activity stream page shell + per-event feed-card and strip-slot fragment renderers (pure `EventEnvelope → Markup` functions). |
-| `probe.rs` | The capability probe: bounded concurrent `supportedactions`/setup-page checks → tier. |
 | `sse_proxy.rs` | `/stream/events`: rp SSE client (incremental frame parser), envelope→fragment translation, cursor passthrough, shutdown token. |
 | `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js` + `assets/htmx-ext-sse.js`; asset routes. |
-| `lib.rs` | `build_router`, `AppState` (rp handle + Sentinel client + the roster-derived resolve incl. the restart port-match), the `/config/{service}` (+ `/restart`), `/equipment*`, `/stream*` handlers, public exports. |
+| `lib.rs` | `build_router`, `AppState` (the rp state, the setup pages, the SSE shutdown token), `RpState::setup_link`, the `/` redirect, public exports. |
 | `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (axum — or `rusty_photon_tls::server::serve_tls` when `server.tls` is set — with the optional `rp_auth` layer, graceful shutdown, SSE shutdown token). |
 
 ## References
 
-- Design plan: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
+- The BFF's origin: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 - Targets inbox (P4): [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
-- Driver config-action protocol: [`config-actions.md`](config-actions.md); the shared walker and the drivers' own pages: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md)
+- The setup pages the BFF's own `/setup` and rp's are served by: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md); why the configuration pages moved there: [`driver-setup-pages.md`](../plans/driver-setup-pages.md)
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)
 - Lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md) "Plain axum service"

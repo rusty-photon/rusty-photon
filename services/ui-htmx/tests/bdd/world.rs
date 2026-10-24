@@ -1,19 +1,14 @@
-//! Cucumber `World` for the `ui-htmx` config-page BDD suite.
+//! Cucumber `World` for the `ui-htmx` BDD suite.
 //!
 //! Mirrors the binary-spawning pattern the other services use (see
 //! [`sentinel`](../../../../sentinel/tests/bdd/world.rs)): every scenario
-//! spawns the *real* `ui-htmx` binary **plus** a real `rp` orchestrator and a
-//! real driver with mock hardware rostered in rp's config — every config
-//! target is roster-derived (#569) — and drives the BFF over HTTP. The
-//! config-page suites use `qhy-focuser`, which still carries the config
-//! actions; the equipment page's setup-page tier uses `dsd-fp2`, which serves
-//! its own setup pages instead. There is no in-process router and no stubbed
-//! client: the production `ReqwestHttpClient` → `AlpacaConfigClient` path and
-//! the driver's real `config.get` / `config.apply` / in-process reload are
-//! exercised end to end.
+//! spawns the *real* `ui-htmx` binary, plus a real `rp` orchestrator where
+//! the scenario reads one, and drives the BFF over HTTP. There is no
+//! in-process router and no stubbed client: the production clients reach rp's
+//! REST, SSE and MCP surfaces end to end.
 //!
-//! Requires the binaries pre-built with `--all-features` (the drivers' mock
-//! transports are feature-gated): `cargo build --all-features --all-targets`.
+//! Requires the binaries pre-built with `--all-features` (the BFF's test-only
+//! fixture routes are feature-gated): `cargo build --all-features --all-targets`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,43 +21,18 @@ use tempfile::TempDir;
 use crate::browser::BrowserSession;
 use crate::dom;
 
-/// The qhy-focuser `Focuser` action endpoint the BFF (and these helpers) call.
-const DRIVER_ACTION_PATH: &str = "/api/v1/focuser/0/action";
-
 /// A reserved, low-numbered loopback port that reliably refuses connections —
-/// the repo's convention for an unreachable Alpaca target (see ui-htmx's
-/// `io.rs` test and rp's BDD steps). Deterministic, unlike a released free port.
-const UNREACHABLE_PORT: u16 = 1;
-
-/// The roster id the qhy-focuser driver is registered under in rp's config —
-/// the config-page suites reach it at [`UiWorld::device_config_path`].
-const DEVICE_ID: &str = "qhy-focuser";
+/// the repo's convention for an unreachable target (see ui-htmx's `io.rs`
+/// test and rp's BDD steps). Deterministic, unlike a released free port.
+pub const UNREACHABLE_PORT: u16 = 1;
 
 #[derive(Debug, Default, World)]
 pub struct UiWorld {
-    /// The qhy-focuser driver the BFF configures (absent in the "unreachable" case).
-    pub driver: Option<ServiceHandle>,
-    /// The dsd-fp2 driver the equipment page probes as a setup-page device.
-    pub panel: Option<ServiceHandle>,
-    /// The panel's bound port and the scheme it serves (`http`, or `https`
-    /// when started through the TLS + auth fixture).
-    panel_port: u16,
-    panel_scheme: &'static str,
     /// The BFF under test.
     pub ui: Option<ServiceHandle>,
-    /// A real sentinel the BFF's restart affordance calls (restart scenarios only).
-    pub sentinel: Option<ServiceHandle>,
-    /// The stub service-manager directory handed to the spawned sentinel via
-    /// `SENTINEL_SERVICE_MANAGER_DIR` (restart scenarios only): sentinel
-    /// discovers the units its `units.txt` lists and records every restart in
-    /// its `restarts.log`.
-    service_manager_dir: Option<PathBuf>,
+    /// The BFF's temp config file, which its setup page saves to.
+    pub ui_config_path: Option<PathBuf>,
     temp_dir: Option<TempDir>,
-    /// The port the driver bound — OS-assigned (the driver binds `:0`),
-    /// discovered from its stdout. The reload-reconnect scenario pins this into
-    /// the driver's config (see [`UiWorld::pin_driver_port`]) so an in-process
-    /// reload rebinds the *same* port and the BFF can reconnect.
-    driver_port: u16,
     /// The rendered HTML of the last BFF response. Kept as a `String` (never a
     /// parsed DOM): the `!Send` `scraper::Html` is built, queried, and dropped
     /// inside the synchronous [`crate::dom`] helpers, so it never crosses an
@@ -89,14 +59,11 @@ pub struct UiWorld {
     pub orphan_survivors: Vec<u32>,
     /// The absolute screenshot + page-source paths captured before the reap.
     pub artifacts: Option<(PathBuf, PathBuf)>,
-    /// The rp orchestrator the Phase-5 suites spawn (rp config page, equipment
-    /// roster, activity stream). Absent for the driver-only scenarios.
+    /// The rp orchestrator the stream and targets suites spawn. Absent for
+    /// the scenarios that read no rp.
     pub rp: Option<ServiceHandle>,
     /// rp's OS-assigned port (rp binds `:0`).
     pub rp_port: u16,
-    /// rp's temp config file — the roster mutations persist here, and the
-    /// on-disk assertions read it back.
-    pub rp_config_path: Option<PathBuf>,
     /// The stub Alpaca safety monitor rp polls in the activity-stream
     /// scenarios: flipping it is how the harness provokes rp events on an
     /// empty roster (rp keeps no session to start or stop).
@@ -119,6 +86,14 @@ pub struct UiWorld {
     /// over the same target store (the stale-goal roster flag). `None`
     /// until a targets-suite Given pins it.
     rp_data_dir: Option<PathBuf>,
+    /// The setup-page steps' state (`setup_pages.feature`).
+    pub setup_pages: bdd_infra::setup_pages::SetupPagesState,
+}
+
+impl bdd_infra::setup_pages::SetupPagesWorld for UiWorld {
+    fn setup_pages(&mut self) -> &mut bdd_infra::setup_pages::SetupPagesState {
+        &mut self.setup_pages
+    }
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for UiWorld {
@@ -147,64 +122,7 @@ impl UiWorld {
 
     // --- spawning real services -------------------------------------------
 
-    /// The roster-derived config-page path of the qhy-focuser device the
-    /// suites exercise (rp's roster is the only device source — #569).
-    pub fn device_config_path() -> String {
-        format!("/config/rp:focusers:{DEVICE_ID}")
-    }
-
-    /// The port the dsd-fp2 panel bound.
-    pub const fn panel_port(&self) -> u16 {
-        self.panel_port
-    }
-
-    /// The scheme the dsd-fp2 panel serves.
-    pub const fn panel_scheme(&self) -> &'static str {
-        self.panel_scheme
-    }
-
-    /// Spawn a real qhy-focuser driver (mock hardware) reporting the given
-    /// effective `serial.port` and `max_step`, roster it in a fresh rp,
-    /// and point a fresh BFF at that rp.
-    pub async fn start_driver_and_bff(&mut self, serial_port: &str, max_step: u32) {
-        // The driver binds port 0, so the OS assigns a free port atomically —
-        // no racy preselection. The reload-reconnect scenario pins the resulting
-        // port (`pin_driver_port`) so a reload keeps the same address.
-        self.start_driver_and_rp_with_focuser_config(DEVICE_ID, serial_port, max_step)
-            .await;
-        self.start_bff_with_rp().await;
-    }
-
-    /// Spawn a real qhy-focuser driver whose `serial.port` is pinned by a
-    /// `--port` command-line override (so `config.get` reports it in
-    /// `overrides[]`), roster it in a fresh rp, and point a fresh BFF at that rp.
-    pub async fn start_driver_with_serial_override_and_bff(&mut self, serial_port: &str) {
-        // The file carries its own serial.port; the override pins a different
-        // effective value, which is what the page must render read-only. Binds
-        // port 0 (OS-assigned); this scenario never reloads, so the port needn't
-        // be pinned.
-        let config_path = self.write_driver_config("/dev/ttyACM0", 60_000);
-        let handle = ServiceHandle::start_with_args(
-            "qhy-focuser",
-            &["--config", &config_path, "--port", serial_port],
-        )
-        .await;
-        self.driver_port = handle.port();
-        self.driver = Some(handle);
-        self.wait_for_driver_ready().await;
-        self.roster_driver_and_start_rp(DEVICE_ID).await;
-        self.start_bff_with_rp().await;
-    }
-
-    /// Spawn rp with a roster entry pointing at a driver that is not running,
-    /// and a BFF at that rp — so the device page's `config.get` is refused.
-    pub async fn start_bff_with_unreachable_driver(&mut self) {
-        self.driver_port = UNREACHABLE_PORT;
-        self.roster_driver_and_start_rp(DEVICE_ID).await;
-        self.start_bff_with_rp().await;
-    }
-
-    /// Spawn just the BFF — no driver, no rp process — for the `/fixtures/*`
+    /// Spawn just the BFF — no rp process — for the `/fixtures/*`
     /// scenarios (plan §9 Tier 1). The fixtures never talk to rp, so the
     /// configured (unreachable) rp target is never contacted; this is the
     /// lightest setup that brings up a fixtures-capable BFF. The spawned
@@ -224,276 +142,6 @@ impl UiWorld {
         self.ui = Some(handle);
     }
 
-    // --- the sentinel the restart affordance calls --------------------------
-
-    /// The stub service-manager directory (created on first use, with an empty
-    /// unit listing). Handed to the spawned sentinel via
-    /// `SENTINEL_SERVICE_MANAGER_DIR`, so the test sentinel never enumerates
-    /// the host's real service manager.
-    pub fn service_manager_dir(&mut self) -> PathBuf {
-        if let Some(dir) = &self.service_manager_dir {
-            return dir.clone();
-        }
-        let dir = self.temp_path("svcmgr");
-        std::fs::create_dir_all(&dir).expect("failed to create service manager dir");
-        std::fs::write(dir.join("units.txt"), "").expect("failed to seed units.txt");
-        self.service_manager_dir = Some(dir.clone());
-        dir
-    }
-
-    /// List a unit in the stub's `units.txt`, so sentinel discovers it.
-    pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
-        use std::fmt::Write as _;
-        // Idempotent: rewrite without any prior line for `unit` first, so a
-        // repeated Given can never leave duplicate enumeration entries.
-        let path = self.service_manager_dir().join("units.txt");
-        let mut content: String = std::fs::read_to_string(&path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.split_whitespace().next() != Some(unit))
-            .fold(String::new(), |mut acc, line| {
-                acc.push_str(line);
-                acc.push('\n');
-                acc
-            });
-        writeln!(content, "{unit} {state}").unwrap();
-        std::fs::write(&path, content).expect("failed to write units.txt");
-    }
-
-    /// Make the stub service manager fail every restart of `unit`.
-    pub fn fail_restarts_of(&mut self, unit: &str) {
-        let path = self
-            .service_manager_dir()
-            .join(format!("restart-fail-{unit}"));
-        std::fs::write(path, "").expect("failed to write restart-fail marker");
-    }
-
-    /// The stub's restart log (one unit name per recorded restart).
-    pub fn restart_log(&mut self) -> Vec<String> {
-        std::fs::read_to_string(self.service_manager_dir().join("restarts.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// Spawn a real sentinel discovering units from the stub service-manager
-    /// directory (list them first via
-    /// [`add_discovered_unit`](Self::add_discovered_unit)), then **replace**
-    /// the already-running BFF with one whose config carries a `sentinel`
-    /// block — the sentinel URL is only known once it has bound, and the
-    /// driver Given has already started the first BFF. Sentinel runs its
-    /// first discovery pass before binding, so the discovered set is complete
-    /// as soon as the handle returns. Its config lives in its own
-    /// subdirectory, seeded with a sibling `qhy-focuser.json` carrying the
-    /// driver's real bound port: discovery derives each service's probe port
-    /// from such files, and the BFF's roster-derived restart match needs
-    /// `probe_port` to equal the rostered device's `alpaca_url` port. (The
-    /// driver's own config — port 0 — must not be mistaken for it.)
-    pub async fn start_sentinel_and_rewire_bff(&mut self) {
-        let manager_dir = self.service_manager_dir();
-        let config = json!({
-            "dashboard": { "enabled": true, "history_size": 100 },
-            "server": { "port": 0, "bind_address": "127.0.0.1" },
-        });
-        let config_dir = self.temp_path("sentinel-home");
-        std::fs::create_dir_all(&config_dir).expect("failed to create sentinel config dir");
-        std::fs::write(
-            config_dir.join("qhy-focuser.json"),
-            json!({ "server": { "port": self.driver_port, "discovery_port": null } }).to_string(),
-        )
-        .expect("failed to write the driver probe config");
-        let path = config_dir.join("sentinel.json");
-        std::fs::write(&path, config.to_string()).expect("failed to write sentinel config");
-        let handle = ServiceHandle::start_with_env(
-            "sentinel",
-            &["--config", path.to_str().unwrap()],
-            &[(
-                "SENTINEL_SERVICE_MANAGER_DIR",
-                manager_dir.to_str().unwrap(),
-            )],
-        )
-        .await;
-        self.sentinel = Some(handle);
-        if let Some(mut ui) = self.ui.take() {
-            ui.stop().await;
-        }
-        self.start_bff_with_rp().await;
-    }
-
-    /// Follow a page's own "Restart via Sentinel" affordance the way htmx
-    /// would: render the page at `path`, read the button's rendered `hx-post`
-    /// URL, and POST it with htmx's headers (the affordance carries no form
-    /// fields).
-    pub async fn request_restart_at(&mut self, path: &str) {
-        self.get(path).await;
-        let url = dom::attr(&self.last_body, "button.restart-sentinel", "hx-post")
-            .unwrap_or_else(|| panic!("no restart affordance in:\n{}", self.last_body));
-        let resp = reqwest::Client::new()
-            .post(self.ui_url(&url))
-            .headers(self.hx_headers())
-            .send()
-            .await
-            .expect("BFF restart POST failed");
-        self.last_body = resp.text().await.unwrap_or_default();
-    }
-
-    /// [`request_restart_at`](Self::request_restart_at) for the rostered
-    /// qhy-focuser device page.
-    pub async fn request_restart(&mut self) {
-        let path = Self::device_config_path();
-        self.request_restart_at(&path).await;
-    }
-
-    /// The qhy-focuser config the config-page suites render: mock hardware
-    /// behind `serial_port`, the OS-assigned server port, and the given step
-    /// limit (the value the scenarios read back and change).
-    fn write_driver_config(&mut self, serial_port: &str, max_step: u32) -> String {
-        let config = json!({
-            "serial": {
-                "port": serial_port,
-                "baud_rate": 9600,
-                "polling_interval": "100ms",
-                "timeout": "2s"
-            },
-            // Port 0: the OS assigns a free port atomically (no preselect race).
-            "server": { "port": 0, "discovery_port": null },
-            "focuser": {
-                "name": "QHY Q-Focuser",
-                "unique_id": "qhy-focuser-ui-bdd",
-                "description": "BDD test instance",
-                "enabled": true,
-                "max_step": max_step,
-                "speed": 0,
-                "reverse": false
-            }
-        });
-        let path = self.temp_path("qhy-focuser.json");
-        std::fs::write(&path, config.to_string()).expect("failed to write driver config");
-        path.to_str().unwrap().to_string()
-    }
-
-    /// The dsd-fp2 panel's config: mock hardware, the OS-assigned server
-    /// port, and — when `server` is given — the TLS + auth fixture's block.
-    fn write_panel_config(&mut self, server: Option<Value>) -> String {
-        let config = json!({
-            "serial": {
-                "port": "/dev/mock",
-                "baud_rate": 115_200,
-                "polling_interval": "100ms",
-                "timeout": "2s"
-            },
-            "server": server.unwrap_or_else(|| json!({ "port": 0, "discovery_port": null })),
-            "cover_calibrator": {
-                "name": "Deep Sky Dad FP2",
-                "unique_id": "dsd-fp2-ui-bdd",
-                "description": "BDD test instance",
-                "enabled": true,
-                "max_brightness": 4096
-            }
-        });
-        let path = self.temp_path("dsd-fp2.json");
-        std::fs::write(&path, config.to_string()).expect("failed to write panel config");
-        path.to_str().unwrap().to_string()
-    }
-
-    // --- talking to the driver directly (to build realistic submissions) ---
-
-    /// Call one of the driver's config actions directly, returning the parsed
-    /// inner body, or `None` on any transport / ASCOM / decode failure (e.g.
-    /// mid-reload). The driver wraps the body as a JSON string in `Value`.
-    async fn driver_action(&self, action: &str, parameters: &str) -> Option<Value> {
-        let url = format!(
-            "http://127.0.0.1:{}{}",
-            self.driver_port, DRIVER_ACTION_PATH
-        );
-        let resp = reqwest::Client::new()
-            .put(&url)
-            .form(&[
-                ("Action", action),
-                ("Parameters", parameters),
-                ("ClientID", "1"),
-                ("ClientTransactionID", "1"),
-            ])
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let envelope: Value = resp.json().await.ok()?;
-        if envelope.get("ErrorNumber").and_then(Value::as_i64) != Some(0) {
-            return None;
-        }
-        let inner = envelope.get("Value")?.as_str()?;
-        serde_json::from_str(inner).ok()
-    }
-
-    /// Wait until the freshly-spawned driver answers `config.get`.
-    async fn wait_for_driver_ready(&self) {
-        for _ in 0..100 {
-            if self.driver_action("config.get", "").await.is_some() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("qhy-focuser driver did not answer config.get within 10s");
-    }
-
-    /// The driver's current `config.get` `(config, overrides)` — the exact blob
-    /// the BFF embeds in the page's hidden field (`serde_json` is
-    /// order-deterministic), so re-submitting it round-trips unchanged.
-    async fn driver_config(&self) -> (Value, Vec<String>) {
-        let body = self
-            .driver_action("config.get", "")
-            .await
-            .expect("driver config.get failed");
-        let config = body
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        let overrides = body
-            .get("overrides")
-            .and_then(Value::as_array)
-            .map_or_default(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            });
-        (config, overrides)
-    }
-
-    /// Pin the driver's OS-assigned bound port into its config via a direct
-    /// `config.apply`, so a later in-process reload rebinds the *same* port and
-    /// the BFF can reconnect. The driver starts on port 0 (race-free); this
-    /// fixes the port afterwards without ever preselecting one. Required only by
-    /// the reload-reconnect scenario; other scenarios don't reload.
-    pub async fn pin_driver_port(&self) {
-        let (mut config, _) = self.driver_config().await;
-        let target = u64::from(self.driver_port);
-        config["server"]["port"] = json!(self.driver_port);
-        let params = serde_json::to_string(&config).expect("serialize pinned config");
-        // `config.apply` returns before its fire-after-response reload, so poll
-        // `config.get` until the driver has reloaded and reports the pinned port.
-        self.driver_action("config.apply", &params).await;
-        for _ in 0..100 {
-            if let Some(body) = self.driver_action("config.get", "").await {
-                if body.pointer("/config/server/port").and_then(Value::as_u64) == Some(target) {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!(
-            "driver did not rebind the pinned port {} within 10s",
-            self.driver_port
-        );
-    }
-
-    // --- the rp orchestrator (Phase-5 suites) --------------------------------
-
-    /// Spawn a real rp from the given harness builder, remembering its config
-    /// path for on-disk assertions. rp binds `:0`; readiness is `/health`.
     pub async fn start_rp(&mut self, builder: &bdd_infra::rp_harness::RpConfigBuilder) {
         let config = builder.build();
         let path = self.temp_path("rp.json");
@@ -509,7 +157,6 @@ impl UiWorld {
         );
         self.rp_port = handle.port();
         self.rp = Some(handle);
-        self.rp_config_path = Some(path);
     }
 
     /// Spawn rp with an empty roster (site configured so site-field validation
@@ -573,137 +220,18 @@ impl UiWorld {
         }
     }
 
-    /// Spawn a real qhy-focuser (mock hardware), then rp with that driver in
-    /// its roster as focuser `id` — the all-first-party managed-device stack
-    /// (no `OmniSim`).
-    pub async fn start_driver_and_rp_with_focuser(&mut self, id: &str) {
-        self.start_driver_and_rp_with_focuser_config(id, "/dev/ttyACM0", 60_000)
-            .await;
-    }
-
-    /// [`start_driver_and_rp_with_focuser`] with an explicit driver config
-    /// (the config-page suite renders these exact values).
-    pub async fn start_driver_and_rp_with_focuser_config(
-        &mut self,
-        id: &str,
-        serial_port: &str,
-        max_step: u32,
-    ) {
-        let config_path = self.write_driver_config(serial_port, max_step);
-        let handle = ServiceHandle::start("qhy-focuser", &config_path).await;
-        self.driver_port = handle.port();
-        self.driver = Some(handle);
-        self.wait_for_driver_ready().await;
-        self.roster_driver_and_start_rp(id).await;
-    }
-
-    /// Spawn rp with the (already known) `self.driver_port` rostered as
-    /// focuser `id`.
-    async fn roster_driver_and_start_rp(&mut self, id: &str) {
-        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
-        builder.add_focuser(bdd_infra::rp_harness::FocuserConfig {
-            id: id.to_string(),
-            alpaca_url: format!("http://127.0.0.1:{}", self.driver_port),
-            device_number: 0,
-            min_position: None,
-            max_position: None,
-            backlash: None,
-            microns_per_step: None,
-        });
-        self.start_rp(&builder).await;
-    }
-
-    /// Spawn a real dsd-fp2 (mock hardware) — a driver with its own setup
-    /// pages and no config actions — then rp with it rostered as cover
-    /// calibrator `id`.
-    pub async fn start_panel_and_rp_with_cover_calibrator(&mut self, id: &str) {
-        let config_path = self.write_panel_config(None);
-        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.panel_port = handle.port();
-        self.panel_scheme = "http";
-        self.panel = Some(handle);
-        let url = format!("http://127.0.0.1:{}", self.panel_port);
-        self.wait_for_panel_ready(&reqwest::Client::new(), &url, None)
-            .await;
-        self.roster_panel_and_start_rp(id, &url).await;
-    }
-
-    /// Spawn the dsd-fp2 panel behind the TLS + auth fixture, then rp with it
-    /// rostered as cover calibrator `id` over `https://localhost` (the name
-    /// the fixture's certificate carries). The BFF started afterwards trusts
-    /// the fixture's CA, so its probe reaches the panel and meets its `401`.
-    pub async fn start_panel_with_tls_auth_and_rp_with_cover_calibrator(&mut self, id: &str) {
-        let pki = bdd_infra::tls_auth::shared_pki("dsd-fp2").await;
-        let config_path = self.write_panel_config(Some(pki.server_block(0)));
-        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.panel_port = handle.port();
-        self.panel_scheme = "https";
-        self.panel = Some(handle);
-        let url = format!("https://localhost:{}", self.panel_port);
-        let client = pki.https_client();
-        self.wait_for_panel_ready(&client, &url, Some((pki.username(), pki.password())))
-            .await;
-        self.pki = Some(pki);
-        self.roster_panel_and_start_rp(id, &url).await;
-    }
-
-    /// Wait until the panel's Alpaca management endpoint answers 200.
-    async fn wait_for_panel_ready(
-        &self,
-        client: &reqwest::Client,
-        base_url: &str,
-        credential: Option<(&str, &str)>,
-    ) {
-        let url = format!("{base_url}/management/v1/configureddevices");
-        for _ in 0..100 {
-            let mut request = client.get(&url);
-            if let Some((user, pass)) = credential {
-                request = request.basic_auth(user, Some(pass));
-            }
-            if let Ok(resp) = request.send().await {
-                if resp.status().as_u16() == 200 {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("dsd-fp2 panel did not answer its management endpoint within 10s");
-    }
-
-    /// Spawn rp with the panel at `url` rostered as cover calibrator `id`.
-    async fn roster_panel_and_start_rp(&mut self, id: &str, url: &str) {
-        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
-        builder.add_cover_calibrator(bdd_infra::rp_harness::CoverCalibratorConfig {
-            id: id.to_string(),
-            alpaca_url: url.to_string(),
-            device_number: 0,
-            poll_interval: Some(Duration::from_millis(100)),
-        });
-        self.start_rp(&builder).await;
-    }
-
-    /// Spawn a BFF whose config carries an `rp` target at the given port.
-    /// When a sentinel is running (restart scenarios), its URL is carried in
-    /// the BFF's `sentinel` block so the restart affordances render. When the
-    /// panel runs behind the TLS fixture, the rp target carries the fixture's
-    /// CA so the BFF's probe trusts the panel's certificate.
+    /// Spawn a BFF on port 0 whose `rp` target is `127.0.0.1:{rp_port}`,
+    /// from a temp config file kept in [`ui_config_path`](Self::ui_config_path).
     pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
-        let mut config = json!({
+        let config = json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
             "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
         });
-        if let (Some(pki), "https") = (&self.pki, self.panel_scheme) {
-            config["rp"]["ca_cert_path"] = json!(pki.ca_path().to_string_lossy());
-        }
-        if let Some(sentinel) = &self.sentinel {
-            config["sentinel"] = json!({
-                "base_url": format!("http://127.0.0.1:{}", sentinel.port())
-            });
-        }
         let path = self.temp_path("ui-htmx.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
         let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
         self.ui = Some(handle);
+        self.ui_config_path = Some(path);
     }
 
     /// Spawn a BFF pointed at the running rp.
@@ -817,16 +345,6 @@ impl UiWorld {
             .map(|v| v.get("target").cloned().expect("get_target without target"))
     }
 
-    /// The rp config file as currently persisted on disk.
-    pub fn rp_config_on_disk(&self) -> Value {
-        let path = self
-            .rp_config_path
-            .as_ref()
-            .expect("rp config path unknown");
-        let raw = std::fs::read_to_string(path).expect("failed to read rp config");
-        serde_json::from_str(&raw).expect("rp config on disk is not JSON")
-    }
-
     /// Connect a reader to the BFF's `/stream/events` SSE proxy.
     pub async fn connect_stream_events(&mut self, last_event_id: Option<u64>) {
         let url = self.ui_url("/stream/events");
@@ -841,14 +359,14 @@ impl UiWorld {
     }
 
     /// The `HX-*` request headers htmx attaches to a swap request, so a captured
-    /// fragment is what a browser would actually receive. The unlock/lock/retry
-    /// affordances and the reconnect poller all declare `hx-target="#config-card"`;
-    /// htmx sends the resolved element id (no leading `#`).
+    /// fragment is what a browser would actually receive. The targets pages'
+    /// affordances all declare `hx-target="#targets-page"`; htmx sends the
+    /// resolved element id (no leading `#`).
     fn hx_headers(&self) -> reqwest::header::HeaderMap {
         use reqwest::header::{HeaderMap, HeaderValue};
         let mut headers = HeaderMap::new();
         headers.insert("HX-Request", HeaderValue::from_static("true"));
-        headers.insert("HX-Target", HeaderValue::from_static("config-card"));
+        headers.insert("HX-Target", HeaderValue::from_static("targets-page"));
         if let Ok(value) = HeaderValue::from_str(&self.current_url) {
             headers.insert("HX-Current-URL", value);
         }
@@ -870,8 +388,8 @@ impl UiWorld {
     }
 
     /// [`get`](Self::get) with the `Host` header a browser that reached the
-    /// BFF by `host` would send — the host a setup-page link carries for a
-    /// loopback-addressed device.
+    /// BFF by `host` would send — the host the navigation's link to rp's
+    /// setup page carries when rp's address is a loopback one.
     pub async fn get_as_host(&mut self, path: &str, host: &str) {
         let url = self.ui_url(path);
         let resp = reqwest::Client::new()
@@ -910,42 +428,8 @@ impl UiWorld {
         (header_value, body)
     }
 
-    /// Issue the GET that htmx would for an `hx-get` affordance: the full `HX-*`
-    /// header set a browser's htmx sends, so the server returns the `#config-card`
-    /// fragment. `path` is the affordance's own rendered URL.
-    async fn hx_get(&mut self, path: &str) {
-        let resp = reqwest::Client::new()
-            .get(self.ui_url(path))
-            .headers(self.hx_headers())
-            .send()
-            .await
-            .expect("BFF htmx GET failed");
-        self.last_body = resp.text().await.unwrap_or_default();
-    }
-
-    /// Submit the config form the way a browser+htmx would: render the page, read
-    /// the hidden blobs and enabled controls **straight from the rendered HTML**,
-    /// apply the operator's edits, and POST to the form's own `hx-post` URL with
-    /// htmx's headers. Disabled fields are omitted exactly as a browser omits
-    /// them, so read-only/locked fields round-trip from the hidden blob — no
-    /// side-channel `config.get` is consulted.
-    pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
-        let path = Self::device_config_path();
-        self.submit_form_at(&path, changes).await;
-    }
-
-    /// Render the page at `path` and submit its form the way htmx would: the
-    /// rendered hidden blobs + enabled controls, with the operator's edits
-    /// replacing (or adding) the named values. Works for any single-form page
-    /// (config pages, the equipment entry forms).
-    pub async fn submit_form_at(&mut self, path: &str, changes: &[(&str, &str)]) {
-        // Render the form first so the submission is built from real page output.
-        self.get(path).await;
-        self.submit_rendered_form(changes).await;
-    }
-
-    /// POST an htmx affordance URL directly (e.g. the equipment Remove button
-    /// after the operator confirms) and capture the swapped fragment.
+    /// POST an htmx affordance URL directly (e.g. a target row's Activate
+    /// button) and capture the swapped fragment.
     pub async fn post_htmx(&mut self, path: &str) {
         let resp = reqwest::Client::new()
             .post(self.ui_url(path))
@@ -956,21 +440,11 @@ impl UiWorld {
         self.last_body = resp.text().await.unwrap_or_default();
     }
 
-    /// Submit the form in the **already-rendered** `last_body` (used when a
-    /// prior step navigated to the form, e.g. the add-equipment flow).
+    /// Submit the form in the **already-rendered** `last_body` the way
+    /// htmx would: the rendered hidden values and enabled controls, with the
+    /// operator's edits replacing (or adding) the named values, `POST`ed to the
+    /// form's own `hx-post` URL with htmx's headers.
     pub async fn submit_rendered_form(&mut self, changes: &[(&str, &str)]) {
-        self.submit_rendered_form_multi(changes, ("", &[])).await;
-    }
-
-    /// Like [`submit_rendered_form`](Self::submit_rendered_form), plus a
-    /// checkbox group: `multi` is `(field name, checked values)`, submitted as
-    /// one pair per value under the shared name — the shape a browser posts
-    /// for a checkbox group. The rendered group's own pairs are replaced.
-    pub async fn submit_rendered_form_multi(
-        &mut self,
-        changes: &[(&str, &str)],
-        multi: (&str, &[&str]),
-    ) {
         let action =
             dom::form_post_url(&self.last_body).expect("rendered page has no <form hx-post>");
         let mut pairs = dom::successful_controls(&self.last_body);
@@ -980,13 +454,6 @@ impl UiWorld {
             pairs.retain(|(n, _)| n.as_str() != name);
             pairs.push((name.to_string(), value.to_string()));
         }
-        let (multi_name, multi_values) = multi;
-        if !multi_name.is_empty() {
-            pairs.retain(|(n, _)| n.as_str() != multi_name);
-            for value in multi_values {
-                pairs.push((multi_name.to_string(), (*value).to_string()));
-            }
-        }
         let resp = reqwest::Client::new()
             .post(self.ui_url(&action))
             .headers(self.hx_headers())
@@ -995,54 +462,6 @@ impl UiWorld {
             .await
             .expect("BFF POST failed");
         self.last_body = resp.text().await.unwrap_or_default();
-    }
-
-    /// Follow the page's "Unlock to edit" affordance for `field` the way htmx
-    /// would: render the page, read the affordance's own `hx-get` URL from the
-    /// rendered HTML, then issue that htmx GET — instead of fabricating the
-    /// `?unlock=` URL out of band.
-    pub async fn open_with_unlock(&mut self, field: &str) {
-        let path = Self::device_config_path();
-        self.get(&path).await;
-        let url = dom::unlock_url(&self.last_body, field).unwrap_or_else(|| {
-            panic!("no unlock affordance for {field:?} in:\n{}", self.last_body)
-        });
-        self.hx_get(&url).await;
-    }
-
-    /// Poll the htmx reconnect endpoint the way the `hx-trigger="every 1s"`
-    /// poller would, until the refreshed form serves `expected` as `field`'s
-    /// input value — matched against the rendered input's `value` attribute (DOM,
-    /// not substring).
-    ///
-    /// Waiting only for the form to reappear is not enough: until the old server
-    /// tears down it keeps answering `config.get` with the pre-reload config, so
-    /// the page would briefly re-render with the stale value. The new value
-    /// appears only once the rebuilt server is serving. The poll is bounded by a
-    /// wall-clock budget because a *real* driver subprocess takes time to tear
-    /// down and rebind during its in-process reload — the literal no-sleep poll
-    /// in the plan's §9 is the browser layer's job, where htmx's own poller drives
-    /// the live DOM.
-    pub async fn poll_status_until_value(&mut self, field: &str, expected: &str) {
-        const MAX_POLLS: usize = 80;
-        const POLL_INTERVAL: Duration = Duration::from_millis(250);
-        let status_path = format!("{}/status", Self::device_config_path());
-        for _ in 0..MAX_POLLS {
-            self.hx_get(&status_path).await;
-            if dom::input(&self.last_body, field)
-                .map(|i| i.value)
-                .as_deref()
-                == Some(expected)
-            {
-                return;
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-        panic!(
-            "driver did not serve {field}={expected:?} within {}s; last body:\n{}",
-            MAX_POLLS * POLL_INTERVAL.as_millis() as usize / 1000,
-            self.last_body
-        );
     }
 
     // --- driving a real browser (@browser scenarios, Layer C) -------------

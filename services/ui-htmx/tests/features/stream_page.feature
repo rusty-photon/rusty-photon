@@ -18,6 +18,21 @@ Feature: Activity stream
     And the feed region prepends "feed" events
     And the fold panel polls "/stream/equipment" every 10 seconds
 
+  Scenario: The front page is the activity stream
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the front page
+    Then the page is the activity stream
+
+  # rp's address in the BFF's config is loopback (127.0.0.1), which a browser
+  # elsewhere would follow to itself: the link carries the host the browser
+  # reached the BFF by, with rp's own port.
+  Scenario: The navigation links rp's setup page at the host the browser used
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the stream page reached as "rig.local"
+    Then the navigation links rp's setup page at "rig.local" on rp's port
+
   # rp keeps no session (mcp-sessionless D6), so the events a harness can
   # provoke on an empty roster are safety transitions: a stub safety
   # monitor flipped unsafe and back emits one safety_changed each.

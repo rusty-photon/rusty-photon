@@ -57,28 +57,26 @@ fn snapshot_dir() -> PathBuf {
 }
 
 /// Assert that `html` matches the committed golden named `name`, scrubbing the
-/// one run/OS-varying token first so a single golden compares everywhere.
+/// one run-varying token first so a single golden compares everywhere.
 ///
-/// The qhy-focuser driver binds `:0` (the OS assigns a free port), and the page
-/// carries that effective `server.port` both in the read-only input and inside
-/// the HTML-escaped hidden `__config` blob — so it is filtered to `<port>`
-/// before compare. The serial port, baud rate, step limit, names, hints, and
-/// `hx-*` wiring are all fixed inputs, so nothing else varies. (The
-/// driver-unreachable error card is deliberately **not** snapshotted: its banner
-/// embeds an OS-specific connection-refused string — "os error 111/61/10061" —
-/// which is exactly the kind of output P2 cannot cover and P1's DOM check does.)
+/// rp binds `:0` (the OS assigns a free port), and every page's navigation
+/// links rp's setup page at rp's address, so that port is filtered to
+/// `<port>` before compare. Everything else on a snapshotted page is a fixed
+/// input. (The rp-unreachable card is deliberately **not** snapshotted: its
+/// detail embeds an OS-specific connection-refused string — "os error
+/// 111/61/10061" — which is exactly the kind of output P2 cannot cover and
+/// P1's DOM check does.)
 pub fn assert_html(name: &str, html: &str) {
     let mut settings = insta::Settings::clone_current();
     settings.set_snapshot_path(snapshot_dir());
     settings.set_prepend_module_to_snapshot(false);
     settings.set_omit_expression(true);
-    // The read-only server.port input: `name="server.port" value="<digits>"`.
-    settings.add_filter(r#"(name="server\.port" value=")\d+""#, r#"${1}<port>""#);
-    // The same port inside the escaped __config blob: `&quot;port&quot;:<digits>`.
-    // Only server.port is numeric here (serial.port is a quoted string, and
-    // an unset discovery_port is absent from the blob rather than carrying a
-    // value), so this can't clobber another value.
-    settings.add_filter(r"(&quot;port&quot;:)\d+", r"${1}<port>");
+    // The navigation's link to rp's setup page:
+    // `class="rp-setup" href="http://127.0.0.1:<digits>/setup"`.
+    settings.add_filter(
+        r#"(class="rp-setup" href="http://127\.0\.0\.1:)\d+"#,
+        r"${1}<port>",
+    );
     settings.bind(|| {
         insta::assert_snapshot!(name, html);
     });

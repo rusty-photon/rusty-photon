@@ -1,4 +1,4 @@
-//! `ui-htmx` — CLI entry point for the web configuration UI (BFF).
+//! `ui-htmx` — CLI entry point for the web UI (BFF).
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -30,11 +30,12 @@ use std::path::PathBuf;
 use clap::Parser;
 use rusty_photon_service_lifecycle::{report_from_boxed, ServiceResult, ServiceRunner};
 use tracing::{debug, info, warn, Level};
+use ui_htmx::config::CliOverrides;
 use ui_htmx::{build_router, load_config, AppState, Config};
 
 #[derive(Parser)]
 #[command(name = "ui-htmx")]
-#[command(about = "Server-rendered web configuration UI (BFF) for rusty-photon")]
+#[command(about = "Server-rendered web UI (BFF) for rusty-photon")]
 #[command(version)]
 // A top-level `--config` alongside a subcommand would parse but be
 // silently ignored (the subcommand carries its own); reject the mixed
@@ -47,7 +48,7 @@ struct Args {
     /// Path to the BFF configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
     /// Linux); created with defaults on first start if absent (binds
-    /// 0.0.0.0:11120, targets dsd-fp2 at <http://127.0.0.1:11119>).
+    /// 0.0.0.0:11120, reads rp at <http://127.0.0.1:11115>).
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -112,11 +113,15 @@ fn main() -> ServiceResult {
     )?;
     debug!("Loading configuration from {config_path:?}");
     let mut config = load_config(&config_path).map_err(report_from_boxed)?;
-    if let Some(port) = args.port {
+    // The overrides are kept, not only applied, so the setup page shows the
+    // field they pin as pinned and never saves it into the file.
+    let overrides = CliOverrides { port: args.port };
+    if let Some(port) = overrides.port {
         config.server.port = port;
     }
+    let pages = ui_htmx::setup::pages(&config, config_path, overrides);
 
-    info!("Starting ui-htmx configuration UI");
+    info!("Starting ui-htmx web UI");
 
     ServiceRunner::new("ui-htmx")
         .scm_mode(args.service)
@@ -126,7 +131,9 @@ fn main() -> ServiceResult {
             // the moment shutdown starts, so `/stream/events` streams close and
             // axum's connection drain can complete promptly.
             let sse_token = tokio_util::sync::CancellationToken::new();
-            let state = AppState::from_config(&config)?.with_sse_shutdown(sse_token.clone());
+            let state = AppState::from_config(&config)?
+                .with_sse_shutdown(sse_token.clone())
+                .with_setup_pages(pages);
             let app = build_router(state);
 
             // Layer HTTP Basic auth around the whole router (`/health`

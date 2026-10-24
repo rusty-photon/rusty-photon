@@ -6,7 +6,7 @@
 //! The BFF never holds a standing MCP client — an idle rmcp client holds
 //! an open POST that stalls rp's graceful stop (the transport is
 //! session-less, ADR-021, so that is the only reason left). Same
-//! philosophy as the config pages' `Connection: close`.
+//! philosophy as the REST reads' `Connection: close`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,6 +68,10 @@ pub trait TargetsClient: Send + Sync {
     async fn set_goals(&self, slug: &str, goals: Vec<Value>) -> Result<(), TargetsError>;
     /// `delete_target`.
     async fn delete_target(&self, slug: &str) -> Result<(), TargetsError>;
+    /// `get_target_context` — the filter roster goals are validated
+    /// against (`filters`) and each optical train's default position angle
+    /// (`trains`).
+    async fn target_context(&self) -> Result<Value, TargetsError>;
 }
 
 /// The production client: rp's `/mcp` endpoint, one connection per call.
@@ -160,10 +164,14 @@ impl TargetsClient for McpTargetsClient {
             .await
             .map(|_| ())
     }
+
+    async fn target_context(&self) -> Result<Value, TargetsError> {
+        self.call("get_target_context", Map::new()).await
+    }
 }
 
 /// Test-state default: every call reports rp's target tools unwired. The
-/// `with_rp_parts` test constructor installs this so unit tests that never
+/// `with_rp_api` test constructor installs this so unit tests that never
 /// touch `/targets` need no stub; targets-page unit tests inject a mock via
 /// `AppState::with_targets_client`.
 pub(crate) struct UnwiredTargets;
@@ -191,6 +199,10 @@ impl TargetsClient for UnwiredTargets {
     }
 
     async fn delete_target(&self, _slug: &str) -> Result<(), TargetsError> {
+        Err(TargetsError::Unavailable("no targets client wired".into()))
+    }
+
+    async fn target_context(&self) -> Result<Value, TargetsError> {
         Err(TargetsError::Unavailable("no targets client wired".into()))
     }
 }
@@ -249,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_unwired_default_reports_every_call_unavailable() {
-        // `with_rp_parts` installs this so a test state that never touches
+        // `with_rp_api` installs this so a test state that never touches
         // /targets needs no stub; each method must present as the honest
         // unavailable card, never a panic.
         let unwired = UnwiredTargets;
@@ -271,6 +283,10 @@ mod tests {
         ));
         assert!(matches!(
             unwired.delete_target("x").await,
+            Err(TargetsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            unwired.target_context().await,
             Err(TargetsError::Unavailable(_))
         ));
     }

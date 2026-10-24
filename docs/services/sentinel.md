@@ -741,10 +741,9 @@ one hanging probe is killed and retried rather than consuming the whole
 phase). The manual restart is the operator's recovery hammer, so it works
 for **any** discovered service regardless of run state — including `stopped`
 and `inert` ones autonomous supervision leaves alone. The endpoint is what
-the dashboard's per-service **Restart** button posts to (below), and what
-the web UI's *Restart via Sentinel* affordance calls (see
-[`ui-htmx.md`](ui-htmx.md)), the escalation target for `config.apply`
-fields classified `restart_required`.
+the dashboard's per-service **Restart** button posts to (below): the
+click an operator has for a service whose setup page saved fields that wait
+for the next start.
 
 ### Behavioral contract
 
@@ -838,9 +837,8 @@ name — an empty array when nothing is discovered:
   restart, or `null` when none is scheduled.
 - `probe_port` is the service's listening port from its config's `server`
   block (what the derived probe URLs embed), or `null` when no probe is
-  derivable. Clients use it to match a device URL to the service behind it:
-  ui-htmx resolves a roster device's `alpaca_url` port against this list to
-  offer that device's Restart-via-Sentinel affordance.
+  derivable. A client can match a device URL to the service behind it by
+  its port.
 
 The dashboard is server-rendered HTML with vanilla JavaScript, built with `format!()` in `services/sentinel/src/dashboard.rs`. (An experimental `sentinel-app` Leptos/WASM frontend was scaffolded and later abandoned; it was removed in 2026-06 — see [docs/plans/archive/sentinel-app-leptos-dashboard.md](../plans/archive/sentinel-app-leptos-dashboard.md).)
 

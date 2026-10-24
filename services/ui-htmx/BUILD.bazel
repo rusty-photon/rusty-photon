@@ -119,19 +119,16 @@ rust_test(
 )
 
 # BDD cucumber test. Spawns the real ui-htmx binary plus, per suite, a real
-# driver with mock hardware — qhy-focuser for the config-page suites (it still
-# carries the config actions), dsd-fp2 for the equipment page's setup-page
-# tier (it serves its own setup pages) — and/or a real rp orchestrator (the
-# rp-config / equipment / stream suites — an all-first-party stack, no
-# OmniSim), so every binary is runtime data and its bdd-infra discovery var
+# rp orchestrator (the stream and targets suites — an all-first-party stack,
+# no OmniSim), so every binary is runtime data and its bdd-infra discovery var
 # ({PKG}_BINARY) points at its rootpath. harness=false (custom cucumber main
 # via bdd_main!) → use_libtest_harness must be False; BDD_PACKAGE_DIR chdirs
 # from the runfiles root into the package dir so relative paths
 # (`tests/features`, `./Cargo.toml`) behave as under `cargo test`.
 rust_test(
     name = "bdd",
-    # Spawns up to three processes per scenario plus reconnect polls; large
-    # gives the most timeout headroom.
+    # Spawns two processes per scenario (rp and the BFF) plus a browser in
+    # the @browser scenarios; large gives the most timeout headroom.
     size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
@@ -146,12 +143,7 @@ rust_test(
         # without changing any existing route. Coverage is unaffected (both fixture
         # modules are #[coverage(off)]).
         ":ui-htmx_fixtures",
-        "//services/dsd-fp2:dsd-fp2_mock",
-        "//services/qhy-focuser:qhy-focuser_mock",
         "//services/rp",
-        # The restart.feature scenarios spawn a real sentinel (its Service
-        # Restart API is what the BFF's "Restart via Sentinel" button calls).
-        "//services/sentinel",
     ] + glob(["tests/features/**"]) +
     # insta goldens (UI-testing plan Layer B): the committed .snap files must
     # reach the runfiles tree so the snapshot-path resolver can read them under
@@ -162,12 +154,9 @@ rust_test(
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/ui-htmx",
-        "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
-        "QHY_FOCUSER_BINARY": "$(rootpath //services/qhy-focuser:qhy-focuser_mock)",
         "RP_BINARY": "$(rootpath //services/rp:rp)",
-        "SENTINEL_BINARY": "$(rootpath //services/sentinel)",
         "UI_HTMX_BINARY": "$(rootpath :ui-htmx_fixtures)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath //services/qhy-focuser:qhy-focuser_mock):$(rootpath :ui-htmx_fixtures):$(rootpath //services/rp:rp):$(rootpath //services/sentinel)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ui-htmx_fixtures):$(rootpath //services/rp:rp)",
         # Bazel does not propagate CI, so force insta to compare-only / fail on
         # mismatch (the sandbox is read-only; goldens are updated Cargo-locally).
         "INSTA_UPDATE": "no",
@@ -189,9 +178,9 @@ rust_test(
         # not use the fixtures module, so the variant is otherwise transparent.
         ":ui-htmx_lib_fixtures",
         # The rp-harness + tls-auth variant: the rp-backed suites use
-        # RpConfigBuilder + the launcher (no OmniSim scenarios here — the
-        # roster devices are first-party mock drivers), and the TLS + auth
-        # suites use the shared PKI + credentials fixture.
+        # RpConfigBuilder + the launcher (no OmniSim scenarios here), the
+        # TLS + auth suites use the shared PKI + credentials fixture, and the
+        # setup-page suite the shared setup-page steps.
         "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
