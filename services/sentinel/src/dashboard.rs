@@ -308,7 +308,11 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
         }
         function restartOutcome(code, body) {
             if (code === 200 && body.status === 'ok') {
-                return `Restarted, recovery ${body.recovery}`;
+                return {
+                    healthy: 'Restarted, healthy again',
+                    timeout: 'Restarted, but not healthy again within the restart budget',
+                    skipped: 'Restarted (recovery is not checked on this platform)',
+                }[body.recovery] || `Restarted, recovery ${body.recovery}`;
             }
             if (code === 200) {
                 return `Restart failed: ${body.detail || 'no detail'}`;
