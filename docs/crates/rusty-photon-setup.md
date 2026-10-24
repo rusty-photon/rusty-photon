@@ -49,7 +49,9 @@ works at any mount.
 
 1. every top-level section of the config that no device page edits
    (`serial`, `server`, a service-wide `usb_devices` list, …), each a
-   `<fieldset>` with the section's fields;
+   `<fieldset>` with the section's fields, a `unique_id` among them under
+   a collapsed **Identity** disclosure as on a device page (`phd2-guider`'s
+   `camera` block, whose device has no page of its own);
 2. **Security**: the server's username, a password and its repeat. See
    [Credentials](#credentials);
 3. **Devices**: one row per device section the config has, naming the
@@ -83,7 +85,7 @@ config's shape (the `GTi`'s `--port` is the serial path on a USB
 transport and the host on a UDP one); it defaults to the driver's
 `override_paths`. A service that restarts rather than reloads
 (`ApplyDisposition::Restart`) names, above the form, the saved fields
-still waiting for its restart. A file that cannot be read shows the
+still waiting for its restart, and how to restart it. A file that cannot be read shows the
 running configuration instead.
 
 ### Fields
@@ -177,8 +179,13 @@ A `POST` to a page submits that page's fields. The handler:
      a typical reload and a link do the same by hand. A save that changed
      nothing says so and fires no reload;
    - for a service that needs a restart (`ApplyDisposition::Restart`),
-     which fields take effect on the next start and that the service must
-     be restarted;
+     which fields take effect on the next start and how to restart it:
+     `sudo systemctl restart rusty-photon-<service>` on Linux,
+     `Restart-Service rusty-photon-<service>` on Windows, `brew services
+     restart rusty-photon-<service>` on macOS, since the unit, the Windows
+     service and the Homebrew service all carry the one name. The pages
+     name the saved fields still waiting, with the same instructions, until
+     the restart runs them;
    - when `server.port` or `server.bind_address` changed, the URL the page
      will have: the host the browser used, the new port;
    - when a device page disabled its device, that the device's page is no

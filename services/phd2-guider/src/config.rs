@@ -53,7 +53,7 @@ impl Default for Config {
 /// parsed, whether or not `enabled` is true: a field that is present
 /// must be valid. The rules that span fields — what `enabled` requires,
 /// and that PHD2 is local — are [`camera_rule_violations`], which
-/// [`load_config`] and `config.apply` both run.
+/// [`load_config`] and a setup-page save both run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CameraConfig {
@@ -66,10 +66,16 @@ pub struct CameraConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique_id: Option<String>,
     /// `PixelSizeX`, in micrometres, from the guide camera's datasheet.
+    ///
+    /// The schema spells both pixel sizes as optional numbers, so the setup
+    /// page renders a number input for each; the range stays the
+    /// newtype's, checked when the submission is parsed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<f64>")]
     pub pixel_size_x_um: Option<PixelSizeXUm>,
     /// `PixelSizeY`, in micrometres, from the guide camera's datasheet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<f64>")]
     pub pixel_size_y_um: Option<PixelSizeYUm>,
     /// The directory PHD2 saves the facade's frames in, and the facade
     /// reads and deletes them from.
@@ -509,6 +515,19 @@ mod tests {
         let persisted = serde_json::to_value(Config::default()).unwrap();
         assert!(persisted.get("camera").is_none(), "{persisted}");
         assert!(!enabled("").camera.is_unset());
+    }
+
+    /// The file leaves the block out while it is all defaults, so the setup
+    /// page draws its fields from their own defaults, and a save that edits
+    /// one of them starts the block from those: they must make the block's
+    /// own default, or the edit would reset the fields left alone.
+    #[test]
+    fn the_camera_fields_defaults_make_the_blocks_default() {
+        let from_fields: CameraConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            serde_json::to_value(&from_fields).unwrap(),
+            serde_json::to_value(CameraConfig::default()).unwrap()
+        );
     }
 
     #[test]

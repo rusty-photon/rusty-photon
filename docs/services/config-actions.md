@@ -213,9 +213,9 @@ renders with are `rusty-photon-setup`'s, shared with the drivers' own pages.
 
 `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`,
 `star-adventurer-gti`, `filemonitor`, `sky-survey-camera`, `svbony-camera`,
-`zwo-camera`, `qhy-camera` and `zwo-focuser` no longer carry the actions: their `SupportedActions` list no `config.*` (the mount keeps
-its `ApPark` actions) and they configure themselves on their own setup
-pages ([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the
+`zwo-camera`, `qhy-camera`, `zwo-focuser` and `phd2-guider`'s camera facade no longer carry the actions: their `SupportedActions` list no `config.*` (the mount keeps
+its `ApPark` actions, the facade its sweep lease) and they configure themselves on their own setup
+pages (`phd2-guider` on its service listener's `/setup`, where the facade's setup paths redirect) ([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the
 BFF's roster links there.
 
 ## References

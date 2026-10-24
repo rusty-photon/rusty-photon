@@ -174,6 +174,12 @@ fn control_for_path(fields: &[&FieldSpec], config: &Value, path: &str) -> Option
     })
 }
 
+/// A field the driver mints and owns, drawn under a collapsed Identity
+/// disclosure on whichever page shows it.
+fn is_identity(spec: &FieldSpec) -> bool {
+    spec.name().ends_with(".unique_id")
+}
+
 /// The generation the next handler is born with.
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -423,7 +429,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         let top = html! {
             @if !errors.is_empty() { (render::rejected_banner(&banner_errors, &placed)) }
             (Self::confirm_banner(drawn.confirm))
-            (Self::pending_banner(pending))
+            (Self::pending_banner(&self.service, pending))
         };
         let actions = Self::actions(drawn.confirm);
         let body = match page {
@@ -443,11 +449,14 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         (top)
                         form method="post" action="" {
                             @for section in &section_names {
+                                @let (identity, plain): (Vec<&FieldSpec>, Vec<&FieldSpec>) = fields
+                                    .iter()
+                                    .filter(|f| f.section() == *section)
+                                    .partition(|f| is_identity(f));
                                 fieldset {
                                     legend { (humanize(section)) }
-                                    @for spec in fields.iter().filter(|f| f.section() == *section) {
-                                        (field_markup(spec))
-                                    }
+                                    @for spec in &plain { (field_markup(spec)) }
+                                    (Self::identity_disclosure(&identity, field_markup))
                                 }
                             }
                             (custom)
@@ -459,9 +468,8 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 }
             }
             Page::Device(section) => {
-                let (identity, plain): (Vec<&FieldSpec>, Vec<&FieldSpec>) = fields
-                    .iter()
-                    .partition(|f| f.name().ends_with(".unique_id"));
+                let (identity, plain): (Vec<&FieldSpec>, Vec<&FieldSpec>) =
+                    fields.iter().partition(|f| is_identity(f));
                 // A page whose every part only shows has nothing to save.
                 let has_form = !fields.is_empty() || drawn.custom.iter().any(|c| c.has_controls());
                 html! {
@@ -478,13 +486,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                                         @for spec in &plain { (field_markup(spec)) }
                                     }
                                 }
-                                @if !identity.is_empty() {
-                                    details.identity {
-                                        summary { "Identity" }
-                                        p.hint { "The driver owns and mints this id; editing it is an escape hatch for a misbehaving driver, not routine configuration." }
-                                        @for spec in &identity { (field_markup(spec)) }
-                                    }
-                                }
+                                (Self::identity_disclosure(&identity, field_markup))
                                 (custom)
                                 (actions)
                             }
@@ -546,8 +548,25 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         }
     }
 
-    /// The saved fields waiting for a restart, above the form.
-    fn pending_banner(pending: &[String]) -> Markup {
+    /// The ids the driver mints, each drawn by `field_markup`, under a
+    /// collapsed Identity disclosure.
+    fn identity_disclosure(
+        identity: &[&FieldSpec],
+        field_markup: impl Fn(&FieldSpec) -> Markup,
+    ) -> Markup {
+        html! {
+            @if !identity.is_empty() {
+                details.identity {
+                    summary { "Identity" }
+                    p.hint { "The driver owns and mints this id; editing it is an escape hatch for a misbehaving driver, not routine configuration." }
+                    @for spec in identity { (field_markup(spec)) }
+                }
+            }
+        }
+    }
+
+    /// The saved fields waiting for `service`'s restart, above the form.
+    fn pending_banner(service: &str, pending: &[String]) -> Markup {
         html! {
             @if !pending.is_empty() {
                 div class="banner warn" id="pending-restart" {
@@ -557,6 +576,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                         span.mono { (pending.join(", ")) }
                     }
                 }
+                (render::restart_how(service))
             }
         }
     }
@@ -969,7 +989,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
 
     /// The saved page, with the no-script `Refresh` when a reload is on.
     fn saved_response(&self, saved: &Saved, destination: Option<&Destination>) -> PageResponse {
-        let body = render::saved_body(saved, destination, "");
+        let body = render::saved_body(&self.service, saved, destination, "");
         let mut response = PageResponse::html(
             StatusCode::OK,
             render::document(&self.service, "Saved", &self.generation, &body),
@@ -1299,6 +1319,30 @@ mod tests {
         }
         fn device_sections(config: &Config) -> Vec<DeviceSection> {
             Fake::device_sections(config)
+        }
+    }
+
+    /// The `Fake` with no device of its own, so the panel's section, its
+    /// id among it, is the server page's.
+    struct ServerOnlyFake;
+
+    impl ConfigurableDriver for ServerOnlyFake {
+        type Config = Config;
+        type Overrides = Overrides;
+        fn normalize(config: &mut Config) {
+            Fake::normalize(config);
+        }
+        fn validate(config: &Config) -> Vec<FieldError> {
+            Fake::validate(config)
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            Fake::secret_pointers()
+        }
+        fn override_paths(overrides: &Overrides) -> Vec<String> {
+            Fake::override_paths(overrides)
+        }
+        fn apply_overrides(config: &mut Config, overrides: &Overrides) {
+            Fake::apply_overrides(config, overrides);
         }
     }
 
@@ -2030,7 +2074,37 @@ mod tests {
             "{}",
             response.body
         );
+        assert!(
+            response
+                .body
+                .contains("<code>sudo systemctl restart rusty-photon-rp</code>"),
+            "the saved page says how to restart: {}",
+            response.body
+        );
         assert!(response.headers.get("refresh").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_unique_id_on_the_server_page_sits_under_identity_in_its_section() {
+        let fx = fixture(&config());
+        let p = SetupPages::<ServerOnlyFake>::new(
+            "fake",
+            config(),
+            fx.path.clone(),
+            Overrides::default(),
+        );
+        let page = p.handle(PageScope::Server, get()).await.body;
+        let panel = page
+            .split("<legend>Panel</legend>")
+            .nth(1)
+            .and_then(|rest| rest.split("</fieldset>").next())
+            .unwrap_or_else(|| panic!("no Panel section:\n{page}"));
+        let identity = panel
+            .find(r#"<details class="identity"><summary>Identity</summary>"#)
+            .unwrap_or_else(|| panic!("no Identity disclosure in the section:\n{panel}"));
+        let id = panel.find(r#"name="panel.unique_id""#).unwrap();
+        let level = panel.find(r#"name="panel.level""#).unwrap();
+        assert!(level < identity && identity < id, "{panel}");
     }
 
     #[tokio::test]
@@ -2074,6 +2148,10 @@ mod tests {
         );
         assert!(page.contains(r#"id="pending-restart""#), "{page}");
         assert!(page.contains("serial.baud_rate"), "{page}");
+        assert!(
+            page.contains("<code>sudo systemctl restart rusty-photon-rp</code>"),
+            "the waiting page says how to restart: {page}"
+        );
         // A second save of another field keeps the first one.
         let mut second = base.to_vec();
         second.push(("serial.baud_rate", "9600"));
@@ -2105,6 +2183,7 @@ mod tests {
             "{page}"
         );
         assert!(!page.contains(r#"id="pending-restart""#), "{page}");
+        assert!(!page.contains(r#"class="restart-how""#), "{page}");
         // A corrupt file falls back to the running configuration.
         std::fs::write(&fx.path, "{ not json").unwrap();
         let page = p.handle(PageScope::Server, get()).await.body;

@@ -4,6 +4,7 @@
 //! the settle/stop behavior), writes a config pointing at it, and
 //! starts `phd2-guider serve` via `bdd_infra::ServiceHandle`.
 
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -54,8 +55,12 @@ pub struct GuiderWorld {
     /// The frame a staged capture marker names.
     pub marker_frame: Option<PathBuf>,
 
-    /// The most recent `config.schema` / `config.apply` answer.
-    pub config_action_reply: Option<serde_json::Value>,
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
+
+    /// The facade's answer to a setup path, unfollowed: its status and
+    /// its `Location`.
+    pub facade_setup_answer: Option<(u16, Option<String>)>,
 
     /// The most recent sweep-lease Action's answer.
     pub lease_reply: Option<serde_json::Value>,
@@ -86,6 +91,12 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for GuiderWorld {
             },
             "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" }
         })
+    }
+}
+
+impl SetupPagesWorld for GuiderWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
     }
 }
 
@@ -330,12 +341,8 @@ impl GuiderWorld {
         tokio::fs::write(&config_path, config.to_string())
             .await
             .expect("write config");
-        let config_str = config_path.to_string_lossy().into_owned();
 
-        let handle =
-            ServiceHandle::start_with_args("phd2-guider", &["--config", &config_str, "serve"])
-                .await;
-        self.service_handle = Some(handle);
+        self.spawn_on_config_file().await;
 
         if wait_connected {
             let url = format!("{}/health", self.service_url());
@@ -357,6 +364,46 @@ impl GuiderWorld {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+    }
+
+    /// Start `phd2-guider serve` on the scenario's config file and point the
+    /// setup-page steps at it.
+    async fn spawn_on_config_file(&mut self) {
+        let config_path = self
+            .config_path
+            .clone()
+            .expect("the scenario wrote no config file");
+        let config_str = config_path.to_string_lossy().into_owned();
+        let handle =
+            ServiceHandle::start_with_args("phd2-guider", &["--config", &config_str, "serve"])
+                .await;
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
+        self.service_handle = Some(handle);
+    }
+
+    /// Stop the service and start it again on the same config file: what a
+    /// saved change waits for.
+    pub async fn restart_service(&mut self) {
+        let mut handle = self
+            .service_handle
+            .take()
+            .expect("the guider service was not started");
+        handle.stop().await;
+        self.camera = None;
+        self.spawn_on_config_file().await;
+    }
+
+    /// Start the service behind TLS and auth and point the setup-page steps
+    /// at it.
+    pub async fn start_with_tls_and_auth_pages(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.base_test_config();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        self.start_with_tls_auth(config).await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
     }
 
     /// Record an HTTP response into the world.

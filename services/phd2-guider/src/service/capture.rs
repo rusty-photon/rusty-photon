@@ -636,8 +636,8 @@ impl CaptureEngine {
 /// Check that `image_dir` is an existing directory the service can
 /// create and remove files in, by creating and removing [`PROBE_NAME`].
 ///
-/// Startup runs it, and so does `config.apply`, inside the service, so
-/// both test the permissions the service has.
+/// Startup runs it, and so does a setup-page save, inside the service,
+/// so both test the permissions the service has.
 ///
 /// # Errors
 ///

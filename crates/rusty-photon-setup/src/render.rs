@@ -346,10 +346,30 @@ pub struct Destination {
     pub note: Option<String>,
 }
 
-/// The page a save answers with: what happened, where the browser goes if
-/// not back to this page (`destination`), and the wait.
+/// How to restart `service` where it is packaged: its systemd unit, its
+/// Windows service and its Homebrew service all carry the one name.
 #[must_use]
-pub fn saved_body(saved: &Saved, destination: Option<&Destination>, back: &str) -> Markup {
+pub fn restart_how(service: &str) -> Markup {
+    let name = format!("rusty-photon-{service}");
+    html! {
+        p.restart-how {
+            "Restart the service to apply them: "
+            code { "sudo systemctl restart " (name) } " on Linux, "
+            code { "Restart-Service " (name) } " on Windows, or "
+            code { "brew services restart " (name) } " on macOS."
+        }
+    }
+}
+
+/// The page `service`'s save answers with: what happened, where the browser
+/// goes if not back to this page (`destination`), and the wait.
+#[must_use]
+pub fn saved_body(
+    service: &str,
+    saved: &Saved,
+    destination: Option<&Destination>,
+    back: &str,
+) -> Markup {
     let moved_to = destination.map(|d| d.url.as_str());
     let target = moved_to.map(str::to_string);
     let target_json = serde_json::to_string(&target).unwrap_or_else(|_| "null".to_string());
@@ -370,6 +390,7 @@ pub fn saved_body(saved: &Saved, destination: Option<&Destination>, back: &str) 
                             span.mono { (fields.join(", ")) }
                         }
                     }
+                    (restart_how(service))
                 }
             }
             @if let Some(d) = destination {
@@ -846,7 +867,7 @@ mod tests {
 
     #[test]
     fn the_saved_page_says_what_happened_and_waits_only_for_a_reload() {
-        let reloading = saved_body(&Saved::Reloading, None, "").into_string();
+        let reloading = saved_body("dsd-fp2", &Saved::Reloading, None, "").into_string();
         assert!(reloading.contains(r#"id="saved-reloading""#), "{reloading}");
         assert!(reloading.contains("<script>"), "{reloading}");
         assert!(
@@ -858,7 +879,7 @@ mod tests {
             url: "http://h:1/setup".to_string(),
             note: None,
         };
-        let moved = saved_body(&Saved::Reloading, Some(&moved_dest), "").into_string();
+        let moved = saved_body("dsd-fp2", &Saved::Reloading, Some(&moved_dest), "").into_string();
         assert!(
             moved.contains(r#"var url = "http://h:1/setup" || window.location.href;"#),
             "{moved}"
@@ -868,9 +889,9 @@ mod tests {
             url: "../../../../setup".to_string(),
             note: Some("This device is disabled now.".to_string()),
         };
-        let noted = saved_body(&Saved::Reloading, Some(&noted), "").into_string();
+        let noted = saved_body("dsd-fp2", &Saved::Reloading, Some(&noted), "").into_string();
         assert!(noted.contains(r#"<p id="moved">This device is disabled now. <a href="../../../../setup">Open the server page</a>.</p>"#), "{noted}");
-        let unchanged = saved_body(&Saved::Unchanged, None, "").into_string();
+        let unchanged = saved_body("dsd-fp2", &Saved::Unchanged, None, "").into_string();
         assert!(unchanged.contains(r#"id="saved-unchanged""#), "{unchanged}");
         assert!(!unchanged.contains("<script>"), "{unchanged}");
         let restart_dest = Destination {
@@ -878,6 +899,7 @@ mod tests {
             note: None,
         };
         let restart = saved_body(
+            "rp",
             &Saved::RestartRequired(vec!["server.port".to_string()]),
             Some(&restart_dest),
             "",
@@ -888,6 +910,22 @@ mod tests {
         assert!(
             restart.contains("Nothing answers at the new address until the restart"),
             "{restart}"
+        );
+        assert!(
+            restart.contains("<code>sudo systemctl restart rusty-photon-rp</code>"),
+            "{restart}"
+        );
+        assert!(
+            restart.contains("<code>Restart-Service rusty-photon-rp</code>"),
+            "{restart}"
+        );
+        assert!(
+            restart.contains("<code>brew services restart rusty-photon-rp</code>"),
+            "{restart}"
+        );
+        assert!(
+            !reloading.contains(r#"class="restart-how""#),
+            "a reload says nothing of a restart: {reloading}"
         );
     }
 
