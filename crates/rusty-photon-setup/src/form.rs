@@ -277,11 +277,13 @@ fn field_error(path: &str, msg: &str) -> FieldError {
     }
 }
 
-/// Write `value` at `pointer`, creating the leaf key when its parent object
-/// exists without it.
+/// Write `value` at `pointer`, creating the leaf key, and any object above
+/// it the config leaves out.
 ///
 /// An optional field absent from the file (absence is how "unset" is
-/// spelled) must still be settable from the page.
+/// spelled) must still be settable from the page, and so must a field of a
+/// section the file leaves out. A parent that is present but not an object
+/// (a `null` optional block) is left alone, and so is the value.
 pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
     if let Some(slot) = config.pointer_mut(pointer) {
         *slot = value;
@@ -290,6 +292,11 @@ pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
     let Some((parent, key)) = pointer.rsplit_once('/') else {
         return;
     };
+    // A section the file leaves out, which its type's defaults fill when the
+    // file is parsed: the submitted field starts it.
+    if config.pointer(parent).is_none() {
+        set_pointer(config, parent, Value::Object(serde_json::Map::new()));
+    }
     if let Some(Value::Object(map)) = config.pointer_mut(parent) {
         _ = map.insert(key.to_string(), value);
     }
@@ -497,6 +504,20 @@ mod tests {
             &form_from(&[("serial.port", "")]),
         );
         assert_eq!(config["serial"]["port"], "");
+    }
+
+    #[test]
+    fn a_field_of_a_section_the_file_leaves_out_starts_the_section() {
+        let mut config = json!({ "serial": { "port": "/dev/a" } });
+        set_pointer(&mut config, "/camera/server/port", json!(11128));
+        assert_eq!(
+            config,
+            json!({ "serial": { "port": "/dev/a" }, "camera": { "server": { "port": 11128 } } })
+        );
+        // A block present as `null` is the file's choice, not an absence.
+        let mut config = json!({ "server": { "tls": null } });
+        set_pointer(&mut config, "/server/tls/cert", json!("c.pem"));
+        assert_eq!(config, json!({ "server": { "tls": null } }));
     }
 
     #[test]

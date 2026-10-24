@@ -1321,6 +1321,89 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(&fx.path).unwrap()).unwrap()
     }
 
+    /// A config whose `extra` section a file may leave out, which its
+    /// defaults then fill; `grace` is a newtype, so its schema is a `$ref`
+    /// with the field's default beside it.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct SparseConfig {
+        server: Server,
+        #[serde(default, skip_serializing_if = "Extra::is_default")]
+        extra: Extra,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+    struct Extra {
+        #[serde(default)]
+        grace: Grace,
+        #[serde(default)]
+        on: bool,
+    }
+
+    impl Extra {
+        fn is_default(&self) -> bool {
+            *self == Self::default()
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct Grace(String);
+
+    impl Default for Grace {
+        fn default() -> Self {
+            Self("10s".to_string())
+        }
+    }
+
+    struct SparseFake;
+
+    impl ConfigurableDriver for SparseFake {
+        type Config = SparseConfig;
+        type Overrides = ();
+        fn normalize(_config: &mut SparseConfig) {}
+        fn validate(_config: &SparseConfig) -> Vec<FieldError> {
+            Vec::new()
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            &[]
+        }
+        fn override_paths(_overrides: &()) -> Vec<String> {
+            Vec::new()
+        }
+        fn apply_overrides(_config: &mut SparseConfig, _overrides: &()) {}
+    }
+
+    #[tokio::test]
+    async fn a_section_the_file_leaves_out_shows_its_defaults_and_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.json");
+        std::fs::write(&path, r#"{"server": {"port": 11119}}"#).unwrap();
+        let running: SparseConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let p = SetupPages::<SparseFake>::new("sparse", running, path.clone(), ());
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="extra.grace" value="10s""#),
+            "the field's default shows: {page}"
+        );
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11119"),
+                    ("extra.grace", "20s"),
+                    ("extra.on", "on"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            disk["extra"],
+            json!({ "grace": "20s", "on": true }),
+            "{disk}"
+        );
+    }
+
     const DEVICE: PageScope<'static> = PageScope::Device {
         device_type: "covercalibrator",
         device_number: 0,
