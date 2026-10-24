@@ -69,7 +69,11 @@ The page links back to the server page.
 
 A page shows the configuration **file** — what the service runs once it
 has reloaded, and the base the next save overlays — read through the typed
-config so a field the file leaves at its default shows that default, with
+config so a field the file leaves at its default shows that default (and
+its schema `default` when the typed config does not write it back either:
+a section its type leaves out of the file while it is all defaults, whose
+own default can differ from its fields' and wins while a save leaves the
+section as shown), with
 a field a command-line flag pins showing what the running service uses:
 disabled, with a note that says so, and never persisted by a save (see
 [Saving](#saving)). Which fields the flags pin is the driver's
@@ -96,7 +100,7 @@ key order so the rendered order is the same on every host:
 | `number` with optional `minimum`/`maximum` | number input taking any value (`step="any"`: without it a browser accepts only whole steps from the value the input starts at), the bounds its `min`/`max` | parsed and range-checked; not a finite number (`inf`, `NaN`, which JSON cannot hold) or out of range is a field error; an optional one cleared persists `null`, a required one cleared is a field error |
 | `array` of an integer `enum` | one checkbox per enumerated value, in schema order | the checked values, in schema order; none checked ⇒ `[]` |
 | a plain object | recursed | — |
-| `$ref` into `$defs` | resolved | — |
+| `$ref` into `$defs` | resolved; a `default` beside the `$ref` is the field's (a newtype field's `serde(default)`), else the definition's own | — |
 | `Option<T>` where `T` is an object (`anyOf [T, null]`) | file-only (below) | — |
 | an internally tagged enum whose variants are objects (`oneOf` of objects sharing one `const` property; `schemars` renders a newtype variant around a struct this way too) | one radio button per variant, with the chosen variant's fields shown and the others hidden by CSS; each variant's fields sit in a fieldset that a few lines of script in the group disable while it is not chosen, so the browser neither checks nor sends a hidden variant's fields and a value typed there before switching away cannot block the save (without script every fieldset stays on); an unchosen variant's fields start from their schema `default`s, so a switch to it is the selector plus the fields it requires | the chosen variant's fields, under its tag; the other variants' submitted fields are ignored. A variant's field is a control named by the variant (`transport:usb.port`): a driver `validate` error naming it by its config path (`transport.port`) is shown beside that control; a pinned path inside the enum pins that control alone, a pinned enum pins the selector and every field; `secret_pointers` reach a variant's fields |
 | anything else (`allOf`, `enum`, `const`, arrays of objects, custom-serde types) | file-only | — |
@@ -138,7 +142,16 @@ A `POST` to a page submits that page's fields. The handler:
    config; a file that is not valid JSON refuses the save, so a typo is
    never overwritten), and overlays the submitted fields onto the page's
    section alone — a save of a device page cannot alter the server section,
-   and a save of the server page cannot alter a device's — and has each of
+   and a save of the server page cannot alter a device's. A field of a
+   section the file leaves out starts that section only when the
+   submission changes it from what the page showed: a section left alone
+   stays out of the file, for the typed config to fill from the section's
+   own default, which can differ from its fields' own. A section a change
+   starts begins from the values the typed config fills for it, so a field
+   the page does not send (a pinned one) is kept, or empty for a section
+   the typed config leaves out of the file while it is all defaults, which
+   the parse completes from its fields' defaults. The credential block
+   starts its section the same way. It then has each of
    the driver's own sections on the page apply its part
    ([A driver's own part](#a-drivers-own-part));
 2. skips every field a command-line flag pins: the file's value stays;
@@ -302,7 +315,10 @@ sorted order, `$ref` resolution, the tagged-enum detection against
 `schemars`'s own output), the coercion rules, the renderer (a control per
 kind, the pinned state, a file-only note, the Security section), the
 origin check, and the handler against a fake driver (the overlay onto one
-section, the skipped pinned field — inside a tagged enum too — the
+section, a section the file leaves out shown with its defaults and saved,
+left alone keeping its own default, and started with the fields the page
+does not send,
+the skipped pinned field — inside a tagged enum too — the
 rejected save leaving the file untouched, a `validate` error re-pointed at
 a variant's control, the persisted file, the reload fired, the credential
 rules, one save waiting for another), and a driver's own part (its keys

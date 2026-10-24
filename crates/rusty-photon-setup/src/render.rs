@@ -5,7 +5,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use rusty_photon_config::actions::FieldError;
 use serde_json::Value;
 
-use crate::form::{array_has, text_of};
+use crate::form::{array_has, shown_value, text_of};
 use crate::schema::{FieldKind, FieldSpec};
 
 /// The stylesheet every page inlines.
@@ -134,10 +134,7 @@ fn scalar_field(
     let error = state.error_for(name);
     // The config's value, else the schema's default: an unchosen variant's
     // field has no value yet, and a switch to it starts from the defaults.
-    let value = config
-        .pointer(pointer)
-        .or_else(|| spec.default_value())
-        .unwrap_or(&Value::Null);
+    let value = shown_value(spec, config, pointer);
     html! {
         div.field.pinned[disabled].invalid[error.is_some()] {
             @match spec.kind() {

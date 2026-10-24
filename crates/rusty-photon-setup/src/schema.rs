@@ -340,7 +340,8 @@ fn pointer_matches(pattern: &str, pointer: &str) -> bool {
 ///
 /// A node with no `$ref` is returned as-is. (Sibling keys like
 /// `default`/`description` on a `$ref` node are irrelevant to leaf
-/// classification, so they are dropped.)
+/// classification, so they are dropped; a leaf reads its `default` off the
+/// node before resolving it, [`default_of`].)
 #[must_use]
 pub fn resolve<'a>(node: &'a Value, root: &'a Value) -> &'a Value {
     if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
@@ -521,14 +522,16 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             if prefix.is_empty() {
                 return; // a top-level scalar config is not a form field
             }
-            out.push(make_field(prefix, &base, nullable, resolved));
+            let mut spec = make_field(prefix, &base, nullable, resolved);
+            spec.default = default_of(node, resolved);
+            out.push(spec);
         }
         Shape::IntEnumArray { options } => {
             if prefix.is_empty() {
                 return;
             }
             let mut spec = field_spec(prefix, FieldKind::IntSet { options });
-            spec.default = resolved.get("default").cloned();
+            spec.default = default_of(node, resolved);
             out.push(spec);
         }
         Shape::Tagged { tag, branches } => {
@@ -578,6 +581,15 @@ fn join(prefix: &str, name: &str) -> String {
     }
 }
 
+/// A leaf's schema `default`: the property's own, which `schemars` writes
+/// beside a `$ref` when the field's type is a definition of its own (a
+/// newtype with a `serde(default)`), else its type's.
+fn default_of(node: &Value, resolved: &Value) -> Option<Value> {
+    node.get("default")
+        .or_else(|| resolved.get("default"))
+        .cloned()
+}
+
 fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec {
     let kind = match base {
         "boolean" => FieldKind::Bool,
@@ -594,9 +606,7 @@ fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec
         // "string" and any unexpected base fall back to a text field.
         _ => FieldKind::Str { nullable },
     };
-    let mut spec = field_spec(name, kind);
-    spec.default = node.get("default").cloned();
-    spec
+    field_spec(name, kind)
 }
 
 fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
@@ -1241,6 +1251,35 @@ mod tests {
         assert_eq!(
             model.field("cooling.targets").unwrap().default_value(),
             Some(&json!([0]))
+        );
+    }
+
+    #[test]
+    fn a_default_beside_a_ref_is_the_fields() {
+        // A newtype field with `serde(default)` is a `$ref` to its type's
+        // definition with the field's `default` beside it.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "camera": { "type": "object", "properties": {
+                    "grace": { "$ref": "#/$defs/Grace", "default": "10s" },
+                    "bind": { "$ref": "#/$defs/Bind" },
+                } },
+            },
+            "$defs": {
+                "Grace": { "type": "string" },
+                "Bind": { "type": "string", "default": "127.0.0.1" },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        assert_eq!(
+            model.field("camera.grace").unwrap().default_value(),
+            Some(&json!("10s"))
+        );
+        assert_eq!(
+            model.field("camera.bind").unwrap().default_value(),
+            Some(&json!("127.0.0.1")),
+            "the type's default when the field states none"
         );
     }
 

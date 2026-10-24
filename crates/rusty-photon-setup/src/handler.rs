@@ -17,7 +17,10 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::custom::{Confirmation, CustomSection, DriverPages, SectionView, CONFIRM};
-use crate::form::{changed_paths, overlay_field_except, set_pointer, FormValues};
+use crate::form::{
+    changed_paths, overlay_field_except, set_pointer, start_sections, submitted_as_shown,
+    FormValues,
+};
 use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
 use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
 use crate::{origin, security};
@@ -345,12 +348,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     /// for that restart, which the running configuration does not carry.
     fn current_view(&self, effective: &Value, pinned: &[String]) -> (Value, Vec<String>) {
         let mut shown = match read_file_value(&self.path, effective) {
-            // Through the typed config, so a field the file leaves at its
-            // default shows that default rather than nothing.
-            Ok(raw) => serde_json::from_value::<D::Config>(raw.clone())
-                .ok()
-                .and_then(|typed| serde_json::to_value(&typed).ok())
-                .unwrap_or(raw),
+            Ok(raw) => Self::view_of(raw),
             Err(e) => {
                 warn!(error = %e, path = %self.path.display(), "a setup page could not read the configuration file; showing the running configuration");
                 effective.clone()
@@ -362,6 +360,16 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             ApplyDisposition::Reload => Vec::new(),
         };
         (shown, pending)
+    }
+
+    /// The file as a page shows it: through the typed config, so a field the
+    /// file leaves at its default shows that default rather than nothing; the
+    /// file as it is when the typed config refuses it.
+    fn view_of(raw: Value) -> Value {
+        serde_json::from_value::<D::Config>(raw.clone())
+            .ok()
+            .and_then(|typed| serde_json::to_value(&typed).ok())
+            .unwrap_or(raw)
     }
 
     /// Show a pinned field as the running service has it, whatever the file
@@ -627,14 +635,12 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         let form = FormValues::from(request.form);
         let mut file = match read_file_value(&self.path, effective) {
             Ok(v) => v,
-            Err(e) => {
-                return PageResponse::text(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("the configuration file cannot be read, so nothing was saved: {e}"),
-                )
-            }
+            Err(e) => return Self::unreadable(&e),
         };
         let file_before = file.clone();
+        // What the page showed, which a field of a section the file leaves
+        // out is judged against and such a section starts from.
+        let view = Self::view_of(file.clone());
         let mut errors = Vec::new();
         // The credential is read now and applied only once every other
         // value has passed: a rejected save must not hash anything, and its
@@ -645,11 +651,11 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             .filter(|_| matches!(page, Page::Server { .. }));
         let auth_change = Self::credential_change(auth_pointer, &file, &form, &mut errors);
         Self::overlay_fields(
-            page,
-            model,
+            &page.fields(model),
             &pins.controls,
             auth_pointer,
             &form,
+            &view,
             &mut file,
             &mut errors,
         );
@@ -707,6 +713,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             );
         }
         if let Some((pointer, change)) = auth_change {
+            start_sections(&mut file, &view, pointer);
             if let Err(e) = security::apply(change, &mut file, pointer).await {
                 return PageResponse::html(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -728,6 +735,14 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         };
         let baseline = self.baseline(&file_before, effective);
         self.persist(page, typed, effective, &baseline, &request.headers)
+    }
+
+    /// The `500` a save answers when the file it would overlay cannot be read.
+    fn unreadable(e: &impl std::fmt::Display) -> PageResponse {
+        PageResponse::text(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the configuration file cannot be read, so nothing was saved: {e}"),
+        )
     }
 
     /// What the Security section's submission asks of the credential block
@@ -891,20 +906,36 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     /// Overlay the page's submitted fields onto `file`: a pinned control is
     /// skipped (a tagged enum's pinned field inside the enum's overlay too),
     /// and the credential block is the Security section's.
+    ///
+    /// A field of a section the file leaves out starts the section only when
+    /// the submission changes it from what the page showed (`view`): left
+    /// alone, it leaves the section to the typed config's own default for
+    /// it, which can differ from the field's. A section it starts begins
+    /// from the values `view` holds for it.
     fn overlay_fields(
-        page: &Page,
-        model: &FieldModel,
+        fields: &[&FieldSpec],
         pinned_controls: &[String],
         auth_pointer: Option<&str>,
         form: &FormValues,
+        view: &Value,
         file: &mut Value,
         errors: &mut Vec<FieldError>,
     ) {
-        for spec in page.fields(model) {
+        for spec in fields.iter().copied() {
             if Some(spec.pointer()) == auth_pointer
                 || pinned_controls.iter().any(|p| p == spec.name())
             {
                 continue;
+            }
+            let section_absent = spec
+                .pointer()
+                .rsplit_once('/')
+                .is_some_and(|(parent, _)| file.pointer(parent).is_none());
+            if section_absent {
+                if submitted_as_shown(spec, view, form) {
+                    continue;
+                }
+                start_sections(file, view, spec.pointer());
             }
             overlay_field_except(file, spec, form, pinned_controls, errors);
         }
@@ -1319,6 +1350,192 @@ mod tests {
 
     fn on_disk(fx: &Fixture) -> Value {
         serde_json::from_str(&std::fs::read_to_string(&fx.path).unwrap()).unwrap()
+    }
+
+    /// A config whose `extra` and `link` sections a file may leave out,
+    /// which their defaults then fill. `extra` is left out of the file while
+    /// it is all defaults, and its own default turns `on` on where the
+    /// field's alone would not; `grace` is a newtype, so its schema is a
+    /// `$ref` with the field's default beside it. `link`'s fields have no
+    /// default of their own, and a flag pins `link.port`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct SparseConfig {
+        #[serde(default = "sparse_server")]
+        server: Server,
+        #[serde(default, skip_serializing_if = "Extra::is_default")]
+        extra: Extra,
+        #[serde(default)]
+        link: Link,
+    }
+
+    fn sparse_server() -> Server {
+        Server {
+            port: 11119,
+            discovery_port: None,
+            auth: None,
+            tls: None,
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct Extra {
+        #[serde(default)]
+        grace: Grace,
+        #[serde(default)]
+        on: bool,
+    }
+
+    impl Default for Extra {
+        fn default() -> Self {
+            Self {
+                grace: Grace::default(),
+                on: true,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+    struct Link {
+        host: String,
+        port: u16,
+    }
+
+    impl Extra {
+        fn is_default(&self) -> bool {
+            *self == Self::default()
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct Grace(String);
+
+    impl Default for Grace {
+        fn default() -> Self {
+            Self("10s".to_string())
+        }
+    }
+
+    struct SparseFake;
+
+    impl ConfigurableDriver for SparseFake {
+        type Config = SparseConfig;
+        type Overrides = ();
+        fn normalize(_config: &mut SparseConfig) {}
+        fn validate(_config: &SparseConfig) -> Vec<FieldError> {
+            Vec::new()
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            &[]
+        }
+        fn override_paths(_overrides: &()) -> Vec<String> {
+            vec!["link.port".to_string()]
+        }
+        fn apply_overrides(config: &mut SparseConfig, _overrides: &()) {
+            config.link.port = 4400;
+        }
+    }
+
+    /// The pages of a file holding the `server` section alone, and that file.
+    fn sparse_pages() -> (tempfile::TempDir, PathBuf, SetupPages<SparseFake>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.json");
+        std::fs::write(&path, r#"{"server": {"port": 11119}}"#).unwrap();
+        let mut running: SparseConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        SparseFake::apply_overrides(&mut running, &());
+        let p = SetupPages::<SparseFake>::new("sparse", running, path.clone(), ());
+        (dir, path, p)
+    }
+
+    fn sparse_on_disk(path: &std::path::Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_section_the_file_leaves_out_shows_its_defaults_and_saves() {
+        let (_dir, path, p) = sparse_pages();
+        let page = p.handle(PageScope::Server, get()).await.body;
+        assert!(
+            page.contains(r#"name="extra.grace" value="10s""#),
+            "the field's default shows: {page}"
+        );
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11119"),
+                    ("extra.grace", "20s"),
+                    ("extra.on", "on"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = sparse_on_disk(&path);
+        assert_eq!(
+            disk["extra"],
+            json!({ "grace": "20s", "on": true }),
+            "{disk}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_set_with_the_server_section_left_out_starts_it() {
+        let (_dir, path, p) = sparse_pages();
+        std::fs::write(&path, "{}").unwrap();
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    // As the page shows it, so it starts no section.
+                    ("server.port", "11119"),
+                    ("auth.username", "observatory"),
+                    ("auth.password", "s3cret"),
+                    ("auth.password_repeat", "s3cret"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = sparse_on_disk(&path);
+        assert_eq!(disk["server"]["port"], 11119, "{disk}");
+        assert_eq!(disk["server"]["auth"]["username"], "observatory", "{disk}");
+    }
+
+    #[tokio::test]
+    async fn a_section_left_as_the_page_showed_it_keeps_its_own_default() {
+        // The page draws `extra.on` from the field's default, unchecked,
+        // while the section's own default runs it on: a save of another
+        // field, `extra` left alone, must not turn it off.
+        let (_dir, path, p) = sparse_pages();
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[("server.port", "11120"), ("extra.grace", "10s")]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let disk = sparse_on_disk(&path);
+        assert_eq!(disk["server"]["port"], 11120, "{disk}");
+        let saved: SparseConfig = serde_json::from_value(disk.clone()).unwrap();
+        assert!(saved.extra.on, "the section's own default stays: {disk}");
+    }
+
+    #[tokio::test]
+    async fn a_section_a_change_starts_carries_the_fields_the_page_does_not_send() {
+        // `link.port` is pinned, so the page does not send it, and it has no
+        // default of its own: the section starts from the values the typed
+        // config fills, the file's, not the flag's.
+        let (_dir, path, p) = sparse_pages();
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[("server.port", "11119"), ("link.host", "rig")]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(
+            sparse_on_disk(&path)["link"],
+            json!({ "host": "rig", "port": 0 })
+        );
     }
 
     const DEVICE: PageScope<'static> = PageScope::Device {
