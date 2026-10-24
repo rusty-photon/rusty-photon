@@ -1871,6 +1871,7 @@ mod tests {
             config,
             submitted: None,
             errors: &[],
+            host: None,
         }
     }
 
@@ -2437,6 +2438,7 @@ mod tests {
                 config: &config,
                 submitted: Some(&submitted),
                 errors: &[],
+                host: None,
             })
             .into_string();
         assert!(html.contains(r#"value="Typed""#), "{html}");
@@ -3166,6 +3168,7 @@ mod tests {
                 config: &config,
                 submitted: Some(&submitted),
                 errors: &errors,
+                host: None,
             })
             .into_string();
         assert!(html.contains("filter_names[1] is empty"), "{html}");

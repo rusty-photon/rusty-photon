@@ -178,3 +178,39 @@ dl.facts dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: 
 .banner.confirm .dot { margin-top: 6px; }
 .banner.confirm p { margin: 0 0 6px; }
 .banner.confirm ul { margin: 0 0 8px; padding-left: 18px; }
+
+/* A service's own roster of entries on another server (rp's equipment):
+ * each entry a collapsed row whose summary names it, its address, its
+ * lamp and its credential, opening to its fields. */
+h3.kind { font-size: 14px; margin: 18px 0 8px; color: var(--dim); font-weight: 600; }
+details.entry {
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: var(--panel);
+}
+details.entry > summary {
+    cursor: pointer;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+}
+details.entry[open] > summary { margin-bottom: 12px; }
+details.entry .entry-id { font-family: var(--mono); }
+details.entry .entry-name, details.entry .entry-address, details.entry .entry-credential {
+    color: var(--dim);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+details.entry .entry-address { font-family: var(--mono); font-size: 12px; }
+details.entry .entry-credential { margin-left: auto; }
+details.entry.add > summary { color: var(--accent-a); }
+details.entry .links { font-size: 13px; margin: 0 0 12px; }
+details.entry .remove { margin-top: 8px; }
+.led { width: 9px; height: 9px; border-radius: 999px; flex: none; display: inline-block; }
+.led.on { background: var(--ok); }
+.led.off { background: var(--bad); }
+.led.idle { background: var(--dim); }
+.hint.removed code { font-family: var(--mono); }

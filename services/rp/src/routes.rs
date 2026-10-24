@@ -45,6 +45,8 @@ pub struct AppState {
     pub config: Arc<crate::config::Config>,
     /// The resolved config-file path `PUT /api/config` persists to.
     pub config_path: Arc<std::path::PathBuf>,
+    /// The setup page, `/setup` (rp.md § Setup Page).
+    pub setup: crate::setup::Pages,
 }
 
 /// Build rp's router. `mcp_extra_allowed_hosts` are the `Host`
@@ -81,7 +83,9 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
     // In-Flight Tool Calls), where a gated tool is refused with the
     // `SafetyUnsafe` JSON-RPC error while everything else keeps
     // answering. The REST surface is never gated either — editing
-    // config must stay possible under unsafe skies.
+    // config must stay possible under unsafe skies, on the setup page
+    // as over REST.
+    let setup = crate::setup::router(state.setup.clone());
     Router::new()
         .route("/health", get(health))
         .route("/api/equipment", get(get_equipment))
@@ -96,6 +100,7 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
         .route("/api/images/{document_id}/pixels", get(get_image_pixels))
         .route("/api/events/subscribe", get(subscribe_events))
         .with_state(state)
+        .merge(setup)
 }
 
 async fn health() -> &'static str {
@@ -503,6 +508,7 @@ mod tests {
             image_cache.clone(),
             None,
         );
+        let setup = crate::setup::pages(&config, config_path.clone(), equipment.clone());
         AppState {
             equipment,
             mcp,
@@ -510,6 +516,7 @@ mod tests {
             sse_shutdown: CancellationToken::new(),
             config: Arc::new(config),
             config_path: Arc::new(config_path),
+            setup,
         }
     }
 

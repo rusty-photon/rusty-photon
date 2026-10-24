@@ -95,6 +95,53 @@ pub fn host_without_port(host: &str) -> String {
     split_port(host.trim()).0
 }
 
+/// The host the browser reached a page by: the request's `Host` without its
+/// port.
+#[must_use]
+pub fn browser_host(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(host_without_port)
+}
+
+/// Whether `host` (an IPv6 literal bracketed or not) names this machine by
+/// a loopback spelling: `127.0.0.1`, `::1` or `localhost`.
+#[must_use]
+pub fn is_loopback(host: &str) -> bool {
+    matches!(
+        host.trim_matches(|c| c == '[' || c == ']')
+            .to_ascii_lowercase()
+            .as_str(),
+        "127.0.0.1" | "::1" | "localhost"
+    )
+}
+
+/// The link a page draws to another server's page at `url`, an address the
+/// configuration holds.
+///
+/// On a single-box rig a configuration names its peers by a loopback
+/// address, which a browser on the operator's laptop would follow to
+/// itself. Such a host is replaced by `browser_host`, the host the browser
+/// reached this page by; the scheme, port and path stay `url`'s. Any other
+/// host, or no browser host, leaves `url` as written.
+#[must_use]
+pub fn link_for(url: &str, browser_host: Option<&str>) -> String {
+    let Some(browser_host) = browser_host.filter(|h| !h.is_empty()) else {
+        return url.to_string();
+    };
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let (host, port) = split_port(authority);
+    if !is_loopback(&host) {
+        return url.to_string();
+    }
+    let port = port.map_or_else(String::new, |p| format!(":{p}"));
+    format!("{scheme}://{browser_host}{port}/{path}")
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -190,5 +237,47 @@ mod tests {
             "{err}"
         );
         check(&headers(&[("origin", "http://driver:11119")])).unwrap_err();
+    }
+
+    #[test]
+    fn a_loopback_link_carries_the_browsers_host_and_keeps_the_port() {
+        for loopback in ["127.0.0.1", "localhost", "[::1]", "LOCALHOST"] {
+            let url = format!("https://{loopback}:11119/setup/v1/covercalibrator/0/setup");
+            assert_eq!(
+                link_for(&url, Some("observatory.example")),
+                "https://observatory.example:11119/setup/v1/covercalibrator/0/setup",
+                "{loopback}"
+            );
+        }
+        // No port stays no port.
+        assert_eq!(
+            link_for("http://127.0.0.1/setup", Some("rig")),
+            "http://rig/setup"
+        );
+    }
+
+    #[test]
+    fn any_other_host_is_used_as_written() {
+        let url = "http://focuslynx.lan:4247/setup/v1/focuser/0/setup";
+        assert_eq!(link_for(url, Some("observatory.example")), url);
+        assert_eq!(
+            link_for("http://127.0.0.1:1/setup", None),
+            "http://127.0.0.1:1/setup",
+            "without a browser host there is nothing to substitute"
+        );
+        assert_eq!(link_for("not a url", Some("h")), "not a url");
+    }
+
+    #[test]
+    fn the_browser_host_is_the_host_header_without_its_port() {
+        assert_eq!(browser_host(&headers(&[])), None);
+        assert_eq!(
+            browser_host(&headers(&[("host", "observatory.example:8080")])).as_deref(),
+            Some("observatory.example")
+        );
+        assert_eq!(
+            browser_host(&headers(&[("host", "[::1]:8080")])).as_deref(),
+            Some("[::1]")
+        );
     }
 }

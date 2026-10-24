@@ -289,6 +289,7 @@ mod tests {
             config,
             submitted: None,
             errors: &[],
+            host: None,
         }
     }
 
@@ -390,6 +391,7 @@ mod tests {
             config: &config,
             submitted: Some(&submitted),
             errors: &[],
+            host: None,
         };
         let html = override_fields("aaaa", "focuser", view, None).into_string();
         assert!(
