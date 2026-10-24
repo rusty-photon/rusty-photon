@@ -274,8 +274,8 @@ fn main() -> ServiceResult {
 /// override is in play — and every remaining mode falls back to
 /// defaults with the `--host`/`--port` flags applied, writing nothing.
 ///
-/// Returns the file the config came from, when there is one: the
-/// camera facade's config actions persist there.
+/// Returns the file the config came from, when there is one: the setup
+/// page saves there.
 fn resolve_config(
     command: &Commands,
     config_arg: Option<&std::path::Path>,

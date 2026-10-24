@@ -16,7 +16,6 @@
 //!
 //! - [`client`] - PHD2 client for RPC communication
 //! - [`config`] - Configuration types and loading
-//! - [`config_actions`] - The camera facade's `config.get` / `config.apply` / `config.schema`
 //! - `connection` - Internal connection management (not public)
 //! - [`doctor`] - The read-only `doctor` subcommand (docs/services/doctor.md)
 //! - [`error`] - Error types and Result alias
@@ -26,6 +25,7 @@
 //! - [`rpc`] - JSON RPC 2.0 types
 //! - [`service`] - HTTP service mode (`phd2-guider serve`), the rp-managed guider service,
 //!   and its opt-in ASCOM Alpaca Camera facade
+//! - [`setup`] - The setup page, `/setup`, for the whole config, and the facade's redirect to it
 //! - [`types`] - Common types (Rect, Profile, Equipment)
 //!
 //! ## Example
@@ -75,7 +75,6 @@
 
 pub mod client;
 pub mod config;
-pub mod config_actions;
 pub(crate) mod connection;
 pub mod doctor;
 pub mod error;
@@ -85,6 +84,7 @@ pub mod io;
 pub mod process;
 pub mod rpc;
 pub mod service;
+pub mod setup;
 pub mod types;
 
 // Re-export commonly used types at the crate root for convenience

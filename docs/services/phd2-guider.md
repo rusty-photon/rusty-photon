@@ -64,7 +64,7 @@ services/phd2-guider/src/
 ├── process.rs      # Phd2ProcessManager, get_default_phd2_path
 ├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
 ├── types.rs        # Rect, Profile, Equipment (shared types)
-├── config_actions.rs # config.get/apply/schema for the camera facade
+├── setup.rs        # the setup page (`/setup`) and the facade's redirect to it
 └── service/        # HTTP service mode (`phd2-guider serve`)
     ├── mod.rs      # ServerBuilder, BoundServer
     ├── api.rs      # axum router, wire types, request handlers
@@ -88,7 +88,7 @@ services/phd2-guider/src/
 | `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse`, `RpcErrorObject` |
 | `types` | Common types | `Rect`, `Profile`, `Equipment`, `EquipmentDevice`, `CalibrationData`, `CalibrationTarget`, `GuideAxis`, `CoolerStatus`, `StarImage` |
 | `service` | HTTP service mode and the camera facade | `ServerBuilder`, `BoundServer`, `GuiderOps`, `ServiceError`, `Phd2Camera` |
-| `config_actions` | The facade's config actions | `Phd2GuiderDriver` |
+| `setup` | The setup page and the facade's redirect to it | `Phd2GuiderDriver`, `GuiderSetupLink` |
 
 All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
 
@@ -956,6 +956,10 @@ with PHD2's text. Mutating.
 
 Response: `{ "state": "selected" }`.
 
+#### `GET /setup` / `POST /setup`
+
+The setup page, HTML for a browser: see [Setup page](#setup-page).
+
 #### `GET /health`
 
 `200 {"status": "ok"}` while the TCP connection to PHD2 is
@@ -1052,6 +1056,60 @@ request.
 `bound_addr=<host>:<port>` to stdout (the `bdd-infra::ServiceHandle`
 discovery convention; `port: 0` auto-assigns). Config validation
 failures exit non-zero before binding.
+
+## Setup page
+
+`phd2-guider serve` configures itself on one HTML page, `GET` and `POST`
+`/setup` on the service listener — the one the HTTP API and `/health`
+use, behind the same TLS and Basic Auth. The shared `rusty-photon-setup`
+crate draws and saves it
+([rusty-photon-setup.md](../crates/rusty-photon-setup.md)); why the page
+is here and not on the facade is the
+[driver-setup-pages plan](../plans/driver-setup-pages.md)'s D13. The page
+covers the whole config, the `camera` block included:
+
+- **One page.** `server`, `stop_timeout`, `phd2`, `settling` and
+  `camera` are each a section of fields, and the Security section edits
+  `server.auth`: a username and a password the service hashes. The list
+  of devices is empty, since the guider's own server serves no Alpaca
+  device. The facade's `unique_id` sits under the collapsed Identity
+  disclosure, editable as every driver's id is, as an escape hatch:
+  cleared, the next enabled start mints a new one. The file-only fields,
+  named on the page and edited in the file, are `server.tls`,
+  `phd2.spawn_env` (a map), and the facade listener's `camera.server.tls`
+  and `camera.server.auth`, so the facade's credential is the file's, set
+  by `doctor --fix` or by hand. With no `camera` block in the file, the
+  block's fields show their defaults, and a save that leaves them so
+  writes no block.
+- **A save waits for the restart.** The service has no reload path (the
+  `Restart` disposition): a save is persisted, and its answer names the
+  fields that take effect at the next start and how to restart the
+  service (`sudo systemctl restart rusty-photon-phd2-guider` on Linux,
+  `Restart-Service rusty-photon-phd2-guider` on Windows, `brew services
+  restart rusty-photon-phd2-guider` on macOS); until then the
+  page names the fields still waiting. A moved `server.port` or bind
+  address is named beside the restart text, since nothing answers there
+  until the restart. A guide loop survives the restart, as any restart
+  of this service (see [What serve mode does and does not
+  do](#what-serve-mode-does-and-does-not-do)).
+- **What a save is held to.** The load's rules (the facade's are in
+  [Configuration](#configuration-1)), and, since a saved change is first
+  tried at the next start, startup's check of an enabled facade's
+  `image_dir`: it creates and removes `.phd2-guider-probe` there, inside
+  the service, so it tests the service's own permissions, and a
+  directory that fails it is refused beside its field rather than saved
+  to stop the next start. The page adds rules the load does not have,
+  for values the file parses but the guider cannot work with:
+  `stop_timeout`, `phd2.connection_timeout`, `phd2.command_timeout`,
+  `phd2.reconnect.interval` and `settling.timeout` greater than 0,
+  `settling.pixels` greater than 0, `phd2.host` not empty and
+  `phd2.port` greater than 0. A file that breaks them still loads.
+- **No file, no page.** A `serve` started with `--host` or `--port` and
+  no file at the default path runs on built-in defaults with nowhere to
+  save, and its `/setup` answers `404` saying so.
+
+The camera facade has no page of its own: see [Setup
+paths](#setup-paths).
 
 ## Camera facade (`camera`)
 
@@ -1373,7 +1431,7 @@ it for a guiding train's training run
 "Settled in C7").
 
 The lease is three ASCOM `Action`s on the facade's Camera.
-`SupportedActions` lists them before the config Actions, so a client
+`SupportedActions` lists them and nothing else, so a client
 knows a camera is the facade, with a phd2-guider that has the lease, when
 `rustyphoton:sweep-lease-acquire` is on that list. Each takes its
 `Parameters` as a JSON object and answers one:
@@ -1571,7 +1629,7 @@ The ASCOM errors are listed under [Errors](#errors).
 | Field | Default | Rule |
 |---|---|---|
 | `enabled` | `false` | With `false` the facade does not exist: no listener, no marker, and the remaining fields are not required |
-| `unique_id` | minted | The device's ASCOM `UniqueID`, minted into the config file on the first start with `enabled: true` and never changed after. Not derived from PHD2's profile or camera, which change when the operator reconfigures PHD2 |
+| `unique_id` | minted | The device's ASCOM `UniqueID`, minted into the config file on the first start with `enabled: true` and never changed after by the service (the setup page's Identity disclosure is the operator's escape hatch). Not derived from PHD2's profile or camera, which change when the operator reconfigures PHD2 |
 | `pixel_size_x_um` / `pixel_size_y_um` | — | **Required when enabled.** Finite and greater than 0. Entered from the guide camera's datasheet. They are two fields because a sensor's pixels need not be square, and rp reads each axis separately. PHD2 does not report them in a usable form: its pixel scale needs the focal length |
 | `image_dir` | — | **Required when enabled.** An absolute, UTF-8 path to an existing directory that this service can create and remove files in. Startup checks it by creating and removing `.phd2-guider-probe` there |
 | `capture_grace` | `"10s"` | Greater than 0 and at most `"60s"`. It covers PHD2's download and save of one frame; a grace longer than that is a misconfiguration |
@@ -1589,23 +1647,18 @@ broken block stops the service with a message naming the field.
 `image_dir`'s directory check, and a facade listener that cannot bind,
 fail startup only when `enabled` is true.
 
-### Config actions
+### Setup paths
 
-The facade device answers the shared `config.get`, `config.apply` and
-`config.schema` Actions ([config-actions.md](config-actions.md)) over
-phd2-guider's whole config. The service has no reload path, so the
-disposition is **`Restart`**: `config.apply` persists the change and
-reports it in `restart_required[]`. It takes effect at the next start,
-as `rp`'s config does. `server.port`, `camera.enabled`,
-`camera.server.port` and `camera.server.bind_address` are read-only,
-because changing them would cut the client off the endpoint it is editing
-through. `camera.unique_id` is locked. Since an applied change is tried
-only at the next start, `config.apply` also runs startup's check of an
-enabled facade's `image_dir`, creating and removing `.phd2-guider-probe`
-there, and refuses a directory that fails it rather than persist a
-config that would stop the service. It runs inside the service, so it
-tests the service's own permissions. The two auth password hashes
-(`server.auth` and `camera.server.auth`) are redacted secrets.
+The block is edited on the guider's [setup page](#setup-page). The
+facade's listener is loopback-only and exists only while `camera.enabled`
+is true, so a page there would be out of the operator's reach. Both of
+the facade's setup paths, `/setup` and `/setup/v1/camera/0/setup`, answer
+`303 See Other` to the guider's `/setup`, for `GET` and `POST` alike: at
+the host the browser used when the service listens on every interface,
+else at the one address it listens on. That is right for the one place
+the facade is reachable from, the host. The facade's Actions carry no
+configuration: any but the sweep lease's three is `ActionNotImplemented`
+(`0x40C`).
 
 ### Loopback only
 
@@ -1784,6 +1837,12 @@ sweep lease is held return `camera_busy` (409), see
 - [x] The lease against a live PHD2 on `pier1`, with PHD2's Simulator camera, and ConformU
 - [x] A lease held through a sweep on `pier1` with the QHY5III715C (C7d's hardware check, recorded in [focus-model.md](focus-model.md) § Training runs on a guiding train)
 
+### Phase 11: The setup page (driver-setup-pages plan P3)
+- [x] `/setup` on the service listener over the whole config, the `camera` block included; the facade's config Actions removed
+- [x] The facade's two setup paths answer `303` to the guider's page
+- [x] The page's own rules (zero timeouts and intervals, the settle threshold, the PHD2 address) and the `image_dir` check on save
+- [x] BDD `setup_pages.feature`
+
 ## Dependencies
 
 ```toml
@@ -1848,8 +1907,10 @@ services/phd2-guider/tests/
 ### BDD (HTTP service contract)
 
 `tests/features/http_api.feature` is the canonical contract for the
-serve mode — `rp`'s guider client (`crates/rp-guider`) is written
-against it. Each scenario spawns `mock_phd2` (with per-scenario env)
+serve mode's HTTP API — `rp`'s guider client (`crates/rp-guider`) is
+written against it — and `tests/features/setup_pages.feature` for its
+setup page, on the shared steps in `bdd-infra`'s `setup_pages` module.
+Each scenario spawns `mock_phd2` (with per-scenario env)
 and then `phd2-guider serve` pointed at it via
 `bdd_infra::ServiceHandle`, mirroring how `plate-solver`'s BDD drives
 `mock_astap`.

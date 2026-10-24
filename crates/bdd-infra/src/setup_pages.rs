@@ -738,6 +738,43 @@ macro_rules! setup_pages_steps {
             );
         }
 
+        #[::cucumber::then(
+            expr = "the page reports the configuration was saved and {string} waits for the restart"
+        )]
+        fn setup_pages_saved_restart(world: &mut $world, field: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(200), "{}", state.last_body);
+            assert!(
+                $crate::setup_pages::dom::text_contains(&state.last_body, "#saved-restart", &field),
+                "no restart banner naming {field:?}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then(expr = "the page names {string} as waiting for the restart")]
+        fn setup_pages_pending_restart(world: &mut $world, field: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert!(
+                $crate::setup_pages::dom::text_contains(&state.last_body, "#pending-restart", &field),
+                "no waiting banner naming {field:?}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::then("the page names nothing as waiting for the restart")]
+        fn setup_pages_nothing_pending(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(200), "{}", state.last_body);
+            assert!(
+                !$crate::setup_pages::dom::matches(&state.last_body, "#pending-restart"),
+                "a waiting banner:\n{}",
+                state.last_body
+            );
+        }
+
         #[::cucumber::then(regex = r#"^the configuration file holds (.+) at "([^"]+)"$"#)]
         fn setup_pages_file_holds(world: &mut $world, expected: String, pointer: String) {
             use $crate::setup_pages::SetupPagesWorld as _;

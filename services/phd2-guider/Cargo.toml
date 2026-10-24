@@ -32,10 +32,11 @@ rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 async-trait = { workspace = true }
 # The opt-in ASCOM Alpaca Camera facade (docs/services/phd2-guider.md
-# § "Camera facade") and its config actions.
+# § "Camera facade").
 ascom-alpaca = { workspace = true, features = ["server", "camera"] }
 rusty-photon-camera-core = { workspace = true }
-rusty-photon-driver = { workspace = true }
+# The setup page (docs/services/phd2-guider.md § "Setup page").
+rusty-photon-setup = { workspace = true }
 schemars = { workspace = true }
 ndarray = { workspace = true }
 uuid = { workspace = true }
@@ -128,7 +129,7 @@ mockall = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
 cucumber = { workspace = true }
-bdd-infra = { workspace = true, features = ["tls-auth"] }
+bdd-infra = { workspace = true, features = ["tls-auth", "setup-pages"] }
 reqwest = { workspace = true }
 # The camera-facade BDD steps talk to the facade as an Alpaca client.
 ascom-alpaca = { workspace = true, features = ["client", "camera"] }

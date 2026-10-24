@@ -15,15 +15,14 @@ use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use ndarray::Array2;
 use rusty_photon_camera_core::Roi;
-use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
 use crate::client::Phd2Client;
-use crate::config_actions::Phd2GuiderDriver;
 use crate::error::Phd2Error;
+use crate::setup::GuiderSetupLink;
 
 use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, MAX_EXPOSURE};
 use super::guider::LOCKED_RPC_TIMEOUT;
@@ -161,9 +160,8 @@ struct Aborted {
 pub struct Phd2Camera {
     #[debug(skip)]
     inner: Arc<Inner>,
-    /// Skipped from `Debug`: `ConfigActionCtx` has none.
-    #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<Phd2GuiderDriver>>,
+    /// Where the device's setup page sends a browser.
+    setup_link: Option<GuiderSetupLink>,
 }
 
 impl Phd2Camera {
@@ -196,15 +194,15 @@ impl Phd2Camera {
                 lifecycle: tokio::sync::Mutex::new(()),
                 exposure_ended: tokio::sync::Notify::new(),
             }),
-            config_ctx: None,
+            setup_link: None,
         }
     }
 
-    /// Attach the config actions (`config.get` / `config.apply` /
-    /// `config.schema`).
+    /// Send the device's setup page to the guider's own `/setup`, where the
+    /// whole config, this block included, is edited.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<Phd2GuiderDriver>) -> Self {
-        self.config_ctx = Some(ctx);
+    pub const fn with_setup_link(mut self, link: GuiderSetupLink) -> Self {
+        self.setup_link = Some(link);
         self
     }
 
@@ -722,27 +720,42 @@ impl Device for Phd2Camera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// The sweep lease's three Actions, then the config Actions.
+    /// The sweep lease's three Actions.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        let mut names: Vec<String> = lease::ACTIONS.iter().map(ToString::to_string).collect();
-        names.extend(rusty_photon_driver::supported_actions(&self.config_ctx));
-        Ok(names)
+        Ok(lease::ACTIONS.iter().map(ToString::to_string).collect())
     }
 
-    /// A lease Action, or else a config Action. An unknown name is
-    /// `ActionNotImplemented`, from the config dispatch.
+    /// A lease Action. Any other name is `ActionNotImplemented`, the
+    /// specification's answer to an unknown action, not the generic
+    /// `NotImplemented` the crate defaults to: the configuration is edited
+    /// on the guider's setup page.
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
         match LeaseAction::from_name(&action) {
             Some(lease_action) => self.lease_action(lease_action, &parameters).await,
-            None => {
-                rusty_photon_driver::dispatch::<Phd2GuiderDriver>(
-                    &self.config_ctx,
-                    action,
-                    parameters,
-                )
-                .await
-            }
+            None => Err(ASCOMError::new(
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                format!("the camera facade has no action {action:?}"),
+            )),
         }
+    }
+
+    /// The device's setup page, `/setup/v1/camera/0/setup`: a redirect to
+    /// the guider's own `/setup`, for `GET` and `POST`. A device built
+    /// without the link (a focused unit test) has none.
+    fn setup_request(
+        &self,
+        request: SetupRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
+        let response = self.setup_link.map_or_else(
+            || {
+                SetupResponse::text(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "This device was built without its setup page",
+                )
+            },
+            |link| link.redirect(&request),
+        );
+        Box::pin(async move { response })
     }
 }
 
@@ -1822,6 +1835,62 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED, "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_config_actions_are_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        for name in ["config.get", "config.apply", "config.schema"] {
+            let err = camera
+                .action(name.to_string(), String::new())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                "{name}: {err}"
+            );
+        }
+    }
+
+    fn setup_get() -> SetupRequest {
+        let mut headers = axum::http::HeaderMap::new();
+        _ = headers.insert(
+            axum::http::header::HOST,
+            axum::http::HeaderValue::from_static("127.0.0.1:11128"),
+        );
+        SetupRequest {
+            method: axum::http::Method::GET,
+            headers,
+            query: Vec::new(),
+            form: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_device_page_sends_the_browser_to_the_guiders_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path()).with_setup_link(GuiderSetupLink {
+            addr: "0.0.0.0:11130".parse().unwrap(),
+            https: false,
+        });
+        let response = camera.setup_request(setup_get()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "http://127.0.0.1:11130/setup"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_without_the_link_has_no_setup_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let response = test_camera(dir.path()).setup_request(setup_get()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[test]

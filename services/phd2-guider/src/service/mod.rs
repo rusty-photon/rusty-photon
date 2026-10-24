@@ -22,11 +22,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_setup::SetupPages;
 use tokio::net::TcpListener;
 
 use crate::client::Phd2Client;
 use crate::config::Config;
+use crate::setup::{self as pages, GuiderSetupLink, Phd2GuiderDriver};
 
 use self::capture::CaptureEngine;
 
@@ -58,9 +59,8 @@ impl ServerBuilder {
         self
     }
 
-    /// The file the config came from. The camera facade's
-    /// `config.apply` persists there; without it the facade serves no
-    /// config actions.
+    /// The file the config came from, which the setup page saves to;
+    /// without it the guider has no setup page.
     #[must_use]
     pub fn with_config_path(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
@@ -108,11 +108,21 @@ impl ServerBuilder {
         // PHD2 connect-retry loop.
         let listener = TcpListener::bind(config.server.socket_addr()).await?;
         let local_addr = listener.local_addr()?;
+        let setup_link = GuiderSetupLink {
+            addr: local_addr,
+            https: config.server.tls.is_some(),
+        };
         let camera = if config.camera.enabled {
-            Some(bind_camera(&config, self.config_path, &client, &ops).await?)
+            Some(bind_camera(&config, setup_link, &client, &ops).await?)
         } else {
             None
         };
+        let pages = self.config_path.map(|path| {
+            Arc::new(
+                SetupPages::<Phd2GuiderDriver>::new("phd2-guider", config.clone(), path, ())
+                    .with_https(setup_link.https),
+            )
+        });
 
         ops.spawn_event_pump();
         if let Some(camera) = &camera {
@@ -124,7 +134,7 @@ impl ServerBuilder {
         // client's auto-reconnect owns recovery after that.
         ops.spawn_connect_retry(config.phd2.reconnect.interval);
 
-        let router = api::build_router(ops);
+        let router = api::build_router(ops).merge(pages::router(pages));
 
         // Opt-in HTTP Basic Auth (shared server config `auth` block).
         let router = match &config.server.auth {
@@ -162,10 +172,11 @@ fn warn_auth_without_tls(no_tls: bool) {
 }
 
 /// Check the facade's directory, build its device and bind its
-/// loopback listener.
+/// loopback listener. Its setup paths send a browser to the guider's
+/// page, `setup_link`.
 async fn bind_camera(
     config: &Config,
-    config_path: Option<PathBuf>,
+    setup_link: GuiderSetupLink,
     client: &Arc<Phd2Client>,
     ops: &Arc<GuiderOps>,
 ) -> Result<BoundCamera, std::io::Error> {
@@ -216,21 +227,13 @@ async fn bind_camera(
             x_um: pixel_x.um(),
             y_um: pixel_y.um(),
         },
-    );
-    let device = match config_path {
-        Some(path) => device.with_config_actions(ConfigActionCtx {
-            effective: config.clone(),
-            path,
-            overrides: (),
-            // Never fired: the disposition is `Restart`.
-            reload: rusty_photon_service_lifecycle::ReloadSignal::new(),
-        }),
-        None => device,
-    };
+    )
+    .with_setup_link(setup_link);
 
     let mut server = ascom_alpaca::Server::new(CargoServerInfo!());
     let addr = camera_config.server.socket_addr();
     server.listen_addr = addr;
+    server.setup = Some(Arc::new(setup_link));
     server.devices.register(device);
     let router = axum::Router::new().fallback_service(server.into_service());
     let router = match &camera_config.server.auth {
@@ -433,6 +436,56 @@ mod tests {
             .err()
             .expect("the build succeeded on a missing image_dir");
         assert!(err.to_string().contains("camera.image_dir"), "{err}");
+    }
+
+    /// `GET` `path` on a served `bound`, then stop it: the status and body.
+    async fn get_once(bound: BoundServer, path: &str) -> (u16, String) {
+        let url = format!("http://{}{path}", bound.listen_addr());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let served = tokio::spawn(bound.start(async {
+            let _ = stopped.await;
+        }));
+        let response = reqwest::get(&url).await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap();
+        stop.send(()).unwrap();
+        served.await.unwrap().unwrap();
+        (status, body)
+    }
+
+    fn plain_config() -> Config {
+        serde_json::from_value(serde_json::json!({
+            "server": { "port": 0, "bind_address": "127.0.0.1" }
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_service_listener_serves_the_setup_page_of_its_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phd2-guider.json");
+        std::fs::write(&path, serde_json::to_string(&plain_config()).unwrap()).unwrap();
+        let bound = ServerBuilder::new()
+            .with_config(plain_config())
+            .with_config_path(path)
+            .build()
+            .await
+            .unwrap();
+        let (status, body) = get_once(bound, "/setup").await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("<h1>phd2-guider setup</h1>"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_guider_without_a_config_file_has_no_setup_page() {
+        let bound = ServerBuilder::new()
+            .with_config(plain_config())
+            .build()
+            .await
+            .unwrap();
+        let (status, body) = get_once(bound, "/setup").await;
+        assert_eq!(status, 404, "{body}");
+        assert!(body.contains("so it has no setup page"), "{body}");
     }
 
     #[tokio::test]

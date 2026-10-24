@@ -144,6 +144,8 @@ button.primary:hover { filter: brightness(1.08); }
 .banner.warn .dot { background: var(--warn); }
 .banner.error { border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .08); }
 .banner.error .dot { background: var(--bad); }
+.restart-how { color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+.restart-how code { font-family: var(--mono); }
 .banner .mono { font-family: var(--mono); color: var(--dim); }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }

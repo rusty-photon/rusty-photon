@@ -424,29 +424,6 @@ async fn fetch_image_bytes(world: &mut GuiderWorld) {
     world.image_bytes = Some(body.to_vec());
 }
 
-async fn config_action(world: &mut GuiderWorld, action: &str, parameters: String) {
-    let camera = facade(world).await;
-    let reply = camera
-        .action(action.to_string(), parameters)
-        .await
-        .unwrap_or_else(|e| panic!("{action} failed: {e}"));
-    world.config_action_reply =
-        Some(serde_json::from_str(&reply).expect("config action reply is JSON"));
-}
-
-#[when("the client reads the facade's config schema")]
-async fn read_schema(world: &mut GuiderWorld) {
-    config_action(world, "config.schema", String::new()).await;
-}
-
-#[when(expr = "the client applies the current config with camera.capture_grace set to {string}")]
-async fn apply_grace(world: &mut GuiderWorld, grace: String) {
-    config_action(world, "config.get", String::new()).await;
-    let mut config = world.config_action_reply.take().unwrap()["config"].clone();
-    config["camera"]["capture_grace"] = grace.into();
-    config_action(world, "config.apply", config.to_string()).await;
-}
-
 // ---------------------------------------------------------------------------
 // Thens
 // ---------------------------------------------------------------------------
@@ -727,48 +704,6 @@ async fn unique_id_matches(world: &mut GuiderWorld) {
         camera.unique_id(),
         config["camera"]["unique_id"].as_str().unwrap()
     );
-}
-
-fn reply_list(world: &GuiderWorld, field: &str) -> Vec<String> {
-    world
-        .config_action_reply
-        .as_ref()
-        .expect("no config action reply")[field]
-        .as_array()
-        .unwrap_or_else(|| panic!("no {field} in the reply"))
-        .iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect()
-}
-
-#[then(expr = "the read-only fields should include {string}")]
-fn read_only_includes(world: &mut GuiderWorld, path: String) {
-    let fields = reply_list(world, "read_only_fields");
-    assert!(fields.contains(&path), "{path} not in {fields:?}");
-}
-
-#[then(expr = "the locked fields should include {string}")]
-fn locked_includes(world: &mut GuiderWorld, path: String) {
-    let fields = reply_list(world, "locked_fields");
-    assert!(fields.contains(&path), "{path} not in {fields:?}");
-}
-
-#[then(expr = "the apply status should be {string}")]
-fn apply_status(world: &mut GuiderWorld, status: String) {
-    let reply = world.config_action_reply.as_ref().expect("no apply reply");
-    assert_eq!(reply["status"], status, "{reply}");
-}
-
-#[then(expr = "the apply should list {string} as needing a restart")]
-fn apply_restart(world: &mut GuiderWorld, path: String) {
-    let fields = reply_list(world, "restart_required");
-    assert!(fields.contains(&path), "{path} not in {fields:?}");
-}
-
-#[then(expr = "the config file should hold camera.capture_grace {string}")]
-fn file_holds_grace(world: &mut GuiderWorld, grace: String) {
-    let config = config_file(world);
-    assert_eq!(config["camera"]["capture_grace"], grace, "{config}");
 }
 
 #[then(expr = "the doctor report should fail mentioning {string}")]
