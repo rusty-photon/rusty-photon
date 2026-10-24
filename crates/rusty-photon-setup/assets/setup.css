@@ -98,7 +98,9 @@ input:disabled { color: var(--dim); background: var(--panel); cursor: not-allowe
 .checkbox-group { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px; }
 
 /* A tagged enum: one radio per variant; only the chosen variant's fields
- * show. Pure CSS, the same `:has()` the night-vision toggle relies on. */
+ * show, by the same `:has()` the night-vision toggle relies on. Hiding is
+ * the stylesheet's; switching the hidden fieldsets off is the group's
+ * script's (render.rs). */
 .variants .variant { margin-bottom: 10px; }
 .variants .variant .variant-fields { display: none; margin: 10px 0 0 24px; }
 .variants .variant:has(> .choice input:checked) .variant-fields { display: block; }
@@ -148,8 +150,8 @@ button.primary:hover { filter: brightness(1.08); }
 
 /* A driver's own section (docs/crates/rusty-photon-setup.md, "A driver's
  * own part"): a table of rows, a pair of radios switching between two modes
- * whose other mode's columns hide — pure CSS, as the tagged enum's — and a
- * list of facts about a device the page only shows. */
+ * whose other mode's columns hide — pure CSS, as the tagged enum's hiding
+ * is — and a list of facts about a device the page only shows. */
 table.rows { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 14px; }
 table.rows th {
   text-align: left; padding: 6px 8px;
