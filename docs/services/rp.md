@@ -1680,8 +1680,9 @@ hours, `dec` is degrees. See
 
 `add_target`, `get_target`, `list_targets`, `update_target`,
 `delete_target`, `set_goals` — CRUD over the plan-data store where
-targets now live. See [Target Store](#target-store) for the full
-contract.
+targets now live — and `get_target_context`, the read of what a target
+is checked against and inherits from the rig's config. See
+[Target Store](#target-store) for the full contract.
 
 **Session**
 
@@ -6555,6 +6556,7 @@ Document).
 | `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` / `grading` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling` and `grading`, when supplied, each replace the whole overrides object rather than merging field-wise; an explicit `null` on `grading` clears the override back to inherit-`default_grading`. Re-grading is free — thresholds are applied at read time, so tightening one immediately re-partitions `good`/`total` with nothing on disk renamed or moved. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (see [Position angle](#position-angle)) |
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
+| `get_target_context` | — | filters, trains: [{train_id, purpose, default_position_angle_degrees}] | What a target is checked against and inherits, read from the config and touching no device and not the store: `filters` is the filter roster `add_target` and `set_goals` validate goal filters against, each name in `equipment.filter_wheels[].filters` once, in config order (empty when no wheel names its filters, and then any filter is accepted); `trains` lists every optical train with its `default_position_angle_degrees` (null when unset), the angle a target without its own inherits on that train ([Position angle](#position-angle)). The ui-htmx targets inbox reads it for its stale-filter badge and its position-angle hint |
 
 The `target` objects these tools return are `Target`'s **derived** serde
 serialization — there is no separate hand-maintained response shape. That
@@ -8268,7 +8270,8 @@ services/rp/src/
       targets.rs        Target CRUD tools (add_target, get_target,
                           list_targets, update_target, delete_target,
                           set_goals) over crates/rp-targets'
-                          TargetStore (§ Target Store).
+                          TargetStore (§ Target Store), and
+                          get_target_context.
     # Planned follow-up: distribute the centralized tests.rs into
     # per-category `#[cfg(test)] mod tests` blocks inside each
     # built_in/<category>.rs (matching the imaging/ test-colocation

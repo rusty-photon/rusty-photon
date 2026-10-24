@@ -4003,6 +4003,75 @@ async fn calibrator_tools_name_an_unknown_train_and_a_train_without_a_calibrator
 }
 
 // -----------------------------------------------------------------------
+// get_target_context
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_target_context_names_each_filter_once_and_every_trains_default_angle() {
+    use super::built_in::targets::GetTargetContextParams;
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "wide-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "optical_trains": [
+            {"id": "main", "purpose": "imaging", "default_position_angle_degrees": 254.0,
+             "devices": ["cam"]},
+            {"id": "wide", "devices": ["wide-cam"]}
+        ]
+    }))
+    .unwrap();
+    let trains = crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap();
+    // Two wheels naming "Red" both: the roster names it once.
+    let mut registry = filter_wheel_registry(Arc::new(MockFilterWheel::default()));
+    registry
+        .filter_wheels
+        .push(crate::equipment::FilterWheelEntry {
+            id: "fw2".to_string(),
+            config: crate::config::FilterWheelConfig {
+                id: "fw2".to_string(),
+                alpaca_url: "http://localhost:1".to_string(),
+                device_number: 1,
+                unique_id: None,
+                filters: vec!["Red".into(), "Ha".into()],
+                auth: None,
+            },
+            session: crate::equipment::DeviceSession::connected(Arc::new(
+                MockFilterWheel::default(),
+            )),
+            slot: crate::equipment::DeviceSlot::default(),
+        });
+    let handler = test_handler(registry).with_trains(trains);
+
+    let json = success_json(
+        handler
+            .get_target_context(Parameters(GetTargetContextParams {}))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json["filters"], serde_json::json!(["Lum", "Red", "Ha"]));
+    assert_eq!(
+        json["trains"],
+        serde_json::json!([
+            {"train_id": "main", "purpose": "imaging", "default_position_angle_degrees": 254.0},
+            {"train_id": "wide", "purpose": "imaging", "default_position_angle_degrees": null}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn get_target_context_without_wheels_or_trains_is_empty() {
+    use super::built_in::targets::GetTargetContextParams;
+    let json = success_json(
+        test_handler(empty_registry())
+            .get_target_context(Parameters(GetTargetContextParams {}))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json, serde_json::json!({"filters": [], "trains": []}));
+}
+
+// -----------------------------------------------------------------------
 // get_train_info
 // -----------------------------------------------------------------------
 

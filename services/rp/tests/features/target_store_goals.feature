@@ -5,7 +5,18 @@ Feature: Target acquisition goals and filter-roster validation (P1)
   goals are rp-owned policy, not bridge/UI config). Every goal's
   `filter` is validated against the connected rig's configured filter
   roster at add/set time, so a plan referencing a filter the rig lacks
-  fails at add, not mid-session. rp.md § Target Store.
+  fails at add, not mid-session. `get_target_context` reads that roster
+  back, with each optical train's default position angle, for a client
+  that shows them beside a target (the ui-htmx targets inbox).
+  rp.md § Target Store.
+
+  Scenario: get_target_context names each configured filter once and each train's default angle
+    Given rp is running with the filter wheels "Luminance, Red" and "Red, Ha" and the imaging train "main" at default position angle 254.0
+    And an MCP client connected to rp
+    When the MCP client calls "get_target_context"
+    Then the tool call should succeed
+    And the target context names the filters "Luminance, Red, Ha"
+    And the target context gives the train "main" the default position angle 254.0
 
   Scenario: set_goals replaces the goal set atomically
     Given rp is running with a target store and filter roster "Luminance, Red, Green, Blue"

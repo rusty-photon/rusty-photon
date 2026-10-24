@@ -145,6 +145,7 @@ pub const UNGATED: &[&str] = &[
     "update_target",
     "delete_target",
     "set_goals",
+    "get_target_context",
     // optical trains
     "get_train_info",
     "get_refocus_plan",

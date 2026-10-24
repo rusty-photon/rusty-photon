@@ -2,6 +2,9 @@
 //! `add_target` / `get_target` / `list_targets` / `update_target` /
 //! `delete_target` / `set_goals`, backed by [`rp_targets::TargetStore`].
 //!
+//! `get_target_context` reads what a target is checked against and
+//! inherits from the rig's config.
+//!
 //! The store is the sole source of planner targets ([`super::planner`]'s
 //! `get_next_target` / `record_exposure` / `get_session_progress` read
 //! its active rows); its settings live under the `target_store` config
@@ -16,6 +19,7 @@ use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::debug;
 
 use rp_targets::{
     AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore, WriteStamp, OPERATOR_WRITER,
@@ -142,6 +146,9 @@ pub struct ListTargetsParams {
     #[serde(default)]
     pub active_only: Option<bool>,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTargetContextParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateTargetParams {
@@ -471,6 +478,47 @@ impl McpHandler {
             items.push(v);
         }
         Ok(tool_success!({ "targets": items }))
+    }
+
+    #[tool(
+        description = "What a target is checked against and inherits from the rig's \
+                       config, without touching any device or the store. filters: \
+                       the filter roster add_target and set_goals validate goal \
+                       filters against, each name in equipment.filter_wheels[].filters \
+                       once, in config order (empty when no wheel names its filters, \
+                       and then any filter is accepted). trains: every optical \
+                       train's train_id, purpose and default_position_angle_degrees \
+                       (null when unset), the angle get_next_target gives a target \
+                       without its own on that train."
+    )]
+    pub(crate) async fn get_target_context(
+        &self,
+        Parameters(_params): Parameters<GetTargetContextParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let mut filters: Vec<String> = Vec::new();
+        for name in super::plan_validation::filter_roster(&self.equipment) {
+            if !filters.contains(&name) {
+                filters.push(name);
+            }
+        }
+        let trains: Vec<Value> = self
+            .trains
+            .trains()
+            .iter()
+            .map(|train| {
+                json!({
+                    "train_id": train.id,
+                    "purpose": train.purpose,
+                    "default_position_angle_degrees": train.default_position_angle_degrees,
+                })
+            })
+            .collect();
+        debug!(
+            filters = filters.len(),
+            trains = trains.len(),
+            "described the target context"
+        );
+        Ok(tool_success!({ "filters": filters, "trains": trains }))
     }
 
     #[tool(description = "Edit a target's fields in place. Does not touch \
