@@ -16,6 +16,7 @@ use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use maud::{html, Markup};
+use rusty_photon_setup::origin::{browser_host, link_for};
 use serde_json::Value;
 use strum::VariantArray;
 
@@ -37,61 +38,8 @@ struct RosterRow {
     connected: Option<bool>,
     tier: Tier,
     /// The device's own setup page, for the setup-page tier, with its host
-    /// following [`setup_link_for`].
+    /// following [`link_for`].
     setup_link: Option<String>,
-}
-
-/// The link the page renders to a device's setup page: the probe's URL with
-/// its host substituted when it is a loopback address (`127.0.0.1`, `::1`,
-/// `localhost`) — on a single-box rig the roster names the driver by
-/// loopback, and a browser on the operator's laptop would follow that to
-/// itself. The substitute is `browser_host`, the host the browser reached
-/// the BFF by (its `Host` header without the port); the scheme and port stay
-/// the entry's. Any other host is used as written.
-fn setup_link_for(url: &str, browser_host: Option<&str>) -> String {
-    let Some(browser_host) = browser_host.filter(|h| !h.is_empty()) else {
-        return url.to_string();
-    };
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = split_authority(authority);
-    let loopback = matches!(
-        host.trim_matches(|c| c == '[' || c == ']')
-            .to_ascii_lowercase()
-            .as_str(),
-        "127.0.0.1" | "::1" | "localhost"
-    );
-    if !loopback {
-        return url.to_string();
-    }
-    let port = port.map_or_else(String::new, |p| format!(":{p}"));
-    format!("{scheme}://{browser_host}{port}/{path}")
-}
-
-/// Split `host[:port]`, bracketed IPv6 literals included.
-fn split_authority(authority: &str) -> (&str, Option<&str>) {
-    if let Some(end) = authority
-        .strip_prefix('[')
-        .and_then(|_| authority.find(']'))
-    {
-        let (host, after) = authority.split_at(end.saturating_add(1));
-        return (host, after.strip_prefix(':'));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => (host, Some(port)),
-        _ => (authority, None),
-    }
-}
-
-/// The host the browser reached the BFF by: the request's `Host` header
-/// without its port.
-fn browser_host(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(rusty_photon_setup::origin::host_without_port)
 }
 
 /// The outcome banner over the roster state.
@@ -178,7 +126,7 @@ async fn probe_all(rp: &RpState, entries: &[RosterEntry]) -> Vec<Tier> {
 
 /// Fetch rp's config + live status, join, probe, and render the roster state.
 /// `browser_host` is the host the browser reached the BFF by, for the
-/// setup-page links ([`setup_link_for`]).
+/// setup-page links ([`link_for`]).
 async fn roster_state(
     rp: &RpState,
     banner: Option<EquipBanner>,
@@ -201,7 +149,7 @@ async fn roster_state(
             connected: connected_of(&status, &entry),
             entry,
             setup_link: match &tier {
-                Tier::SetupPage(url) => Some(setup_link_for(url, browser_host)),
+                Tier::SetupPage(url) => Some(link_for(url, browser_host)),
                 _ => None,
             },
             tier,
@@ -960,54 +908,6 @@ mod tests {
                 "mount": null
             }
         })
-    }
-
-    #[test]
-    fn a_loopback_setup_link_carries_the_browsers_host_and_keeps_the_port() {
-        for loopback in ["127.0.0.1", "localhost", "[::1]", "LOCALHOST"] {
-            let url = format!("https://{loopback}:11119/setup/v1/covercalibrator/0/setup");
-            assert_eq!(
-                setup_link_for(&url, Some("observatory.example")),
-                "https://observatory.example:11119/setup/v1/covercalibrator/0/setup",
-                "{loopback}"
-            );
-        }
-        // No port stays no port.
-        assert_eq!(
-            setup_link_for("http://127.0.0.1/setup", Some("rig")),
-            "http://rig/setup"
-        );
-    }
-
-    #[test]
-    fn any_other_host_is_used_as_written() {
-        let url = "http://focuslynx.lan:4247/setup/v1/focuser/0/setup";
-        assert_eq!(setup_link_for(url, Some("observatory.example")), url);
-        assert_eq!(
-            setup_link_for("http://127.0.0.1:1/setup", None),
-            "http://127.0.0.1:1/setup",
-            "without a browser host there is nothing to substitute"
-        );
-        assert_eq!(setup_link_for("not a url", Some("h")), "not a url");
-    }
-
-    #[test]
-    fn the_browser_host_is_the_host_header_without_its_port() {
-        let mut headers = HeaderMap::new();
-        assert_eq!(browser_host(&headers), None);
-        _ = headers.insert(
-            axum::http::header::HOST,
-            HeaderValue::from_static("observatory.example:8080"),
-        );
-        assert_eq!(
-            browser_host(&headers).as_deref(),
-            Some("observatory.example")
-        );
-        _ = headers.insert(
-            axum::http::header::HOST,
-            HeaderValue::from_static("[::1]:8080"),
-        );
-        assert_eq!(browser_host(&headers).as_deref(), Some("[::1]"));
     }
 
     fn state_with(stub: Arc<RpStub>, api: MockRpApi, probe_http: MockProbeHttp) -> AppState {

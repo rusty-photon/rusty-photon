@@ -324,9 +324,15 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             Some(pages) => pages.sections(scope, request.method == Method::POST).await,
             None => Vec::new(),
         };
+        let host = request
+            .headers
+            .get(HOST)
+            .and_then(|v| v.to_str().ok())
+            .map(origin::host_without_port);
         let drawn = Drawn {
             custom: &custom,
             confirm: None,
+            host: host.as_deref(),
         };
         match request.method {
             Method::GET => {
@@ -423,6 +429,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             config: shown,
             submitted,
             errors,
+            host: drawn.host,
         };
         let custom = html! { @for section in drawn.custom { (section.render(view)) } };
         let security_errors = Self::security_errors(errors, submitted, drawn.confirm.is_some());
@@ -1062,6 +1069,8 @@ impl<D: ConfigurableDriver> SetupPages<D> {
 struct Drawn<'a> {
     custom: &'a [Box<dyn CustomSection>],
     confirm: Option<&'a Confirm>,
+    /// The host the browser reached the page by, for the sections' links.
+    host: Option<&'a str>,
 }
 
 /// Which page, with what it needs to render.
@@ -2735,12 +2744,17 @@ mod tests {
         }
     }
 
-    /// A device page that only shows.
+    /// A device page that only shows, naming the host it was reached by.
     struct About;
 
     impl CustomSection for About {
-        fn render(&self, _: SectionView<'_>) -> Markup {
-            html! { p #about { "Camera 3 on port a:1" } }
+        fn render(&self, view: SectionView<'_>) -> Markup {
+            html! {
+                p #about {
+                    "Camera 3 on port a:1"
+                    @if let Some(host) = view.host { span.seen { "reached as " (host) } }
+                }
+            }
         }
 
         fn has_controls(&self) -> bool {
@@ -2849,6 +2863,24 @@ mod tests {
 
         let panel = p.handle(DEVICE, get()).await;
         assert_eq!(panel.status, StatusCode::NOT_FOUND, "{}", panel.body);
+    }
+
+    #[tokio::test]
+    async fn a_drivers_section_is_drawn_knowing_the_host_the_browser_used() {
+        let fx = fixture(&config());
+        let p = own_pages(&fx);
+        let unnamed = p.handle(CAMERA, get()).await;
+        assert!(!unnamed.body.contains("reached as"), "{}", unnamed.body);
+        let mut request = get();
+        _ = request
+            .headers
+            .insert(HOST, HeaderValue::from_static("rig.example:11119"));
+        let named = p.handle(CAMERA, request).await;
+        assert!(
+            named.body.contains("reached as rig.example<"),
+            "{}",
+            named.body
+        );
     }
 
     #[tokio::test]

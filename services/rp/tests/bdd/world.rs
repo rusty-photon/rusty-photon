@@ -309,6 +309,8 @@ pub struct RpWorld {
     pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+    /// The setup-page steps' state (`setup_pages.feature`).
+    pub setup_pages: bdd_infra::setup_pages::SetupPagesState,
 
     // --- Document HTTP API test state (Phase 7 Step 6) ---
     /// Pinned data directory across rp lifecycle. The cross-restart
@@ -374,6 +376,12 @@ pub struct RpWorld {
     /// In-process `SkyView` stub serving cutouts to `sky-survey-camera`.
     /// Held on the world so the axum task isn't cancelled mid-scenario.
     pub sky_view_stub: Option<SkyViewStub>,
+}
+
+impl bdd_infra::setup_pages::SetupPagesWorld for RpWorld {
+    fn setup_pages(&mut self) -> &mut bdd_infra::setup_pages::SetupPagesState {
+        &mut self.setup_pages
+    }
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for RpWorld {
