@@ -28,7 +28,7 @@ Each service's top-level configuration type implements `ConfigFile`. It is a
 rule that spans several blocks, for example. Most services have none and
 implement the trait with an empty body. Three services do have such rules:
 `star-adventurer-gti`'s auto-flip offset rule, `sky-survey-camera`'s follow-mode
-rules, and `rp`'s field validation (the rules `PUT /api/config` applies). In
+rules, and `rp`'s field validation (the rules its setup page's save applies). In
 each, the loader and `check()` share one implementation, so the bootstrap and
 the load cannot disagree about them.
 

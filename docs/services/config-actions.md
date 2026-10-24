@@ -198,18 +198,21 @@ locked so the UI can't edit away its own reachability.
 
 ## Driver coverage
 
-| Driver | Devices | Secrets | Notes |
-|--------|---------|---------|-------|
-| `qhy-focuser` | Focuser | auth password hash | single device; the BFF's BDD vehicle, so it keeps the actions until P4 retires the BFF's config pages |
-| `rp` | — (REST transport) | per-device `auth` passwords across the equipment arrays (wildcards) + server auth hash | `ApplyDisposition::Restart` — no reload; `server.port` read-only |
+No service carries the protocol any more. Its last two users went in P4 of
+[driver-setup-pages.md](../plans/driver-setup-pages.md): `qhy-focuser`, which
+kept the actions while it was the BFF's BDD vehicle, now configures itself on
+its setup pages, and `rp`'s REST transport (`GET`/`PUT /api/config`,
+`GET /api/config/schema`) gave way to rp's own `/setup`. The plan's P5 archives
+this document and reduces `rusty_photon_config::actions` to what the setup
+pages use.
 
 ## The web UI
 
-The `ui-htmx` BFF ([`ui-htmx.md`](ui-htmx.md)) is the browser-facing consumer: it
-calls `config.get` / `config.schema` to render a form and `config.apply` to save,
-reusing the `rusty_photon_config::actions` wire types. See `ui-htmx.md` for the
-rendering and multi-driver routing. The schema walker and the form coercion it
-renders with are `rusty-photon-setup`'s, shared with the drivers' own pages.
+The `ui-htmx` BFF ([`ui-htmx.md`](ui-htmx.md)) was the protocol's
+browser-facing consumer: it called `config.get` / `config.schema` to render a
+form and `config.apply` to save. Its configuration pages retired in the same P4;
+it now links rp's setup page from its navigation and edits its own
+configuration on its own `/setup`.
 
 `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`,
 `star-adventurer-gti`, `filemonitor`, `sky-survey-camera`, `svbony-camera`,

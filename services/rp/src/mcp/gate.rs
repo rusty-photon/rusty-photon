@@ -368,7 +368,7 @@ impl ClassTable {
 
 /// Validate a `safety.gate` block against the built-in catalog.
 ///
-/// For the config loader and `PUT /api/config` (rp.md § In-Flight Tool
+/// For the config loader and the setup page's save (rp.md § In-Flight Tool
 /// Calls → Operator overrides): each name must exist in the catalog,
 /// and a name may not be on both sides. Every offending entry is
 /// reported with its dotted path so a UI can point at it. Empty means

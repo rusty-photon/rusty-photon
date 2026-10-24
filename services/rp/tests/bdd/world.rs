@@ -339,25 +339,13 @@ pub struct RpWorld {
     /// header that must never appear, and the JSON-RPC object.
     pub last_mcp_probe: Option<McpProbeResponse>,
 
-    // --- Config REST test state (config_rest.feature) ---
+    // --- Scenario-private config file (scenario_config_steps.rs) ---
     /// `TempDir` holding the scenario's private rp config file (and its data
     /// directory). Held so the file survives until scenario teardown.
     pub config_rest_dir: Option<tempfile::TempDir>,
-    /// Path of the config file rp was started from; `PUT /api/config`
+    /// Path of the config file rp was started from; a setup-page save
     /// persists to it, so the file assertions read this path.
     pub config_rest_path: Option<std::path::PathBuf>,
-    /// Byte snapshot of the config file for byte-identical assertions
-    /// (invalid / malformed applies must not touch the file).
-    pub config_file_snapshot: Option<String>,
-    /// The `config` object from the last `GET /api/config` response, edited
-    /// and resubmitted by the PUT steps (the BFF's own flow).
-    pub fetched_config: Option<Value>,
-    /// Status of the last config-endpoint response.
-    pub last_config_response_status: Option<u16>,
-    /// Raw body of the last config-endpoint response (400s are plain text).
-    pub last_config_response_text: Option<String>,
-    /// Parsed JSON body of the last config-endpoint response, when JSON.
-    pub last_config_response_json: Option<Value>,
 
     // --- Phase 4 closed-loop centering: sky-survey-camera follow mode ---
     /// Running `sky-survey-camera` process when the centering scenario

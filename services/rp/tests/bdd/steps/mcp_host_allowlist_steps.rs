@@ -16,8 +16,8 @@ use serde_json::Value;
 
 use crate::world::RpWorld;
 
-use super::config_rest_steps::write_scenario_config_with_server;
 use super::mcp_transport_steps::post_2026_07_28;
+use super::scenario_config_steps::write_scenario_config_with_server;
 
 /// A wildcard bind on an ephemeral port, optionally advertising a URL.
 fn wildcard_server(advertised_url: Option<&str>) -> Value {

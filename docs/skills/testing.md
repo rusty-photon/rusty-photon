@@ -302,7 +302,7 @@ These are known issues with the Gherkin parser used by cucumber-rs:
 
   ```rust
   #[when(
-      regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
+      regex = r#"^I save rp's setup page after setting the file's "([^"]+)" to the JSON (.+)$"#
   )]
   ```
 

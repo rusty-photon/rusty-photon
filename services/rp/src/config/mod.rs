@@ -142,7 +142,7 @@ pub struct Config {
 }
 
 impl rusty_photon_config::ConfigFile for Config {
-    /// The field rules `PUT /api/config` applies, reported as startup
+    /// The field rules the setup page's save applies, reported as startup
     /// reports them: the first offending field. [`load_config`] runs them
     /// through here, so the startup bootstrap holds a scaffold it is about
     /// to write to the same rules the load will.
@@ -244,8 +244,8 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::Pat
     }
 }
 
-/// Domain validation shared by startup ([`load_config`]) and the REST
-/// `PUT /api/config` endpoint (via [`crate::config_actions::RpConfigDriver`]).
+/// Domain validation shared by startup ([`load_config`]) and the setup
+/// page's save (via [`crate::config_actions::RpConfigDriver`]).
 ///
 /// Empty result means valid. Paths are dotted with array indices
 /// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error
@@ -357,8 +357,8 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// ADR-017). Both are permanent configuration faults when malformed — a
 /// half-written credential would be read as "no credential" and 401 every
 /// request; a bad URL would fail every attempt — so both fail at load
-/// rather than at first use, which means `load_config`,
-/// `PUT /api/config`, and `rp doctor` all reject them identically instead
+/// rather than at first use, which means `load_config`, the setup page's
+/// save, and `rp doctor` all reject them identically instead
 /// of leaving the first session of the night to discover it. The same
 /// scope decides which registrations doctor offers to wire a credential
 /// into (`RpView::plugin_targets`).
@@ -433,7 +433,7 @@ pub fn has_tool_providers(plugins: &[Value]) -> bool {
 ///
 /// Every rejection of a `type: "orchestrator"` entry or a
 /// `session.session_state_file` key ends with it (mcp-sessionless D11),
-/// at load, at `PUT /api/config` and in `rp doctor` alike.
+/// at load, on a setup-page save and in `rp doctor` alike.
 pub const ORCHESTRATOR_REGISTRATION_REMOVED: &str = "orchestrator registrations were removed; \
      start runs at session-runner — see docs/plans/archive/mcp-sessionless.md";
 
@@ -885,8 +885,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
             e
         ))
     })?;
-    // Same field validation as `PUT /api/config`; startup keeps its
-    // pre-REST behaviour of aborting on the first offending field.
+    // Same field validation as the setup page's save; startup aborts on
+    // the first offending field.
     rusty_photon_config::ConfigFile::check(&config).map_err(RpError::Config)?;
     Ok(config)
 }
@@ -1164,10 +1164,9 @@ mod tests {
         assert_eq!(progress_derivation_warning(&config.session), None);
     }
 
-    /// Serialize → deserialize → serialize must be a fixed point: the REST
-    /// `PUT /api/config` path re-parses the serialized value it persists
-    /// (`rusty_photon_config::actions::config_apply`), so any asymmetric
-    /// field would corrupt the persisted config.
+    /// Serialize → deserialize → serialize must be a fixed point: the setup
+    /// page's save persists the typed round trip of what it read, so any
+    /// asymmetric field would corrupt the persisted config.
     fn assert_value_round_trips(config: &Config) -> serde_json::Value {
         let value = serde_json::to_value(config).unwrap();
         let back: Config = serde_json::from_value(value.clone()).unwrap();
@@ -1327,8 +1326,8 @@ mod tests {
 
     /// A plugin registration is otherwise opaque, but on a registration rp
     /// dials the `auth` block is read as rp's client credential — a
-    /// half-written one must fail at load (and so at `PUT /api/config` and
-    /// `rp doctor`) rather than be silently read as "no credential" and
+    /// half-written one must fail at load (and so on a setup-page save and
+    /// in `rp doctor`) rather than be silently read as "no credential" and
     /// 401 every request.
     #[test]
     fn a_malformed_plugin_auth_block_fails_to_load() {
@@ -1545,7 +1544,7 @@ mod tests {
 
     /// Validation runs the same [`EventSubscription::parse`] the bus
     /// builds subscribers with, so an undeliverable registration is
-    /// refused by `PUT /api/config` and `rp doctor` exactly as it is by
+    /// refused by a setup-page save and `rp doctor` exactly as it is by
     /// startup. What the parse rejects is pinned case-by-case where it
     /// runs (`events::tests::an_undeliverable_registration_fails_startup`);
     /// what this pins is that the load path runs it at all — a

@@ -18,7 +18,7 @@ pub struct SiteConfig {
 impl SiteConfig {
     /// Range-validate the site as field-level errors (empty = valid).
     /// Shared by `load_config` (which aborts startup on the first error)
-    /// and the REST `PUT /api/config` validation.
+    /// and the setup page's save.
     #[must_use]
     pub fn field_errors(&self) -> Vec<FieldError> {
         let mut errors = Vec::new();

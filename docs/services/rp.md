@@ -749,10 +749,10 @@ flat `<uuid8>.fits` capture — while `""` is a pattern with nothing in it,
 which for a directory means a path with no components the progress scan
 could never match. The two are different states, so only the spelling
 that means "unset" is read that way, and the load error names it. This
-matters most through the config UI, where clearing a text box is the
-natural gesture for turning a field off: the BFF sends `null` for a
+matters most through a setup page, where clearing a text box is the
+natural gesture for turning a field off: the page saves `null` for a
 cleared optional field precisely so that gesture reaches rp as the state
-the operator intended (ui-htmx.md § Schema-driven config form).
+the operator intended ([rusty-photon-setup](../crates/rusty-photon-setup.md)).
 
 **Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
 (§ Capture Tool Details) feed `render`, and rendering replaces the flat
@@ -1076,8 +1076,8 @@ uses (see [Configuration](#configuration)). The optional `auth` block is
 the plaintext credential `rp` presents as HTTP Basic on every delivery,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. Both are validated at config
-load, so startup, `PUT /api/config` and `rp doctor` refuse the same
-file: `webhook_url` must be an `http://` or `https://` URL (the rule
+load, so startup, a save of the [setup page](#setup-page) and `rp doctor`
+refuse the same file: `webhook_url` must be an `http://` or `https://` URL (the rule
 `server.advertised_url` follows) carrying no embedded credentials —
 `https://user:pass@host/…` is rejected, because `rp` logs the URL on
 every delivery and the `auth` block beside it, applied per request and
@@ -3209,7 +3209,7 @@ starts itself — an operator posts to its `/runs` — and `rp` needs no
 registration to serve it, so it keeps none. (`calibrator-flats` left
 this list when it became a tool provider — [calibrator-flats.md](calibrator-flats.md).) A
 `plugins[]` entry with `"type": "orchestrator"` is rejected at config
-load, by `PUT /api/config` and by `rp doctor` with a message naming
+load, by a setup-page save and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
 `session-runner` — [`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)
 D11), as is a `session.session_state_file` key: silently accepting
@@ -3332,7 +3332,7 @@ The operator's `safety.gate` overrides (§ Configuration) apply on top,
 so a deployment can still move a provider tool either way: a
 `safety.gate` entry naming a provider tool wins over the registration's
 own `gate` key. Because a provider's tools are only known once it has
-been dialed, the config loader (and `PUT /api/config`, and `rp doctor`)
+been dialed, the config loader (and a setup-page save, and `rp doctor`)
 can only check a `safety.gate` name against the built-in catalog — with
 at least one tool provider registered, a name that is not a built-in is
 deferred to startup, where it is checked against the merged catalog and
@@ -3958,7 +3958,9 @@ Semantics:
   left out of every train stay legal and behave exactly as today —
   trains are enrichment, not a gate.
 
-Validation happens at load and on `PUT /api/config`. Per-field
+Validation happens at load and on every save of the [setup
+page](#setup-page), which refuses a file whose trains break these rules
+(the trains themselves are edited in the file). Per-field
 invariants (the `purpose` enum, `focal_length_mm` positivity) are
 enforced in the field types at deserialize; the cross-array graph
 rules run in the shared `validate_config` pass, reporting dotted
@@ -4733,11 +4735,11 @@ would waste winter cooling headroom (dark current roughly halves every
 never match a library.
 
 Off-grid values, duplicates, and out-of-range values are rejected at
-config load and `config.apply` with a field error naming
+config load and on a setup-page save with a field error naming
 `equipment.cameras.N.cooler_targets_c`. The field's JSON Schema is an
-`array` whose `items` enumerate the grid, so the web UI renders it as a
+`array` whose `items` enumerate the grid, so a setup page renders it as a
 checkbox grid without hardcoding the rungs — see
-[`ui-htmx.md`](ui-htmx.md) "Schema-driven rendering".
+[rusty-photon-setup](../crates/rusty-photon-setup.md).
 
 ### Selection: `start_cooldown`
 
@@ -6331,8 +6333,8 @@ doc's "rp Integration" section summarizes.
 Targets are rows in a redb-backed `rp-targets` database that `rp` opens
 once at startup (`target_store.db_path`, default
 `<session.data_directory>/targets.redb`), editable live via the MCP
-tools below without a restart — no more `PUT /api/config` plus a restart
-to add or edit a target.
+tools below without a restart — no config edit plus a restart to add or
+edit a target.
 
 Targets live exclusively in the store: `get_next_target` (§ Dynamic
 Planner), `record_exposure`, `get_session_progress`, and
@@ -7224,7 +7226,7 @@ config carries two lists (§ Configuration):
 ```
 
 Each name must exist in the catalog, and a name in both lists is an
-error; both are rejected at load and by `PUT /api/config`, naming the
+error; both are rejected at load and by a setup-page save, naming the
 offending entry (`safety.gate.gated.0`). The override applies to the
 gate and to cancellation alike — there is one class. The effective
 table is logged once at `info!` at startup and reported by
@@ -7478,9 +7480,8 @@ refuse it (D5).
 
 The optical trains, the plugins, `site`, `plate_solver`, `planner`, a
 filter wheel's filters, a focuser's backlash and the mount's guiding block
-are named on the page and edited in the file. The REST config routes
-(`GET`/`PUT /api/config`, `GET /api/config/schema`) stay until `ui-htmx`'s
-config pages retire (the plan's P4).
+are named on the page and edited in the file. rp has no other config
+route: the page is where its configuration is edited, and the file.
 
 ## API Layer
 
@@ -7518,8 +7519,8 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   its number, until its session is next re-established. That is the
   case a pin exists to catch (§ [Device Identity
   Pin](#device-identity-pin)). Device *addresses
-  and settings* are not repeated here — they live in the config,
-  readable via `GET /api/config`, and a UI joins the two by `id`.
+  and settings* are not repeated here — they live in the config, which
+  the [setup page](#setup-page) draws beside this state, joined by `id`.
 - Runtime device connect/disconnect is **not** a REST route: the registry is
   built once at startup, sessions are kept alive by the reconnect supervisor
   (§ [Device Session Recovery](#device-session-recovery)) — so `connected`
@@ -7534,25 +7535,6 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
 - `POST /setup` — save the page: accepted only from the page itself (the
   origin check), validated with rp's load rules, persisted; the change
   takes effect on the next rp start.
-
-#### Configuration
-- `GET /api/config` — the effective configuration, secrets redacted, plus
-  CLI-override-pinned paths. Same `{ config, overrides }` body as the
-  drivers' `config.get`, as plain REST (no Alpaca envelope). See
-  [`config-actions.md`](config-actions.md) "REST transport".
-- `GET /api/config/schema` — JSON Schema for the config plus editability
-  tiers (`{ schema, locked_fields, read_only_fields }`; `server.port` is
-  hard read-only — the self-lockout guard).
-- `PUT /api/config` — validate and atomically persist a full Config
-  (body = the Config JSON; response = the `config.apply` classification
-  body). **rp has no in-process reload**: every changed field is reported
-  in `restart_required[]` with `status:"ok"`, and the persisted file takes
-  effect on the next rp start. Validation failure → HTTP 200
-  `status:"invalid"` + field-level `errors[]`, file untouched; a malformed
-  JSON body → HTTP 400; a body over axum's default 2 MiB request limit →
-  HTTP 413 (a valid config is a few KiB). The config endpoints are covered by the
-  server-wide auth/TLS and, like every REST route, are never safety-gated
-  — configuration must stay editable while the system is unsafe.
 
 #### Runs
 - There are no run routes. Runs are started, listed and stopped at the
@@ -7681,13 +7663,8 @@ the first-start scaffold.
 
 The running config is edited on rp's own [setup page](#setup-page),
 `/setup`, the roster included; a saved change is persisted atomically to
-this file and takes effect on the next rp start. It is also readable and
-editable over REST — `GET /api/config`, `GET /api/config/schema`, `PUT
-/api/config` (see [Configuration endpoints](#configuration) above): rp
-implements the shared config-actions protocol
-([`config-actions.md`](config-actions.md)) with `ApplyDisposition::Restart`,
-so an applied change is reported as `restart_required`. This is what the
-`ui-htmx` equipment page edits until its config pages retire.
+this file and takes effect on the next rp start (`ApplyDisposition::Restart`),
+which the saved page says.
 
 The `mount` field is singular: exactly one mount is the typical
 deployment. Piggyback rigs share that one mount across multiple optical
@@ -8335,10 +8312,10 @@ services/rp/src/
   # client surface is MCP. One flat file, no api/ package.
   routes.rs             Axum router mounting /mcp (rmcp streamable
                         HTTP, session-less — § MCP Server) alongside
-                        the HTTP routes: /health, /api/equipment, /api/config
-                        [+ /schema], /api/plugins/{event_id}/complete,
-                        /api/documents/{id}, /api/images/{id}[/pixels]
-                        (Alpaca ImageBytes), /api/events/subscribe (SSE).
+                        the HTTP routes: /health, /api/equipment,
+                        /setup (merged from setup/), /api/documents/{id},
+                        /api/images/{id}[/pixels] (Alpaca ImageBytes),
+                        /api/events/subscribe (SSE).
                         No /api/targets — target CRUD is MCP-only
                         (§ Target Store); no application logic here.
 

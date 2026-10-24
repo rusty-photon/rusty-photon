@@ -1,24 +1,21 @@
-//! rp's [`ConfigurableDriver`] implementation — the service-specific half of
-//! the shared config protocol ([`rusty_photon_config::actions`]).
+//! rp's [`ConfigurableDriver`] implementation — the service-specific half
+//! behind its setup page ([`crate::setup`]).
 //!
-//! Unlike the Alpaca drivers, rp is **not** an ASCOM device: the protocol is
-//! consumed by the plain-REST endpoints in [`crate::routes`]
-//! (`GET/PUT /api/config`, `GET /api/config/schema`) rather than by vendor
-//! `Action`s. rp also has no in-process reload (`main.rs` runs
-//! `ServiceRunner::run`, not `run_with_reload`), so its
+//! rp has no in-process reload (`main.rs` runs `ServiceRunner::run`, not
+//! `run_with_reload`), so its
 //! [`apply_disposition`](ConfigurableDriver::apply_disposition) is
-//! [`ApplyDisposition::Restart`]: every persisted change is classified
-//! `restart_required` and takes effect on the next rp start.
+//! [`ApplyDisposition::Restart`]: every persisted change waits for the next
+//! rp start, which the saved page says.
 
 use rusty_photon_config::actions::{ApplyDisposition, ConfigurableDriver, FieldError};
 
 use crate::config::{validate_config, Config};
 
-/// Re-exported so routes and tests can name the redaction sentinel without
+/// Re-exported so the tests can name the redaction sentinel without
 /// reaching across crates.
 pub use rusty_photon_config::actions::REDACTED;
 
-/// Marker wiring rp's [`Config`] into the shared config-action protocol.
+/// Marker wiring rp's [`Config`] into its setup page.
 pub struct RpConfigDriver;
 
 impl ConfigurableDriver for RpConfigDriver {
@@ -30,9 +27,8 @@ impl ConfigurableDriver for RpConfigDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// Reuses the exact validation `load_config` runs at startup (site
-    /// ranges + camera fields), so a config the REST endpoint accepts is a
-    /// config rp will boot from.
+    /// Reuses the exact validation `load_config` runs at startup, so a
+    /// config the setup page saves is a config rp will boot from.
     fn validate(config: &Config) -> Vec<FieldError> {
         validate_config(config)
     }
@@ -80,7 +76,7 @@ impl ConfigurableDriver for RpConfigDriver {
     }
 
     /// rp has no in-process reload: persisted changes take effect on the
-    /// next rp start (`restart_required[]`, status stays `"ok"`).
+    /// next rp start.
     fn apply_disposition() -> ApplyDisposition {
         ApplyDisposition::Restart
     }

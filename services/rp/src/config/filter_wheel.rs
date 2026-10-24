@@ -54,8 +54,8 @@ pub struct FilterDetail {
 ///
 /// A bare name, or `{name, wavelength_nm}` for a filter whose
 /// wavelength is known (rp.md § Train optics). Serializes back in the
-/// form it was written, so a config round-trips through `GET` /
-/// `PUT /api/config` unchanged.
+/// form it was written, so a config round-trips through a setup-page save
+/// unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum FilterEntry {

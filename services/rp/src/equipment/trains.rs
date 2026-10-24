@@ -2,7 +2,7 @@
 //!
 //! [`TrainModel::try_from_equipment`] is both the cross-array graph
 //! validation for `equipment.optical_trains` (shared by `load_config`
-//! and `PUT /api/config` via `validate_config`) and the builder of the
+//! and the setup page's save via `validate_config`) and the builder of the
 //! runtime model the derivation queries run against — one code path,
 //! so validation and derivation cannot drift apart. Per-field
 //! invariants (the purpose enum, focal-length positivity) are already

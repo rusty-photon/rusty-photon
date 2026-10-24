@@ -14,7 +14,6 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::config_actions::RpConfigDriver;
 use crate::equipment::EquipmentRegistry;
 use crate::events::{EventEnvelope, Subscription};
 use crate::mcp::McpHandler;
@@ -38,14 +37,8 @@ pub struct AppState {
     /// it to end in-flight `/api/events/subscribe` streams. See
     /// `BoundServer::start`.
     pub sse_shutdown: CancellationToken,
-    /// The effective running configuration (rp has no config-overriding CLI
-    /// flags, so this is exactly the file loaded at startup). Served by
-    /// `GET /api/config` (secrets redacted) and diffed against by
-    /// `PUT /api/config` to compute `restart_required[]`.
-    pub config: Arc<crate::config::Config>,
-    /// The resolved config-file path `PUT /api/config` persists to.
-    pub config_path: Arc<std::path::PathBuf>,
-    /// The setup page, `/setup` (rp.md § Setup Page).
+    /// The setup page, `/setup` (rp.md § Setup Page), where rp's
+    /// configuration is edited.
     pub setup: crate::setup::Pages,
 }
 
@@ -82,18 +75,12 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
     // and the safety gate lives in the tool dispatch (rp.md § Safety →
     // In-Flight Tool Calls), where a gated tool is refused with the
     // `SafetyUnsafe` JSON-RPC error while everything else keeps
-    // answering. The REST surface is never gated either — editing
-    // config must stay possible under unsafe skies, on the setup page
-    // as over REST.
+    // answering. The REST surface and the setup page are never gated
+    // either — editing config must stay possible under unsafe skies.
     let setup = crate::setup::router(state.setup.clone());
     Router::new()
         .route("/health", get(health))
         .route("/api/equipment", get(get_equipment))
-        // Plain-REST config endpoints (no Alpaca envelope — rp is not an
-        // ASCOM device). Router-wide auth/TLS layers (applied in lib.rs)
-        // cover them like every other route.
-        .route("/api/config", get(get_config).put(put_config))
-        .route("/api/config/schema", get(get_config_schema))
         .nest_service("/mcp", mcp_service)
         .route("/api/documents/{document_id}", get(get_document))
         .route("/api/images/{document_id}", get(get_image_metadata))
@@ -110,59 +97,6 @@ async fn health() -> &'static str {
 async fn get_equipment(State(state): State<AppState>) -> Json<Value> {
     let status = state.equipment.status();
     Json(serde_json::to_value(status).unwrap_or_default())
-}
-
-/// `GET /api/config` — the effective running config with secrets redacted to
-/// the `********` sentinel, plus the CLI-override-pinned paths (always empty:
-/// rp has no config-overriding flags). Body is a bare
-/// [`rusty_photon_config::actions::ConfigGetResponse`].
-async fn get_config(State(state): State<AppState>) -> Response {
-    debug!("GET /api/config");
-    match rusty_photon_config::actions::config_get::<RpConfigDriver>(&state.config, &()) {
-        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-        Err(e) => {
-            debug!(error = %e, "failed to serialize effective config");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to serialize config: {e}"),
-            )
-                .into_response()
-        }
-    }
-}
-
-/// `GET /api/config/schema` — a JSON Schema for rp's config plus the
-/// editability tiers: `locked_fields` is empty and `read_only_fields` is
-/// `["server.port"]` (a rebind the UI could not follow). Body is a bare
-/// [`rusty_photon_config::actions::ConfigSchemaResponse`].
-async fn get_config_schema() -> Json<rusty_photon_config::actions::ConfigSchemaResponse> {
-    debug!("GET /api/config/schema");
-    Json(rusty_photon_config::actions::config_schema::<RpConfigDriver>())
-}
-
-/// `PUT /api/config` — validate and persist a full submitted config JSON.
-///
-/// rp has no in-process reload (`main.rs` runs `ServiceRunner::run`), so
-/// every changed field is classified `restart_required` and `status` stays
-/// `"ok"` — the persisted file takes effect on the next rp start. Validation
-/// failure is HTTP 200 `status:"invalid"` with `errors[]`, file untouched. A
-/// malformed JSON body is 400 with a plain-text message; internal read /
-/// persist failures are 500.
-async fn put_config(State(state): State<AppState>, body: String) -> Response {
-    use rusty_photon_config::actions::{config_apply, ApplyError};
-
-    debug!("PUT /api/config");
-    match config_apply::<RpConfigDriver>(&state.config_path, &(), &state.config, &body) {
-        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-        Err(err @ ApplyError::Parse(_)) => {
-            debug!(error = %err, "config apply rejected: malformed JSON body");
-            (StatusCode::BAD_REQUEST, err.to_string()).into_response()
-        }
-        Err(err) => {
-            debug!(error = %err, "config apply failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-        }
-    }
 }
 
 /// Interval between SSE `:keep-alive` comment lines, to keep middleboxes from
@@ -508,14 +442,12 @@ mod tests {
             image_cache.clone(),
             None,
         );
-        let setup = crate::setup::pages(&config, config_path.clone(), equipment.clone());
+        let setup = crate::setup::pages(&config, config_path, equipment.clone());
         AppState {
             equipment,
             mcp,
             image_cache,
             sse_shutdown: CancellationToken::new(),
-            config: Arc::new(config),
-            config_path: Arc::new(config_path),
             setup,
         }
     }
@@ -687,12 +619,11 @@ mod tests {
         assert!(dispatched.get("error").is_none(), "got: {dispatched}");
         assert_eq!(dispatched["result"]["isError"], true, "got: {dispatched}");
 
-        // The REST surface keeps answering while unsafe — the config
-        // endpoints in particular (editing config is how an operator
-        // recovers).
+        // The REST surface keeps answering while unsafe — the setup page
+        // in particular (editing config is how an operator recovers).
         safety.set_overall(false);
         let client = reqwest::Client::new();
-        for path in ["/health", "/api/config", "/api/config/schema"] {
+        for path in ["/health", "/api/equipment", "/setup"] {
             let response = client
                 .get(format!("http://{addr}{path}"))
                 .send()
@@ -1179,263 +1110,5 @@ mod tests {
             text.contains("\"lagged\""),
             "the lag stream_gap must carry the lagged count; body was: {text:?}"
         );
-    }
-
-    // --- /api/config REST endpoints ------------------------------------------
-
-    fn config_with_camera_password(password: &str) -> crate::config::Config {
-        serde_json::from_value(serde_json::json!({
-            "session": { "data_directory": "/tmp/rp-test" },
-            "equipment": {
-                "cameras": [{
-                    "id": "main-cam",
-                    "alpaca_url": "http://127.0.0.1:1",
-                    "auth": { "username": "obs", "password": password }
-                }]
-            },
-            "server": { "port": 0 }
-        }))
-        .unwrap()
-    }
-
-    /// Persist `config` to a fresh temp file and build an `AppState` whose
-    /// running config and config path both point at it — the state rp is in
-    /// right after booting from that file.
-    fn config_test_state(config: crate::config::Config) -> (AppState, tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rp.json");
-        rusty_photon_config::save(&path, &serde_json::to_value(&config).unwrap()).unwrap();
-        let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
-            config,
-            path.clone(),
-        );
-        (state, dir, path)
-    }
-
-    async fn response_json(response: Response) -> Value {
-        serde_json::from_slice(&body_bytes(response).await).unwrap()
-    }
-
-    #[tokio::test]
-    async fn config_get_redacts_device_password_and_lists_no_overrides() {
-        let (state, _dir, _path) = config_test_state(config_with_camera_password("hunter2"));
-        let response = get_config(State(state)).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(
-            body.pointer("/config/equipment/cameras/0/auth/password")
-                .and_then(Value::as_str),
-            Some(crate::config_actions::REDACTED)
-        );
-        assert_eq!(body["overrides"], serde_json::json!([]));
-    }
-
-    #[tokio::test]
-    async fn config_schema_lists_server_port_read_only() {
-        let response = get_config_schema().await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["read_only_fields"], serde_json::json!(["server.port"]));
-        assert_eq!(body["locked_fields"], serde_json::json!([]));
-        assert!(
-            body.pointer("/schema/properties/server").is_some(),
-            "schema must describe the config shape"
-        );
-    }
-
-    #[tokio::test]
-    async fn config_put_change_is_restart_required_with_status_ok() {
-        let (state, _dir, path) = config_test_state(scaffold_config());
-        let mut submitted = serde_json::to_value(&*state.config).unwrap();
-        submitted["imaging"]["cache_max_mib"] = serde_json::json!(256);
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["status"], "ok", "restart disposition never 'applying'");
-        assert_eq!(
-            body["restart_required"],
-            serde_json::json!(["imaging.cache_max_mib"])
-        );
-        assert_eq!(body["reload"], serde_json::json!([]));
-        assert_eq!(
-            body["persisted_to"].as_str(),
-            Some(path.display().to_string().as_str())
-        );
-
-        let on_disk: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            on_disk
-                .pointer("/imaging/cache_max_mib")
-                .and_then(Value::as_u64),
-            Some(256)
-        );
-    }
-
-    #[tokio::test]
-    async fn config_put_unchanged_is_ok_with_empty_lists() {
-        let (state, _dir, _path) = config_test_state(scaffold_config());
-        let submitted = serde_json::to_value(&*state.config).unwrap();
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["status"], "ok");
-        assert_eq!(body["restart_required"], serde_json::json!([]));
-        assert_eq!(body["reload"], serde_json::json!([]));
-    }
-
-    #[tokio::test]
-    async fn config_put_invalid_site_latitude_is_domain_error_and_file_untouched() {
-        let (state, _dir, path) = config_test_state(scaffold_config());
-        let file_before = std::fs::read_to_string(&path).unwrap();
-        let mut submitted = serde_json::to_value(&*state.config).unwrap();
-        submitted["site"] =
-            serde_json::json!({ "latitude_degrees": 91.0, "longitude_degrees": 0.0 });
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        // Domain error, not transport error: HTTP 200 with status "invalid".
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["status"], "invalid");
-        assert_eq!(body["errors"][0]["path"], "site.latitude_degrees");
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            file_before,
-            "an invalid apply must leave the file byte-identical"
-        );
-    }
-
-    #[tokio::test]
-    async fn config_put_malformed_body_is_400_plain_text() {
-        let (state, _dir, path) = config_test_state(scaffold_config());
-        let file_before = std::fs::read_to_string(&path).unwrap();
-
-        let response = put_config(State(state), "this is not json".to_string()).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let text = String::from_utf8(body_bytes(response).await).unwrap();
-        assert!(
-            text.contains("invalid config JSON"),
-            "400 body must say what went wrong, got: {text:?}"
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), file_before);
-    }
-
-    #[tokio::test]
-    async fn config_put_persist_failure_is_500() {
-        // The config path is a *directory*: validation passes, the atomic
-        // persist fails — the handler's internal-error branch.
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
-            scaffold_config(),
-            dir.path().to_path_buf(),
-        );
-        let mut submitted = serde_json::to_value(&*state.config).unwrap();
-        submitted["imaging"]["cache_max_mib"] = serde_json::json!(512);
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[tokio::test]
-    async fn config_put_sentinel_round_trip_keeps_stored_password_on_disk() {
-        let (state, _dir, path) = config_test_state(config_with_camera_password("hunter2"));
-        // Submit what GET /api/config returned: the password redacted.
-        let mut submitted = serde_json::to_value(&*state.config).unwrap();
-        submitted["equipment"]["cameras"][0]["auth"]["password"] =
-            serde_json::json!(crate::config_actions::REDACTED);
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["status"], "ok");
-        assert_eq!(body["restart_required"], serde_json::json!([]));
-
-        let on_disk: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            on_disk
-                .pointer("/equipment/cameras/0/auth/password")
-                .and_then(Value::as_str),
-            Some("hunter2"),
-            "the sentinel must keep the stored secret, never replace it"
-        );
-    }
-
-    #[tokio::test]
-    async fn config_put_removing_the_first_camera_keeps_the_seconds_password_on_disk() {
-        let config: crate::config::Config = serde_json::from_value(serde_json::json!({
-            "session": { "data_directory": "/tmp/rp-test" },
-            "equipment": {
-                "cameras": [
-                    {
-                        "id": "cam-one",
-                        "alpaca_url": "http://127.0.0.1:1",
-                        "auth": { "username": "obs", "password": "first-secret" }
-                    },
-                    {
-                        "id": "cam-two",
-                        "alpaca_url": "http://127.0.0.1:1",
-                        "auth": { "username": "obs", "password": "second-secret" }
-                    }
-                ]
-            },
-            "server": { "port": 0 }
-        }))
-        .unwrap();
-        let (state, _dir, path) = config_test_state(config);
-        // The equipment page's delete flow: PUT the redacted config with
-        // camera 0 removed, which shifts cam-two down to index 0. The
-        // sentinel must pair with cam-two's stored password by id, not with
-        // the deleted camera's by position.
-        let mut submitted = serde_json::to_value(&*state.config).unwrap();
-        submitted["equipment"]["cameras"]
-            .as_array_mut()
-            .unwrap()
-            .remove(0);
-        submitted["equipment"]["cameras"][0]["auth"]["password"] =
-            serde_json::json!(crate::config_actions::REDACTED);
-
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["status"], "ok");
-
-        let on_disk: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            on_disk
-                .pointer("/equipment/cameras/0/id")
-                .and_then(Value::as_str),
-            Some("cam-two")
-        );
-        assert_eq!(
-            on_disk
-                .pointer("/equipment/cameras/0/auth/password")
-                .and_then(Value::as_str),
-            Some("second-secret"),
-            "the surviving camera must keep its own password, not the deleted one's"
-        );
-    }
-
-    #[tokio::test]
-    async fn config_put_unwritable_path_is_500() {
-        // A read/persist failure surfaces as 500, not a panic. A regular
-        // *file* as the path's parent fails on every platform (and even as
-        // root, unlike permission-based setups).
-        let dir = tempfile::tempdir().unwrap();
-        let blocker = dir.path().join("not-a-dir");
-        std::fs::write(&blocker, "x").unwrap();
-        let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
-            scaffold_config(),
-            blocker.join("rp.json"),
-        );
-        let submitted = serde_json::to_value(&*state.config).unwrap();
-        let response = put_config(State(state), submitted.to_string()).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

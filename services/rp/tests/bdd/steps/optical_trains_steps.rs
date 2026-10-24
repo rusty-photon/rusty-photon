@@ -1,22 +1,25 @@
 //! BDD step definitions for the optical-trains configuration model
 //! (`optical_trains.feature`).
 //!
-//! The validation scenarios reuse the plain-REST config machinery from
-//! `config_rest_steps.rs` (GET / PUT `/api/config`, apply-status and
-//! error-path assertions); the capture scenarios reuse the `OmniSim` +
-//! MCP steps from `tool_steps.rs` and the document lookup steps from
-//! `document_http_api_steps.rs`.
+//! The validation scenarios edit the scenario's config file and save rp's
+//! setup page over it, which holds the whole file to rp's load-time rules;
+//! their refusals are read with the shared setup-page steps. The capture
+//! scenarios reuse the `OmniSim` + MCP steps from `tool_steps.rs` and the
+//! document lookup steps from `document_http_api_steps.rs`.
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use serde_json::Value;
 
 use bdd_infra::rp_harness::OpticalTrainConfig;
+use bdd_infra::setup_pages::{self, dom, SetupPagesWorld as _};
 
-use crate::steps::config_rest_steps::{send_put_config, write_scenario_config};
 use crate::steps::event_steps::json_values_match;
 use crate::steps::focuser_steps::add_focuser;
 use crate::steps::rotator_steps::add_offline_camera;
+use crate::steps::scenario_config_steps::{
+    scenario_config_path, scenario_config_value, write_scenario_config,
+};
 use crate::steps::tool_steps::{
     add_camera, add_filter_wheel, ensure_mcp_client, ensure_omnisim, start_rp,
 };
@@ -384,68 +387,105 @@ async fn mcp_call_set_filter_train(world: &mut RpWorld, train_id: String, filter
     world.last_tool_result = Some(result);
 }
 
-#[when(expr = "I PUT \\/api\\/config with the fetched config after setting {string} to:")]
-async fn put_config_with_pointer_set_docstring(world: &mut RpWorld, pointer: String, step: &Step) {
+/// Write `value` at `pointer` in the scenario's config file, inserting the
+/// last segment into its parent object when the file does not carry it.
+fn write_into_file(world: &RpWorld, pointer: &str, value: Value) {
+    let mut config = scenario_config_value(world);
+    if let Some(slot) = config.pointer_mut(pointer) {
+        *slot = value;
+    } else {
+        let (parent, key) = pointer
+            .rsplit_once('/')
+            .unwrap_or_else(|| panic!("pointer {pointer} has no '/'"));
+        let parent_value = if parent.is_empty() {
+            &mut config
+        } else {
+            config
+                .pointer_mut(parent)
+                .unwrap_or_else(|| panic!("parent pointer {parent} not in the config file"))
+        };
+        parent_value
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("parent at {parent} is not a JSON object"))
+            .insert(key.to_string(), value);
+    }
+    std::fs::write(
+        scenario_config_path(world),
+        serde_json::to_string_pretty(&config).expect("serialize rp config"),
+    )
+    .expect("write rp config file");
+}
+
+/// Save rp's setup page the way its own form would, over the file as it now
+/// stands.
+async fn save_setup_page(world: &mut RpWorld) {
+    setup_pages::submit(world.setup_pages(), setup_pages::SERVER_PATH, &[], None).await;
+}
+
+#[when("I save rp's setup page as it is drawn")]
+async fn save_as_drawn(world: &mut RpWorld) {
+    save_setup_page(world).await;
+}
+
+#[when(expr = "I save rp's setup page after setting the file's {string} to:")]
+async fn save_after_setting_docstring(world: &mut RpWorld, pointer: String, step: &Step) {
     let raw = step
         .docstring()
         .expect("this step needs a docstring with the JSON value")
         .trim();
     let value: Value =
         serde_json::from_str(raw).expect("the docstring must be valid JSON for this step");
-    let mut config = world
-        .fetched_config
-        .clone()
-        .expect("no fetched config — add a 'When I GET /api/config' step first");
-    *config
-        .pointer_mut(&pointer)
-        .unwrap_or_else(|| panic!("pointer {pointer} not present in fetched config")) = value;
-    send_put_config(world, config.to_string()).await;
+    write_into_file(world, &pointer, value);
+    save_setup_page(world).await;
 }
 
-/// Insert a key that the fetched config does not carry (the retired-key
-/// scenarios): `pointer_mut` on the full pointer would fail, so resolve
-/// the parent object and insert the final segment into it.
-///
+#[when(expr = "I save rp's setup page after setting the file's {string} to {string}")]
+async fn save_after_setting(world: &mut RpWorld, pointer: String, raw: String) {
+    // The raw step value parses as JSON where possible ("-100.0" → number),
+    // falling back to a plain string.
+    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
+    write_into_file(world, &pointer, value);
+    save_setup_page(world).await;
+}
+
 /// The value is the rest of the line, parsed as JSON. A `{string}`
 /// parameter cannot carry the quotes inside a JSON object or around a
-/// JSON string, so rows inserting either would match nothing.
-#[when(
-    regex = r#"^I PUT /api/config with the fetched config after inserting "([^"]+)" set to the JSON (.+)$"#
-)]
-async fn put_config_with_pointer_inserted(world: &mut RpWorld, pointer: String, raw: String) {
+/// JSON string, so rows writing either would match nothing.
+#[when(regex = r#"^I save rp's setup page after setting the file's "([^"]+)" to the JSON (.+)$"#)]
+async fn save_after_setting_json(world: &mut RpWorld, pointer: String, raw: String) {
     let value: Value = serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("step value is not JSON ({e}): {raw}"));
-    let mut config = world
-        .fetched_config
-        .clone()
-        .expect("no fetched config — add a 'When I GET /api/config' step first");
-    let (parent, key) = pointer
-        .rsplit_once('/')
-        .unwrap_or_else(|| panic!("pointer {pointer} has no '/'"));
-    let parent_value = if parent.is_empty() {
-        &mut config
-    } else {
-        config
-            .pointer_mut(parent)
-            .unwrap_or_else(|| panic!("parent pointer {parent} not present in fetched config"))
-    };
-    parent_value
-        .as_object_mut()
-        .unwrap_or_else(|| panic!("parent at {parent} is not a JSON object"))
-        .insert(key.to_string(), value);
-    send_put_config(world, config.to_string()).await;
+    write_into_file(world, &pointer, value);
+    save_setup_page(world).await;
 }
 
-#[then(expr = "the config response body should contain {string}")]
-fn config_response_body_contains(world: &mut RpWorld, needle: String) {
-    let body = world
-        .last_config_response_text
-        .as_ref()
-        .expect("no config response recorded — check the request step ran");
+#[then("the save is refused")]
+fn save_refused(world: &mut RpWorld) {
+    let state = world.setup_pages();
+    assert_eq!(state.last_status, Some(422), "{}", state.last_body);
+}
+
+#[then("the save is accepted")]
+fn save_accepted(world: &mut RpWorld) {
+    let state = world.setup_pages();
+    assert_eq!(state.last_status, Some(200), "{}", state.last_body);
     assert!(
-        body.contains(&needle),
-        "expected the response body to contain {needle:?}; body was: {body}"
+        !dom::matches(&state.last_body, "#rejected"),
+        "a rejection banner:\n{}",
+        state.last_body
     );
+}
+
+#[then(expr = "the refusal at {string} says {string}")]
+fn refusal_at_says(world: &mut RpWorld, path: String, needle: String) {
+    let state = world.setup_pages();
+    for part in [&path, &needle] {
+        assert!(
+            dom::text_contains(&state.last_body, "#rejected", part),
+            "no rejection banner carrying {part:?}:\n{}",
+            state.last_body
+        );
+    }
 }
 
 #[then(expr = "the document body should not contain {string}")]

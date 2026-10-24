@@ -98,8 +98,8 @@ pub struct CameraConfig {
 impl CameraConfig {
     /// Range-validate the camera as field-level errors (empty = valid),
     /// with `index` naming its position in `equipment.cameras`. Shared by
-    /// `load_config` (which aborts startup on the first error) and the REST
-    /// `PUT /api/config` validation. Paths are dotted with the index
+    /// `load_config` (which aborts startup on the first error) and the
+    /// setup page's save. Paths are dotted with the index
     /// (`equipment.cameras.0.focal_length_mm`) so a UI can map each error
     /// onto its field; the message names the camera id for humans.
     #[must_use]

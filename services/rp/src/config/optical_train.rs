@@ -508,7 +508,7 @@ pub struct TrainAutoFocusConfig {
 /// existence, terminal camera, order consistency, the
 /// one-guiding-train rule) live in
 /// [`crate::equipment::trains::TrainModel::try_from_equipment`],
-/// shared by `load_config` and `PUT /api/config`.
+/// shared by `load_config` and the setup page's save.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpticalTrainConfig {

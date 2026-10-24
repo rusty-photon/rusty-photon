@@ -12,8 +12,8 @@
 //! (the legacy `targets[]` planner array was retired — targets live in the
 //! redb store, added via `add_target`), so `Config`'s top-level
 //! `deny_unknown_fields` rejects a stray legacy `targets` key or a leftover
-//! array shape loudly at load, and `GET /api/config/schema` carries the
-//! real structure. The wire type stays rp-local (mirroring [`GoalWire`]'s
+//! array shape loudly at load, and the schema the setup page renders from
+//! carries the real structure. The wire type stays rp-local (mirroring [`GoalWire`]'s
 //! role for goals) so the store leaf keeps its deliberately schemars-free
 //! build (`crates/rp-targets/BUILD.bazel`).
 

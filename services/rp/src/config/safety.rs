@@ -16,8 +16,8 @@ pub struct SafetyConfig {
     /// Operator overrides to the built-in tool classes (rp.md § Safety →
     /// In-Flight Tool Calls → Operator overrides). Both lists default
     /// to empty; every name must exist in the tool catalog and no name
-    /// may appear on both sides — checked at load and by
-    /// `PUT /api/config` (`crate::mcp::gate::override_errors`).
+    /// may appear on both sides — checked at load and by a setup-page save
+    /// (`crate::mcp::gate::override_errors`).
     #[serde(default)]
     pub gate: GateOverrides,
 }
@@ -152,7 +152,7 @@ mod tests {
         assert!(msg.contains("no_such_tool"), "got: {msg}");
     }
 
-    /// `PUT /api/config` sees the same rules as field errors.
+    /// A setup-page save sees the same rules as field errors.
     #[test]
     fn validate_config_reports_a_tool_on_both_sides() {
         let mut config: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();

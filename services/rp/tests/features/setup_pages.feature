@@ -29,7 +29,7 @@ Feature: rp's setup page
       | kind     | id          | alpaca_url                   | device_number |
       | cameras  | main-cam    | http://127.0.0.1:1           | 0             |
       | focusers | far-focuser | http://focuslynx.invalid:4247 | 1             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open the server setup page
     Then the page shows an input named "imaging.cache_max_mib" with value "1024"
     And the page shows an input named "equipment.cameras.0.id" with value "main-cam"
@@ -41,7 +41,7 @@ Feature: rp's setup page
       | kind     | id          | alpaca_url                   | device_number |
       | cameras  | main-cam    | http://127.0.0.1:1           | 0             |
       | focusers | far-focuser | http://focuslynx.invalid:4247 | 1             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open rp's setup page reached as "rig.example"
     Then the roster row "main-cam" links its driver's setup page at "http://rig.example:1/setup"
     And the roster row "main-cam" links its device's page at "http://rig.example:1/setup/v1/camera/0/setup"
@@ -50,7 +50,7 @@ Feature: rp's setup page
 
   Scenario: The camera that is phd2-guider's facade links the guider's setup page
     Given a temp rp config whose camera "guide-cam" is the stub camera facade and whose mount guides through "http://127.0.0.1:11130"
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open rp's setup page reached as "rig.example"
     Then the roster row "guide-cam" links the guider's setup page at "http://rig.example:11130/setup"
 
@@ -58,7 +58,7 @@ Feature: rp's setup page
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page setting "equipment.cameras.0.gain" to "120"
     Then the page reports the configuration was saved and "equipment.cameras" waits for the restart
     And the configuration file holds 120 at "/equipment/cameras/0/gain"
@@ -68,7 +68,7 @@ Feature: rp's setup page
       | kind    | id        | alpaca_url         | device_number |
       | cameras | main-cam  | http://127.0.0.1:1 | 0             |
       | cameras | guide-cam | http://127.0.0.1:2 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page setting "remove:equipment.cameras.0" to "on"
     Then the page reports the configuration was saved and "equipment.cameras" waits for the restart
     And the configuration file holds "guide-cam" at "/equipment/cameras/0/id"
@@ -78,7 +78,7 @@ Feature: rp's setup page
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page with:
       | add.focusers.id            | guide-focuser      |
       | add.focusers.alpaca_url    | http://127.0.0.1:4 |
@@ -94,7 +94,7 @@ Feature: rp's setup page
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
     And the entry "main-cam" presents the username "observatory" with the password "hunter2"
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open the server setup page
     Then the page shows an empty password input named "equipment.cameras.0.auth.password"
     And the page shows an input named "equipment.cameras.0.auth.username" with value "observatory"
@@ -107,7 +107,7 @@ Feature: rp's setup page
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page setting "equipment.cameras.0.auth.username" to "observatory"
     Then the page answers 422 with the error "is needed with a username: none is stored" on "equipment.cameras.0.auth.password"
     And the configuration file has nothing at "/equipment/cameras/0/auth"
@@ -117,7 +117,7 @@ Feature: rp's setup page
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
     And the entry "main-cam" presents the username "observatory" with the password "hunter2"
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page setting "equipment.cameras.0.auth.username" to ""
     Then the page reports the configuration was saved and "equipment.cameras" waits for the restart
     And the configuration file has nothing at "/equipment/cameras/0/auth"
@@ -127,7 +127,7 @@ Feature: rp's setup page
       | kind     | id          | alpaca_url         | device_number |
       | cameras  | main-cam    | http://127.0.0.1:1 | 0             |
       | focusers | far-focuser | http://127.0.0.1:2 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page with:
       | remove:equipment.cameras.0          | on      |
       | equipment.focusers.0.auth.username  | someone |
@@ -141,7 +141,7 @@ Feature: rp's setup page
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open the server setup page
     And the configuration file gains the camera "late-cam" behind the page's back
     And I save the page again setting "equipment.cameras.0.gain" to "120"
@@ -155,7 +155,7 @@ Feature: rp's setup page
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
       | cameras | side-cam | http://127.0.0.1:2 | 0             |
     And the entry "side-cam" presents the username "observatory" with the password "hunter2"
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I open the server setup page
     And the configuration file gains the camera "late-cam" behind the page's back
     And I save the page again setting "remove:equipment.cameras.0" to "on"
@@ -173,7 +173,7 @@ Feature: rp's setup page
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |
       | cameras | main-cam | http://127.0.0.1:1 | 0             |
-    And rp is started on that config file for its setup page
+    And rp is started with that config file
     When I submit the server setup page from the origin "https://elsewhere.example" setting "equipment.cameras.0.gain" to "120"
     Then the response status is 403
     And the configuration file has nothing at "/equipment/cameras/0/gain"
