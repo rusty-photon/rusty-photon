@@ -163,11 +163,11 @@ When the dashboard is enabled, the following endpoints are available:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Web UI showing monitor statuses, discovered services (run state + health), and notification history (auto-refreshes every 5s). |
+| `GET /` | Web UI showing monitor statuses, discovered services (run state + health, and a Restart button per service that posts to the restart endpoint below), and notification history (auto-refreshes every 5s). |
 | `GET /api/status` | JSON array of monitor statuses. |
 | `GET /api/services` | JSON array of discovered services with their run states and health. |
 | `GET /api/history` | JSON array of recent notification records. |
-| `POST /api/services/{name}/restart` | Restart a discovered service via its derived platform command. |
+| `POST /api/services/{name}/restart` | Restart a discovered service via its derived platform command. Only the dashboard itself may post it, so a page on another site cannot restart a service with your cached credentials: a browser on the dashboard sends `Sec-Fetch-Site: same-origin`, and a script names the dashboard's own origin (`curl -X POST -H 'Origin: http://127.0.0.1:11114' http://127.0.0.1:11114/api/services/dsd-fp2/restart`). Anything else is refused with `403`. |
 | `GET /health` | Returns `200 OK` — useful for health checks. |
 
 ## Design Documentation

@@ -456,7 +456,10 @@ is the only device source.)
 
 Sentinel owns *process* restart (the config-actions plan's service-lifecycle
 split); the BFF is just an authorised client of Sentinel's
-[Service Restart API](sentinel.md#service-restart-api). Two affordances lead
+[Service Restart API](sentinel.md#service-restart-api). Its `POST` carries
+an `Origin` naming Sentinel's own origin, as that endpoint requires of a
+client that is not a browser (Sentinel refuses a restart a page on another
+site could have posted). Two affordances lead
 here, both rendered only when the BFF has a `sentinel` block configured:
 
 - **The recovery hammer**: a config card carries a "Restart via Sentinel"

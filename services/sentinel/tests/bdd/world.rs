@@ -386,10 +386,16 @@ impl SentinelWorld {
     }
 
     /// POST a dashboard endpoint (empty body) and capture status + body.
-    pub async fn http_post(&mut self, path: &str) {
+    /// `POST` `path` on the dashboard carrying `headers`, recording the
+    /// answer as [`Self::http_get`] does.
+    pub async fn http_post(&mut self, path: &str, headers: &[(&str, &str)]) {
         let client = reqwest::Client::new();
         let url = self.dashboard_url(path);
-        match client.post(&url).send().await {
+        let mut request = client.post(&url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        match request.send().await {
             Ok(resp) => {
                 self.last_status_code = Some(resp.status().as_u16());
                 self.last_response_body = Some(resp.text().await.unwrap_or_default());
@@ -473,6 +479,15 @@ impl SentinelWorld {
     pub fn dashboard_url(&self, path: &str) -> String {
         let sentinel = self.sentinel.as_ref().expect("sentinel not started");
         format!("{}{}", sentinel.base_url(), path)
+    }
+
+    /// The dashboard's own origin (`http://127.0.0.1:<port>`): what a client
+    /// that is not a browser names in `Origin` to be accepted.
+    pub fn dashboard_origin(&self) -> String {
+        self.sentinel
+            .as_ref()
+            .expect("sentinel not started")
+            .base_url()
     }
 
     /// Wait until sentinel has polled at least once (`last_poll_epoch_ms` > 0).

@@ -39,7 +39,9 @@ pub trait HttpClient: Send + Sync {
     async fn put_json(&self, url: &str, body: &str) -> Result<HttpResponse, HttpError>;
 
     /// Send a POST request with an empty body. Sentinel's REST restart
-    /// endpoint (`POST /api/services/{name}/restart`) takes no body.
+    /// endpoint (`POST /api/services/{name}/restart`) takes no body, and
+    /// refuses a request that does not name its own origin, as a page on
+    /// another site could not.
     async fn post(&self, url: &str) -> Result<HttpResponse, HttpError>;
 }
 
@@ -168,11 +170,18 @@ impl HttpClient for ReqwestHttpClient {
     async fn post(&self, url: &str) -> Result<HttpResponse, HttpError> {
         tracing::debug!("POST {url}");
         // `Connection: close` for the same reason as `get` — a restart tears
-        // processes down, so a pooled connection would go stale.
+        // processes down, so a pooled connection would go stale. The `Origin`
+        // is the target's own, which a client that is not a browser names to
+        // pass the target's cross-site check.
+        let origin = reqwest::Url::parse(url)
+            .map_err(|e| HttpError(format!("POST {url}: not a URL: {e}")))?
+            .origin()
+            .ascii_serialization();
         let mut request = self
             .client
             .post(url)
-            .header(reqwest::header::CONNECTION, "close");
+            .header(reqwest::header::CONNECTION, "close")
+            .header(reqwest::header::ORIGIN, origin);
         if let Some((user, pass)) = &self.auth {
             request = request.basic_auth(user, Some(pass));
         }
@@ -227,5 +236,12 @@ mod tests {
         let client = ReqwestHttpClient::new(None).unwrap();
         let err = client.post(UNREACHABLE_URL).await.unwrap_err();
         assert!(err.0.starts_with("POST "), "{}", err.0);
+    }
+
+    #[tokio::test]
+    async fn post_to_what_is_not_a_url_is_an_error() {
+        let client = ReqwestHttpClient::new(None).unwrap();
+        let err = client.post("sentinel/restart").await.unwrap_err();
+        assert!(err.0.contains("not a URL"), "{}", err.0);
     }
 }

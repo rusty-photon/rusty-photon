@@ -17,6 +17,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-process:rusty-photon-process",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-setup:rusty-photon-setup",
 ]
 
 rust_library(
