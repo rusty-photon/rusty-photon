@@ -13,6 +13,16 @@ Feature: Service restart API
   recovery hammer, so it also works for services whose run state autonomous
   supervision leaves alone (stopped, inert, disabled).
 
+  Only the dashboard itself may post a restart: browsers resend cached Basic
+  credentials to any request, so a page on another site could otherwise
+  restart a service. A request is accepted when its Sec-Fetch-Site is
+  same-origin or none, or, carrying none, when its Origin's host and port
+  are the request's own Host; any other request, one naming no origin at
+  all included, is refused with 403 and runs nothing. A client that is not
+  a browser names the dashboard's own origin, as the scenarios do unless
+  they say otherwise. Each discovered service's row on the dashboard page
+  carries a Restart button: a form posting to that endpoint.
+
   Scenario: A restart runs the derived command and confirms recovery
     Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
     And sentinel is running with no monitors
@@ -49,3 +59,40 @@ Feature: Service restart API
     Then the response status should be 200
     And the restart response reports status "ok" and recovery "healthy"
     And the service manager records a restart of "rusty-photon-dsd-fp2"
+
+  Scenario: A restart posted from the dashboard page itself runs
+    Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the restart endpoint is requested for "dsd-fp2" with Sec-Fetch-Site "same-origin"
+    Then the response status should be 200
+    And the restart response reports status "ok" and recovery "healthy"
+    And the service manager records a restart of "rusty-photon-dsd-fp2"
+
+  Scenario: A restart posted from another site is refused and runs nothing
+    Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the restart endpoint is requested for "dsd-fp2" with Sec-Fetch-Site "cross-site"
+    Then the response status should be 403
+    And the restart response's error names "another site"
+    And the service manager has recorded no restarts
+
+  Scenario: A restart whose Origin is another server's is refused
+    Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the restart endpoint is requested for "dsd-fp2" with Origin "http://elsewhere.example"
+    Then the response status should be 403
+    And the service manager has recorded no restarts
+
+  Scenario: A restart that names no origin is refused
+    Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the restart endpoint is requested for "dsd-fp2" naming no origin
+    Then the response status should be 403
+    And the service manager has recorded no restarts
+
+  Scenario: The dashboard offers a Restart button for each discovered service
+    Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the services response eventually lists "dsd-fp2" with run state "running"
+    And the dashboard page is requested
+    Then the dashboard's row for "dsd-fp2" has a Restart button posting to "/api/services/dsd-fp2/restart"

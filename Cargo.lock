@@ -5118,6 +5118,7 @@ dependencies = [
  "rusty-photon-process",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
  "rusty-photon-tls",
  "serde",
  "serde_json",

@@ -741,8 +741,9 @@ one hanging probe is killed and retried rather than consuming the whole
 phase). The manual restart is the operator's recovery hammer, so it works
 for **any** discovered service regardless of run state — including `stopped`
 and `inert` ones autonomous supervision leaves alone. The endpoint is what
+the dashboard's per-service **Restart** button posts to (below), and what
 the web UI's *Restart via Sentinel* affordance calls (see
-[`ui-htmx.md`](ui-htmx.md)), and the escalation target for `config.apply`
+[`ui-htmx.md`](ui-htmx.md)), the escalation target for `config.apply`
 fields classified `restart_required`.
 
 ### Behavioral contract
@@ -755,6 +756,7 @@ fields classified `restart_required`.
 | Restart command exits non-zero, fails to spawn, or exceeds the budget | `200` `{"service":"<name>","status":"failed","detail":"…"}` (no recovery poll) |
 | `{name}` is not a discovered service | `404` `{"error":"no discovered service named '<name>'"}` |
 | A restart for `{name}` is already in flight | `409` `{"error":"a restart of '<name>' is already in flight"}` |
+| The request does not say it came from the dashboard itself (below) | `403` `{"error":"<why>"}`, nothing run |
 
 - **`status` reports the action's outcome, not the transport's** — a failed
   restart command is a domain result (HTTP 200 with `status:"failed"`),
@@ -771,14 +773,28 @@ fields classified `restart_required`.
   response always arrives within that budget plus scheduling noise.
 - **Same protection as the rest of the dashboard.** The endpoint sits on the
   dashboard router, behind the same optional `server.auth` Basic-auth and
-  `server.tls` layers — there is no separate gate. Deploying without dashboard auth
+  `server.tls` layers. Deploying without dashboard auth
   leaves it (like the JSON API) open; the restart command is derived from the
   discovered unit name, never taken from the request.
+- **Only the dashboard itself may post it.** The Restart button makes the
+  endpoint a form target, and browsers resend cached Basic credentials on
+  any request to the origin, so a page on another site could otherwise
+  restart a service with the operator's credential. The `POST` is accepted
+  only when the request says it came from the dashboard: `Sec-Fetch-Site`
+  is `same-origin` or `none`, or, where the client sends none, the
+  `Origin` header's host and port are the request's own `Host` — the check
+  the services' setup pages make (`rusty-photon-setup`'s `origin`,
+  [rusty-photon-setup.md §Cross-site protection](../crates/rusty-photon-setup.md#cross-site-protection)).
+  Any other request, one with neither header included, is refused with
+  `403` and a sentence saying why, and nothing is run. A client that is
+  not a browser sends an `Origin` naming the dashboard's own origin; the
+  web UI's restart client does.
 - A user-initiated restart is logged (`info!`) but does **not** dispatch
   notifications and is not recorded in the notification history — the
   operator who pressed the button already knows.
 
 - **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds). Shows monitor statuses, a *Discovered Services* table (run state + health), and the notification history.
+- **Restart button**: each *Discovered Services* row carries a **Restart** button, a form posting to that service's [restart endpoint](#service-restart-api). With script, the button asks the operator to confirm, posts in the background, shows "Restarting…" in the row and keeps the button disabled until the answer, then shows the outcome there ("Restarted, healthy again", "Restarted, but not healthy again within the restart budget", "Restart failed: …", or the refusal's reason) across the page's refreshes. Without script the form posts in the foreground and the browser shows the endpoint's JSON answer. Like every restart path, it works for any discovered service whatever its run state.
 - **JSON API**: `/api/status` (monitor statuses), `/api/services` (discovered-service state and health, below), `/api/history` (notification history)
 - **Service restart**: `POST /api/services/{name}/restart` (see [Service Restart API](#service-restart-api))
 - **Health check**: `/health` returns 200 OK
