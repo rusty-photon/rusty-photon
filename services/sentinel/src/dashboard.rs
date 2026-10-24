@@ -1,11 +1,13 @@
 //! Web dashboard with JSON API endpoints (hand-rolled HTML + JS polling)
 //! plus the Service Restart API (`POST /api/services/{name}/restart`).
+//!
+//! Each discovered service's Restart button on the page posts to that API.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -34,6 +36,33 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Percent-encode `name` as one URL path segment: a discovered service's
+/// name is the platform's unit name, whose characters sentinel does not
+/// choose.
+fn path_segment(name: &str) -> String {
+    use std::fmt::Write as _;
+    name.bytes().fold(String::new(), |mut acc, b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            acc.push(char::from(b));
+        } else {
+            let _ = write!(acc, "%{b:02X}");
+        }
+        acc
+    })
+}
+
+/// A service row's Restart cell: a form posting to the service's restart
+/// endpoint, which the page's script takes over (see [`DASHBOARD_PAGE`]),
+/// and the line the script writes the outcome to.
+fn restart_cell(name: &str, unit: &str) -> String {
+    format!(
+        r#"<form class="restart" method="post" action="/api/services/{}/restart" data-service="{}" data-unit="{}" style="margin: 0;"><button type="submit">Restart</button></form><small class="restart-status"></small>"#,
+        html_escape(&path_segment(name)),
+        html_escape(name),
+        html_escape(unit)
+    )
 }
 
 /// Dashboard application state
@@ -209,6 +238,7 @@ fn service_rows(services: &[crate::state::ServiceHealthStatus]) -> String {
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
                 html_escape(&s.name),
                 html_escape(&run_state),
@@ -220,7 +250,8 @@ fn service_rows(services: &[crate::state::ServiceHealthStatus]) -> String {
                 s.restarts_in_outage,
                 s.total_restarts,
                 last_probe,
-                next_restart
+                next_restart,
+                restart_cell(&s.name, &s.unit)
             );
             acc
         })
@@ -265,6 +296,50 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
         function esc(v) {
             return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
         }
+        // The Restart buttons' state, kept across the re-renders below: the
+        // services being restarted (their button disabled) and the last
+        // outcome each row shows.
+        const restarting = new Set();
+        const restartNote = {};
+        function restartCell(s) {
+            const busy = restarting.has(s.name) ? ' disabled' : '';
+            const note = restartNote[s.name] || '';
+            return `<form class="restart" method="post" action="/api/services/${encodeURIComponent(s.name)}/restart" data-service="${esc(s.name)}" data-unit="${esc(s.unit)}" style="margin: 0;"><button type="submit"${busy}>Restart</button></form><small class="restart-status">${esc(note)}</small>`;
+        }
+        function restartOutcome(code, body) {
+            if (code === 200 && body.status === 'ok') {
+                return `Restarted, recovery ${body.recovery}`;
+            }
+            if (code === 200) {
+                return `Restart failed: ${body.detail || 'no detail'}`;
+            }
+            return body.error || `Restart refused (HTTP ${code})`;
+        }
+        // A Restart button confirms, posts in the background and shows the
+        // outcome in its row; without script its form posts in the
+        // foreground and the browser shows the endpoint's answer.
+        document.addEventListener('submit', ev => {
+            const form = ev.target.closest('form.restart');
+            if (!form) {
+                return;
+            }
+            ev.preventDefault();
+            const name = form.dataset.service;
+            if (restarting.has(name) || !confirm(`Restart ${form.dataset.unit}?`)) {
+                return;
+            }
+            restarting.add(name);
+            restartNote[name] = 'Restarting…';
+            refreshData();
+            fetch(form.action, { method: 'POST' })
+                .then(r => r.json().catch(() => ({})).then(body => restartOutcome(r.status, body)))
+                .catch(e => `Restart request failed: ${e}`)
+                .then(note => {
+                    restartNote[name] = note;
+                    restarting.delete(name);
+                    refreshData();
+                });
+        });
         function refreshData() {
             fetch('/api/status')
                 .then(r => r.json())
@@ -315,6 +390,7 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
                             <td style="padding: 0.5rem;">${s.total_restarts}</td>
                             <td style="padding: 0.5rem;">${lastProbe}</td>
                             <td style="padding: 0.5rem;">${nextRestart}</td>
+                            <td style="padding: 0.5rem;">${restartCell(s)}</td>
                         </tr>`;
                     }).join('');
                 });
@@ -366,6 +442,7 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
                     <th style="padding: 0.5rem; text-align: left;">Restarts (Total)</th>
                     <th style="padding: 0.5rem; text-align: left;">Last Probe</th>
                     <th style="padding: 0.5rem; text-align: left;">Next Restart</th>
+                    <th style="padding: 0.5rem; text-align: left;">Restart</th>
                 </tr>
             </thead>
             <tbody id="service-body">%service_rows%</tbody>
@@ -478,10 +555,24 @@ async fn history_handler(State(dashboard): State<DashboardState>) -> impl IntoRe
 /// restart command (and recovery poll). The command's outcome is a domain
 /// result on HTTP 200; addressing errors map to 404 (no discovered service by
 /// that name) or 409 (already in flight).
+///
+/// The Restart button makes the endpoint a form target, and a browser
+/// resends cached Basic credentials to it from any page, so a request that
+/// does not say it came from the dashboard itself is refused with 403 before
+/// anything runs.
 async fn restart_handler(
     State(dashboard): State<DashboardState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
+    if let Err(refused) = rusty_photon_setup::origin::check(&headers) {
+        tracing::debug!(service = %name, "restart refused: {refused}");
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({ "error": refused.to_string() })),
+        )
+            .into_response();
+    }
     match dashboard.restarts.restart(&name).await {
         Ok(report) => (StatusCode::OK, axum::Json(report)).into_response(),
         Err(e) => {
@@ -516,10 +607,12 @@ mod tests {
 
     use crate::discovery::{DiscoveredService, DiscoveredUnit, RunState, ServiceManager};
 
-    /// A [`ServiceManager`] that accepts every restart — the restart-handler
-    /// tests only assert the HTTP mapping, not the platform.
-    #[derive(Debug)]
-    struct AlwaysOkManager;
+    /// A [`ServiceManager`] that accepts every restart, counting them — the
+    /// restart-handler tests only assert the HTTP mapping, not the platform.
+    #[derive(Debug, Default)]
+    struct AlwaysOkManager {
+        restarts: std::sync::atomic::AtomicUsize,
+    }
 
     #[async_trait::async_trait]
     impl ServiceManager for AlwaysOkManager {
@@ -528,6 +621,9 @@ mod tests {
         }
 
         async fn restart(&self, _unit: &str, _budget: Duration) -> crate::Result<()> {
+            _ = self
+                .restarts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
@@ -537,6 +633,10 @@ mod tests {
     }
 
     fn restart_manager(services: &[&str]) -> Arc<RestartManager> {
+        restart_manager_on(services, Arc::new(AlwaysOkManager::default()))
+    }
+
+    fn restart_manager_on(services: &[&str], manager: Arc<AlwaysOkManager>) -> Arc<RestartManager> {
         let registry: std::collections::HashMap<String, DiscoveredService> = services
             .iter()
             .map(|n| {
@@ -553,7 +653,7 @@ mod tests {
             .collect();
         Arc::new(RestartManager::new(
             Arc::new(tokio::sync::RwLock::new(registry)),
-            Arc::new(AlwaysOkManager),
+            manager,
             Duration::from_secs(1),
         ))
     }
@@ -830,15 +930,24 @@ mod tests {
         build_router(setup_state(), restart_manager(services))
     }
 
+    /// Post a restart from the dashboard page itself.
     async fn post_restart(app: Router, name: &str) -> (StatusCode, serde_json::Value) {
+        post_restart_with(app, name, &[("sec-fetch-site", "same-origin")]).await
+    }
+
+    async fn post_restart_with(
+        app: Router,
+        name: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/services/{name}/restart"));
+        for (header, value) in headers {
+            request = request.header(*header, *value);
+        }
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/services/{name}/restart"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -870,6 +979,96 @@ mod tests {
         assert_eq!(body["service"], "svc");
         assert_eq!(body["status"], "ok");
         assert_eq!(body["recovery"], "skipped");
+    }
+
+    #[tokio::test]
+    async fn restart_from_another_site_is_refused_and_runs_nothing() {
+        let manager = Arc::new(AlwaysOkManager::default());
+        let app = build_router(
+            setup_state(),
+            restart_manager_on(&["svc"], Arc::clone(&manager)),
+        );
+        let (status, body) =
+            post_restart_with(app, "svc", &[("sec-fetch-site", "cross-site")]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body["error"].as_str().unwrap().contains("another site"),
+            "{body}"
+        );
+        assert_eq!(
+            manager.restarts.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_naming_no_origin_is_refused() {
+        let manager = Arc::new(AlwaysOkManager::default());
+        let app = build_router(
+            setup_state(),
+            restart_manager_on(&["svc"], Arc::clone(&manager)),
+        );
+        let (status, _) = post_restart_with(app, "svc", &[]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            manager.restarts.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_naming_its_own_origin_runs() {
+        let manager = Arc::new(AlwaysOkManager::default());
+        let app = build_router(
+            setup_state(),
+            restart_manager_on(&["svc"], Arc::clone(&manager)),
+        );
+        let (status, body) = post_restart_with(
+            app,
+            "svc",
+            &[("origin", "http://rig:11114"), ("host", "rig:11114")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            manager.restarts.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn path_segment_encodes_what_a_segment_cannot_hold() {
+        assert_eq!(path_segment("dsd-fp2"), "dsd-fp2");
+        assert_eq!(path_segment("a b/c@d"), "a%20b%2Fc%40d");
+    }
+
+    #[tokio::test]
+    async fn index_offers_a_restart_button_per_service() {
+        let state = new_state_handle(vec![], 10);
+        {
+            let mut s = state.write().await;
+            s.set_service_health(crate::state::ServiceHealthStatus::unknown(
+                "odd name".to_string(),
+                "rusty-photon-odd name".to_string(),
+                RunState::Stopped,
+                None,
+                Duration::from_secs(30),
+            ));
+        }
+        let response = router(state)
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            html.contains(
+                r#"<form class="restart" method="post" action="/api/services/odd%20name/restart" data-service="odd name" data-unit="rusty-photon-odd name""#
+            ),
+            "{html}"
+        );
     }
 
     #[tokio::test]

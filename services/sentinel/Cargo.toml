@@ -33,6 +33,7 @@ rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-process = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-setup = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no
@@ -140,7 +141,7 @@ fi
 require-sh = true
 
 [dev-dependencies]
-bdd-infra = { workspace = true, features = ["tls-auth"] }
+bdd-infra = { workspace = true, features = ["tls-auth", "setup-pages"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }

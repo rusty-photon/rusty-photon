@@ -285,6 +285,7 @@ fn services_response_does_not_list(world: &mut SentinelWorld, name: String) {
     );
 }
 
+#[when(expr = "the services response eventually lists {string} with run state {string}")]
 #[then(expr = "the services response eventually lists {string} with run state {string}")]
 async fn services_eventually_lists(world: &mut SentinelWorld, name: String, run_state: String) {
     let mut last: Option<serde_json::Value> = None;
