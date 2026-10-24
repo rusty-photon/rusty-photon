@@ -277,13 +277,14 @@ fn field_error(path: &str, msg: &str) -> FieldError {
     }
 }
 
-/// Write `value` at `pointer`, creating the leaf key, and any object above
-/// it the config leaves out.
+/// Write `value` at `pointer`, creating the leaf key when its parent object
+/// exists without it.
 ///
 /// An optional field absent from the file (absence is how "unset" is
-/// spelled) must still be settable from the page, and so must a field of a
-/// section the file leaves out. A parent that is present but not an object
-/// (a `null` optional block) is left alone, and so is the value.
+/// spelled) must still be settable from the page. A parent the config leaves
+/// out, or holds as `null` (an optional block), drops the value: a save
+/// starts a section the file leaves out with [`start_sections`] first, from
+/// the values the typed config fills for it.
 pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
     if let Some(slot) = config.pointer_mut(pointer) {
         *slot = value;
@@ -292,11 +293,6 @@ pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
     let Some((parent, key)) = pointer.rsplit_once('/') else {
         return;
     };
-    // A section the file leaves out, which its type's defaults fill when the
-    // file is parsed: the submitted field starts it.
-    if config.pointer(parent).is_none() {
-        set_pointer(config, parent, Value::Object(serde_json::Map::new()));
-    }
     if let Some(Value::Object(map)) = config.pointer_mut(parent) {
         _ = map.insert(key.to_string(), value);
     }
@@ -572,13 +568,12 @@ mod tests {
     }
 
     #[test]
-    fn a_field_of_a_section_the_file_leaves_out_starts_the_section() {
+    fn a_value_whose_parent_is_absent_or_null_is_dropped() {
+        // A caller that draws a missing section blank (ui-htmx's config
+        // cards) must not write those blanks over the section's defaults.
         let mut config = json!({ "serial": { "port": "/dev/a" } });
         set_pointer(&mut config, "/camera/server/port", json!(11128));
-        assert_eq!(
-            config,
-            json!({ "serial": { "port": "/dev/a" }, "camera": { "server": { "port": 11128 } } })
-        );
+        assert_eq!(config, json!({ "serial": { "port": "/dev/a" } }));
         // A block present as `null` is the file's choice, not an absence.
         let mut config = json!({ "server": { "tls": null } });
         set_pointer(&mut config, "/server/tls/cert", json!("c.pem"));
