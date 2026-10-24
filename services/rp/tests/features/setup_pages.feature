@@ -149,6 +149,26 @@ Feature: rp's setup page
     And the page says "changed after this page was drawn"
     And the configuration file has nothing at "/equipment/cameras/0/gain"
 
+  Scenario: A page refused as drawn from an older file shows the file's entries, and saving it writes each to its own
+    Given a temp rp config whose roster holds:
+      | kind    | id       | alpaca_url         | device_number |
+      | cameras | main-cam | http://127.0.0.1:1 | 0             |
+      | cameras | side-cam | http://127.0.0.1:2 | 0             |
+    And the entry "side-cam" presents the username "observatory" with the password "hunter2"
+    And rp is started on that config file for its setup page
+    When I open the server setup page
+    And the configuration file gains the camera "late-cam" behind the page's back
+    And I save the page again setting "remove:equipment.cameras.0" to "on"
+    Then the response status is 422
+    And the page says "changed after this page was drawn"
+    And the page does not contain "Removed by this save"
+    When I save the page again setting "equipment.cameras.0.gain" to "120"
+    Then the page reports the configuration was saved and "equipment.cameras" waits for the restart
+    And the configuration file holds "main-cam" at "/equipment/cameras/0/id"
+    And the configuration file has nothing at "/equipment/cameras/0/auth"
+    And the configuration file holds "hunter2" at "/equipment/cameras/1/auth/password"
+    And the configuration file holds "late-cam" at "/equipment/cameras/2/id"
+
   Scenario: A save posted from another site is refused
     Given a temp rp config whose roster holds:
       | kind    | id       | alpaca_url         | device_number |

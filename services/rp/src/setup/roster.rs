@@ -552,10 +552,14 @@ impl RosterSection {
     fn kind_block(&self, kind: Kind, view: SectionView<'_>) -> Markup {
         let entries = Self::entries(view.config, kind);
         // Drawn again after a rejected save, the rows follow the
-        // submission; drawn from the file, each row is its entry there.
-        let planned = view.submitted.map(|form| plan(form, kind));
-        let removed = view
+        // submission; drawn from the file, each row is its entry there. A
+        // kind the save refused as drawn from an older file is drawn as the
+        // file holds it: the submission's rows are not its entries.
+        let submitted = view
             .submitted
+            .filter(|_| !view.errors.contains(&moved_on(kind)));
+        let planned = submitted.map(|form| plan(form, kind));
+        let removed = submitted
             .map(|form| removed_origins(form, kind))
             .unwrap_or_default();
         html! {
@@ -869,9 +873,9 @@ fn moved_on(kind: Kind) -> FieldError {
     FieldError {
         path: String::new(),
         msg: format!(
-            "The configuration file's {} changed after this page was drawn; nothing was saved. \
-             Reload the page and make the change again.",
-            kind.heading.to_lowercase()
+            "The configuration file's {kinds} changed after this page was drawn; nothing was saved. \
+             The page now shows the {kinds} the file holds: make the change again.",
+            kinds = kind.heading.to_lowercase()
         ),
     }
 }
@@ -1298,6 +1302,40 @@ mod tests {
                 .any(|e| e.msg.contains("changed after this page was drawn")),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn a_kind_refused_as_drawn_from_an_older_file_is_drawn_as_the_file_holds_it() {
+        let section = section(json!({}), &[]);
+        // The page drew a and b; c joined the file behind it, and the save
+        // removes a.
+        let mut config = two_cameras();
+        config["equipment"]["cameras"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": "c", "alpaca_url": "http://127.0.0.1:3", "device_number": 0 }));
+        let submitted = form(&[
+            ("origin:equipment.cameras.0", "file:0:a"),
+            ("remove:equipment.cameras.0", "on"),
+            ("origin:equipment.cameras.1", "file:1:b"),
+        ]);
+        let mut shown = config.clone();
+        let errors = section.apply(&submitted, &mut shown);
+        assert_eq!(errors, vec![moved_on(CAMERAS)]);
+        let html = section
+            .render(SectionView {
+                config: &shown,
+                submitted: Some(&submitted),
+                errors: &errors,
+                host: None,
+            })
+            .into_string();
+        for (place, origin) in ["file:0:a", "file:1:b", "file:2:c"].iter().enumerate() {
+            let control = format!(r#"name="origin:equipment.cameras.{place}" value="{origin}""#);
+            assert!(html.contains(&control), "{control}:\n{html}");
+        }
+        assert!(!html.contains("removed:equipment.cameras"), "{html}");
+        assert!(!html.contains("Removed by this save"), "{html}");
     }
 
     #[test]

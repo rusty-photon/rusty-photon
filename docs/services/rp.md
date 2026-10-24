@@ -7416,7 +7416,9 @@ part of a submission:
 - overlays each row's fields onto the entry at the same position in the
   file, once each row's `id` (the mount's address) is the one the page
   showed: a file edited since the page was loaded is refused rather than
-  overlaid onto the wrong entry, with a note to reload the page;
+  overlaid onto the wrong entry, and the page is drawn again with that
+  kind's entries as the file now holds them, on which the change is made
+  again;
 - removes each entry whose Remove box is checked. A page drawn again after
   a rejected save names the entries that save removes and carries them, so
   saving it once the error is fixed removes them too (reloading the page
