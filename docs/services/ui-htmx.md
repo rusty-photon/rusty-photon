@@ -265,7 +265,10 @@ the BFF renders the scalar ones:
 - Each leaf's **`FieldKind`** is inferred from the schema: `string` → text,
   `boolean` → checkbox, `integer`/`number` → numeric input, integer-enum
   array → checkbox group, with the schema's `minimum`/`maximum` and
-  nullability (`type:["integer","null"]`) driving coercion. Fields are
+  nullability (`type:["integer","null"]`) driving coercion. A numeric input
+  carries those bounds as `min`/`max`, and a `number`'s takes any value
+  (`step="any"`), since the browser's default step of 1 would refuse a
+  decimal. Fields are
   grouped into a `<fieldset>` per top-level section.
 
 The form edits a subset of fields; the rest must round-trip unchanged so

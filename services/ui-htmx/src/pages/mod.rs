@@ -398,9 +398,14 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
                         }
                     }
                 }
+                // A number input carries its `step` (`any` for a
+                // floating-point field, which the browser's default of 1
+                // would refuse a decimal in) and its schema bounds.
                 _ => {
+                    @let (min, max) = spec.bounds();
                     label for=(name) { (spec.label()) }
-                    input type=(spec.input_type()) id=(name) name=(name)
+                    input type=(spec.input_type()) step=[spec.step()] min=[min] max=[max]
+                        id=(name) name=(name)
                         value=(text_at(ctx.config, spec.pointer())) disabled[disabled];
                 }
             }
@@ -1018,6 +1023,32 @@ mod tests {
         assert!(
             markup.contains("Pinned by a command-line override"),
             "{markup}"
+        );
+    }
+
+    #[test]
+    fn a_float_field_takes_any_value_and_an_integer_its_bounds() {
+        let schema = ConfigSchemaResponse {
+            schema: json!({
+                "type": "object",
+                "properties": { "cooling": { "type": "object", "properties": {
+                    "tolerance_c": { "type": "number" },
+                    "settle_polls": { "type": "integer", "minimum": 1, "maximum": 60 },
+                } } },
+            }),
+            locked_fields: vec![],
+            read_only_fields: vec![],
+        };
+        let model = FieldModel::from_schema(&schema);
+        let config = json!({ "cooling": { "tolerance_c": 0.5, "settle_polls": 3 } });
+        let markup = config_card(&page(), &model, &config, &[], &[], &[], None).into_string();
+        assert_eq!(
+            input_tag(&markup, "cooling.tolerance_c"),
+            r#"<input type="number" step="any" id="cooling.tolerance_c" name="cooling.tolerance_c" value="0.5">"#
+        );
+        assert_eq!(
+            input_tag(&markup, "cooling.settle_polls"),
+            r#"<input type="number" min="1" max="60" id="cooling.settle_polls" name="cooling.settle_polls" value="3">"#
         );
     }
 

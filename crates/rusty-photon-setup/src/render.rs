@@ -171,10 +171,14 @@ fn scalar_field(
                         autocomplete="off";
                     div.hint { "Blank keeps the stored value." }
                 }
+                // A number input carries its `step` and its schema bounds
+                // (`FieldSpec::step`, `FieldSpec::bounds`); a text input
+                // carries neither.
                 _ => {
+                    @let (min, max) = spec.bounds();
                     label for=(name) { (spec.label()) }
-                    input type=(spec.input_type()) id=(name) name=(name)
-                        value=(text_of(value)) disabled[disabled];
+                    input type=(spec.input_type()) step=[spec.step()] min=[min] max=[max]
+                        id=(name) name=(name) value=(text_of(value)) disabled[disabled];
                 }
             }
             @if let Some(e) = error { div.error { (e) } }
@@ -401,6 +405,8 @@ mod tests {
                 "serial": { "type": "object", "properties": {
                     "port": { "type": "string" },
                     "baud_rate": { "type": "integer", "minimum": 0 },
+                    "gain": { "type": "number" },
+                    "tilt": { "type": "number", "minimum": -90, "maximum": 90 },
                     "enabled": { "type": "boolean" },
                     "key": { "type": "string" },
                     "targets": { "type": "array", "items": { "type": "integer", "enum": [-10, 0] } },
@@ -419,7 +425,7 @@ mod tests {
 
     fn config() -> Value {
         json!({
-            "serial": { "port": "/dev/a", "baud_rate": 9600, "enabled": true, "key": "stored", "targets": [0] },
+            "serial": { "port": "/dev/a", "baud_rate": 9600, "gain": 1.5, "tilt": 12.5, "enabled": true, "key": "stored", "targets": [0] },
             "server": { "tls": null },
             "transport": { "kind": "udp", "host": "mount.local" },
         })
@@ -481,6 +487,35 @@ mod tests {
             "{markup}"
         );
         assert!(markup.contains(r#"type="number""#), "{markup}");
+    }
+
+    #[test]
+    fn a_number_field_takes_any_value_and_an_integer_steps_by_one() {
+        let markup = render("serial.gain", FieldState::default());
+        assert!(
+            markup.contains(
+                r#"<input type="number" step="any" id="serial.gain" name="serial.gain" value="1.5">"#
+            ),
+            "{markup}"
+        );
+        let integer = render("serial.baud_rate", FieldState::default());
+        assert!(
+            integer.contains(
+                r#"<input type="number" min="0" id="serial.baud_rate" name="serial.baud_rate" value="9600">"#
+            ),
+            "{integer}"
+        );
+    }
+
+    #[test]
+    fn a_number_fields_schema_bounds_are_its_min_and_max() {
+        let markup = render("serial.tilt", FieldState::default());
+        assert!(
+            markup.contains(
+                r#"<input type="number" step="any" min="-90" max="90" id="serial.tilt" name="serial.tilt" value="12.5">"#
+            ),
+            "{markup}"
+        );
     }
 
     #[test]
