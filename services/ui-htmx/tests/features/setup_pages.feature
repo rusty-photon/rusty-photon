@@ -33,6 +33,22 @@ Feature: ui-htmx's setup page
     Then the page names "rp.auth" as edited in the configuration file
     And the setup page does not contain "hunter2"
 
+  # The credential is bound to rp's address: a page anyone reaching the BFF
+  # can save must not send rp's password to an address typed on it.
+  Scenario: Moving rp elsewhere removes the credential the BFF presented to it
+    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
+    Then the page reports the configuration was saved and "rp.base_url" waits for the restart
+    And the page says "Removed from the file: rp.auth"
+    And the configuration file has nothing at "/rp/auth"
+
+  Scenario: A save that leaves rp's address keeps the credential
+    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    When I submit the server setup page setting "rp.ca_cert_path" to "/etc/rusty-photon/ca.pem"
+    Then the page reports the configuration was saved and "rp.ca_cert_path" waits for the restart
+    And the configuration file holds "observatory" at "/rp/auth/username"
+    And the configuration file holds "hunter2" at "/rp/auth/password"
+
   Scenario: A save posted from another site is refused
     Given ui-htmx is started on a temp config file for its setup page
     When I submit the server setup page from the origin "https://elsewhere.example" setting "rp.base_url" to "http://rig.local:11115"

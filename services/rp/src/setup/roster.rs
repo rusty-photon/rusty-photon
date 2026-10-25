@@ -824,6 +824,7 @@ impl RosterSection {
             };
             let to = row_prefix(kind, (kind != MOUNT).then_some(built.len()));
             let sub = scoped(form, &planned.from);
+            let stored_address = base.get("alpaca_url").cloned();
             let mut scratch = json!({ SCRATCH: base });
             let mut row_errors = Vec::new();
             for spec in self.entry_fields(kind, SCRATCH) {
@@ -835,7 +836,8 @@ impl RosterSection {
                 .get_mut(SCRATCH)
                 .map(Value::take)
                 .unwrap_or_default();
-            row_errors.extend(apply_credential(&sub, &mut entry));
+            let moved = entry.get("alpaca_url").cloned() != stored_address;
+            row_errors.extend(apply_credential(&sub, &mut entry, moved));
             errors.extend(row_errors.into_iter().map(|e| renamed(e, &to)));
             built.push(entry);
         }
@@ -938,7 +940,7 @@ fn credential_fields(
                 @if typed {
                     "Type the password again: a page never carries one back."
                 } @else if stored {
-                    "Blank keeps the stored password."
+                    "Blank keeps the stored password while the address stays as it is."
                 } @else {
                     "Needed with a username."
                 }
@@ -949,28 +951,43 @@ fn credential_fields(
 }
 
 /// Apply a row's credential fields (named under [`SCRATCH`]) onto `entry`.
-/// A row whose submission carries no username control keeps its block.
-fn apply_credential(form: &FormValues, entry: &mut Value) -> Vec<FieldError> {
+/// A blank password keeps the stored one only while the entry's address
+/// stays as it was (`moved` says it changed): a stored password is
+/// presented only at the address it was set for, so a page cannot send it
+/// somewhere new. A row whose submission carries no username control keeps
+/// its block, on the same terms.
+fn apply_credential(form: &FormValues, entry: &mut Value, moved: bool) -> Vec<FieldError> {
     let user_control = format!("{SCRATCH}.auth.username");
     let pass_control = format!("{SCRATCH}.auth.password");
-    let Some(user) = form.get(&user_control).map(str::trim) else {
-        return Vec::new();
-    };
-    let typed = form.get(&pass_control).unwrap_or_default();
     let Some(object) = entry.as_object_mut() else {
         return Vec::new();
     };
-    let stored = object
-        .get("auth")
-        .and_then(|auth| auth.get("password"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
     let refuse = |path: &str, msg: &str| {
         vec![FieldError {
             path: path.to_string(),
             msg: msg.to_string(),
         }]
     };
+    let moved_away = || {
+        refuse(
+            &pass_control,
+            "is needed again: the address changed, and a stored password is presented only \
+             at the address it was set for; clear the username to present none",
+        )
+    };
+    let Some(user) = form.get(&user_control).map(str::trim) else {
+        return if moved && object.contains_key("auth") {
+            moved_away()
+        } else {
+            Vec::new()
+        };
+    };
+    let typed = form.get(&pass_control).unwrap_or_default();
+    let stored = object
+        .get("auth")
+        .and_then(|auth| auth.get("password"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut set = |password: &str| {
         let mut auth = Map::new();
         _ = auth.insert("username".to_string(), Value::String(user.to_string()));
@@ -988,10 +1005,11 @@ fn apply_credential(form: &FormValues, entry: &mut Value) -> Vec<FieldError> {
             "is needed with a password; clear both to present no credential",
         ),
         (false, false) => set(typed),
-        (false, true) => stored.as_deref().map_or_else(
-            || refuse(&pass_control, "is needed with a username: none is stored"),
-            set,
-        ),
+        (false, true) => match stored {
+            Some(_) if moved => moved_away(),
+            Some(password) => set(&password),
+            None => refuse(&pass_control, "is needed with a username: none is stored"),
+        },
     }
 }
 
@@ -1164,11 +1182,21 @@ mod tests {
         pairs: &[(&str, &str)],
         stored: Option<(&str, &str)>,
     ) -> (Value, Vec<FieldError>) {
+        credential_after(pairs, stored, false)
+    }
+
+    /// The credential a row's submission leaves, `moved` saying whether the
+    /// row's address changed.
+    fn credential_after(
+        pairs: &[(&str, &str)],
+        stored: Option<(&str, &str)>,
+        moved: bool,
+    ) -> (Value, Vec<FieldError>) {
         let mut entry = json!({ "id": "a" });
         if let Some((user, pass)) = stored {
             entry["auth"] = json!({ "username": user, "password": pass });
         }
-        let errors = apply_credential(&form(pairs), &mut entry);
+        let errors = apply_credential(&form(pairs), &mut entry, moved);
         (entry, errors)
     }
 
@@ -1232,6 +1260,66 @@ mod tests {
         assert!(entry.get("auth").is_none());
         let (entry, _) = credential(&[], Some(("obs", "hunter2")));
         assert_eq!(entry["auth"]["password"], "hunter2");
+    }
+
+    #[test]
+    fn a_blank_password_at_a_changed_address_is_refused_on_the_password() {
+        let (_, errors) = credential_after(
+            &[("entry.auth.username", "obs"), ("entry.auth.password", "")],
+            Some(("obs", "hunter2")),
+            true,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "entry.auth.password");
+        assert!(errors[0].msg.contains("the address changed"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_typed_password_or_a_cleared_credential_is_taken_at_a_changed_address() {
+        let (entry, errors) = credential_after(
+            &[
+                ("entry.auth.username", "obs"),
+                ("entry.auth.password", "fresh"),
+            ],
+            Some(("obs", "hunter2")),
+            true,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(entry["auth"]["password"], "fresh");
+        let (entry, errors) = credential_after(
+            &[("entry.auth.username", ""), ("entry.auth.password", "")],
+            Some(("obs", "hunter2")),
+            true,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(entry.get("auth").is_none());
+    }
+
+    #[test]
+    fn no_username_control_at_a_changed_address_is_refused() {
+        let (_, errors) = credential_after(&[], Some(("obs", "hunter2")), true);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "entry.auth.password");
+    }
+
+    #[test]
+    fn a_save_moving_an_entry_with_a_stored_password_names_the_rows_password() {
+        let mut config = two_cameras();
+        config["equipment"]["cameras"][1]["auth"] =
+            json!({ "username": "obs", "password": "hunter2" });
+        let submitted = form(&[
+            ("origin:equipment.cameras.0", "file:0:a"),
+            ("origin:equipment.cameras.1", "file:1:b"),
+            (
+                "equipment.cameras.1.alpaca_url",
+                "http://elsewhere.example:80",
+            ),
+            ("equipment.cameras.1.auth.username", "obs"),
+            ("equipment.cameras.1.auth.password", ""),
+        ]);
+        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "equipment.cameras.1.auth.password");
     }
 
     #[test]

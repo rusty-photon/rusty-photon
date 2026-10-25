@@ -71,7 +71,7 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 [package.metadata.deb]
 name = "rusty-photon-ui-htmx"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "Server-rendered web configuration UI for Rusty Photon services."
+extended-description = "Server-rendered web UI for Rusty Photon: the activity stream and the targets inbox."
 section = "science"
 priority = "optional"
 # $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
@@ -90,7 +90,7 @@ restart-after-upgrade = true
 
 [package.metadata.generate-rpm]
 name = "rusty-photon-ui-htmx"
-summary = "Web configuration UI for Rusty Photon services"
+summary = "Web UI for Rusty Photon: activity stream and targets inbox"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/ui-htmx", dest = "/usr/bin/rusty-photon-ui-htmx", mode = "755" },

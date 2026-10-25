@@ -141,7 +141,7 @@
          PascalCase mapping of the service directory names. -->
     <Feature Id="Core"
              Title="Core"
-             Description="Always installed: sentinel (watchdog + notifications, port 11114) and the web config UI (port 11120)."
+             Description="Always installed: sentinel (watchdog + notifications, port 11114) and the web UI (port 11120)."
              Level="1"
              AllowAbsent="no"
              AllowAdvertise="no"

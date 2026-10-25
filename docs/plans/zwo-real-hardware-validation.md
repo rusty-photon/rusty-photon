@@ -64,9 +64,9 @@ deployment work. Remote dev loop: see
 
 ### 1.5 Stack integration
 
-- [ ] Add both devices to `ui-htmx` drivers, sentinel monitors, and rp
-      equipment on the rig; confirm the `/equipment` roster tiers them
-      correctly.
+- [ ] Add both devices to sentinel monitors and rp equipment on the rig;
+      confirm `rp`'s `/setup` roster shows them connected and links each
+      driver's own setup page.
 - [ ] `scripts/rig.sh fetch-configs` afterwards so local dev configs include
       the new endpoints.
 
@@ -86,7 +86,7 @@ deployment work. Remote dev loop: see
 ## 3. Exit criteria
 
 Both ConformU suites green against real hardware, one full-frame capture on
-disk, EAF moving reliably, devices integrated into ui-htmx/sentinel/rp, and
+disk, EAF moving reliably, devices integrated into sentinel/rp, and
 each service's design doc updated with a "validated on real hardware" note
 (zwo-camera.md, zwo-focuser.md). Then archive this plan per
 docs/skills/archiving-plans.md.

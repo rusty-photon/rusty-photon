@@ -293,6 +293,18 @@ A secret leaf the driver names in `secret_pointers` that is not the
 server-auth hash renders as an empty password input whose blank submission
 means "unchanged", and never carries its stored value.
 
+**A credential the service presents to another server** is bound to the
+address it presents it at: `SetupPages::with_bound_credential(address,
+credential)`, two JSON pointers. A save that changes the address and leaves
+the credential block as the file stores it removes the block, and the saved
+page names what it removed (`#saved-unbound`) and says to set it again in the
+file. The address is compared as the service would run it — parsed and
+normalized, so a default the file leaves out, written back by the page, is no
+change — and a block the save itself rewrote is kept, as the operator's for
+the new address. A page anyone who reaches the service can save must not send
+a stored password to whatever address is typed on it; the BFF binds `rp.auth`
+to `rp.base_url` this way ([ui-htmx.md](../services/ui-htmx.md) § Setup page).
+
 ## Cross-site protection
 
 Browsers resend cached Basic credentials on any request to the origin, so

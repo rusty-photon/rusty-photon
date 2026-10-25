@@ -427,7 +427,7 @@ fn trim_float(value: f64) -> String {
 }
 
 /// Field-level errors on the review form (`div.field.invalid` + `.error`,
-/// the config pages' convention).
+/// the setup pages' convention).
 #[derive(Debug, Default)]
 struct FormErrors {
     display_name: Option<String>,

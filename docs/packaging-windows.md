@@ -18,7 +18,7 @@ One `rusty-photon-<version>-x64.msi` for the whole family, downloaded from
 the GitHub Releases page. The installer presents a feature tree:
 
 - **Core** (required): `sentinel` (watchdog/notifications) and `ui-htmx`
-  (web config UI). Any install includes them. Core also installs
+  (the web UI). Any install includes them. Core also installs
   `rusty-photon-doctor.exe` (diagnosis, `--fix` repair, and the TLS +
   credential lifecycle — [docs/services/doctor.md](services/doctor.md);
   there is no separate doctor package) and registers the Scheduled Task
@@ -49,7 +49,7 @@ its port:
 | star-adventurer-gti | 11117 | `StarAdventurerGti` | serial (COM port) |
 | pa-falcon-rotator | 11118 | `PaFalconRotator` | serial (COM port) |
 | dsd-fp2 | 11119 | `DsdFp2` | serial (COM port) |
-| ui-htmx | 11120 | `Core` | web config UI |
+| ui-htmx | 11120 | `Core` | web UI: activity stream, targets inbox |
 | qhy-camera | 11121 | `QhyCamera` | needs QHY's All-in-One pack (below) |
 | zwo-camera | 11122 | `ZwoCamera` | its SDK DLL bundled |
 | pa-scops-oag | 11123 | `PaScopsOag` | serial (COM port) |

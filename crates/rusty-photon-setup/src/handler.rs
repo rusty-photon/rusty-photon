@@ -112,6 +112,17 @@ pub struct SetupPages<D: ConfigurableDriver> {
     saving: tokio::sync::Mutex<()>,
     /// The driver's own part of the pages, when it has one.
     driver_pages: Option<Arc<dyn DriverPages>>,
+    /// The credentials the service presents to another server, each kept
+    /// only while its address stays the one it was stored with.
+    bound_credentials: Vec<BoundCredential>,
+}
+
+/// A credential block the service presents to another server, and the
+/// address it presents it at, both as JSON pointers.
+#[derive(Debug, Clone)]
+struct BoundCredential {
+    address: String,
+    credential: String,
 }
 
 /// A save waiting for its confirmation: the tokens the confirmation page
@@ -180,6 +191,18 @@ fn is_identity(spec: &FieldSpec) -> bool {
     spec.name().ends_with(".unique_id")
 }
 
+/// Remove the member at `pointer` from its parent object; whether there
+/// was one.
+fn remove_pointer(config: &mut Value, pointer: &str) -> bool {
+    let Some((parent, key)) = pointer.rsplit_once('/') else {
+        return false;
+    };
+    config
+        .pointer_mut(parent)
+        .and_then(Value::as_object_mut)
+        .is_some_and(|object| object.remove(key).is_some())
+}
+
 /// The generation the next handler is born with.
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -227,6 +250,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             generation: next_generation(),
             saving: tokio::sync::Mutex::new(()),
             driver_pages: None,
+            bound_credentials: Vec::new(),
         }
     }
 
@@ -252,6 +276,21 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     #[must_use]
     pub const fn with_https(mut self, https: bool) -> Self {
         self.https = https;
+        self
+    }
+
+    /// A credential the service presents to another server — the block at
+    /// the JSON pointer `credential` — kept only while the address at
+    /// `address` stays the one it was stored with. A save that changes the
+    /// address and leaves the block as the file stores it removes the
+    /// block, and the saved page names what it removed: a page that can
+    /// edit the address must not send a stored password somewhere new.
+    #[must_use]
+    pub fn with_bound_credential(mut self, address: &str, credential: &str) -> Self {
+        self.bound_credentials.push(BoundCredential {
+            address: address.to_string(),
+            credential: credential.to_string(),
+        });
         self
     }
 
@@ -748,6 +787,22 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 );
             }
         }
+        self.write(page, &file_before, file, effective, &request.headers)
+    }
+
+    /// Write `file`, a save every check passed, over `file_before`: the
+    /// bound credentials it would carry to a changed address removed, then
+    /// typed and normalized, and persisted against what the service would
+    /// run without it.
+    fn write(
+        &self,
+        page: &Page,
+        file_before: &Value,
+        mut file: Value,
+        effective: &Value,
+        headers: &HeaderMap,
+    ) -> PageResponse {
+        let unbound = self.unbind_credentials(file_before, &mut file);
         let typed = match serde_json::from_value::<D::Config>(file) {
             Ok(mut typed) => {
                 D::normalize(&mut typed);
@@ -760,8 +815,41 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        let baseline = self.baseline(&file_before, effective);
-        self.persist(page, typed, effective, &baseline, &request.headers)
+        let baseline = self.baseline(file_before, effective);
+        self.persist(page, typed, effective, &baseline, headers, &unbound)
+    }
+
+    /// Remove each bound credential this save would carry to a changed
+    /// address: the address the service would run with from `file` is not
+    /// the one it runs with from `before`, and the block is as `before`
+    /// stores it — a block the save itself rewrote is the operator's, for
+    /// the new address. Answers the dotted paths of the blocks removed.
+    fn unbind_credentials(&self, before: &Value, file: &mut Value) -> Vec<String> {
+        let mut removed = Vec::new();
+        for bound in &self.bound_credentials {
+            let stored = before.pointer(&bound.credential);
+            if stored.is_none() || file.pointer(&bound.credential) != stored {
+                continue;
+            }
+            if self.address_in(before, &bound.address) == self.address_in(file, &bound.address) {
+                continue;
+            }
+            if remove_pointer(file, &bound.credential) {
+                debug!(credential = %bound.credential, "a setup-page save removes a credential whose address changed");
+                removed.push(bound.credential.trim_start_matches('/').replace('/', "."));
+            }
+        }
+        removed
+    }
+
+    /// The address at `pointer` the service would run with from `file`:
+    /// parsed and normalized, so a default the file leaves out or a trimmed
+    /// space is no change; the file's own value when the typed config
+    /// refuses it.
+    fn address_in(&self, file: &Value, pointer: &str) -> Option<Value> {
+        self.effective_of(file)
+            .and_then(|config| config.pointer(pointer).cloned())
+            .or_else(|| file.pointer(pointer).cloned())
     }
 
     /// The `500` a save answers when the file it would overlay cannot be read.
@@ -863,9 +951,10 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// Persist the validated configuration and answer with what happened:
-    /// what changed against `baseline` decides the reload, and where the
-    /// pages live afterwards is read against `effective`, the running
-    /// service, whose address the browser is at.
+    /// what changed against `baseline` decides the reload, where the pages
+    /// live afterwards is read against `effective`, the running service,
+    /// whose address the browser is at, and the saved page names the bound
+    /// credentials the save removed (`unbound`).
     fn persist(
         &self,
         page: &Page,
@@ -873,6 +962,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         effective: &Value,
         baseline: &Value,
         headers: &HeaderMap,
+        unbound: &[String],
     ) -> PageResponse {
         let to_persist = match serde_json::to_value(&typed) {
             Ok(v) => v,
@@ -927,7 +1017,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 ApplyDisposition::Restart => Saved::RestartRequired(changed),
             }
         };
-        self.saved_response(&saved, destination.as_ref())
+        self.saved_response(&saved, destination.as_ref(), unbound)
     }
 
     /// Overlay the page's submitted fields onto `file`: a pinned control is
@@ -995,8 +1085,13 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// The saved page, with the no-script `Refresh` when a reload is on.
-    fn saved_response(&self, saved: &Saved, destination: Option<&Destination>) -> PageResponse {
-        let body = render::saved_body(&self.service, saved, destination, "");
+    fn saved_response(
+        &self,
+        saved: &Saved,
+        destination: Option<&Destination>,
+        unbound: &[String],
+    ) -> PageResponse {
+        let body = render::saved_body(&self.service, saved, destination, "", unbound);
         let mut response = PageResponse::html(
             StatusCode::OK,
             render::document(&self.service, "Saved", &self.generation, &body),
@@ -3245,5 +3340,209 @@ mod tests {
         _ = p.handle(PageScope::Server, get()).await;
         _ = p.handle(PageScope::Server, post(&server_base())).await;
         assert_eq!(*seen.0.lock().unwrap(), vec![false, true]);
+    }
+
+    /// A service that presents a credential to another server: the
+    /// upstream's address, which the page edits, and the credential block
+    /// bound to it, which the file holds.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct LinkedConfig {
+        server: Server,
+        #[serde(default)]
+        upstream: Upstream,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct Upstream {
+        #[serde(default = "default_upstream_url")]
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<UpstreamAuth>,
+    }
+
+    impl Default for Upstream {
+        fn default() -> Self {
+            Self {
+                url: default_upstream_url(),
+                auth: None,
+            }
+        }
+    }
+
+    fn default_upstream_url() -> String {
+        "http://127.0.0.1:11115".to_string()
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct UpstreamAuth {
+        username: String,
+        password: String,
+    }
+
+    struct LinkedFake;
+
+    impl ConfigurableDriver for LinkedFake {
+        type Config = LinkedConfig;
+        type Overrides = ();
+        fn normalize(config: &mut LinkedConfig) {
+            config.upstream.url = config.upstream.url.trim().to_string();
+        }
+        fn validate(_config: &LinkedConfig) -> Vec<FieldError> {
+            Vec::new()
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            &["/upstream/auth/password"]
+        }
+        fn override_paths(_overrides: &()) -> Vec<String> {
+            Vec::new()
+        }
+        fn apply_overrides(_config: &mut LinkedConfig, _overrides: &()) {}
+        fn apply_disposition() -> ApplyDisposition {
+            ApplyDisposition::Restart
+        }
+    }
+
+    /// The pages over `file`, with the upstream's credential bound to its
+    /// address, and that file.
+    fn linked_pages(file: &Value) -> (tempfile::TempDir, PathBuf, SetupPages<LinkedFake>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("linked.json");
+        std::fs::write(&path, file.to_string()).unwrap();
+        let running: LinkedConfig = serde_json::from_value(file.clone()).unwrap();
+        let p = SetupPages::<LinkedFake>::new("linked", running, path.clone(), ())
+            .with_bound_credential("/upstream/url", "/upstream/auth");
+        (dir, path, p)
+    }
+
+    fn linked_credential() -> Value {
+        json!({ "username": "obs", "password": "hunter2" })
+    }
+
+    #[tokio::test]
+    async fn a_save_that_changes_the_address_removes_the_credential_bound_to_it() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11120"),
+                    ("upstream.url", "http://elsewhere.example:80"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let saved = sparse_on_disk(&path);
+        assert_eq!(saved["upstream"]["url"], "http://elsewhere.example:80");
+        assert!(saved["upstream"].get("auth").is_none(), "{saved}");
+        assert!(
+            response.body.contains(r#"id="saved-unbound""#),
+            "{}",
+            response.body
+        );
+        assert!(
+            response
+                .body
+                .contains("<span class=\"mono\">upstream.auth</span>"),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_that_keeps_the_address_keeps_the_credential() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11121"),
+                    ("upstream.url", "http://127.0.0.1:11115"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+        assert!(
+            !response.body.contains("saved-unbound"),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_the_file_leaves_to_its_default_is_no_change() {
+        // The page shows the default address and submits it back, which
+        // writes the key the file left out: the address the service runs
+        // with is the same, so the credential stays.
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11121"),
+                    ("upstream.url", "http://127.0.0.1:11115"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_save_that_changes_the_address_leaves_the_credential() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "not a port"),
+                    ("upstream.url", "http://elsewhere.example:80"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+    }
+
+    #[test]
+    fn a_credential_the_save_rewrote_is_kept_at_the_new_address() {
+        // A block the save itself changed is the operator's, for the
+        // address the save names.
+        let before = json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        });
+        let (_dir, _path, p) = linked_pages(&before);
+        let typed = json!({ "username": "obs", "password": "typed-for-the-new-one" });
+        let mut file = json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://elsewhere.example:80", "auth": typed }
+        });
+        assert_eq!(
+            p.unbind_credentials(&before, &mut file),
+            Vec::<String>::new()
+        );
+        assert_eq!(file["upstream"]["auth"], typed);
     }
 }

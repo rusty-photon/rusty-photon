@@ -7453,8 +7453,14 @@ but a page never carries it back: the password input is empty, and blank
 means unchanged.
 
 - A username with a password sets the block.
-- A username with a blank password keeps the stored password; with none
-  stored, the save is refused with the password field named.
+- A username with a blank password keeps the stored password while the
+  entry's `alpaca_url` stays as it is; with none stored, the save is
+  refused with the password field named.
+- A save that changes the entry's `alpaca_url` with a blank password
+  over a stored one is refused with the password field named: a stored
+  password is presented only at the address it was set for, so a page
+  anyone who reaches `rp` can save cannot send it to an address typed on
+  it. Typing the password again, or clearing the username, saves.
 - A blank username with a blank password removes the block: `rp` presents
   no credential to that driver.
 - A blank username with a typed password is refused with the username

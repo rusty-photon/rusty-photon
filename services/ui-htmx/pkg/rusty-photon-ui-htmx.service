@@ -1,5 +1,5 @@
 [Unit]
-Description=Rusty Photon ui-htmx - web configuration UI (port 11120)
+Description=Rusty Photon ui-htmx - web UI (port 11120)
 After=network.target
 
 [Service]

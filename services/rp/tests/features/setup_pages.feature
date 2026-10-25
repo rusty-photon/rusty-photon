@@ -16,8 +16,8 @@ Feature: rp's setup page
   each kind's Add block adds an entry when its id is filled. A save drawn
   before the file's roster changed is refused rather than written onto the
   wrong entry. A credential's password never reaches a page: blank keeps
-  the stored one, a username needs a password, and clearing both removes
-  the credential.
+  the stored one while the entry's address stays as it is, a username
+  needs a password, and clearing both removes the credential.
 
   rp applies a saved change at its next start, so the saved page names the
   fields that wait for the restart. These scenarios start rp on a temp
@@ -111,6 +111,19 @@ Feature: rp's setup page
     When I submit the server setup page setting "equipment.cameras.0.auth.username" to "observatory"
     Then the page answers 422 with the error "is needed with a username: none is stored" on "equipment.cameras.0.auth.password"
     And the configuration file has nothing at "/equipment/cameras/0/auth"
+
+  # A stored password goes only to the address it was set for: a page
+  # anyone reaching rp could save must not send it to an address typed on it.
+  Scenario: Moving an entry elsewhere asks for its password again, the file untouched
+    Given a temp rp config whose roster holds:
+      | kind    | id       | alpaca_url         | device_number |
+      | cameras | main-cam | http://127.0.0.1:1 | 0             |
+    And the entry "main-cam" presents the username "observatory" with the password "hunter2"
+    And rp is started with that config file
+    When I submit the server setup page setting "equipment.cameras.0.alpaca_url" to "http://elsewhere.example:11121"
+    Then the page answers 422 with the error "the address changed" on "equipment.cameras.0.auth.password"
+    And the configuration file holds "http://127.0.0.1:1" at "/equipment/cameras/0/alpaca_url"
+    And the configuration file holds "hunter2" at "/equipment/cameras/0/auth/password"
 
   Scenario: Clearing the username and the password removes the credential
     Given a temp rp config whose roster holds:

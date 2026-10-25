@@ -40,7 +40,7 @@ doubles as the PHD2 CLI via subcommands.)
 | star-adventurer-gti | 11117 | serial (dialout; deb adds plugdev) |
 | pa-falcon-rotator | 11118 | serial (dialout; deb adds plugdev) |
 | dsd-fp2 | 11119 | serial (dialout; deb adds plugdev) |
-| ui-htmx | 11120 | web config UI |
+| ui-htmx | 11120 | web UI: activity stream, targets inbox |
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout; deb adds plugdev) |

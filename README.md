@@ -24,7 +24,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
 | [pa-scops-oag](services/pa-scops-oag) | ASCOM Focuser | 11123 | Driver for Pegasus Astro Scops OAG (motorized off-axis guider focuser) |
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
-| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | Server-rendered configuration UI (axum + Maud + HTMX); edits a driver's config via its `config.get`/`config.apply` actions, and links to a driver's own setup pages where it serves them |
+| [ui-htmx](services/ui-htmx) | Web UI (BFF) | 11120 | Server-rendered web UI (axum + Maud + HTMX): rp's activity stream and the targets inbox, with links to rp's setup page and its own |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
 | [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
@@ -113,7 +113,7 @@ See [docs/services/dsd-fp2.md](docs/services/dsd-fp2.md) for design documentatio
 
 ### UI-HTMX
 
-Browser-facing, server-rendered configuration UI — a standalone backend-for-frontend (BFF) that holds no UI logic inside `rp`. Renders HTML with axum + Maud and adds interactivity with HTMX. It is a **client** of the drivers, reading and writing each one's configuration through the cross-driver `config.get` / `config.apply` / `config.schema` ASCOM actions, so a single UI can configure any driver without driver-specific knowledge.
+Browser-facing, server-rendered web UI — a standalone backend-for-frontend (BFF) that holds no UI logic inside `rp`. Renders HTML with axum + Maud and adds interactivity with HTMX. It is a **client** of `rp`: its pages are rp's activity stream, proxied live over Server-Sent Events, and the targets inbox, where planned targets are reviewed and activated. Configuration is edited on each service's own setup page (`/setup`): the BFF's navigation links to rp's, and the BFF edits its own on its own `/setup`.
 
 See [docs/services/ui-htmx.md](docs/services/ui-htmx.md) for design documentation.
 
@@ -275,7 +275,7 @@ rusty-photon/
     focus-model/           Focus tool provider (focus_train / determine_filter_offsets / calibrate_temperature through rp)
     polar-align/           Plate-solving polar alignment orchestrator
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
-    ui-htmx/               Server-rendered web configuration UI (BFF)
+    ui-htmx/               Server-rendered web UI (BFF): activity stream, targets inbox
     doctor/                Install diagnosis CLI (read-only in D2; ADR-016)
   docs/
     services/              Per-service design documentation

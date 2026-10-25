@@ -361,14 +361,18 @@ pub fn restart_how(service: &str) -> Markup {
     }
 }
 
-/// The page `service`'s save answers with: what happened, where the browser
-/// goes if not back to this page (`destination`), and the wait.
+/// The page `service`'s save answers with.
+///
+/// What happened, the credentials the save removed because the address
+/// they are presented at changed (`unbound`, dotted paths), where the
+/// browser goes if not back to this page (`destination`), and the wait.
 #[must_use]
 pub fn saved_body(
     service: &str,
     saved: &Saved,
     destination: Option<&Destination>,
     back: &str,
+    unbound: &[String],
 ) -> Markup {
     let moved_to = destination.map(|d| d.url.as_str());
     let target = moved_to.map(str::to_string);
@@ -391,6 +395,16 @@ pub fn saved_body(
                         }
                     }
                     (restart_how(service))
+                }
+            }
+            @if !unbound.is_empty() {
+                div class="banner warn" id="saved-unbound" {
+                    span.dot {}
+                    span {
+                        "Removed from the file: "
+                        span.mono { (unbound.join(", ")) }
+                        ". The address it was presented at changed, and a stored credential is presented only at the address it was set for: set it again in the configuration file."
+                    }
                 }
             }
             @if let Some(d) = destination {
@@ -867,7 +881,7 @@ mod tests {
 
     #[test]
     fn the_saved_page_says_what_happened_and_waits_only_for_a_reload() {
-        let reloading = saved_body("dsd-fp2", &Saved::Reloading, None, "").into_string();
+        let reloading = saved_body("dsd-fp2", &Saved::Reloading, None, "", &[]).into_string();
         assert!(reloading.contains(r#"id="saved-reloading""#), "{reloading}");
         assert!(reloading.contains("<script>"), "{reloading}");
         assert!(
@@ -879,7 +893,8 @@ mod tests {
             url: "http://h:1/setup".to_string(),
             note: None,
         };
-        let moved = saved_body("dsd-fp2", &Saved::Reloading, Some(&moved_dest), "").into_string();
+        let moved =
+            saved_body("dsd-fp2", &Saved::Reloading, Some(&moved_dest), "", &[]).into_string();
         assert!(
             moved.contains(r#"var url = "http://h:1/setup" || window.location.href;"#),
             "{moved}"
@@ -889,9 +904,9 @@ mod tests {
             url: "../../../../setup".to_string(),
             note: Some("This device is disabled now.".to_string()),
         };
-        let noted = saved_body("dsd-fp2", &Saved::Reloading, Some(&noted), "").into_string();
+        let noted = saved_body("dsd-fp2", &Saved::Reloading, Some(&noted), "", &[]).into_string();
         assert!(noted.contains(r#"<p id="moved">This device is disabled now. <a href="../../../../setup">Open the server page</a>.</p>"#), "{noted}");
-        let unchanged = saved_body("dsd-fp2", &Saved::Unchanged, None, "").into_string();
+        let unchanged = saved_body("dsd-fp2", &Saved::Unchanged, None, "", &[]).into_string();
         assert!(unchanged.contains(r#"id="saved-unchanged""#), "{unchanged}");
         assert!(!unchanged.contains("<script>"), "{unchanged}");
         let restart_dest = Destination {
@@ -903,6 +918,7 @@ mod tests {
             &Saved::RestartRequired(vec!["server.port".to_string()]),
             Some(&restart_dest),
             "",
+            &[],
         )
         .into_string();
         assert!(restart.contains(r#"id="saved-restart""#), "{restart}");

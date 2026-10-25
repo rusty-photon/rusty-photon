@@ -536,7 +536,7 @@
           "FILE:@@//services/svbony-camera/Cargo.toml d2d85db12a7c9bb607ef857ec72344ea26962f6c6dd5b97a14344bee3918c3e4",
           "FILE:@@//crates/svbony-rs/Cargo.toml 26d5abd20d7d78d1642bc3a94852a3bb5ab69665dc5cca8c732602d75337151e",
           "FILE:@@//crates/svbony-rs/libsvbony-sys/Cargo.toml 1e18f2fadb23eb6530aa77256fe0ecd50fafcdc207ccf26b5b65abf08d69f8d6",
-          "FILE:@@//services/ui-htmx/Cargo.toml ee686bd23547ced8092b86822115f67ce1ff1353378fb38687d141633f28ed47",
+          "FILE:@@//services/ui-htmx/Cargo.toml 09c014ff89978877ce6adcb369fa6a5d7ed43ea924f625de7e9116f084c29159",
           "FILE:@@//services/upbv2-driver/Cargo.toml a108f5e1bf21f075d0ca90489f514e8b80c878dad8a9e28756af99a2bb9a91ce",
           "FILE:@@//services/zwo-camera/Cargo.toml eefd602868482b9c0161fa4aec0786050379dfdc62f8a5f94fdefdceea2edd44",
           "FILE:@@//crates/zwo-rs/Cargo.toml aed31dbddf5a495b8fa61816f504eb86606d8809d70d91e564824feabea449c9",
