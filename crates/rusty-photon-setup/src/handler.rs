@@ -182,8 +182,13 @@ struct Unbinding {
     /// The changed settings' JSON pointers.
     settings: Vec<String>,
     /// The stored password's JSON pointer, when the driver names a secret
-    /// directly under the block: typed again, it keeps the block.
+    /// directly under the block and the page is behind the service's own
+    /// login: typed again, it keeps the block.
     password: Option<String>,
+    /// The block has a password, but the page asks for no login, so it is
+    /// not offered: a page anyone can reach must not answer whether a guess
+    /// matches a stored password.
+    unguarded: bool,
     token: String,
 }
 
@@ -206,6 +211,8 @@ impl Unbinding {
                     (render::mono_list(&self.settings())) " changed: a stored credential is presented only to the server it was set for. "
                     @if self.password.is_some() {
                         "Type its password below to keep it for the new server; left blank, it is removed, to be set again in the configuration file."
+                    } @else if self.unguarded {
+                        "This page asks for no login, so it cannot keep the credential by its password: it is set again in the configuration file."
                     } @else {
                         "It is set again in the configuration file."
                     }
@@ -863,7 +870,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         // could confirm would happen: a section is asked only when it does.
         // A bound credential's removal is asked whenever the save would make
         // it: it rewrites the file whatever reloads.
-        let unbindings = self.unbindings(&file_before, &file);
+        let unbindings = self.unbindings(&file_before, &file, self.behind_login(effective));
         let kept = Self::kept(&unbindings, &file_before, &form, &mut errors);
         let reloads = self.reloads(&file_before, &file, effective, auth_change.as_ref());
         let confirmation =
@@ -954,7 +961,8 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     /// change; the file's own value when the typed config refuses it — and
     /// a block the save itself rewrote is the operator's, for the server
     /// the save names, so only a block as `before` stores it is carried.
-    fn unbindings(&self, before: &Value, file: &Value) -> Vec<Unbinding> {
+    /// The password that keeps a block is offered only `behind_login`.
+    fn unbindings(&self, before: &Value, file: &Value, behind_login: bool) -> Vec<Unbinding> {
         let (ran, runs) = (self.effective_of(before), self.effective_of(file));
         let setting = |config: Option<&Value>, raw: &Value, pointer: &str| {
             config
@@ -974,28 +982,41 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 continue;
             }
             let change = format!("{} {was} > {is}", dotted(&bound.setting));
-            match unbindings
+            if let Some(unbinding) = unbindings
                 .iter_mut()
                 .find(|u| u.credential == bound.credential)
             {
-                Some(unbinding) => {
-                    unbinding.settings.push(bound.setting.clone());
-                    unbinding.token = format!("{}; {change}", unbinding.token);
-                }
-                None => unbindings.push(Unbinding {
+                unbinding.settings.push(bound.setting.clone());
+                unbinding.token = format!("{}; {change}", unbinding.token);
+            } else {
+                let password = password_under(&bound.credential, D::secret_pointers());
+                unbindings.push(Unbinding {
                     credential: bound.credential.clone(),
                     settings: vec![bound.setting.clone()],
-                    password: password_under(&bound.credential, D::secret_pointers()),
+                    unguarded: password.is_some() && !behind_login,
+                    password: password.filter(|_| behind_login),
                     token: format!("remove {}: {change}", dotted(&bound.credential)),
-                }),
+                });
             }
         }
         unbindings
     }
 
+    /// Whether the running service, `effective`, asks for its own login
+    /// before serving the pages: its credential block is set. Only then does
+    /// a confirmation offer to keep a bound credential by its password.
+    fn behind_login(&self, effective: &Value) -> bool {
+        self.auth_pointer
+            .as_deref()
+            .and_then(|pointer| effective.pointer(pointer))
+            .is_some_and(|block| !block.is_null())
+    }
+
     /// The bound credentials the submission keeps for the new server: the
     /// stored password typed again in its keep control. A typed password
-    /// that does not match is refused beside its control.
+    /// that does not match is refused beside its control. A keep control
+    /// the page did not offer — one sent to a page behind no login — is
+    /// ignored.
     fn kept(
         unbindings: &[Unbinding],
         before: &Value,
@@ -3626,11 +3647,14 @@ mod tests {
         json!({ "username": "obs", "password": "hunter2" })
     }
 
-    /// The linked pages' file with the upstream at its first address and
-    /// the credential stored.
+    /// The linked pages' file behind the service's own login, with the
+    /// upstream at its first address and the credential stored.
     fn linked_file() -> Value {
         json!({
-            "server": { "port": 11120 },
+            "server": {
+                "port": 11120,
+                "auth": { "username": "observatory", "password_hash": "$argon2id$stored" }
+            },
             "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
         })
     }
@@ -3765,6 +3789,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_behind_no_login_offers_no_keep_box_and_ignores_one() {
+        // A page anyone can reach must not answer whether a guess matches
+        // the stored password: it asks before removing the credential, but
+        // only removes it, whatever a crafted keep control carries.
+        let mut file = linked_file();
+        _ = file["server"].as_object_mut().unwrap().remove("auth");
+        let (_dir, path, p) = linked_pages(&file);
+        let asked = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        assert!(!asked.body.contains("keep-credential:"), "{}", asked.body);
+        assert!(
+            asked.body.contains("This page asks for no login"),
+            "{}",
+            asked.body
+        );
+        let token = confirm_token(&asked.body);
+        let guessed = moving(&[
+            (CONFIRM, &token),
+            ("keep-credential:upstream.auth", "not-it"),
+        ]);
+        let response = p.handle(PageScope::Server, post(&guessed)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert!(
+            sparse_on_disk(&path)["upstream"].get("auth").is_none(),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_refused_confirmation_asks_again_for_a_typed_password() {
         // Refused for another field, the confirmation is carried; the keep
         // password is not, so its control asks for it again rather than
@@ -3801,7 +3854,7 @@ mod tests {
                 "auth": linked_credential()
             }
         });
-        let unbindings = p.unbindings(&before, &file);
+        let unbindings = p.unbindings(&before, &file, true);
         assert_eq!(unbindings.len(), 1);
         assert_eq!(unbindings[0].credential, "/upstream/auth");
         assert_eq!(
@@ -3941,6 +3994,6 @@ mod tests {
             "server": { "port": 11120 },
             "upstream": { "url": "http://elsewhere.example:80", "auth": typed }
         });
-        assert!(p.unbindings(&before, &file).is_empty());
+        assert!(p.unbindings(&before, &file, true).is_empty());
     }
 }

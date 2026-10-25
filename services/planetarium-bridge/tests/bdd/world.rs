@@ -283,6 +283,10 @@ impl BridgeWorld {
         self.tls_auth.pki = Some(pki);
         let mut config = Self::smoke_base_config();
         config["server"] = self.tls_auth.pki().server_block(0);
+        if let Some((username, password)) = &self.rp_service_auth {
+            config["rp"]["service_auth"] =
+                serde_json::json!({ "username": username, "password": password });
+        }
         self.start_with_tls_auth(config).await;
         let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
             .expect("the TLS fixture staged a config file");

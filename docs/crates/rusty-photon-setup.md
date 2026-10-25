@@ -311,7 +311,11 @@ credential block as the file stores it asks first:
   the block and which setting changed (`#confirm li.unbind`). Beside the
   Save button is a password control for the block (`keep-credential:` and
   the block's dotted path), when the driver names a secret directly under
-  it in `secret_pointers`.
+  it in `secret_pointers` and the running service has its own credential
+  set (the block at `with_auth_pointer`'s pointer). A page anyone can reach
+  must not answer whether a guess matches a stored password, so behind no
+  login the confirmation says it cannot keep the block, and a keep control
+  sent anyway is ignored.
 - Saved with the stored password typed there (compared in constant time),
   the block is kept for the new server. A typed password that does not match
   is refused beside the control, the file untouched. A page never carries a
@@ -385,8 +389,9 @@ the confirmation: the `409` with its token, the save the token confirms,
 and a token that no longer matches asking again), and a bound credential
 (the `409` before its removal, the removal with its control blank, the
 block kept by its password typed again, a wrong one refused beside the
-control, a refusal for another field asking for it again, and a saved page
-naming a removal that waits for no reload).
+control, a refusal for another field asking for it again, no control behind
+no login and one sent anyway ignored, and a saved page naming a removal that
+waits for no reload).
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

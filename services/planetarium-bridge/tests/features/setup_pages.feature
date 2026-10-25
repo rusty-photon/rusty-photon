@@ -13,8 +13,9 @@ Feature: Setup pages
   so is assume_epoch, a choice of two words, on the Telescope's page. That
   credential is bound to rp's address and to the CA that verifies rp
   there: a save that changes either asks first, keeps the credential when
-  its password is typed again, and otherwise removes it from the file,
-  the saved page saying so and staying on screen through the reload.
+  its password is typed again behind the bridge's own login, and otherwise
+  removes it from the file, the saved page saying so and staying on screen
+  through the reload.
   Clearing the altitude floor saves the null that disables it. A value out
   of a field's range is refused naming the field, and the file is left as
   it was. The binary takes no command-line overrides, so no field is ever
@@ -122,7 +123,7 @@ Feature: Setup pages
 
   Scenario: rp's password typed on the confirmation keeps the bridge's credential for the new address
     Given the bridge presents the username "bridge" and password "rp-secret-on-file" to rp
-    And the bridge is running
+    And the bridge is running with TLS and auth
     When I submit the server setup page setting "rp.mcp_server_url" to "http://rig.example:11115/mcp"
     And I save the confirmation typing "rp-secret-on-file" as the password that keeps "rp.service_auth"
     Then the page reports the configuration was saved and the service is reloading

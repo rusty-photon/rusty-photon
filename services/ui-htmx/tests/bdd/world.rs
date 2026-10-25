@@ -223,10 +223,15 @@ impl UiWorld {
     /// Spawn a BFF on port 0 whose `rp` target is `127.0.0.1:{rp_port}`,
     /// from a temp config file kept in [`ui_config_path`](Self::ui_config_path).
     pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
-        let config = json!({
+        self.start_bff_with_config(json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
             "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
-        });
+        }))
+        .await;
+    }
+
+    /// Spawn a BFF on a temp config file holding `config`.
+    pub async fn start_bff_with_config(&mut self, config: Value) {
         let path = self.temp_path("ui-htmx.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
         let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;

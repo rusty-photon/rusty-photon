@@ -35,8 +35,10 @@ Feature: ui-htmx's setup page
 
   # The credential is bound to rp's address and to the CA that verifies rp
   # there: a page anyone reaching the BFF can save must not send rp's
-  # password to a server typed on it. A save that would asks first, and
-  # keeps the credential only when its password is typed again.
+  # password to a server typed on it. A save that would asks first. Behind
+  # the BFF's own login it keeps the credential when its password is typed
+  # again; a page behind no login offers no password box, since it must not
+  # answer whether a guess matches the stored password.
   Scenario: Moving rp elsewhere asks before removing the credential the BFF presented to it
     Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
     When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
@@ -57,7 +59,7 @@ Feature: ui-htmx's setup page
     And the configuration file has nothing at "/rp/auth"
 
   Scenario: rp's password typed on the confirmation keeps the credential for the new address
-    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    Given ui-htmx is started behind its own login for its setup page presenting rp the username "observatory" with the password "hunter2"
     When I submit the server setup page setting "rp.base_url" to "http://rig.example:11115"
     And I save the confirmation typing "hunter2" as the password that keeps "rp.auth"
     Then the page reports the configuration was saved and "rp.base_url" waits for the restart
@@ -65,12 +67,30 @@ Feature: ui-htmx's setup page
     And the configuration file holds "hunter2" at "/rp/auth/password"
 
   Scenario: A wrong password on the confirmation is refused, the file untouched
-    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    Given ui-htmx is started behind its own login for its setup page presenting rp the username "observatory" with the password "hunter2"
     When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
     And I save the confirmation typing "not-it" as the password that keeps "rp.auth"
     Then the page answers 422 with the error "does not match the stored password" on "keep-credential:rp.auth"
     And the configuration file holds "http://127.0.0.1:1" at "/rp/base_url"
     And the configuration file holds "hunter2" at "/rp/auth/password"
+
+  Scenario: Behind no login, the confirmation offers no password box
+    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
+    Then the page asks to confirm removing "rp.auth"
+    And the page shows no input named "keep-credential:rp.auth"
+    And the page says "This page asks for no login"
+
+  # Doctor wrote the sentinel block into the installs it wired, and an
+  # upgrade runs no doctor: the BFF starts over it, and a save drops it.
+  Scenario: A configuration still carrying the retired sentinel block starts, and a save drops the block
+    Given ui-htmx is started for its setup page on a configuration still carrying the retired sentinel block
+    When I open the server setup page
+    Then the response status is 200
+    And the page shows no input named "sentinel.base_url"
+    When I submit the server setup page setting "rp.base_url" to "http://rig.local:11115"
+    Then the page reports the configuration was saved and "rp.base_url" waits for the restart
+    And the configuration file has nothing at "/sentinel"
 
   Scenario: A save that leaves rp's address and CA keeps the credential
     Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
