@@ -143,9 +143,6 @@ rust_binary(
     # Pin CARGO_PKG_NAME to the Cargo package name, as the real binary does,
     # so bdd-infra's {PKG}_BINARY discovery and the spawned process agree.
     rustc_env = {"CARGO_PKG_NAME": "qhy-focuser"},
-    # Public so ui-htmx's BDD can cross-spawn a real mock-mode qhy-focuser as
-    # a roster device, the way it spawns dsd-fp2.
-    visibility = ["//visibility:public"],
     deps = [":qhy-focuser_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 

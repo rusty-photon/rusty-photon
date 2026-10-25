@@ -460,7 +460,7 @@ pub fn artifact_dir() -> PathBuf {
 /// Whether the BFF flushed a non-empty `.profraw` into `coverage_dir` (Bazel
 /// coverage). Mirrors bdd-infra's child path `<COVERAGE_DIR>/ui-htmx-%8m.profraw`
 /// — the `%8m` online-merge pool expands to `ui-htmx-<n>.profraw` — and the
-/// `ui-htmx-` prefix keeps it distinct from the driver's (`dsd-fp2-*`) pool.
+/// `ui-htmx-` prefix keeps it distinct from rp's (`rp-*`) pool.
 pub fn bff_profraw_flushed(coverage_dir: &OsStr) -> bool {
     let Ok(entries) = std::fs::read_dir(Path::new(coverage_dir)) else {
         return false;

@@ -44,7 +44,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-strum = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 rp-auth = { workspace = true }
@@ -130,17 +129,15 @@ fi
 require-sh = true
 
 [dev-dependencies]
-# rp-harness: the Phase-5 suites spawn a real rp (RpConfigBuilder + launcher)
-# alongside the BFF and dsd-fp2 — an all-first-party stack, no OmniSim.
+# rp-harness: the suites spawn a real rp (RpConfigBuilder + launcher) beside
+# the BFF — an all-first-party stack, no OmniSim.
 # tls-auth: the shared PKI + credentials fixture backing the deep TLS + Basic
 # Auth suites (auth.feature, tls.feature).
+# setup-pages: the shared setup-page steps the BFF's own `/setup` scenarios use.
 bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth", "setup-pages"] }
 mockall = { workspace = true }
 # `ServiceExt::oneshot`, to drive the router in unit tests.
 tower = { workspace = true, features = ["util"] }
-# `test-util` unlocks paused tokio time (`start_paused`) for the bounded
-# sentinel-lookup timeout test.
-tokio = { workspace = true, features = ["test-util"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 # Layer A of the UI-testing plan (docs/plans/archive/ui-testing.md §4): the Servo

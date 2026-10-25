@@ -6350,7 +6350,6 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
- "strum",
  "tempfile",
  "thirtyfour",
  "thiserror 2.0.21",

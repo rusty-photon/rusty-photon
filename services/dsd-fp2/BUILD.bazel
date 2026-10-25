@@ -136,9 +136,6 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "dsd-fp2"},
-    # Public so ui-htmx's BDD can cross-spawn a real mock-mode dsd-fp2, the way
-    # sentinel's BDD references //services/filemonitor:filemonitor.
-    visibility = ["//visibility:public"],
     deps = [":dsd-fp2_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 

@@ -1,20 +1,18 @@
 # Config actions — the cross-driver configuration protocol
 
-> **Being retired.** [driver-setup-pages.md](../plans/driver-setup-pages.md)
-> replaces these actions with the two HTML setup pages the Alpaca
+> **Retired.** [driver-setup-pages.md](../plans/driver-setup-pages.md)
+> replaced these actions with the two HTML setup pages the Alpaca
 > specification defines, served by each driver itself and rendered by the
 > shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate.
-> `dsd-fp2`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`,
-> `upbv2-driver`, `star-adventurer-gti`, `filemonitor`,
-> `sky-survey-camera`, `svbony-camera`, `zwo-camera`, `qhy-camera` and
-> `zwo-focuser` have made the move and no longer carry the actions;
-> the other drivers follow family by family, and this document goes with
-> the last of them.
+> No service carries them any more ([Driver coverage](#driver-coverage)).
+> The `ConfigurableDriver` trait below is still each setup page's
+> service-specific half; the plan's P5 archives this document and reduces
+> `rusty_photon_config::actions` to what the setup pages use.
 
-Every rusty-photon Alpaca driver not yet on its setup pages exposes its own configuration over HTTP as three
+Every rusty-photon Alpaca driver exposed its own configuration over HTTP as three
 **vendor ASCOM `Action`s** — `config.get`, `config.apply`, and `config.schema` —
-so a single web UI can read, edit, and apply any driver's config without the
-driver-specific knowledge living in the UI. This is the generalisation of the
+so a single web UI could read, edit, and apply any driver's config without the
+driver-specific knowledge living in the UI. It was the generalisation of the
 Phase 1/2 `dsd-fp2` protocol (see
 [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md))
 to **all** drivers.
@@ -153,30 +151,6 @@ shutdown-or-reload stop future, the old server drains HTTP and releases its
 transport, and the loop rebuilds from the freshly-persisted file — rebinding the
 same port. The BFF treats `status:"applying"` as "expect a brief blip; reconnect
 and re-`config.get`".
-
-## REST transport (`rp`)
-
-`rp` is not an ASCOM device, so it exposes the **same three operations as plain
-REST** on its existing axum router — same request/response bodies, no Alpaca
-envelope (the body is the JSON directly, not a JSON string inside `Value`):
-
-```
-GET  /api/config          → 200  ConfigGetResponse    { config, overrides }
-GET  /api/config/schema   → 200  ConfigSchemaResponse { schema, locked_fields, read_only_fields }
-PUT  /api/config  <body = full Config JSON>
-                          → 200  ConfigApplyResponse  { status, …, restart_required[], … }
-                          → 400  (malformed JSON body — the transport-error equivalent
-                                  of the drivers' ASCOM INVALID_VALUE)
-```
-
-`rp` implements `ConfigurableDriver` with `ApplyDisposition::Restart`: it has no
-in-process reload, so every changed field lands in `restart_required[]` with
-`status:"ok"` and takes effect on the next `rp` start. Secrets (per-device
-`auth` credentials across the equipment arrays, the server auth hash) are
-redacted with wildcard pointers. The endpoints are covered by rp's server-wide
-auth/TLS like every other route, and are **not** behind the `/mcp` safety gate —
-config must stay editable while the system is unsafe. See
-[`rp.md`](rp.md) "Configuration API".
 
 ## Editability tiers
 

@@ -889,6 +889,8 @@ noted.
   among `rp`'s `secret_pointers()`, so the response carries it and
   `ui-htmx`'s `rp` config page embeds it in the browser's hidden blob.
   A one-line fix today (add the pointer); the route goes in P4.
+  Closed in P4: the route is gone, and `rp`'s page never carries a
+  password back.
 - **Every server built on `ascom-alpaca` answers `404` on the
   specification's device setup path** (`/setup/v1/{type}/{n}/setup`),
   the path `ui-htmx` probes and the Remote client opens; the crate
