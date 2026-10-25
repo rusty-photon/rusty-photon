@@ -461,6 +461,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // reqwest's client builds a rustls config, whose aws-lc C code Miri cannot call
     async fn the_service_listener_serves_the_setup_page_of_its_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("phd2-guider.json");
@@ -477,6 +478,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // reqwest's client builds a rustls config, whose aws-lc C code Miri cannot call
     async fn a_guider_without_a_config_file_has_no_setup_page() {
         let bound = ServerBuilder::new()
             .with_config(plain_config())
