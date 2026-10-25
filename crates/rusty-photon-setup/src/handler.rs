@@ -21,7 +21,7 @@ use crate::form::{
     changed_paths, overlay_field_except, set_pointer, start_sections, submitted_as_shown,
     FormValues,
 };
-use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
+use crate::render::{self, Destination, DeviceRow, FieldState, Saved, Unbound};
 use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
 use crate::{origin, security};
 
@@ -113,15 +113,17 @@ pub struct SetupPages<D: ConfigurableDriver> {
     /// The driver's own part of the pages, when it has one.
     driver_pages: Option<Arc<dyn DriverPages>>,
     /// The credentials the service presents to another server, each kept
-    /// only while its address stays the one it was stored with.
+    /// only while the settings that decide which server receives it stay
+    /// as they were when it was stored.
     bound_credentials: Vec<BoundCredential>,
 }
 
-/// A credential block the service presents to another server, and the
-/// address it presents it at, both as JSON pointers.
+/// A credential block the service presents to another server, and a
+/// setting that decides which server receives it (its address, or the CA
+/// that verifies the server there), both as JSON pointers.
 #[derive(Debug, Clone)]
 struct BoundCredential {
-    address: String,
+    setting: String,
     credential: String,
 }
 
@@ -203,6 +205,11 @@ fn remove_pointer(config: &mut Value, pointer: &str) -> bool {
         .is_some_and(|object| object.remove(key).is_some())
 }
 
+/// The dotted path (`rp.auth`) of the JSON pointer `pointer` (`/rp/auth`).
+fn dotted(pointer: &str) -> String {
+    pointer.trim_start_matches('/').replace('/', ".")
+}
+
 /// The generation the next handler is born with.
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -280,15 +287,18 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// A credential the service presents to another server — the block at
-    /// the JSON pointer `credential` — kept only while the address at
-    /// `address` stays the one it was stored with. A save that changes the
-    /// address and leaves the block as the file stores it removes the
-    /// block, and the saved page names what it removed: a page that can
-    /// edit the address must not send a stored password somewhere new.
+    /// the JSON pointer `credential` — kept only while the setting at
+    /// `setting`, which decides which server receives it (its address, or
+    /// the CA that verifies the server there), stays as it was when the
+    /// credential was stored. A save that changes the setting and leaves
+    /// the block as the file stores it removes the block, and the saved
+    /// page names what it removed and which setting changed: a page that
+    /// can edit the setting must not send a stored password somewhere new.
+    /// A credential bound to several settings takes a call for each.
     #[must_use]
-    pub fn with_bound_credential(mut self, address: &str, credential: &str) -> Self {
+    pub fn with_bound_credential(mut self, setting: &str, credential: &str) -> Self {
         self.bound_credentials.push(BoundCredential {
-            address: address.to_string(),
+            setting: setting.to_string(),
             credential: credential.to_string(),
         });
         self
@@ -791,7 +801,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// Write `file`, a save every check passed, over `file_before`: the
-    /// bound credentials it would carry to a changed address removed, then
+    /// bound credentials it would carry to another server removed, then
     /// typed and normalized, and persisted against what the service would
     /// run without it.
     fn write(
@@ -819,37 +829,42 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         self.persist(page, typed, effective, &baseline, headers, &unbound)
     }
 
-    /// Remove each bound credential this save would carry to a changed
-    /// address: the address the service would run with from `file` is not
-    /// the one it runs with from `before`, and the block is as `before`
-    /// stores it — a block the save itself rewrote is the operator's, for
-    /// the new address. Answers the dotted paths of the blocks removed.
-    fn unbind_credentials(&self, before: &Value, file: &mut Value) -> Vec<String> {
+    /// Remove each bound credential this save would carry to another
+    /// server: a setting it is bound to, as the service would run it from
+    /// `file`, is not as it runs from `before`, and the block is as
+    /// `before` stores it — a block the save itself rewrote is the
+    /// operator's, for the server the save names. Answers each block
+    /// removed, once, with the first changed setting that removed it.
+    fn unbind_credentials(&self, before: &Value, file: &mut Value) -> Vec<Unbound> {
         let mut removed = Vec::new();
         for bound in &self.bound_credentials {
             let stored = before.pointer(&bound.credential);
             if stored.is_none() || file.pointer(&bound.credential) != stored {
                 continue;
             }
-            if self.address_in(before, &bound.address) == self.address_in(file, &bound.address) {
+            if self.setting_in(before, &bound.setting) == self.setting_in(file, &bound.setting) {
                 continue;
             }
             if remove_pointer(file, &bound.credential) {
-                debug!(credential = %bound.credential, "a setup-page save removes a credential whose address changed");
-                removed.push(bound.credential.trim_start_matches('/').replace('/', "."));
+                debug!(credential = %bound.credential, setting = %bound.setting, "a setup-page save removes a credential whose server changed");
+                removed.push(Unbound {
+                    credential: dotted(&bound.credential),
+                    setting: dotted(&bound.setting),
+                });
             }
         }
         removed
     }
 
-    /// The address at `pointer` the service would run with from `file`:
-    /// parsed and normalized, so a default the file leaves out or a trimmed
-    /// space is no change; the file's own value when the typed config
-    /// refuses it.
-    fn address_in(&self, file: &Value, pointer: &str) -> Option<Value> {
-        self.effective_of(file)
-            .and_then(|config| config.pointer(pointer).cloned())
-            .or_else(|| file.pointer(pointer).cloned())
+    /// The setting at `pointer` the service would run with from `file`:
+    /// parsed and normalized, so a default the file leaves out, a trimmed
+    /// space or a blank optional field the form submits as `null` is no
+    /// change; the file's own value when the typed config refuses it.
+    fn setting_in(&self, file: &Value, pointer: &str) -> Option<Value> {
+        self.effective_of(file).map_or_else(
+            || file.pointer(pointer).cloned(),
+            |config| config.pointer(pointer).cloned(),
+        )
     }
 
     /// The `500` a save answers when the file it would overlay cannot be read.
@@ -962,7 +977,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         effective: &Value,
         baseline: &Value,
         headers: &HeaderMap,
-        unbound: &[String],
+        unbound: &[Unbound],
     ) -> PageResponse {
         let to_persist = match serde_json::to_value(&typed) {
             Ok(v) => v,
@@ -1089,7 +1104,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         &self,
         saved: &Saved,
         destination: Option<&Destination>,
-        unbound: &[String],
+        unbound: &[Unbound],
     ) -> PageResponse {
         let body = render::saved_body(&self.service, saved, destination, "", unbound);
         let mut response = PageResponse::html(
@@ -3343,8 +3358,8 @@ mod tests {
     }
 
     /// A service that presents a credential to another server: the
-    /// upstream's address, which the page edits, and the credential block
-    /// bound to it, which the file holds.
+    /// upstream's address and the CA that verifies it, which the page
+    /// edits, and the credential block bound to both, which the file holds.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
     struct LinkedConfig {
         server: Server,
@@ -3358,6 +3373,8 @@ mod tests {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<UpstreamAuth>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca: Option<String>,
     }
 
     impl Default for Upstream {
@@ -3365,6 +3382,7 @@ mod tests {
             Self {
                 url: default_upstream_url(),
                 auth: None,
+                ca: None,
             }
         }
     }
@@ -3403,14 +3421,15 @@ mod tests {
     }
 
     /// The pages over `file`, with the upstream's credential bound to its
-    /// address, and that file.
+    /// address and its CA, and that file.
     fn linked_pages(file: &Value) -> (tempfile::TempDir, PathBuf, SetupPages<LinkedFake>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("linked.json");
         std::fs::write(&path, file.to_string()).unwrap();
         let running: LinkedConfig = serde_json::from_value(file.clone()).unwrap();
         let p = SetupPages::<LinkedFake>::new("linked", running, path.clone(), ())
-            .with_bound_credential("/upstream/url", "/upstream/auth");
+            .with_bound_credential("/upstream/url", "/upstream/auth")
+            .with_bound_credential("/upstream/ca", "/upstream/auth");
         (dir, path, p)
     }
 
@@ -3443,12 +3462,66 @@ mod tests {
             response.body
         );
         assert!(
-            response
-                .body
-                .contains("<span class=\"mono\">upstream.auth</span>"),
+            response.body.contains(
+                "<span class=\"mono\">upstream.auth</span>, since <span class=\"mono\">upstream.url</span> changed"
+            ),
             "{}",
             response.body
         );
+    }
+
+    #[tokio::test]
+    async fn a_save_that_changes_the_ca_removes_the_credential_bound_to_it() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11120"),
+                    ("upstream.url", "http://127.0.0.1:11115"),
+                    ("upstream.ca", "/etc/elsewhere/ca.pem"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let saved = sparse_on_disk(&path);
+        assert_eq!(saved["upstream"]["ca"], "/etc/elsewhere/ca.pem");
+        assert!(saved["upstream"].get("auth").is_none(), "{saved}");
+        assert!(
+            response.body.contains(
+                "<span class=\"mono\">upstream.auth</span>, since <span class=\"mono\">upstream.ca</span> changed"
+            ),
+            "{}",
+            response.body
+        );
+    }
+
+    #[test]
+    fn a_credential_two_changed_settings_unbind_is_removed_once() {
+        let before = json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        });
+        let (_dir, _path, p) = linked_pages(&before);
+        let mut file = json!({
+            "server": { "port": 11120 },
+            "upstream": {
+                "url": "http://elsewhere.example:80",
+                "ca": "/etc/elsewhere/ca.pem",
+                "auth": linked_credential()
+            }
+        });
+        assert_eq!(
+            p.unbind_credentials(&before, &mut file),
+            vec![Unbound {
+                credential: "upstream.auth".to_string(),
+                setting: "upstream.url".to_string(),
+            }]
+        );
+        assert!(file["upstream"].get("auth").is_none(), "{file}");
     }
 
     #[tokio::test]
@@ -3463,6 +3536,7 @@ mod tests {
                 post(&[
                     ("server.port", "11121"),
                     ("upstream.url", "http://127.0.0.1:11115"),
+                    ("upstream.ca", ""),
                 ]),
             )
             .await;
@@ -3541,7 +3615,7 @@ mod tests {
         });
         assert_eq!(
             p.unbind_credentials(&before, &mut file),
-            Vec::<String>::new()
+            Vec::<Unbound>::new()
         );
         assert_eq!(file["upstream"]["auth"], typed);
     }

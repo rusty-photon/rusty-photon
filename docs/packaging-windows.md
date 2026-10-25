@@ -193,8 +193,8 @@ start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated five
 (above) never write one; the two cameras, `zwo-focuser`, and
 `phd2-guider` run on built-in defaults without writing a file until
-settings are saved (via ui-htmx `config.apply`) or one is created by
-hand. To change settings:
+settings are saved on the service's setup page (`/setup`) or one is
+created by hand. To change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json
@@ -206,8 +206,8 @@ Reload-capable (SCM `ParamChange`, the SIGHUP analogue): filemonitor,
 ppba-driver, upbv2-driver, qhy-focuser, sky-survey-camera,
 pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera,
 zwo-camera, zwo-focuser, planetarium-bridge.
-Services with `config.apply` support (via ui-htmx) rewrite these files at
-runtime — hand-edits and UI edits share the same file.
+A service's setup page (`/setup`) rewrites its file when a page is saved —
+hand-edits and page edits share the same file.
 
 **ui-htmx config**: self-created like every other service — the default
 (the required `rp` target on localhost) is correct for every install,

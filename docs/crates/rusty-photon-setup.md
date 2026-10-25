@@ -114,7 +114,9 @@ rule a rejected save attaches to such a field is shown in its note.
 doctor writes it. A service also names the fields it writes itself at
 runtime (`file_only_pointers`: a mount's park position, captured by
 `SetPark`), whatever the schema made of them: a form filled before such a
-write would otherwise carry the old value back on its next save.
+write would otherwise carry the old value back on its next save. The same
+list holds a trust setting a page must not choose: rp's `ca_cert`, the CA it
+trusts for every credential it presents, is file-only as `server.tls` is.
 
 Labels are humanised from the path's last segments (`max_brightness` →
 "Max brightness").
@@ -294,16 +296,21 @@ server-auth hash renders as an empty password input whose blank submission
 means "unchanged", and never carries its stored value.
 
 **A credential the service presents to another server** is bound to the
-address it presents it at: `SetupPages::with_bound_credential(address,
-credential)`, two JSON pointers. A save that changes the address and leaves
-the credential block as the file stores it removes the block, and the saved
-page names what it removed (`#saved-unbound`) and says to set it again in the
-file. The address is compared as the service would run it — parsed and
-normalized, so a default the file leaves out, written back by the page, is no
-change — and a block the save itself rewrote is kept, as the operator's for
-the new address. A page anyone who reaches the service can save must not send
-a stored password to whatever address is typed on it; the BFF binds `rp.auth`
-to `rp.base_url` this way ([ui-htmx.md](../services/ui-htmx.md) § Setup page).
+settings that decide which server receives it — its address, and the CA that
+verifies the server there: `SetupPages::with_bound_credential(setting,
+credential)`, two JSON pointers, one call per setting. A save that changes a
+bound setting and leaves the credential block as the file stores it removes
+the block, and the saved page names what it removed and which setting changed
+(`#saved-unbound`) and says to set it again in the file. A setting is compared
+as the service would run it — parsed and normalized, so a default the file
+leaves out, written back by the page, or a blank optional field submitted as
+`null` is no change — and a block the save itself rewrote is kept, as the
+operator's for the new server. A page anyone who reaches the service can save
+must not send a stored password to whatever server is typed on it. The BFF
+binds `rp.auth` to `rp.base_url` and `rp.ca_cert_path`
+([ui-htmx.md](../services/ui-htmx.md) § Setup page), and planetarium-bridge
+binds `rp.service_auth` to `rp.mcp_server_url` and `rp.ca_cert`
+([planetarium-bridge.md](../services/planetarium-bridge.md) § Setup pages).
 
 ## Cross-site protection
 

@@ -346,9 +346,9 @@ sudo systemctl restart rusty-photon-<svc>   # the rest
 Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver, qhy-focuser,
 sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
 star-adventurer-gti, qhy-camera, zwo-camera, svbony-camera, zwo-focuser,
-planetarium-bridge. Note that services with `config.apply` support
-(via ui-htmx) rewrite these files at runtime — hand-edits and UI edits
-share the same file.
+planetarium-bridge. Note that a service's setup page (`/setup`) rewrites
+its file when a page is saved — hand-edits and page edits share the same
+file.
 
 ## Sentinel restart privileges (polkit)
 

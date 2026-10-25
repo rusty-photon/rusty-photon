@@ -69,6 +69,14 @@ impl ConfigurableDriver for RpConfigDriver {
 
     fn apply_overrides(_config: &mut Config, _overrides: &()) {}
 
+    /// `ca_cert`, the CA rp trusts for every server it presents a stored
+    /// credential to: the setup page names it as edited in the
+    /// configuration file, as it does `server.tls`, so a page anyone who
+    /// reaches rp can save cannot choose whom rp's stored passwords go to.
+    fn file_only_pointers() -> &'static [&'static str] {
+        &["/ca_cert"]
+    }
+
     /// `server.port`: a rebind the UI could not follow — the same
     /// self-lockout reasoning as the Alpaca drivers.
     fn read_only_paths() -> &'static [&'static str] {

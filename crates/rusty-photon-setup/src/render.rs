@@ -361,18 +361,28 @@ pub fn restart_how(service: &str) -> Markup {
     }
 }
 
+/// A bound credential a save removed, and the setting whose change removed
+/// it, both as dotted paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unbound {
+    /// The credential block: `rp.auth`.
+    pub credential: String,
+    /// The setting that changed: `rp.base_url`.
+    pub setting: String,
+}
+
 /// The page `service`'s save answers with.
 ///
-/// What happened, the credentials the save removed because the address
-/// they are presented at changed (`unbound`, dotted paths), where the
-/// browser goes if not back to this page (`destination`), and the wait.
+/// What happened, the credentials the save removed because the server they
+/// are presented to changed (`unbound`), where the browser goes if not back
+/// to this page (`destination`), and the wait.
 #[must_use]
 pub fn saved_body(
     service: &str,
     saved: &Saved,
     destination: Option<&Destination>,
     back: &str,
-    unbound: &[String],
+    unbound: &[Unbound],
 ) -> Markup {
     let moved_to = destination.map(|d| d.url.as_str());
     let target = moved_to.map(str::to_string);
@@ -402,8 +412,14 @@ pub fn saved_body(
                     span.dot {}
                     span {
                         "Removed from the file: "
-                        span.mono { (unbound.join(", ")) }
-                        ". The address it was presented at changed, and a stored credential is presented only at the address it was set for: set it again in the configuration file."
+                        @for (i, removed) in unbound.iter().enumerate() {
+                            @if i > 0 { "; " }
+                            span.mono { (removed.credential) }
+                            ", since "
+                            span.mono { (removed.setting) }
+                            " changed"
+                        }
+                        ". A stored credential is presented only to the server it was set for: set it again in the configuration file."
                     }
                 }
             }

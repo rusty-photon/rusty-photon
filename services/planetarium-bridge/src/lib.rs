@@ -266,6 +266,11 @@ impl ServerBuilder {
 
 /// The setup pages over the file at `path`, built from the running
 /// `config`; a save that changes a field fires `reload`.
+///
+/// The credential the bridge presents to rp is bound to rp's MCP address
+/// and to the CA that verifies rp there: a save that moves rp elsewhere, or
+/// trusts another CA for it, removes the credential, so the page cannot
+/// send rp's password to whatever server is typed.
 fn setup_pages(
     config: &Config,
     path: PathBuf,
@@ -274,7 +279,9 @@ fn setup_pages(
     Arc::new(
         SetupPages::<PlanetariumBridgeDriver>::new("planetarium-bridge", config.clone(), path, ())
             .with_reload(reload)
-            .with_https(config.server.tls.is_some()),
+            .with_https(config.server.tls.is_some())
+            .with_bound_credential("/rp/mcp_server_url", "/rp/service_auth")
+            .with_bound_credential("/rp/ca_cert", "/rp/service_auth"),
     )
 }
 

@@ -651,6 +651,15 @@ never carried config actions; its `SupportedActions` stays empty.
 - **Secrets:** `/server/auth/password_hash`, edited through the Security
   section and never shown, and `/rp/service_auth/password`, the plaintext
   password the bridge presents to rp, which no page carries.
+- **rp's credential is bound to rp's address and CA.** A save that changes
+  `rp.mcp_server_url` or `rp.ca_cert` removes `rp.service_auth` from the
+  file, and the saved page says so, naming the field that changed: the
+  bridge presents the credential to whatever server the file names, and a
+  page anyone who reaches the bridge can save must not send rp's password to
+  a server typed on it. The credential is set again in the file, or by
+  `doctor --fix`, which writes an absent client credential block
+  ([doctor.md](doctor.md) § What `--fix` adds). The page does this with the
+  crate's `with_bound_credential`.
 - **Validation.** The ranges, the URL's shape and the spool bound are the
   config newtypes', checked when the submission is parsed: a value out of
   range is refused (`422`) with the newtype's message, which names the
@@ -761,7 +770,7 @@ the real store.
 | `target_import.feature` | Align → `add_target` (both sync verbs); slews never import; epoch conversion under `assume_epoch: jnow`; below-horizon Align imported; repeated Aligns each submitted (rp dedup collapses) |
 | `position_policy.feature` | Floor snap to idle point; below-floor slew converges but reports idle; below-floor Align imports but reports idle; `null` floor reports raw pointing |
 | `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; replay across a setup-page reload; the health totals span a reload; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
-| `setup_pages.feature` | The [setup pages](#setup-pages): the server page's sections and its link to the Telescope's page; the Telescope's page shows the device section alone, `assume_epoch` named as file-only; a valid save persists, reloads and is served back; clearing the floor saves `null`; an out-of-range value refused naming the field; the zero backoff cap and the empty `unique_id` refused beside their fields; a save that changes nothing; a cross-site `POST` refused; a port change answers with the new address; the rp password never on a page; with TLS and auth, `401` without the credential and no hash on the page |
+| `setup_pages.feature` | The [setup pages](#setup-pages): the server page's sections and its link to the Telescope's page; the Telescope's page shows the device section alone, `assume_epoch` named as file-only; a valid save persists, reloads and is served back; clearing the floor saves `null`; an out-of-range value refused naming the field; the zero backoff cap and the empty `unique_id` refused beside their fields; a save that changes nothing; a cross-site `POST` refused; a port change answers with the new address; the rp password never on a page; a save moving rp's address or CA removes the rp credential, one keeping both keeps it; with TLS and auth, `401` without the credential and no hash on the page |
 | `doctor.feature` | The shared doctor smoke (testing.md § Doctor smoke): a valid config yields a clean report, an unknown key fails the report and is named. Rides `bdd_infra::doctor_smoke`; the world's `valid_config()` spells out all five config blocks, so the clean-report scenario covers the whole typed load path |
 | `auth.feature` | The shared TLS + auth smoke (testing.md § TLS/auth): with `server.tls` and `server.auth` configured the bridge serves HTTPS and answers 401 without credentials, 200 with them. Rides `bdd_infra::tls_auth`; the world's launch hook points `spool.path` at the scenario temp dir, since an absent path resolves to — and creates — the platform config dir |
 

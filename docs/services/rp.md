@@ -7358,9 +7358,12 @@ In order:
 
 1. **`rp`'s own sections**, generated from its config type: `session`,
    `server` (its `tls` file-only, as on every page), `safety`, `imaging`,
-   `centering`, `cooling`, `target_store`, `ca_cert`. A block the form
-   cannot render is named as edited in the configuration file: `site` and
-   `plate_solver` (optional blocks), `planner` (read opaquely).
+   `centering`, `cooling`, `target_store`. A block the form cannot render
+   is named as edited in the configuration file: `site` and
+   `plate_solver` (optional blocks), `planner` (read opaquely). So is
+   `ca_cert`, as `server.tls` is: it decides whom rp trusts with every
+   password it presents, and a page anyone who reaches `rp` can save must
+   not choose that; doctor writes it.
 2. **Security**: `rp`'s own `server.auth`, as on every server page.
 3. **Equipment**: the equipment block's own settings
    (`reconnect_interval`, `temperature_poll_interval`,
@@ -7739,7 +7742,9 @@ runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
 once the CA exists (`services/doctor/src/provision/mod.rs`
-`CA_ONLY_WIRING_SERVICES`). Setting it makes it the client's **only**
+`CA_ONLY_WIRING_SERVICES`); the setup page names it as edited in the
+file rather than editing it (§ [Setup Page](#setup-page)). Setting it
+makes it the client's **only**
 trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds to,
 the platform trust store, so a public-CA `https://` target becomes
 unreachable alongside the observatory CA. Omitted (the default), only

@@ -170,14 +170,15 @@ password rules:
   `http` or `https` URL carrying no credentials (`user:pass@…` — they would
   reach error messages and logs; the credential belongs in `rp.auth`), the rule
   the BFF's start holds it to.
-- **rp's credential is bound to rp's address.** A save that changes
-  `rp.base_url` removes `rp.auth` from the file, and the saved page says so:
-  the BFF presents the credential to whatever address the file names, and a
-  page anyone who reaches the BFF can save must not send rp's password to an
-  address typed on it. The credential is set again in the file, or by
-  `doctor --fix` when the new address names this machine
-  ([doctor.md](doctor.md) § Client-target joins). The page does this with
-  the crate's `with_bound_credential`.
+- **rp's credential is bound to rp's address and CA.** A save that changes
+  `rp.base_url` or `rp.ca_cert_path` removes `rp.auth` from the file, and the
+  saved page says so, naming the field that changed: the BFF presents the
+  credential to whatever server the file names, at the address it names and
+  verified by the CA it names, and a page anyone who reaches the BFF can save
+  must not send rp's password to a server typed on it. The credential is set
+  again in the file, or by `doctor --fix` when the new address names this
+  machine ([doctor.md](doctor.md) § Client-target joins). The page does this
+  with the crate's `with_bound_credential`.
 - **Saving.** The BFF has no in-process reload, so a save is persisted
   atomically and takes effect at the next start (`ApplyDisposition::Restart`):
   the saved page names the fields that wait for it and says how to restart
@@ -741,8 +742,9 @@ rp), and drive the page through the shared `bdd_infra::setup_pages_steps!`: the
 page shows rp's address; a changed address is saved and waits for the restart;
 an address carrying credentials is refused with the file untouched; the `rp.auth`
 block is named as edited in the file with its password off the page; moving rp
-elsewhere removes `rp.auth` and the saved page names it, while a save that leaves
-rp's address keeps it; and a save posted from another site is refused.
+elsewhere or trusting another CA for it removes `rp.auth` and the saved page names
+it and the field that changed, while a save that leaves rp's address and CA keeps
+it; and a save posted from another site is refused.
 
 **Activity stream scenarios** (`stream_page.feature`) cover the page's SSE and
 fold-panel wiring, the front page answering with the stream, the navigation's

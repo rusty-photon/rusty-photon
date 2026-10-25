@@ -88,15 +88,17 @@ pub type Pages = Arc<SetupPages<UiHtmxDriver>>;
 /// The page over `config`, as the BFF runs it with `overrides`, saved to the
 /// file at `path`.
 ///
-/// The credential the BFF presents to rp is bound to rp's address: a save
-/// that moves rp elsewhere removes it, so the page cannot send rp's
-/// password to whatever address is typed.
+/// The credential the BFF presents to rp is bound to rp's address and to
+/// the CA that verifies rp there: a save that moves rp elsewhere, or trusts
+/// another CA for it, removes the credential, so the page cannot send rp's
+/// password to whatever server is typed.
 #[must_use]
 pub fn pages(config: &Config, path: PathBuf, overrides: CliOverrides) -> Pages {
     Arc::new(
         SetupPages::new("ui-htmx", config.clone(), path, overrides)
             .with_https(config.server.tls.is_some())
-            .with_bound_credential("/rp/base_url", "/rp/auth"),
+            .with_bound_credential("/rp/base_url", "/rp/auth")
+            .with_bound_credential("/rp/ca_cert_path", "/rp/auth"),
     )
 }
 

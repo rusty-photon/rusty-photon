@@ -17,7 +17,9 @@ Feature: rp's setup page
   before the file's roster changed is refused rather than written onto the
   wrong entry. A credential's password never reaches a page: blank keeps
   the stored one while the entry's address stays as it is, a username
-  needs a password, and clearing both removes the credential.
+  needs a password, and clearing both removes the credential. The CA rp
+  trusts for every credential it presents is edited in the file, not on
+  the page.
 
   rp applies a saved change at its next start, so the saved page names the
   fields that wait for the restart. These scenarios start rp on a temp
@@ -124,6 +126,18 @@ Feature: rp's setup page
     Then the page answers 422 with the error "the address changed" on "equipment.cameras.0.auth.password"
     And the configuration file holds "http://127.0.0.1:1" at "/equipment/cameras/0/alpaca_url"
     And the configuration file holds "hunter2" at "/equipment/cameras/0/auth/password"
+
+  Scenario: rp's CA is edited in the file, and a save that carries one leaves the file's
+    Given a temp rp config whose roster holds:
+      | kind    | id       | alpaca_url         | device_number |
+      | cameras | main-cam | http://127.0.0.1:1 | 0             |
+    And rp is started with that config file
+    When I open the server setup page
+    Then the page names "ca_cert" as edited in the configuration file
+    And the page shows no input named "ca_cert"
+    When I submit the server setup page setting "ca_cert" to "/etc/elsewhere/ca.pem"
+    Then the page reports the configuration was saved and nothing changed
+    And the configuration file has nothing at "/ca_cert"
 
   Scenario: Clearing the username and the password removes the credential
     Given a temp rp config whose roster holds:
