@@ -176,9 +176,10 @@ password rules:
   save must not send rp's password to a server typed on it. A save that
   changes `rp.base_url` or `rp.ca_cert_path` therefore asks first (`409`).
   Behind the BFF's own `server.auth`, typing rp's password there keeps
-  `rp.auth` for the new address. A BFF without `server.auth` offers no
-  password box, since a page anyone can reach must not answer whether a
-  guess matches rp's password. Left blank, or without the box, the save
+  `rp.auth` for the new address; each check costs an Argon2id hash, as a
+  guess against rp's own login does. A BFF without `server.auth` offers no
+  password box, so a guess there needs a login set first, which the
+  operator would meet on their next visit. Left blank, or without the box, the save
   removes `rp.auth` from the file and the saved page says so, naming the
   field that changed. A removed credential is set again in
   the file, or by `doctor --fix` when the new address names this machine

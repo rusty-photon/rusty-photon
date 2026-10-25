@@ -656,9 +656,10 @@ never carried config actions; its `SupportedActions` stays empty.
   reaches the bridge can save must not send rp's password to a server typed
   on it. A save that changes `rp.mcp_server_url` or `rp.ca_cert` therefore
   asks first (`409`). Behind the bridge's own `server.auth`, typing rp's
-  password there keeps `rp.service_auth` for the new address; a bridge
-  without `server.auth` offers no password box, since a page anyone can
-  reach must not answer whether a guess matches rp's password. Left blank,
+  password there keeps `rp.service_auth` for the new address; each check
+  costs an Argon2id hash, as a guess against rp's own login does. A bridge
+  without `server.auth` offers no password box, so a guess there needs a
+  login set first, which the operator would meet on their next visit. Left blank,
   or without the box, the save removes the credential from the file, and the
   saved page says so, naming the field that changed, and stays on screen
   through the reload rather than reopen the setup page. Without the
