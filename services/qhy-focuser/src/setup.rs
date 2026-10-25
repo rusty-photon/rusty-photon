@@ -1,22 +1,23 @@
 //! qhy-focuser's [`ConfigurableDriver`] implementation — the driver-specific
-//! half of the `config.get` / `config.apply` / `config.schema` protocol.
+//! half behind its setup pages.
 //!
-//! The generic machinery lives in [`rusty_photon_config::actions`]; this module
-//! supplies only the Q-Focuser's `Config` type, normalization, validation,
-//! secret location, CLI overrides, and editability tiers. See
-//! [`docs/services/qhy-focuser.md`] "Config Actions".
+//! The pages themselves (the render, the save, the origin check, the
+//! Security section, the reload) are `rusty-photon-setup`'s; this module
+//! supplies only what varies for the Q-Focuser: its `Config` type,
+//! normalization, validation, its one secret, its command-line overrides, and
+//! which config section the focuser's page edits. See
+//! [`docs/services/qhy-focuser.md`] "Setup pages".
 //!
 //! [`docs/services/qhy-focuser.md`]: ../../../docs/services/qhy-focuser.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
-/// Re-exported so `focuser_device.rs` and tests can name the redaction sentinel.
-pub use rusty_photon_config::actions::REDACTED;
+/// The focuser's device type in its Alpaca path spelling.
+pub const DEVICE_TYPE: &str = "focuser";
 
-/// Driver marker wiring the Q-Focuser's `Config` into the generic config-action
-/// protocol via [`rusty_photon_config::actions`].
+/// Driver marker wiring the Q-Focuser's `Config` into the shared setup pages.
 pub struct QhyFocuserDriver;
 
 impl ConfigurableDriver for QhyFocuserDriver {
@@ -73,6 +74,8 @@ impl ConfigurableDriver for QhyFocuserDriver {
         errors
     }
 
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows.
     fn secret_pointers() -> &'static [&'static str] {
         &["/server/auth/password_hash"]
     }
@@ -85,17 +88,16 @@ impl ConfigurableDriver for QhyFocuserDriver {
         overrides.apply(config);
     }
 
-    /// The device owns and generates its ASCOM `UniqueID`; editing it is an
-    /// escape hatch for a misbehaving driver, not routine configuration.
-    fn locked_paths() -> &'static [&'static str] {
-        &["focuser.unique_id"]
-    }
-
-    /// `server.port` (the BFF can't follow a rebind) and `focuser.enabled`
-    /// (disabling tears down the device the config actions live on) are
-    /// self-lockout fields.
-    fn read_only_paths() -> &'static [&'static str] {
-        &["server.port", "focuser.enabled"]
+    /// The focuser's page edits the `focuser` section; the server page holds
+    /// `serial` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![DeviceSection {
+            device_type: DEVICE_TYPE.to_string(),
+            device_number: 0,
+            pointer: "/focuser".to_string(),
+            name: config.focuser.name.clone(),
+            enabled: config.focuser.enabled,
+        }]
     }
 }
 
@@ -120,7 +122,7 @@ mod tests {
     fn validate_accepts_populated_config() {
         assert_eq!(
             QhyFocuserDriver::validate(&valid_config()),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<FieldError>::new()
         );
     }
 
@@ -176,11 +178,28 @@ mod tests {
     }
 
     #[test]
-    fn editability_tiers_match_self_lockout_intent() {
-        assert_eq!(QhyFocuserDriver::locked_paths(), &["focuser.unique_id"]);
+    fn the_focusers_page_edits_its_own_section() {
+        let mut config = valid_config();
+        config.focuser.name = "Main focuser".to_string();
         assert_eq!(
-            QhyFocuserDriver::read_only_paths(),
-            &["server.port", "focuser.enabled"]
+            QhyFocuserDriver::device_sections(&config),
+            vec![DeviceSection {
+                device_type: "focuser".to_string(),
+                device_number: 0,
+                pointer: "/focuser".to_string(),
+                name: "Main focuser".to_string(),
+                enabled: true,
+            }]
+        );
+        config.focuser.enabled = false;
+        assert!(!QhyFocuserDriver::device_sections(&config)[0].enabled);
+    }
+
+    #[test]
+    fn the_pages_secret_is_the_auth_hash_alone() {
+        assert_eq!(
+            QhyFocuserDriver::secret_pointers(),
+            &["/server/auth/password_hash"]
         );
     }
 }

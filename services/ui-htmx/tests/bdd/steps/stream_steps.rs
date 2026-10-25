@@ -13,6 +13,38 @@ async fn open_stream(world: &mut UiWorld) {
     world.get("/stream").await;
 }
 
+/// `/` answers `303 See Other` to `/stream`; the client follows it, as a
+/// browser does.
+#[when("I open the front page")]
+async fn open_front_page(world: &mut UiWorld) {
+    world.get("/").await;
+}
+
+#[when(expr = "I open the stream page reached as {string}")]
+async fn open_stream_reached_as(world: &mut UiWorld, host: String) {
+    world.get_as_host("/stream", &format!("{host}:11120")).await;
+}
+
+#[then("the page is the activity stream")]
+fn page_is_the_stream(world: &mut UiWorld) {
+    assert!(
+        dom::matches(&world.last_body, "#stream-page"),
+        "{}",
+        world.last_body
+    );
+}
+
+#[then(expr = "the navigation links rp's setup page at {string} on rp's port")]
+fn nav_links_rp_setup(world: &mut UiWorld, host: String) {
+    let expected = format!("http://{host}:{}/setup", world.rp_port);
+    assert_eq!(
+        dom::attr(&world.last_body, "nav a.rp-setup", "href").as_deref(),
+        Some(expected.as_str()),
+        "{}",
+        world.last_body
+    );
+}
+
 #[then(regex = r#"^the page declares an SSE connection to "([^"]+)"$"#)]
 fn declares_sse(world: &mut UiWorld, url: String) {
     let connect = dom::attr(&world.last_body, "[hx-ext=\"sse\"]", "sse-connect");

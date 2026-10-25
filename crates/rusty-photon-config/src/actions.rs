@@ -147,13 +147,15 @@ pub trait ConfigurableDriver {
         Self::override_paths(overrides)
     }
 
-    /// RFC-6901 JSON pointers to fields the service writes at runtime — a
-    /// mount's park position, captured by `SetPark`, and its AP-park
-    /// choices, set by their actions. A setup page names such a field as
-    /// edited in the configuration file instead of rendering an input for
-    /// it: a form filled before the runtime write would otherwise carry the
-    /// old value back on its next save. A pointer segment may be the
-    /// wildcard `*`. Empty for a service that writes nothing at runtime.
+    /// RFC-6901 JSON pointers to fields a setup page must not edit. Fields
+    /// the service writes at runtime — a mount's park position, captured by
+    /// `SetPark`, and its AP-park choices, set by their actions — since a
+    /// form filled before the runtime write would otherwise carry the old
+    /// value back on its next save; and trust settings a page must not
+    /// choose — rp's `ca_cert`, the CA it trusts for every credential it
+    /// presents. A setup page names such a field as edited in the
+    /// configuration file instead of rendering an input for it. A pointer
+    /// segment may be the wildcard `*`. Empty for a service with none.
     #[must_use]
     fn file_only_pointers() -> &'static [&'static str] {
         &[]

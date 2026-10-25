@@ -4,7 +4,7 @@
 //! roster rows' links and states, and the saves that edit the page drawn
 //! again.
 //!
-//! Like `config_rest.feature`, these scenarios spawn their own rp on port 0
+//! These scenarios spawn their own rp on port 0
 //! from a scenario-private temp config, its entries pointing at addresses
 //! nothing answers on (or at the stub camera facade), so no simulator runs.
 
@@ -15,7 +15,7 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use serde_json::{json, Value};
 
-use super::config_rest_steps::write_scenario_config;
+use super::scenario_config_steps::write_scenario_config;
 use crate::world::RpWorld;
 
 bdd_infra::setup_pages_steps!(RpWorld);
@@ -104,19 +104,6 @@ fn entry_presents_credential(world: &mut RpWorld, id: String, username: String, 
         .unwrap_or_else(|| panic!("no entry {id} in the roster"));
     entry["auth"] = json!({ "username": username, "password": password });
     write_config_file(&path, &config);
-}
-
-#[given("rp is started on that config file for its setup page")]
-async fn rp_started_for_setup_page(world: &mut RpWorld) {
-    let (path, _) = config_file(world);
-    let handle =
-        ServiceHandle::start(env!("CARGO_PKG_NAME"), path.to_str().expect("utf-8 path")).await;
-    setup_pages::adopt_plain(&mut world.setup_pages, handle.bound_port(), path);
-    world.rp = Some(handle);
-    assert!(
-        world.wait_for_rp_healthy().await,
-        "rp did not become healthy"
-    );
 }
 
 #[given("rp is started behind TLS and auth for its setup page")]

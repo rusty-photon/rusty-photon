@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use ascom_alpaca::api::{Focuser, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
+use bdd_infra::tls_auth::TlsAuthState;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use qhy_focuser::Config;
@@ -28,10 +30,14 @@ pub struct QhyFocuserWorld {
     /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
     pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
-    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
-    pub last_response: Option<serde_json::Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// State for the shared setup-page steps (`setup_pages.feature`).
+    pub setup_pages: SetupPagesState,
+    /// The TLS + auth fixture the setup-page credential scenario starts
+    /// the service through.
+    pub tls_auth: TlsAuthState,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
@@ -49,17 +55,30 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for QhyFocuserWorld {
     }
 }
 
+impl SetupPagesWorld for QhyFocuserWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
+    }
+}
+
 impl QhyFocuserWorld {
     /// Convenience accessor for the Focuser device client.
     pub fn focuser(&self) -> &Arc<dyn Focuser> {
         self.focuser.as_ref().expect("focuser not acquired")
     }
 
-    /// Build a JSON config from current world state, write to temp file, and return path.
-    fn write_config(&mut self) -> String {
-        let config = self.config.clone().unwrap_or_default();
+    /// The JSON the suite starts the service on: the world's config (the
+    /// library defaults unless a Given changed it, with the mock serial
+    /// port in place of the platform default, which the mock ignores) and
+    /// the `server` block every scenario shares — port 0 for OS-assigned, no
+    /// discovery.
+    fn config_json(&self) -> serde_json::Value {
+        let mut config = self.config.clone().unwrap_or_default();
+        if self.config.is_none() {
+            config.serial.port = "/dev/mock".to_string();
+        }
 
-        let config_json = serde_json::json!({
+        serde_json::json!({
             "serial": {
                 "port": config.serial.port,
                 "baud_rate": config.serial.baud_rate,
@@ -79,7 +98,12 @@ impl QhyFocuserWorld {
                 "speed": config.focuser.speed,
                 "reverse": config.focuser.reverse,
             },
-        });
+        })
+    }
+
+    /// Build a JSON config from current world state, write to temp file, and return path.
+    fn write_config(&mut self) -> String {
+        let config_json = self.config_json();
 
         let dir = self
             .temp_dir
@@ -92,62 +116,52 @@ impl QhyFocuserWorld {
     /// Start the focuser service binary and acquire a Focuser client.
     pub async fn start_focuser(&mut self) {
         let config_path = self.write_config();
-
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
-        let focuser = self.acquire_focuser(&handle).await;
-        self.focuser = Some(focuser);
+        self.adopt(handle, config_path).await;
+    }
+
+    /// Spawn the binary with `serial.port` pinned by a `--port` override,
+    /// so the server page shows the field pinned and never persists it.
+    pub async fn start_with_serial_override(&mut self, serial_port: &str) {
+        let config_path = self.write_config();
+        let handle = ServiceHandle::start_with_args(
+            env!("CARGO_PKG_NAME"),
+            &["--config", &config_path, "--port", serial_port],
+        )
+        .await;
+        self.adopt(handle, config_path).await;
+    }
+
+    /// Spawn the binary through the TLS + auth fixture, so the setup pages
+    /// sit behind the credential.
+    pub async fn start_with_tls_and_auth(&mut self) {
+        let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+        self.tls_auth.pki = Some(pki);
+        let mut config = self.config_json();
+        config["server"] = self.tls_auth.pki().server_block(0);
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
+            .expect("the TLS fixture staged a config file");
+        setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
         self.focuser_handle = Some(handle);
     }
 
-    /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
-        self.focuser_handle
-            .as_ref()
-            .expect("service not started")
-            .port()
-    }
-
-    /// Call `config.get`, stash the parsed response, and return the `config`
-    /// object so a When step can edit a field and re-`config.apply` it.
-    pub async fn current_config(&mut self) -> serde_json::Value {
-        let focuser = Arc::clone(self.focuser());
-        let body = focuser
-            .action("config.get".to_string(), String::new())
-            .await
-            .expect("config.get failed");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("config.get returned invalid JSON");
-        let config = parsed
-            .get("config")
-            .cloned()
-            .expect("config.get response missing `config`");
-        self.last_response = Some(parsed);
-        config
-    }
-
-    /// Call `config.apply` with `params` and stash the parsed response.
-    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
-        let focuser = Arc::clone(self.focuser());
-        let body = focuser
-            .action("config.apply".to_string(), params.to_string())
-            .await
-            .expect("config.apply failed");
-        self.last_response =
-            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
-    }
-
-    /// Poll `config.get` via a fresh client until `focuser.max_step` equals
-    /// `expected`, tolerating the brief blip while the server rebinds. Panics
-    /// after ~20 s — which is the point if the reload failed to rebind.
-    pub async fn wait_for_config_max_step(&self, expected: u32) {
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
-        for _ in 0..80 {
-            if try_get_max_step(addr).await == Some(u64::from(expected)) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("reloaded service did not report max_step {expected} within 20s");
+    /// Record a spawned plain-HTTP service: acquire its device client and
+    /// hand the setup-page steps its address and config file.
+    async fn adopt(&mut self, handle: ServiceHandle, config_path: String) {
+        let focuser = self.acquire_focuser(&handle).await;
+        setup_pages::adopt_plain(
+            &mut self.setup_pages,
+            handle.bound_port(),
+            config_path.into(),
+        );
+        self.focuser = Some(focuser);
+        self.focuser_handle = Some(handle);
     }
 
     /// Poll until the server returns a Focuser device via the Alpaca client.
@@ -164,20 +178,4 @@ impl QhyFocuserWorld {
         }
         panic!("qhy-focuser did not become healthy within 30 seconds");
     }
-}
-
-/// Read `focuser.max_step` from `config.get` via a fresh client, returning
-/// `None` on any transport/parse failure (e.g. mid-reload).
-async fn try_get_max_step(addr: SocketAddr) -> Option<u64> {
-    let client = AlpacaClient::new_from_addr(addr);
-    let mut devices = client.get_devices().await.ok()?;
-    if let Some(TypedDevice::Focuser(focuser)) = devices.next() {
-        let body = focuser
-            .action("config.get".to_string(), String::new())
-            .await
-            .ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
-        return parsed["config"]["focuser"]["max_step"].as_u64();
-    }
-    None
 }

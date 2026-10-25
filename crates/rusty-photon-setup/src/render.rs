@@ -361,14 +361,41 @@ pub fn restart_how(service: &str) -> Markup {
     }
 }
 
-/// The page `service`'s save answers with: what happened, where the browser
-/// goes if not back to this page (`destination`), and the wait.
+/// A bound credential a save removed, and the settings whose change removed
+/// it, as dotted paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unbound {
+    /// The credential block: `rp.auth`.
+    pub credential: String,
+    /// The settings that changed: `rp.base_url`.
+    pub settings: Vec<String>,
+}
+
+/// `items` in monospace, joined by "and".
+#[must_use]
+pub fn mono_list(items: &[String]) -> Markup {
+    html! {
+        @for (i, item) in items.iter().enumerate() {
+            @if i > 0 { " and " }
+            span.mono { (item) }
+        }
+    }
+}
+
+/// The page `service`'s save answers with.
+///
+/// What happened, the credentials the save removed because the server they
+/// are presented to changed (`unbound`), where the browser goes if not back
+/// to this page (`destination`), and the wait. A page that names a removal
+/// waits for no reload: it stays on screen until it is left, so the warning
+/// is read.
 #[must_use]
 pub fn saved_body(
     service: &str,
     saved: &Saved,
     destination: Option<&Destination>,
     back: &str,
+    unbound: &[Unbound],
 ) -> Markup {
     let moved_to = destination.map(|d| d.url.as_str());
     let target = moved_to.map(str::to_string);
@@ -379,8 +406,11 @@ pub fn saved_body(
                 Saved::Unchanged => {
                     (banner("ok", "saved-unchanged", "Saved. Nothing changed, so no reload is needed."))
                 }
-                Saved::Reloading => {
+                Saved::Reloading if unbound.is_empty() => {
                     (banner("applying", "saved-reloading", "Saved. The service is reloading; this page reopens when it answers again."))
+                }
+                Saved::Reloading => {
+                    (banner("applying", "saved-reloading", "Saved. The service is reloading; this page stays so the removal below is read."))
                 }
                 Saved::RestartRequired(fields) => {
                     div class="banner warn" id="saved-restart" {
@@ -391,6 +421,22 @@ pub fn saved_body(
                         }
                     }
                     (restart_how(service))
+                }
+            }
+            @if !unbound.is_empty() {
+                div class="banner warn" id="saved-unbound" {
+                    span.dot {}
+                    span {
+                        "Removed from the file: "
+                        @for (i, removed) in unbound.iter().enumerate() {
+                            @if i > 0 { "; " }
+                            span.mono { (removed.credential) }
+                            ", since "
+                            (mono_list(&removed.settings))
+                            " changed"
+                        }
+                        ". A stored credential is presented only to the server it was set for: set it again in the configuration file."
+                    }
                 }
             }
             @if let Some(d) = destination {
@@ -406,13 +452,15 @@ pub fn saved_body(
             }
             p {
                 @match (saved, moved_to) {
-                    (Saved::Reloading, Some(url)) => { "If it does not reopen, " a href=(url) { "open the new address" } " once the service is back." }
-                    (Saved::Reloading, None) => { "If it does not reopen, " a href=(back) { "reload the page" } " once the service is back." }
+                    (Saved::Reloading, Some(url)) if unbound.is_empty() => { "If it does not reopen, " a href=(url) { "open the new address" } " once the service is back." }
+                    (Saved::Reloading, None) if unbound.is_empty() => { "If it does not reopen, " a href=(back) { "reload the page" } " once the service is back." }
+                    (Saved::Reloading, Some(url)) => { a href=(url) { "Open the new address" } " once the service is back." }
+                    (Saved::Reloading, None) => { a href=(back) { "Back to the page" } " once the service is back." }
                     (Saved::RestartRequired(_), Some(_)) => { "Nothing answers at the new address until the restart. " a href=(back) { "Back to the page" } "." }
                     _ => { a href=(back) { "Back to the page" } }
                 }
             }
-            @if matches!(saved, Saved::Reloading) {
+            @if matches!(saved, Saved::Reloading) && unbound.is_empty() {
                 script { (PreEscaped(reload_wait_script(&target_json))) }
             }
         }
@@ -867,7 +915,7 @@ mod tests {
 
     #[test]
     fn the_saved_page_says_what_happened_and_waits_only_for_a_reload() {
-        let reloading = saved_body("dsd-fp2", &Saved::Reloading, None, "").into_string();
+        let reloading = saved_body("dsd-fp2", &Saved::Reloading, None, "", &[]).into_string();
         assert!(reloading.contains(r#"id="saved-reloading""#), "{reloading}");
         assert!(reloading.contains("<script>"), "{reloading}");
         assert!(
@@ -879,7 +927,8 @@ mod tests {
             url: "http://h:1/setup".to_string(),
             note: None,
         };
-        let moved = saved_body("dsd-fp2", &Saved::Reloading, Some(&moved_dest), "").into_string();
+        let moved =
+            saved_body("dsd-fp2", &Saved::Reloading, Some(&moved_dest), "", &[]).into_string();
         assert!(
             moved.contains(r#"var url = "http://h:1/setup" || window.location.href;"#),
             "{moved}"
@@ -889,9 +938,9 @@ mod tests {
             url: "../../../../setup".to_string(),
             note: Some("This device is disabled now.".to_string()),
         };
-        let noted = saved_body("dsd-fp2", &Saved::Reloading, Some(&noted), "").into_string();
+        let noted = saved_body("dsd-fp2", &Saved::Reloading, Some(&noted), "", &[]).into_string();
         assert!(noted.contains(r#"<p id="moved">This device is disabled now. <a href="../../../../setup">Open the server page</a>.</p>"#), "{noted}");
-        let unchanged = saved_body("dsd-fp2", &Saved::Unchanged, None, "").into_string();
+        let unchanged = saved_body("dsd-fp2", &Saved::Unchanged, None, "", &[]).into_string();
         assert!(unchanged.contains(r#"id="saved-unchanged""#), "{unchanged}");
         assert!(!unchanged.contains("<script>"), "{unchanged}");
         let restart_dest = Destination {
@@ -903,6 +952,7 @@ mod tests {
             &Saved::RestartRequired(vec!["server.port".to_string()]),
             Some(&restart_dest),
             "",
+            &[],
         )
         .into_string();
         assert!(restart.contains(r#"id="saved-restart""#), "{restart}");

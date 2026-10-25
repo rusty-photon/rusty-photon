@@ -10,7 +10,11 @@ Feature: Setup pages
   the device section. The credential the bridge presents to rp is an
   optional block the form does not render, so the server page names it as
   edited in the configuration file and its password never reaches a page;
-  so is assume_epoch, a choice of two words, on the Telescope's page.
+  so is assume_epoch, a choice of two words, on the Telescope's page. That
+  credential is bound to rp's address and to the CA that verifies rp
+  there: a save that changes either asks first, keeps the credential when
+  its password is typed again, and otherwise removes it from the file,
+  the saved page saying so and staying on screen through the reload.
   Clearing the altitude floor saves the null that disables it. A value out
   of a field's range is refused naming the field, and the file is left as
   it was. The binary takes no command-line overrides, so no field is ever
@@ -94,6 +98,44 @@ Feature: Setup pages
     When I open the server setup page
     Then the page names "rp.service_auth" as edited in the configuration file
     And the page does not contain "rp-secret-on-file"
+
+  Scenario: Moving rp elsewhere asks, then removes the credential the bridge presents to it and says so
+    Given the bridge presents the username "bridge" and password "rp-secret-on-file" to rp
+    And the bridge is running
+    When I submit the server setup page setting "rp.mcp_server_url" to "http://elsewhere.example:11115/mcp"
+    Then the page asks to confirm removing "rp.service_auth"
+    When I save the confirmation
+    Then the page reports the configuration was saved and the service is reloading
+    And the page says "Removed from the file: rp.service_auth, since rp.mcp_server_url changed"
+    And the saved page stays on the removal instead of reopening the setup page
+    And the configuration file has nothing at "/rp/service_auth"
+
+  Scenario: Trusting another CA for rp asks, then removes the credential the bridge presents to it
+    Given the bridge presents the username "bridge" and password "rp-secret-on-file" to rp
+    And the bridge is running
+    When I submit the server setup page setting "rp.ca_cert" to "/etc/rusty-photon/ca.pem"
+    Then the page asks to confirm removing "rp.service_auth"
+    When I save the confirmation
+    Then the page reports the configuration was saved and the service is reloading
+    And the page says "Removed from the file: rp.service_auth, since rp.ca_cert changed"
+    And the configuration file has nothing at "/rp/service_auth"
+
+  Scenario: rp's password typed on the confirmation keeps the bridge's credential for the new address
+    Given the bridge presents the username "bridge" and password "rp-secret-on-file" to rp
+    And the bridge is running
+    When I submit the server setup page setting "rp.mcp_server_url" to "http://rig.example:11115/mcp"
+    And I save the confirmation typing "rp-secret-on-file" as the password that keeps "rp.service_auth"
+    Then the page reports the configuration was saved and the service is reloading
+    And the configuration file holds "http://rig.example:11115/mcp" at "/rp/mcp_server_url"
+    And the configuration file holds "rp-secret-on-file" at "/rp/service_auth/password"
+
+  Scenario: A save that leaves rp's address and CA keeps the credential the bridge presents to it
+    Given the bridge presents the username "bridge" and password "rp-secret-on-file" to rp
+    And the bridge is running
+    When I submit the server setup page setting "site.site_latitude_deg" to "34.05"
+    Then the page reports the configuration was saved and the service is reloading
+    And the configuration file holds "bridge" at "/rp/service_auth/username"
+    And the configuration file holds "rp-secret-on-file" at "/rp/service_auth/password"
 
   Scenario: No password hash reaches a page, and the pages are behind the credential
     Given the bridge is running with TLS and auth

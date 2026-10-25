@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Server-rendered web configuration UI (BFF) for rusty-photon — HTMX expression"
+description = "Server-rendered web UI (BFF) for rusty-photon — HTMX expression"
 
 [lints]
 workspace = true
@@ -34,6 +34,8 @@ derive_more = { workspace = true }
 humantime = { workspace = true }
 maud = { workspace = true, features = ["axum"] }
 reqwest = { workspace = true }
+# The config's JSON Schema, which the BFF's own setup page renders from.
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -42,7 +44,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-strum = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 rp-auth = { workspace = true }
@@ -53,8 +54,7 @@ rp-mcp-client = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
-# The schema walker, the form coercion and the field model the config pages
-# render from, shared with the drivers' own setup pages.
+# The BFF's own setup page, and the host rule its link to rp's page follows.
 rusty-photon-setup = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
@@ -71,7 +71,7 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 [package.metadata.deb]
 name = "rusty-photon-ui-htmx"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "Server-rendered web configuration UI for Rusty Photon services."
+extended-description = "Server-rendered web UI for Rusty Photon: the activity stream and the targets inbox."
 section = "science"
 priority = "optional"
 # $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
@@ -90,7 +90,7 @@ restart-after-upgrade = true
 
 [package.metadata.generate-rpm]
 name = "rusty-photon-ui-htmx"
-summary = "Web configuration UI for Rusty Photon services"
+summary = "Web UI for Rusty Photon: activity stream and targets inbox"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/ui-htmx", dest = "/usr/bin/rusty-photon-ui-htmx", mode = "755" },
@@ -129,15 +129,15 @@ fi
 require-sh = true
 
 [dev-dependencies]
-# rp-harness: the Phase-5 suites spawn a real rp (RpConfigBuilder + launcher)
-# alongside the BFF and dsd-fp2 — an all-first-party stack, no OmniSim.
+# rp-harness: the suites spawn a real rp (RpConfigBuilder + launcher) beside
+# the BFF — an all-first-party stack, no OmniSim.
 # tls-auth: the shared PKI + credentials fixture backing the deep TLS + Basic
 # Auth suites (auth.feature, tls.feature).
-bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
+# setup-pages: the shared setup-page steps the BFF's own `/setup` scenarios use.
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth", "setup-pages"] }
 mockall = { workspace = true }
-# `test-util` unlocks paused tokio time (`start_paused`) for the bounded
-# sentinel-lookup timeout test.
-tokio = { workspace = true, features = ["test-util"] }
+# `ServiceExt::oneshot`, to drive the router in unit tests.
+tower = { workspace = true, features = ["util"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 # Layer A of the UI-testing plan (docs/plans/archive/ui-testing.md §4): the Servo

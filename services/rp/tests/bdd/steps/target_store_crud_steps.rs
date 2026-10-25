@@ -5,7 +5,7 @@
 //! These scenarios never touch `OmniSim`: `add_target`/`get_target`/
 //! `list_targets`/`update_target`/`delete_target` are pure plan-data
 //! operations, so rp is spawned directly from a scenario-private temp
-//! config on port 0 (the `config_rest.feature` pattern), skipping the
+//! config on port 0 (the `setup_pages.feature` pattern), skipping the
 //! simulator entirely. `write_target_store_config` and
 //! `start_target_store_rp` are `pub(crate)` and reused by the sibling
 //! `target_store_goals_steps.rs` and `target_store_progress_steps.rs`.

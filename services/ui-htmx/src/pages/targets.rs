@@ -7,8 +7,8 @@
 //! goals, then activates or discards the target.
 //!
 //! Every read and write rides rp's MCP-only target tools through the
-//! [`crate::targets_client`] seam; the filter roster and train
-//! position-angle defaults join in from rp's config over REST. The htmx
+//! [`crate::targets_client`] seam, the filter roster and train
+//! position-angle defaults included (`get_target_context`). The htmx
 //! swap unit is `#targets-page` — the inbox and the review form are
 //! alternate states of that one element.
 
@@ -36,11 +36,11 @@ fn is_htmx(headers: &HeaderMap) -> bool {
 }
 
 /// Wrap a `#targets-page` fragment in the full page unless htmx asked.
-fn respond(fragment: Markup, headers: &HeaderMap) -> Response {
+fn respond(rp: &RpState, fragment: Markup, headers: &HeaderMap) -> Response {
     if is_htmx(headers) {
         fragment.into_response()
     } else {
-        layout_with_nav(TITLE, NavTab::Targets, &fragment).into_response()
+        layout_with_nav(TITLE, NavTab::Targets, &rp.setup_link(headers), &fragment).into_response()
     }
 }
 
@@ -151,8 +151,8 @@ fn parse_row(value: &Value) -> Row {
     }
 }
 
-/// What the targets pages join in from rp's effective config: the filter
-/// roster union goals are validated against, and the imaging trains'
+/// What the targets pages join in from rp's `get_target_context`: the
+/// filter roster goals are validated against, and the imaging trains'
 /// configured default position angles (the PA field's inherit hint).
 #[derive(Debug, Default)]
 struct ConfigJoin {
@@ -160,35 +160,22 @@ struct ConfigJoin {
     train_defaults: Vec<(String, f64)>,
 }
 
-fn config_join(config: &Value) -> ConfigJoin {
+fn config_join(context: &Value) -> ConfigJoin {
     let mut join = ConfigJoin::default();
-    if let Some(wheels) = config
-        .pointer("/equipment/filter_wheels")
-        .and_then(Value::as_array)
-    {
-        for wheel in wheels {
-            if let Some(filters) = wheel.get("filters").and_then(Value::as_array) {
-                // An entry is a bare name or `{name, wavelength_nm}`
-                // (rp.md § Train optics); the roster wants the name.
-                join.filter_roster.extend(
-                    filters
-                        .iter()
-                        .filter_map(|entry| entry.as_str().or_else(|| entry["name"].as_str()))
-                        .map(str::to_string),
-                );
-            }
-        }
+    if let Some(filters) = context.get("filters").and_then(Value::as_array) {
+        join.filter_roster
+            .extend(filters.iter().filter_map(Value::as_str).map(str::to_string));
     }
-    if let Some(trains) = config
-        .pointer("/equipment/optical_trains")
-        .and_then(Value::as_array)
-    {
+    if let Some(trains) = context.get("trains").and_then(Value::as_array) {
         for train in trains {
             let imaging = train
                 .get("purpose")
                 .and_then(Value::as_str)
                 .is_none_or(|p| p == "imaging");
-            let id = train.get("id").and_then(Value::as_str).unwrap_or_default();
+            let id = train
+                .get("train_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if let Some(angle) = train
                 .get("default_position_angle_degrees")
                 .and_then(Value::as_f64)
@@ -276,13 +263,13 @@ async fn inbox_state(rp: &RpState) -> Markup {
         Ok(targets) => targets,
         Err(err) => return targets_error_card(&err),
     };
-    // One rp, one health state: the config join failing renders the same
-    // unavailable card rather than a page with silently absent flags.
-    let config = match rp.config_client.get_config().await {
-        Ok(resp) => resp.config,
-        Err(err) => return unavailable_card(&err.to_string()),
+    // One rp, one health state: the join failing renders the same card
+    // rather than a page with silently absent flags.
+    let context = match rp.targets.target_context().await {
+        Ok(context) => context,
+        Err(err) => return targets_error_card(&err),
     };
-    let join = config_join(&config);
+    let join = config_join(&context);
     let mut rows: Vec<Row> = targets.iter().map(parse_row).collect();
     sort_rows(&mut rows);
     inbox_markup(&rows, &join)
@@ -440,7 +427,7 @@ fn trim_float(value: f64) -> String {
 }
 
 /// Field-level errors on the review form (`div.field.invalid` + `.error`,
-/// the config pages' convention).
+/// the setup pages' convention).
 #[derive(Debug, Default)]
 struct FormErrors {
     display_name: Option<String>,
@@ -682,10 +669,8 @@ fn form_value<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> 
 
 /// `GET /targets` — the inbox.
 pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(rp) = state.rp() else {
-        return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
-    };
-    respond(inbox_state(rp).await, &headers)
+    let rp = state.rp();
+    respond(rp, inbox_state(rp).await, &headers)
 }
 
 /// `GET /targets/{slug}` — the review form.
@@ -694,10 +679,8 @@ pub(crate) async fn review(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(rp) = state.rp() else {
-        return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
-    };
-    respond(review_state(rp, &slug, None, None).await, &headers)
+    let rp = state.rp();
+    respond(rp, review_state(rp, &slug, None, None).await, &headers)
 }
 
 /// Fetch one row + the config join and render the form. `echo`/`banner`
@@ -715,15 +698,29 @@ async fn review_state(
         }
         Err(err) => return targets_error_card(&err),
     };
-    let config = match rp.config_client.get_config().await {
-        Ok(resp) => resp.config,
-        Err(err) => return unavailable_card(&err.to_string()),
+    let context = match rp.targets.target_context().await {
+        Ok(context) => context,
+        Err(err) => return targets_error_card(&err),
     };
-    let join = config_join(&config);
+    let join = config_join(&context);
     let row = parse_row(&target);
     let (echo, errors) =
         override_form.unwrap_or_else(|| (FormEcho::from_row(&row), FormErrors::default()));
     review_markup(&row, &echo, &errors, banner.as_ref(), &join)
+}
+
+/// A parsed goal row as the re-rendered form echoes it back.
+fn goal_echo(goal: &Value) -> Goal {
+    let text = |key: &str| goal[key].as_str().unwrap_or_default().to_string();
+    Goal {
+        filter: text("filter"),
+        binning: text("binning"),
+        exposure: text("exposure_duration"),
+        desired_count: goal["desired_count"]
+            .as_u64()
+            .unwrap_or_default()
+            .to_string(),
+    }
 }
 
 /// `POST /targets/{slug}` — save the review form: `update_target` (the
@@ -736,9 +733,7 @@ pub(crate) async fn save(
     headers: HeaderMap,
     Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
-    let Some(rp) = state.rp() else {
-        return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
-    };
+    let rp = state.rp();
 
     let ScalarFields {
         mut echo,
@@ -750,23 +745,13 @@ pub(crate) async fn save(
     } = parse_scalar_fields(&form);
     let goals = match parse_goal_rows(&form) {
         Ok(goals) => {
-            echo.goals = goals
-                .iter()
-                .map(|g| Goal {
-                    filter: g["filter"].as_str().unwrap_or_default().to_string(),
-                    binning: g["binning"].as_str().unwrap_or_default().to_string(),
-                    exposure: g["exposure_duration"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    desired_count: g["desired_count"].as_u64().unwrap_or_default().to_string(),
-                })
-                .collect();
+            echo.goals = goals.iter().map(goal_echo).collect();
             Some(goals)
         }
         Err(message) => {
             echo.goals = raw_goal_rows(&form);
             return respond(
+                rp,
                 review_state(
                     rp,
                     &slug,
@@ -782,6 +767,7 @@ pub(crate) async fn save(
     if errors.any() {
         echo.goals = raw_goal_rows(&form);
         return respond(
+            rp,
             review_state(rp, &slug, Some((echo, errors)), None).await,
             &headers,
         );
@@ -814,7 +800,7 @@ pub(crate) async fn save(
             }
             other => targets_error_card(&other),
         };
-        return respond(markup, &headers);
+        return respond(rp, markup, &headers);
     }
 
     if let Some(goals) = goals {
@@ -831,11 +817,12 @@ pub(crate) async fn save(
                 }
                 other => targets_error_card(&other),
             };
-            return respond(markup, &headers);
+            return respond(rp, markup, &headers);
         }
     }
 
     respond(
+        rp,
         review_state(rp, &slug, None, Some(ReviewBanner::Saved)).await,
         &headers,
     )
@@ -949,16 +936,14 @@ pub(crate) async fn set_active(
     Query(query): Query<ActiveQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(rp) = state.rp() else {
-        return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
-    };
+    let rp = state.rp();
     let mut fields = Map::new();
     fields.insert("active".to_string(), Value::Bool(query.active));
     let markup = match rp.targets.update_target(&slug, fields).await {
         Ok(()) => inbox_state(rp).await,
         Err(err) => targets_error_card(&err),
     };
-    with_push_url(respond(markup, &headers))
+    with_push_url(respond(rp, markup, &headers))
 }
 
 /// `POST /targets/{slug}/delete` — discard. Answers with the refreshed
@@ -968,14 +953,12 @@ pub(crate) async fn delete(
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(rp) = state.rp() else {
-        return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
-    };
+    let rp = state.rp();
     let markup = match rp.targets.delete_target(&slug).await {
         Ok(()) => inbox_state(rp).await,
         Err(err) => targets_error_card(&err),
     };
-    with_push_url(respond(markup, &headers))
+    with_push_url(respond(rp, markup, &headers))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -999,7 +982,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::driver_client::{ConfigClient, ConfigClientError};
     use crate::targets_client::MockTargetsClient;
     use crate::AppState;
 
@@ -1087,29 +1069,28 @@ mod tests {
         assert!(!goal_flagged("", &roster));
     }
 
-    // --- the config join ----------------------------------------------------
+    // --- the target-context join --------------------------------------------
 
     #[test]
-    fn join_unions_wheels_and_collects_imaging_train_defaults() {
-        let config = json!({ "equipment": {
-            "filter_wheels": [
-                { "id": "a", "filters": ["Ha", "OIII"] },
-                { "id": "b", "filters": ["OIII", { "name": "SII", "wavelength_nm": 672.0 }] }
-            ],
-            "optical_trains": [
-                { "id": "main", "default_position_angle_degrees": 254.0 },
-                { "id": "guide", "purpose": "guiding",
+    fn join_reads_the_roster_and_collects_imaging_train_defaults() {
+        let context = json!({
+            "filters": ["Ha", "OIII", "SII"],
+            "trains": [
+                { "train_id": "main", "purpose": "imaging",
+                  "default_position_angle_degrees": 254.0 },
+                { "train_id": "guide", "purpose": "guiding",
                   "default_position_angle_degrees": 10.0 },
-                { "id": "second", "purpose": "imaging" }
+                { "train_id": "second", "purpose": "imaging",
+                  "default_position_angle_degrees": null }
             ]
-        }});
-        let join = config_join(&config);
+        });
+        let join = config_join(&context);
         assert_eq!(
             join.filter_roster,
             ["Ha", "OIII", "SII"].map(str::to_string).into()
         );
-        // Omitted purpose defaults to imaging; guiding trains never hint;
-        // a train without a default contributes nothing.
+        // Guiding trains never hint; a train without a default contributes
+        // nothing.
         assert_eq!(join.train_defaults, vec![("main".to_string(), 254.0)]);
     }
 
@@ -1153,39 +1134,9 @@ mod tests {
 
     // --- handler states the end-to-end suite can't produce -------------------
 
-    /// A `ConfigClient` whose reads always fail — the targets handlers
-    /// short-circuit on the targets client before ever reaching it.
-    struct UnusedConfig;
-
-    #[async_trait::async_trait]
-    impl ConfigClient for UnusedConfig {
-        async fn get_config(
-            &self,
-        ) -> Result<rusty_photon_config::actions::ConfigGetResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-
-        async fn get_schema(
-            &self,
-        ) -> Result<rusty_photon_config::actions::ConfigSchemaResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-
-        async fn apply_config(
-            &self,
-            _config: &Value,
-        ) -> Result<rusty_photon_config::actions::ConfigApplyResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-    }
-
     fn state_with_targets(targets: MockTargetsClient) -> AppState {
-        AppState::with_rp_parts(
-            Arc::new(UnusedConfig),
-            Arc::new(crate::rp_client::MockRpApi::new()),
-            Arc::new(crate::probe::MockProbeHttp::new()),
-        )
-        .with_targets_client(Arc::new(targets))
+        AppState::with_rp_api(Arc::new(crate::rp_client::MockRpApi::new()))
+            .with_targets_client(Arc::new(targets))
     }
 
     async fn body_of(response: Response) -> String {
@@ -1229,42 +1180,12 @@ mod tests {
         assert!(!html.contains("targets-unavailable"), "{html}");
     }
 
-    /// A `ConfigClient` returning a minimal effective config — the save-path
-    /// tests need the review re-render's config join to succeed.
-    struct EmptyConfig;
-
-    #[async_trait::async_trait]
-    impl ConfigClient for EmptyConfig {
-        async fn get_config(
-            &self,
-        ) -> Result<rusty_photon_config::actions::ConfigGetResponse, ConfigClientError> {
-            Ok(rusty_photon_config::actions::ConfigGetResponse {
-                config: json!({}),
-                overrides: Vec::new(),
-            })
-        }
-
-        async fn get_schema(
-            &self,
-        ) -> Result<rusty_photon_config::actions::ConfigSchemaResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-
-        async fn apply_config(
-            &self,
-            _config: &Value,
-        ) -> Result<rusty_photon_config::actions::ConfigApplyResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-    }
-
-    fn state_with_targets_and_config(targets: MockTargetsClient) -> AppState {
-        AppState::with_rp_parts(
-            Arc::new(EmptyConfig),
-            Arc::new(crate::rp_client::MockRpApi::new()),
-            Arc::new(crate::probe::MockProbeHttp::new()),
-        )
-        .with_targets_client(Arc::new(targets))
+    /// The save-path tests need the review re-render's join to succeed.
+    fn state_with_targets_and_context(mut targets: MockTargetsClient) -> AppState {
+        targets
+            .expect_target_context()
+            .returning(|| Ok(json!({ "filters": [], "trains": [] })));
+        state_with_targets(targets)
     }
 
     /// The stored row the save-path mocks serve from `get_target`.
@@ -1293,7 +1214,7 @@ mod tests {
 
     async fn run_save(targets: MockTargetsClient, form: Vec<(String, String)>) -> String {
         let response = save(
-            axum::extract::State(state_with_targets_and_config(targets)),
+            axum::extract::State(state_with_targets_and_context(targets)),
             Path("m-82".to_string()),
             HeaderMap::new(),
             Form(form),
@@ -1392,7 +1313,7 @@ mod tests {
             .expect_get_target()
             .returning(|_| Err(TargetsError::Unavailable("refused".to_string())));
         let response = review(
-            axum::extract::State(state_with_targets_and_config(targets)),
+            axum::extract::State(state_with_targets_and_context(targets)),
             Path("m-82".to_string()),
             HeaderMap::new(),
         )
@@ -1408,7 +1329,7 @@ mod tests {
             .expect_update_target()
             .returning(|_, _| Err(TargetsError::Tool("unknown target".to_string())));
         let response = set_active(
-            axum::extract::State(state_with_targets_and_config(targets)),
+            axum::extract::State(state_with_targets_and_context(targets)),
             Path("m-82".to_string()),
             Query(ActiveQuery { active: true }),
             HeaderMap::new(),
@@ -1421,7 +1342,7 @@ mod tests {
             .expect_delete_target()
             .returning(|_| Err(TargetsError::Tool("unknown target".to_string())));
         let response = delete(
-            axum::extract::State(state_with_targets_and_config(targets)),
+            axum::extract::State(state_with_targets_and_context(targets)),
             Path("m-82".to_string()),
             HeaderMap::new(),
         )
@@ -1430,39 +1351,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_targets_handler_renders_the_no_rp_card_without_an_rp() {
-        // `AppState::with_client` carries no rp state — the shape the
-        // stubbed-driver unit states use.
-        let state = || axum::extract::State(AppState::with_client("stub", Arc::new(UnusedConfig)));
-        let no_rp = "No rp orchestrator is configured";
-        let html = body_of(page(state(), HeaderMap::new()).await).await;
-        assert!(html.contains(no_rp), "{html}");
-        let html = body_of(review(state(), Path("x".to_string()), HeaderMap::new()).await).await;
-        assert!(html.contains(no_rp), "{html}");
-        let html = body_of(
-            save(
-                state(),
-                Path("x".to_string()),
-                HeaderMap::new(),
-                Form(Vec::new()),
-            )
-            .await,
+    async fn a_failed_context_read_renders_the_retry_card_not_a_page_without_flags() {
+        let mut targets = MockTargetsClient::new();
+        targets.expect_list_targets().returning(|| Ok(Vec::new()));
+        targets
+            .expect_target_context()
+            .returning(|| Err(TargetsError::Unavailable("connection reset".to_string())));
+        let response = page(
+            axum::extract::State(state_with_targets(targets)),
+            HeaderMap::new(),
         )
         .await;
-        assert!(html.contains(no_rp), "{html}");
-        let html = body_of(
-            set_active(
-                state(),
-                Path("x".to_string()),
-                Query(ActiveQuery { active: true }),
-                HeaderMap::new(),
-            )
-            .await,
-        )
-        .await;
-        assert!(html.contains(no_rp), "{html}");
-        let html = body_of(delete(state(), Path("x".to_string()), HeaderMap::new()).await).await;
-        assert!(html.contains(no_rp), "{html}");
+        let html = body_of(response).await;
+        assert!(html.contains("targets-unavailable"), "{html}");
+        assert!(html.contains("connection reset"), "{html}");
     }
 
     #[tokio::test]

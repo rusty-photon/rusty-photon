@@ -676,10 +676,12 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
     checks
 }
 
-/// Config keys retired by D3s and #569: sentinel's `services` map (sentinel
-/// discovers its services) and ui-htmx's whole `drivers` override map (rp's
-/// roster is the only device source). Both fail the service's own strict
-/// load, so the file is dead weight that keeps the service from starting.
+/// Config keys retired by D3s, #569 and the setup pages: sentinel's
+/// `services` map (sentinel discovers its services), ui-htmx's whole
+/// `drivers` override map (rp's roster is the only device source), and
+/// ui-htmx's `sentinel` block (the BFF restarts nothing). Each fails the
+/// service's own strict load, so the key is dead weight that keeps the
+/// service from starting.
 fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
     if sentinel.is_some_and(|s| s.services.is_some()) {
@@ -721,6 +723,27 @@ fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec
             .with_fixes(vec![crate::report::FixOp::RemoveKey {
                 service: "ui-htmx".to_string(),
                 pointer: "/drivers".to_string(),
+            }]),
+        );
+    }
+    if ui.is_some_and(|u| u.sentinel.is_some()) {
+        checks.push(
+            Check::fail(
+                "config.retired-keys",
+                Some("ui-htmx".to_string()),
+                "ui-htmx.json carries the retired sentinel block — the web UI no \
+                 longer restarts services (Sentinel's dashboard does), and ui-htmx \
+                 refuses to start while the key is present"
+                    .to_string(),
+                Some(
+                    "delete the top-level \"sentinel\" key; restarts are on \
+                     Sentinel's own dashboard"
+                        .to_string(),
+                ),
+            )
+            .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                service: "ui-htmx".to_string(),
+                pointer: "/sentinel".to_string(),
             }]),
         );
     }
@@ -1913,9 +1936,9 @@ fn judge_client_target(ctx: &Context, t: &ClientTarget) -> Vec<Check> {
     checks
 }
 
-/// ui-htmx's `rp` (required) and `sentinel` (optional) targets — both
-/// carry `base_url` + `auth` + `ca_cert_path`, so both the transport and
-/// credential checks are fully fix-eligible.
+/// ui-htmx's `rp` target — it carries `base_url` + `auth` +
+/// `ca_cert_path`, so both the transport and credential checks are fully
+/// fix-eligible.
 fn ui_htmx_targets(ctx: &Context) -> Vec<ClientTarget> {
     let Some(ui_scan) = ctx.scan("ui-htmx").filter(|s| ctx.participates(s)) else {
         return Vec::new();
@@ -1923,33 +1946,32 @@ fn ui_htmx_targets(ctx: &Context) -> Vec<ClientTarget> {
     let Some(ui) = scan::view::<UiHtmxView>(ui_scan).and_then(Result::ok) else {
         return Vec::new();
     };
-    [("rp", ui.rp), ("sentinel", ui.sentinel)]
-        .into_iter()
-        .filter_map(|(name, target)| {
-            let target = target?;
-            let url = target.base_url.clone()?;
-            Some(ClientTarget {
-                client: "ui-htmx",
-                transport_field: format!("{name}.base_url"),
-                locator: TargetLocator::Url {
-                    url,
-                    pointer: format!("/{name}/base_url"),
-                },
-                ca_cert: (
-                    format!("/{name}/ca_cert_path"),
-                    target
-                        .ca_cert_path
-                        .as_deref()
-                        .is_some_and(|p| !p.is_empty()),
-                ),
-                auth: Some(AuthTarget {
-                    field: format!("{name}.auth"),
-                    pointer: format!("/{name}/auth"),
-                    current: target.auth,
-                }),
-            })
-        })
-        .collect()
+    let Some(target) = ui.rp else {
+        return Vec::new();
+    };
+    let Some(url) = target.base_url.clone() else {
+        return Vec::new();
+    };
+    vec![ClientTarget {
+        client: "ui-htmx",
+        transport_field: "rp.base_url".to_string(),
+        locator: TargetLocator::Url {
+            url,
+            pointer: "/rp/base_url".to_string(),
+        },
+        ca_cert: (
+            "/rp/ca_cert_path".to_string(),
+            target
+                .ca_cert_path
+                .as_deref()
+                .is_some_and(|p| !p.is_empty()),
+        ),
+        auth: Some(AuthTarget {
+            field: "rp.auth".to_string(),
+            pointer: "/rp/auth".to_string(),
+            current: target.auth,
+        }),
+    }]
 }
 
 /// rp's plate-solver/guider clients, the generic equipment roster, and
@@ -2344,21 +2366,17 @@ fn set_ca_pins(ctx: &Context) -> Vec<CaPin> {
         .scan("ui-htmx")
         .filter(|s| ctx.participates(s))
         .and_then(|s| scan::view::<UiHtmxView>(s)?.ok());
-    if let Some(ui) = ui {
-        for (name, target) in [("rp", ui.rp), ("sentinel", ui.sentinel)] {
-            let Some(pin) = target
-                .and_then(|t| t.ca_cert_path)
-                .filter(|p| !p.is_empty())
-            else {
-                continue;
-            };
-            pins.push(CaPin {
-                client: "ui-htmx",
-                field: format!("{name}.ca_cert_path"),
-                pointer: format!("/{name}/ca_cert_path"),
-                value: pin,
-            });
-        }
+    if let Some(pin) = ui
+        .and_then(|ui| ui.rp)
+        .and_then(|t| t.ca_cert_path)
+        .filter(|p| !p.is_empty())
+    {
+        pins.push(CaPin {
+            client: "ui-htmx",
+            field: "rp.ca_cert_path".to_string(),
+            pointer: "/rp/ca_cert_path".to_string(),
+            value: pin,
+        });
     }
     pins
 }
@@ -3969,7 +3987,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ui_htmx_sentinel_target_absent_is_a_noop() {
+    fn test_ui_htmx_retired_sentinel_block_is_never_joined() {
         let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
@@ -3981,11 +3999,13 @@ mod tests {
             dir.path(),
             "ui-htmx.json",
             serde_json::json!({ "server": { "port": 11120 },
-                "rp": { "base_url": "http://127.0.0.1:11115" } }),
+                "rp": { "base_url": "http://127.0.0.1:11115" },
+                "sentinel": { "base_url": "http://127.0.0.1:11114" } }),
         );
         let ctx = config_only_ctx(dir.path());
-        // rp itself does not participate (no config, no unit), and
-        // ui-htmx's optional sentinel block is absent — nothing to join.
+        // rp itself does not participate (no config, no unit), and the
+        // plain-HTTP sentinel block against a TLS-on sentinel is not a
+        // client target: it is retired, which `config.retired-keys` reports.
         assert!(client_target_joins(&ctx).is_empty());
     }
 
@@ -4831,6 +4851,29 @@ mod tests {
             [crate::report::FixOp::RemoveKey { service, pointer }] => {
                 assert_eq!(service, "star-adventurer-gti");
                 assert_eq!(pointer, "/mount/flip_policy/flip_range_hours");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ui_htmx_sentinel_block_is_flagged_for_removal() {
+        let ui: UiHtmxView = serde_json::from_value(serde_json::json!({
+            "rp": { "base_url": "http://127.0.0.1:11115" },
+            "sentinel": { "base_url": "http://127.0.0.1:11114" }
+        }))
+        .unwrap();
+        let checks = retired_keys(None, Some(&ui));
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        let check = &checks[0];
+        assert_eq!(check.name, "config.retired-keys");
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(check.service.as_deref(), Some("ui-htmx"));
+        assert!(check.detail.contains("sentinel"), "{}", check.detail);
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/sentinel");
             }
             other => unreachable!("{other:?}"),
         }

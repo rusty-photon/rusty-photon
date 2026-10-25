@@ -40,7 +40,7 @@ doubles as the PHD2 CLI via subcommands.)
 | star-adventurer-gti | 11117 | serial (dialout; deb adds plugdev) |
 | pa-falcon-rotator | 11118 | serial (dialout; deb adds plugdev) |
 | dsd-fp2 | 11119 | serial (dialout; deb adds plugdev) |
-| ui-htmx | 11120 | web config UI |
+| ui-htmx | 11120 | web UI: activity stream, targets inbox |
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout; deb adds plugdev) |
@@ -346,9 +346,9 @@ sudo systemctl restart rusty-photon-<svc>   # the rest
 Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver, qhy-focuser,
 sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
 star-adventurer-gti, qhy-camera, zwo-camera, svbony-camera, zwo-focuser,
-planetarium-bridge. Note that services with `config.apply` support
-(via ui-htmx) rewrite these files at runtime — hand-edits and UI edits
-share the same file.
+planetarium-bridge. Note that a service's setup page (`/setup`) rewrites
+its file when a page is saved — hand-edits and page edits share the same
+file.
 
 ## Sentinel restart privileges (polkit)
 

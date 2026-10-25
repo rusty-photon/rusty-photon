@@ -15,7 +15,7 @@
         <ServiceInstall Id="UiHtmxService"
                         Name="rusty-photon-ui-htmx"
                         DisplayName="rusty-photon-ui-htmx"
-                        Description="Server-rendered web configuration UI for Rusty Photon services."
+                        Description="Server-rendered web UI for Rusty Photon: the activity stream and the targets inbox."
                         Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"

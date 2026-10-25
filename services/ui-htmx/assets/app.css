@@ -56,6 +56,9 @@ a:hover { text-decoration: underline; }
 .nav-tabs a { padding: 5px 10px; border-radius: 5px; color: var(--dim); }
 .nav-tabs a:hover { color: var(--text); text-decoration: none; }
 .nav-tabs a.active { color: #fff; background: rgba(255, 255, 255, .05); }
+/* The BFF's own setup page, beside the night-vision toggle. */
+.topnav a.ui-setup { padding: 5px 10px; font-size: 12px; color: var(--dim); }
+.topnav a.ui-setup:hover { color: var(--text); text-decoration: none; }
 
 /* Night-vision toggle (from the chosen mock): a visually-hidden checkbox in the
  * nav; the :has() selector below applies a page-level red filter. Pure CSS. */

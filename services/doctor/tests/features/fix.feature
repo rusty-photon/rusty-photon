@@ -2,7 +2,7 @@ Feature: Repair — doctor --fix
   A default doctor run is read-only. --fix applies the machine-applicable
   fixes the checks planned — a port collision moved back to a free catalog
   default, a retired key deleted (sentinel's services map, ui-htmx's
-  drivers map) — then re-diagnoses and reports the post-fix state, exit
+  drivers map and sentinel block) — then re-diagnoses and reports the post-fix state, exit
   code included. Writes go through the same atomic save path the services' own
   config.apply uses, every field doctor does not touch is preserved (the
   formatting normalizes to the pretty-printed shape config.apply writes),
@@ -52,7 +52,7 @@ Feature: Repair — doctor --fix
     And the config file "sentinel.json" has the string "http://localhost:11115" at "/operation_watchdog/rp_url"
     And the report has no checks named "config.retired-keys"
 
-  Scenario: The retired ui-htmx drivers map is deleted
+  Scenario: The retired ui-htmx drivers map and sentinel block are deleted
     Given a config directory with "ui-htmx.json" containing:
       """
       { "server": { "port": 11120 },
@@ -64,7 +64,8 @@ Feature: Repair — doctor --fix
     Then doctor exits with code 0
     And the report records an applied fix for check "config.retired-keys" on service "ui-htmx"
     And the config file "ui-htmx.json" has no value at "/drivers"
-    And the config file "ui-htmx.json" has the string "http://localhost:11114" at "/sentinel/base_url"
+    And the config file "ui-htmx.json" has no value at "/sentinel"
+    And the config file "ui-htmx.json" has the number 11120 at "/server/port"
 
   Scenario: A second --fix run applies nothing
     Given a config directory with "sentinel.json" containing:

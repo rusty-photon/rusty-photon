@@ -220,24 +220,25 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
 // views of other services' shapes, and must keep working as those shapes
 // grow fields doctor does not join across.
 
-/// ui-htmx: the retired `drivers` override map, read only to diagnose it
-/// (`config.retired-keys`), plus the `rp`/`sentinel` client targets.
+/// ui-htmx: the retired `drivers` override map and `sentinel` block, read
+/// only to diagnose them (`config.retired-keys`), plus the `rp` client
+/// target.
 ///
-/// Doctor joins the targets against their own server TLS/auth state
+/// Doctor joins the target against rp's own server TLS/auth state
 /// (docs/services/doctor.md §Client-target joins).
 #[derive(Debug, Deserialize, Default)]
 pub struct UiHtmxView {
     #[serde(default)]
     pub drivers: Option<Value>,
     #[serde(default)]
-    pub rp: Option<ClientTargetView>,
+    pub sentinel: Option<Value>,
     #[serde(default)]
-    pub sentinel: Option<ClientTargetView>,
+    pub rp: Option<ClientTargetView>,
 }
 
 /// A `base_url` client target with an optional credential and CA-trust
-/// path — ui-htmx's `rp`/`sentinel` blocks (`services/ui-htmx/src/config.rs`
-/// `RpTarget`/`SentinelTarget`).
+/// path — ui-htmx's `rp` block (`services/ui-htmx/src/config.rs`
+/// `RpTarget`).
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ClientTargetView {
     #[serde(default)]
@@ -892,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ui_htmx_view_reads_rp_and_sentinel_targets() {
+    fn test_ui_htmx_view_reads_the_rp_target_and_the_retired_sentinel_block() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
@@ -909,16 +910,7 @@ mod tests {
         assert_eq!(rp.base_url.as_deref(), Some("http://127.0.0.1:11115"));
         assert!(rp.auth.is_none());
         assert!(rp.ca_cert_path.is_none());
-        let sentinel = ui.sentinel.unwrap();
-        assert_eq!(
-            sentinel.base_url.as_deref(),
-            Some("https://127.0.0.1:11114")
-        );
-        assert_eq!(
-            sentinel.auth.unwrap().username.as_deref(),
-            Some("observatory")
-        );
-        assert_eq!(sentinel.ca_cert_path.as_deref(), Some("/pki/ca.pem"));
+        assert!(ui.sentinel.is_some());
     }
 
     #[test]

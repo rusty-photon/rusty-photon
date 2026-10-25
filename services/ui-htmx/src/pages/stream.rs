@@ -18,7 +18,6 @@
 //! - The fold panel (CSS Grid `0fr → 1fr`, checkbox `#fold-state` + label — no
 //!   JavaScript) contains `#equipment-leds`, which re-fetches
 //!   `/stream/equipment` via `hx-get` + `hx-trigger="every 10s"`.
-//! - Without an rp target the page renders the shared "no rp configured" card.
 //!
 //! The htmx SSE extension swaps a slot's **innerHTML**, so the slot fragments
 //! ([`slot_updates`], [`unreachable_slot`]) are the slot's *inner* markup only —
@@ -26,6 +25,7 @@
 //! place and keeps matching subsequent frames.
 
 use axum::extract::State;
+use axum::http::HeaderMap;
 use maud::{html, Markup};
 use serde::Deserialize;
 use serde_json::Value;
@@ -577,14 +577,8 @@ fn humanize_ms(ms: u64) -> String {
 /// and the LED panel with a note, and the page still renders); the strip's
 /// slots start in their unknown state and the feed starts empty — both
 /// fill from the SSE replay.
-pub async fn page(State(state): State<AppState>) -> Markup {
-    let Some(rp) = state.rp() else {
-        return layout_with_nav(
-            TITLE,
-            NavTab::Activity,
-            &super::equipment::no_rp_card("the activity stream"),
-        );
-    };
+pub async fn page(State(state): State<AppState>, headers: HeaderMap) -> Markup {
+    let rp = state.rp();
     let equipment = match rp.api.equipment_status().await {
         Ok(equipment) => Some(equipment),
         Err(e) => {
@@ -592,7 +586,12 @@ pub async fn page(State(state): State<AppState>) -> Markup {
             None
         }
     };
-    layout_with_nav(TITLE, NavTab::Activity, &shell(equipment.as_ref()))
+    layout_with_nav(
+        TITLE,
+        NavTab::Activity,
+        &rp.setup_link(&headers),
+        &shell(equipment.as_ref()),
+    )
 }
 
 /// The stream page body: the SSE wrapper, the sticky fold strip (slots), the
@@ -651,15 +650,12 @@ fn shell(equipment: Option<&EquipmentStatus>) -> Markup {
 /// `hx-get`/`hx-trigger`, so each 10s poll replaces it wholesale and a
 /// down rp self-heals.
 pub async fn equipment_fragment(State(state): State<AppState>) -> Markup {
-    let status = match state.rp() {
-        None => None,
-        Some(rp) => match rp.api.equipment_status().await {
-            Ok(status) => Some(status),
-            Err(e) => {
-                debug!("equipment LED poll failed: {e}");
-                None
-            }
-        },
+    let status = match state.rp().api.equipment_status().await {
+        Ok(status) => Some(status),
+        Err(e) => {
+            debug!("equipment LED poll failed: {e}");
+            None
+        }
     };
     equipment_leds(status.as_ref())
 }
@@ -719,11 +715,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::driver_client::{
-        ConfigApplyResponse, ConfigClient, ConfigClientError, ConfigGetResponse,
-        ConfigSchemaResponse,
-    };
-    use crate::rp_client::{DeviceStatus, MockRpApi, MountStatus};
+    use crate::rp_client::{DeviceStatus, MockRpApi, MountStatus, RpApiError};
 
     fn envelope(event: &str, payload: Value) -> EventEnvelope {
         EventEnvelope {
@@ -1292,31 +1284,8 @@ mod tests {
 
     // --- the page + equipment fragment ------------------------------------------
 
-    /// A `ConfigClient` the stream surfaces never call (state plumbing only).
-    struct UnusedConfigClient;
-
-    #[async_trait::async_trait]
-    impl ConfigClient for UnusedConfigClient {
-        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-        async fn apply_config(
-            &self,
-            _config: &Value,
-        ) -> Result<ConfigApplyResponse, ConfigClientError> {
-            Err(ConfigClientError::Transport("unused".to_string()))
-        }
-    }
-
     fn rp_state(api: MockRpApi) -> AppState {
-        AppState::with_rp_parts(
-            Arc::new(UnusedConfigClient),
-            Arc::new(api),
-            Arc::new(crate::probe::MockProbeHttp::new()),
-        )
+        AppState::with_rp_api(Arc::new(api))
     }
 
     fn equipment_fixture() -> EquipmentStatus {
@@ -1334,8 +1303,8 @@ mod tests {
         }
     }
 
-    fn down() -> ConfigClientError {
-        ConfigClientError::Transport("connection refused".to_string())
+    fn down() -> RpApiError {
+        RpApiError::Transport("connection refused".to_string())
     }
 
     #[tokio::test]
@@ -1343,7 +1312,9 @@ mod tests {
         let mut api = MockRpApi::new();
         api.expect_equipment_status()
             .returning(|| Box::pin(async { Ok(equipment_fixture()) }));
-        let html = page(State(rp_state(api))).await.into_string();
+        let html = page(State(rp_state(api)), HeaderMap::new())
+            .await
+            .into_string();
 
         // The SSE extension script + the one sse-connect wrapper.
         assert!(html.contains(r#"src="/assets/htmx-ext-sse.js""#), "{html}");
@@ -1379,7 +1350,9 @@ mod tests {
         let mut api = MockRpApi::new();
         api.expect_equipment_status()
             .returning(|| Box::pin(async { Err(down()) }));
-        let html = page(State(rp_state(api))).await.into_string();
+        let html = page(State(rp_state(api)), HeaderMap::new())
+            .await
+            .into_string();
 
         // The page still renders (shell + SSE wiring)…
         assert!(html.contains(r#"sse-connect="/stream/events""#), "{html}");
@@ -1391,14 +1364,6 @@ mod tests {
             html.contains("rp unreachable — equipment state unknown"),
             "{html}"
         );
-    }
-
-    #[tokio::test]
-    async fn page_without_rp_target_renders_the_shared_card() {
-        let state = AppState::with_client("dsd-fp2", Arc::new(UnusedConfigClient));
-        let html = page(State(state)).await.into_string();
-        assert!(html.contains("No rp orchestrator is configured"), "{html}");
-        assert!(html.contains("the activity stream"), "{html}");
     }
 
     #[tokio::test]

@@ -18,7 +18,7 @@ One `rusty-photon-<version>-x64.msi` for the whole family, downloaded from
 the GitHub Releases page. The installer presents a feature tree:
 
 - **Core** (required): `sentinel` (watchdog/notifications) and `ui-htmx`
-  (web config UI). Any install includes them. Core also installs
+  (the web UI). Any install includes them. Core also installs
   `rusty-photon-doctor.exe` (diagnosis, `--fix` repair, and the TLS +
   credential lifecycle — [docs/services/doctor.md](services/doctor.md);
   there is no separate doctor package) and registers the Scheduled Task
@@ -49,7 +49,7 @@ its port:
 | star-adventurer-gti | 11117 | `StarAdventurerGti` | serial (COM port) |
 | pa-falcon-rotator | 11118 | `PaFalconRotator` | serial (COM port) |
 | dsd-fp2 | 11119 | `DsdFp2` | serial (COM port) |
-| ui-htmx | 11120 | `Core` | web config UI |
+| ui-htmx | 11120 | `Core` | web UI: activity stream, targets inbox |
 | qhy-camera | 11121 | `QhyCamera` | needs QHY's All-in-One pack (below) |
 | zwo-camera | 11122 | `ZwoCamera` | its SDK DLL bundled |
 | pa-scops-oag | 11123 | `PaScopsOag` | serial (COM port) |
@@ -193,8 +193,8 @@ start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated five
 (above) never write one; the two cameras, `zwo-focuser`, and
 `phd2-guider` run on built-in defaults without writing a file until
-settings are saved (via ui-htmx `config.apply`) or one is created by
-hand. To change settings:
+settings are saved on the service's setup page (`/setup`) or one is
+created by hand. To change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json
@@ -206,8 +206,8 @@ Reload-capable (SCM `ParamChange`, the SIGHUP analogue): filemonitor,
 ppba-driver, upbv2-driver, qhy-focuser, sky-survey-camera,
 pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera,
 zwo-camera, zwo-focuser, planetarium-bridge.
-Services with `config.apply` support (via ui-htmx) rewrite these files at
-runtime — hand-edits and UI edits share the same file.
+A service's setup page (`/setup`) rewrites its file when a page is saved —
+hand-edits and page edits share the same file.
 
 **ui-htmx config**: self-created like every other service — the default
 (the required `rp` target on localhost) is correct for every install,

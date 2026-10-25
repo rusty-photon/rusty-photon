@@ -302,7 +302,7 @@ These are known issues with the Gherkin parser used by cucumber-rs:
 
   ```rust
   #[when(
-      regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
+      regex = r#"^I save rp's setup page after setting the file's "([^"]+)" to the JSON (.+)$"#
   )]
   ```
 
@@ -644,7 +644,10 @@ and Then steps are service-neutral — opening either page, submitting it the
 way its own form would (the rendered controls, the edit, the `Origin` of the
 page itself or of another site), the reload wait, the file's contents at a
 pointer, a field's error under `422`, the credential's absence from a page,
-a page that only shows, saving a confirmation page again after its `409`,
+a page that only shows, saving a confirmation page again after its `409`
+(as it stands, or with a bound credential's password typed to keep it), the
+confirmation asking to remove a bound credential and the saved page that
+stays on that removal,
 the fields a service that restarts names as waiting for it —
 so field names, values and statuses live in the feature file. `dsd-fp2`'s
 suite is the reference. The camera drivers also invoke

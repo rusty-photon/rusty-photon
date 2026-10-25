@@ -10,8 +10,8 @@ pub struct SessionConfig {
     /// name. It is still *accepted by the parser* — never serialized,
     /// never in the schema — solely so that
     /// [`crate::config::validate_config`] can reject a config carrying
-    /// it with a message naming the migration, at load and at
-    /// `PUT /api/config` alike, instead of serde's bare "unknown field".
+    /// it with a message naming the migration, at load and on a setup-page
+    /// save alike, instead of serde's bare "unknown field".
     #[serde(default, skip_serializing)]
     #[schemars(skip)]
     pub session_state_file: Option<String>,

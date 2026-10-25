@@ -21,9 +21,10 @@ use crate::form::{
     changed_paths, overlay_field_except, set_pointer, start_sections, submitted_as_shown,
     FormValues,
 };
-use crate::render::{self, Destination, DeviceRow, FieldState, Saved};
+use crate::render::{self, Destination, DeviceRow, FieldState, Saved, Unbound};
 use crate::schema::{dotted_to_pointer, humanize, FieldKind, FieldModel, FieldSpec};
 use crate::{origin, security};
+use subtle::ConstantTimeEq;
 
 /// Delay before firing the in-process reload, so the saved page flushes
 /// before the server that served it is torn down by the reload.
@@ -112,20 +113,35 @@ pub struct SetupPages<D: ConfigurableDriver> {
     saving: tokio::sync::Mutex<()>,
     /// The driver's own part of the pages, when it has one.
     driver_pages: Option<Arc<dyn DriverPages>>,
+    /// The credentials the service presents to another server, each kept
+    /// only while the settings that decide which server receives it stay
+    /// as they were when it was stored.
+    bound_credentials: Vec<BoundCredential>,
+}
+
+/// A credential block the service presents to another server, and a
+/// setting that decides which server receives it (its address, or the CA
+/// that verifies the server there), both as JSON pointers.
+#[derive(Debug, Clone)]
+struct BoundCredential {
+    setting: String,
+    credential: String,
 }
 
 /// A save waiting for its confirmation: the tokens the confirmation page
-/// carries, and what the save would change.
+/// carries, what the save would change, and the password controls that
+/// keep a bound credential it would remove.
 struct Confirm {
     token: String,
     changes: Vec<Markup>,
+    keeps: Vec<Keep>,
 }
 
 impl Confirm {
-    /// The confirmation `confirmations` ask for together, `None` when none
-    /// asks. Each token is one line, so the joined token survives a form's
-    /// line-break normalisation.
-    fn of(confirmations: Vec<Confirmation>) -> Option<Self> {
+    /// The confirmation `confirmations` ask for together, with `keeps`,
+    /// `None` when none asks. Each token is one line, so the joined token
+    /// survives a form's line-break normalisation.
+    fn of(confirmations: Vec<Confirmation>, keeps: Vec<Keep>) -> Option<Self> {
         if confirmations.is_empty() {
             return None;
         }
@@ -137,8 +153,84 @@ impl Confirm {
         Some(Self {
             token,
             changes: confirmations.into_iter().map(|c| c.markup).collect(),
+            keeps,
         })
     }
+}
+
+/// The control a confirmation page asks a bound credential's password in,
+/// and the credential's dotted path.
+struct Keep {
+    name: String,
+    credential: String,
+}
+
+/// The prefix of a keep control's name, before the credential's dotted
+/// path: `keep-credential:rp.auth`.
+pub const KEEP_CREDENTIAL: &str = "keep-credential:";
+
+/// What a keep control says when the submission typed a password a
+/// re-rendered page cannot carry back.
+const RETYPE_KEEP: &str = "Type the password again before saving: a page never carries a password back, and a save without it removes the credential.";
+
+/// A bound credential a save would carry to another server: the block, the
+/// bound settings the save changes, the stored password that keeps it, and
+/// the confirmation token naming exactly this change.
+struct Unbinding {
+    /// The credential block's JSON pointer.
+    credential: String,
+    /// The changed settings' JSON pointers.
+    settings: Vec<String>,
+    /// The stored password's JSON pointer, when the driver names a secret
+    /// directly under the block: typed again, it keeps the block.
+    password: Option<String>,
+    token: String,
+}
+
+impl Unbinding {
+    /// The control the confirmation page asks the password in.
+    fn keep_control(&self) -> String {
+        format!("{KEEP_CREDENTIAL}{}", dotted(&self.credential))
+    }
+
+    fn settings(&self) -> Vec<String> {
+        self.settings.iter().map(|s| dotted(s)).collect()
+    }
+
+    /// What the confirmation page says this save would do.
+    fn confirmation(&self) -> Confirmation {
+        let markup = html! {
+            ul {
+                li.unbind data-credential=(dotted(&self.credential)) {
+                    "remove " span.mono { (dotted(&self.credential)) } " from the file, since "
+                    (render::mono_list(&self.settings())) " changed: a stored credential is presented only to the server it was set for. "
+                    @if self.password.is_some() {
+                        "Type its password below to keep it for the new server; left blank, it is removed, to be set again in the configuration file."
+                    } @else {
+                        "It is set again in the configuration file."
+                    }
+                }
+            }
+        };
+        Confirmation {
+            token: self.token.clone(),
+            markup,
+        }
+    }
+}
+
+/// The secret leaf directly under the block at `credential`, among
+/// `secrets`: the password that keeps a bound credential.
+fn password_under(credential: &str, secrets: &[&str]) -> Option<String> {
+    secrets
+        .iter()
+        .find(|secret| {
+            secret
+                .strip_prefix(credential)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .is_some_and(|leaf| !leaf.is_empty() && !leaf.contains('/'))
+        })
+        .map(|secret| (*secret).to_string())
 }
 
 /// The fields the command-line overrides pin, in both spellings a page
@@ -178,6 +270,23 @@ fn control_for_path(fields: &[&FieldSpec], config: &Value, path: &str) -> Option
 /// disclosure on whichever page shows it.
 fn is_identity(spec: &FieldSpec) -> bool {
     spec.name().ends_with(".unique_id")
+}
+
+/// Remove the member at `pointer` from its parent object; whether there
+/// was one.
+fn remove_pointer(config: &mut Value, pointer: &str) -> bool {
+    let Some((parent, key)) = pointer.rsplit_once('/') else {
+        return false;
+    };
+    config
+        .pointer_mut(parent)
+        .and_then(Value::as_object_mut)
+        .is_some_and(|object| object.remove(key).is_some())
+}
+
+/// The dotted path (`rp.auth`) of the JSON pointer `pointer` (`/rp/auth`).
+fn dotted(pointer: &str) -> String {
+    pointer.trim_start_matches('/').replace('/', ".")
 }
 
 /// The generation the next handler is born with.
@@ -227,6 +336,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             generation: next_generation(),
             saving: tokio::sync::Mutex::new(()),
             driver_pages: None,
+            bound_credentials: Vec::new(),
         }
     }
 
@@ -252,6 +362,26 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     #[must_use]
     pub const fn with_https(mut self, https: bool) -> Self {
         self.https = https;
+        self
+    }
+
+    /// A credential the service presents to another server — the block at
+    /// the JSON pointer `credential` — kept only while the setting at
+    /// `setting`, which decides which server receives it (its address, or
+    /// the CA that verifies the server there), stays as it was when the
+    /// credential was stored: a page that can edit the setting must not
+    /// send a stored password somewhere new. A save that changes the
+    /// setting and leaves the block as the file stores it asks first: the
+    /// stored password typed again keeps the block, and left blank the
+    /// save removes it, the saved page naming what it removed and which
+    /// setting changed. A credential bound to several settings takes a call
+    /// for each.
+    #[must_use]
+    pub fn with_bound_credential(mut self, setting: &str, credential: &str) -> Self {
+        self.bound_credentials.push(BoundCredential {
+            setting: setting.to_string(),
+            credential: credential.to_string(),
+        });
         self
     }
 
@@ -423,7 +553,10 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             };
             render::field(spec, shown, state)
         };
-        let placed = Self::placed_controls(page, &fields, auth_pointer.is_some());
+        let mut placed = Self::placed_controls(page, &fields, auth_pointer.is_some());
+        if let Some(confirm) = drawn.confirm {
+            placed.extend(confirm.keeps.iter().map(|k| k.name.as_str()));
+        }
         let banner_errors = Self::banner_errors(errors, drawn.custom);
         let view = SectionView {
             config: shown,
@@ -438,7 +571,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             (Self::confirm_banner(drawn.confirm))
             (Self::pending_banner(&self.service, pending))
         };
-        let actions = Self::actions(drawn.confirm);
+        let actions = Self::actions(drawn.confirm, errors, submitted);
         let body = match page {
             Page::Server { sections } => {
                 let mut section_names: Vec<&str> = Vec::new();
@@ -588,12 +721,34 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         }
     }
 
-    /// The form's end: the confirmation's tokens, when it asks for one, and
-    /// the button.
-    fn actions(confirm: Option<&Confirm>) -> Markup {
+    /// The form's end: the confirmation's tokens and the passwords that keep
+    /// the bound credentials it would remove, when it asks for one, and the
+    /// button. A keep password the submission typed is asked again beside
+    /// its control: a page never carries a password back.
+    fn actions(
+        confirm: Option<&Confirm>,
+        errors: &[FieldError],
+        submitted: Option<&FormValues>,
+    ) -> Markup {
         html! {
             @if let Some(confirm) = confirm {
                 input type="hidden" name=(CONFIRM) value=(confirm.token);
+                @for keep in &confirm.keeps {
+                    @let typed = submitted
+                        .and_then(|form| form.get(&keep.name))
+                        .is_some_and(|password| !password.is_empty());
+                    @let error = errors
+                        .iter()
+                        .find(|e| e.path == keep.name)
+                        .map(|e| e.msg.as_str())
+                        .or_else(|| typed.then_some(RETYPE_KEEP));
+                    div.field.invalid[error.is_some()] {
+                        label for=(keep.name) { "Password of " span.mono { (keep.credential) } ", to keep it for the new server" }
+                        input type="password" id=(keep.name) name=(keep.name) value="" autocomplete="off";
+                        @if let Some(e) = error { div.error { (e) } }
+                        @else { div.hint { "Blank removes it from the file." } }
+                    }
+                }
             }
             div.actions {
                 button.primary type="submit" {
@@ -704,12 +859,15 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }),
         }
         Self::place_variant_errors(&page.fields(model), &file, &mut errors);
-        // A save that changes nothing fires no reload, so nothing it could
-        // confirm would happen: a section is asked only when it does.
-        let confirmation = self
-            .reloads(&file_before, &file, effective, auth_change.as_ref())
-            .then(|| Self::confirmation(drawn, &form, &file_before, &file))
-            .flatten();
+        // A save that changes nothing fires no reload, so nothing a section
+        // could confirm would happen: a section is asked only when it does.
+        // A bound credential's removal is asked whenever the save would make
+        // it: it rewrites the file whatever reloads.
+        let unbindings = self.unbindings(&file_before, &file);
+        let kept = Self::kept(&unbindings, &file_before, &form, &mut errors);
+        let reloads = self.reloads(&file_before, &file, effective, auth_change.as_ref());
+        let confirmation =
+            Self::confirmation(drawn, &form, (&file_before, &file), reloads, &unbindings);
         if !errors.is_empty() {
             // A submission that confirmed what it changes keeps the
             // confirmation through a rejection, so fixing the field — the
@@ -748,6 +906,30 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 );
             }
         }
+        let unbound = Self::unbind(&unbindings, &kept, &mut file);
+        self.write(
+            page,
+            &file_before,
+            file,
+            effective,
+            &request.headers,
+            &unbound,
+        )
+    }
+
+    /// Write `file`, a save every check passed, over `file_before`: typed
+    /// and normalized, and persisted against what the service would run
+    /// without it, the saved page naming the bound credentials the save
+    /// removed (`unbound`).
+    fn write(
+        &self,
+        page: &Page,
+        file_before: &Value,
+        file: Value,
+        effective: &Value,
+        headers: &HeaderMap,
+        unbound: &[Unbound],
+    ) -> PageResponse {
         let typed = match serde_json::from_value::<D::Config>(file) {
             Ok(mut typed) => {
                 D::normalize(&mut typed);
@@ -760,8 +942,104 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 )
             }
         };
-        let baseline = self.baseline(&file_before, effective);
-        self.persist(page, typed, effective, &baseline, &request.headers)
+        let baseline = self.baseline(file_before, effective);
+        self.persist(page, typed, effective, &baseline, headers, unbound)
+    }
+
+    /// The bound credentials saving `file` over `before` would carry to
+    /// another server, one per block, each naming every changed setting it
+    /// is bound to. A setting is compared as the service would run it —
+    /// parsed and normalized, so a default the file leaves out, a trimmed
+    /// space or a blank optional field the form submits as `null` is no
+    /// change; the file's own value when the typed config refuses it — and
+    /// a block the save itself rewrote is the operator's, for the server
+    /// the save names, so only a block as `before` stores it is carried.
+    fn unbindings(&self, before: &Value, file: &Value) -> Vec<Unbinding> {
+        let (ran, runs) = (self.effective_of(before), self.effective_of(file));
+        let setting = |config: Option<&Value>, raw: &Value, pointer: &str| {
+            config
+                .map_or_else(|| raw.pointer(pointer), |c| c.pointer(pointer))
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        let mut unbindings: Vec<Unbinding> = Vec::new();
+        for bound in &self.bound_credentials {
+            let stored = before.pointer(&bound.credential);
+            if stored.is_none() || file.pointer(&bound.credential) != stored {
+                continue;
+            }
+            let was = setting(ran.as_ref(), before, &bound.setting);
+            let is = setting(runs.as_ref(), file, &bound.setting);
+            if was == is {
+                continue;
+            }
+            let change = format!("{} {was} > {is}", dotted(&bound.setting));
+            match unbindings
+                .iter_mut()
+                .find(|u| u.credential == bound.credential)
+            {
+                Some(unbinding) => {
+                    unbinding.settings.push(bound.setting.clone());
+                    unbinding.token = format!("{}; {change}", unbinding.token);
+                }
+                None => unbindings.push(Unbinding {
+                    credential: bound.credential.clone(),
+                    settings: vec![bound.setting.clone()],
+                    password: password_under(&bound.credential, D::secret_pointers()),
+                    token: format!("remove {}: {change}", dotted(&bound.credential)),
+                }),
+            }
+        }
+        unbindings
+    }
+
+    /// The bound credentials the submission keeps for the new server: the
+    /// stored password typed again in its keep control. A typed password
+    /// that does not match is refused beside its control.
+    fn kept(
+        unbindings: &[Unbinding],
+        before: &Value,
+        form: &FormValues,
+        errors: &mut Vec<FieldError>,
+    ) -> Vec<String> {
+        let mut kept = Vec::new();
+        for unbinding in unbindings {
+            let Some(password) = &unbinding.password else {
+                continue;
+            };
+            let control = unbinding.keep_control();
+            let Some(typed) = form.get(&control).filter(|typed| !typed.is_empty()) else {
+                continue;
+            };
+            let stored = before.pointer(password).and_then(Value::as_str);
+            if stored.is_some_and(|stored| bool::from(stored.as_bytes().ct_eq(typed.as_bytes()))) {
+                kept.push(unbinding.credential.clone());
+            } else {
+                errors.push(FieldError {
+                    path: control,
+                    msg: "does not match the stored password: type it again, or leave it blank to remove the credential".to_string(),
+                });
+            }
+        }
+        kept
+    }
+
+    /// Remove from `file` each of `unbindings` the save does not keep:
+    /// what the saved page names as removed.
+    fn unbind(unbindings: &[Unbinding], kept: &[String], file: &mut Value) -> Vec<Unbound> {
+        let mut removed = Vec::new();
+        for unbinding in unbindings {
+            if kept.contains(&unbinding.credential) || !remove_pointer(file, &unbinding.credential)
+            {
+                continue;
+            }
+            debug!(credential = %unbinding.credential, settings = ?unbinding.settings, "a setup-page save removes a credential whose server changed");
+            removed.push(Unbound {
+                credential: dotted(&unbinding.credential),
+                settings: unbinding.settings(),
+            });
+        }
+        removed
     }
 
     /// The `500` a save answers when the file it would overlay cannot be read.
@@ -815,22 +1093,34 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             })
     }
 
-    /// What the driver's sections want confirmed of a save from `before` to
-    /// `after`, and whether `form` confirms it: whether it carries the tokens
-    /// the save produces now — so a submission whose changes differ, or
-    /// whose file moved on, is asked again.
+    /// What a save from `before` to `after` wants confirmed — the driver's
+    /// sections' changes when `sections_asked`, and each bound credential it
+    /// would remove — and whether `form` confirms it: whether it carries the
+    /// tokens the save produces now — so a submission whose changes differ,
+    /// or whose file moved on, is asked again.
     fn confirmation(
         drawn: Drawn<'_>,
         form: &FormValues,
-        before: &Value,
-        after: &Value,
+        (before, after): (&Value, &Value),
+        sections_asked: bool,
+        unbindings: &[Unbinding],
     ) -> Option<(Confirm, bool)> {
-        let confirmations = drawn
+        let mut confirmations: Vec<Confirmation> = drawn
             .custom
             .iter()
+            .filter(|_| sections_asked)
             .filter_map(|section| section.confirmation(before, after))
             .collect();
-        let confirm = Confirm::of(confirmations)?;
+        confirmations.extend(unbindings.iter().map(Unbinding::confirmation));
+        let keeps = unbindings
+            .iter()
+            .filter(|u| u.password.is_some())
+            .map(|u| Keep {
+                name: u.keep_control(),
+                credential: dotted(&u.credential),
+            })
+            .collect();
+        let confirm = Confirm::of(confirmations, keeps)?;
         let confirmed = form.get(CONFIRM) == Some(confirm.token.as_str());
         Some((confirm, confirmed))
     }
@@ -863,9 +1153,10 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     }
 
     /// Persist the validated configuration and answer with what happened:
-    /// what changed against `baseline` decides the reload, and where the
-    /// pages live afterwards is read against `effective`, the running
-    /// service, whose address the browser is at.
+    /// what changed against `baseline` decides the reload, where the pages
+    /// live afterwards is read against `effective`, the running service,
+    /// whose address the browser is at, and the saved page names the bound
+    /// credentials the save removed (`unbound`).
     fn persist(
         &self,
         page: &Page,
@@ -873,6 +1164,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         effective: &Value,
         baseline: &Value,
         headers: &HeaderMap,
+        unbound: &[Unbound],
     ) -> PageResponse {
         let to_persist = match serde_json::to_value(&typed) {
             Ok(v) => v,
@@ -927,7 +1219,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
                 ApplyDisposition::Restart => Saved::RestartRequired(changed),
             }
         };
-        self.saved_response(&saved, destination.as_ref())
+        self.saved_response(&saved, destination.as_ref(), unbound)
     }
 
     /// Overlay the page's submitted fields onto `file`: a pinned control is
@@ -994,14 +1286,21 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         }
     }
 
-    /// The saved page, with the no-script `Refresh` when a reload is on.
-    fn saved_response(&self, saved: &Saved, destination: Option<&Destination>) -> PageResponse {
-        let body = render::saved_body(&self.service, saved, destination, "");
+    /// The saved page, with the no-script `Refresh` when a reload is on —
+    /// unless the save removed a bound credential, whose warning the page
+    /// keeps on screen rather than move on from.
+    fn saved_response(
+        &self,
+        saved: &Saved,
+        destination: Option<&Destination>,
+        unbound: &[Unbound],
+    ) -> PageResponse {
+        let body = render::saved_body(&self.service, saved, destination, "", unbound);
         let mut response = PageResponse::html(
             StatusCode::OK,
             render::document(&self.service, "Saved", &self.generation, &body),
         );
-        if matches!(saved, Saved::Reloading) {
+        if matches!(saved, Saved::Reloading) && unbound.is_empty() {
             let refresh = destination.map_or_else(
                 || NOSCRIPT_REFRESH_SECONDS.to_string(),
                 |d| format!("{NOSCRIPT_REFRESH_SECONDS}; url={}", d.url),
@@ -3245,5 +3544,403 @@ mod tests {
         _ = p.handle(PageScope::Server, get()).await;
         _ = p.handle(PageScope::Server, post(&server_base())).await;
         assert_eq!(*seen.0.lock().unwrap(), vec![false, true]);
+    }
+
+    /// A service that presents a credential to another server: the
+    /// upstream's address and the CA that verifies it, which the page
+    /// edits, and the credential block bound to both, which the file holds.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct LinkedConfig {
+        server: Server,
+        #[serde(default)]
+        upstream: Upstream,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct Upstream {
+        #[serde(default = "default_upstream_url")]
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<UpstreamAuth>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca: Option<String>,
+    }
+
+    impl Default for Upstream {
+        fn default() -> Self {
+            Self {
+                url: default_upstream_url(),
+                auth: None,
+                ca: None,
+            }
+        }
+    }
+
+    fn default_upstream_url() -> String {
+        "http://127.0.0.1:11115".to_string()
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct UpstreamAuth {
+        username: String,
+        password: String,
+    }
+
+    struct LinkedFake;
+
+    impl ConfigurableDriver for LinkedFake {
+        type Config = LinkedConfig;
+        type Overrides = ();
+        fn normalize(config: &mut LinkedConfig) {
+            config.upstream.url = config.upstream.url.trim().to_string();
+        }
+        fn validate(_config: &LinkedConfig) -> Vec<FieldError> {
+            Vec::new()
+        }
+        fn secret_pointers() -> &'static [&'static str] {
+            &["/upstream/auth/password"]
+        }
+        fn override_paths(_overrides: &()) -> Vec<String> {
+            Vec::new()
+        }
+        fn apply_overrides(_config: &mut LinkedConfig, _overrides: &()) {}
+        fn apply_disposition() -> ApplyDisposition {
+            ApplyDisposition::Restart
+        }
+    }
+
+    /// The pages over `file`, with the upstream's credential bound to its
+    /// address and its CA, and that file.
+    fn linked_pages(file: &Value) -> (tempfile::TempDir, PathBuf, SetupPages<LinkedFake>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("linked.json");
+        std::fs::write(&path, file.to_string()).unwrap();
+        let running: LinkedConfig = serde_json::from_value(file.clone()).unwrap();
+        let p = SetupPages::<LinkedFake>::new("linked", running, path.clone(), ())
+            .with_bound_credential("/upstream/url", "/upstream/auth")
+            .with_bound_credential("/upstream/ca", "/upstream/auth");
+        (dir, path, p)
+    }
+
+    fn linked_credential() -> Value {
+        json!({ "username": "obs", "password": "hunter2" })
+    }
+
+    /// The linked pages' file with the upstream at its first address and
+    /// the credential stored.
+    fn linked_file() -> Value {
+        json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        })
+    }
+
+    /// The submission moving the upstream elsewhere, with `extra` pairs.
+    fn moving<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut pairs = vec![
+            ("server.port", "11120"),
+            ("upstream.url", "http://elsewhere.example:80"),
+        ];
+        pairs.extend_from_slice(extra);
+        pairs
+    }
+
+    #[tokio::test]
+    async fn a_save_that_changes_the_address_asks_before_removing_the_credential() {
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let response = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
+        assert!(
+            response
+                .body
+                .contains(r#"<li class="unbind" data-credential="upstream.auth">"#),
+            "{}",
+            response.body
+        );
+        assert!(
+            response
+                .body
+                .contains(r#"name="keep-credential:upstream.auth""#),
+            "{}",
+            response.body
+        );
+        assert_eq!(sparse_on_disk(&path), linked_file());
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_save_with_the_password_left_blank_removes_the_credential() {
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let asked = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        let token = confirm_token(&asked.body);
+        let confirmed = moving(&[(CONFIRM, &token), ("keep-credential:upstream.auth", "")]);
+        let response = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let saved = sparse_on_disk(&path);
+        assert_eq!(saved["upstream"]["url"], "http://elsewhere.example:80");
+        assert!(saved["upstream"].get("auth").is_none(), "{saved}");
+        assert!(
+            response.body.contains(
+                "<span class=\"mono\">upstream.auth</span>, since <span class=\"mono\">upstream.url</span> changed"
+            ),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_that_changes_the_ca_asks_and_then_removes_the_credential() {
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let changing_ca = [
+            ("server.port", "11120"),
+            ("upstream.url", "http://127.0.0.1:11115"),
+            ("upstream.ca", "/etc/elsewhere/ca.pem"),
+        ];
+        let asked = p.handle(PageScope::Server, post(&changing_ca)).await;
+        assert_eq!(asked.status, StatusCode::CONFLICT, "{}", asked.body);
+        let token = confirm_token(&asked.body);
+        let mut confirmed = changing_ca.to_vec();
+        confirmed.push((CONFIRM, &token));
+        let response = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let saved = sparse_on_disk(&path);
+        assert_eq!(saved["upstream"]["ca"], "/etc/elsewhere/ca.pem");
+        assert!(saved["upstream"].get("auth").is_none(), "{saved}");
+        assert!(
+            response.body.contains(
+                "<span class=\"mono\">upstream.auth</span>, since <span class=\"mono\">upstream.ca</span> changed"
+            ),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stored_password_typed_on_the_confirmation_keeps_the_credential() {
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let asked = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        let token = confirm_token(&asked.body);
+        let confirmed = moving(&[
+            (CONFIRM, &token),
+            ("keep-credential:upstream.auth", "hunter2"),
+        ]);
+        let response = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        let saved = sparse_on_disk(&path);
+        assert_eq!(saved["upstream"]["url"], "http://elsewhere.example:80");
+        assert_eq!(saved["upstream"]["auth"], linked_credential());
+        assert!(
+            !response.body.contains("saved-unbound"),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_on_the_confirmation_is_refused_beside_its_control() {
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let asked = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        let token = confirm_token(&asked.body);
+        let confirmed = moving(&[
+            (CONFIRM, &token),
+            ("keep-credential:upstream.auth", "not-it"),
+        ]);
+        let response = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            response.body
+        );
+        assert!(
+            response.body.contains("does not match the stored password"),
+            "{}",
+            response.body
+        );
+        assert!(
+            !response.body.contains("not-it"),
+            "a typed password reached the page:\n{}",
+            response.body
+        );
+        assert_eq!(sparse_on_disk(&path), linked_file());
+    }
+
+    #[tokio::test]
+    async fn a_refused_confirmation_asks_again_for_a_typed_password() {
+        // Refused for another field, the confirmation is carried; the keep
+        // password is not, so its control asks for it again rather than
+        // let the next save remove the credential unawares.
+        let (_dir, path, p) = linked_pages(&linked_file());
+        let asked = p.handle(PageScope::Server, post(&moving(&[]))).await;
+        let token = confirm_token(&asked.body);
+        let confirmed = vec![
+            ("server.port", "not a port"),
+            ("upstream.url", "http://elsewhere.example:80"),
+            (CONFIRM, &token),
+            ("keep-credential:upstream.auth", "hunter2"),
+        ];
+        let response = p.handle(PageScope::Server, post(&confirmed)).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            response.body
+        );
+        assert!(response.body.contains(RETYPE_KEEP), "{}", response.body);
+        assert_eq!(sparse_on_disk(&path), linked_file());
+    }
+
+    #[test]
+    fn a_credential_two_changed_settings_carry_is_one_unbinding_naming_both() {
+        let before = linked_file();
+        let (_dir, _path, p) = linked_pages(&before);
+        let file = json!({
+            "server": { "port": 11120 },
+            "upstream": {
+                "url": "http://elsewhere.example:80",
+                "ca": "/etc/elsewhere/ca.pem",
+                "auth": linked_credential()
+            }
+        });
+        let unbindings = p.unbindings(&before, &file);
+        assert_eq!(unbindings.len(), 1);
+        assert_eq!(unbindings[0].credential, "/upstream/auth");
+        assert_eq!(
+            unbindings[0].settings,
+            vec!["/upstream/url", "/upstream/ca"]
+        );
+        assert_eq!(
+            unbindings[0].password.as_deref(),
+            Some("/upstream/auth/password")
+        );
+        assert_eq!(
+            unbindings[0].token,
+            r#"remove upstream.auth: upstream.url "http://127.0.0.1:11115" > "http://elsewhere.example:80"; upstream.ca null > "/etc/elsewhere/ca.pem""#
+        );
+    }
+
+    #[test]
+    fn the_keeping_password_is_the_secret_directly_under_the_block() {
+        let secrets = ["/server/auth/password_hash", "/rp/auth/password"];
+        assert_eq!(
+            password_under("/rp/auth", &secrets).as_deref(),
+            Some("/rp/auth/password")
+        );
+        assert_eq!(password_under("/rp", &secrets), None);
+        assert_eq!(password_under("/rp/au", &secrets), None);
+    }
+
+    #[test]
+    fn a_saved_page_naming_a_removal_waits_for_no_reload() {
+        let (_dir, _path, p) = linked_pages(&linked_file());
+        let removed = [Unbound {
+            credential: "upstream.auth".to_string(),
+            settings: vec!["upstream.url".to_string()],
+        }];
+        let staying = p.saved_response(&Saved::Reloading, None, &removed);
+        assert!(staying.headers.get("refresh").is_none());
+        assert!(
+            !staying.body.contains("location.assign"),
+            "{}",
+            staying.body
+        );
+        let moving_on = p.saved_response(&Saved::Reloading, None, &[]);
+        assert!(moving_on.headers.get("refresh").is_some());
+        assert!(
+            moving_on.body.contains("location.assign"),
+            "{}",
+            moving_on.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_that_keeps_the_address_keeps_the_credential() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11121"),
+                    ("upstream.url", "http://127.0.0.1:11115"),
+                    ("upstream.ca", ""),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+        assert!(
+            !response.body.contains("saved-unbound"),
+            "{}",
+            response.body
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_the_file_leaves_to_its_default_is_no_change() {
+        // The page shows the default address and submits it back, which
+        // writes the key the file left out: the address the service runs
+        // with is the same, so the credential stays.
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "11121"),
+                    ("upstream.url", "http://127.0.0.1:11115"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_save_that_changes_the_address_leaves_the_credential() {
+        let (_dir, path, p) = linked_pages(&json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        }));
+        let response = p
+            .handle(
+                PageScope::Server,
+                post(&[
+                    ("server.port", "not a port"),
+                    ("upstream.url", "http://elsewhere.example:80"),
+                ]),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            sparse_on_disk(&path)["upstream"]["auth"],
+            linked_credential()
+        );
+    }
+
+    #[test]
+    fn a_credential_the_save_rewrote_is_kept_at_the_new_address() {
+        // A block the save itself changed is the operator's, for the
+        // address the save names.
+        let before = json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://127.0.0.1:11115", "auth": linked_credential() }
+        });
+        let (_dir, _path, p) = linked_pages(&before);
+        let typed = json!({ "username": "obs", "password": "typed-for-the-new-one" });
+        let file = json!({
+            "server": { "port": 11120 },
+            "upstream": { "url": "http://elsewhere.example:80", "auth": typed }
+        });
+        assert!(p.unbindings(&before, &file).is_empty());
     }
 }

@@ -146,8 +146,8 @@ pub struct ProbeSpec {
     /// ladder probes and aborts against.
     pub alpaca_base: String,
     /// The service's listening port (the `server.port` the URLs above embed).
-    /// Exposed through `GET /api/services` so clients (ui-htmx) can match a
-    /// device's `alpaca_url` to the service that serves it.
+    /// Exposed through `GET /api/services` so a client can match a device's
+    /// `alpaca_url` to the service that serves it.
     pub port: u16,
 }
 

@@ -688,8 +688,8 @@ report groups naturally.
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
-| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
-| `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (#1301 — pier side is derived from the CW exclusion zone alone; configs the pre-#1301 service self-created carry it, so every upgraded install needs this fix). The remedy is deletion — no replacement config exists. |
+| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` and `sentinel` keys and the `rp` target). |
+| `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured), ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source), ui-htmx's `sentinel` block (the web UI restarts nothing since its configuration pages retired; Sentinel's dashboard does), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (#1301 — pier side is derived from the CW exclusion zone alone; configs the pre-#1301 service self-created carry it, so every upgraded install needs this fix). The remedy is deletion — no replacement config exists. |
 | `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/archive/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
@@ -761,8 +761,8 @@ so there is no ui-htmx-side name join left to check.)
 
 Every other D2/D6a check above judges a service against its **own**
 config. This family is the join the rest missed: a service's config
-points a URL at *another* catalog service — ui-htmx's `rp`/`sentinel`
-targets, rp's `plate_solver.url`, `equipment.mount.guiding.url`,
+points a URL at *another* catalog service — ui-htmx's `rp` target,
+rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry including the singular
 `equipment.mount.alpaca_url` (issue #663), the URL of each plugin
 registration rp dials — an event plugin's `plugins[].webhook_url`
@@ -799,10 +799,10 @@ reaches the join exactly as the config spells it.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme (gap 2 of [#805](https://github.com/rusty-photon/rusty-photon/issues/805)); or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue #663, and each `plugins[].auth` since issue #800) are judged here. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue #663, and each `plugins[].auth` since issue #800) are judged here. |
 
-**What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
-carry `base_url` + `auth` + `ca_cert_path`, so both checks are fully
+**What `--fix` can and cannot rewrite.** ui-htmx's `rp` block carries
+`base_url` + `auth` + `ca_cert_path`, so both checks are fully
 fix-eligible there: the scheme is rewritten in place (preserving the
 URL's path/query byte-for-byte — round-tripping through a URL parser's
 `to_string()` would silently append a trailing `/` to an origin-only URL,
@@ -1159,7 +1159,7 @@ call:
 | Check | Fix `--fix` applies |
 |---|---|
 | `ports.collision` | Move each colliding service whose configured port differs from its catalog default back to that default — but only when the default itself is free among the effective ports. A collision between judgment-call ports (two services deliberately moved to the same custom port) gets a suggestion, not a fix. |
-| `config.retired-keys` | Delete the retired key (sentinel's `services` map; ui-htmx's `drivers` map; star-adventurer-gti's `mount.flip_policy.flip_range_hours`). |
+| `config.retired-keys` | Delete the retired key (sentinel's `services` map; ui-htmx's `drivers` map and `sentinel` block; star-adventurer-gti's `mount.flip_policy.flip_range_hours`). |
 
 Everything else stays suggestion-only: a `ConditionPathExists` gate needs a
 hand-written config, a `discovery_port` collision is operator intent (which
@@ -1255,8 +1255,8 @@ can write **both forms everywhere they belong**:
 
 - the **Argon2id hash** into each installed service's `server.auth`;
 - the **plaintext** into each client auth block — rp's `equipment[].auth`
-  entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`sentinel`
-  targets, and the MCP clients' `service_auth` (session-runner,
+  entries, sentinel's service-probe `auth`, ui-htmx's `rp` target, and
+  the MCP clients' `service_auth` (session-runner,
   calibrator-flats, focus-model, polar-align — see
   [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
   alongside the CA path each client trusts.
@@ -1925,7 +1925,7 @@ pki-ownership alignment under sudo (the #572 remainder).
 from the one client-target registry, with the ACME name join and the
 loopback→`<svc>.<domain>` host rewrite on an ACME install.
 `joins.client-transport` is fully fix-eligible for ui-htmx's
-`rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
+`rp` target, sentinel's per-monitor `scheme`, sentinel's
 `operation_watchdog.rp_url` scheme, the shared top-level `ca_cert` both
 sentinel client families trust (#801), and rp's plate-solver/guider/plugin
 clients (rp's shared top-level `ca_cert`, closed by #609/PR #612).

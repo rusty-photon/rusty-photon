@@ -6,8 +6,13 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use serde_json::Value;
 
+use crate::steps::target_store_crud_steps::{start_target_store_rp, write_target_store_config};
 use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
+
+fn names(list: &str) -> Vec<String> {
+    list.split(',').map(|s| s.trim().to_string()).collect()
+}
 
 /// Parses a `| filter | binning | exposure_duration | desired_count |` Gherkin
 /// table into the JSON shape `add_target`/`set_goals` accept for their
@@ -39,6 +44,50 @@ pub fn goals_from_table(step: &Step) -> Vec<Value> {
 // ---------------------------------------------------------------------------
 // Given
 // ---------------------------------------------------------------------------
+
+/// Two wheels and an imaging train over a camera, none of them reachable:
+/// the target context is read from the config, not from the devices.
+#[given(
+    expr = "rp is running with the filter wheels {string} and {string} and the imaging train {string} at default position angle {float}"
+)]
+async fn rp_with_wheels_and_train(
+    world: &mut RpWorld,
+    first: String,
+    second: String,
+    train: String,
+    angle: f64,
+) {
+    write_target_store_config(world, Some(names(&first)));
+    let path = world
+        .config_rest_path
+        .clone()
+        .expect("the target-store config was written");
+    let mut config: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read rp config"))
+            .expect("parse rp config");
+    let equipment = &mut config["equipment"];
+    equipment["filter_wheels"]
+        .as_array_mut()
+        .expect("the config has a wheel")
+        .push(serde_json::json!({
+            "id": "side-fw",
+            "alpaca_url": "http://127.0.0.1:1",
+            "device_number": 1,
+            "filters": names(&second)
+        }));
+    equipment["cameras"] = serde_json::json!([
+        { "id": "main-cam", "alpaca_url": "http://127.0.0.1:1", "device_number": 0 }
+    ]);
+    equipment["optical_trains"] = serde_json::json!([
+        { "id": train, "devices": ["main-cam"], "default_position_angle_degrees": angle }
+    ]);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).expect("serialize rp config"),
+    )
+    .expect("write rp config");
+    start_target_store_rp(world).await;
+}
 
 #[given(expr = "rp is configured with default target goals:")]
 fn default_target_goals(world: &mut RpWorld, step: &Step) {
@@ -118,6 +167,49 @@ async fn call_add_target_with_goals(
 // ---------------------------------------------------------------------------
 // Then
 // ---------------------------------------------------------------------------
+
+#[when("the MCP client calls \"get_target_context\"")]
+async fn call_get_target_context(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_target_context", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+fn target_context(world: &RpWorld) -> &Value {
+    world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result")
+        .as_ref()
+        .expect("expected tool call to succeed")
+}
+
+#[then(expr = "the target context names the filters {string}")]
+fn target_context_names_filters(world: &mut RpWorld, list: String) {
+    let context = target_context(world);
+    assert_eq!(
+        context["filters"],
+        serde_json::json!(names(&list)),
+        "{context}"
+    );
+}
+
+#[then(expr = "the target context gives the train {string} the default position angle {float}")]
+fn target_context_train_angle(world: &mut RpWorld, train: String, angle: f64) {
+    let context = target_context(world);
+    let entry = context["trains"]
+        .as_array()
+        .and_then(|trains| trains.iter().find(|t| t["train_id"] == train.as_str()))
+        .unwrap_or_else(|| panic!("no train {train} in {context}"));
+    assert_eq!(
+        entry["default_position_angle_degrees"],
+        serde_json::json!(angle),
+        "{context}"
+    );
+}
 
 #[then(expr = "the fetched target should have exactly these goals:")]
 fn fetched_target_has_goals(world: &mut RpWorld, step: &Step) {

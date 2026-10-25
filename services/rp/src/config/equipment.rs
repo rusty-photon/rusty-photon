@@ -713,7 +713,7 @@ mod tests {
     }
 
     /// A pin serializes back as the plain string it was loaded from, so
-    /// `PUT /api/config` persists what the operator wrote.
+    /// a setup-page save persists what the operator wrote.
     #[test]
     fn unique_id_pin_round_trips_as_a_plain_string() {
         let pin = super::UniqueIdPin::try_new("ZWO:ASI1600MM:noserial-0".to_string()).unwrap();

@@ -114,7 +114,9 @@ rule a rejected save attaches to such a field is shown in its note.
 doctor writes it. A service also names the fields it writes itself at
 runtime (`file_only_pointers`: a mount's park position, captured by
 `SetPark`), whatever the schema made of them: a form filled before such a
-write would otherwise carry the old value back on its next save.
+write would otherwise carry the old value back on its next save. The same
+list holds a trust setting a page must not choose: rp's `ca_cert`, the CA it
+trusts for every credential it presents, is file-only as `server.tls` is.
 
 Labels are humanised from the path's last segments (`max_brightness` →
 "Max brightness").
@@ -131,7 +133,7 @@ headers and a body. The statuses:
 | `GET` | `200` with the form |
 | `POST` that saved | `200` with the saved page |
 | `POST` whose values were rejected | `422 Unprocessable Content`, the form again with each error beside its field and the submitted values kept; an error on a field this page does not show (the file's other section failing validation) is named above the form, with its path |
-| `POST` whose save a driver's section asks to confirm first (a renumbering) | `409 Conflict`, the form again with the submitted values, what the save would change, and the button that saves it ([Confirmation](#confirmation)) |
+| `POST` whose save a driver's section asks to confirm first (a renumbering), or that would remove a bound credential ([Credentials](#credentials)) | `409 Conflict`, the form again with the submitted values, what the save would change, and the button that saves it ([Confirmation](#confirmation)) |
 | `POST` that fails the origin check | `403` with a sentence saying why |
 | `POST` whose save failed (the file could not be written, the file on disk is not valid JSON) | `500` with the reason |
 | a device page for a device the config has no section for | `404` with a sentence; the crate in front answers `403` first for a device it does not serve |
@@ -161,8 +163,10 @@ A `POST` to a page submits that page's fields. The handler:
    a failure re-renders the form with each error beside its field and the
    file untouched;
 4. asks the driver's sections whether the change needs confirming, and
-   answers `409` with what it would change when it does and the submission
-   does not confirm it ([Confirmation](#confirmation));
+   whether it would remove a bound credential
+   ([Credentials](#credentials)), and answers `409` with what it would
+   change when either does and the submission does not confirm it
+   ([Confirmation](#confirmation));
 5. persists with `rusty_photon_config::save` (atomic, owner and mode kept);
 6. answers with a page that says what was saved, and
    - for a service that reloads in process (`ApplyDisposition::Reload`),
@@ -176,8 +180,10 @@ A `POST` to a page submits that page's fields. The handler:
      — a `401` after a credential change included — then navigate to it
      (a `no-cors` probe, since after a port change the URL is another
      origin); without script, a `Refresh` header after a delay longer than
-     a typical reload and a link do the same by hand. A save that changed
-     nothing says so and fires no reload;
+     a typical reload and a link do the same by hand. A save that removed
+     a bound credential has neither: its page stays on the removal, with
+     the link ([Credentials](#credentials)). A save that changed nothing
+     says so and fires no reload;
    - for a service that needs a restart (`ApplyDisposition::Restart`),
      which fields take effect on the next start and how to restart it:
      `sudo systemctl restart rusty-photon-<service>` on Linux,
@@ -293,6 +299,39 @@ A secret leaf the driver names in `secret_pointers` that is not the
 server-auth hash renders as an empty password input whose blank submission
 means "unchanged", and never carries its stored value.
 
+**A credential the service presents to another server** is bound to the
+settings that decide which server receives it — its address, and the CA that
+verifies the server there: `SetupPages::with_bound_credential(setting,
+credential)`, two JSON pointers, one call per setting. A page anyone who
+reaches the service can save must not send a stored password to whatever
+server is typed on it, so a save that changes a bound setting and leaves the
+credential block as the file stores it asks first:
+
+- It answers `409` ([Confirmation](#confirmation)), saying it would remove
+  the block and which setting changed (`#confirm li.unbind`). Beside the
+  Save button is a password control for the block (`keep-credential:` and
+  the block's dotted path), when the driver names a secret directly under
+  it in `secret_pointers`.
+- Saved with the stored password typed there (compared in constant time),
+  the block is kept for the new server. A typed password that does not match
+  is refused beside the control, the file untouched. A page never carries a
+  password back, so a refusal for another field asks for it again beside the
+  control rather than let the next save remove the block unawares.
+- Saved with the control blank, the block is removed, and the saved page
+  names it and the settings that changed (`#saved-unbound`) and says to set
+  it again in the file. That page waits for no reload: on a service that
+  reloads it stays on screen, with a link back, instead of reopening the
+  setup page, whose file-only note would not say the block is gone.
+
+A setting is compared as the service would run it — parsed and normalized,
+so a default the file leaves out, written back by the page, or a blank
+optional field submitted as `null` is no change — and a block the save itself
+rewrote is kept, as the operator's for the new server. The BFF
+binds `rp.auth` to `rp.base_url` and `rp.ca_cert_path`
+([ui-htmx.md](../services/ui-htmx.md) § Setup page), and planetarium-bridge
+binds `rp.service_auth` to `rp.mcp_server_url` and `rp.ca_cert`
+([planetarium-bridge.md](../services/planetarium-bridge.md) § Setup pages).
+
 ## Cross-site protection
 
 Browsers resend cached Basic credentials on any request to the origin, so
@@ -343,7 +382,11 @@ rules, one save waiting for another), and a driver's own part (its keys
 left off every page, the device list it gives, a page it draws alone with
 no form when nothing on it submits, its section's apply and errors, and
 the confirmation: the `409` with its token, the save the token confirms,
-and a token that no longer matches asking again).
+and a token that no longer matches asking again), and a bound credential
+(the `409` before its removal, the removal with its control blank, the
+block kept by its password typed again, a wrong one refused beside the
+control, a refusal for another field asking for it again, and a saved page
+naming a removal that waits for no reload).
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

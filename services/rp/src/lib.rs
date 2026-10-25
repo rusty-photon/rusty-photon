@@ -95,8 +95,8 @@ impl ServerBuilder {
         self
     }
 
-    /// The resolved config-file path the server was loaded from.
-    /// `PUT /api/config` persists to it.
+    /// The resolved config-file path the server was loaded from. A save
+    /// of the setup page persists to it.
     #[must_use]
     pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
         self.config_path = Some(path);
@@ -127,10 +127,6 @@ impl ServerBuilder {
             self.config_path,
             "config path is required \u{2014} call .with_config_path(...) first",
         )?;
-        // The effective running config: rp has no config-overriding CLI
-        // flags, so this is exactly the loaded file. Served by
-        // `GET /api/config` and diffed against by `PUT /api/config`.
-        let effective_config = Arc::new(config.clone());
         let bind_addr = config.server.socket_addr();
 
         let equipment = connect_equipment(&config).await?;
@@ -219,14 +215,14 @@ impl ServerBuilder {
 
         let leases = mcp.leases.clone();
 
-        let setup = crate::setup::pages(&config, config_path.clone(), equipment.clone());
+        // The page's running config is the loaded file: rp has no
+        // config-overriding CLI flags.
+        let setup = crate::setup::pages(&config, config_path, equipment.clone());
         let state = AppState {
             equipment,
             mcp,
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
-            config: effective_config,
-            config_path: Arc::new(config_path),
             setup,
         };
 

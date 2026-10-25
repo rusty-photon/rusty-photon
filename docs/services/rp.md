@@ -749,10 +749,10 @@ flat `<uuid8>.fits` capture — while `""` is a pattern with nothing in it,
 which for a directory means a path with no components the progress scan
 could never match. The two are different states, so only the spelling
 that means "unset" is read that way, and the load error names it. This
-matters most through the config UI, where clearing a text box is the
-natural gesture for turning a field off: the BFF sends `null` for a
+matters most through a setup page, where clearing a text box is the
+natural gesture for turning a field off: the page saves `null` for a
 cleared optional field precisely so that gesture reaches rp as the state
-the operator intended (ui-htmx.md § Schema-driven config form).
+the operator intended ([rusty-photon-setup](../crates/rusty-photon-setup.md)).
 
 **Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
 (§ Capture Tool Details) feed `render`, and rendering replaces the flat
@@ -1076,8 +1076,8 @@ uses (see [Configuration](#configuration)). The optional `auth` block is
 the plaintext credential `rp` presents as HTTP Basic on every delivery,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. Both are validated at config
-load, so startup, `PUT /api/config` and `rp doctor` refuse the same
-file: `webhook_url` must be an `http://` or `https://` URL (the rule
+load, so startup, a save of the [setup page](#setup-page) and `rp doctor`
+refuse the same file: `webhook_url` must be an `http://` or `https://` URL (the rule
 `server.advertised_url` follows) carrying no embedded credentials —
 `https://user:pass@host/…` is rejected, because `rp` logs the URL on
 every delivery and the `auth` block beside it, applied per request and
@@ -1680,8 +1680,9 @@ hours, `dec` is degrees. See
 
 `add_target`, `get_target`, `list_targets`, `update_target`,
 `delete_target`, `set_goals` — CRUD over the plan-data store where
-targets now live. See [Target Store](#target-store) for the full
-contract.
+targets now live — and `get_target_context`, the read of what a target
+is checked against and inherits from the rig's config. See
+[Target Store](#target-store) for the full contract.
 
 **Session**
 
@@ -3208,7 +3209,7 @@ starts itself — an operator posts to its `/runs` — and `rp` needs no
 registration to serve it, so it keeps none. (`calibrator-flats` left
 this list when it became a tool provider — [calibrator-flats.md](calibrator-flats.md).) A
 `plugins[]` entry with `"type": "orchestrator"` is rejected at config
-load, by `PUT /api/config` and by `rp doctor` with a message naming
+load, by a setup-page save and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
 `session-runner` — [`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)
 D11), as is a `session.session_state_file` key: silently accepting
@@ -3331,7 +3332,7 @@ The operator's `safety.gate` overrides (§ Configuration) apply on top,
 so a deployment can still move a provider tool either way: a
 `safety.gate` entry naming a provider tool wins over the registration's
 own `gate` key. Because a provider's tools are only known once it has
-been dialed, the config loader (and `PUT /api/config`, and `rp doctor`)
+been dialed, the config loader (and a setup-page save, and `rp doctor`)
 can only check a `safety.gate` name against the built-in catalog — with
 at least one tool provider registered, a name that is not a built-in is
 deferred to startup, where it is checked against the merged catalog and
@@ -3957,7 +3958,9 @@ Semantics:
   left out of every train stay legal and behave exactly as today —
   trains are enrichment, not a gate.
 
-Validation happens at load and on `PUT /api/config`. Per-field
+Validation happens at load and on every save of the [setup
+page](#setup-page), which refuses a file whose trains break these rules
+(the trains themselves are edited in the file). Per-field
 invariants (the `purpose` enum, `focal_length_mm` positivity) are
 enforced in the field types at deserialize; the cross-array graph
 rules run in the shared `validate_config` pass, reporting dotted
@@ -4732,11 +4735,11 @@ would waste winter cooling headroom (dark current roughly halves every
 never match a library.
 
 Off-grid values, duplicates, and out-of-range values are rejected at
-config load and `config.apply` with a field error naming
+config load and on a setup-page save with a field error naming
 `equipment.cameras.N.cooler_targets_c`. The field's JSON Schema is an
-`array` whose `items` enumerate the grid, so the web UI renders it as a
+`array` whose `items` enumerate the grid, so a setup page renders it as a
 checkbox grid without hardcoding the rungs — see
-[`ui-htmx.md`](ui-htmx.md) "Schema-driven rendering".
+[rusty-photon-setup](../crates/rusty-photon-setup.md).
 
 ### Selection: `start_cooldown`
 
@@ -6330,8 +6333,8 @@ doc's "rp Integration" section summarizes.
 Targets are rows in a redb-backed `rp-targets` database that `rp` opens
 once at startup (`target_store.db_path`, default
 `<session.data_directory>/targets.redb`), editable live via the MCP
-tools below without a restart — no more `PUT /api/config` plus a restart
-to add or edit a target.
+tools below without a restart — no config edit plus a restart to add or
+edit a target.
 
 Targets live exclusively in the store: `get_next_target` (§ Dynamic
 Planner), `record_exposure`, `get_session_progress`, and
@@ -6555,6 +6558,7 @@ Document).
 | `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` / `grading` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling` and `grading`, when supplied, each replace the whole overrides object rather than merging field-wise; an explicit `null` on `grading` clears the override back to inherit-`default_grading`. Re-grading is free — thresholds are applied at read time, so tightening one immediately re-partitions `good`/`total` with nothing on disk renamed or moved. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (see [Position angle](#position-angle)) |
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
+| `get_target_context` | — | filters, trains: [{train_id, purpose, default_position_angle_degrees}] | What a target is checked against and inherits, read from the config and touching no device and not the store: `filters` is the filter roster `add_target` and `set_goals` validate goal filters against, each name in `equipment.filter_wheels[].filters` once, in config order (empty when no wheel names its filters, and then any filter is accepted); `trains` lists every optical train with its `default_position_angle_degrees` (null when unset), the angle a target without its own inherits on that train ([Position angle](#position-angle)). The ui-htmx targets inbox reads it for its stale-filter badge and its position-angle hint |
 
 The `target` objects these tools return are `Target`'s **derived** serde
 serialization — there is no separate hand-maintained response shape. That
@@ -7222,7 +7226,7 @@ config carries two lists (§ Configuration):
 ```
 
 Each name must exist in the catalog, and a name in both lists is an
-error; both are rejected at load and by `PUT /api/config`, naming the
+error; both are rejected at load and by a setup-page save, naming the
 offending entry (`safety.gate.gated.0`). The override applies to the
 gate and to cancellation alike — there is one class. The effective
 table is logged once at `info!` at startup and reported by
@@ -7354,9 +7358,12 @@ In order:
 
 1. **`rp`'s own sections**, generated from its config type: `session`,
    `server` (its `tls` file-only, as on every page), `safety`, `imaging`,
-   `centering`, `cooling`, `target_store`, `ca_cert`. A block the form
-   cannot render is named as edited in the configuration file: `site` and
-   `plate_solver` (optional blocks), `planner` (read opaquely).
+   `centering`, `cooling`, `target_store`. A block the form cannot render
+   is named as edited in the configuration file: `site` and
+   `plate_solver` (optional blocks), `planner` (read opaquely). So is
+   `ca_cert`, as `server.tls` is: it decides whom rp trusts with every
+   password it presents, and a page anyone who reaches `rp` can save must
+   not choose that; doctor writes it.
 2. **Security**: `rp`'s own `server.auth`, as on every server page.
 3. **Equipment**: the equipment block's own settings
    (`reconnect_interval`, `temperature_poll_interval`,
@@ -7449,8 +7456,14 @@ but a page never carries it back: the password input is empty, and blank
 means unchanged.
 
 - A username with a password sets the block.
-- A username with a blank password keeps the stored password; with none
-  stored, the save is refused with the password field named.
+- A username with a blank password keeps the stored password while the
+  entry's `alpaca_url` stays as it is; with none stored, the save is
+  refused with the password field named.
+- A save that changes the entry's `alpaca_url` with a blank password
+  over a stored one is refused with the password field named: a stored
+  password is presented only at the address it was set for, so a page
+  anyone who reaches `rp` can save cannot send it to an address typed on
+  it. Typing the password again, or clearing the username, saves.
 - A blank username with a blank password removes the block: `rp` presents
   no credential to that driver.
 - A blank username with a typed password is refused with the username
@@ -7476,9 +7489,8 @@ refuse it (D5).
 
 The optical trains, the plugins, `site`, `plate_solver`, `planner`, a
 filter wheel's filters, a focuser's backlash and the mount's guiding block
-are named on the page and edited in the file. The REST config routes
-(`GET`/`PUT /api/config`, `GET /api/config/schema`) stay until `ui-htmx`'s
-config pages retire (the plan's P4).
+are named on the page and edited in the file. rp has no other config
+route: the page is where its configuration is edited, and the file.
 
 ## API Layer
 
@@ -7516,8 +7528,8 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   its number, until its session is next re-established. That is the
   case a pin exists to catch (§ [Device Identity
   Pin](#device-identity-pin)). Device *addresses
-  and settings* are not repeated here — they live in the config,
-  readable via `GET /api/config`, and a UI joins the two by `id`.
+  and settings* are not repeated here — they live in the config, which
+  the [setup page](#setup-page) draws beside this state, joined by `id`.
 - Runtime device connect/disconnect is **not** a REST route: the registry is
   built once at startup, sessions are kept alive by the reconnect supervisor
   (§ [Device Session Recovery](#device-session-recovery)) — so `connected`
@@ -7532,25 +7544,6 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
 - `POST /setup` — save the page: accepted only from the page itself (the
   origin check), validated with rp's load rules, persisted; the change
   takes effect on the next rp start.
-
-#### Configuration
-- `GET /api/config` — the effective configuration, secrets redacted, plus
-  CLI-override-pinned paths. Same `{ config, overrides }` body as the
-  drivers' `config.get`, as plain REST (no Alpaca envelope). See
-  [`config-actions.md`](config-actions.md) "REST transport".
-- `GET /api/config/schema` — JSON Schema for the config plus editability
-  tiers (`{ schema, locked_fields, read_only_fields }`; `server.port` is
-  hard read-only — the self-lockout guard).
-- `PUT /api/config` — validate and atomically persist a full Config
-  (body = the Config JSON; response = the `config.apply` classification
-  body). **rp has no in-process reload**: every changed field is reported
-  in `restart_required[]` with `status:"ok"`, and the persisted file takes
-  effect on the next rp start. Validation failure → HTTP 200
-  `status:"invalid"` + field-level `errors[]`, file untouched; a malformed
-  JSON body → HTTP 400; a body over axum's default 2 MiB request limit →
-  HTTP 413 (a valid config is a few KiB). The config endpoints are covered by the
-  server-wide auth/TLS and, like every REST route, are never safety-gated
-  — configuration must stay editable while the system is unsafe.
 
 #### Runs
 - There are no run routes. Runs are started, listed and stopped at the
@@ -7679,13 +7672,8 @@ the first-start scaffold.
 
 The running config is edited on rp's own [setup page](#setup-page),
 `/setup`, the roster included; a saved change is persisted atomically to
-this file and takes effect on the next rp start. It is also readable and
-editable over REST — `GET /api/config`, `GET /api/config/schema`, `PUT
-/api/config` (see [Configuration endpoints](#configuration) above): rp
-implements the shared config-actions protocol
-([`config-actions.md`](config-actions.md)) with `ApplyDisposition::Restart`,
-so an applied change is reported as `restart_required`. This is what the
-`ui-htmx` equipment page edits until its config pages retire.
+this file and takes effect on the next rp start (`ApplyDisposition::Restart`),
+which the saved page says.
 
 The `mount` field is singular: exactly one mount is the typical
 deployment. Piggyback rigs share that one mount across multiple optical
@@ -7754,7 +7742,9 @@ runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
 once the CA exists (`services/doctor/src/provision/mod.rs`
-`CA_ONLY_WIRING_SERVICES`). Setting it makes it the client's **only**
+`CA_ONLY_WIRING_SERVICES`); the setup page names it as edited in the
+file rather than editing it (§ [Setup Page](#setup-page)). Setting it
+makes it the client's **only**
 trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds to,
 the platform trust store, so a public-CA `https://` target becomes
 unreachable alongside the observatory CA. Omitted (the default), only
@@ -8268,7 +8258,8 @@ services/rp/src/
       targets.rs        Target CRUD tools (add_target, get_target,
                           list_targets, update_target, delete_target,
                           set_goals) over crates/rp-targets'
-                          TargetStore (§ Target Store).
+                          TargetStore (§ Target Store), and
+                          get_target_context.
     # Planned follow-up: distribute the centralized tests.rs into
     # per-category `#[cfg(test)] mod tests` blocks inside each
     # built_in/<category>.rs (matching the imaging/ test-colocation
@@ -8332,10 +8323,10 @@ services/rp/src/
   # client surface is MCP. One flat file, no api/ package.
   routes.rs             Axum router mounting /mcp (rmcp streamable
                         HTTP, session-less — § MCP Server) alongside
-                        the HTTP routes: /health, /api/equipment, /api/config
-                        [+ /schema], /api/plugins/{event_id}/complete,
-                        /api/documents/{id}, /api/images/{id}[/pixels]
-                        (Alpaca ImageBytes), /api/events/subscribe (SSE).
+                        the HTTP routes: /health, /api/equipment,
+                        /setup (merged from setup/), /api/documents/{id},
+                        /api/images/{id}[/pixels] (Alpaca ImageBytes),
+                        /api/events/subscribe (SSE).
                         No /api/targets — target CRUD is MCP-only
                         (§ Target Store); no application logic here.
 
