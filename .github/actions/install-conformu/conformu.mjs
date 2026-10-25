@@ -22,16 +22,18 @@ import { checkReplaceable, download, forRunner, markInstalled, unpack, withWorkD
 export const REPO = 'ASCOMInitiative/ConformU';
 
 /**
- * Each runner's release asset: its name, or for the Windows installer, whose
- * name carries the version and build, a pattern. The Linux archives unpack
+ * Each runner's release asset, as a pattern, since every name carries the
+ * release's version, and the Windows installer's its build too
+ * (conformu.4.5.3.linux-x64.tar.gz, ConformU-Installer.4.5.3.dmg,
+ * ConformU.4.5.3+56334.Setup.exe). The Linux archives are gzipped and unpack
  * flat; the macOS disk image holds ConformU.app, a universal binary for both
  * Mac architectures; the Windows installer is Inno Setup's.
  */
 export const ASSETS = {
-  'Linux-X64': 'conformu.linux-x64.tar.xz',
-  'Linux-ARM64': 'conformu.linux-arm64.tar.xz',
-  'macOS-ARM64': 'ConformU-Installer.dmg',
-  'macOS-X64': 'ConformU-Installer.dmg',
+  'Linux-X64': /^conformu\.[^/\\]+\.linux-x64\.tar\.gz$/,
+  'Linux-ARM64': /^conformu\.[^/\\]+\.linux-arm64\.tar\.gz$/,
+  'macOS-ARM64': /^ConformU-Installer\.[^/\\]+\.dmg$/,
+  'macOS-X64': /^ConformU-Installer\.[^/\\]+\.dmg$/,
   'Windows-X64': /^ConformU\.[^/\\]+\.Setup\.exe$/,
 };
 
@@ -76,7 +78,7 @@ export async function resolve({ runner, token, api = 'https://api.github.com', s
   if (version === undefined) {
     throw new Error(`ConformU's latest release has the tag ${JSON.stringify(tag)}, which names no version`);
   }
-  const matches = (release.assets ?? []).filter(({ name }) => (typeof wanted === 'string' ? name === wanted : wanted.test(name)));
+  const matches = (release.assets ?? []).filter(({ name }) => wanted.test(name));
   if (matches.length !== 1) {
     const found = matches.length === 0 ? 'none' : matches.map(({ name }) => name).join(', ');
     throw new Error(`ConformU ${tag} should have one asset ${wanted} for ${runner}; it has ${found}`);

@@ -4,9 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, win32 } from 'node:path';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 
 import { INSTALLED } from '../lib/install.mjs';
-import { capture, serve } from '../lib/testing.mjs';
+import { capture, serve, tar } from '../lib/testing.mjs';
 import { ASSETS, binaryIn, checkVersion, installAt, REPO, resolve, windowsDir } from './conformu.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -17,31 +18,32 @@ function tempDir() {
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-// A Linux release archive laid out as ConformU's are, flat: conformu ("the
-// checker\n", mode 755), appsettings.json and wwwroot/favicon.ico, made by
-// GNU tar and xz.
-const ARCHIVE = Buffer.from(
-  '/Td6WFoAAATm1rRGBMDFAYBQIQEcAAAAAAAAAOLJgKPgJ/8AvV0AMZvKGIhnivhTi/zcFiYSZslbr4yEO+usMjW+rQ0G3h2Pxl+H' +
-    '1phpFdEaME0aI8bY1nHGpmpqnvWJzJTauQg1+0CfhkaQcC7lQGuCVbH50aE04BB6NQByj0slLKSiK9uBiio65SnUFsIRXjdnOjkB' +
-    'Z5SkLxil/YpS6jAwoUkfd5hn+Vc1O/49EqntwtejWfkqMPRrmB+Jud9aKELOjXKTp314djUdG4Sr51RR/lj2JzzrJqd9zYj7aCem' +
-    'ZQAAAAAAALL8Gu6qB04fAAHhAYBQAADBrciiscRn+wIAAAAABFla',
-  'base64',
+// A Linux release archive laid out as ConformU's are, flat and gzipped:
+// conformu ("the checker\n", mode 755), appsettings.json and
+// wwwroot/favicon.ico.
+const ARCHIVE = gzipSync(
+  tar([
+    { path: 'conformu', data: 'the checker\n', mode: 0o755 },
+    { path: 'appsettings.json', data: '{}\n' },
+    { path: 'wwwroot/', type: '5', mode: 0o755 },
+    { path: 'wwwroot/favicon.ico', data: 'icon\n' },
+  ]),
 );
 
-const INSTALLER = 'ConformU.4.5.2+56139.Setup.exe';
+const INSTALLER = 'ConformU.4.5.3+56334.Setup.exe';
 
 // Each asset of a release, as the API lists it, and the bytes served for it.
 const FILES = {
-  'ConformU-Installer.dmg': Buffer.from('the disk image'),
+  'ConformU-Installer.4.5.3.dmg': Buffer.from('the disk image'),
   [INSTALLER]: Buffer.from('the installer'),
-  'conformu.linux-arm32.tar.xz': Buffer.from('the arm32 archive'),
-  'conformu.linux-arm64.tar.xz': Buffer.from('the arm64 archive'),
-  'conformu.linux-x64.tar.xz': ARCHIVE,
+  'conformu.4.5.3.linux-arm.tar.gz': Buffer.from('the arm32 archive'),
+  'conformu.4.5.3.linux-arm64.tar.gz': Buffer.from('the arm64 archive'),
+  'conformu.4.5.3.linux-x64.tar.gz': ARCHIVE,
 };
 
 // The API's answer for the latest release: `tag`, and `assets`, each with the
 // digest GitHub gives the bytes FILES serves for it.
-function release({ tag = 'v4.5.2', assets = Object.keys(FILES), digest = (name) => `sha256:${sha(FILES[name] ?? '')}` } = {}) {
+function release({ tag = 'v4.5.3', assets = Object.keys(FILES), digest = (name) => `sha256:${sha(FILES[name] ?? '')}` } = {}) {
   return { tag_name: tag, assets: assets.map((name) => ({ name, digest: digest(name), size: FILES[name]?.length ?? 0 })) };
 }
 
@@ -64,11 +66,11 @@ const at = (server) => ({ api: server.url, server: server.url });
 
 // An `execute` that records each program it is given, with what the file
 // held when it ran, and answers --version with `version`, running nothing.
-function executor(version = '4.5.2') {
+function executor(version = '4.5.3') {
   const calls = [];
   const execute = async (program, args, options) => {
     calls.push({ program, args, options, held: existsSync(program) ? readFileSync(program, 'utf8') : undefined });
-    return args[0] === '--version' ? `\nConform Universal ${version} (Build 56139.1a2b3c4)\n` : '';
+    return args[0] === '--version' ? `\nConform Universal ${version} (Build 56334.1a2b3c4)\n` : '';
   };
   return { execute, calls };
 }
@@ -99,18 +101,18 @@ test('resolve takes each runner its asset of the latest release, pinned to the S
   const server = await github();
   try {
     for (const [runner, kind, name] of [
-      ['Linux-X64', 'archive', 'conformu.linux-x64.tar.xz'],
-      ['Linux-ARM64', 'archive', 'conformu.linux-arm64.tar.xz'],
-      ['macOS-ARM64', 'image', 'ConformU-Installer.dmg'],
-      ['macOS-X64', 'image', 'ConformU-Installer.dmg'],
+      ['Linux-X64', 'archive', 'conformu.4.5.3.linux-x64.tar.gz'],
+      ['Linux-ARM64', 'archive', 'conformu.4.5.3.linux-arm64.tar.gz'],
+      ['macOS-ARM64', 'image', 'ConformU-Installer.4.5.3.dmg'],
+      ['macOS-X64', 'image', 'ConformU-Installer.4.5.3.dmg'],
       ['Windows-X64', 'installer', INSTALLER],
     ]) {
       assert.deepEqual(await resolve({ runner, ...at(server) }), {
-        version: '4.5.2',
+        version: '4.5.3',
         kind,
         asset: {
           name,
-          url: `${server.url}/${REPO}/releases/download/v4.5.2/${encodeURIComponent(name)}`,
+          url: `${server.url}/${REPO}/releases/download/v4.5.3/${encodeURIComponent(name)}`,
           pin: { sha256: sha(FILES[name]) },
         },
       });
@@ -145,7 +147,7 @@ test('resolve refuses an asset without a SHA-256 from GitHub to check it against
     try {
       await assert.rejects(resolve({ runner: 'Linux-X64', ...at(server) }), {
         message:
-          `ConformU v4.5.2's conformu.linux-x64.tar.xz has no SHA-256 from GitHub to check it against (its digest is ${shown}). ` +
+          `ConformU v4.5.3's conformu.4.5.3.linux-x64.tar.gz has no SHA-256 from GitHub to check it against (its digest is ${shown}). ` +
           'GitHub gives one only for assets uploaded since mid-2025, and an unchecked install is not supported',
       });
     } finally {
@@ -155,13 +157,13 @@ test('resolve refuses an asset without a SHA-256 from GitHub to check it against
 });
 
 test('resolve fails when the release has no asset for the runner, or two installers', async () => {
-  const server = await github(release({ assets: ['ConformU-Installer.dmg', INSTALLER, 'ConformU.4.5.2+1.Setup.exe'] }));
+  const server = await github(release({ assets: ['ConformU-Installer.4.5.3.dmg', INSTALLER, 'ConformU.4.5.3+1.Setup.exe'] }));
   try {
     await assert.rejects(resolve({ runner: 'Linux-ARM64', ...at(server) }), {
-      message: 'ConformU v4.5.2 should have one asset conformu.linux-arm64.tar.xz for Linux-ARM64; it has none',
+      message: `ConformU v4.5.3 should have one asset ${ASSETS['Linux-ARM64']} for Linux-ARM64; it has none`,
     });
     await assert.rejects(resolve({ runner: 'Windows-X64', ...at(server) }), {
-      message: `ConformU v4.5.2 should have one asset ${ASSETS['Windows-X64']} for Windows-X64; it has ${INSTALLER}, ConformU.4.5.2+1.Setup.exe`,
+      message: `ConformU v4.5.3 should have one asset ${ASSETS['Windows-X64']} for Windows-X64; it has ${INSTALLER}, ConformU.4.5.3+1.Setup.exe`,
     });
   } finally {
     await server.close();
@@ -185,11 +187,11 @@ test('resolve reads the version from a tag with a build number, and refuses one 
   try {
     const { version, asset } = await resolve({ runner: 'Linux-X64', ...at(server) });
     assert.equal(version, '3.0.0');
-    assert.equal(asset.url, `${server.url}/${REPO}/releases/download/v3.0.0%2B29642/conformu.linux-x64.tar.xz`);
+    assert.equal(asset.url, `${server.url}/${REPO}/releases/download/v3.0.0%2B29642/conformu.4.5.3.linux-x64.tar.gz`);
   } finally {
     await server.close();
   }
-  for (const tag of ['latest', '4.5.2', 'v4.5', undefined]) {
+  for (const tag of ['latest', '4.5.3', 'v4.5', undefined]) {
     server = await github({ ...release(), tag_name: tag });
     try {
       await assert.rejects(resolve({ runner: 'Linux-X64', ...at(server) }), {
@@ -217,10 +219,7 @@ test('resolve says that reading the release failed, with what GitHub answered', 
 
 // --- Installing -----------------------------------------------------------------
 
-// Windows' tar.exe reads no xz, so only Linux and macOS unpack the archive.
-const NO_XZ = process.platform === 'win32' && "Windows' tar.exe reads no xz";
-
-test('installAt unpacks the archive into the directory, marks it, and checks its version', { skip: NO_XZ }, async () => {
+test('installAt unpacks the archive into the directory, marks it, and checks its version', async () => {
   const server = await github();
   const parent = tempDir();
   const dir = join(parent, 'conformu');
@@ -230,10 +229,10 @@ test('installAt unpacks the archive into the directory, marks it, and checks its
     const { value } = await capture(() => installAt(dir, resolved, { download: fast, execute }));
     assert.deepEqual(value, { CONFORMU_PATH: join(dir, 'conformu') });
     assert.equal(readFileSync(join(dir, 'conformu'), 'utf8'), 'the checker\n');
-    assert.equal(statSync(join(dir, 'conformu')).mode & 0o777, 0o755);
+    if (process.platform !== 'win32') assert.equal(statSync(join(dir, 'conformu')).mode & 0o777, 0o755);
     assert.equal(readFileSync(join(dir, 'wwwroot', 'favicon.ico'), 'utf8'), 'icon\n');
     assert.deepEqual(readdirSync(dir).sort(), [INSTALLED, 'appsettings.json', 'conformu', 'wwwroot'].sort());
-    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'ConformU 4.5.2, conformu.linux-x64.tar.xz\n');
+    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'ConformU 4.5.3, conformu.4.5.3.linux-x64.tar.gz\n');
     assert.deepEqual(readdirSync(parent), ['conformu']);
     assert.deepEqual(calls.map(({ program, args }) => [program, ...args]), [[join(dir, 'conformu'), '--version']]);
   } finally {
@@ -241,7 +240,7 @@ test('installAt unpacks the archive into the directory, marks it, and checks its
   }
 });
 
-test('installAt replaces an earlier install, and leaves a directory of other files alone', { skip: NO_XZ }, async () => {
+test('installAt replaces an earlier install, and leaves a directory of other files alone', async () => {
   const server = await github();
   const parent = tempDir();
   const dir = join(parent, 'conformu');
@@ -265,13 +264,13 @@ test('installAt replaces an earlier install, and leaves a directory of other fil
   }
 });
 
-test('installAt fails when the binary does not answer with the release version', { skip: NO_XZ }, async () => {
+test('installAt fails when the binary does not answer with the release version', async () => {
   const server = await github();
   const dir = join(tempDir(), 'conformu');
   try {
     const resolved = await resolve({ runner: 'Linux-X64', ...at(server) });
     await assert.rejects(capture(() => installAt(dir, resolved, { download: fast, execute: executor('4.5.0').execute })), {
-      message: `${join(dir, 'conformu')} is ConformU 4.5.0, where 4.5.2 was installed`,
+      message: `${join(dir, 'conformu')} is ConformU 4.5.0, where 4.5.3 was installed`,
     });
   } finally {
     await server.close();
@@ -293,7 +292,7 @@ test('installAt copies ConformU.app out of the mounted disk image, and detaches 
     const [attach, copy, detach] = calls;
     const mount = attach.at(-1);
     assert.deepEqual(attach, ['hdiutil', 'attach', attach[2], '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount]);
-    assert.equal(basename(attach[2]), 'ConformU-Installer.dmg');
+    assert.equal(basename(attach[2]), 'ConformU-Installer.4.5.3.dmg');
     assert.equal(calls.attached, 'the disk image');
     assert.deepEqual(copy, ['ditto', join(mount, 'ConformU.app'), join(dirname(mount), 'conformu', 'ConformU.app')]);
     assert.deepEqual(detach, ['hdiutil', 'detach', mount, '-force']);
@@ -368,11 +367,11 @@ test('binaryIn names where each kind of install puts the binary', () => {
 });
 
 test('checkVersion passes on the version it expects, with a time limit, and names what it got otherwise', async () => {
-  const { execute, calls } = executor('4.5.2');
-  await checkVersion('conformu', '4.5.2', { execute });
+  const { execute, calls } = executor('4.5.3');
+  await checkVersion('conformu', '4.5.3', { execute });
   assert.ok(calls[0].options.signal instanceof AbortSignal);
-  await assert.rejects(checkVersion('conformu', '4.6.0', { execute }), { message: 'conformu is ConformU 4.5.2, where 4.6.0 was installed' });
-  await assert.rejects(checkVersion('conformu', '4.5.2', { execute: async () => 'Usage: conformu [command]\n' }), {
+  await assert.rejects(checkVersion('conformu', '4.6.0', { execute }), { message: 'conformu is ConformU 4.5.3, where 4.6.0 was installed' });
+  await assert.rejects(checkVersion('conformu', '4.5.3', { execute: async () => 'Usage: conformu [command]\n' }), {
     message: 'conformu --version printed no "Conform Universal <version>"',
   });
 });
