@@ -7335,6 +7335,151 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
   └─► Send push notification describing what happened
 ```
 
+## Setup Page
+
+`rp` edits its own configuration on its own page, `/setup`, behind the same
+TLS and Basic Auth as every other route: `GET /setup` answers the form,
+`POST /setup` saves it. The page is rendered and saved by the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, as every
+driver's server page is, so its rules (the file as the base of a save, the
+origin check on a `POST`, the Security section, file-only fields) are that
+crate's; this section states what is `rp`'s own
+([driver-setup-pages.md](../plans/driver-setup-pages.md), D4–D6, D13).
+`rp` is not an Alpaca device, so it has no device pages; the equipment
+roster takes their place on this one page.
+
+### What the page holds
+
+In order:
+
+1. **`rp`'s own sections**, generated from its config type: `session`,
+   `server` (its `tls` file-only, as on every page), `safety`, `imaging`,
+   `centering`, `cooling`, `target_store`, `ca_cert`. A block the form
+   cannot render is named as edited in the configuration file: `site` and
+   `plate_solver` (optional blocks), `planner` (read opaquely).
+2. **Security**: `rp`'s own `server.auth`, as on every server page.
+3. **Equipment**: the equipment block's own settings
+   (`reconnect_interval`, `temperature_poll_interval`,
+   `temperature_event_delta_c`), the optical trains named as edited in the
+   file, and the roster (below).
+4. **Plugins**: the registered plugins by name and type. A registration is
+   the plugin author's vocabulary, which no generated form renders, so the
+   list is edited in the configuration file, as the section says.
+
+### The roster
+
+One row per equipment entry, kind by kind — cameras, filter wheels,
+focusers, cover calibrators, rotators, switches, safety monitors, observing
+conditions, domes, then the mount — each a collapsed row whose summary
+shows:
+
+- the entry's `id` (the mount's is `mount`) and its `name` where it has one;
+- its address: `alpaca_url` and `device_number`;
+- its live state, from the registry `rp` is running: connected or not, and
+  the device name and unique ID it bound (`GET /api/equipment`'s view). An
+  entry the file has and the running `rp` does not reads "not in the
+  roster rp is running: connects after rp restarts";
+- the credential `rp` presents to it: the username, or none;
+- two links: the driver's server page (`<alpaca_url>/setup`) and the
+  device's own page (`<alpaca_url>/setup/v1/<type>/<n>/setup`, the type
+  being the entry's kind in Alpaca's spelling: `camera`, `filterwheel`,
+  `focuser`, `covercalibrator`, `rotator`, `switch`, `safetymonitor`,
+  `observingconditions`, `dome`, `telescope`), each following the host
+  rule below. A camera that is `phd2-guider`'s facade — while connected,
+  its `SupportedActions` lists the sweep lease's acquire — links the
+  guider's `/setup` instead, at `mount.guiding.url` under the same host
+  rule; the facade answers only on the guider's host, and its page is the
+  guider's (D13). Without a `guiding` block the row says that `rp` has no
+  guider address to link. Each connected camera is asked when the page is
+  drawn, and one that has not answered within two seconds is drawn as any
+  camera.
+
+Opened, a row shows the entry's fields, generated from its kind's type
+(`id`, `name`, `alpaca_url` and `device_number` first, then the rest: a
+camera's `gain`, …), with a field
+the form cannot render named as edited in the file (a filter wheel's
+`filters`, a focuser's `backlash`, the mount's `guiding`), its `unique_id`
+pin under a collapsed **Identity** disclosure (D2), its credential, and a
+**Remove** box. Below each kind's rows an **Add** block offers a blank
+entry of that kind, its fields at their defaults; the mount's is offered
+only while the file has none.
+
+The page names each entry's controls by its position in the file
+(`equipment.cameras.0.gain`), as `rp`'s validation names its errors, so a
+rejected value is shown beside its field, with its row opened.
+
+### Saving
+
+One Save covers the page. On top of the shared crate's save, the roster's
+part of a submission:
+
+- overlays each row's fields onto the entry at the same position in the
+  file, once each row's `id` (the mount's address) is the one the page
+  showed: a file edited since the page was loaded is refused rather than
+  overlaid onto the wrong entry, and the page is drawn again with that
+  kind's entries as the file now holds them, on which the change is made
+  again;
+- removes each entry whose Remove box is checked. A page drawn again after
+  a rejected save names the entries that save removes and carries them, so
+  saving it once the error is fixed removes them too (reloading the page
+  keeps them);
+- adds an Add block's entry when its `id` is filled (the mount's when its
+  `alpaca_url` is), with the fields the block sends;
+- leaves the optical trains, the plugins and every field named as edited
+  in the file as the file has them.
+
+The result is then parsed, validated with the rules `rp` loads its file
+with — an id two entries share, a train naming an entry the save removed,
+a bad `unique_id` pin — and persisted, as every save is.
+
+`rp` applies its configuration only when it starts
+(`ApplyDisposition::Restart`): the saved page names the fields that wait
+for the restart and how to restart (`sudo systemctl restart
+rusty-photon-rp` on Linux, `Restart-Service rusty-photon-rp` on Windows,
+`brew services restart rusty-photon-rp` on macOS), and the page names them
+until the restart. The roster's live state is the running `rp`'s, so an
+added entry shows its state, and a removed one leaves its, only after the
+restart.
+
+### Credentials
+
+Each entry's `auth` block is two fields, a username and a password. `rp`
+keeps the password in plaintext, as a client must to present it (ADR-003),
+but a page never carries it back: the password input is empty, and blank
+means unchanged.
+
+- A username with a password sets the block.
+- A username with a blank password keeps the stored password; with none
+  stored, the save is refused with the password field named.
+- A blank username with a blank password removes the block: `rp` presents
+  no credential to that driver.
+- A blank username with a typed password is refused with the username
+  field named.
+
+Doctor's minted observatory credential stays the zero-touch default:
+`doctor --fix` fills an absent block, and a block set here is the
+operator's intent doctor leaves alone (D6).
+
+### Links to a driver's pages: the host rule
+
+On a single-box rig an entry names its driver by a loopback address
+(`https://127.0.0.1:11119`), which a browser on the operator's laptop would
+follow to itself. A link therefore keeps the entry's scheme and port and,
+when its host is a loopback address (`127.0.0.1`, `::1`, `localhost`),
+carries the host the browser reached `rp`'s page by — the request's `Host`
+without its port. Any other host is used as written. When the substituted
+host is an IP address the row notes that a doctor-issued certificate names
+an IP address only when doctor was given `--extra-san`, so the browser may
+refuse it (D5).
+
+### What stays in the file
+
+The optical trains, the plugins, `site`, `plate_solver`, `planner`, a
+filter wheel's filters, a focuser's backlash and the mount's guiding block
+are named on the page and edited in the file. The REST config routes
+(`GET`/`PUT /api/config`, `GET /api/config/schema`) stay until `ui-htmx`'s
+config pages retire (the plan's P4).
+
 ## API Layer
 
 `rp`'s client surface is MCP (Tenet 8): every capability a UI, plugin, or
@@ -7379,6 +7524,14 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   reflects the live session state, not the startup snapshot — and if an
   operator-facing connect/disconnect is ever exposed it lands as an MCP
   tool, not a REST endpoint (Tenet 8).
+
+#### Setup page
+- `GET /setup` — rp's configuration as a page: its own sections, the
+  Security section, the equipment roster and the registered plugins (see
+  [Setup Page](#setup-page)).
+- `POST /setup` — save the page: accepted only from the page itself (the
+  origin check), validated with rp's load rules, persisted; the change
+  takes effect on the next rp start.
 
 #### Configuration
 - `GET /api/config` — the effective configuration, secrets redacted, plus
@@ -7524,13 +7677,15 @@ read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Unlike `serve`, it never writes
 the first-start scaffold.
 
-The running config is readable and editable over REST — `GET /api/config`,
-`GET /api/config/schema`, `PUT /api/config` (see
-[Configuration endpoints](#configuration) above): rp implements the shared
-config-actions protocol ([`config-actions.md`](config-actions.md)) with
-`ApplyDisposition::Restart`, so an applied change is persisted atomically to
-this file and reported as `restart_required` — it takes effect on the next rp
-start. This is what the `ui-htmx` equipment page edits.
+The running config is edited on rp's own [setup page](#setup-page),
+`/setup`, the roster included; a saved change is persisted atomically to
+this file and takes effect on the next rp start. It is also readable and
+editable over REST — `GET /api/config`, `GET /api/config/schema`, `PUT
+/api/config` (see [Configuration endpoints](#configuration) above): rp
+implements the shared config-actions protocol
+([`config-actions.md`](config-actions.md)) with `ApplyDisposition::Restart`,
+so an applied change is reported as `restart_required`. This is what the
+`ui-htmx` equipment page edits until its config pages retire.
 
 The `mount` field is singular: exactly one mount is the typical
 deployment. Piggyback rigs share that one mount across multiple optical

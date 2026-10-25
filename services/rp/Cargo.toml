@@ -49,6 +49,8 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-setup = { workspace = true }
+maud = { workspace = true }
 ndarray = { workspace = true }
 ndarray-ndimage = { workspace = true }
 rmpfit = { workspace = true }
@@ -128,7 +130,7 @@ require-sh = true
 [dev-dependencies]
 # tls-auth: the shared PKI + credentials fixture backing the deep TLS + Basic
 # Auth suites (tls.feature, auth.feature).
-bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth", "setup-pages"] }
 cucumber = { workspace = true }
 derive_more = { workspace = true }
 libc = { workspace = true }

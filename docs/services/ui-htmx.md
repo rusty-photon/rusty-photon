@@ -538,7 +538,8 @@ on the operator's laptop would follow to itself. The link therefore keeps the
 entry's scheme and port and, when the entry's host is a loopback address
 (`127.0.0.1`, `::1`, `localhost`), carries the host the browser reached the
 BFF by — the request's `Host` header without its port. Any other host is
-used as written.
+used as written. The rule is the shared crate's `origin::link_for`, which
+`rp`'s own roster page links its drivers by too.
 
 **Editing the roster edits rp's config.** Add / edit / remove perform a
 read-modify-write on the equipment arrays: `GET /api/config` → splice the entry

@@ -233,7 +233,16 @@ the EAFs its SDK enumerates, which the file only renames through a
 A section draws its markup inside the page's form — from the file as the
 page shows it, or, re-rendering a save, from the submission and its errors
 — and applies a submission onto the file the save is building, naming any
-error by a control it draws. An error a section draws beside its control is
+error by a control it draws. It is drawn knowing the host the browser
+reached the page by, so a link it draws to another server the configuration
+names by a loopback address carries that host instead
+(`origin::link_for`: `127.0.0.1`, `::1` and `localhost` are replaced, the
+scheme, port and path kept; any other host is left as written). A section
+whose configuration is an array of entries draws each entry's fields with
+`FieldModel::from_node_under`, which walks the entry's schema under its
+place in the file (`equipment.cameras.0`), so each field is named as the
+service's validation names its errors and labelled by its own key. `rp`'s
+roster is the first ([rp.md § Setup Page](../services/rp.md#setup-page)). An error a section draws beside its control is
 not repeated above the form; any other is named there with its path, as
 for a field the page does not show.
 
@@ -312,8 +321,10 @@ the actions retire.
 
 - Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
   `setup_request` hook to the handler is `rusty-photon-driver`'s.
-- No navigation between services: a page links to its own server page and
-  its own device pages, nothing else.
+- No navigation between services of its own: a page links to its own
+  server page and its own device pages. A service's own part may link
+  another server, through `origin::link_for` (`rp`'s roster links each
+  entry's driver).
 
 ## Testing
 

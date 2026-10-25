@@ -213,6 +213,27 @@ impl FieldModel {
         Self { fields }
     }
 
+    /// Walk `node` (a subschema of `root`, resolved against it) as the fields
+    /// under `prefix` (`equipment.cameras.0`): each field's name and pointer
+    /// are the whole config's (`equipment.cameras.0.gain`), so a page can
+    /// show an array's entries side by side, while its label is relative to
+    /// the prefix ("Gain").
+    #[must_use]
+    pub fn from_node_under(root: &Value, node: &Value, prefix: &str) -> Self {
+        let mut fields = Vec::new();
+        walk_schema(node, root, prefix, &mut fields);
+        for field in &mut fields {
+            if let Some(relative) = field
+                .name
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('.'))
+            {
+                field.label = humanize(relative);
+            }
+        }
+        Self { fields }
+    }
+
     /// Mark every string leaf at one of `pointers` as a [`FieldKind::Secret`],
     /// the fields a tagged enum's variants carry included. A pointer segment
     /// may be the wildcard `*`, matching any one segment.
@@ -979,6 +1000,44 @@ mod tests {
         );
         assert_eq!(model.field("auth").unwrap().kind(), &FieldKind::FileOnly);
         assert_eq!(model.field("id").unwrap().pointer_segments(), vec!["id"]);
+    }
+
+    #[test]
+    fn from_node_under_names_an_entry_by_its_place_and_labels_it_by_its_own() {
+        let root = json!({
+            "$defs": {
+                "FocuserConfig": {
+                    "type": "object",
+                    "properties": {
+                        "min_position": { "type": ["integer", "null"], "format": "int32" },
+                        "limits": {
+                            "type": "object",
+                            "properties": { "max_steps": { "type": "integer" } },
+                        },
+                    },
+                },
+            },
+            "type": "object",
+            "properties": {
+                "focusers": { "type": "array", "items": { "$ref": "#/$defs/FocuserConfig" } },
+            },
+        });
+        let items = root.pointer("/properties/focusers/items").unwrap();
+        let model = FieldModel::from_node_under(&root, items, "equipment.focusers.1");
+        assert_eq!(
+            names(&model),
+            vec![
+                "equipment.focusers.1.limits.max_steps",
+                "equipment.focusers.1.min_position"
+            ]
+        );
+        let min = model.field("equipment.focusers.1.min_position").unwrap();
+        assert_eq!(min.pointer(), "/equipment/focusers/1/min_position");
+        assert_eq!(min.label(), "Min position");
+        let max = model
+            .field("equipment.focusers.1.limits.max_steps")
+            .unwrap();
+        assert_eq!(max.label(), "Limits · Max steps");
     }
 
     #[test]

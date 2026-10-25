@@ -47,6 +47,7 @@ pub mod persistence;
 pub mod planner;
 pub mod routes;
 pub mod safety;
+pub mod setup;
 pub mod temperature_watch;
 pub mod train_lease;
 
@@ -218,6 +219,7 @@ impl ServerBuilder {
 
         let leases = mcp.leases.clone();
 
+        let setup = crate::setup::pages(&config, config_path.clone(), equipment.clone());
         let state = AppState {
             equipment,
             mcp,
@@ -225,6 +227,7 @@ impl ServerBuilder {
             sse_shutdown: sse_shutdown.clone(),
             config: effective_config,
             config_path: Arc::new(config_path),
+            setup,
         };
 
         let router = assemble_router(state, &config, bind_addr.ip());

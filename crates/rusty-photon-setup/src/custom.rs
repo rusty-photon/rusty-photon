@@ -34,6 +34,10 @@ pub struct SectionView<'a> {
     pub submitted: Option<&'a FormValues>,
     /// The errors the save attached.
     pub errors: &'a [FieldError],
+    /// The host the browser reached the page by: the request's `Host`
+    /// without its port, for a link the section draws to another server
+    /// the config names by a loopback address ([`crate::origin::link_for`]).
+    pub host: Option<&'a str>,
 }
 
 /// What a save would change that the operator confirms before it is
