@@ -35,20 +35,42 @@ Feature: ui-htmx's setup page
 
   # The credential is bound to rp's address and to the CA that verifies rp
   # there: a page anyone reaching the BFF can save must not send rp's
-  # password to a server typed on it.
-  Scenario: Moving rp elsewhere removes the credential the BFF presented to it
+  # password to a server typed on it. A save that would asks first, and
+  # keeps the credential only when its password is typed again.
+  Scenario: Moving rp elsewhere asks before removing the credential the BFF presented to it
     Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
     When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
+    Then the page asks to confirm removing "rp.auth"
+    And the configuration file holds "http://127.0.0.1:1" at "/rp/base_url"
+    When I save the confirmation
     Then the page reports the configuration was saved and "rp.base_url" waits for the restart
     And the page says "Removed from the file: rp.auth, since rp.base_url changed"
     And the configuration file has nothing at "/rp/auth"
 
-  Scenario: Trusting another CA for rp removes the credential the BFF presented to it
+  Scenario: Trusting another CA for rp asks before removing the credential the BFF presented to it
     Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
     When I submit the server setup page setting "rp.ca_cert_path" to "/etc/rusty-photon/ca.pem"
+    Then the page asks to confirm removing "rp.auth"
+    When I save the confirmation
     Then the page reports the configuration was saved and "rp.ca_cert_path" waits for the restart
     And the page says "Removed from the file: rp.auth, since rp.ca_cert_path changed"
     And the configuration file has nothing at "/rp/auth"
+
+  Scenario: rp's password typed on the confirmation keeps the credential for the new address
+    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    When I submit the server setup page setting "rp.base_url" to "http://rig.example:11115"
+    And I save the confirmation typing "hunter2" as the password that keeps "rp.auth"
+    Then the page reports the configuration was saved and "rp.base_url" waits for the restart
+    And the configuration file holds "http://rig.example:11115" at "/rp/base_url"
+    And the configuration file holds "hunter2" at "/rp/auth/password"
+
+  Scenario: A wrong password on the confirmation is refused, the file untouched
+    Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"
+    When I submit the server setup page setting "rp.base_url" to "http://elsewhere.example:11115"
+    And I save the confirmation typing "not-it" as the password that keeps "rp.auth"
+    Then the page answers 422 with the error "does not match the stored password" on "keep-credential:rp.auth"
+    And the configuration file holds "http://127.0.0.1:1" at "/rp/base_url"
+    And the configuration file holds "hunter2" at "/rp/auth/password"
 
   Scenario: A save that leaves rp's address and CA keeps the credential
     Given ui-htmx is started for its setup page presenting rp the username "observatory" with the password "hunter2"

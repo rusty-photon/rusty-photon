@@ -231,6 +231,28 @@ pub async fn resubmit(state: &mut SetupPagesState) {
     post(state, &path, &controls, None).await;
 }
 
+/// Save the last page again as it stands, with the control `name` set to
+/// `value`: what saving a confirmation page after typing in it does.
+///
+/// # Panics
+///
+/// Panics when no page was requested yet, the page has no control `name`,
+/// the service was not started, or the request fails to send.
+pub async fn resubmit_setting(state: &mut SetupPagesState, name: &str, value: &str) {
+    let path = state
+        .last_path
+        .clone()
+        .expect("no page was requested to save again");
+    state.generation_before_save = dom::generation(&state.last_body);
+    let mut controls = dom::successful_controls(&state.last_body);
+    let control = controls
+        .iter_mut()
+        .find(|(k, _)| k == name)
+        .unwrap_or_else(|| panic!("no control {name} on the page:\n{}", state.last_body));
+    control.1 = value.to_string();
+    post(state, &path, &controls, None).await;
+}
+
 /// `POST` `pairs` as a form to a page, from `origin`.
 ///
 /// # Panics
@@ -927,6 +949,58 @@ macro_rules! setup_pages_steps {
                 state.last_body
             );
             $crate::setup_pages::resubmit(state).await;
+        }
+
+        #[::cucumber::then(expr = "the page asks to confirm removing {string}")]
+        fn setup_pages_confirm_unbind(world: &mut $world, credential: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(409), "{}", state.last_body);
+            let css = format!(r#"#confirm li.unbind[data-credential="{credential}"]"#);
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, &css),
+                "no confirmation removing {credential}:\n{}",
+                state.last_body
+            );
+        }
+
+        #[::cucumber::when(
+            expr = "I save the confirmation typing {string} as the password that keeps {string}"
+        )]
+        async fn setup_pages_save_confirmation_keeping(
+            world: &mut $world,
+            password: String,
+            credential: String,
+        ) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(
+                state.last_status,
+                Some(409),
+                "the last page asks for no confirmation:\n{}",
+                state.last_body
+            );
+            // The keep control's name is the setup crate's
+            // `KEEP_CREDENTIAL` prefix before the credential's dotted path.
+            let name = format!("keep-credential:{credential}");
+            $crate::setup_pages::resubmit_setting(state, &name, &password).await;
+        }
+
+        #[::cucumber::then("the saved page stays on the removal instead of reopening the setup page")]
+        fn setup_pages_saved_stays(world: &mut $world) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert_eq!(state.last_status, Some(200), "{}", state.last_body);
+            assert!(
+                $crate::setup_pages::dom::matches(&state.last_body, "#saved-unbound"),
+                "no removal named:\n{}",
+                state.last_body
+            );
+            assert!(
+                !$crate::setup_pages::dom::matches(&state.last_body, "script"),
+                "the saved page moves on by itself:\n{}",
+                state.last_body
+            );
         }
     };
 }

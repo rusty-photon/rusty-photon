@@ -361,21 +361,34 @@ pub fn restart_how(service: &str) -> Markup {
     }
 }
 
-/// A bound credential a save removed, and the setting whose change removed
-/// it, both as dotted paths.
+/// A bound credential a save removed, and the settings whose change removed
+/// it, as dotted paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unbound {
     /// The credential block: `rp.auth`.
     pub credential: String,
-    /// The setting that changed: `rp.base_url`.
-    pub setting: String,
+    /// The settings that changed: `rp.base_url`.
+    pub settings: Vec<String>,
+}
+
+/// `items` in monospace, joined by "and".
+#[must_use]
+pub fn mono_list(items: &[String]) -> Markup {
+    html! {
+        @for (i, item) in items.iter().enumerate() {
+            @if i > 0 { " and " }
+            span.mono { (item) }
+        }
+    }
 }
 
 /// The page `service`'s save answers with.
 ///
 /// What happened, the credentials the save removed because the server they
 /// are presented to changed (`unbound`), where the browser goes if not back
-/// to this page (`destination`), and the wait.
+/// to this page (`destination`), and the wait. A page that names a removal
+/// waits for no reload: it stays on screen until it is left, so the warning
+/// is read.
 #[must_use]
 pub fn saved_body(
     service: &str,
@@ -393,8 +406,11 @@ pub fn saved_body(
                 Saved::Unchanged => {
                     (banner("ok", "saved-unchanged", "Saved. Nothing changed, so no reload is needed."))
                 }
-                Saved::Reloading => {
+                Saved::Reloading if unbound.is_empty() => {
                     (banner("applying", "saved-reloading", "Saved. The service is reloading; this page reopens when it answers again."))
+                }
+                Saved::Reloading => {
+                    (banner("applying", "saved-reloading", "Saved. The service is reloading; this page stays so the removal below is read."))
                 }
                 Saved::RestartRequired(fields) => {
                     div class="banner warn" id="saved-restart" {
@@ -416,7 +432,7 @@ pub fn saved_body(
                             @if i > 0 { "; " }
                             span.mono { (removed.credential) }
                             ", since "
-                            span.mono { (removed.setting) }
+                            (mono_list(&removed.settings))
                             " changed"
                         }
                         ". A stored credential is presented only to the server it was set for: set it again in the configuration file."
@@ -436,13 +452,15 @@ pub fn saved_body(
             }
             p {
                 @match (saved, moved_to) {
-                    (Saved::Reloading, Some(url)) => { "If it does not reopen, " a href=(url) { "open the new address" } " once the service is back." }
-                    (Saved::Reloading, None) => { "If it does not reopen, " a href=(back) { "reload the page" } " once the service is back." }
+                    (Saved::Reloading, Some(url)) if unbound.is_empty() => { "If it does not reopen, " a href=(url) { "open the new address" } " once the service is back." }
+                    (Saved::Reloading, None) if unbound.is_empty() => { "If it does not reopen, " a href=(back) { "reload the page" } " once the service is back." }
+                    (Saved::Reloading, Some(url)) => { a href=(url) { "Open the new address" } " once the service is back." }
+                    (Saved::Reloading, None) => { a href=(back) { "Back to the page" } " once the service is back." }
                     (Saved::RestartRequired(_), Some(_)) => { "Nothing answers at the new address until the restart. " a href=(back) { "Back to the page" } "." }
                     _ => { a href=(back) { "Back to the page" } }
                 }
             }
-            @if matches!(saved, Saved::Reloading) {
+            @if matches!(saved, Saved::Reloading) && unbound.is_empty() {
                 script { (PreEscaped(reload_wait_script(&target_json))) }
             }
         }
