@@ -311,9 +311,19 @@ credential block as the file stores it asks first:
   the block and which setting changed (`#confirm li.unbind`). Beside the
   Save button is a password control for the block (`keep-credential:` and
   the block's dotted path), when the driver names a secret directly under
-  it in `secret_pointers`.
-- Saved with the stored password typed there (compared in constant time),
-  the block is kept for the new server. A typed password that does not match
+  it in `secret_pointers` and the running service has its own credential
+  set (the block at `with_auth_pointer`'s pointer). Behind no login the
+  confirmation says it cannot keep the block, and a keep control sent
+  anyway is ignored. That is no gate on its own — a visitor to a page behind
+  no login can set a login in the Security section — but it means a
+  visitor guessing through the box must first set a login, which locks the
+  operator out of the page and so does not go unnoticed; the Argon2id cost
+  below is what bounds the guessing.
+- Saved with the stored password typed there, the block is kept for the
+  new server. The box answers whether a guess matches a stored password, so
+  each check costs what a guess against a login costs: the stored password
+  is hashed with Argon2id and the typed one verified against the hash, on
+  the blocking pool, and a service's saves are taken one at a time. A typed password that does not match
   is refused beside the control, the file untouched. A page never carries a
   password back, so a refusal for another field asks for it again beside the
   control rather than let the next save remove the block unawares.
@@ -385,8 +395,9 @@ the confirmation: the `409` with its token, the save the token confirms,
 and a token that no longer matches asking again), and a bound credential
 (the `409` before its removal, the removal with its control blank, the
 block kept by its password typed again, a wrong one refused beside the
-control, a refusal for another field asking for it again, and a saved page
-naming a removal that waits for no reload).
+control, a refusal for another field asking for it again, no control behind
+no login and one sent anyway ignored, and a saved page naming a removal that
+waits for no reload).
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

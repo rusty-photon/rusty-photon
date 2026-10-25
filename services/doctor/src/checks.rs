@@ -679,9 +679,11 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
 /// Config keys retired by D3s, #569 and the setup pages: sentinel's
 /// `services` map (sentinel discovers its services), ui-htmx's whole
 /// `drivers` override map (rp's roster is the only device source), and
-/// ui-htmx's `sentinel` block (the BFF restarts nothing). Each fails the
-/// service's own strict load, so the key is dead weight that keeps the
-/// service from starting.
+/// ui-htmx's `sentinel` block (the BFF restarts nothing). The first two
+/// fail the service's own strict load, so the key keeps the service from
+/// starting. The `sentinel` block, which doctor itself once wired, ui-htmx
+/// ignores with a warning, so its check warns: dead weight, deleted by the
+/// same fix.
 fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
     if sentinel.is_some_and(|s| s.services.is_some()) {
@@ -728,12 +730,12 @@ fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec
     }
     if ui.is_some_and(|u| u.sentinel.is_some()) {
         checks.push(
-            Check::fail(
+            Check::warn(
                 "config.retired-keys",
                 Some("ui-htmx".to_string()),
                 "ui-htmx.json carries the retired sentinel block — the web UI no \
                  longer restarts services (Sentinel's dashboard does), and ui-htmx \
-                 refuses to start while the key is present"
+                 ignores the block with a warning at start"
                     .to_string(),
                 Some(
                     "delete the top-level \"sentinel\" key; restarts are on \
@@ -4867,7 +4869,8 @@ mod tests {
         assert_eq!(checks.len(), 1, "{checks:?}");
         let check = &checks[0];
         assert_eq!(check.name, "config.retired-keys");
-        assert_eq!(check.status, Status::Fail);
+        // ui-htmx starts over the block, so it warns rather than fails.
+        assert_eq!(check.status, Status::Warn);
         assert_eq!(check.service.as_deref(), Some("ui-htmx"));
         assert!(check.detail.contains("sentinel"), "{}", check.detail);
         match &check.fixes[..] {

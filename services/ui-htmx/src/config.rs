@@ -2,9 +2,13 @@
 //!
 //! The BFF is not an ASCOM device; this is its own small config: the
 //! listening server plus the required [`RpTarget`], edited on the BFF's own
-//! setup page ([`crate::setup`]). The retired `drivers` override map and
-//! `sentinel` block fail loudly at load (`deny_unknown_fields`); doctor's
-//! `config.retired-keys` fix deletes them (see `docs/services/ui-htmx.md`).
+//! setup page ([`crate::setup`]). The retired `drivers` override map fails
+//! loudly at load (`deny_unknown_fields`); the retired `sentinel` block is
+//! ignored with a warning, since doctor once wired it into every install and
+//! an upgrade runs no doctor. Doctor's `config.retired-keys` fix deletes both
+//! (see `docs/services/ui-htmx.md`).
+
+use tracing::warn;
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +28,15 @@ pub struct Config {
     /// block (or with `"rp": null`) fails loudly at load instead of starting
     /// a useless server.
     pub rp: RpTarget,
+    /// The retired `sentinel` block: the BFF restarts nothing since its
+    /// configuration pages retired. Doctor wrote it into the installs it
+    /// wired, and an upgrade runs no doctor, so it is accepted and ignored
+    /// rather than refused — [`load_config`] warns, doctor's
+    /// `config.retired-keys` fix deletes it, and the setup page's next save
+    /// drops it. It never reaches the page or a file the BFF writes.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub sentinel: Option<serde::de::IgnoredAny>,
 }
 
 /// The command-line overrides the BFF runs with: `--port` pins
@@ -40,6 +53,7 @@ impl Default for Config {
         Self {
             server: default_server(),
             rp: RpTarget::default(),
+            sentinel: None,
         }
     }
 }
@@ -100,7 +114,14 @@ fn default_rp_base_url() -> String {
 /// [`Config`].
 pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
-    let config = serde_json::from_str(&content)?;
+    let config: Config = serde_json::from_str(&content)?;
+    if config.sentinel.is_some() {
+        warn!(
+            path = %path.display(),
+            "the configuration carries the retired sentinel block, which nothing reads: \
+             `rusty-photon-doctor --fix` deletes it"
+        );
+    }
     Ok(config)
 }
 
@@ -161,11 +182,22 @@ mod tests {
     }
 
     #[test]
-    fn retired_sentinel_block_is_rejected() {
-        // The BFF no longer restarts services, so a config still naming
-        // where Sentinel is fails loudly instead of being silently ignored.
-        let err = serde_json::from_str::<Config>(r#"{ "rp": {}, "sentinel": {} }"#).unwrap_err();
-        assert!(err.to_string().contains("sentinel"), "{err}");
+    fn retired_sentinel_block_is_ignored_and_never_written_back() {
+        // Doctor wired the block into every install it fixed, and an
+        // upgrade runs no doctor: the BFF must still start over it.
+        let c: Config = serde_json::from_str(
+            r#"{ "rp": {}, "sentinel": { "base_url": "http://127.0.0.1:11114" } }"#,
+        )
+        .unwrap();
+        assert!(c.sentinel.is_some());
+        let written = serde_json::to_value(&c).unwrap();
+        assert!(written.get("sentinel").is_none(), "{written}");
+    }
+
+    #[test]
+    fn the_schema_the_setup_page_renders_has_no_sentinel_block() {
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        assert!(schema["properties"].get("sentinel").is_none(), "{schema}");
     }
 
     #[test]

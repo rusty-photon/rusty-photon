@@ -655,8 +655,12 @@ never carried config actions; its `SupportedActions` stays empty.
   the credential to whatever server the file names, and a page anyone who
   reaches the bridge can save must not send rp's password to a server typed
   on it. A save that changes `rp.mcp_server_url` or `rp.ca_cert` therefore
-  asks first (`409`): typing rp's password there keeps `rp.service_auth` for
-  the new address; left blank, the save removes it from the file, and the
+  asks first (`409`). Behind the bridge's own `server.auth`, typing rp's
+  password there keeps `rp.service_auth` for the new address; each check
+  costs an Argon2id hash, as a guess against rp's own login does. A bridge
+  without `server.auth` offers no password box, so a guess there needs a
+  login set first, which the operator would meet on their next visit. Left blank,
+  or without the box, the save removes the credential from the file, and the
   saved page says so, naming the field that changed, and stays on screen
   through the reload rather than reopen the setup page. Without the
   credential, every import gets rp's `401` and is spooled. A removed
@@ -774,7 +778,7 @@ the real store.
 | `target_import.feature` | Align → `add_target` (both sync verbs); slews never import; epoch conversion under `assume_epoch: jnow`; below-horizon Align imported; repeated Aligns each submitted (rp dedup collapses) |
 | `position_policy.feature` | Floor snap to idle point; below-floor slew converges but reports idle; below-floor Align imports but reports idle; `null` floor reports raw pointing |
 | `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; replay across a setup-page reload; the health totals span a reload; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
-| `setup_pages.feature` | The [setup pages](#setup-pages): the server page's sections and its link to the Telescope's page; the Telescope's page shows the device section alone, `assume_epoch` named as file-only; a valid save persists, reloads and is served back; clearing the floor saves `null`; an out-of-range value refused naming the field; the zero backoff cap and the empty `unique_id` refused beside their fields; a save that changes nothing; a cross-site `POST` refused; a port change answers with the new address; the rp password never on a page; a save moving rp's address or CA asks, then removes the rp credential with the saved page staying on the removal, rp's password typed on the confirmation keeps it, a save keeping both keeps it; with TLS and auth, `401` without the credential and no hash on the page |
+| `setup_pages.feature` | The [setup pages](#setup-pages): the server page's sections and its link to the Telescope's page; the Telescope's page shows the device section alone, `assume_epoch` named as file-only; a valid save persists, reloads and is served back; clearing the floor saves `null`; an out-of-range value refused naming the field; the zero backoff cap and the empty `unique_id` refused beside their fields; a save that changes nothing; a cross-site `POST` refused; a port change answers with the new address; the rp password never on a page; a save moving rp's address or CA asks, then removes the rp credential with the saved page staying on the removal, rp's password typed on the confirmation behind TLS and auth keeps it, a save keeping both keeps it; with TLS and auth, `401` without the credential and no hash on the page |
 | `doctor.feature` | The shared doctor smoke (testing.md § Doctor smoke): a valid config yields a clean report, an unknown key fails the report and is named. Rides `bdd_infra::doctor_smoke`; the world's `valid_config()` spells out all five config blocks, so the clean-report scenario covers the whole typed load path |
 | `auth.feature` | The shared TLS + auth smoke (testing.md § TLS/auth): with `server.tls` and `server.auth` configured the bridge serves HTTPS and answers 401 without credentials, 200 with them. Rides `bdd_infra::tls_auth`; the world's launch hook points `spool.path` at the scenario temp dir, since an absent path resolves to — and creates — the platform config dir |
 

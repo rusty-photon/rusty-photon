@@ -174,10 +174,14 @@ password rules:
   the credential to whatever server the file names, at the address it names
   and verified by the CA it names, and a page anyone who reaches the BFF can
   save must not send rp's password to a server typed on it. A save that
-  changes `rp.base_url` or `rp.ca_cert_path` therefore asks first (`409`):
-  typing rp's password there keeps `rp.auth` for the new address; left
-  blank, the save removes `rp.auth` from the file and the saved page says
-  so, naming the field that changed. A removed credential is set again in
+  changes `rp.base_url` or `rp.ca_cert_path` therefore asks first (`409`).
+  Behind the BFF's own `server.auth`, typing rp's password there keeps
+  `rp.auth` for the new address; each check costs an Argon2id hash, as a
+  guess against rp's own login does. A BFF without `server.auth` offers no
+  password box, so a guess there needs a login set first, which the
+  operator would meet on their next visit. Left blank, or without the box, the save
+  removes `rp.auth` from the file and the saved page says so, naming the
+  field that changed. A removed credential is set again in
   the file, or by `doctor --fix` when the new address names this machine
   ([doctor.md](doctor.md) § Client-target joins). The page does this with
   the crate's `with_bound_credential`
@@ -460,11 +464,15 @@ The BFF has its own small config (it is not an ASCOM device), edited on its
 [setup page](#setup-page) or in the file: the listening server and where rp is
 (`http://127.0.0.1:11115` — the single-box default). The `rp` target is
 **required**: an rp-less BFF has no purpose, so a config without the block (or
-with `"rp": null`) fails loudly at load. Two retired keys fail loudly the same
-way (`deny_unknown_fields` — the sentinel `services`-map precedent), with their
-deletion in doctor's `config.retired-keys` fix catalog: the `drivers` override
-map (rp's equipment roster is the only device list) and the `sentinel` block
-(the BFF restarts nothing since its configuration pages retired). Every block
+with `"rp": null`) fails loudly at load. The retired `drivers` override map
+(rp's equipment roster is the only device list) fails loudly the same way
+(`deny_unknown_fields` — the sentinel `services`-map precedent). The retired
+`sentinel` block (the BFF restarts nothing since its configuration pages
+retired) is accepted and ignored instead, with a warning at load: doctor wrote
+it into the installs it wired, and an upgrade runs no doctor, so refusing it
+would leave an upgraded web UI down. It never reaches the setup page, and the
+page's next save drops it. Doctor's `config.retired-keys` fix deletes both.
+Every block
 (`Config` and each nested target/auth struct) rejects unknown keys at
 deserialize, so a typo or a key removed by a schema change fails loudly at load
 instead of being silently ignored.
@@ -746,10 +754,12 @@ page shows rp's address; a changed address is saved and waits for the restart;
 an address carrying credentials is refused with the file untouched; the `rp.auth`
 block is named as edited in the file with its password off the page; moving rp
 elsewhere or trusting another CA for it asks first, then removes `rp.auth` and the
-saved page names it and the field that changed; rp's password typed on that
-confirmation keeps `rp.auth` for the new address, and a wrong one is refused with
-the file untouched; a save that leaves rp's address and CA keeps it; and a save
-posted from another site is refused.
+saved page names it and the field that changed; behind the BFF's own login, rp's
+password typed on that confirmation keeps `rp.auth` for the new address, and a
+wrong one is refused with the file untouched; behind no login the confirmation
+offers no password box; a save that leaves rp's address and CA keeps it; a file
+still carrying the retired `sentinel` block starts, and a save drops the block;
+and a save posted from another site is refused.
 
 **Activity stream scenarios** (`stream_page.feature`) cover the page's SSE and
 fold-panel wiring, the front page answering with the stream, the navigation's
@@ -808,7 +818,8 @@ avoids.
 ### Unit Tests
 
 - `config.rs`: defaults, the required `rp` target (missing/null rejected),
-  the retired `drivers` and `sentinel` keys' rejection, and JSON load.
+  the retired `drivers` key's rejection, the retired `sentinel` block ignored
+  and never written back or shown on the page, and JSON load.
 - `setup.rs`: the `UiHtmxDriver` rules — rp's address must be an `http`/`https`
   URL without credentials, it is trimmed, and `--port` pins `server.port`.
 - `lib.rs`: `AppState::from_config` (rejects URL-embedded credentials, trims
