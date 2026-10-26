@@ -40,6 +40,7 @@ Feature: Setup pages
     When I open the setup page of device "telescope" 0
     Then the page shows an input named "mount.description" with value "Sky-Watcher Star Adventurer GTi German Equatorial Mount"
     And the page shows an input named "mount.auto_flip.meridian_offset_hours" with value "0.0"
+    And the page shows a dropdown named "mount.tracking_rate" offering "sidereal" with "sidereal" chosen
     And the page names "mount.park_ra_ticks" as edited in the configuration file
     And the page names "mount.preferred_ap_park" as edited in the configuration file
     And the page shows no input named "transport:usb.port"

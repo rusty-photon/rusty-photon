@@ -616,16 +616,15 @@ empty, and any `Action` answers `ActionNotImplemented`.
 | Page | Section | Fields |
 |------|---------|--------|
 | `/setup` | `server` | `port`, `bind_address`, `discovery_port`; `tls` is named as file-only (doctor writes it); `auth` is the Security section |
-| | `max_adu_reporting` | named as file-only (below) |
+| | `max_adu_reporting` | a dropdown (below) |
 | | Cameras | `usb_devices`, and `devices` when the mode changes (below) |
 | `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
 
-**`max_adu_reporting` is edited in the file.** It is a string enum, which
-the shared form does not render (the crate's field shapes), so the page
-names it as edited in the configuration file, as `star-adventurer-gti`'s
-`tracking_rate` is, and a save leaves it as the file has it. Each device
-reads it at construction, so a hand edit applies at the next reload — a
-save that changes something, `SIGHUP` — or restart.
+**`max_adu_reporting` is a dropdown** of its two values,
+`saturation_threshold` and `container_full_scale` (the crate's field shapes
+draw a string enum so). Each device reads it at construction, so a changed
+value applies at the reload the save fires, which re-creates every device;
+a hand edit applies at the next reload (`SIGHUP`) or restart.
 
 **The Cameras section** is the device-claims plan's C8, settled as
 [driver-setup-pages.md](../plans/driver-setup-pages.md) D11, the same

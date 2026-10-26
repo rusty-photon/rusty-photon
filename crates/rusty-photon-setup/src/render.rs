@@ -162,6 +162,19 @@ fn scalar_field(
                         }
                     }
                 }
+                // One option per value, in schema order; the shown value is
+                // the one selected.
+                FieldKind::Choice { options } => {
+                    label for=(name) { (spec.label()) }
+                    select id=(name) name=(name) disabled[disabled] {
+                        @for option in options {
+                            option value=(option.value)
+                                selected[value.as_str() == Some(option.value.as_str())] {
+                                (option.label)
+                            }
+                        }
+                    }
+                }
                 FieldKind::Secret => {
                     label for=(name) { (spec.label()) }
                     input type="password" id=(name) name=(name) value="" disabled[disabled]
@@ -497,6 +510,10 @@ mod tests {
                     "enabled": { "type": "boolean" },
                     "key": { "type": "string" },
                     "targets": { "type": "array", "items": { "type": "integer", "enum": [-10, 0] } },
+                    "mode": { "oneOf": [
+                        { "type": "string", "const": "auto", "title": "Every camera the scan places" },
+                        { "type": "string", "const": "list" },
+                    ] },
                 } },
                 "server": { "type": "object", "properties": {
                     "tls": { "anyOf": [ { "type": "object", "properties": { "cert": { "type": "string" } } }, { "type": "null" } ] },
@@ -512,7 +529,7 @@ mod tests {
 
     fn config() -> Value {
         json!({
-            "serial": { "port": "/dev/a", "baud_rate": 9600, "gain": 1.5, "tilt": 12.5, "enabled": true, "key": "stored", "targets": [0] },
+            "serial": { "port": "/dev/a", "baud_rate": 9600, "gain": 1.5, "tilt": 12.5, "enabled": true, "key": "stored", "targets": [0], "mode": "list" },
             "server": { "tls": null },
             "transport": { "kind": "udp", "host": "mount.local" },
         })
@@ -620,6 +637,29 @@ mod tests {
         assert!(
             group.contains(r#"id="serial.targets.0" name="serial.targets" value="0" checked"#),
             "{group}"
+        );
+    }
+
+    #[test]
+    fn a_dropdown_offers_each_option_with_the_shown_one_selected() {
+        let markup = render("serial.mode", FieldState::default());
+        assert!(
+            markup.contains(
+                r#"<select id="serial.mode" name="serial.mode"><option value="auto">Every camera the scan places</option><option value="list" selected>list</option></select>"#
+            ),
+            "{markup}"
+        );
+        let pinned = ["serial.mode".to_string()];
+        let markup = render(
+            "serial.mode",
+            FieldState {
+                pinned: &pinned,
+                ..FieldState::default()
+            },
+        );
+        assert!(
+            markup.contains(r#"<select id="serial.mode" name="serial.mode" disabled>"#),
+            "{markup}"
         );
     }
 

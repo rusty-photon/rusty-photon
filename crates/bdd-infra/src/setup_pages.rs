@@ -416,6 +416,51 @@ pub mod dom {
             })
     }
 
+    /// What a step asserts about one `<select>`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SelectState {
+        /// Each option's value, in document order.
+        pub options: Vec<String>,
+        /// The value a browser submits: the `selected` option's, else the
+        /// first option's; `None` for a dropdown with no option.
+        pub chosen: Option<String>,
+        pub disabled: bool,
+    }
+
+    /// The `<select>` named `name`, if any.
+    #[must_use]
+    pub fn select(html: &str, name: &str) -> Option<SelectState> {
+        let doc = Html::parse_document(html);
+        doc.select(&selector("select[name]"))
+            .find(|el| el.value().attr("name") == Some(name))
+            .map(|el| select_state(el))
+    }
+
+    /// A `<select>`'s options and the one a browser submits. An option
+    /// without a `value` submits its text, as a browser's does.
+    fn select_state(el: scraper::ElementRef<'_>) -> SelectState {
+        let options: Vec<(String, bool)> = el
+            .select(&selector("option"))
+            .map(|option| {
+                let v = option.value();
+                let value = v
+                    .attr("value")
+                    .map_or_else(|| option.text().collect(), str::to_owned);
+                (value, v.attr("selected").is_some())
+            })
+            .collect();
+        let chosen = options
+            .iter()
+            .find(|(_, selected)| *selected)
+            .or_else(|| options.first())
+            .map(|(value, _)| value.clone());
+        SelectState {
+            options: options.into_iter().map(|(value, _)| value).collect(),
+            chosen,
+            disabled: el.value().attr("disabled").is_some(),
+        }
+    }
+
     /// The text of the `<textarea>` named `name`, if any, as a browser
     /// shows it: the newline right after the opening tag is not part of it.
     #[must_use]
@@ -459,13 +504,13 @@ pub mod dom {
             .collect()
     }
 
-    /// Whether a `div.field.invalid` holding the `input` or `textarea`
-    /// named `field` shows an `.error` containing `message`.
+    /// Whether a `div.field.invalid` holding the `input`, `textarea` or
+    /// `select` named `field` shows an `.error` containing `message`.
     #[must_use]
     pub fn field_error(html: &str, field: &str, message: &str) -> bool {
         let doc = Html::parse_document(html);
         let field_sel = selector("div.field.invalid");
-        let input_sel = selector("input[name], textarea[name]");
+        let input_sel = selector("input[name], textarea[name], select[name]");
         let error_sel = selector(".error");
         doc.select(&field_sel).any(|fld| {
             let is_target = fld
@@ -520,9 +565,10 @@ pub mod dom {
     /// Every control the browser would submit from the page's form, as
     /// `(name, value)`.
     ///
-    /// Each non-`disabled` `input` and `textarea` with a `name`: a checkbox
-    /// or radio only when `checked`, the rest of the inputs with their
-    /// `value`, a `textarea` with its text.
+    /// Each non-`disabled` `input`, `textarea` and `select` with a `name`: a
+    /// checkbox or radio only when `checked`, the rest of the inputs with
+    /// their `value`, a `textarea` with its text, a `select` with the value
+    /// of its chosen option.
     #[must_use]
     pub fn successful_controls(html: &str) -> Vec<(String, String)> {
         let doc = Html::parse_document(html);
@@ -552,6 +598,17 @@ pub mod dom {
             }
             let Some(name) = v.attr("name") else { continue };
             out.push((name.to_owned(), el.text().collect()));
+        }
+        for el in doc.select(&selector("form select[name]")) {
+            if el.value().attr("disabled").is_some() {
+                continue;
+            }
+            let Some(name) = el.value().attr("name") else {
+                continue;
+            };
+            if let Some(chosen) = select_state(el).chosen {
+                out.push((name.to_owned(), chosen));
+            }
         }
         out
     }
@@ -674,6 +731,19 @@ macro_rules! setup_pages_steps {
             let input = $crate::setup_pages::dom::input(&state.last_body, &name)
                 .unwrap_or_else(|| panic!("no input named {name:?} in:\n{}", state.last_body));
             assert_eq!(input.value, value, "input {name} value");
+        }
+
+        #[::cucumber::then(
+            expr = "the page shows a dropdown named {string} offering {string} with {string} chosen"
+        )]
+        fn setup_pages_dropdown(world: &mut $world, name: String, options: String, chosen: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            let select = $crate::setup_pages::dom::select(&state.last_body, &name)
+                .unwrap_or_else(|| panic!("no dropdown named {name:?} in:\n{}", state.last_body));
+            let offered: Vec<String> = options.split(',').map(|o| o.trim().to_owned()).collect();
+            assert_eq!(select.options, offered, "the options of dropdown {name}");
+            assert_eq!(select.chosen.as_deref(), Some(chosen.as_str()), "the chosen option of dropdown {name}");
         }
 
         #[::cucumber::then(expr = "the page shows no input named {string}")]

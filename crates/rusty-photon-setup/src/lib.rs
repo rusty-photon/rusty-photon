@@ -49,4 +49,4 @@ pub mod security;
 pub use custom::{BoxFuture, Confirmation, CustomSection, DriverPages, SectionView, CONFIRM};
 pub use form::FormValues;
 pub use handler::{PageRequest, PageResponse, PageScope, SetupPages, RELOAD_AFTER_RESPONSE_DELAY};
-pub use schema::{FieldKind, FieldModel, FieldSpec};
+pub use schema::{ChoiceOption, FieldKind, FieldModel, FieldSpec};
