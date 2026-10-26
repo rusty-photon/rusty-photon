@@ -1,7 +1,9 @@
 # Config actions — the cross-driver configuration protocol
 
 **Status: RETIRED (archived 2026-10-25).** The setup pages
-([driver-setup-pages.md](../driver-setup-pages.md)) replaced these actions.
+([driver-setup-pages.md](../driver-setup-pages.md),
+[ADR-023](../../decisions/023-services-configure-themselves-on-their-own-setup-pages.md))
+replaced these actions.
 Each service now serves the two HTML pages the Alpaca specification defines,
 rendered by the shared [`rusty-photon-setup`](../../crates/rusty-photon-setup.md)
 crate. No service carries the actions any more, and the plan's P5 removed

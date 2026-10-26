@@ -5,6 +5,9 @@
 Accepted (2026-07-15); amended 2026-07-16 (see [Amendments](#amendments-2026-07-16));
 implemented in full and archived —
 [`docs/plans/archive/service-config-doctor.md`](../plans/archive/service-config-doctor.md).
+Amendment 9 (2026-10-25) carries the recovery model over to the setup
+pages that replaced the config actions
+([ADR-023](023-services-configure-themselves-on-their-own-setup-pages.md)).
 
 Builds on [ADR-012](012-service-packaging-architecture.md) §3 without
 superseding it: packages still ship no config file, and services still
@@ -560,6 +563,32 @@ starting D1.
    and says so at its definition — `planetarium-bridge`'s
    `report_altitude_floor_deg` is the only one. A default config
    serialises it as a value, so the guard does not trip over it.
+
+9. **The recovery model holds, with the setup pages in the actions' place**
+   (2026-10-25; modifies the recovery-model and third-writer bullets of
+   Consequences, and amendment 6's config-page targets —
+   [ADR-023](023-services-configure-themselves-on-their-own-setup-pages.md)).
+   Each service now edits its configuration on its own setup pages. The
+   `config.*` actions, `rp`'s `PUT /api/config` and ui-htmx's config pages
+   are gone.
+
+   The recovery model keeps its substance. A page is served by the
+   service's own HTTP server, so a service that fails startup has no page,
+   as it had no actions, and `ssh` plus `doctor --fix` (or a hand edit)
+   stays the repair path. A wrong-but-valid value leaves the service up
+   and editable on its own page.
+
+   Doctor's fellow writers are now operator hand edits and each service's
+   setup-page save. The save persists through the same
+   `rusty_photon_config::save`, and never writes a field a command-line
+   flag pins. The round-trip amendment 8 names is that save.
+
+   ui-htmx edits no configuration but its own. It keeps the activity
+   stream and the targets inbox, links to `rp`'s setup page, and still
+   requires its `rp` block, so amendment 6's config-page targets are gone.
+   Its restart card retired with its `sentinel` block, which it ignores
+   with a warning and doctor's `config.retired-keys` deletes. Restarts are
+   a button per service on Sentinel's own dashboard.
 
 ## References
 
