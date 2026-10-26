@@ -297,6 +297,19 @@ async fn time_since_last_update_less_than(world: &mut GeminiWorld, sensor: Strin
     );
 }
 
+#[then(expr = "time since last update for {string} should be unavailable")]
+async fn time_since_last_update_unavailable(world: &mut GeminiWorld, sensor: String) {
+    let time = world
+        .oc_ref()
+        .time_since_last_update(sensor.clone())
+        .await
+        .unwrap();
+    assert!(
+        time >= f64::MAX,
+        "expected no data for sensor '{sensor}', got {time}"
+    );
+}
+
 #[then("time since last update should return NOT_IMPLEMENTED for all unimplemented sensors")]
 async fn time_since_last_update_not_implemented_for_all(world: &mut GeminiWorld) {
     let sensors = [

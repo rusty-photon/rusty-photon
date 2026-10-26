@@ -156,6 +156,11 @@ Feature: Observing conditions
       | TEMPERATURE |
       |             |
 
+  Scenario: Time since last update for the empty name reports no data while the ambient sensor is unplugged
+    Given a running Gemini hub server with the AHT20 unplugged and the OC device connected
+    Then time since last update for "" should be unavailable
+    And time since last update for "temperature" should be unavailable
+
   Scenario: Time since last update for a sensor the hub lacks returns NOT_IMPLEMENTED
     Given a running Gemini hub server with the OC device connected
     When I try to get time since last update for "pressure"

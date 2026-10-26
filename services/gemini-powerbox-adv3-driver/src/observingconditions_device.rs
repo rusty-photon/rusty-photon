@@ -11,7 +11,6 @@
 //! lens probe has no property here; it is Switch row 23.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::{Device, ObservingConditions};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
@@ -242,11 +241,9 @@ impl ObservingConditions for GeminiObservingConditionsDevice {
                     state.humidity_mean.time_since_last_update(),
                     state.dewpoint_mean.time_since_last_update(),
                 ];
-                times
-                    .iter()
-                    .filter_map(|&t| t)
-                    .min()
-                    .or(Some(Duration::ZERO))
+                // The freshest window; `None` while all three are empty, so
+                // the client reads "no data" rather than "updated just now".
+                times.iter().filter_map(|&t| t).min()
             }
             "temperature" => state.temp_mean.time_since_last_update(),
             "humidity" => state.humidity_mean.time_since_last_update(),
@@ -441,6 +438,36 @@ mod tests {
         ] {
             assert_eq!(err.code, ASCOMErrorCode::VALUE_NOT_SET, "{err}");
             assert!(err.message.contains("AHT20"), "{}", err.message);
+        }
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn time_since_last_update_for_the_empty_name_is_the_freshest_window() {
+        let device = connected_device().await;
+        let any = device.time_since_last_update(String::new()).await.unwrap();
+        let temperature = device
+            .time_since_last_update("temperature".to_string())
+            .await
+            .unwrap();
+        assert!(any <= temperature, "{any} > {temperature}");
+        assert!(any < 5.0, "{any}");
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn time_since_last_update_for_the_empty_name_reports_no_data_while_every_window_is_empty()
+    {
+        let (device, _) = make_device_on(Arc::new(
+            MockGeminiTransportFactory::default().with_sensors(false, true),
+        ));
+        device.set_connected(true).await.unwrap();
+        for name in ["", "temperature"] {
+            let seconds = device
+                .time_since_last_update(name.to_string())
+                .await
+                .unwrap();
+            assert!(seconds >= f64::MAX, "{name:?}: {seconds}");
         }
         device.set_connected(false).await.unwrap();
     }

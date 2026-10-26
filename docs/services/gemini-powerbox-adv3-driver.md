@@ -633,9 +633,11 @@ rejection, the `MAX_AVERAGING_PERIOD` constant shared by the device, the
 manager and the setup page, and the staleness rule (an emptied window
 reads `VALUE_NOT_SET`) are exactly as
 [`ppba-driver`](ppba-driver.md#averageperiod-staleness-and-the-meaning-of-zero)
-specifies them; this document does not restate them. A sample is fed only
-while the AHT20's attached flag is `1`, and a frame with that flag at `0`
-clears the three windows
+specifies them; this document does not restate them. `TimeSinceLastUpdate`
+with an empty sensor name is the freshest of the three windows, and while
+all three are empty it answers what one empty window answers — the no-data
+value, not zero. A sample is fed only while the AHT20's attached flag is
+`1`, and a frame with that flag at `0` clears the three windows
 ([Sensor presence](#sensor-presence-and-the-absent-sensor-sentinel)).
 
 The lens probe has no ObservingConditions property; it is Switch row 23.
