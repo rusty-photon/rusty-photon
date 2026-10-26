@@ -1888,22 +1888,44 @@ fn client_targets(ctx: &Context) -> Vec<ClientTarget> {
     targets
 }
 
+/// The client credential fields `doctor auth rotate` rewrites, as
+/// `(client service, JSON pointer)`.
+///
+/// Every registry entry with a credential field whose address resolves to
+/// a local service. Rotation re-hashes every such service's `server.auth`,
+/// so each of these must carry the new plaintext; an address that names no
+/// local service is the operator's credential, and is left alone.
+#[must_use]
+pub fn rotation_credential_pointers(ctx: &Context) -> Vec<(String, String)> {
+    client_targets(ctx)
+        .into_iter()
+        .filter(|t| {
+            target_address(t)
+                .is_some_and(|(_, host, port)| resolve_join_target(ctx, &host, port).is_some())
+        })
+        .filter_map(|t| t.auth.map(|auth| (t.client.to_string(), auth.pointer)))
+        .collect()
+}
+
+/// A registry entry's address as `(scheme, host, port)`; `None` for a
+/// URL that does not parse or carries no explicit port.
+fn target_address(t: &ClientTarget) -> Option<(String, String, u16)> {
+    match &t.locator {
+        TargetLocator::Url { url, .. } => parse_target_url(url),
+        TargetLocator::Parts {
+            scheme, host, port, ..
+        } => Some((scheme.clone(), host.clone(), *port)),
+    }
+}
+
 /// Resolve one registry entry to its target and run the transport and
 /// credential checks against it. An address that does not parse, carries
 /// no explicit port, or resolves to no unambiguous local service files
 /// no verdict — [`resolve_join_target`]'s own contract.
 fn judge_client_target(ctx: &Context, t: &ClientTarget) -> Vec<Check> {
     let mut checks = Vec::new();
-    let (scheme, host, port) = match &t.locator {
-        TargetLocator::Url { url, .. } => {
-            let Some(parsed) = parse_target_url(url) else {
-                return checks;
-            };
-            parsed
-        }
-        TargetLocator::Parts {
-            scheme, host, port, ..
-        } => (scheme.clone(), host.clone(), *port),
+    let Some((scheme, host, port)) = target_address(t) else {
+        return checks;
     };
     let Some(target) = resolve_join_target(ctx, &host, port) else {
         return checks;

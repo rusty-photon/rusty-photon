@@ -492,11 +492,10 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
 struct ClientWiring {
     service: &'static str,
     /// `false` for services with only a `ca_cert` setting — no
-    /// `service_auth`, because they carry no
-    /// shared-observatory-credential client role. `rp`'s outbound
-    /// Alpaca / plate-solver / guider clients trust the observatory CA
-    /// the same way, but device credentials are per-device `auth`
-    /// blocks, not the D6 shared credential (issue #609).
+    /// `service_auth`, because they carry no shared client pair. `rp`'s
+    /// outbound Alpaca / plate-solver / guider clients trust the
+    /// observatory CA the same way, but carry a credential per target
+    /// (`auth` beside each address), which `joins.client-auth` wires.
     wire_auth: bool,
     prefix: &'static str,
 }
@@ -571,14 +570,37 @@ pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
         .collect()
 }
 
-fn plan_service_client_wiring(config_dir: &Path, wiring: &ClientWiring) -> Vec<(String, FixOp)> {
+/// The `service_auth` pairs `doctor auth rotate` rewrites with the fresh
+/// `password`.
+///
+/// Every [`CLIENT_WIRING`] service that carries one, whether the pair is
+/// present or not, as [`plan_client_wiring`] would place it. Unlike that
+/// pass, a present pair is overwritten: a rotation re-aligns every copy.
+#[must_use]
+pub fn plan_client_rotation(config_dir: &Path, password: &str) -> Vec<(String, FixOp)> {
+    CLIENT_WIRING
+        .iter()
+        .filter(|wiring| wiring.wire_auth && client_config(config_dir, wiring).is_some())
+        .map(|wiring| {
+            (
+                "provisioning".to_string(),
+                FixOp::SetObject {
+                    service: wiring.service.to_string(),
+                    pointer: format!("{}/service_auth", wiring.prefix),
+                    value: json!({ "username": CREDENTIAL_USERNAME, "password": password }),
+                },
+            )
+        })
+        .collect()
+}
+
+/// `wiring`'s config, when it has one a client block can be written into.
+fn client_config(config_dir: &Path, wiring: &ClientWiring) -> Option<serde_json::Value> {
     let path = config_dir.join(format!("{}.json", wiring.service));
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
+    let content = std::fs::read_to_string(&path).ok()?;
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
         debug!(path = %path.display(), "config is not valid JSON; no client wiring");
-        return Vec::new();
+        return None;
     };
     // Fix ops never create intermediate structure (fix.rs), so a nested
     // client block's parent must already exist — a service self-creates
@@ -589,8 +611,15 @@ fn plan_service_client_wiring(config_dir: &Path, wiring: &ClientWiring) -> Vec<(
             .pointer(wiring.prefix)
             .is_some_and(serde_json::Value::is_object)
     {
-        return Vec::new();
+        return None;
     }
+    Some(value)
+}
+
+fn plan_service_client_wiring(config_dir: &Path, wiring: &ClientWiring) -> Vec<(String, FixOp)> {
+    let Some(value) = client_config(config_dir, wiring) else {
+        return Vec::new();
+    };
     let mut ops = Vec::new();
     let auth_pointer = format!("{}/service_auth", wiring.prefix);
     if wiring.wire_auth
