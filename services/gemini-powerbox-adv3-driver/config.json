@@ -1,0 +1,23 @@
+{
+  "serial": {
+    "port": "/dev/ttyUSB0",
+    "polling_interval": "5s",
+    "timeout": "2s"
+  },
+  "server": {
+    "port": 11132
+  },
+  "switch": {
+    "name": "Gemini Advanced 3 Switch",
+    "unique_id": "",
+    "description": "Gemini Astro Power & Data Hubs Advanced 3 Power Control",
+    "enabled": true
+  },
+  "observingconditions": {
+    "name": "Gemini Advanced 3 Weather",
+    "unique_id": "",
+    "description": "Gemini Astro Power & Data Hubs Advanced 3 Environmental Sensors",
+    "enabled": true,
+    "averaging_period": "5m"
+  }
+}

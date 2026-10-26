@@ -69,6 +69,10 @@ static RAW: &[(&str, &str)] = &[
         include_str!("../../focus-model/pkg/doctor.toml"),
     ),
     (
+        "gemini-powerbox-adv3-driver",
+        include_str!("../../gemini-powerbox-adv3-driver/pkg/doctor.toml"),
+    ),
+    (
         "pa-falcon-rotator",
         include_str!("../../pa-falcon-rotator/pkg/doctor.toml"),
     ),

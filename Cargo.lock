@@ -1772,6 +1772,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "gemini-powerbox-adv3-driver"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "cargo-husky",
+ "clap",
+ "cucumber",
+ "derive_more",
+ "humantime-serde",
+ "i18n-embed",
+ "i18n-embed-fl",
+ "reqwest",
+ "rp-auth",
+ "rust-embed",
+ "rusty-photon-config",
+ "rusty-photon-doctor-checks",
+ "rusty-photon-driver",
+ "rusty-photon-i18n",
+ "rusty-photon-rolling-stats",
+ "rusty-photon-server-config",
+ "rusty-photon-service-lifecycle",
+ "rusty-photon-setup",
+ "rusty-photon-shared-transport",
+ "rusty-photon-tls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

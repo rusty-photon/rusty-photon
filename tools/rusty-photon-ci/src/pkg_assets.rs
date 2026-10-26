@@ -74,6 +74,7 @@ const RELOADING: &[&str] = &[
     "filemonitor",
     "ppba-driver",
     "upbv2-driver",
+    "gemini-powerbox-adv3-driver",
     "qhy-focuser",
     "sky-survey-camera",
     "pa-falcon-rotator",

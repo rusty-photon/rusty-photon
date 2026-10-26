@@ -27,6 +27,7 @@ use crate::process::{self, Cmd, Runner};
 pub const SERIAL: &[&str] = &[
     "ppba-driver",
     "upbv2-driver",
+    "gemini-powerbox-adv3-driver",
     "qhy-focuser",
     "pa-falcon-rotator",
     "pa-scops-oag",
@@ -83,6 +84,7 @@ pub const PORTS: &[(&str, u16)] = &[
     ("upbv2-driver", 11127),
     ("phd2-guider", 11130),
     ("plate-solver", 11131),
+    ("gemini-powerbox-adv3-driver", 11132),
     ("calibrator-flats", 11170),
     ("session-runner", 11171),
     ("polar-align", 11172),

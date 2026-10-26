@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+SVC="${DPKG_MAINTSCRIPT_PACKAGE#rusty-photon-}"
+if [ "$1" = "purge" ]; then
+    rm -f "/var/lib/rusty-photon/.config/rusty-photon/$SVC.json"
+    rm -rf "/var/lib/rusty-photon/$SVC"
+fi
+#DEBHELPER#

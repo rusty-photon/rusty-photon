@@ -14,10 +14,10 @@ function tempDir() {
 }
 
 // Every package with a bdd target in the workspace, as cargo's messages name
-// them: rp, session-runner, polar-align, filemonitor and 21 more.
+// them: rp, session-runner, polar-align, filemonitor and 22 more.
 const WORKSPACE = [
-  'calibrator-flats', 'doctor', 'dsd-fp2', 'filemonitor', 'focus-model', 'operation-watchdog-e2e',
-  'pa-falcon-rotator', 'pa-scops-oag', 'phd2-guider', 'planetarium-bridge', 'plate-solver',
+  'calibrator-flats', 'doctor', 'dsd-fp2', 'filemonitor', 'focus-model', 'gemini-powerbox-adv3-driver',
+  'operation-watchdog-e2e', 'pa-falcon-rotator', 'pa-scops-oag', 'phd2-guider', 'planetarium-bridge', 'plate-solver',
   'polar-align', 'ppba-driver', 'qhy-camera', 'qhy-focuser', 'rp', 'sentinel', 'session-runner',
   'sky-survey-camera', 'star-adventurer-gti', 'svbony-camera', 'ui-htmx', 'upbv2-driver',
   'zwo-camera', 'zwo-focuser',
@@ -346,8 +346,8 @@ test('each stream’s output is printed as a group of its own, its suites in ord
   assert.deepEqual(groups.map(([name]) => name), ['rp-0', 'rp-1', 'rp-2', 'rp-3', 'session-runner-0', 'session-runner-1', 'heavy', 'rest']);
   assert.equal(groups[1][1], 'rp in /w/services/rp, 1/4\n');
   assert.equal(groups[6][1], 'filemonitor in /w/services/filemonitor, whole\npolar-align in /w/services/polar-align, whole\n');
-  assert.equal(groups[7][1].split('\n').length - 1, 21);
-  assert.match(stdout, /^built 25 bdd binaries$/m);
+  assert.equal(groups[7][1].split('\n').length - 1, 22);
+  assert.match(stdout, /^built 26 bdd binaries$/m);
 });
 
 test('a stopped run stops every suite, starts no other, and still prints what each printed', async () => {

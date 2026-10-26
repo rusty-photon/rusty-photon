@@ -27,6 +27,7 @@ members = [
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
+  "services/gemini-powerbox-adv3-driver",
   "services/pa-falcon-rotator",
   "services/pa-scops-oag",
   "services/phd2-guider",

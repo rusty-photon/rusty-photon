@@ -1,0 +1,264 @@
+//! gemini-powerbox-adv3-driver's [`ConfigurableDriver`] implementation — the
+//! driver-specific half behind its setup pages.
+//!
+//! The driver registers **two** ASCOM devices (Switch + `ObservingConditions`)
+//! backed by one config file, each with its own setup page. The pages
+//! themselves (the render, the save, the origin check, the Security section,
+//! the reload) are `rusty-photon-setup`'s; this module supplies only what
+//! varies for the hub: its `Config` type, normalization, validation, its one
+//! secret, its command-line overrides, and which config section each
+//! device's page edits. A save never pushes anything to the hub. See
+//! [`docs/services/gemini-powerbox-adv3-driver.md`] "Setup pages".
+//!
+//! [`docs/services/gemini-powerbox-adv3-driver.md`]: ../../../docs/services/gemini-powerbox-adv3-driver.md
+
+use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError};
+
+use crate::config::{CliOverrides, Config};
+
+use crate::manager::MAX_AVERAGING_PERIOD;
+
+/// The switch's device type in its Alpaca path spelling.
+pub const SWITCH_DEVICE_TYPE: &str = "switch";
+/// The observing-conditions device's type in its Alpaca path spelling.
+pub const OBSERVING_CONDITIONS_DEVICE_TYPE: &str = "observingconditions";
+
+/// Driver marker wiring the hub's full `Config` into the shared setup pages.
+pub struct GeminiDriver;
+
+impl ConfigurableDriver for GeminiDriver {
+    type Config = Config;
+    type Overrides = CliOverrides;
+
+    fn normalize(config: &mut Config) {
+        let trimmed = config.serial.port.trim();
+        if trimmed.len() != config.serial.port.len() {
+            config.serial.port = trimmed.to_string();
+        }
+    }
+
+    fn validate(config: &Config) -> Vec<FieldError> {
+        let mut errors = Vec::new();
+        if config.serial.port.trim().is_empty() {
+            errors.push(FieldError {
+                path: "serial.port".to_string(),
+                msg: "must not be empty".to_string(),
+            });
+        }
+        if config.serial.polling_interval.is_zero() {
+            errors.push(FieldError {
+                path: "serial.polling_interval".to_string(),
+                msg: "must be greater than 0".to_string(),
+            });
+        }
+        if config.serial.timeout.is_zero() {
+            errors.push(FieldError {
+                path: "serial.timeout".to_string(),
+                msg: "must be greater than 0".to_string(),
+            });
+        }
+        // Deliberately no lower bound. Zero is ASCOM's "the device is not
+        // averaging — give me the most recent value", which
+        // `set_average_period(0.0)` accepts over the wire and
+        // `GeminiManager::new` maps to the instantaneous window. Rejecting it
+        // here would leave a client able to select a period at runtime that it
+        // could never persist as the startup default.
+        if config.observingconditions.averaging_period > MAX_AVERAGING_PERIOD {
+            errors.push(FieldError {
+                path: "observingconditions.averaging_period".to_string(),
+                msg: "must not exceed 24h, the ASCOM AveragePeriod ceiling".to_string(),
+            });
+        }
+        for (path, id) in [
+            ("switch.unique_id", &config.switch.unique_id),
+            (
+                "observingconditions.unique_id",
+                &config.observingconditions.unique_id,
+            ),
+        ] {
+            if id.trim().is_empty() {
+                errors.push(FieldError {
+                    path: path.to_string(),
+                    msg: "must not be empty (it is the device's stable ASCOM UniqueID)".to_string(),
+                });
+            }
+        }
+        errors
+    }
+
+    /// The one secret: the server-auth password hash, which the pages'
+    /// Security section edits and never shows.
+    fn secret_pointers() -> &'static [&'static str] {
+        &["/server/auth/password_hash"]
+    }
+
+    fn override_paths(overrides: &CliOverrides) -> Vec<String> {
+        overrides.pinned_paths()
+    }
+
+    fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
+        overrides.apply(config);
+    }
+
+    /// The switch's page edits the `switch` section and the observing
+    /// conditions' page the `observingconditions` section; the server page
+    /// holds `serial` and `server`.
+    fn device_sections(config: &Config) -> Vec<DeviceSection> {
+        vec![
+            DeviceSection {
+                device_type: SWITCH_DEVICE_TYPE.to_string(),
+                device_number: 0,
+                pointer: "/switch".to_string(),
+                name: config.switch.name.clone(),
+                enabled: config.switch.enabled,
+            },
+            DeviceSection {
+                device_type: OBSERVING_CONDITIONS_DEVICE_TYPE.to_string(),
+                device_number: 0,
+                pointer: "/observingconditions".to_string(),
+                name: config.observingconditions.name.clone(),
+                enabled: config.observingconditions.enabled,
+            },
+        ]
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ObservingConditionsConfig, SwitchConfig};
+    use std::time::Duration;
+
+    fn valid_config() -> Config {
+        Config {
+            switch: SwitchConfig {
+                unique_id: "switch-id".to_string(),
+                ..SwitchConfig::default()
+            },
+            observingconditions: ObservingConditionsConfig {
+                unique_id: "oc-id".to_string(),
+                ..ObservingConditionsConfig::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn validate_accepts_populated_config() {
+        assert_eq!(
+            GeminiDriver::validate(&valid_config()),
+            Vec::<FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_zero_averaging_period() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = Duration::ZERO;
+        assert_eq!(GeminiDriver::validate(&config), Vec::<FieldError>::new());
+    }
+
+    #[test]
+    fn validate_rejects_an_averaging_period_above_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD + Duration::from_secs(1);
+        let paths: Vec<String> = GeminiDriver::validate(&config)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(
+            paths.contains(&"observingconditions.averaging_period".to_string()),
+            "expected the averaging_period ceiling to be enforced, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_an_averaging_period_at_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD;
+        assert_eq!(GeminiDriver::validate(&config), Vec::<FieldError>::new());
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_polling_interval_and_timeout() {
+        let mut config = valid_config();
+        config.serial.polling_interval = Duration::ZERO;
+        config.serial.timeout = Duration::ZERO;
+        let paths: Vec<String> = GeminiDriver::validate(&config)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(paths.contains(&"serial.polling_interval".to_string()));
+        assert!(paths.contains(&"serial.timeout".to_string()));
+    }
+
+    #[test]
+    fn validate_rejects_a_blank_port_and_normalize_trims_one() {
+        let mut config = valid_config();
+        config.serial.port = "   ".to_string();
+        assert!(GeminiDriver::validate(&config)
+            .iter()
+            .any(|e| e.path == "serial.port"));
+
+        config.serial.port = "  /dev/ttyUSB1 ".to_string();
+        GeminiDriver::normalize(&mut config);
+        assert_eq!(config.serial.port, "/dev/ttyUSB1");
+    }
+
+    #[test]
+    fn validate_rejects_both_empty_unique_ids() {
+        let paths: Vec<String> = GeminiDriver::validate(&Config::default())
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(paths.contains(&"switch.unique_id".to_string()));
+        assert!(paths.contains(&"observingconditions.unique_id".to_string()));
+    }
+
+    #[test]
+    fn override_paths_cover_enable_flags() {
+        let overrides = CliOverrides {
+            enable_switch: Some(false),
+            enable_observingconditions: Some(true),
+            ..CliOverrides::default()
+        };
+        let paths = GeminiDriver::override_paths(&overrides);
+        assert!(paths.contains(&"switch.enabled".to_string()));
+        assert!(paths.contains(&"observingconditions.enabled".to_string()));
+    }
+
+    #[test]
+    fn each_device_page_edits_its_own_section() {
+        let mut config = valid_config();
+        config.switch.name = "Power box".to_string();
+        config.observingconditions.enabled = false;
+        assert_eq!(
+            GeminiDriver::device_sections(&config),
+            vec![
+                DeviceSection {
+                    device_type: "switch".to_string(),
+                    device_number: 0,
+                    pointer: "/switch".to_string(),
+                    name: "Power box".to_string(),
+                    enabled: true,
+                },
+                DeviceSection {
+                    device_type: "observingconditions".to_string(),
+                    device_number: 0,
+                    pointer: "/observingconditions".to_string(),
+                    name: config.observingconditions.name.clone(),
+                    enabled: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_pages_secret_is_the_auth_hash_alone() {
+        assert_eq!(
+            GeminiDriver::secret_pointers(),
+            &["/server/auth/password_hash"]
+        );
+    }
+}

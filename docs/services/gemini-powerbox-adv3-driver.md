@@ -5,10 +5,14 @@ Power & Data Hubs Advanced 3 (the box identifies itself on the wire as
 `GeminiPowerBoxPlusAdv3`; the vendor's ASCOM driver is named
 `GeminiPowerAndDataHubAdv3`).
 
-**Status: design (Phase 1 of [development-workflow.md](../skills/development-workflow.md)).**
-No code exists yet. Everything stated about the wire was either read from
-the two open-source drivers named under [Sources](#sources) or measured
-against the dev box's own unit on 2026-10-26, and the document says which.
+**Status: implemented (Phase 3 of [development-workflow.md](../skills/development-workflow.md)), 2026-10-26**,
+against a mock that serves the captured frame and streams as the hub does,
+and started once against the dev box's unit read-only
+([smoke test](#what-the-wire-actually-does)); the
+[hardware validation](#hardware-validation) list is still owed on that
+unit. Everything stated about the wire was either read from the
+two open-source drivers named under [Sources](#sources) or measured against
+the dev box's own unit on 2026-10-26, and the document says which.
 
 ## Overview
 
@@ -233,6 +237,28 @@ observation; the drivers' claims it confirms or contradicts are named.
   the phase would have moved. The driver therefore does nothing special
   with DTR or `HUPCL`; the `>H#` retry below is the only concession to a
   unit that might behave differently.
+- **A command interrupts a periodic frame.** Measured at the
+  implementation's first connect to the same unit, later on 2026-10-26,
+  with the hub still streaming from the design session's probe: the first
+  `>H#` was answered 118 ms later by one 89-byte chunk,
+  `*G1111D…19.86D12*HGeminiPowerBoxPlusAdv3#` — the periodic frame the hub
+  was sending stopped after 63 of its 81 bytes, and the identity reply
+  followed in the same bytes with no terminator between them. A reply
+  therefore begins at the **last** `*` of what the terminator delivers, and
+  the codec parses from there; nothing a reply carries contains a `*`, so
+  the rule is exact.
+- **The implementation's smoke test, 2026-10-26.** The finished driver
+  against the same unit, read-only but for one write: the handshake took
+  `>H#` in 118 ms (the glued chunk above, again), `>V#` in 176 ms with one
+  streamed `*G` frame skipped under the budget before `*V308#`, and `>G#`
+  in 49 ms. All 26 switches and the three sensor properties read as the
+  frame said (26.08 °C, 70.46 % RH, 20.28 °C dew point, lens 24.50 °C,
+  12.2 V, 0.04 A, 0.50 W). One write, `>X100#\n>G#\n` with DEW6 already
+  Manual at 100 % — a no-op for the heater — was answered by one frame in
+  200 ms with nothing skipped: the firmware takes the second command of a
+  buffer, so the two-request fallback is not needed for the reply. Whether
+  the set itself is applied is what a value change shows, which this write
+  did not make ([hardware validation](#hardware-validation), item 1).
 - **The hub's state when found.** DC2–DC5 all on, USB A–F all on, both
   sensors attached, both dew channels **Manual at 100 %**, 12.2 V in,
   0.02–0.06 A. AlpacaBridge reports the same dew state on power-up
@@ -492,9 +518,13 @@ later, and after a write it would show the state *before* the write.
 So every request that expects a `*G` frame is preceded by a **discard of
 the input buffer**, which is one small addition to the shared crate:
 
-- `FrameTransport::discard_input()` — default no-op; `SerialFrameTransport`
-  implements it as a `ClearBuffer::Input` on the port plus dropping its own
-  partial-frame buffer; the BDD mock drops its queued unsolicited frames.
+- `FrameTransport::discard_input()` — default no-op. `SerialFrameTransport`
+  implements it by dropping what its reader has buffered — whole frames
+  included, since the reader fills by the chunk — and then reading the
+  stream dry without waiting: each read is polled once, and the first
+  `Pending` ends it. No port-level flush: the transport is generic over
+  its stream, and the drain reaches the same bytes. The BDD mock drops its
+  queued unsolicited frames.
 - `Codec::discard_before_send(&cmd) -> bool` — default `false`; the Gemini
   codec answers `true` for `>G#` and for every set command.
 - `Connection::request` calls the first when the second says so, right
@@ -502,9 +532,11 @@ the input buffer**, which is one small addition to the shared crate:
 
 What can still precede the real reply after a discard: the tail of a frame
 that was mid-flight when the buffer was cleared (it does not start with
-`*`), and at most one whole periodic frame whose first byte landed after
-the discard. The codec sorts frames by their first two bytes. `*G`, `*H`
-and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
+`*`), at most one whole periodic frame whose first byte landed after the
+discard, and a frame the hub cut short to answer, which arrives glued to
+the reply in one chunk ([measured](#what-the-wire-actually-does)). The
+codec takes the reply from the last `*` in the chunk and sorts it by its
+letter. `*G`, `*H` and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
 of sequence, a wrong digit count, a bad number — is a `ParseError`: the
 request fails at once, the cache is untouched, and nothing reconnects,
 because the shared crate treats a codec error as the device's answer, not
@@ -541,7 +573,9 @@ write addressed with what it asked for:
 - a mismatch that survives the second look is reported as
   `INVALID_OPERATION`, naming the switch, the value asked for and the value
   the hub reports — a tripped output that the hub refuses to turn back on
-  surfaces here, not as a silent success.
+  surfaces here, not as a silent success. The second look's frame is
+  stored either way: it is the hub's state, and a read after the failure
+  reports what the hub reports.
 
 Which field confirms which write:
 
@@ -705,7 +739,7 @@ to the hub. The driver has no custom Actions.
 | Write to `DC1` | `NOT_IMPLEMENTED` (CanWrite false). |
 | Write to `DEWn Duty` outside Manual, or `DEWn Enabled` in Manual | `NOT_IMPLEMENTED`, naming `DEWn Mode` as the switch to change first; nothing sent. |
 | `DEWn Mode` written to `0` while a sensor is absent | `INVALID_OPERATION` naming the missing sensor; nothing sent. |
-| `DEWn Mode` outside 0–2, `DEWn Duty` outside 0–100, a non-integer on either | `INVALID_VALUE`; nothing sent. |
+| Any writable switch given a value outside its range, or not a number — `DEWn Mode` outside 0–2, `DEWn Duty` outside 0–100, `2` on an output | `INVALID_VALUE`; nothing sent. A value inside the range but between steps is rounded to the nearest step (half up) and taken: ConformU writes the quarter points of every range and expects them accepted. |
 | Readback frame does not show the write, twice | `INVALID_OPERATION` naming the switch, the value asked and the value reported. |
 | `SetAsync`, `SetAsyncValue`, `StateChangeComplete` on a valid id | `NOT_IMPLEMENTED`; nothing sent. `CancelAsync` succeeds as a no-op. |
 | Any member with an id outside 0–25 | `INVALID_VALUE` (or `NOT_CONNECTED` while disconnected), checked before `NOT_IMPLEMENTED`. |
@@ -748,7 +782,7 @@ binary spawned with `--features mock`, unit tests inline in `src/`.
 
 | Design section | Feature file | Covers |
 |----------------|--------------|--------|
-| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, garbage); firmware 307 refused, 308 warns, 309 clean; `>H#` retry |
+| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry |
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
 | Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; the stale-frame second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
@@ -769,22 +803,32 @@ G   *G1111D111111U1A1T1A1M1B1M100C100C 23.25S 24.47T 67.76H 18.12D12.2V 0.02C  0
 ```
 
 The mock **streams**: after the first `>G#` it queues a frame every 3 s of
-mock time, and when a knob says so it also queues a pre-request frame ahead
-of its reply, so the skip path is exercised deterministically rather than
-by chance. Its `discard_input` drops the queue; a scenario
-asserts that a write's readback is the post-write frame even with a
-pre-write frame queued ahead of it. Set commands change the mock's state
-and produce no reply; the mock applies `>X`/`>Y` to fields 8/9 at once
-until hardware says otherwise.
+wall-clock time, and when a knob says so it also queues two
+already-streamed frames behind every reply, so the discard before a poll or
+a write is load-bearing on every request rather than by chance — two, so
+that a broken discard fails a write on both looks instead of being rescued
+by the second. Its `discard_input` drops the queue; a scenario asserts
+that a write's readback is the post-write frame with those frames queued
+ahead of it. Set commands change the mock's state and produce no reply;
+the mock applies `>X`/`>Y` to fields 8/9 at once until hardware says
+otherwise. Each refusal the handshake can give has a knob too, since the
+service then exits before it binds and the scenario reads the refusal off
+its stderr.
 
 Knobs reaching state the driver cannot set:
 
 | Environment variable | Effect |
 |----------------------|--------|
 | `GEMINI_MOCK_FIRMWARE` | the `>V#` reply, e.g. `307` |
-| `GEMINI_MOCK_IDENTITY` | the `>H#` reply, for the mismatch scenarios |
+| `GEMINI_MOCK_IDENTITY` | the `>H#` reply, for the mismatch scenarios; a value starting `raw:` goes on the wire verbatim, a device with no `*H` at all |
 | `GEMINI_MOCK_SENSORS` | two flags, `10` = AHT20 only, for the sentinel and the Auto-refusal scenarios |
 | `GEMINI_MOCK_DEW_MODES` | the two mode digits at start, e.g. `01` |
+| `GEMINI_MOCK_INPUT_VOLTAGE` | the input voltage the frame carries, e.g. `24.0`, for the unclamped-reading scenario |
+| `GEMINI_MOCK_STALE_FRAMES` | `1`: two already-streamed frames behind every reply once armed |
+| `GEMINI_MOCK_IGNORE_FIRST_IDENTITY` | `1`: the first `>H#` draws no reply within the timeout, for the retry scenario |
+| `GEMINI_MOCK_STUCK_OUTPUT` | a DC output number, 2–5, the hub never switches — a tripped output, for the unconfirmed-write scenario |
+| `GEMINI_MOCK_STREAMING_AT_START` | `1`: the hub is streaming when the port opens, as a unit left armed by an earlier session is |
+| `GEMINI_MOCK_CUT_FRAMES` | `1`: once armed, every reply arrives glued to a periodic frame cut short after 63 bytes, as measured |
 
 Each is read once at mock construction; the in-process `with_…` builders
 are the unit-test equivalents. The knobs fix the sensor flags for the run,
@@ -817,7 +861,11 @@ facts this design could not, each recorded in the run's
 
 1. **Two commands in one buffer.** Does `>O3#\n>G#\n` yield a frame
    showing output 3 changed? If the firmware drops the second command, the
-   write path falls back to two requests.
+   write path falls back to two requests. *Half answered 2026-10-26:*
+   `>X100#\n>G#\n` drew its frame in one request
+   ([smoke test](#what-the-wire-actually-does)), so the second command is
+   not dropped; that the frame shows the set applied awaits a write that
+   changes a value.
 2. **Fields 8/9 under `>X`/`>Y`.** Does the duty field follow the set at
    once in Manual mode, and what does it show in Auto mode — the manual
    setpoint or the loop's live duty?
