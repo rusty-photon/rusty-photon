@@ -71,6 +71,12 @@ async fn open_recovery(world: &mut StarAdventurerWorld) {
     setup_pages::get(world.setup_pages(), &recovery_page(), true).await;
 }
 
+#[when(expr = "I open the mount's recovery page with the query {string}")]
+async fn open_recovery_with_query(world: &mut StarAdventurerWorld, query: String) {
+    let path = format!("{}?{query}", mount_page());
+    setup_pages::get(world.setup_pages(), &path, true).await;
+}
+
 #[when(expr = "I recover the mount from {string} on its setup page, confirming it is there")]
 async fn recover_confirmed(world: &mut StarAdventurerWorld, pose: String) {
     submit_recovery(world, &pose, true, None).await;

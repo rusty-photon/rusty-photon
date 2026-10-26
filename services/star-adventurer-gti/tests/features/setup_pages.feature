@@ -30,7 +30,8 @@ Feature: Setup pages
   recovery runs on a still mount, parked or not, with the box ticked:
   422 without the box, 409 while the mount is not connected or is
   moving. Either answers 403 from another site. A refused command runs
-  nothing; one that ran redirects to the page, which says what it did.
+  nothing; one that ran redirects to the page, which says what it did,
+  once, on the address that redirect named.
 
   Scenario: The server page offers the transport as a selector and links to the mount's page
     Given a running star-adventurer service
@@ -88,6 +89,16 @@ Feature: Setup pages
     And I open the mount's recovery page
     Then the page says "Motion: tracking at the sidereal rate"
     And Tracking should be true
+
+  Scenario: A command's result shows once, on the address its redirect named
+    Given a running star-adventurer service
+    When I connect the device
+    And I press Stop on the mount's recovery page
+    Then the page says "both axes reported stopped"
+    When I open the mount's recovery page with the query "recover&ran=1"
+    Then the page does not say "reported stopped"
+    When I open the mount's recovery page with the query "recover=stopped"
+    Then the page does not say "reported stopped"
 
   Scenario: The page's Stop halts a tracking mount and shows it stopped
     Given a running star-adventurer service

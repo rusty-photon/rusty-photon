@@ -2845,11 +2845,16 @@ page's save.
     `axis_ownership`, so no slew, park, tracking start or pulse of this
     driver's can start between them.
 
-  A command that ran answers `303 See Other` to `?recover=stopped` or
-  `?recover=<pose>`, whose `GET` is the page with a banner saying what was
-  done. A refresh then shows it again and never re-sends the command, so
-  a stale tick of the box cannot rewrite the encoders after the mount has
-  moved.
+  A command that ran answers `303 See Other` to `?recover&ran=<n>`, where
+  `<n>` is the number the driver gave that command. The driver keeps the
+  last command's result under its number until a page has shown it, and
+  the `GET` of that address is the page with a banner saying what was
+  done. A refresh then shows the page without the banner and never
+  re-sends the command, so a stale tick of the box cannot rewrite the
+  encoders after the mount has moved. Any other address (a bookmark, a
+  restored tab, the `?recover=<pose>` an earlier build redirected to)
+  shows the page with no result: the banner reports only a command that
+  ran and that no page has reported yet.
 
 | Refusal | Answer |
 |---|---|
