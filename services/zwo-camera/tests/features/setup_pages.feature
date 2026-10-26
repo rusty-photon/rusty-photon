@@ -3,9 +3,12 @@ Feature: Setup pages
   zwo-camera configures itself through the two HTML pages the Alpaca
   Management API defines, served by the service itself: /setup for the
   whole server and /setup/v1/camera/{n}/setup for each camera it serves.
-  The server page holds the server block, max_adu_reporting (a dropdown of
-  its two contracts; a value outside them is refused beside it), the
-  Security section and the Cameras section, which edits usb_devices.
+  The server page holds the server block, max_adu_reporting, the Security
+  section and the Cameras section, which edits usb_devices.
+  max_adu_reporting is a dropdown of its two contracts, sensor_ceiling and
+  zwo_driver, each labelled by what it reports, with a hint that says what
+  MaxADU is and that zwo_driver may disable a client's saturation
+  detection; a value outside them is refused beside it.
 
   The Cameras section has two modes: every camera the USB scan places,
   numbered in port order, or only the checked cameras. It shows one row per
@@ -42,7 +45,7 @@ Feature: Setup pages
     Given a running zwo-camera service with the simulation backend
     When I open the server setup page
     Then the page shows an input named "server.bind_address" with value "0.0.0.0"
-    And the page shows a dropdown named "max_adu_reporting" offering "saturation_threshold, container_full_scale" with "saturation_threshold" chosen
+    And the page shows a dropdown named "max_adu_reporting" offering "sensor_ceiling, zwo_driver" with "sensor_ceiling" chosen
     And the Cameras section's mode is "auto"
     And the Cameras section lists the port "simulated-usbv3-0:1" as "camera 0"
     And the page links to the setup page of device "camera" 0
@@ -245,12 +248,21 @@ Feature: Setup pages
     When the action "config.get" is called on camera device 0
     Then the call should fail with an action-not-implemented error
 
+  Scenario: The MaxADU dropdown labels each contract and its hint warns that zwo_driver may disable saturation detection
+    Given a running zwo-camera service with the simulation backend
+    When I open the server setup page
+    Then the dropdown named "max_adu_reporting" labels "sensor_ceiling" as "sensor_ceiling: a value saturated pixels reach (the default)"
+    And the dropdown named "max_adu_reporting" labels "zwo_driver" as "zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection"
+    And the field "max_adu_reporting" has the hint "in Raw8 both report 255"
+    And the field "max_adu_reporting" has the hint "the brightest value a pixel can have"
+    And the field "max_adu_reporting" has the hint "so it may disable a client's saturation detection, depending on the threshold the client counts saturation at"
+
   Scenario: The server page saves the MaxADU contract chosen from its dropdown
     Given a running zwo-camera service with the simulation backend
     And the bound port is pinned in the configuration file so a reload keeps the address
-    When I submit the server setup page setting "max_adu_reporting" to "container_full_scale"
+    When I submit the server setup page setting "max_adu_reporting" to "zwo_driver"
     Then the page reports the configuration was saved and the service is reloading
-    And the configuration file holds "container_full_scale" at "/max_adu_reporting"
+    And the configuration file holds "zwo_driver" at "/max_adu_reporting"
 
   Scenario: A MaxADU contract outside the dropdown's values is refused beside it, the file untouched
     Given a running zwo-camera service with the simulation backend

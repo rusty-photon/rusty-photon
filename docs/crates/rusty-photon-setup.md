@@ -122,6 +122,14 @@ trusts for every credential it presents, is file-only as `server.tls` is.
 Labels are humanised from the path's last segments (`max_brightness` →
 "Max brightness").
 
+A field may carry a **hint**, a short explanation the page shows under its
+control: the schema keyword `x-setup-hint`, a string, on the field's
+property (`#[schemars(extend("x-setup-hint" = "…"))]` on the field) or on
+its type's definition, the property's own first. A tagged enum's hint sits
+under its variants, and a file-only field's under its note. Nothing else of
+a field's schema reaches the page as prose: the `description` that
+`schemars` makes of a doc comment is written for the code's readers.
+
 ### Requests and responses
 
 The handler takes a `PageRequest` — the method, the headers, the query
