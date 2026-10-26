@@ -191,6 +191,7 @@ fn scalar_field(
                         id=(name) name=(name) value=(text_of(value)) disabled[disabled];
                 }
             }
+            @if let Some(hint) = spec.hint() { div.hint { (hint) } }
             @if let Some(e) = error { div.error { (e) } }
             @if pinned {
                 div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
@@ -211,6 +212,7 @@ fn file_only(spec: &FieldSpec, pointer: &str, config: &Value, state: FieldState<
             code { (spec.name()) }
             " is edited in the configuration file; it is "
             @if set { "set." } @else { "not set." }
+            @if let Some(hint) = spec.hint() { div.hint { (hint) } }
             @if let Some(e) = error { div.error { (e) } }
         }
     }
@@ -262,6 +264,7 @@ fn variants_field(
                     }
                 }
             }
+            @if let Some(hint) = spec.hint() { div.hint { (hint) } }
             @if let Some(e) = error { div.error { (e) } }
             @if pinned {
                 div.hint { "Pinned by a command-line override; change the service's launch flags to edit it." }
@@ -732,6 +735,71 @@ mod tests {
             markup.contains(r#"name="link:network.host" value="h""#),
             "{markup}"
         );
+    }
+
+    #[test]
+    fn a_fields_hint_sits_under_its_control_its_variants_and_its_file_only_note() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "camera": { "type": "object", "properties": {
+                    "mode": { "oneOf": [
+                        { "type": "string", "const": "fast" },
+                        { "type": "string", "const": "slow" },
+                    ], "x-setup-hint": "Fast skips the check." },
+                    "tls": { "anyOf": [ { "type": "object", "properties": { "cert": { "type": "string" } } }, { "type": "null" } ], "x-setup-hint": "Doctor writes it." },
+                    "plain": { "type": "string" },
+                } },
+                "link": { "oneOf": [
+                    { "type": "object", "properties": { "kind": { "const": "serial" }, "port": { "type": "string", "x-setup-hint": "The device path." } } },
+                    { "type": "object", "properties": { "kind": { "const": "network" }, "host": { "type": "string" } } },
+                ], "x-setup-hint": "How the driver reaches the device." },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        let config = json!({
+            "camera": { "mode": "fast", "tls": null, "plain": "" },
+            "link": { "kind": "serial", "port": "/dev/a" },
+        });
+        let draw = |name: &str, state: FieldState<'_>| {
+            field(model.field(name).unwrap(), &config, state).into_string()
+        };
+        let mode = draw("camera.mode", FieldState::default());
+        assert!(
+            mode.contains(r#"</select><div class="hint">Fast skips the check.</div></div>"#),
+            "{mode}"
+        );
+        let tls = draw("camera.tls", FieldState::default());
+        assert!(
+            tls.contains(r#"it is not set.<div class="hint">Doctor writes it.</div></div>"#),
+            "{tls}"
+        );
+        let link = draw("link", FieldState::default());
+        assert!(
+            link.contains(r#"name="link:serial.port" value="/dev/a"><div class="hint">The device path.</div></div>"#),
+            "{link}"
+        );
+        assert!(
+            link.contains(
+                r#"</fieldset></div><div class="hint">How the driver reaches the device.</div>"#
+            ),
+            "{link}"
+        );
+        // The field's own explanation comes before a rejected save's error.
+        let errs = errors(&[("camera.mode", "must be one of the listed values")]);
+        let rejected = draw(
+            "camera.mode",
+            FieldState {
+                pinned: &[],
+                errors: &errs,
+            },
+        );
+        assert!(
+            rejected.contains(r#"<div class="hint">Fast skips the check.</div><div class="error">must be one of the listed values</div>"#),
+            "{rejected}"
+        );
+        let plain = draw("camera.plain", FieldState::default());
+        assert!(!plain.contains("hint"), "{plain}");
     }
 
     #[test]

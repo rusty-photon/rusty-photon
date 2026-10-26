@@ -523,6 +523,46 @@ pub mod dom {
         })
     }
 
+    /// Whether a `div.field` holding the `input`, `textarea` or `select`
+    /// named `field` shows a `.hint` containing `text`.
+    #[must_use]
+    pub fn field_hint(html: &str, field: &str, text: &str) -> bool {
+        let doc = Html::parse_document(html);
+        let field_sel = selector("div.field");
+        let input_sel = selector("input[name], textarea[name], select[name]");
+        let hint_sel = selector(".hint");
+        doc.select(&field_sel).any(|fld| {
+            let is_target = fld
+                .select(&input_sel)
+                .any(|el| el.value().attr("name") == Some(field));
+            is_target
+                && fld
+                    .select(&hint_sel)
+                    .any(|h| h.text().collect::<String>().contains(text))
+        })
+    }
+
+    /// The text of the option whose value is `value` in the `<select>`
+    /// named `name`, its whitespace collapsed to single spaces.
+    #[must_use]
+    pub fn option_label(html: &str, name: &str, value: &str) -> Option<String> {
+        let doc = Html::parse_document(html);
+        let select = doc
+            .select(&selector("select[name]"))
+            .find(|el| el.value().attr("name") == Some(name))?;
+        let option = select
+            .select(&selector("option"))
+            .find(|el| el.value().attr("value") == Some(value))?;
+        Some(
+            option
+                .text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+
     /// The value of the checked radio button or checkbox named `name`, if
     /// one is checked.
     #[must_use]
@@ -744,6 +784,26 @@ macro_rules! setup_pages_steps {
             let offered: Vec<String> = options.split(',').map(|o| o.trim().to_owned()).collect();
             assert_eq!(select.options, offered, "the options of dropdown {name}");
             assert_eq!(select.chosen.as_deref(), Some(chosen.as_str()), "the chosen option of dropdown {name}");
+        }
+
+        #[::cucumber::then(expr = "the dropdown named {string} labels {string} as {string}")]
+        fn setup_pages_dropdown_label(world: &mut $world, name: String, value: String, label: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            let shown = $crate::setup_pages::dom::option_label(&state.last_body, &name, &value)
+                .unwrap_or_else(|| panic!("no option {value:?} in a dropdown named {name:?}:\n{}", state.last_body));
+            assert_eq!(shown, label, "the label of option {value} in dropdown {name}");
+        }
+
+        #[::cucumber::then(expr = "the field {string} has the hint {string}")]
+        fn setup_pages_field_hint(world: &mut $world, field: String, text: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert!(
+                $crate::setup_pages::dom::field_hint(&state.last_body, &field, &text),
+                "no hint {text:?} on {field}:\n{}",
+                state.last_body
+            );
         }
 
         #[::cucumber::then(expr = "the page shows no input named {string}")]
@@ -1334,6 +1394,30 @@ mod tests {
         );
         assert_eq!(dom::textarea(NAMES, "missing"), None);
         assert!(dom::field_error(NAMES, "wheel.filter_names", "is empty"));
+    }
+
+    const CHOICE: &str = r#"<form method="post" action="">
+        <div class="field"><label for="mode">Mode</label>
+        <select id="mode" name="mode"><option value="fast" selected>fast:
+          the quick one</option><option value="slow">slow</option></select>
+        <div class="hint">Fast skips the check.</div></div>
+        <div class="field"><input type="text" name="other" value=""></div></form>"#;
+
+    #[test]
+    fn the_choice_helpers_read_an_options_label_and_a_fields_hint() {
+        assert_eq!(
+            dom::option_label(CHOICE, "mode", "fast").as_deref(),
+            Some("fast: the quick one")
+        );
+        assert_eq!(
+            dom::option_label(CHOICE, "mode", "slow").as_deref(),
+            Some("slow")
+        );
+        assert_eq!(dom::option_label(CHOICE, "mode", "medium"), None);
+        assert_eq!(dom::option_label(CHOICE, "other", "fast"), None);
+        assert!(dom::field_hint(CHOICE, "mode", "skips the check"));
+        assert!(!dom::field_hint(CHOICE, "other", "skips the check"));
+        assert!(!dom::field_hint(CHOICE, "mode", "something else"));
     }
 
     #[test]

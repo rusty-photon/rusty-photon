@@ -85,7 +85,11 @@ pub struct FieldSpec {
     label: String,
     kind: FieldKind,
     default: Option<Value>,
+    hint: Option<String>,
 }
+
+/// The schema keyword a field's hint is written in.
+const HINT: &str = "x-setup-hint";
 
 impl FieldSpec {
     /// The schema's `default` for the field, if it states one: what an input
@@ -120,6 +124,13 @@ impl FieldSpec {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// The explanation the page shows under the field's control: the
+    /// schema's `x-setup-hint`, if the field or its type carries one.
+    #[must_use]
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
     }
 
     /// How the field renders and coerces.
@@ -613,6 +624,7 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             }
             let mut spec = make_field(prefix, &base, nullable, resolved);
             spec.default = default_of(node, resolved);
+            spec.hint = hint_of(node, resolved);
             out.push(spec);
         }
         Shape::IntEnumArray { options } => {
@@ -621,6 +633,7 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             }
             let mut spec = field_spec(prefix, FieldKind::IntSet { options });
             spec.default = default_of(node, resolved);
+            spec.hint = hint_of(node, resolved);
             out.push(spec);
         }
         Shape::StringEnum { options } => {
@@ -629,6 +642,7 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             }
             let mut spec = field_spec(prefix, FieldKind::Choice { options });
             spec.default = default_of(node, resolved);
+            spec.hint = hint_of(node, resolved);
             out.push(spec);
         }
         Shape::Tagged { tag, branches } => {
@@ -639,13 +653,17 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
                 .iter()
                 .filter_map(|branch| variant_of(branch, root, &tag, prefix))
                 .collect();
-            out.push(field_spec(prefix, FieldKind::Variants { tag, variants }));
+            let mut spec = field_spec(prefix, FieldKind::Variants { tag, variants });
+            spec.hint = hint_of(node, resolved);
+            out.push(spec);
         }
         Shape::FileOnly => {
             if prefix.is_empty() {
                 return;
             }
-            out.push(field_spec(prefix, FieldKind::FileOnly));
+            let mut spec = field_spec(prefix, FieldKind::FileOnly);
+            spec.hint = hint_of(node, resolved);
+            out.push(spec);
         }
     }
 }
@@ -687,6 +705,15 @@ fn default_of(node: &Value, resolved: &Value) -> Option<Value> {
         .cloned()
 }
 
+/// A leaf's hint: the property's own, which `schemars` writes beside a
+/// `$ref` when the field carries one, else its type's.
+fn hint_of(node: &Value, resolved: &Value) -> Option<String> {
+    node.get(HINT)
+        .or_else(|| resolved.get(HINT))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec {
     let kind = match base {
         "boolean" => FieldKind::Bool,
@@ -718,6 +745,7 @@ fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
         label: humanize(&sub),
         kind,
         default: None,
+        hint: None,
     }
 }
 
@@ -1540,6 +1568,86 @@ mod tests {
             Some(&json!("127.0.0.1")),
             "the type's default when the field states none"
         );
+    }
+
+    #[test]
+    fn a_fields_hint_is_its_own_else_its_types_and_a_doc_comment_is_none() {
+        /// A type that carries a hint of its own.
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        #[serde(rename_all = "snake_case")]
+        #[schemars(extend("x-setup-hint" = "The type's hint."))]
+        enum Mode {
+            /// Quick.
+            Fast,
+            /// Careful.
+            Slow,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Camera {
+            /// Written for the code's readers, not the page.
+            #[schemars(extend("x-setup-hint" = "How long a frame takes."))]
+            exposure: f64,
+            /// The type's hint, the field stating none.
+            mode: Mode,
+            #[schemars(extend("x-setup-hint" = "The field's own hint."))]
+            other_mode: Mode,
+            /// A doc comment and nothing else.
+            gain: u32,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Config {
+            camera: Camera,
+        }
+        let schema = serde_json::to_value(schema_for!(Config)).unwrap();
+        let model = FieldModel::from_schema(&schema);
+        let hint = |name| model.field(name).unwrap().hint();
+        assert_eq!(hint("camera.exposure"), Some("How long a frame takes."));
+        assert_eq!(hint("camera.mode"), Some("The type's hint."));
+        assert_eq!(hint("camera.other_mode"), Some("The field's own hint."));
+        assert_eq!(hint("camera.gain"), None);
+    }
+
+    #[test]
+    fn a_hint_reaches_a_tagged_enum_its_variants_fields_and_a_file_only_field() {
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Transport {
+            Usb {
+                #[schemars(extend("x-setup-hint" = "The device path."))]
+                port: String,
+            },
+            Udp {
+                host: String,
+            },
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Tls {
+            cert: String,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Link {
+            #[schemars(extend("x-setup-hint" = "How the driver reaches the device."))]
+            transport: Transport,
+            #[schemars(extend("x-setup-hint" = "Doctor writes it."))]
+            tls: Option<Tls>,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Config {
+            link: Link,
+        }
+        let schema = serde_json::to_value(schema_for!(Config)).unwrap();
+        let model = FieldModel::from_schema(&schema);
+        let transport = model.field("link.transport").unwrap();
+        assert_eq!(transport.hint(), Some("How the driver reaches the device."));
+        let FieldKind::Variants { variants, .. } = transport.kind() else {
+            panic!("link.transport must be a Variants leaf: {transport:?}");
+        };
+        assert_eq!(variants[0].name, "usb");
+        assert_eq!(variants[0].fields[0].hint(), Some("The device path."));
+        assert_eq!(variants[1].fields[0].hint(), None);
+        let tls = model.field("link.tls").unwrap();
+        assert_eq!(tls.kind(), &FieldKind::FileOnly);
+        assert_eq!(tls.hint(), Some("Doctor writes it."));
     }
 
     #[test]
