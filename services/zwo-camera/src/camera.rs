@@ -860,7 +860,7 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
 ///
-/// Under [`MaxAduReporting::SaturationThreshold`] (the default) this is a
+/// Under [`MaxAduReporting::SensorCeiling`] (the default) this is a
 /// **saturation threshold chosen to be reachable**, not an exact upper bound on
 /// the pixel values. *In the shifted branch* — a sub-16-bit depth in Raw16,
 /// where the margin applies — a sensor that reaches its top ADC code delivers
@@ -868,7 +868,7 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 /// container's maximum, which nothing delivered in that container can exceed:
 /// `u16::MAX` for the remaining Raw16 depths, and `u8::MAX` for Raw8.
 ///
-/// [`MaxAduReporting::ContainerFullScale`] reports that container maximum in
+/// [`MaxAduReporting::ZwoDriver`] reports that container maximum in
 /// every Raw16 branch instead, matching ZWO's own ASCOM driver for clients
 /// written against it — at the cost of the detection described below. The two
 /// modes differ only in the shifted branch; everywhere else they already agree.
@@ -891,10 +891,11 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 /// code: a physical 14-bit ASI178MM clips at `16382 << 2 = 65528`, one count
 /// short of the `16383 << 2 = 65532` the shift alone predicts, at every gain
 /// and bin. ASCOM defines this property as the maximum value the camera *can
-/// produce*, and clients test saturation as `pixel >= MaxADU`, so reporting an
-/// unreachable ceiling does not merely round badly — it makes saturation
-/// undetectable, which is the whole point of the property for autofocus star
-/// selection and flat-panel exposure targeting.
+/// produce*, and a client that tests saturation as `pixel >= MaxADU`, as rp
+/// does, finds no saturated pixel under an unreachable ceiling: reporting one
+/// does not merely round badly, it can make saturation undetectable, which is
+/// the whole point of the property for autofocus star selection and
+/// flat-panel exposure targeting.
 ///
 /// So the shifted branch reports one quantization step below full scale. The
 /// shortfall is per-model — of three cameras driven to saturation, the
@@ -928,7 +929,7 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
         // depth arms below — it is the whole point of the mode that it
         // overrides the shift, and the arms it does not reach already agree
         // with it.
-        _ if reporting == MaxAduReporting::ContainerFullScale => container_full_scale,
+        _ if reporting == MaxAduReporting::ZwoDriver => container_full_scale,
         // No margin, for two different reasons: a depth that already fills the
         // container has no shift and so no slack to spend, while an unknown (0)
         // or degenerate (1) depth says nothing about the packing at all — there
@@ -2151,7 +2152,7 @@ mod tests {
     /// `pixel >= MaxADU` impossible to satisfy on the ones that clip short.
     #[test]
     fn max_adu_is_one_step_below_the_delivered_format_full_scale() {
-        let threshold = MaxAduReporting::SaturationThreshold;
+        let threshold = MaxAduReporting::SensorCeiling;
         // One quantization step below the shifted full scale, so a sensor that
         // clips short of its top ADC code still trips `pixel >= MaxADU`.
         assert_eq!(max_adu_for(ImageType::Raw16, 12, threshold), 65_504);
@@ -2166,8 +2167,8 @@ mod tests {
     /// whatever the ADC depth — the flat 65535 measured from ZWO's own ASCOM
     /// driver on all three cameras.
     #[test]
-    fn container_full_scale_reports_the_container_maximum_at_every_depth() {
-        let compat = MaxAduReporting::ContainerFullScale;
+    fn zwo_driver_reports_the_container_maximum_at_every_depth() {
+        let compat = MaxAduReporting::ZwoDriver;
         // The depths that carry a margin under the default lose it here: this
         // is the whole point of the mode, not an oversight.
         assert_eq!(max_adu_for(ImageType::Raw16, 12, compat), 65_535);
@@ -2190,8 +2191,8 @@ mod tests {
             (ImageType::Y8, 14),    // ditto
         ] {
             assert_eq!(
-                max_adu_for(image_type, depth, MaxAduReporting::SaturationThreshold),
-                max_adu_for(image_type, depth, MaxAduReporting::ContainerFullScale),
+                max_adu_for(image_type, depth, MaxAduReporting::SensorCeiling),
+                max_adu_for(image_type, depth, MaxAduReporting::ZwoDriver),
                 "{image_type:?} at depth {depth} must not depend on the mode"
             );
         }
@@ -2202,12 +2203,12 @@ mod tests {
     /// Measured through ZWO's own driver, a blown-out frame reports zero
     /// saturated pixels on all three cameras.
     #[test]
-    fn container_full_scale_puts_the_measured_ceilings_out_of_reach() {
+    fn zwo_driver_puts_the_measured_ceilings_out_of_reach() {
         for (depth, delivered_ceiling) in [(14u32, 16_382u32 << 2), (12, 4_094 << 4)] {
-            let max_adu = max_adu_for(ImageType::Raw16, depth, MaxAduReporting::ContainerFullScale);
+            let max_adu = max_adu_for(ImageType::Raw16, depth, MaxAduReporting::ZwoDriver);
             assert!(
                 delivered_ceiling < max_adu,
-                "compat mode is expected to make saturation undetectable at depth {depth}"
+                "zwo_driver is expected to put the sensor's ceiling out of reach at depth {depth}"
             );
         }
     }
@@ -2217,7 +2218,7 @@ mod tests {
     /// rather than a value one count below it.
     #[test]
     fn max_adu_spends_no_margin_where_the_container_is_already_full() {
-        let threshold = MaxAduReporting::SaturationThreshold;
+        let threshold = MaxAduReporting::SensorCeiling;
         // A 16-bit ADC fills the container: step 1, nothing to give back.
         assert_eq!(max_adu_for(ImageType::Raw16, 16, threshold), 65_535);
         // Unknown (0) and degenerate (1) depths give nothing to reason from;
@@ -2232,7 +2233,7 @@ mod tests {
     /// saturation test clients actually write.
     #[test]
     fn measured_asi178mm_ceiling_registers_as_saturated() {
-        let max_adu = max_adu_for(ImageType::Raw16, 14, MaxAduReporting::SaturationThreshold);
+        let max_adu = max_adu_for(ImageType::Raw16, 14, MaxAduReporting::SensorCeiling);
         let delivered_ceiling = 16_382u32 << 2;
         assert_eq!(delivered_ceiling, 65_528);
         assert!(
@@ -2250,7 +2251,7 @@ mod tests {
         let accurate = ZwoCamera::new(
             Arc::new(MockCameraHandle::default().with_signal(0.25, 14)),
             None,
-            MaxAduReporting::SaturationThreshold,
+            MaxAduReporting::SensorCeiling,
         );
         accurate.connect().unwrap();
         assert_eq!(accurate.max_adu().await.unwrap(), 65_528);
@@ -2258,7 +2259,7 @@ mod tests {
         let compat = ZwoCamera::new(
             Arc::new(MockCameraHandle::default().with_signal(0.25, 14)),
             None,
-            MaxAduReporting::ContainerFullScale,
+            MaxAduReporting::ZwoDriver,
         );
         compat.connect().unwrap();
         assert_eq!(compat.max_adu().await.unwrap(), 65_535);
