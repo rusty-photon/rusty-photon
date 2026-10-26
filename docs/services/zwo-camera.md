@@ -581,9 +581,7 @@ Sections:
 - **max_adu_reporting** — Which `MaxADU` contract to present, service-wide:
   `sensor_ceiling` (default, a value saturated pixels reach) or
   `zwo_driver` (a flat 65535 in `Raw16`, matching ZWO's own ASCOM driver for
-  clients written against it). `saturation_threshold` and
-  `container_full_scale`, their former names, are still read as these, and a
-  save from the page writes the new ones. A dropdown on the server page
+  clients written against it). A dropdown on the server page
   (*Setup pages*), baked into each device at construction, so it takes effect
   on the next reload or restart rather than on the live objects. See ST3
   *the compatibility switch*: on a sub-16-bit sensor `zwo_driver` may disable
@@ -625,8 +623,9 @@ empty, and any `Action` answers `ActionNotImplemented`.
 **`max_adu_reporting` is a dropdown** of its two values, `sensor_ceiling`
 and `zwo_driver`, each labelled by what it reports (the crate's field shapes
 draw a string enum so, a variant's `title` its label). The field's hint,
-under the dropdown, says what `MaxADU` is, why a ZWO sensor's pixels stop
-short of 65535, and that `zwo_driver` may disable a client's saturation
+under the dropdown, says what `MaxADU` is, that the two differ only in the
+`Raw16` readout of a sub-16-bit sensor, whose pixels stop short of 65535
+(`Raw8` reports 255 under both), and that `zwo_driver` may disable a client's saturation
 detection, depending on the threshold the client counts saturation at (ST3
 *the compatibility switch*). Each device reads it at construction, so a changed
 value applies at the reload the save fires, which re-creates every device;

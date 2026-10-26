@@ -8,9 +8,7 @@ Feature: Setup pages
   max_adu_reporting is a dropdown of its two contracts, sensor_ceiling and
   zwo_driver, each labelled by what it reports, with a hint that says what
   MaxADU is and that zwo_driver may disable a client's saturation
-  detection; a value outside them is refused beside it. A file holding a
-  contract by its former name (saturation_threshold, container_full_scale)
-  loads as the new one, and a save writes the new name.
+  detection; a value outside them is refused beside it.
 
   The Cameras section has two modes: every camera the USB scan places,
   numbered in port order, or only the checked cameras. It shows one row per
@@ -254,7 +252,8 @@ Feature: Setup pages
     Given a running zwo-camera service with the simulation backend
     When I open the server setup page
     Then the dropdown named "max_adu_reporting" labels "sensor_ceiling" as "sensor_ceiling: a value saturated pixels reach (the default)"
-    And the dropdown named "max_adu_reporting" labels "zwo_driver" as "zwo_driver: 65535, as ZWO's own driver reports; may disable saturation detection"
+    And the dropdown named "max_adu_reporting" labels "zwo_driver" as "zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection"
+    And the field "max_adu_reporting" has the hint "in Raw8 both report 255"
     And the field "max_adu_reporting" has the hint "the brightest value a pixel can have"
     And the field "max_adu_reporting" has the hint "so it may disable a client's saturation detection, depending on the threshold the client counts saturation at"
 
@@ -263,15 +262,6 @@ Feature: Setup pages
     And the bound port is pinned in the configuration file so a reload keeps the address
     When I submit the server setup page setting "max_adu_reporting" to "zwo_driver"
     Then the page reports the configuration was saved and the service is reloading
-    And the configuration file holds "zwo_driver" at "/max_adu_reporting"
-
-  Scenario: A MaxADU contract under its former name loads as the new one, and a save writes the new name
-    Given the configuration JSON {"max_adu_reporting": "container_full_scale"}
-    And a running zwo-camera service with the simulation backend
-    When I open the server setup page
-    Then the page shows a dropdown named "max_adu_reporting" offering "sensor_ceiling, zwo_driver" with "zwo_driver" chosen
-    When I submit the server setup page setting "max_adu_reporting" to "zwo_driver"
-    Then the page reports the configuration was saved and nothing changed
     And the configuration file holds "zwo_driver" at "/max_adu_reporting"
 
   Scenario: A MaxADU contract outside the dropdown's values is refused beside it, the file untouched

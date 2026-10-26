@@ -81,9 +81,10 @@ impl Config {
 /// What the server page says under the `max_adu_reporting` dropdown.
 const MAX_ADU_REPORTING_HINT: &str = "What each camera reports as MaxADU: the brightest \
     value a pixel can have, which clients compare pixels against to find saturated ones. \
-    The two choices differ only on a sensor of fewer than 16 bits, whose pixels never reach \
-    65535. sensor_ceiling reports a value saturated pixels reach, one step below the \
-    sensor's full scale because some sensors stop a step short of it: 65528 for a 14-bit \
+    The two choices differ only in the 16-bit readout (Raw16) of a sensor of fewer than 16 \
+    bits, whose pixels never reach 65535; in Raw8 both report 255. There, sensor_ceiling \
+    reports a value saturated pixels reach, one step below the sensor's full scale because \
+    some sensors stop a step short of it: 65528 for a 14-bit \
     sensor, 65504 for a 12-bit one. zwo_driver reports 65535, as ZWO's own ASCOM driver \
     does, for a client written against that number. No pixel of such a sensor reaches \
     65535, so it may disable a client's saturation detection, depending on the threshold \
@@ -101,24 +102,20 @@ pub enum MaxAduReporting {
     /// One quantization step below the delivered format's full scale, so that a
     /// sensor clipping short of its top ADC code still satisfies
     /// `pixel >= MaxADU`. The default: saturation detection is the capability
-    /// the property exists for, and it should work unconfigured. A file may
-    /// still name it `saturation_threshold`, its former name.
+    /// the property exists for, and it should work unconfigured.
     #[default]
-    #[serde(alias = "saturation_threshold")]
     #[schemars(title = "sensor_ceiling: a value saturated pixels reach (the default)")]
     SensorCeiling,
     /// The delivered container's own maximum — 65535 in `Raw16`. What ZWO's own
-    /// ASCOM driver reports, for clients written against that value. A file
-    /// may still name it `container_full_scale`, its former name.
+    /// ASCOM driver reports, for clients written against that value.
     ///
     /// No pixel of a sub-16-bit sensor reaches the value, so this **may
     /// disable saturation detection**: a client that counts a pixel saturated
     /// only at or above `MaxADU`, as rp does, finds none. A client with a lower
     /// threshold is unaffected. It is a compatibility mode, not a second
     /// correct answer.
-    #[serde(alias = "container_full_scale")]
     #[schemars(
-        title = "zwo_driver: 65535, as ZWO's own driver reports; may disable saturation detection"
+        title = "zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection"
     )]
     ZwoDriver,
 }
@@ -287,33 +284,6 @@ mod tests {
     }
 
     #[test]
-    fn max_adu_reporting_reads_its_former_names_and_writes_the_new_ones() {
-        // A file saved before the rename must still load, as the contract it
-        // named; the next save writes that contract's new name.
-        for (former, contract, name) in [
-            (
-                "saturation_threshold",
-                MaxAduReporting::SensorCeiling,
-                "sensor_ceiling",
-            ),
-            (
-                "container_full_scale",
-                MaxAduReporting::ZwoDriver,
-                "zwo_driver",
-            ),
-        ] {
-            let c: Config =
-                serde_json::from_value(serde_json::json!({ "max_adu_reporting": former })).unwrap();
-            assert_eq!(c.max_adu_reporting, contract, "{former}");
-            assert_eq!(
-                serde_json::to_value(&c).unwrap()["max_adu_reporting"],
-                name,
-                "{former}"
-            );
-        }
-    }
-
-    #[test]
     fn the_page_labels_each_contract_and_explains_the_field() {
         // The dropdown offers only the new names, each labelled by what it
         // reports, and the hint under it warns that zwo_driver may disable
@@ -337,7 +307,7 @@ mod tests {
                 ),
                 (
                     "zwo_driver",
-                    "zwo_driver: 65535, as ZWO's own driver reports; may disable saturation detection"
+                    "zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection"
                 ),
             ]
         );
@@ -358,8 +328,10 @@ mod tests {
             .to_string();
         // The message must name the accepted values, or the operator is left
         // guessing at the spelling of a key they cannot see in the schema.
-        assert!(err.contains("sensor_ceiling"), "{err}");
-        assert!(err.contains("zwo_driver"), "{err}");
+        assert!(
+            err.contains("unknown variant `65535`, expected `sensor_ceiling` or `zwo_driver`"),
+            "{err}"
+        );
     }
 
     #[test]
