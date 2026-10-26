@@ -157,10 +157,11 @@ module owns this mapping so no caller ever composes an output number.
 
 The reply to `>G#` is one frame of seventeen fields. Every field is a
 number followed by a **suffix tag letter**; the numeric fields are
-fixed-width with leading spaces. Tags repeat (`A`, `M`, `C`, `D`, `T` each
-occur twice), so the parser consumes the fields **in order**, each up to
-its expected tag, the way the INDI driver does — not by splitting on the
-tag alphabet.
+fixed-width with leading spaces. Tags repeat — `C` occurs three times
+(fields 8, 9 and 15), `A`, `M`, `D` and `T` twice each — so the parser
+consumes the fields **in order**, each up to its expected tag, the way the
+INDI driver does, not by splitting on the tag alphabet or by looking a tag
+up.
 
 Captured from the dev box's unit (firmware 308) rather than copied from
 either driver:
@@ -377,15 +378,23 @@ The frame says whether each sensor is attached (fields 2 and 3), and the
 driver believes the flag over the number. When a flag is `0`:
 
 - the ObservingConditions device receives **no sample** for that sensor's
-  properties, so they read `VALUE_NOT_SET` once the window has emptied
-  (ambient temperature, humidity and dewpoint follow the AHT20; nothing in
-  ObservingConditions follows the probe);
+  properties, and the first frame whose AHT20 flag reads `0` **clears**
+  the three averaging windows, so ambient temperature, humidity and
+  dewpoint read `VALUE_NOT_SET` from that poll on — not a mean of samples
+  taken before the sensor went away, served for up to `AveragePeriod`
+  longer. Sampling resumes, into empty windows, with the first frame whose
+  flag is `1` again. Nothing in ObservingConditions follows the probe;
 - the matching Switch rows read a **sentinel**: `-127` for the three
-  temperature rows and `0` for humidity. A Switch has no "not set", every
-  row must read inside its declared range, and the flags (switches 24 and
-  25) are there so a client can explain the sentinel rather than chart it.
-  `-127` is the DS18B20 library convention for a disconnected probe, which
-  is why the temperature rows declare `-127` as their minimum.
+  temperature rows and `0` for humidity. A Switch has no "not set", so the
+  row must carry some number. The sentinel is one a working sensor never
+  reports, placed inside the row's declared range so a client that checks
+  readings against `MinSwitchValue` does not reject it, and the flags
+  (switches 24 and 25) are there so a client can explain it rather than
+  chart it. This substitutes a value for a reading the frame does not
+  carry; it is not a clamp of one it does, which the no-clamp rule under
+  *Read-only* above forbids. `-127` is the DS18B20 library convention for
+  a disconnected probe, which is why the temperature rows declare `-127`
+  as their minimum.
 
 What the firmware itself writes into fields 10–13 while a sensor is
 unplugged is not known; neither driver says and the dev box's unit had both
@@ -590,7 +599,8 @@ manager and the setup page, and the staleness rule (an emptied window
 reads `VALUE_NOT_SET`) are exactly as
 [`ppba-driver`](ppba-driver.md#averageperiod-staleness-and-the-meaning-of-zero)
 specifies them; this document does not restate them. A sample is fed only
-while the AHT20's attached flag is `1`
+while the AHT20's attached flag is `1`, and a frame with that flag at `0`
+clears the three windows
 ([Sensor presence](#sensor-presence-and-the-absent-sensor-sentinel)).
 
 The lens probe has no ObservingConditions property; it is Switch row 23.
@@ -700,7 +710,7 @@ to the hub. The driver has no custom Actions.
 | Any member with an id outside 0–25 | `INVALID_VALUE` (or `NOT_CONNECTED` while disconnected), checked before `NOT_IMPLEMENTED`. |
 | `SetAveragePeriod` given `NaN` or a value outside `[0, 24]` hours | `INVALID_VALUE`; windows and the recorded period untouched. |
 | Read before the first successful poll | `NOT_CONNECTED`. |
-| Sensor read after the window has emptied, or while the AHT20 is absent | `VALUE_NOT_SET`. |
+| Sensor read after the window has emptied, or after a frame has shown the AHT20 absent (that frame clears the windows) | `VALUE_NOT_SET`. |
 
 ## MVP scope
 
@@ -741,7 +751,7 @@ binary spawned with `--features mock`, unit tests inline in `src/`.
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
 | Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; the stale-frame second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
-| Status frame | `sensor_readings.feature` | the pinned frame's values read back exactly; every row inside its range; sentinel rows with a sensor absent |
+| Status frame | `sensor_readings.feature` | the pinned frame's values read back exactly; a field outside its row's range (a 24 V input) published unclamped; sentinel rows with a sensor absent |
 | ObservingConditions | `observing_conditions.feature` | the three means, `AveragePeriod`, `VALUE_NOT_SET` on an empty window and on an absent AHT20 |
 | Labels | `switch_metadata.feature` | a `DEW6` label renames three rows; a bad key fails the load |
 | Config, setup, auth, TLS, doctor, server registration | as the siblings' files | |
@@ -776,7 +786,10 @@ Knobs reaching state the driver cannot set:
 | `GEMINI_MOCK_DEW_MODES` | the two mode digits at start, e.g. `01` |
 
 Each is read once at mock construction; the in-process `with_…` builders
-are the unit-test equivalents.
+are the unit-test equivalents. The knobs fix the sensor flags for the run,
+so the mid-session unplug — a full window, then a frame with the AHT20
+flag at `0`, then `VALUE_NOT_SET` at once — is a unit test on the poll
+loop over a scripted mock, not a scenario.
 
 ### ConformU
 
