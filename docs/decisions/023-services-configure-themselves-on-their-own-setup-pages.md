@@ -111,9 +111,12 @@ generated page with a hand-built one later, through the same hooks.
    - a `DriverPages`, for sections that fields alone cannot draw, such as
      a camera driver's `usb_devices` editor.
 3. **Custom actions carry device features and runtime protocols only.**
-   These are `phd2-guider`'s facade lease, the mount's AP-park actions,
-   and any vendor feature a driver adds later. No action carries
-   configuration.
+   These are `phd2-guider`'s facade lease and any vendor feature a driver
+   adds later. No action carries configuration. A page may also carry an
+   operator command for its device, which is never part of a save: the
+   mount's recovery page shows what the mount is doing and carries a
+   Stop and the recovery from a known pose, in place of the AP-park
+   actions it retired.
 4. **A stored secret never reaches a page.** A password hash or a client
    password renders as an empty password input, and a blank submission
    keeps the stored value.
