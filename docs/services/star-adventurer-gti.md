@@ -2915,9 +2915,8 @@ page edits (`device_sections` in `setup.rs`), its one secret
 other page's section. The pages work whether or not the mount is
 `Connected`.
 
-The `config.get` / `config.apply` / `config.schema` actions this driver
-used to expose are gone: `SupportedActions` lists the three `ApPark`
-actions alone, and every other `Action` answers `ACTION_NOT_IMPLEMENTED`.
+`SupportedActions` lists the three `ApPark` actions alone, and every other
+`Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules
 

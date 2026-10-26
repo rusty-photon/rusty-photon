@@ -6575,18 +6575,17 @@ rather than overriding it.
 
 ### Plan schema and validation
 
-The plan-data analogue of the `config.get` / `config.schema` /
-`config.apply` protocol (ADR-019, and
+The plan-data analogue of what a service's setup pages do for its
+configuration — describe its shape and check a candidate (ADR-019, and
 [rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
 two read-only MCP tools that let any surface discover the shape of plan
 data and check a candidate against **the same rules the write tools
 enforce**, without writing anything.
 
 **MCP only — there is no REST counterpart.** rp's HTTP surface covers
-service-level concerns (health, config, session lifecycle, documents,
-events); plan data lives entirely on the MCP surface, so these tools add
-no routes. `config.schema` remains the REST-side config analogue and is
-unrelated to plan data.
+service-level concerns (health, the setup page, session lifecycle,
+documents, events); plan data lives entirely on the MCP surface, so these
+tools add no routes.
 
 | Tool | Parameters | Returns | Notes |
 |---|---|---|---|
@@ -6601,9 +6600,9 @@ unrelated to plan data.
 | `goals` | a `goals[]` array | `set_goals` / `add_target`'s `goals` |
 | `naming_pattern` | `{file_naming_pattern?, directory_pattern?}` | config load |
 
-`errors[]` entries are `{path, msg}` — the identical `FieldError` shape
-`config-actions` returns, deliberately, so a surface renders a plan
-error next to its field with the code it already has for driver config.
+`errors[]` entries are `{path, msg}` — the `FieldError` shape a service's
+config validation returns, deliberately, so a surface renders a plan
+error next to its field, as a setup page renders a config error.
 `path` is dotted and indexed into the submitted value
 (`goals[1].binning`, `scheduling.min_altitude_degrees`, `ra_hours`).
 `valid` is `errors.is_empty()`.

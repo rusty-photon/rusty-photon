@@ -124,7 +124,7 @@ not:
 - Native SDK payload policy: [ADR-013](013-native-sdk-payload-policy.md)
 - Config machinery this leans on: `crates/rusty-photon-config`
   (`resolve_and_init`, `materialize_identity`, atomic `save()`),
-  [`docs/services/config-actions.md`](../services/config-actions.md)
+  [`docs/plans/archive/config-actions-protocol.md`](../plans/archive/config-actions-protocol.md)
 - Service lifecycle (signals, stderr logging, SIGHUP reload):
   [ADR-011](011-error-reporting-layers.md),
   `crates/rusty-photon-service-lifecycle`

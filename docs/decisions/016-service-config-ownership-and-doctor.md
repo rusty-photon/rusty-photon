@@ -572,7 +572,7 @@ starting D1.
 - Config-and-state-in-code, not installer artifacts:
   [ADR-015](015-windows-packaging-architecture.md) §4
 - The edit protocol doctor must not fight with:
-  [`docs/services/config-actions.md`](../services/config-actions.md)
+  [`docs/plans/archive/config-actions-protocol.md`](../plans/archive/config-actions-protocol.md)
 - Config machinery doctor reuses: `crates/rusty-photon-config`
   (`resolve_config_path`, atomic `save()`, layer-aware persist)
 - Precedent for shared-mechanism / per-service-data:

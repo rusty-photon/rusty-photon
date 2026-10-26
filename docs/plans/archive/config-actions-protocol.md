@@ -1,24 +1,28 @@
 # Config actions — the cross-driver configuration protocol
 
-> **Retired.** [driver-setup-pages.md](../plans/driver-setup-pages.md)
-> replaced these actions with the two HTML setup pages the Alpaca
-> specification defines, served by each driver itself and rendered by the
-> shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate.
-> No service carries them any more ([Driver coverage](#driver-coverage)).
-> The `ConfigurableDriver` trait below is still each setup page's
-> service-specific half; the plan's P5 archives this document and reduces
-> `rusty_photon_config::actions` to what the setup pages use.
+**Status: RETIRED (archived 2026-10-25).** The setup pages
+([driver-setup-pages.md](../driver-setup-pages.md)) replaced these actions.
+Each service now serves the two HTML pages the Alpaca specification defines,
+rendered by the shared [`rusty-photon-setup`](../../crates/rusty-photon-setup.md)
+crate. No service carries the actions any more, and the plan's P5 removed
+their code (PR #1634).
+
+The `ConfigurableDriver` trait survives as each setup page's
+service-specific half, in `rusty_photon_config::driver`. It no longer has
+`locked_paths` or `read_only_paths`, and `ApplyDisposition` is now
+`SaveDisposition`. This document records the protocol as it was. Its 2026-05
+plan is [config-actions.md](config-actions.md), beside it.
 
 Every rusty-photon Alpaca driver exposed its own configuration over HTTP as three
 **vendor ASCOM `Action`s** — `config.get`, `config.apply`, and `config.schema` —
 so a single web UI could read, edit, and apply any driver's config without the
 driver-specific knowledge living in the UI. It was the generalisation of the
 Phase 1/2 `dsd-fp2` protocol (see
-[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md))
+[`docs/plans/archive/config-actions.md`](config-actions.md))
 to **all** drivers.
 
 The driver-agnostic machinery lives in the **`rusty-photon-config`** crate's
-[`actions`](../../crates/rusty-photon-config/src/actions.rs) module; each driver
+`actions` module; each driver
 supplies only its specifics through one trait.
 
 ## The `ConfigurableDriver` trait
@@ -82,14 +86,14 @@ dependency** — it is the transport-/consumer-agnostic config *model*, shared w
 The ASCOM **adapter** — wrapping those results into `ASCOMResult`, the generic
 `config.get` / `config.apply` / `config.schema` action dispatch, the
 `ConfigActionCtx`, and the shared transport-driver error model — lives in the
-separate [`rusty-photon-driver`](../../crates/rusty-photon-driver) crate (which
+separate [`rusty-photon-driver`](../../../crates/rusty-photon-driver) crate (which
 *does* depend on `ascom-alpaca`, used only by the six driver services). Each
 driver delegates `Device::action` / `Device::supported_actions` to
 `rusty_photon_driver::dispatch::<D>` / `rusty_photon_driver::supported_actions`,
 and defines its error type with the `rusty_photon_driver::driver_error!` macro —
 so the dispatch, the `ApplyError → ASCOMError` mapping, and the common
 `DriverError` variants each exist in exactly one place. See
-[ADR-007](../decisions/007-rusty-photon-driver-shared-crate.md).
+[ADR-007](../../decisions/007-rusty-photon-driver-shared-crate.md).
 
 ## The three actions
 
@@ -144,7 +148,7 @@ disk as an absent key.
 ### In-process reload
 
 Drivers run under `ServiceRunner::with_reload().run_with_reload(...)` (see
-[`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)). A
+[`docs/skills/service-lifecycle.md`](../../skills/service-lifecycle.md)). A
 `config.apply` that needs a reload fires `ReloadSignal::notify()` after a short
 delay (so the HTTP response flushes first); the run loop breaks its
 shutdown-or-reload stop future, the old server drains HTTP and releases its
@@ -173,7 +177,7 @@ locked so the UI can't edit away its own reachability.
 ## Driver coverage
 
 No service carries the protocol any more. Its last two users went in P4 of
-[driver-setup-pages.md](../plans/driver-setup-pages.md): `qhy-focuser`, which
+[driver-setup-pages.md](../driver-setup-pages.md): `qhy-focuser`, which
 kept the actions while it was the BFF's BDD vehicle, now configures itself on
 its setup pages, and `rp`'s REST transport (`GET`/`PUT /api/config`,
 `GET /api/config/schema`) gave way to rp's own `/setup`. The plan's P5 archives
@@ -182,7 +186,7 @@ pages use.
 
 ## The web UI
 
-The `ui-htmx` BFF ([`ui-htmx.md`](ui-htmx.md)) was the protocol's
+The `ui-htmx` BFF ([`ui-htmx.md`](../../services/ui-htmx.md)) was the protocol's
 browser-facing consumer: it called `config.get` / `config.schema` to render a
 form and `config.apply` to save. Its configuration pages retired in the same P4;
 it now links rp's setup page from its navigation and edits its own
@@ -192,13 +196,13 @@ configuration on its own `/setup`.
 `star-adventurer-gti`, `filemonitor`, `sky-survey-camera`, `svbony-camera`,
 `zwo-camera`, `qhy-camera`, `zwo-focuser` and `phd2-guider`'s camera facade no longer carry the actions: their `SupportedActions` list no `config.*` (the mount keeps
 its `ApPark` actions, the facade its sweep lease) and they configure themselves on their own setup
-pages (`phd2-guider` on its service listener's `/setup`, where the facade's setup paths redirect) ([`dsd-fp2.md`](dsd-fp2.md) "Setup Pages" describes the shape); the
+pages (`phd2-guider` on its service listener's `/setup`, where the facade's setup paths redirect) ([`dsd-fp2.md`](../../services/dsd-fp2.md) "Setup Pages" describes the shape); the
 BFF's roster links there.
 
 ## References
 
-- Protocol design + phasing: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
-- Protocol model (no ASCOM dep): [`crates/rusty-photon-config/src/actions.rs`](../../crates/rusty-photon-config/src/actions.rs)
-- ASCOM adapter (dispatch + `driver_error!` macro + error model): [`crates/rusty-photon-driver`](../../crates/rusty-photon-driver) — see [ADR-007](../decisions/007-rusty-photon-driver-shared-crate.md)
-- Reload lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
+- Protocol design + phasing: [`docs/plans/archive/config-actions.md`](config-actions.md)
+- Protocol model (no ASCOM dep): `crates/rusty-photon-config/src/actions.rs`, removed by P5
+- ASCOM adapter (dispatch + `driver_error!` macro + error model): [`crates/rusty-photon-driver`](../../../crates/rusty-photon-driver) — see [ADR-007](../../decisions/007-rusty-photon-driver-shared-crate.md)
+- Reload lifecycle: [`docs/skills/service-lifecycle.md`](../../skills/service-lifecycle.md)
 - Per-driver specifics: each `docs/services/<driver>.md` "Config actions" section.

@@ -6,10 +6,17 @@ Accepted (2026-06-01). Implemented on the `feature/config-actions-phase3`
 branch (PR #344), bundled with the Phase 3 config-actions work that surfaced the
 duplication.
 
+Amended 2026-10-25: items 1 and 2 of the decision (the config-action dispatch
+and `apply_error_to_ascom`) retired with the config actions, which the setup
+pages replaced ([driver-setup-pages.md](../plans/driver-setup-pages.md), P5).
+The crate keeps `driver_error!`, and gained the glue from the pinned crate's
+setup hooks to `rusty-photon-setup`'s pages, `connected_transition`, the
+`overrides` pages and the `claims` feature.
+
 ## Context
 
 Phase 3 of the config-actions work (see
-[`docs/services/config-actions.md`](../services/config-actions.md)) generalised
+[`docs/plans/archive/config-actions-protocol.md`](../plans/archive/config-actions-protocol.md)) generalised
 `config.get` / `config.apply` / `config.schema` across all six Alpaca driver
 services. The driver-agnostic *protocol* logic (the `ConfigurableDriver` trait and
 the `config_get` / `config_apply` / `config_schema` functions) was correctly

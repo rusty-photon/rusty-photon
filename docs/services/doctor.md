@@ -1174,11 +1174,12 @@ Write mechanics:
 
 - Fixes are grouped per file and applied as one read-modify-write through
   `rusty_photon_config::save` — the same atomic
-  temp→fsync→rename→fsync-dir path the services' own `config.apply` uses,
+  temp→fsync→rename→fsync-dir path the services' own setup pages save
+  through,
   so a crash mid-fix never corrupts a config. Every field doctor does not
   touch is preserved — the mutation is on the raw JSON value, not a typed
   round-trip — though `save` normalizes formatting to the same
-  pretty-printed shape `config.apply` writes.
+  pretty-printed shape a setup page's save writes.
 - The write preserves the replaced file's **owner and mode** across the
   rename's inode swap. On a packaged Linux install the config root is
   `0750 rusty-photon:rusty-photon`, so doctor runs under sudo — without
@@ -1191,8 +1192,8 @@ Write mechanics:
   rule is satisfied by construction).
 - **Services may be running while `--fix` writes** — that is the canonical
   install flow, so doctor warns rather than refuses: atomic renames make
-  corruption impossible, and the residual race (a driver's own
-  `config.apply` landing between doctor's read and write loses one of the
+  corruption impossible, and the residual race (a service's own
+  setup-page save landing between doctor's read and write loses one of the
   two writes) is called out on stderr in packaged mode with the advice to
   re-run doctor afterwards. Services read config at startup, so applied
   fixes take effect on each service's next restart.

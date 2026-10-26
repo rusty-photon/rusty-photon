@@ -938,9 +938,8 @@ confirmation and the reload wait. The camera drivers' own parts — the
 `qhy-camera` share; `setup.rs` supplies the rest
 (`ConfigurableDriver for SvbonyCameraDriver`): the `Config`, the
 validation, the secret, the `--port` pin, and what the running server
-registered. The `config.get` / `config.apply` / `config.schema` actions are
-gone: a camera's and a placeholder's `SupportedActions` is empty, and any
-`Action` answers `ActionNotImplemented`.
+registered. A camera's and a placeholder's `SupportedActions` is empty,
+and any `Action` answers `ActionNotImplemented`.
 
 | Page | Section | Fields |
 |------|---------|--------|

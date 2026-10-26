@@ -212,9 +212,8 @@ field shows the running value, disabled, and a save never persists it. A
 save of one page never alters another page's section. The pages work
 whether or not the device is `Connected`.
 
-The `config.get` / `config.apply` / `config.schema` actions this driver
-used to expose are gone: `SupportedActions` is empty and every `Action`
-answers `ACTION_NOT_IMPLEMENTED`.
+The driver has no custom Actions: `SupportedActions` is empty and every
+`Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules
 

@@ -637,8 +637,8 @@ reload wait — and `setup.rs` supplies the bridge's half
 (`ConfigurableDriver for PlanetariumBridgeDriver`): its `Config`, the
 rules a save adds, its two secrets, and which section the Telescope's page
 edits. The binary has no command-line overrides beyond `--config` /
-`--log-level`, so `Overrides = ()` and no field is ever pinned. The bridge
-never carried config actions; its `SupportedActions` stays empty.
+`--log-level`, so `Overrides = ()` and no field is ever pinned. Its
+`SupportedActions` is empty.
 
 | Page | Section | Fields |
 |------|---------|--------|

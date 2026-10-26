@@ -372,7 +372,7 @@ with a single logical owner per device (the same discipline `qhy-camera` mandate
 - Camera scaffolding template: [`sky-survey-camera.md`](../services/sky-survey-camera.md)
 - Same-vendor-class precedent: [`qhy-camera.md`](../services/qhy-camera.md) ·
   [`qhy-focuser.md`](../services/qhy-focuser.md)
-- [`config-actions.md`](../services/config-actions.md) ·
+- [`config-actions.md`](archive/config-actions-protocol.md) ·
   [`service-lifecycle.md`](../skills/service-lifecycle.md) ·
   [`development-workflow.md`](../skills/development-workflow.md) ·
   [`testing.md`](../skills/testing.md)

@@ -491,9 +491,8 @@ driver, the wheel column and the wheel pages — are `rusty-photon-driver`'s
 `claims` module, which `svbony-camera` and `zwo-camera` share; `setup.rs`
 supplies the rest (`ConfigurableDriver for QhyCameraDriver`): the `Config`,
 the validation, the secret, the `--port` pin, and what the running server
-registered. No field is locked: `UniqueID`s are hardware-derived and not
-stored in config (*Device identity*). The `config.get` / `config.apply` /
-`config.schema` actions are gone: a camera's and a placeholder's
+registered. No page edits a `UniqueID`: they are hardware-derived and not
+stored in config (*Device identity*). A camera's and a placeholder's
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 
@@ -656,7 +655,7 @@ camera between machines, and swapping the camera correctly yields a new id.
 Consequences: there is **no `unique_id` field in config**, an **empty
 identity-pointer list** passed to `resolve_and_init` in `main.rs` (no minting;
 the bootstrap still materializes the default config file on first start), and
-**no locked identity field** in the config-actions tiers. Without a list
+**no identity field** on the setup pages. Without a list
 every camera the USB scan places, and the CFW found on it, is exposed (U11),
 each carrying its own serial-derived UniqueID. A listed camera keeps exactly
 this identity —
@@ -3571,6 +3570,6 @@ camera to enumerate.
 - FFI crate: https://crates.io/crates/qhyccd-rs · https://github.com/ivonnyssen/qhyccd-rs
 - [`sky-survey-camera.md`](sky-survey-camera.md) — Camera scaffolding template
 - [`qhy-focuser.md`](qhy-focuser.md) — same-vendor hardware-driver template
-- [`config-actions.md`](config-actions.md) · [`service-lifecycle.md`](../skills/service-lifecycle.md) · [`development-workflow.md`](../skills/development-workflow.md)
+- [`rusty-photon-setup.md`](../crates/rusty-photon-setup.md) · [`service-lifecycle.md`](../skills/service-lifecycle.md) · [`development-workflow.md`](../skills/development-workflow.md)
 - [ADR-001 Amendment A](../decisions/001-fits-file-support.md) — the pure-Rust /
   no-system-dep posture this service is the first exception to

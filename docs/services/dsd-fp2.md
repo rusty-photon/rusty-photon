@@ -456,9 +456,8 @@ pin. The pages work whether or not the device is `Connected` — a wrong
 `serial.port` must be fixable without first connecting to the thing the
 bad port blocks connecting to.
 
-The `config.get` / `config.apply` / `config.schema` actions this driver
-used to expose are gone: `SupportedActions` is empty and every `Action`
-answers `ACTION_NOT_IMPLEMENTED`.
+The driver has no custom Actions: `SupportedActions` is empty and every
+`Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 ### Config-path resolution
 
