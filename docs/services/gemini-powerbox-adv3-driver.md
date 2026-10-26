@@ -189,14 +189,18 @@ either driver:
 | 15 | `C` | output current | ` 0.02` | A |
 | 16 | `P` | output power | `  0.36` | W |
 
-The frame is 83 bytes, which is 43 ms on the wire at 19200 baud — long
+The frame is 81 bytes, which is 42 ms on the wire at 19200 baud — long
 enough that it arrives from the kernel in several reads, and long enough to
 matter for the write path below.
 
 Sanity checks on the capture: 24.47 °C at 67.76 % RH gives a Magnus dew
 point of 18.1 °C, which is what field 13 says, so the `T`/`H`/`D` trio is
-the AHT20 and `S` is the probe; and 0.03 A × 12.2 V ≈ 0.36 W, so `C` and
-`P` are the same measurement in two units.
+the AHT20 and `S` is the probe. Current and power are *not* one
+measurement in two units: this frame carries 0.02 A against 0.36 W, which
+no 12.2 V supply reconciles, while later frames in the same run carry
+0.03 A / 0.36 W, 0.04 A / 0.50 W and 0.06 A / 0.72 W, which do (about
+12 W per ampere). The two fields are sampled or rounded separately, so the
+driver publishes each as read and derives neither from the other.
 
 ### What the wire actually does
 
@@ -304,16 +308,24 @@ ports, dew channels, then telemetry.
 | 17 | `Input Voltage` | frame 14 | 0 | 19 | 0.1 |
 | 18 | `Output Current` | frame 15 | 0 | 15 | 0.01 |
 | 19 | `Output Power` | frame 16 | 0 | 180 | 0.01 |
-| 20 | `Temperature` | frame 11 (AHT20) | -127 | 60 | 0.01 |
+| 20 | `Temperature` | frame 11 (AHT20) | -127 | 85 | 0.01 |
 | 21 | `Humidity` | frame 12 (AHT20) | 0 | 100 | 0.01 |
-| 22 | `Dewpoint` | frame 13 | -127 | 60 | 0.01 |
-| 23 | `Lens Temperature` | frame 10 (DS18B20) | -127 | 60 | 0.01 |
+| 22 | `Dewpoint` | frame 13 | -127 | 85 | 0.01 |
+| 23 | `Lens Temperature` | frame 10 (DS18B20) | -127 | 125 | 0.01 |
 | 24 | `Ambient Sensor Attached` | frame 2 | 0 | 1 | 1 |
 | 25 | `Lens Probe Attached` | frame 3 | 0 | 1 | 1 |
 
 The voltage, current and power ceilings are the vendor driver's (19 V,
-15 A, 180 W); the box is rated 10 A at 12 V. The voltage step is 0.1
+15 A, 180 W); the box is rated 10 A at 12 V. The temperature ceilings are
+the sensors' own: 85 °C is the AHT20's operating maximum and 125 °C the
+DS18B20's, so a probe strapped under a heater at full power — the hub's
+power-up default — still reads inside its row. The voltage step is 0.1
 because the frame carries one decimal there and two everywhere else.
+Every row publishes what the frame carries: the parser neither clamps nor
+range-checks, as [`ppba-driver`](ppba-driver.md#the-current-is-a-sense-count-not-amps)
+decided for its sense count, so a reading outside a row's range — a 24 V
+supply on the input, say — is an abnormal condition the operator sees
+rather than a value hidden behind a clamp.
 
 ### Dew heaters: three switches per channel
 
@@ -434,13 +446,18 @@ state; the driver reports it and changes nothing.
 ### Handshake
 
 1. `>H#`. The reply must be `*HGeminiPowerBoxPlusAdv3#`, compared
-   verbatim. Any other `*HGeminiPowerBox…#` is reported as "a Gemini power
-   box, but not the Advanced 3"; a `*HGeminiFlatPanel…#` as the vendor's
-   flat panel; anything else as not a Gemini device. The guard matters
+   verbatim. Any other `*H…#` reply is returned to the handshake as an
+   identity and refused by name: `*HGeminiPowerBox…#` as "a Gemini power
+   box, but not the Advanced 3", `*HGeminiFlatPanel…#` as the vendor's
+   flat panel, any other `*H` text quoted as it came. A device that
+   answers without a `*H` prefix — another CH340 device on a shared by-id
+   link, say — is not named: its frames are `Unrelated`, the request skips
+   them, and the connect fails as "no Gemini identity reply on `<port>`",
+   with the skipped frames in the `wire recv` trace log. The guard matters
    because every Gemini CH340 device enumerates identically
    ([Device identity](#device-identity)).
-   If nothing answers within `serial.timeout`, the driver waits 2 s and
-   sends `>H#` once more before failing — the vendor driver's flat 2 s
+   If no `*H` reply arrives within `serial.timeout`, the driver waits 2 s
+   and sends `>H#` once more before failing — the vendor driver's flat 2 s
    post-open sleep, spent only when needed. The dev box's unit answers at
    once; the retry covers a unit that does reset on the DTR edge.
 2. `>V#`. Below 308 the connect is refused, naming the version read and
@@ -476,11 +493,18 @@ the input buffer**, which is one small addition to the shared crate:
 What can still precede the real reply after a discard: the tail of a frame
 that was mid-flight when the buffer was cleared (it does not start with
 `*`), and at most one whole periodic frame whose first byte landed after
-the discard. The codec decodes anything that is not a parseable `*G`, `*H`
-or `*V` frame into an `Unrelated` response rather than an error — the
-request loop treats a decode error as fatal, but a non-matching response
-as a skip — and `matches` rejects `Unrelated` and any `*G` frame when the
-request was not for one. `max_skip` is 2.
+the discard. The codec sorts frames by their first two bytes. `*G`, `*H`
+and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
+of sequence, a wrong digit count, a bad number — is a `ParseError`: the
+request fails at once, the cache is untouched, and nothing reconnects,
+because the shared crate treats a codec error as the device's answer, not
+as a lost link. Anything else — a frame without a leading `*`, or a `*`
+with another letter — decodes into an `Unrelated` response rather than an
+error, and `matches` rejects `Unrelated` and any `*G` frame when the
+request was not for one, so the request loop skips it. `max_skip` is 2.
+A malformed reply therefore costs one failed request, never a 3 s wait
+for the next periodic frame and the reconnect that a 2 s timeout would
+bring.
 
 The poll loop then is: every `serial.polling_interval` (default 5 s),
 discard, `>G#`, parse, store in the shared `CachedState`. Reads are served
@@ -500,9 +524,10 @@ write addressed with what it asked for:
 - a match stores the frame in the cache and the write succeeds — so a read
   straight after a write reflects the device, as in the siblings;
 - a mismatch is asked once more (discard, `>G#`) before it is believed,
-  because a periodic frame generated during the 5 ms the two commands take
-  to go out predates the set and is the first frame read about 1.4 % of the
-  time (43 ms of frame per 3 s of period);
+  because a periodic frame the hub starts during the 5 ms the two commands
+  take to reach it predates the set and is the first whole frame read —
+  about 0.2 % of writes (5 ms of window per 3 s of period), which at a
+  2 a.m. write is still a false failure worth one more 70 ms;
 - a mismatch that survives the second look is reported as
   `INVALID_OPERATION`, naming the switch, the value asked for and the value
   the hub reports — a tripped output that the hub refuses to turn back on
@@ -515,13 +540,23 @@ Which field confirms which write:
 | DC2–DC5, USB A–F | frame 0 / 1 digit |
 | `DEWn Enabled` | frame 4 / 6 |
 | `DEWn Mode` | frame 5 / 7 |
-| `DEWn Duty` | frame 8 / 9 — **provisional**: the INDI driver classes the manual duty as *not confirmable*, without saying why. If hardware validation shows fields 8/9 do not follow `>X`/`>Y` promptly, the duty write becomes send-and-record (the cache holds the commanded value until the next frame), and this table is amended. |
+| `DEWn Duty` | frame 8 / 9 — **provisional**: the INDI driver classes the manual duty as *not confirmable*, without saying why. If hardware validation shows fields 8/9 do not follow `>X`/`>Y` promptly, the duty write keeps the same set-plus-`>G#` request but stops comparing the field: the frame still refreshes the cache, the cache holds the commanded duty until a later frame shows it, and this table is amended. |
 
 The two-commands-in-one-buffer shape has not been exercised on hardware;
 both open-source drivers send sets alone. It is the first item on the
-[hardware validation list](#hardware-validation), and the fallback is two
-requests under the same discard rule, which costs one more lock cycle and
-nothing else.
+[hardware validation list](#hardware-validation). The fallback, if the
+firmware drops the second command, is a set command sent on its own
+followed by a `>G#` request — and a set sent alone draws no reply, which
+the shared transport cannot express today: `Connection::request` always
+reads a frame after it writes one, and a read that times out is a
+transport error that reconnects. The fallback therefore needs a second
+shared-crate addition alongside `discard_input`:
+`Codec::expects_reply(&cmd) -> bool`, default `true`, under which the
+request returns a reply-less response without reading. The set then
+takes one lock cycle and the readback another, and the readback's
+discard-then-second-look rule covers the gap between them. It is named
+here so the Phase 3 estimate carries it; it is not built unless the
+hardware asks for it.
 
 ### Synchronous switches only
 
@@ -648,8 +683,8 @@ to the hub. The driver has no custom Actions.
 |-----------|--------|
 | Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
-| `>H#` answers `*HGeminiFlatPanel…#` or anything else | Connect fails naming what answered; the port holds another Gemini device or no Gemini device. |
-| `>H#` unanswered | One retry after 2 s, then connect fails with a timeout. |
+| `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
+| `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
 | `>V#` below 308 | Connect refused, naming the version and the vendor's `FirmwareUpgradeTool`. |
 | `>V#` is 308 | Connects; `warn!` that 309 fixes DS18B20 detection. |
 | `*G` frame with a tag out of sequence, a wrong digit count, or an unparseable number | `ParseError` naming the field; cache untouched; the request fails and the poll goes on. |
