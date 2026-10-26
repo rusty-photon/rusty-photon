@@ -386,15 +386,16 @@ driver believes the flag over the number. When a flag is `0`:
   flag is `1` again. Nothing in ObservingConditions follows the probe;
 - the matching Switch rows read a **sentinel**: `-127` for the three
   temperature rows and `0` for humidity. A Switch has no "not set", so the
-  row must carry some number. The sentinel is one a working sensor never
-  reports, placed inside the row's declared range so a client that checks
-  readings against `MinSwitchValue` does not reject it, and the flags
-  (switches 24 and 25) are there so a client can explain it rather than
-  chart it. This substitutes a value for a reading the frame does not
-  carry; it is not a clamp of one it does, which the no-clamp rule under
-  *Read-only* above forbids. `-127` is the DS18B20 library convention for
-  a disconnected probe, which is why the temperature rows declare `-127`
-  as their minimum.
+  row must carry some number. The sentinel is a value no working sensor
+  produces in air — `-127` is below either sensor's range, and `0` % RH is
+  the AHT20's floor — placed inside the row's declared range so a client
+  that checks readings against `MinSwitchValue` does not reject it, and
+  the flags (switches 24 and 25) are there so a client can tell it from a
+  reading rather than chart it. This substitutes a value for a reading
+  the frame does not carry; it is not a clamp of one it does, which the
+  no-clamp rule under *Read-only* above forbids. `-127` is the DS18B20
+  library convention for a disconnected probe, which is why the
+  temperature rows declare `-127` as their minimum.
 
 What the firmware itself writes into fields 10–13 while a sensor is
 unplugged is not known; neither driver says and the dev box's unit had both
@@ -801,7 +802,8 @@ ObservingConditions suites once. Reduced delays via
 
 On real hardware ConformU **writes every writable switch**: it turns
 DC2–DC5 and USB A–F off and on, drives both dew duties across 0–100, and
-cycles both modes through Auto, Manual and Switch. Run it with nothing on
+cycles both modes through Auto, Manual and Switch. Run it with both
+sensors plugged in, or its Auto writes are refused, and with nothing on
 the DC, USB and DEW ports that minds — a camera on a USB port loses its
 link, a heater on a DEW port goes to full power in Switch mode
 ([hardware-validation.md](../skills/hardware-validation.md) says the same
@@ -828,7 +830,9 @@ facts this design could not, each recorded in the run's
    back as they were or all on. Not a driver behaviour, but an operator
    fact for this document.
 6. **ConformU**, all four suites, clean, in both dew modes, with the
-   version gate first.
+   version gate first and **both sensors attached**: a `DEWn Mode` write
+   to Auto is refused while either sensor is absent, so a run started with
+   a sensor still unplugged after item 3 records that refusal as an error.
 
 ## Open items
 
