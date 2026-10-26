@@ -2841,8 +2841,13 @@ page's save.
 
     The check that the mount is still and the reset run under
     `axis_ownership`, so no slew, park, tracking start or pulse of this
-    driver's can start between them. The answer says what was done and
-    links back to the mount's page.
+    driver's can start between them.
+
+  A command that ran answers `303 See Other` to `?recover=stopped` or
+  `?recover=<pose>`, whose `GET` is the page with a banner saying what was
+  done. A refresh then shows it again and never re-sends the command, so
+  a stale tick of the box cannot rewrite the encoders after the mount has
+  moved.
 
 | Refusal | Answer |
 |---|---|

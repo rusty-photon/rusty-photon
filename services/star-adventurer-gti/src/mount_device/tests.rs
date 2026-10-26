@@ -7616,6 +7616,90 @@ fn get_request() -> ascom_alpaca::SetupRequest {
     }
 }
 
+/// A connected device with the setup pages the driver builds, saving to a
+/// file nothing writes: the recovery page never saves.
+async fn connected_device_with_pages() -> MountDevice {
+    let cfg = base_config();
+    let pages = rusty_photon_setup::SetupPages::<crate::setup::StarAdvDriver>::new(
+        "star-adventurer-gti",
+        cfg.clone(),
+        std::path::PathBuf::from("never-written.json"),
+        crate::config::CliOverrides::default(),
+    );
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager).with_setup_pages(Arc::new(pages));
+    d.set_connected(true).await.unwrap();
+    d
+}
+
+/// The recovery page at `?recover=<value>`.
+fn recovery_get(value: &str) -> ascom_alpaca::SetupRequest {
+    ascom_alpaca::SetupRequest {
+        query: vec![("recover".to_string(), value.to_string())],
+        ..get_request()
+    }
+}
+
+/// A `POST` of `form` to the recovery page, from the page itself.
+fn recovery_post(form: &[(&str, &str)]) -> ascom_alpaca::SetupRequest {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "sec-fetch-site",
+        axum::http::HeaderValue::from_static("same-origin"),
+    );
+    ascom_alpaca::SetupRequest {
+        method: axum::http::Method::POST,
+        headers,
+        form: form
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        ..recovery_get("")
+    }
+}
+
+#[tokio::test]
+async fn a_command_that_ran_redirects_so_a_refresh_cannot_send_it_again() {
+    let d = connected_device_with_pages().await;
+    let stop: &[(&str, &str)] = &[("command", "stop")];
+    let recover: &[(&str, &str)] = &[
+        ("command", "recover"),
+        ("pose", "ap_park_0"),
+        ("confirm", "on"),
+    ];
+    for (form, location) in [(stop, "?recover=stopped"), (recover, "?recover=ap_park_0")] {
+        let response = d.setup_request(recovery_post(form)).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SEE_OTHER,
+            "{form:?}"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            location
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_page_a_redirect_lands_on_says_what_ran_and_a_bare_one_says_nothing() {
+    let d = connected_device_with_pages().await;
+    let recovered = d.setup_request(recovery_get("ap_park_3")).await;
+    assert_eq!(recovered.status(), axum::http::StatusCode::OK);
+    assert!(
+        recovered.body().contains("Recovered from ap_park_3: OTA"),
+        "{}",
+        recovered.body()
+    );
+    let stopped = d.setup_request(recovery_get("stopped")).await;
+    assert!(stopped.body().contains("both axes reported stopped"));
+    let bare = d.setup_request(recovery_get("")).await;
+    assert!(!bare.body().contains("Recovered from") && !bare.body().contains("reported stopped"));
+}
+
 #[tokio::test]
 async fn a_device_without_pages_has_no_setup_page_and_no_recovery() {
     let d = device();

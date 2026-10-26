@@ -30,7 +30,7 @@ Feature: Setup pages
   recovery runs on a still mount, parked or not, with the box ticked:
   422 without the box, 409 while the mount is not connected or is
   moving. Either answers 403 from another site. A refused command runs
-  nothing.
+  nothing; one that ran redirects to the page, which says what it did.
 
   Scenario: The server page offers the transport as a selector and links to the mount's page
     Given a running star-adventurer service
@@ -73,11 +73,13 @@ Feature: Setup pages
 
   Scenario: The recovery page shows the poses and the mount's motion, and changes nothing
     Given a running star-adventurer service
-    When I open the mount's recovery page
+    When I connect the device
+    And I open the mount's recovery page
     Then the response status is 200
     And the page shows a dropdown named "pose" offering "ap_park_0, ap_park_1, ap_park_2, ap_park_3, ap_park_4, ap_park_5" with "ap_park_0" chosen
-    And the page says "Motion: not connected"
+    And the page says "Motion: stopped"
     And the mount should not have received an encoder-seed command
+    And AtPark should be false
 
   Scenario: The recovery page shows a tracking mount as tracking
     Given a running star-adventurer service
@@ -93,7 +95,7 @@ Feature: Setup pages
     And I enable tracking
     And I press Stop on the mount's recovery page
     Then the response status is 200
-    And the page says "both axes report stopped"
+    And the page says "both axes reported stopped"
     And the page says "Motion: stopped"
     And Tracking should be false
     And the mount should have received command :L1
@@ -112,7 +114,8 @@ Feature: Setup pages
     Given a running star-adventurer service
     When I press Stop on the mount's recovery page
     Then the response status is 409
-    And the page says "not connected"
+    And the page says "The mount is not connected"
+    And the page says "Motion: not connected"
 
   Scenario: The page's Stop from another site is refused with 403, and the mount keeps tracking
     Given a running star-adventurer service

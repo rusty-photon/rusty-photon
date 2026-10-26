@@ -9,7 +9,9 @@
 //! `?recover`: a `GET` shows the mount's [`Motion`] and both forms and
 //! changes nothing, and a `POST` runs the command its form names: the
 //! Stop ([`MountDevice::stop_from_page`]), or, with the box ticked, the
-//! recovery ([`MountDevice::recover_from`]) of a mount that is stopped.
+//! recovery ([`MountDevice::recover_from`]) of a mount that is stopped. A
+//! command that ran answers with a redirect to the page, which then says
+//! what it did, so a refresh shows that again and never re-sends it.
 //! The view is this driver's own, the one device command any setup page
 //! carries; it wears the shared pages' shell, sits behind the same TLS and
 //! Basic Auth, and passes the same origin check as a save. See the design
@@ -46,6 +48,10 @@ const COMMAND: &str = "command";
 
 /// The command the Stop form posts.
 const STOP: &str = "stop";
+
+/// What the Stop's redirect carries in the query, as `?recover=stopped`.
+/// A recovery's carries its pose, as `?recover=ap_park_3`.
+const STOPPED: &str = "stopped";
 
 /// The recovery form's pose control.
 const POSE: &str = "pose";
@@ -248,7 +254,10 @@ impl MountDevice {
         request: SetupRequest,
     ) -> SetupResponse {
         match request.method {
-            Method::GET => self.recovery_form(pages, ApPark::ApPark0, &[], None).await,
+            Method::GET => {
+                self.recovery_form(pages, ApPark::ApPark0, &[], done_banner(&request.query))
+                    .await
+            }
             Method::POST => self.command_as_asked(pages, &request).await,
             _ => SetupResponse::text(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -278,43 +287,38 @@ impl MountDevice {
         }
     }
 
-    /// The page's Stop, and the page again with what it did.
+    /// The page's Stop: a redirect to the page that says it ran, or the
+    /// page again with why it did not.
     async fn stop_as_asked(&self, pages: &SetupPages<StarAdvDriver>) -> SetupResponse {
-        let (status, banner) = match self.stop_from_page().await {
+        let e = match self.stop_from_page().await {
             Ok(()) => {
                 tracing::debug!("stop from the mount's setup page");
-                (
-                    StatusCode::OK,
-                    render::banner(
-                        "ok",
-                        "stopped",
-                        "Stopped: both axes report stopped, and tracking is off.",
-                    ),
-                )
+                return SetupResponse::see_other(&format!("?{RECOVER}={STOPPED}"));
             }
-            Err(e) => {
-                tracing::debug!(error = %e, "stop from the mount's setup page failed");
-                if e.code == ASCOMErrorCode::NOT_CONNECTED {
-                    (
-                        StatusCode::CONFLICT,
-                        render::banner("error", "refused", NOT_CONNECTED),
-                    )
-                } else {
-                    let reason = format!("The stop did not complete: {}.", e.message);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        render::banner("error", "refused", &reason),
-                    )
-                }
-            }
+            Err(e) => e,
         };
-        self.recovery_form(pages, ApPark::ApPark0, &[], Some(banner))
-            .await
-            .with_status(status)
+        tracing::debug!(error = %e, "stop from the mount's setup page failed");
+        let (status, reason) = if e.code == ASCOMErrorCode::NOT_CONNECTED {
+            (StatusCode::CONFLICT, NOT_CONNECTED.to_string())
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("The stop did not complete: {}.", e.message),
+            )
+        };
+        self.recovery_form(
+            pages,
+            ApPark::ApPark0,
+            &[],
+            Some(render::banner("error", "refused", &reason)),
+        )
+        .await
+        .with_status(status)
     }
 
     /// The recovery `form` asks for, once it names a pose and has the box
-    /// ticked.
+    /// ticked: a redirect to the page that says it ran, or the page again
+    /// with why it did not.
     async fn recover_as_asked(
         &self,
         pages: &SetupPages<StarAdvDriver>,
@@ -340,22 +344,7 @@ impl MountDevice {
         match self.recover_from(pose).await {
             Ok(()) => {
                 tracing::debug!(pose = %pose, "recovery from the mount's setup page");
-                let done = if pose == ApPark::ApPark0 {
-                    "AtPark is cleared and the encoders are as they were: plate-solve and sync before any slew."
-                } else {
-                    "The encoders now read this pose, the coordinate frame is anchored, and AtPark is cleared."
-                };
-                answer(
-                    pages,
-                    &html! {
-                        div.card {
-                            h1 { "Recovered from " (pose.as_str()) }
-                            p.subtitle { (pose.title()) }
-                            (render::banner("ok", "recovered", done))
-                            p { a href=(MOUNT_PAGE) { "Back to the mount's page" } }
-                        }
-                    },
-                )
+                SetupResponse::see_other(&format!("?{RECOVER}={}", pose.as_str()))
             }
             Err(e) => {
                 tracing::debug!(pose = %pose, error = %e, "recovery from the mount's setup page refused");
@@ -474,6 +463,31 @@ impl MountDevice {
             },
         )
     }
+}
+
+/// What the command a redirect followed did, from the `?recover=` value it
+/// carries: the Stop's [`STOPPED`] or a recovery's pose. A bare
+/// `?recover` has none.
+fn done_banner(query: &[(String, String)]) -> Option<Markup> {
+    let (_, done) = query.iter().find(|(key, _)| key == RECOVER)?;
+    if done == STOPPED {
+        return Some(render::banner(
+            "ok",
+            "stopped",
+            "Stopped: both axes reported stopped, and tracking is off.",
+        ));
+    }
+    let pose = done.parse::<ApPark>().ok()?;
+    let did = if pose == ApPark::ApPark0 {
+        "AtPark is cleared and the encoders are as they were: plate-solve and sync before any slew."
+    } else {
+        "The encoders now read this pose, the coordinate frame is anchored, and AtPark is cleared."
+    };
+    Some(render::banner(
+        "ok",
+        "recovered",
+        &format!("Recovered from {}. {did}", pose.title()),
+    ))
 }
 
 /// A page in the shared pages' shell.

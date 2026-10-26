@@ -37,7 +37,7 @@ Feature: Unpark from AP position
     And I park the mount
     And I recover the mount from "ap_park_3" on its setup page, confirming it is there
     Then the response status is 200
-    And the page says "ap_park_3"
+    And the page says "Recovered from ap_park_3"
     And the mount should have received an encoder seed on both axes
     And AtPark should be false
 
@@ -46,6 +46,7 @@ Feature: Unpark from AP position
     When I connect the device
     And I recover the mount from "ap_park_3" on its setup page, confirming it is there
     Then the response status is 200
+    And the page says "Recovered from ap_park_3"
     And the mount should have received an encoder seed on both axes
     And AtPark should be false
 
@@ -55,6 +56,7 @@ Feature: Unpark from AP position
     And I park the mount
     And I recover the mount from "ap_park_0" on its setup page, confirming it is there
     Then the response status is 200
+    And the page says "Recovered from ap_park_0"
     And AtPark should be false
     And the mount should not have received an encoder-seed command
 
