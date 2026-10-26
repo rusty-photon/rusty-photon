@@ -5,8 +5,8 @@ Feature: Park, unpark, and SetPark
   when both axes report stopped either way. The frame is anchored by a
   named `mount.unpark_from_ap_position` (the operator's declared
   power-up pose, typically `ap_park_3` — Sky-Watcher's stock home), by
-  a successful sync this connection, or by the UnparkFromApPosition
-  recovery action; the ship default `ap_park_0` ("current position",
+  a successful sync this connection, or by the recovery on the mount's
+  setup page; the ship default `ap_park_0` ("current position",
   the only honest value when the operator declared nothing) is
   unanchored until a sync. The park
   target is resolved on connect, per axis, from the raw

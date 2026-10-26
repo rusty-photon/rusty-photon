@@ -81,7 +81,7 @@ pub trait ConfigurableDriver {
 
     /// RFC-6901 JSON pointers to fields a setup page must not edit. Fields
     /// the service writes at runtime — a mount's park position, captured by
-    /// `SetPark`, and its AP-park choices, set by their actions — since a
+    /// `SetPark` — since a
     /// form filled before the runtime write would otherwise carry the old
     /// value back on its next save; and trust settings a page must not
     /// choose — rp's `ca_cert`, the CA it trusts for every credential it

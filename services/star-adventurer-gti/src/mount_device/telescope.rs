@@ -1027,50 +1027,7 @@ impl Telescope for MountDevice {
         // calls AbortSlew on a parked mount gets a clean error without
         // side-effects on tracking_requested or slew_in_progress.
         self.ensure_unparked().await?;
-        // Take the axes before touching the flag, and hold them through
-        // the stops. Without this, abort's own ordering — clear the
-        // flag, *then* `await` the `:L` sends — hands a waiting sync a
-        // `false` reading while the original motion is still running,
-        // and its `:E` writes land mid-slew. `axis_ownership` is what
-        // makes the flag check inside sync sound, so the operation that
-        // falsifies the flag has to hold it too.
-        //
-        // Blocking here is bounded by the longest holder: a
-        // `Tracking = true` write's RA stop-and-wait and restart, up to
-        // about 2 s; otherwise a sync's two encoder writes or a pulse's
-        // burst. It is the right order anyway: an abort arriving mid-sync
-        // should let the position write finish rather than interleave
-        // with it.
-        let _axes = self.axis_ownership.lock().await;
-        // Empty the slew slot first, voiding the claim of the slew or
-        // park in flight: its watcher bails before clobbering the
-        // snapshot or at_park flag, and a slew still waiting on its
-        // stops starts no goto (or stops the one it just started).
-        // Also clear tracking_requested — `:L` halts any motion the
-        // mount is doing including any sidereal tracking the watcher
-        // may have re-issued. After abort the user must explicitly
-        // re-enable tracking. Matches ASCOM's "AbortSlew does not
-        // auto-restore tracking" guarantee.
-        self.slew_in_progress.clear();
-        {
-            let mut s = self.state.write().await;
-            s.tracking_requested = false;
-            // Cancel any pulse in flight on either axis. Its watcher
-            // sends nothing when it wakes; `:L1`/`:L2` below already
-            // halt any rate-shifted motion.
-            s.pulse_guiding = PulseGuiding::IDLE;
-        }
-        // Issue :L on both axes (instant stop). Log the underlying
-        // transport error if either send fails — silent failure here
-        // hides bugs (a watcher race that leaves the manager with no
-        // open transport, for instance) until BDD assertions on the
-        // command log time out far downstream.
-        if let Err(e) = self.send(Command::InstantStop(Axis::Ra)).await {
-            debug!("abort_slew :L1 send failed: {e}");
-        }
-        if let Err(e) = self.send(Command::InstantStop(Axis::Dec)).await {
-            debug!("abort_slew :L2 send failed: {e}");
-        }
+        self.halt_all_motion().await;
         Ok(())
     }
 

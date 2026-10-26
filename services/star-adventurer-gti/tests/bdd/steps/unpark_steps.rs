@@ -1,7 +1,7 @@
 //! Steps for `unpark_from_ap_position.feature`.
 
 use crate::world::{CommandLogTimeout, StarAdventurerWorld, DEBUG_RETRY_WINDOW};
-use cucumber::{given, then, when};
+use cucumber::{given, then};
 
 /// Resolve an `ap_park_N` feature-file token to the typed [`ApPark`]
 /// via its canonical `FromStr`; a bad token fails the scenario.
@@ -16,29 +16,6 @@ fn parse_ap_park(token: &str) -> star_adventurer_gti::ApPark {
 async fn configured_with_unpark(world: &mut StarAdventurerWorld, park: String) {
     world.config_mut().mount.unpark_from_ap_position = parse_ap_park(&park);
     world.start_service().await;
-}
-
-#[when(expr = "I run the SetUnparkFromApPosition action with {string}")]
-async fn run_set_unpark(world: &mut StarAdventurerWorld, park: String) {
-    world
-        .mount()
-        .action("SetUnparkFromApPosition".to_string(), park)
-        .await
-        .unwrap();
-}
-
-#[when(expr = "I run the UnparkFromApPosition action with {string}")]
-async fn run_unpark_action(world: &mut StarAdventurerWorld, park: String) {
-    world
-        .mount()
-        .action("UnparkFromApPosition".to_string(), park)
-        .await
-        .unwrap();
-}
-
-#[when(expr = "I run the action {string} with {string}")]
-async fn run_named_action(world: &mut StarAdventurerWorld, action: String, park: String) {
-    world.mount().action(action, park).await.unwrap();
 }
 
 #[then("the mount should have received an encoder seed on both axes")]
@@ -78,20 +55,4 @@ async fn no_encoder_seed(world: &mut StarAdventurerWorld) {
 async fn persisted_unpark(world: &mut StarAdventurerWorld, park: String) {
     let cfg = world.read_persisted_config();
     assert_eq!(cfg.mount.unpark_from_ap_position, parse_ap_park(&park));
-}
-
-#[then(expr = "SupportedActions should include {string}, {string}, and {string}")]
-async fn supported_actions_include(
-    world: &mut StarAdventurerWorld,
-    first: String,
-    second: String,
-    third: String,
-) {
-    let actions = world.mount().supported_actions().await.unwrap();
-    for want in [first, second, third] {
-        assert!(
-            actions.contains(&want),
-            "SupportedActions {actions:?} missing {want:?}"
-        );
-    }
 }
