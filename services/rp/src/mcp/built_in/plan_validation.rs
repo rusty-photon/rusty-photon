@@ -9,11 +9,11 @@
 //! guarantee that is to have one implementation rather than two that
 //! agree by convention.
 //!
-//! Errors are [`FieldError`] — the same `{path, msg}` shape
-//! `config-actions` returns — with dotted, indexed paths into the
+//! Errors are [`FieldError`] — the same `{path, msg}` shape a service's
+//! config validation returns — with dotted, indexed paths into the
 //! submitted value (`ra_hours`, `goals[1].binning`,
-//! `scheduling.min_altitude_degrees`), so a UI renders a plan error next
-//! to its field with the code it already has for driver config.
+//! `scheduling.min_altitude_degrees`), so a surface renders a plan error
+//! next to its field, as a setup page renders a config error.
 //!
 //! Deliberately **not** here: anything that is a fact about the store
 //! rather than about the payload — whether a slug already exists, which
@@ -22,7 +22,7 @@
 
 use rp_targets::AcquisitionGoal;
 use rp_vocabulary::IcrsCoord;
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 
 use crate::equipment::EquipmentRegistry;
 use crate::planner::goal_wire::GoalWire;
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(paths(&validate_coord(5.0, 100.0)), vec!["dec_degrees"]);
         assert_eq!(
             validate_coord(5.0, 10.0),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<rusty_photon_config::driver::FieldError>::new()
         );
     }
 
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(paths(&errors), vec!["file_naming_pattern"]);
         assert_eq!(
             validate_naming_patterns(None, None),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<rusty_photon_config::driver::FieldError>::new()
         );
     }
 
@@ -626,11 +626,11 @@ mod tests {
     fn a_position_angle_outside_its_domain_is_reported_at_its_path() {
         assert_eq!(
             validate_position_angle(None, "position_angle_degrees"),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<rusty_photon_config::driver::FieldError>::new()
         );
         assert_eq!(
             validate_position_angle(Some(0.0), "position_angle_degrees"),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<rusty_photon_config::driver::FieldError>::new()
         );
         let errors = validate_position_angle(Some(400.0), "position_angle_degrees");
         assert_eq!(paths(&errors), vec!["position_angle_degrees"]);

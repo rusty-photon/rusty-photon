@@ -4,7 +4,7 @@
 //! The shared crate's server page over this service's configuration: the
 //! listening server, and where rp is. The BFF is not an Alpaca device, so it
 //! has no device pages, and it has no in-process reload, so a save takes
-//! effect at the next start (`ApplyDisposition::Restart`), as rp's does.
+//! effect at the next start (`SaveDisposition::Restart`), as rp's does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, Method};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Form, Router};
-use rusty_photon_config::actions::{ApplyDisposition, ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError, SaveDisposition};
 use rusty_photon_setup::{PageRequest, PageResponse, PageScope, SetupPages};
 
 use crate::config::{CliOverrides, Config};
@@ -77,8 +77,8 @@ impl ConfigurableDriver for UiHtmxDriver {
         }
     }
 
-    fn apply_disposition() -> ApplyDisposition {
-        ApplyDisposition::Restart
+    fn save_disposition() -> SaveDisposition {
+        SaveDisposition::Restart
     }
 }
 

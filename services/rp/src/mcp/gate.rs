@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use rmcp::model::{ErrorCode, ErrorData, JsonObject};
 use rp_vocabulary::FrameType;
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 

@@ -682,7 +682,7 @@ never carried config actions; its `SupportedActions` stays empty.
 
 A save that changes a field persists atomically, answers that the service
 is reloading, and fires the in-process reload after the response has
-flushed — a reload rather than a restart (`ApplyDisposition::Reload`):
+flushed — a reload rather than a restart (`SaveDisposition::Reload`):
 `main.rs` runs under `ServiceRunner::with_reload().run_with_reload(...)`,
 whose loop (`run_server_loop`) rebuilds the server from the
 freshly-persisted file. The spool is what makes the stop matter. A reload

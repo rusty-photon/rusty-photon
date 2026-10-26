@@ -4,8 +4,9 @@
 //! part ([`roster`]): the equipment block and its roster, and the
 //! registered plugins. rp is not an Alpaca device, so it has no device
 //! pages, and it applies its configuration at the next start
-//! (`ApplyDisposition::Restart`).
+//! (`SaveDisposition::Restart`).
 
+pub mod driver;
 pub mod roster;
 
 use std::path::PathBuf;
@@ -19,8 +20,8 @@ use axum::{Form, Router};
 use rusty_photon_setup::{PageRequest, PageResponse, PageScope, SetupPages};
 
 use crate::config::Config;
-use crate::config_actions::RpConfigDriver;
 use crate::equipment::EquipmentRegistry;
+use driver::RpConfigDriver;
 
 /// The page's handler, shared by its routes.
 pub type Pages = Arc<SetupPages<RpConfigDriver>>;

@@ -68,8 +68,8 @@ pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
     // On Unix, set SO_REUSEADDR so the server can rebind its port immediately
     // across a restart or in-process reload, even while a previous listener's
     // accepted connections (an HTTP client's keep-alive pool) or TIME_WAIT
-    // sockets still linger — without it a reloading service (dsd-fp2's
-    // `config.apply`) fails to rebind with `AddrInUse`. On Unix this still
+    // sockets still linger — without it a reloading service (a driver's
+    // setup-page save) fails to rebind with `AddrInUse`. On Unix this still
     // rejects a second *live* listener on the port, so it can't mask an
     // "already running" error.
     //
@@ -660,8 +660,8 @@ mod tests {
         // A service that reloads tears down its listener and rebinds the same
         // port while a client's previous connection may still linger on it.
         // SO_REUSEADDR must let the rebind succeed instead of failing
-        // `AddrInUse`. This guards the OS-sensitive rebind behaviour (dsd-fp2's
-        // `config.apply` reload) across platforms.
+        // `AddrInUse`. This guards the OS-sensitive rebind behaviour (a
+        // driver's reload after a setup-page save) across platforms.
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let listener = bind_dual_stack(addr).unwrap();
         // bind_dual_stack sets non-blocking; block in accept() for the test.

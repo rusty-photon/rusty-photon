@@ -1,6 +1,6 @@
 Feature: Plan schema and validation tools
-  The plan-data analogue of the config.get / config.schema / config.apply
-  protocol (ADR-019, rp.md § Plan schema and validation): two read-only
+  The plan-data analogue of what a service's setup pages do for its
+  configuration (ADR-019, rp.md § Plan schema and validation): two read-only
   MCP tools that let any surface discover the shape of plan data and check
   a candidate against the same rules the write tools enforce, without
   writing anything.
@@ -8,9 +8,9 @@ Feature: Plan schema and validation tools
   `get_plan_schema` returns the JSON Schema for one plan-data entity,
   generated from the same types the write tools deserialize.
   `validate_plan` checks a candidate value and returns
-  `{valid, errors: [{path, msg}]}` — the identical FieldError shape
-  config-actions returns, so a surface renders a plan error next to its
-  field with the code it already has for driver config. Paths are dotted
+  `{valid, errors: [{path, msg}]}` — the FieldError shape a service's
+  config validation returns, so a surface renders a plan error next to its
+  field, as a setup page renders a config error. Paths are dotted
   and indexed into the submitted value ("ra_hours",
   "goals[1].binning", "scheduling.min_altitude_degrees").
 

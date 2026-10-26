@@ -84,7 +84,7 @@ running config because a flag can land on one field or another by the
 config's shape (the `GTi`'s `--port` is the serial path on a USB
 transport and the host on a UDP one); it defaults to the driver's
 `override_paths`. A service that restarts rather than reloads
-(`ApplyDisposition::Restart`) names, above the form, the saved fields
+(`SaveDisposition::Restart`) names, above the form, the saved fields
 still waiting for its restart, and how to restart it. A file that cannot be read shows the
 running configuration instead.
 
@@ -169,7 +169,7 @@ A `POST` to a page submits that page's fields. The handler:
    ([Confirmation](#confirmation));
 5. persists with `rusty_photon_config::save` (atomic, owner and mode kept);
 6. answers with a page that says what was saved, and
-   - for a service that reloads in process (`ApplyDisposition::Reload`),
+   - for a service that reloads in process (`SaveDisposition::Reload`),
      that it is reloading: the reload is fired after the response has
      flushed, and the page waits for the listener to come back. Whether
      anything changed is judged against the file as it was read (with the
@@ -184,7 +184,7 @@ A `POST` to a page submits that page's fields. The handler:
      a bound credential has neither: its page stays on the removal, with
      the link ([Credentials](#credentials)). A save that changed nothing
      says so and fires no reload;
-   - for a service that needs a restart (`ApplyDisposition::Restart`),
+   - for a service that needs a restart (`SaveDisposition::Restart`),
      which fields take effect on the next start and how to restart it:
      `sudo systemctl restart rusty-photon-<service>` on Linux,
      `Restart-Service rusty-photon-<service>` on Windows, `brew services
@@ -362,9 +362,7 @@ server's `Host` to be accepted.
 
 The reload is `rusty-photon-service-lifecycle`'s `ReloadSignal`, fired
 from a detached task after `RELOAD_AFTER_RESPONSE_DELAY` so the response
-flushes before the server that served it is torn down. The constant lives
-here; `rusty-photon-driver`'s config-action dispatch re-exports it until
-the actions retire.
+flushes before the server that served it is torn down.
 
 ## What is not here
 

@@ -15,7 +15,7 @@
 //!
 //! [`docs/services/zwo-camera.md`]: ../../../docs/services/zwo-camera.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
@@ -76,7 +76,7 @@ mod tests {
         );
         assert_eq!(
             ZwoCameraDriver::validate(&config),
-            Vec::<rusty_photon_config::actions::FieldError>::new()
+            Vec::<rusty_photon_config::driver::FieldError>::new()
         );
     }
 
@@ -133,11 +133,6 @@ mod tests {
         let errors = ZwoCameraDriver::validate(&config);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].path, "devices.ASI-1");
-    }
-
-    #[test]
-    fn no_locked_identity_fields() {
-        assert_eq!(ZwoCameraDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

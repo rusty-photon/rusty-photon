@@ -273,8 +273,8 @@ fn run_diagnosis(cli: &Cli) -> ExitCode {
             // Units installed is the strongest liveness signal doctor has
             // (the inventory carries no cross-platform active state), and
             // the canonical flow runs --fix with services live anyway:
-            // atomic renames make corruption impossible, but a driver's own
-            // config.apply landing mid-fix loses one of the two writes.
+            // atomic renames make corruption impossible, but a service's own
+            // setup-page save landing mid-fix loses one of the two writes.
             eprintln!(
                 "doctor: rusty-photon units are installed, so their services \
                  may be running while fixes are written — a concurrent config \

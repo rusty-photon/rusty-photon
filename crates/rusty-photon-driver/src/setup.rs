@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::{ServerSetup, SetupRequest, SetupResponse};
 use http::header::CONTENT_TYPE;
-use rusty_photon_config::actions::ConfigurableDriver;
+use rusty_photon_config::driver::ConfigurableDriver;
 use rusty_photon_setup::{PageRequest, PageResponse, PageScope, SetupPages};
 
 /// The crate's own boxed future shape (`futures::future::BoxFuture`), spelled

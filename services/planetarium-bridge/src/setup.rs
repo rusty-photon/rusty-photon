@@ -12,7 +12,7 @@
 //!
 //! [`docs/services/planetarium-bridge.md`]: ../../../docs/services/planetarium-bridge.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::Config;
 use crate::device::DEVICE_NAME;

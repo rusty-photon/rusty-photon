@@ -1,5 +1,5 @@
 use rp_auth::config::ClientAuthConfig;
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

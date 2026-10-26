@@ -135,7 +135,7 @@ fn main() -> ServiceResult {
     info!("Running in MOCK MODE - no real hardware");
     info!("Configuration path: {}", config_path.display());
 
-    // `config.apply` triggers an in-process reload rather than a process bounce:
+    // A setup page's save triggers an in-process reload rather than a process bounce:
     // each loop iteration re-reads the effective config and rebuilds the server.
     ServiceRunner::new("dsd-fp2")
         .with_reload()

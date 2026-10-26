@@ -5,9 +5,10 @@ and how it reads the file back as its own configuration type.
 
 This is a workspace library, not a service. Every long-running service calls it
 once before its first config read (see
-[service-lifecycle.md](../skills/service-lifecycle.md)). The `config.get` /
-`config.apply` / `config.schema` action protocol also lives in this crate (the
-`actions` module); [config-actions.md](../services/config-actions.md) covers it,
+[service-lifecycle.md](../skills/service-lifecycle.md)). The per-service half
+of the setup pages also lives in this crate (the `driver` module: the
+`ConfigurableDriver` trait, `FieldError`, `DeviceSection` and
+`SaveDisposition`); [rusty-photon-setup.md](rusty-photon-setup.md) covers it,
 and this document does not.
 
 ## Scope
@@ -112,13 +113,13 @@ tests keep its default loadable. Same-host consumers
 (sentinel's health probes, doctor) can then read it. An explicit `--config`
 path is created only when minting has an id to write. What a missing explicit
 file means otherwise is up to each service. Strict-config services treat it as
-an error. The `config.apply` drivers run on in-memory defaults.
+an error. Most Alpaca drivers run on in-memory defaults.
 
 ### What a write does to the file
 
 A write re-serializes the whole file: pretty-printed, with keys in alphabetical
 order (`serde_json` without `preserve_order`). Formatting and key order are not
-preserved. `config.apply` writes the same way.
+preserved. A setup page's save writes the same way.
 
 ## Loading: `load_file`
 

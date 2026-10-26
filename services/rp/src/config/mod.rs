@@ -61,7 +61,7 @@ pub use target_store::{TargetStoreConfig, TargetStoreConfigWire};
 
 use std::path::Path;
 
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -245,7 +245,7 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::Pat
 }
 
 /// Domain validation shared by startup ([`load_config`]) and the setup
-/// page's save (via [`crate::config_actions::RpConfigDriver`]).
+/// page's save (via [`crate::setup::driver::RpConfigDriver`]).
 ///
 /// Empty result means valid. Paths are dotted with array indices
 /// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error

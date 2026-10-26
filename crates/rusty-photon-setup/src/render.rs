@@ -2,7 +2,7 @@
 //! the banners, and the page a save answers with.
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use serde_json::Value;
 
 use crate::form::{array_has, shown_value, text_of};

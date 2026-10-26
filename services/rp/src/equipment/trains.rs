@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 
 use crate::config::equipment::EquipmentConfig;
 use crate::config::optical_train::{OpticalTrainConfig, TrainPurpose};

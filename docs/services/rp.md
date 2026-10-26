@@ -7440,7 +7440,7 @@ with — an id two entries share, a train naming an entry the save removed,
 a bad `unique_id` pin — and persisted, as every save is.
 
 `rp` applies its configuration only when it starts
-(`ApplyDisposition::Restart`): the saved page names the fields that wait
+(`SaveDisposition::Restart`): the saved page names the fields that wait
 for the restart and how to restart (`sudo systemctl restart
 rusty-photon-rp` on Linux, `Restart-Service rusty-photon-rp` on Windows,
 `brew services restart rusty-photon-rp` on macOS), and the page names them
@@ -7672,7 +7672,7 @@ the first-start scaffold.
 
 The running config is edited on rp's own [setup page](#setup-page),
 `/setup`, the roster included; a saved change is persisted atomically to
-this file and takes effect on the next rp start (`ApplyDisposition::Restart`),
+this file and takes effect on the next rp start (`SaveDisposition::Restart`),
 which the saved page says.
 
 The `mount` field is singular: exactly one mount is the typical

@@ -1,6 +1,8 @@
 //! The plan-data `schema` / `validate` MCP tools (rp.md § Plan schema
-//! and validation, ADR-019) — the plan-side analogue of
-//! `config.get`/`config.schema`/`config.apply`.
+//! and validation, ADR-019).
+//!
+//! They are the plan-side analogue of what a service's setup pages do for
+//! its configuration: describe its shape and check a candidate.
 //!
 //! Both tools are read-only: they touch no store, write nothing, and
 //! never actuate. They are MCP-only by design; rp's REST surface covers
@@ -138,8 +140,8 @@ impl McpHandler {
 fn deserialize_error(
     entity: &str,
     e: &serde_json::Error,
-) -> rusty_photon_config::actions::FieldError {
-    rusty_photon_config::actions::FieldError {
+) -> rusty_photon_config::driver::FieldError {
+    rusty_photon_config::driver::FieldError {
         path: entity.to_string(),
         msg: e.to_string(),
     }

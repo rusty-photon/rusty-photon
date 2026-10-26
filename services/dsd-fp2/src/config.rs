@@ -158,9 +158,9 @@ pub fn load_config(
 
 /// CLI overrides layered over the file config.
 ///
-/// Tracks which fields are pinned by a command-line flag so the config
-/// actions can distinguish the file layer from the override layer (see
-/// `docs/services/dsd-fp2.md` "Config Actions").
+/// Tracks which fields are pinned by a command-line flag so the setup
+/// pages can tell the file layer from the override layer (see
+/// `docs/services/dsd-fp2.md` "Setup Pages").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.
@@ -170,8 +170,8 @@ pub struct CliOverrides {
 }
 
 impl CliOverrides {
-    /// Dotted JSON paths currently pinned by an active override. Reported by
-    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    /// Dotted JSON paths currently pinned by an active override: shown
+    /// disabled on the setup pages and never persisted by a save.
     #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
@@ -198,7 +198,7 @@ impl CliOverrides {
 /// Load the effective config: the file at `path` if it exists, else
 /// `Config::default()`, with CLI `overrides` applied on top.
 ///
-/// This is what the running driver uses and what `config.get` reports.
+/// This is what the running driver uses and what its setup pages show.
 ///
 /// # Errors
 ///

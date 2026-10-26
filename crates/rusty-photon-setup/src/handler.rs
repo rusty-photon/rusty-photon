@@ -8,9 +8,7 @@ use std::time::Duration;
 use http::header::{CONTENT_TYPE, HOST};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use maud::{html, Markup};
-use rusty_photon_config::actions::{
-    ApplyDisposition, ConfigurableDriver, DeviceSection, FieldError,
-};
+use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError, SaveDisposition};
 use rusty_photon_config::read_file_value;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use serde_json::Value;
@@ -517,9 +515,9 @@ impl<D: ConfigurableDriver> SetupPages<D> {
             }
         };
         Self::pin(&mut shown, effective, pinned);
-        let pending = match D::apply_disposition() {
-            ApplyDisposition::Restart => changed_paths(effective, &shown),
-            ApplyDisposition::Reload => Vec::new(),
+        let pending = match D::save_disposition() {
+            SaveDisposition::Restart => changed_paths(effective, &shown),
+            SaveDisposition::Reload => Vec::new(),
         };
         (shown, pending)
     }
@@ -1178,11 +1176,11 @@ impl<D: ConfigurableDriver> SetupPages<D> {
     /// configuration, so its list of fields waiting for the restart stays
     /// cumulative across saves.
     fn baseline(&self, file_before: &Value, effective: &Value) -> Value {
-        match D::apply_disposition() {
-            ApplyDisposition::Reload => self
+        match D::save_disposition() {
+            SaveDisposition::Reload => self
                 .effective_of(file_before)
                 .unwrap_or_else(|| effective.clone()),
-            ApplyDisposition::Restart => effective.clone(),
+            SaveDisposition::Restart => effective.clone(),
         }
     }
 
@@ -1255,12 +1253,12 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         let saved = if changed.is_empty() {
             Saved::Unchanged
         } else {
-            match D::apply_disposition() {
-                ApplyDisposition::Reload => {
+            match D::save_disposition() {
+                SaveDisposition::Reload => {
                     self.fire_reload();
                     Saved::Reloading
                 }
-                ApplyDisposition::Restart => Saved::RestartRequired(changed),
+                SaveDisposition::Restart => Saved::RestartRequired(changed),
             }
         };
         self.saved_response(&saved, destination.as_ref(), unbound)
@@ -1464,7 +1462,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use rusty_photon_config::actions::FieldError;
+    use rusty_photon_config::driver::FieldError;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
@@ -1666,8 +1664,8 @@ mod tests {
         fn apply_overrides(config: &mut Config, overrides: &Overrides) {
             Fake::apply_overrides(config, overrides);
         }
-        fn apply_disposition() -> ApplyDisposition {
-            ApplyDisposition::Restart
+        fn save_disposition() -> SaveDisposition {
+            SaveDisposition::Restart
         }
         fn device_sections(config: &Config) -> Vec<DeviceSection> {
             Fake::device_sections(config)
@@ -3648,8 +3646,8 @@ mod tests {
             Vec::new()
         }
         fn apply_overrides(_config: &mut LinkedConfig, _overrides: &()) {}
-        fn apply_disposition() -> ApplyDisposition {
-            ApplyDisposition::Restart
+        fn save_disposition() -> SaveDisposition {
+            SaveDisposition::Restart
         }
     }
 

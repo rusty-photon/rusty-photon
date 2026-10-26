@@ -13,7 +13,7 @@
 //!
 //! [`docs/services/zwo-focuser.md`]: ../../../docs/services/zwo-focuser.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
@@ -59,11 +59,6 @@ mod tests {
             ZwoFocuserDriver::validate(&Config::default()),
             Vec::<FieldError>::new()
         );
-    }
-
-    #[test]
-    fn no_locked_identity_fields() {
-        assert_eq!(ZwoFocuserDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]
