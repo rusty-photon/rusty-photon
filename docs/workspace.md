@@ -720,8 +720,8 @@ carry it as data rather than lean on the discriminant — `SwitchId` keeps
 its ASCOM ids in `SwitchInfo::id` and resolves `from_id` through that
 table, which also frees the variants to be reordered.
 - **`IntoStaticStr`** yields `&'static str`; `derive_more`'s only string
-  derive allocates. The `GTi`'s `ApParkAction::name()` is `self.into()`
-  because of it.
+  derive allocates. `session-runner`'s expression operators' `sym()` is
+  `self.into()` because of it.
 - **`Display` + `EnumString`** read the *same* `#[strum(serialize = "…")]`
   attribute, so a wire string is written once and provably round-trips.
   `derive_more`'s `Display` and `FromStr` are independent: `FromStr`

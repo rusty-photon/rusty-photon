@@ -587,7 +587,7 @@ shape).
 | `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)). An East/West pulse on an RA axis that is already tracking sends `:I1` to the **running** motor, once to shift the rate and once to restore sidereal, with no `:K` / `:G` / `:J` around it. Slew: fixed period 6, INDI `minperiods` default |
 | `:J<axis>` | Start motion | every slew, every track start, every pulse started from rest |
 | `:K<axis>` | Stop motion (decelerate) | `Tracking = false`; the stop-and-wait before every `:G` (slew, park, `Tracking = true`, a pulse started from rest); the tracking-time safety guard; the end of a pulse started from rest; a pulse restore that could not change the rate |
-| `:L<axis>` | Instant stop. From goto speed the GTi decelerates exactly as it does for `:K` ([§Safety stop at startup](#safety-stop-at-startup)) | `AbortSlew`; the slew/park watchers' blocked-axis abort; the last-disconnect safety stop; a pulse restore whose `:K` did not stop the axis |
+| `:L<axis>` | Instant stop. From goto speed the GTi decelerates exactly as it does for `:K` ([§Safety stop at startup](#safety-stop-at-startup)) | `AbortSlew` and the Stop on the [recovery page](#recovery-on-the-mounts-setup-page); the slew/park watchers' blocked-axis abort; the last-disconnect safety stop; a pulse restore whose `:K` did not stop the axis |
 | `:a<axis>` | Inquire CPR | connect handshake |
 | `:b1` | Inquire TMR_Freq | connect handshake |
 | `:e<axis>` | Inquire motor-board version | connect handshake (logging only) |
@@ -677,7 +677,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `PulseGuide(direction, duration)` | rate change on the targeted axis for `duration`; returns once the new rate is on the wire, with a watcher task left to restore it. An East/West pulse on a tracking RA axis changes the step period of the running motor (`:I1`) and never stops it; every other pulse starts its axis from rest. Refuses when parked / disconnected / slewing / same-axis pulse already in flight / RA running a goto. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire paths. |
 | `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
-| `Action(name, parameters)` | Driver-specific Actions: `SetUnparkFromApPosition`, `SetPreferredApPark`, `UnparkFromApPosition`. See [§Custom Actions for runtime control](#custom-actions-for-runtime-control). All other action names return `ACTION_NOT_IMPLEMENTED`. |
+| `Action(name, parameters)` | `ACTION_NOT_IMPLEMENTED` for every name: the driver has no custom Actions. The recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
 
 #### Host-clock dependency for LST-using reads
 
@@ -1008,8 +1008,8 @@ which fails, or after the act, where its `:L` stops anything the act
 started. The lock is never held across a wait for an axis to stop, so
 an abort waits a few frames at most.
 
-`UnparkFromApPosition` holds `axis_ownership` from its slew check
-through its encoder reset and the `AtPark` clear. A slew that a
+The recovery holds `axis_ownership` from its slew check through its
+encoder reset and the `AtPark` clear. A slew that a
 concurrent `Unpark` made possible therefore cannot claim the slot
 until the encoders are written. The reset itself leaves the slew slot
 alone: emptying it would void a claim that is not the reset's to
@@ -1067,8 +1067,8 @@ The frame is **anchored** when any of:
   operations this power cycle) grounds the mapping.
 - `SyncToCoordinates` / `SyncToTarget` succeeded during this
   connection (plate-solve ground truth).
-- The `UnparkFromApPosition(ap_park_N)` recovery Action ran with a
-  named park (operator asserts the current physical pose).
+- The recovery on the mount's setup page ran with a named park
+  (`ap_park_N`: the operator asserts the current physical pose).
 
 Anchoring is re-derived on every connect — a sync-derived anchor does
 **not** survive disconnect (conservative: a new session cannot know
@@ -1077,8 +1077,8 @@ what an earlier one measured).
 #### Park-target resolution
 
 The **park-target encoder pair** is resolved per axis on every connect
-(and re-resolved by `SetPreferredApPark` and by the sync that anchors
-a previously unanchored frame), in this order of preference:
+(and re-resolved by the sync that anchors a previously unanchored
+frame), in this order of preference:
 
 1. **Raw config-file override** (per axis). The driver always resolves
    a config-file path at startup (see
@@ -1124,8 +1124,8 @@ pose.
 Re-reading the config file on every connect means a successful
 `SetPark` (or a manual operator edit between connects) takes effect on
 the next reconnect without restarting the driver. After load the
-in-memory target is fixed for the session unless `SetPark`,
-`SetPreferredApPark`, or an anchoring sync updates it (see
+in-memory target is fixed for the session unless `SetPark` or an
+anchoring sync updates it (see
 [§Park persistence](#park-persistence)).
 
 ### Park persistence
@@ -2606,14 +2606,14 @@ Notes:
   encoder seeding: the driver trusts whatever the firmware reports and
   the operator plate-solves and `SyncToCoordinates` to ground-truth;
   until that sync the frame is unanchored and `Park()` stops in place
-  instead of slewing. Runtime-modifiable via the
-  `SetUnparkFromApPosition` custom Action (persisted to the same
-  config file). See
+  instead of slewing. Edited on the mount's setup page, it applies
+  on the next fresh-power-up connect. See
   [§Unpark from AP position](#unpark-from-ap-position).
 - `preferred_ap_park` (optional) — the AP park `Park()` slews to.
   Defaults to `"ap_park_3"` (the visible-celestial-pole pose, the
-  Sky-Watcher stock power-up pose). Runtime-modifiable via the
-  `SetPreferredApPark` custom Action. The legacy
+  Sky-Watcher stock power-up pose). `ap_park_0` is refused: "current
+  position" is not a slew target. Edited on the mount's setup page, it
+  applies at the next connect, which resolves the park target. The legacy
   `park_ra_ticks` / `park_dec_ticks` keys remain as raw-encoder
   overrides for ops pinning a specific tick pair; when both are
   set, the explicit tick pair wins.
@@ -2799,26 +2799,76 @@ set to one of `ap_park_1..ap_park_5`, the operator powers up the
 mount **at** that configured pose and connects the driver before
 any slew or sync.
 
-#### Custom Actions for runtime control
+#### Recovery on the mount's setup page
 
-Three driver-specific Actions (ASCOM `Action(name, parameters)`)
-expose runtime control over the position assumption and the
-preferred-park target. All three are advertised via `SupportedActions`.
-A name is matched without regard to case, as the Alpaca specification
-requires of every `Action` name; `SupportedActions` lists the spelling
-below.
+The recovery tells the driver where the telescope physically is **now**,
+so the firmware encoder can be set to match. It is an operator command,
+not configuration, so it is never part of a page's save. It sits on a
+recovery page beside what the mount is doing and a **Stop**, because it
+runs only on a still mount. The mount's setup page links to that page
+from a **Recovery** section. It is served at the same path with
+`?recover` (`/setup/v1/telescope/0/setup?recover`), behind the same TLS
+and Basic Auth, with the same origin check on every `POST` as the
+page's save.
 
-| Action name | Parameters | Behaviour |
-|---|---|---|
-| `SetUnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Validates the park name, writes the value into the running config file (atomic-rename pattern, mirrors `SetPark` persistence — see [§Park persistence](#park-persistence)), updates the in-memory config. The new value takes effect on the *next* fresh-power-up auto-seed; the current session's encoder is not touched. Refuses (`INVALID_OPERATION`) when no config path is available — at the library layer that means `MountDevice::new`; the binary always resolves one, so this refusal no longer fires in practice. |
-| `SetPreferredApPark` | `park` (`ap_park_1..ap_park_5`) | Sets the AP-park target that `Park()` will slew to. Persisted to config alongside the same file-write pattern. `ap_park_0` is not a valid value here — "current position" is not a slew target. The legacy `park_ra_ticks` / `park_dec_ticks` config keys remain as raw-encoder overrides for ops who pinned a specific tick pair; when both forms are set, the explicit tick pair wins. |
-| `UnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Recovery operation. For `ap_park_0`, semantically equivalent to standard `Unpark()` — clears `AtPark`, no encoder change. For any named park (`ap_park_1..ap_park_5`), runs the [`ResetMountEncoders` sequence](#resetmountencoders-sequence) to safely write the park's encoder values *regardless of the current encoder state*, then clears `AtPark`. Operator is asserting "the OTA is physically at this park"; the driver makes firmware state match — this also **anchors the coordinate frame** and re-arms the park target (see [§Park lifecycle](#park-lifecycle)). |
+- `GET` shows the page and changes nothing:
+  - the mount's **motion**: not connected, slewing (a slew or park holds
+    the slew slot, its settle included), pulse guiding, tracking at the
+    sidereal rate, moving (an axis reports running though the driver has
+    no motion of its own on it: a goto coasting out after its stop, or a
+    hand controller), parked, or stopped. The driver's own motion comes
+    first; the axes are read (`:j`, `:f`) for the page.
+  - the **Stop** button, and a link that reloads the page.
+  - the recovery form: a dropdown of the six poses (`ap_park_0`..`ap_park_5`,
+    labelled as in [§The named poses](#the-named-poses)) and a box to
+    tick, *The telescope is physically at this pose.*
+- `POST` runs the command its form names, in a hidden `command` field:
+  - **`stop`** halts every motion the driver has the mount in, the same
+    halt as `AbortSlew`: it voids the slew or park in flight, turns
+    tracking off, cancels any guide pulse, and instant-stops both axes
+    (`:L1`, `:L2`). Unlike `AbortSlew` it runs on a parked mount too,
+    which stays parked. It answers once both axes report stopped (a goto
+    coasts on for up to 1.5 s), with the page again and its motion.
+  - **`recover`**, with the box ticked, on a still mount, parked or not:
+    - `ap_park_0` clears `AtPark` with no encoder change, the end state
+      of a standard `Unpark()`. The operator plate-solves and syncs before
+      any blind slew.
+    - `ap_park_1`..`ap_park_5` runs the
+      [`ResetMountEncoders` sequence](#resetmountencoders-sequence), which
+      writes the pose's encoder values *regardless of the current encoder
+      state*, then clears `AtPark`. This **anchors the coordinate frame**
+      and re-arms the park target (see [§Park lifecycle](#park-lifecycle)).
 
-Standard ASCOM `Unpark()` is unchanged — it always just clears the
-`AtPark` flag with no encoder write. The two operations
-(`Unpark()` and `UnparkFromApPosition(ap_park_0)`) are structurally
-equivalent; the custom Action exists to express the recovery flow
-for the named-park cases.
+    The check that the mount is still and the reset run under
+    `axis_ownership`, so no slew, park, tracking start or pulse of this
+    driver's can start between them. The answer says what was done and
+    links back to the mount's page.
+
+| Refusal | Answer |
+|---|---|
+| A `POST` came from another site | `403`, nothing run |
+| A `POST` names no command the page knows | `400`, nothing run |
+| The recovery's box is not ticked, or its pose is not one of the six | `422`: the form again, with the reason beside its control |
+| The mount is not connected (either command), or is not still (the recovery) | `409`: the page again, the reason in a banner, nothing run |
+| The firmware refuses a command or the transport fails during the reset, or an axis does not report stopped within the Stop's wait | `500`: the page again, the error in a banner |
+
+The pose is the operator's assertion, and the driver believes it: if the
+telescope is elsewhere, every later slew aims as if it were at the pose.
+That is why the page says so and asks for the box. Both commands are
+operator-started actions, which [tenet 3](../workspace.md#project-tenets)
+permits: the Stop is stop-class, the reset writes counters on a mount it
+found still, and no path from startup, connect, a save or a supervisory
+transition reaches either.
+
+The driver has no custom Actions: `SupportedActions` is empty, and every
+`Action` answers `ACTION_NOT_IMPLEMENTED`. The power-up pose and the park
+target are configuration, edited on the mount's page
+([§Setup pages](#setup-pages)).
+
+Standard ASCOM `Unpark()` is unchanged: it always just clears the
+`AtPark` flag, with no encoder write. `Unpark()` and the recovery from
+`ap_park_0` are structurally equivalent; the recovery exists to express
+the named-park cases.
 
 #### `ResetMountEncoders` sequence
 
@@ -2838,8 +2888,9 @@ clear driver-internal slew / target / tracking-flag state
 
 Invoked by:
 
-- `UnparkFromApPosition(ap_park_N)` for `N ≥ 1` (operator-confirmed
-  physical position).
+- The recovery on the mount's setup page, for `ap_park_N` with
+  `N ≥ 1` (operator-confirmed physical position). It runs only on a
+  mount it found still, so the stop steps are a poll each.
 - Auto-seed path on fresh-power-up connect (the stop steps are no-ops
   in that state; the encoder writes are the only meaningful work).
 
@@ -2853,9 +2904,9 @@ What to do after various crash / disconnect scenarios:
 
 | Scenario | Procedure |
 |---|---|
-| Driver crashed, mount still powered, OTA points at solvable sky | Reconnect (no power cycle) → `UnparkFromApPosition(ap_park_0)` (or standard `Unpark()`) → plate-solve current view → `SyncToCoordinates(plate_solved_coords)`. Encoder counter is intact from the session; sync writes the offset to match celestial truth. |
-| Driver crashed, mount still powered, OTA points at unsolvable sky (below horizon, clouded out) | Reconnect → `UnparkFromApPosition(ap_park_N)` where `N` is the AP park you've physically positioned the OTA at. The `ResetMountEncoders` sequence stops in-flight motion and writes the park's encoder values; subsequent slews start from a known frame. Alternatively, power-cycle the mount and let the fresh-power-up auto-seed run from the persisted `unpark_from_ap_position` config value. |
-| Mount lost power (planned shutdown or otherwise) | Before the next power-on, physically position the OTA at whatever `unpark_from_ap_position` is configured for (or update the config / call `SetUnparkFromApPosition` first). On power-on connect, the fresh-power-up auto-seed writes the encoder to that park's values. |
+| Driver crashed, mount still powered, OTA points at solvable sky | Reconnect (no power cycle) → the recovery from `ap_park_0` (or standard `Unpark()`) → plate-solve current view → `SyncToCoordinates(plate_solved_coords)`. Encoder counter is intact from the session; sync writes the offset to match celestial truth. |
+| Driver crashed, mount still powered, OTA points at unsolvable sky (below horizon, clouded out) | Restart the driver and reconnect → on the mount's recovery page, check that the motion reads stopped (the [safety stop at startup](#safety-stop-at-startup) halts what the crash left running) and press **Stop** if it does not → the recovery from `ap_park_N`, where `N` is the AP park you've physically positioned the OTA at. No `Park()` is needed first, and none should be: a `Park()` of an anchored frame slews. The `ResetMountEncoders` sequence writes the park's encoder values; subsequent slews start from a known frame. Alternatively, power-cycle the mount and let the fresh-power-up auto-seed run from the persisted `unpark_from_ap_position` config value. |
+| Mount lost power (planned shutdown or otherwise) | Before the next power-on, physically position the OTA at whatever `unpark_from_ap_position` is configured for (or set it on the mount's setup page first). On power-on connect, the fresh-power-up auto-seed writes the encoder to that park's values. |
 
 The only genuinely dangerous pattern is "crash + power-cycle without
 re-parking AND with a non-`ap_park_0` `unpark_from_ap_position`
@@ -2901,7 +2952,7 @@ API defines, served by the driver itself behind its own TLS and Basic Auth
 | Path | Holds |
 |------|-------|
 | `/setup` | The server page: the `transport` section — a selector between `usb` and `udp` with the chosen kind's fields shown, the other kind's starting from their defaults, so a switch is the selector plus the fields that kind requires (a UDP address and bind address) — the `server` section (port, bind address, discovery port; `tls` is file-only), the **Security** section (username, password, repeat → `server.auth`), and the device list linking to the mount's page. |
-| `/setup/v1/telescope/0/setup` | The mount's page: the `mount` section alone — name, description, `enabled`, the site, the settle, the safety envelope's scalars (`tracking_guard_margin_hours`, `min_altitude_degrees`, `ra_pulse_edge_steps`, `auto_flip`), `tracking_rate` as a dropdown of the one rate the mount drives (`sidereal`), and `unique_id` under a collapsed Identity disclosure. `cw_exclusion_zone` is named as file-only (a nullable object the generic form cannot render), and so are the fields the mount writes at runtime — `park_ra_ticks` / `park_dec_ticks`, which `SetPark` captures, and `unpark_from_ap_position` / `preferred_ap_park`, which their actions set (`file_only_pointers` in `setup.rs`): a page opened before such a write must not carry the old value back on its next save. A save leaves every file-only field as the file has it. |
+| `/setup/v1/telescope/0/setup` | The mount's page: the `mount` section alone — name, description, `enabled`, the site, the settle, the safety envelope's scalars (`tracking_guard_margin_hours`, `min_altitude_degrees`, `ra_pulse_edge_steps`, `auto_flip`), `tracking_rate` as a dropdown of the one rate the mount drives (`sidereal`), `unpark_from_ap_position` and `preferred_ap_park` as dropdowns of the named poses (the park target offers `ap_park_1`..`ap_park_5`: "current position" is not a slew target), and `unique_id` under a collapsed Identity disclosure. `cw_exclusion_zone` is named as file-only (a nullable object the generic form cannot render), and so is the park position the mount writes at runtime, `park_ra_ticks` / `park_dec_ticks`, which `SetPark` captures (`file_only_pointers` in `setup.rs`): a page opened before such a write must not carry the old value back on its next save. A save leaves every file-only field as the file has it. A **Recovery** section links to the [recovery page](#recovery-on-the-mounts-setup-page) (the mount's motion, a Stop, and the recovery), served at the same path with `?recover`. |
 
 Both answer `GET` with the form and `POST` with the save. The pages are
 rendered and saved by the shared
@@ -2915,8 +2966,8 @@ page edits (`device_sections` in `setup.rs`), its one secret
 other page's section. The pages work whether or not the mount is
 `Connected`.
 
-`SupportedActions` lists the three `ApPark` actions alone, and every other
-`Action` answers `ACTION_NOT_IMPLEMENTED`.
+`SupportedActions` is empty, and every `Action` answers
+`ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules
 
@@ -3012,12 +3063,12 @@ src/
                            re-exports of the park-persistence helpers
   mount_device/
     device.rs            — `impl Device for MountDevice` (connect /
-                           description / driver info, plus
-                           `SupportedActions` + `Action` dispatch)
-    actions.rs           — the three driver-specific ASCOM `Action`
-                           handlers (`SetUnparkFromApPosition`,
-                           `SetPreferredApPark`, `UnparkFromApPosition`)
-                           that `device.rs`'s `action` dispatches to
+                           description / driver info, the mount's setup
+                           page, `?recover` included)
+    recovery.rs          — the recovery page: the mount's motion, the
+                           Stop, the encoder reset to an
+                           operator-confirmed pose, and the `?recover`
+                           view on the mount's setup page that runs them
     telescope.rs         — `impl Telescope for MountDevice` (the ASCOM
                            surface: capability flags, coordinate reads,
                            slew / sync / park / side-of-pier / pulse-guide)
@@ -4022,8 +4073,8 @@ What's still outstanding from Phase 4:
 - Connect / disconnect lifecycle, ref-counted transport
 - Init handshake: `:F`, `:a`, `:b`, `:g`, `:e`, `:j`
 - ASCOM device metadata (`Description`, `DriverInfo`, `DriverVersion`,
-  `InterfaceVersion`, `Name`, `SupportedActions` lists the three
-  driver-specific Actions — see [§Unpark from AP position](#unpark-from-ap-position))
+  `InterfaceVersion`, `Name`; `SupportedActions` is empty — the recovery
+  is on the mount's setup page, see [§Unpark from AP position](#unpark-from-ap-position))
 - Site lat/lon/elevation from config (read-only via ASCOM)
 - `RightAscension` / `Declination` reads (encoder + LST + sync offset)
 - `Azimuth` / `Altitude` reads (derived from RA/Dec)

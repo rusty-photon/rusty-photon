@@ -13,10 +13,9 @@ use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
 use skywatcher_motor_protocol::Axis;
-use strum::VariantArray;
 use tracing::debug;
 
-use super::actions::ApParkAction;
+use super::recovery::is_recovery;
 use super::MountDevice;
 use crate::setup::DEVICE_TYPE;
 
@@ -159,48 +158,34 @@ impl Device for MountDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// The driver-specific vendor Actions, and nothing else: the
-    /// configuration moved to the setup pages. See [`super::actions`] and
-    /// the design doc's
-    /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
+    /// None: the driver has no custom Actions. The power-up pose and the
+    /// park target are configuration, and the recovery is a command on the
+    /// mount's setup page ([`super::recovery`]).
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(ApParkAction::VARIANTS
-            .iter()
-            .map(|action| action.name().to_string())
-            .collect())
+        Ok(Vec::new())
     }
 
-    /// Dispatch a vendor `Action`. Each handler takes the single
-    /// `parameters` string as an `ap_park_0..ap_park_5` token. An
-    /// unrecognised name returns `ACTION_NOT_IMPLEMENTED` per the ASCOM
-    /// `Action` contract, not the generic `NotImplemented` the crate
-    /// defaults to.
-    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        match ApParkAction::from_name(&action) {
-            Some(ApParkAction::SetUnparkFromApPosition) => {
-                self.handle_set_unpark_from_ap_position(&parameters).await
-            }
-            Some(ApParkAction::SetPreferredApPark) => {
-                self.handle_set_preferred_ap_park(&parameters).await
-            }
-            Some(ApParkAction::UnparkFromApPosition) => {
-                self.handle_unpark_from_ap_position(&parameters).await
-            }
-            None => Err(ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                format!("this device has no action {action:?}"),
-            )),
-        }
+    /// `ACTION_NOT_IMPLEMENTED` for every name, per the ASCOM `Action`
+    /// contract, not the generic `NotImplemented` the crate defaults to.
+    async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        Err(ASCOMError::new(
+            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+            format!("this device has no action {action:?}"),
+        ))
     }
 
     /// The mount's setup page, `/setup/v1/telescope/0/setup`, for `GET`
-    /// and `POST`, through the shared handler. A device built without the
-    /// pages (a focused unit test) has none.
+    /// and `POST`, through the shared handler; with `?recover`, the
+    /// recovery page, its Stop and its recovery ([`super::recovery`]). A
+    /// device built without the pages (a focused unit test) has neither.
     fn setup_request(
         &self,
         request: SetupRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = SetupResponse> + Send + '_>> {
         match &self.pages {
+            Some(pages) if is_recovery(&request.query) => {
+                Box::pin(async move { self.recovery_request(pages, request).await })
+            }
             Some(pages) => {
                 rusty_photon_driver::device_setup_request(pages, DEVICE_TYPE, 0, request)
             }

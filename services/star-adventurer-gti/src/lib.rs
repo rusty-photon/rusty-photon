@@ -273,7 +273,8 @@ impl ServerBuilder {
                     self.overrides.clone(),
                 )
                 .with_reload(reload)
-                .with_https(self.config.server.tls.is_some()),
+                .with_https(self.config.server.tls.is_some())
+                .with_driver_pages(Arc::new(mount_device::RecoveryPages)),
             )),
             _ => None,
         }

@@ -150,10 +150,9 @@ pub(super) struct MountConnectFields {
 /// Read the four connect-time `mount.*` fields (`park_ra_ticks`,
 /// `park_dec_ticks`, `unpark_from_ap_position`, `preferred_ap_park`)
 /// from the on-disk config in one read + parse, so `set_connected`'s
-/// seed + park-target hooks don't each re-read the file. A
-/// `SetUnparkFromApPosition` / `SetPreferredApPark` / `SetPark` write —
-/// or an operator hand-edit between connects — therefore takes effect on
-/// the next connect without a driver restart.
+/// seed + park-target hooks don't each re-read the file. A `SetPark`
+/// write, a setup-page save or an operator hand-edit between connects
+/// therefore takes effect on the next connect without a driver restart.
 ///
 /// Per-field decoding matches the single-field helpers: tick keys go
 /// through [`extract_park_tick`] (loud on a non-integer, or an integer
@@ -253,8 +252,7 @@ pub(super) fn write_park_to_config(
 
 /// Patch the on-disk JSON config, setting each `mount.<key>` in
 /// `updates` to its paired value. The read-modify-write engine behind
-/// [`write_park_to_config`] and the `SetUnparkFromApPosition` /
-/// `SetPreferredApPark` Actions.
+/// [`write_park_to_config`].
 ///
 /// Read-as-`Value` + atomic-rename pattern: load the file as
 /// `serde_json::Value`, mutate **only** the listed `mount` keys,

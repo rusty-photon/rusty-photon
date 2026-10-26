@@ -411,6 +411,20 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         self
     }
 
+    /// The handler's generation, which every page it draws carries: a page a
+    /// driver draws beside the pages carries it too, so a page from the
+    /// rebuilt server is told apart the same way.
+    #[must_use]
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+
+    /// The service the pages are for, as their shell names it.
+    #[must_use]
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
     /// Answer a request for one of the pages.
     pub async fn handle(&self, scope: PageScope<'_>, request: PageRequest) -> PageResponse {
         let effective = match serde_json::to_value(&self.effective) {
@@ -2186,6 +2200,12 @@ mod tests {
         let b = generation(&second.handle(PageScope::Server, get()).await.body);
         assert_eq!(a, a_device, "one handler, one generation on both pages");
         assert_ne!(a, b, "a rebuilt handler carries a new generation");
+        assert_eq!(
+            first.generation(),
+            a,
+            "a driver's own page can carry it too"
+        );
+        assert_eq!(first.service(), "fake");
         let saved = first
             .handle(
                 PageScope::Server,

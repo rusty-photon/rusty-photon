@@ -8,11 +8,11 @@
 //!
 //! ## Submodule layout
 //!
-//! - [`actions`] — the three driver-specific ASCOM `Action` handlers
-//!   (`SetUnparkFromApPosition`, `SetPreferredApPark`,
-//!   `UnparkFromApPosition`) dispatched from `device`'s `action`.
+//! - [`recovery`] — the recovery page on the mount's setup page: the
+//!   mount's motion, the Stop, the encoder reset to an
+//!   operator-confirmed pose, and the `?recover` view that runs them.
 //! - [`device`] — `impl Device for MountDevice` (connect/description,
-//!   `SupportedActions` + `Action` dispatch, the mount's setup page).
+//!   the mount's setup page, `?recover` included).
 //! - [`telescope`] — `impl Telescope for MountDevice` (the ASCOM
 //!   surface: coordinate reads, slew/sync/park, side-of-pier,
 //!   pulse-guide).
@@ -48,11 +48,11 @@ use crate::config::{ApPark, MountConfig};
 use crate::manager::MountManager;
 use crate::setup::StarAdvDriver;
 
-mod actions;
 mod device;
 mod inherent;
 mod park_persistence;
 mod pulse;
+mod recovery;
 mod slew;
 mod telescope;
 mod tracking_guard;
@@ -66,6 +66,7 @@ mod tests;
 pub use park_persistence::{
     canonicalise_config_path, probe_park_file_writability, warn_if_park_path_unwritable,
 };
+pub(crate) use recovery::RecoveryPages;
 
 /// Default guide rate as a fraction of sidereal. ASCOM clients see
 /// this multiplied by `SIDEREAL_DEG_PER_SEC` through
@@ -88,15 +89,15 @@ struct DriverState {
     /// `preferred_ap_park` pose ticks when the frame is anchored.
     /// `None` means the axis has **no park target** — `Park()` stops
     /// that axis in place instead of slewing (unanchored frame, no raw
-    /// override). Re-armed by the sync that anchors the frame and by
-    /// `SetPreferredApPark`. See the design doc's §Park lifecycle.
+    /// override). Re-armed by the sync that anchors the frame and by the
+    /// recovery from a named park. See the design doc's §Park lifecycle.
     park_ra_ticks: Option<i32>,
     park_dec_ticks: Option<i32>,
     /// Whether the encoder→pose mapping has operator-asserted or
     /// measured ground truth. `true` from connect when
     /// `unpark_from_ap_position` is a named park (`ap_park_1..5`);
     /// flips `true` on a successful `SyncToCoordinates` /
-    /// `SyncToTarget` or a named-park `UnparkFromApPosition`. While
+    /// `SyncToTarget` or the recovery from a named park. While
     /// `false`, `Park()` must not slew to an absolute AP-pose target —
     /// that would command real motion to a fabricated position
     /// (workspace tenet: no actuation on connect). Reset on disconnect

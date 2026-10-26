@@ -2659,31 +2659,6 @@ async fn rearm_while_disconnected_keeps_targets_unarmed() {
 }
 
 #[tokio::test]
-async fn set_preferred_ap_park_rearms_using_a_sync_derived_anchor() {
-    // A sync-derived anchor must survive the SetPreferredApPark live
-    // re-resolve: the reload recomputes anchoring as config-named-pose
-    // OR the existing in-memory anchor, and the on-disk `ap_park_0`
-    // here exercises the OR's in-memory side.
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    let d = device_with_path(path.clone());
-    d.set_connected(true).await.unwrap();
-    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
-    let ret = d
-        .action("SetPreferredApPark".to_string(), "ap_park_2".to_string())
-        .await
-        .unwrap();
-    assert_eq!(ret, "ap_park_2");
-    // Re-resolve kept the sync anchor and re-armed to the new pose:
-    // ap_park_2 at latitude 0 → ra = -907,200, dec_enc = 0.
-    let s = d.state.read().await;
-    assert!(s.frame_anchored);
-    assert_eq!(s.park_ra_ticks, Some(-907_200));
-    assert_eq!(s.park_dec_ticks, Some(0));
-}
-
-#[tokio::test]
 async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     // Sky-Watcher firmware does not always read exactly (0, 0) after a
     // power-cycle: the validation GTi reports dec = -1 on fresh
@@ -2850,13 +2825,13 @@ async fn reset_mount_encoders_leaves_the_slew_slot_alone() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unpark_from_ap_position_holds_off_a_slew_until_its_encoders_are_written() {
+async fn the_recovery_holds_off_a_slew_until_its_encoders_are_written() {
     // A second client unparks and slews while the reset is stopping the
     // axes: the slew may only start once the encoders are written.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
     d.state.write().await.at_park = true;
     let from = mock.lock().await.command_log.len();
-    let reset = d.action("UnparkFromApPosition".into(), "ap_park_3".into());
+    let reset = d.recover_from(crate::config::ApPark::ApPark3);
     let unpark_and_slew = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
         d.unpark().await.unwrap();
@@ -2886,7 +2861,7 @@ async fn unpark_from_ap_position_holds_off_a_slew_until_its_encoders_are_written
 
 #[tokio::test(start_paused = true)]
 async fn reset_mount_encoders_dates_the_positions_it_wrote_when_its_writes_went_out() {
-    // The connect-time / UnparkFromApPosition seed follows the same
+    // The connect-time / recovery seed follows the same
     // convention as a sync's (issue #1371).
     let (d, mock) = capturing_connected_device().await;
     let _paused = d.manager.pause_background_polling();
@@ -2927,139 +2902,32 @@ async fn reset_mount_encoders_errors_when_axis_never_stops() {
     );
 }
 
-// ---- Custom Actions (Phase D) ----
+// ---- The recovery, and no custom Actions ----
 
 #[tokio::test]
-async fn supported_actions_lists_the_three_vendor_actions() {
+async fn the_device_offers_no_actions_and_answers_any_as_not_implemented() {
     let d = device();
-    let actions = d.supported_actions().await.unwrap();
-    assert_eq!(
-        actions,
-        vec![
-            "SetUnparkFromApPosition".to_string(),
-            "SetPreferredApPark".to_string(),
-            "UnparkFromApPosition".to_string(),
-        ]
-    );
+    assert_eq!(d.supported_actions().await.unwrap(), Vec::<String>::new());
+    for name in [
+        "NoSuchAction",
+        "UnparkFromApPosition",
+        "SetPreferredApPark",
+        "config.get",
+    ] {
+        let err = d.action(name.to_string(), String::new()).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED, "{name}");
+    }
 }
 
 #[tokio::test]
-async fn action_with_unknown_name_returns_action_not_implemented() {
-    let d = device();
-    let err = d
-        .action("NoSuchAction".to_string(), String::new())
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
-}
-
-#[tokio::test]
-async fn set_unpark_from_ap_position_persists_to_config() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    let d = device_with_path(path.clone());
-    d.set_connected(true).await.unwrap();
-    let ret = d
-        .action(
-            "SetUnparkFromApPosition".to_string(),
-            "ap_park_2".to_string(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(ret, "ap_park_2");
-    let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(
-        back.mount.unpark_from_ap_position,
-        crate::config::ApPark::ApPark2
-    );
-}
-
-#[tokio::test]
-async fn set_unpark_from_ap_position_without_config_is_refused() {
-    // No `--config` path → nowhere to persist; the Action refuses.
-    let d = device();
-    let err = d
-        .action(
-            "SetUnparkFromApPosition".to_string(),
-            "ap_park_2".to_string(),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-}
-
-#[tokio::test]
-async fn set_unpark_from_ap_position_rejects_unknown_park() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    let d = device_with_path(path);
-    let err = d
-        .action(
-            "SetUnparkFromApPosition".to_string(),
-            "ap_park_9".to_string(),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-}
-
-#[tokio::test]
-async fn set_preferred_ap_park_rejects_ap_park_0() {
-    // "Current position" is not a slew target.
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    let d = device_with_path(path);
-    let err = d
-        .action("SetPreferredApPark".to_string(), "ap_park_0".to_string())
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-}
-
-#[tokio::test]
-async fn set_preferred_ap_park_persists_and_updates_live_target() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    // Anchor the frame via a named on-disk unpark pose — the live
-    // re-resolve only arms an AP-pose target on an anchored frame
-    // (unanchored frames keep no target and park in place).
-    let mut on_disk: Config =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    on_disk.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
-    std::fs::write(&path, serde_json::to_string_pretty(&on_disk).unwrap()).unwrap();
-    let d = device_with_path(path.clone());
-    d.set_connected(true).await.unwrap();
-    let ret = d
-        .action("SetPreferredApPark".to_string(), "ap_park_2".to_string())
-        .await
-        .unwrap();
-    assert_eq!(ret, "ap_park_2");
-    // Persisted to disk.
-    let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(back.mount.preferred_ap_park, crate::config::ApPark::ApPark2);
-    // Live park target re-resolved without a reconnect. device_with_path
-    // runs at latitude 0; ap_park_2 → mech_HA = -6h (ra = -907,200),
-    // dec_enc = 0° (dec = 0).
-    let s = d.state.read().await;
-    assert_eq!(s.park_ra_ticks, Some(-907_200));
-    assert_eq!(s.park_dec_ticks, Some(0));
-}
-
-#[tokio::test]
-async fn unpark_from_ap_position_ap_park_0_clears_at_park_without_encoder_change() {
+async fn the_recovery_from_ap_park_0_clears_at_park_without_encoder_change() {
     let d = connected_device().await;
     // Set the parked flag directly — this test exercises the unpark path.
     d.state.write().await.at_park = true;
     let before = d.manager.snapshot().await;
-    let ret = d
-        .action("UnparkFromApPosition".to_string(), "ap_park_0".to_string())
+    d.recover_from(crate::config::ApPark::ApPark0)
         .await
         .unwrap();
-    assert_eq!(ret, "ap_park_0");
     assert!(!d.at_park().await.unwrap());
     // "Current position" leaves the encoder untouched (≡ standard Unpark).
     let after = d.manager.snapshot().await;
@@ -3068,7 +2936,7 @@ async fn unpark_from_ap_position_ap_park_0_clears_at_park_without_encoder_change
 }
 
 #[tokio::test]
-async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() {
+async fn the_recovery_from_a_named_park_resets_the_encoder_and_clears_at_park() {
     // The operator asserts the OTA is physically at ap_park_3; the
     // driver makes the firmware encoder match regardless of the stale
     // current reading, then clears AtPark.
@@ -3087,11 +2955,9 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d.state.write().await.at_park = true;
-    let ret = d
-        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+    d.recover_from(crate::config::ApPark::ApPark3)
         .await
         .unwrap();
-    assert_eq!(ret, "ap_park_3");
     // ap_park_3 at lat 32.7157: ra = -907,200, dec = +725,760.
     let snap = d.manager.snapshot().await;
     assert_eq!(snap.ra.position_ticks, -907_200);
@@ -3100,60 +2966,192 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
 }
 
 #[tokio::test]
-async fn unpark_from_ap_position_refuses_when_not_parked() {
-    let d = connected_device().await;
-    // at_park is false (default).
-    let err = d
-        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+async fn the_recovery_runs_on_a_still_mount_that_is_not_parked() {
+    let (d, mock) = capturing_connected_device().await;
+    let from = mock.lock().await.command_log.len();
+    d.recover_from(crate::config::ApPark::ApPark3)
         .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        .unwrap();
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    assert!(
+        frames.iter().any(|f| f.starts_with(":E1")) && frames.iter().any(|f| f.starts_with(":E2")),
+        "the recovery wrote no encoders: {frames:?}"
+    );
+    assert!(d.state.read().await.frame_anchored);
+    assert!(!d.at_park().await.unwrap());
 }
 
 #[tokio::test]
-async fn unpark_from_ap_position_refuses_when_disconnected() {
+async fn the_recovery_refuses_while_tracking_and_leaves_it_tracking() {
+    let (d, mock) = capturing_connected_device().await;
+    d.set_tracking(true).await.unwrap();
+    let from = mock.lock().await.command_log.len();
+    let err = d
+        .recover_from(crate::config::ApPark::ApPark3)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(err.message, "the mount is tracking; stop it first");
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
+    );
+    assert!(d.tracking().await.unwrap());
+}
+
+#[tokio::test]
+async fn the_recovery_refuses_while_a_guide_pulse_is_in_flight() {
+    let d = connected_device().await;
+    d.state
+        .write()
+        .await
+        .pulse_guiding
+        .set(Axis::Dec, Some(PulseId(0)));
+    let err = d
+        .recover_from(crate::config::ApPark::ApPark3)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(err.message, "the mount is pulse guiding; stop it first");
+}
+
+#[tokio::test]
+async fn the_recovery_refuses_while_an_axis_reports_running() {
+    // Nothing of this driver's moves the mount, but the firmware says Dec
+    // runs: a hand controller, or a goto coasting out after its stop.
+    let (d, mock) = capturing_connected_device().await;
+    {
+        let mut st = mock.lock().await;
+        st.dec.running = true;
+        st.dec.mode = skywatcher_motor_protocol::ModeKind::Tracking;
+    }
+    let from = mock.lock().await.command_log.len();
+    let err = d
+        .recover_from(crate::config::ApPark::ApPark3)
+        .await
+        .unwrap_err();
+    assert_eq!(err.message, "the mount is moving; stop it first");
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test]
+async fn the_recovery_refuses_when_disconnected() {
     let d = device();
     let err = d
-        .action("UnparkFromApPosition".to_string(), "ap_park_0".to_string())
+        .recover_from(crate::config::ApPark::ApPark0)
         .await
         .unwrap_err();
     assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
 }
 
 #[tokio::test]
-async fn unpark_from_ap_position_refuses_while_slewing() {
+async fn the_recovery_refuses_while_slewing() {
     let d = connected_device().await;
     d.state.write().await.at_park = true;
     d.slew_in_progress.try_claim().unwrap();
     let err = d
-        .action("UnparkFromApPosition".to_string(), "ap_park_3".to_string())
+        .recover_from(crate::config::ApPark::ApPark3)
         .await
         .unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(err.message, "the mount is slewing; stop it first");
+}
+
+#[test]
+fn the_motion_puts_the_drivers_own_motion_before_the_axes() {
+    use super::recovery::Motion;
+    use skywatcher_motor_protocol::ModeKind;
+    let running = crate::manager::MountSnapshot {
+        ra: axis_reading(Some((true, ModeKind::Tracking))),
+        ..Default::default()
+    };
+    let still = crate::manager::MountSnapshot::default();
+    let parked = DriverState {
+        at_park: true,
+        ..DriverState::default()
+    };
+    let tracking = DriverState {
+        tracking_requested: true,
+        ..DriverState::default()
+    };
+    let mut guiding = DriverState {
+        tracking_requested: true,
+        ..DriverState::default()
+    };
+    guiding.pulse_guiding.set(Axis::Ra, Some(PulseId(0)));
+    // A slew's settle holds still axes, and is still a slew.
+    assert_eq!(Motion::of(true, &parked, &still), Motion::Slewing);
+    assert_eq!(Motion::of(false, &guiding, &running), Motion::PulseGuiding);
+    assert_eq!(Motion::of(false, &tracking, &running), Motion::Tracking);
+    assert_eq!(Motion::of(false, &parked, &running), Motion::Moving);
+    assert_eq!(Motion::of(false, &parked, &still), Motion::Parked);
+    assert_eq!(
+        Motion::of(false, &DriverState::default(), &still),
+        Motion::Stopped
+    );
+    assert!(Motion::Parked.is_still() && Motion::Stopped.is_still());
+    assert!(!Motion::Moving.is_still() && !Motion::Tracking.is_still());
 }
 
 #[tokio::test]
-async fn set_unpark_from_ap_position_round_trips_every_named_park() {
-    // Exercises parse + canonical-string round-trip for the AP parks
-    // the focused action tests don't otherwise touch (ap_park_1/4/5).
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("config.json");
-    seed_default_config(&path);
-    let d = device_with_path(path.clone());
-    d.set_connected(true).await.unwrap();
-    for (token, expected) in [
-        ("ap_park_1", crate::config::ApPark::ApPark1),
-        ("ap_park_4", crate::config::ApPark::ApPark4),
-        ("ap_park_5", crate::config::ApPark::ApPark5),
-    ] {
-        let ret = d
-            .action("SetUnparkFromApPosition".to_string(), token.to_string())
-            .await
-            .unwrap();
-        assert_eq!(ret, token);
-        let back: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(back.mount.unpark_from_ap_position, expected);
-    }
+async fn the_page_stop_halts_tracking_and_returns_with_both_axes_stopped() {
+    let (d, mock) = capturing_connected_device().await;
+    d.set_tracking(true).await.unwrap();
+    let from = mock.lock().await.command_log.len();
+    d.stop_from_page().await.unwrap();
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    assert_eq!(frames, vec![":L1".to_string(), ":L2".to_string()]);
+    assert!(!d.tracking().await.unwrap());
+    let st = mock.lock().await;
+    assert!(!st.ra.running && !st.dec.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_page_stop_returns_once_a_coasting_goto_has_come_to_rest() {
+    // A goto coasts on for up to 1.5 s after its `:L`: the Stop answers
+    // once the axis reads stopped, so the recovery that follows finds the
+    // mount still.
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    d.stop_from_page().await.unwrap();
+    assert!(
+        !mock.lock().await.dec.running,
+        "the Stop answered mid-coast"
+    );
+    d.recover_from(crate::config::ApPark::ApPark0)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_page_stop_voids_a_slew_in_flight() {
+    let d = connected_device().await;
+    d.slew_in_progress.try_claim().unwrap();
+    d.stop_from_page().await.unwrap();
+    assert!(!d.slew_in_progress.is_held());
+}
+
+#[tokio::test]
+async fn the_page_stop_leaves_a_parked_mount_parked() {
+    let d = connected_device().await;
+    d.state.write().await.at_park = true;
+    d.stop_from_page().await.unwrap();
+    assert!(d.at_park().await.unwrap());
+}
+
+#[tokio::test]
+async fn the_page_stop_refuses_when_disconnected() {
+    let d = device();
+    let err = d.stop_from_page().await.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
 }
 
 #[tokio::test]
@@ -7619,26 +7617,12 @@ fn get_request() -> ascom_alpaca::SetupRequest {
 }
 
 #[tokio::test]
-async fn the_config_actions_are_gone_and_the_ap_park_actions_stay() {
-    let d = device();
-    assert_eq!(
-        d.supported_actions().await.unwrap(),
-        vec![
-            "SetUnparkFromApPosition",
-            "SetPreferredApPark",
-            "UnparkFromApPosition",
-        ]
-    );
-    let err = d
-        .action("config.get".to_string(), String::new())
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED);
-}
-
-#[tokio::test]
-async fn a_device_without_pages_has_no_setup_page() {
+async fn a_device_without_pages_has_no_setup_page_and_no_recovery() {
     let d = device();
     let response = d.setup_request(get_request()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    let mut recovery = get_request();
+    recovery.query = vec![("recover".to_string(), String::new())];
+    let response = d.setup_request(recovery).await;
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }

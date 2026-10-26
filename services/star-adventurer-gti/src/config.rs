@@ -289,9 +289,9 @@ pub struct MountConfig {
     /// `Park()` stops in place instead of slewing (see the design doc's
     /// [§Park lifecycle](../../../docs/services/star-adventurer-gti.md#park-lifecycle)).
     ///
-    /// The runtime `SetUnparkFromApPosition` Action persists a new value
-    /// here (applied on the next fresh-power-up). See [`ApPark`] for the
-    /// supported positions, the design doc's
+    /// Edited on the mount's setup page; a saved value applies on the next
+    /// fresh-power-up connect. See [`ApPark`] for the supported positions,
+    /// the design doc's
     /// [§Unpark from AP position](../../../docs/services/star-adventurer-gti.md#unpark-from-ap-position),
     /// and the wiring in `MountDevice::seed_after_connect`.
     #[serde(default = "default_unpark_from_ap_position")]
@@ -302,15 +302,17 @@ pub struct MountConfig {
     /// (Sky-Watcher's stock power-up pose along the polar axis).
     ///
     /// `ap_park_0` is rejected at deserialize time — "current position"
-    /// is not a slew target. The runtime `SetPreferredApPark` Action
-    /// persists a new value here. When both this and an explicit
-    /// `park_ra_ticks` / `park_dec_ticks` pair are set, the raw tick
-    /// pair wins (per-axis). See the design doc's
-    /// [§Custom Actions for runtime control](../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
+    /// is not a slew target, and the mount's setup page does not offer
+    /// it. Edited on that page; a saved value applies at the next
+    /// connect, which resolves the park target. When both this and an
+    /// explicit `park_ra_ticks` / `park_dec_ticks` pair are set, the raw
+    /// tick pair wins (per-axis). See the design doc's
+    /// [§Park-target resolution](../../../docs/services/star-adventurer-gti.md#park-target-resolution).
     #[serde(
         default = "default_preferred_ap_park",
         deserialize_with = "deserialize_preferred_ap_park"
     )]
+    #[schemars(schema_with = "preferred_ap_park_schema")]
     pub preferred_ap_park: ApPark,
 }
 
@@ -852,10 +854,10 @@ impl Default for MinAltitudeDegrees {
 /// for Park 4 (target on the meridian, anti-pole side) and at
 /// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
 /// horizon), and the Dec encoder is past the celestial pole.
-// Custom Serialize/Deserialize map to `preferred` / `ap_park_0..5` strings; the
-// derived JsonSchema is advisory (the schema only shapes the UI form — the
-// custom Deserialize is the gate). Rendered read-only in the UI regardless.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+// Custom Serialize/Deserialize map to the `ap_park_0..5` strings, and the
+// hand-written JsonSchema names the same strings, so the mount's setup page
+// offers and submits what the Deserialize takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApPark {
     /// "Current position" — the ship default. No encoder seeding — the
     /// driver trusts the firmware encoder as-is on connect. The
@@ -932,10 +934,20 @@ pub enum ApPark {
 }
 
 impl ApPark {
+    /// Every pose, in `ap_park_0..ap_park_5` order.
+    pub const ALL: [Self; 6] = [
+        Self::ApPark0,
+        Self::ApPark1,
+        Self::ApPark2,
+        Self::ApPark3,
+        Self::ApPark4,
+        Self::ApPark5,
+    ];
+
     /// The canonical `ap_park_N` token for this variant — the single
     /// source of truth for the string form used in config JSON
-    /// (`Serialize`/`Deserialize` delegate here), ASCOM `Action`
-    /// parameters, and `Action` return values.
+    /// (`Serialize`/`Deserialize` delegate here) and on the mount's setup
+    /// page.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -947,6 +959,57 @@ impl ApPark {
             Self::ApPark5 => "ap_park_5",
         }
     }
+}
+
+impl ApPark {
+    /// The pose in a few words, as the mount's setup page names it in its
+    /// dropdowns (the design doc's §The named poses).
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::ApPark0 => "ap_park_0: current position (no seed; plate-solve and sync)",
+            Self::ApPark1 => "ap_park_1: OTA west, level, facing the polar-side horizon",
+            Self::ApPark2 => "ap_park_2: OTA level facing east, counterweight down",
+            Self::ApPark3 => "ap_park_3: OTA at the pole, counterweight down (Sky-Watcher's home)",
+            Self::ApPark4 => "ap_park_4: OTA east, level, facing the anti-polar horizon",
+            Self::ApPark5 => "ap_park_5: OTA east, level, facing the polar-side horizon",
+        }
+    }
+}
+
+/// Manual because the custom serde maps the variants to `ap_park_N`
+/// strings, which the derive cannot follow: one fixed-string branch per
+/// pose, titled, which the setup page draws as a dropdown.
+impl schemars::JsonSchema for ApPark {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ApPark")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        ap_park_schema(&Self::ALL)
+    }
+}
+
+/// A schema whose values are `poses`, each a fixed string titled by its
+/// pose.
+fn ap_park_schema(poses: &[ApPark]) -> schemars::Schema {
+    let branches: Vec<serde_json::Value> = poses
+        .iter()
+        .map(|pose| {
+            serde_json::json!({
+                "type": "string",
+                "const": pose.as_str(),
+                "title": pose.title(),
+            })
+        })
+        .collect();
+    schemars::json_schema!({ "oneOf": branches })
+}
+
+/// The park target's schema: every pose but `ap_park_0`, which
+/// [`deserialize_preferred_ap_park`] refuses.
+fn preferred_ap_park_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    ap_park_schema(&ApPark::ALL[1..])
 }
 
 impl std::fmt::Display for ApPark {
@@ -1802,10 +1865,51 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_offers_each_pose_by_its_token_and_the_park_target_none_without_a_target() {
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        let consts = |node: &serde_json::Value| -> Vec<String> {
+            node["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|branch| branch["const"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let poses = &schema["$defs"]["ApPark"];
+        assert_eq!(
+            consts(poses),
+            [
+                "ap_park_0",
+                "ap_park_1",
+                "ap_park_2",
+                "ap_park_3",
+                "ap_park_4",
+                "ap_park_5"
+            ]
+        );
+        assert_eq!(poses["oneOf"][3]["title"], ApPark::ApPark3.title());
+        let mount = &schema["$defs"]["MountConfig"]["properties"];
+        assert_eq!(mount["unpark_from_ap_position"]["$ref"], "#/$defs/ApPark");
+        let target = &mount["preferred_ap_park"];
+        assert_eq!(
+            consts(target),
+            [
+                "ap_park_1",
+                "ap_park_2",
+                "ap_park_3",
+                "ap_park_4",
+                "ap_park_5"
+            ],
+            "ap_park_0 is no slew target"
+        );
+        assert_eq!(target["default"], "ap_park_3");
+    }
+
+    #[test]
     fn ap_park_tokens_keep_their_trailing_underscore() {
         // The six tokens are a deployed-config wire contract: every rig's
-        // config JSON, the `Action` parameters and the `Action` return
-        // values all use these exact strings, and the value feeds the
+        // config JSON and the mount's setup page use these exact strings,
+        // and the value feeds the
         // connect-time encoder seed and the `Park()` slew target. A
         // rename — e.g. dropping the underscore to `ap_park0` — silently
         // breaks every deployed config, so the literals are pinned here

@@ -362,6 +362,59 @@ impl MountDevice {
         .await
     }
 
+    /// Halt every motion this driver has the mount in: void the slew or
+    /// park in flight, turn tracking off, cancel any guide pulse, and
+    /// instant-stop both axes (`:L1`, `:L2`). `AbortSlew` and the Stop on
+    /// the mount's recovery page; it does not wait for the axes to report
+    /// stopped, and it leaves `AtPark` as it is.
+    pub(super) async fn halt_all_motion(&self) {
+        // Take the axes before touching the flag, and hold them through
+        // the stops. Without this, the halt's own ordering — clear the
+        // flag, *then* `await` the `:L` sends — hands a waiting sync a
+        // `false` reading while the original motion is still running,
+        // and its `:E` writes land mid-slew. `axis_ownership` is what
+        // makes the flag check inside sync sound, so the operation that
+        // falsifies the flag has to hold it too.
+        //
+        // Blocking here is bounded by the longest holder: a
+        // `Tracking = true` write's RA stop-and-wait and restart, up to
+        // about 2 s; otherwise a sync's two encoder writes or a pulse's
+        // burst. It is the right order anyway: a halt arriving mid-sync
+        // should let the position write finish rather than interleave
+        // with it.
+        let _axes = self.axis_ownership.lock().await;
+        // Empty the slew slot first, voiding the claim of the slew or
+        // park in flight: its watcher bails before clobbering the
+        // snapshot or at_park flag, and a slew still waiting on its
+        // stops starts no goto (or stops the one it just started).
+        // Also clear tracking_requested — `:L` halts any motion the
+        // mount is doing including any sidereal tracking the watcher
+        // may have re-issued. After a halt the user must explicitly
+        // re-enable tracking. Matches ASCOM's "AbortSlew does not
+        // auto-restore tracking" guarantee, and the page's Stop leaves
+        // the mount the same way.
+        self.slew_in_progress.clear();
+        {
+            let mut s = self.state.write().await;
+            s.tracking_requested = false;
+            // Cancel any pulse in flight on either axis. Its watcher
+            // sends nothing when it wakes; `:L1`/`:L2` below already
+            // halt any rate-shifted motion.
+            s.pulse_guiding = PulseGuiding::IDLE;
+        }
+        // Issue :L on both axes (instant stop). Log the underlying
+        // transport error if either send fails — silent failure here
+        // hides bugs (a watcher race that leaves the manager with no
+        // open transport, for instance) until BDD assertions on the
+        // command log time out far downstream.
+        if let Err(e) = self.send(Command::InstantStop(Axis::Ra)).await {
+            debug!("halt :L1 send failed: {e}");
+        }
+        if let Err(e) = self.send(Command::InstantStop(Axis::Dec)).await {
+            debug!("halt :L2 send failed: {e}");
+        }
+    }
+
     /// [`Self::stop_and_wait`] for a slew or park that holds `claim`.
     /// The `:K` goes out under [`SlewClaim::hold_axes`], so an operation
     /// whose claim has lapsed sends no stop into the slew that replaced
@@ -498,8 +551,7 @@ impl MountDevice {
     /// absent. For `Config::default()` runs (no config file) every field
     /// comes straight from `self.config`. Called once per connect by
     /// `set_connected` and re-used by both the seed and park-target
-    /// hooks; also re-run by `SetPreferredApPark` to re-resolve the live
-    /// target after a write.
+    /// hooks.
     pub(super) async fn read_connect_config(&self) -> ASCOMResult<ConnectConfig> {
         let Some(path) = self.config_file_path.clone() else {
             return Ok(ConnectConfig {
@@ -536,12 +588,11 @@ impl MountDevice {
         &self,
         cfg: &ConnectConfig,
     ) -> ASCOMResult<()> {
-        // A named unpark pose anchors the frame from config; a sync
-        // this connection may already have anchored it (the OR keeps a
-        // sync-derived anchor alive across a `SetPreferredApPark`
-        // re-resolve — at connect time the flag is freshly reset).
-        let anchored = cfg.unpark_from_ap_position != ApPark::ApPark0
-            || self.state.read().await.frame_anchored;
+        // A named unpark pose anchors the frame from config. A sync
+        // anchors it later in the connection
+        // (`anchor_frame_and_rearm_park_target`); at connect the flag is
+        // freshly reset, so the config alone decides.
+        let anchored = cfg.unpark_from_ap_position != ApPark::ApPark0;
         // Fallback for an axis without a raw override: the
         // `preferred_ap_park` encoder pair when the frame is anchored,
         // else no target at all (park-in-place).
@@ -577,7 +628,7 @@ impl MountDevice {
     /// from the connect-resolved `preferred_ap_park`.
     ///
     /// Called after a successful `SyncToCoordinates` / `SyncToTarget`
-    /// and after a named-park `UnparkFromApPosition`. Axes with a raw
+    /// and after the recovery from a named park. Axes with a raw
     /// `park_*_ticks` override (or an already-armed pose target) are
     /// left untouched — only the `None` slots left by an unanchored
     /// connect are filled. Best-effort: if the transport parameters are
@@ -629,9 +680,10 @@ impl MountDevice {
     ///
     /// Invoked by [`Self::seed_after_connect`] (where the stops are
     /// no-ops on a fresh-power-up mount — the motors are idle) and by
-    /// the `UnparkFromApPosition(ap_park_N)` recovery Action for
-    /// `N ≥ 1` (where the stops cancel whatever motion a crash left
-    /// running). The standard `Unpark()` flow does **not** call this —
+    /// the recovery from `ap_park_N` on the mount's setup page for
+    /// `N ≥ 1` (where the stops are a poll each: the recovery runs only on
+    /// a mount it found still). The standard `Unpark()` flow does **not**
+    /// call this —
     /// writing the encoder there would silently destroy session state.
     ///
     /// Takes the session explicitly because the connect-time seed runs
