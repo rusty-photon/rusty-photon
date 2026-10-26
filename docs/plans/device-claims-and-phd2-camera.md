@@ -1777,7 +1777,7 @@ all.
   ```
 
   **Being an Alpaca device, the facade owes the shared configuration
-  contract too.** [`config-actions.md`](../services/config-actions.md)
+  contract too.** [`config-actions.md`](archive/config-actions-protocol.md)
   requires every driver to expose `config.get`, `config.apply` and
   `config.schema`; without them `ui-htmx` cannot edit `enabled`, the
   pixel sizes or `image_dir`, and a change to the listener has no defined

@@ -297,10 +297,9 @@ and the reload wait, which [`dsd-fp2.md`](dsd-fp2.md) "Setup Pages"
 describes in full. The EAF pages are `rusty-photon-driver`'s `overrides`
 module, fed the EAFs the build registered; `setup.rs` supplies the rest
 (`ConfigurableDriver for ZwoFocuserDriver`): the `Config`, the secret
-(`server.auth.password_hash`, never shown), and the `--port` pin. No field
-is locked: `UniqueID`s are hardware-derived and not stored in config
-(*Device identity*). The `config.get` / `config.apply` / `config.schema`
-actions are gone: `SupportedActions` is empty and any `Action` answers
+(`server.auth.password_hash`, never shown), and the `--port` pin. No page
+edits a `UniqueID`: they are hardware-derived and not stored in config
+(*Device identity*). `SupportedActions` is empty and any `Action` answers
 `ActionNotImplemented`.
 
 | Page | Holds |
@@ -696,7 +695,7 @@ keep their firmware in onboard flash, so there is no firmware-install helper.
 - Same-interface precedent: [`qhy-focuser.md`](qhy-focuser.md) ·
   [`pa-scops-oag.md`](pa-scops-oag.md) (ASCOM Focuser mapping, absolute-only
   move, TempComp stub)
-- [`config-actions.md`](config-actions.md) ·
+- [`rusty-photon-setup.md`](../crates/rusty-photon-setup.md) ·
   [`service-lifecycle.md`](../skills/service-lifecycle.md) ·
   [`development-workflow.md`](../skills/development-workflow.md) ·
   [`testing.md`](../skills/testing.md)

@@ -94,8 +94,7 @@ reload wait — and `setup.rs` supplies the driver-specific half
 (`ConfigurableDriver for FileMonitorDriver`): its `Config`, validation,
 its one secret, and which section the device's page edits. The binary has
 no command-line overrides beyond `--config` / `--log-level`, so
-`Overrides = ()` and no field is ever pinned. The `config.get` /
-`config.apply` / `config.schema` actions are gone: the device's
+`Overrides = ()` and no field is ever pinned. The device's
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 

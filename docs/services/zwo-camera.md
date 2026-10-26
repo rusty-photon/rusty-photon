@@ -609,9 +609,8 @@ confirmation and the reload wait. The camera drivers' own parts — the
 `qhy-camera` share; `setup.rs` supplies the rest
 (`ConfigurableDriver for ZwoCameraDriver`): the `Config`, the validation,
 the secret, the `--port` pin, and what the running server registered. No
-field is locked: `UniqueID`s are hardware-derived and not stored in config
-(*Device identity*). The `config.get` / `config.apply` / `config.schema`
-actions are gone: a camera's and a placeholder's `SupportedActions` is
+page edits a `UniqueID`: they are hardware-derived and not stored in config
+(*Device identity*). A camera's and a placeholder's `SupportedActions` is
 empty, and any `Action` answers `ActionNotImplemented`.
 
 | Page | Section | Fields |
@@ -757,8 +756,8 @@ chain is:
 Consequences (same as
 `qhy-camera`): **no `unique_id` field in config**, an **empty identity-pointer
 list** passed to `resolve_and_init` in `main.rs` (no minting; the bootstrap
-still materializes the default config file on first start), and **no locked
-identity field** in the config-actions tiers. Two identical-model cameras
+still materializes the default config file on first start), and **no
+identity field** on the setup pages. Two identical-model cameras
 would be told apart by serial only once each is open, which is why neither a
 `usb_devices` list nor the no-list default can place them before an open, and
 both refuse them as look-alikes (U3, U10).
@@ -2775,7 +2774,7 @@ no firmware-install helper and no cold-plug upload path.
 - Same-vendor-class precedent: [`qhy-camera.md`](qhy-camera.md) ·
   [`qhy-focuser.md`](qhy-focuser.md)
 - Camera scaffolding template: [`sky-survey-camera.md`](sky-survey-camera.md)
-- [`config-actions.md`](config-actions.md) ·
+- [`rusty-photon-setup.md`](../crates/rusty-photon-setup.md) ·
   [`service-lifecycle.md`](../skills/service-lifecycle.md) ·
   [`development-workflow.md`](../skills/development-workflow.md) ·
   [`testing.md`](../skills/testing.md)

@@ -780,7 +780,7 @@ permissive in both directions across the binary boundary.
   own blob. Draws the SDK line this plan follows.
 - [ADR-015](../../decisions/015-windows-packaging-architecture.md) — config and
   state are platform-dependent defaults in code, not installer artifacts.
-- [config-actions](../../services/config-actions.md) — the `config.get`/`apply`/
+- [config-actions](config-actions-protocol.md) — the `config.get`/`apply`/
   `schema` protocol doctor must not fight with.
 - [packaging.md](../../packaging.md) / [packaging-windows.md](../../packaging-windows.md)
   / [packaging-macos.md](../../packaging-macos.md) — current per-platform reality.

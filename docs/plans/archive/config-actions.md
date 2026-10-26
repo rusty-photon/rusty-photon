@@ -6,7 +6,7 @@ skeleton + dsd-fp2 config page as the `ui-htmx` service,
 [`docs/services/ui-htmx.md`](../../services/ui-htmx.md)) shipped via PR #305
 (`65ecc2d`). Phase 3 (the `config.get`/`config.apply`/`config.schema` protocol
 generalised across **all six** drivers via the shared `rusty-photon-config::actions`
-module, [`docs/services/config-actions.md`](../../services/config-actions.md),
+module, [`docs/plans/archive/config-actions-protocol.md`](config-actions-protocol.md),
 with the `ui-htmx` BFF rendering **any** driver's form generically from
 `config.schema` under `/config/{service}`) shipped via PR #344 (`1da776b`).
 Phase 4 (Sentinel's `POST /api/services/{name}/restart`, driven by the
@@ -420,7 +420,7 @@ along the natural driver ⇆ BFF fault line.
 - ✅ Extracted the shared `config-actions` helper into the existing
   `rusty-photon-config` crate (`actions` module: the `ConfigurableDriver` trait +
   generic `config_get`/`config_apply`/`config_schema`). The cross-driver protocol
-  is documented in [`docs/services/config-actions.md`](../../services/config-actions.md).
+  is documented in [`docs/plans/archive/config-actions-protocol.md`](config-actions-protocol.md).
 - ✅ Rolled out to **all six** drivers — `dsd-fp2` (refactored onto the shared
   crate), `qhy-focuser`, `pa-falcon-rotator`, `ppba-driver`, `sky-survey-camera`,
   `star-adventurer-gti` — each with a `config_actions.feature` BDD suite covering

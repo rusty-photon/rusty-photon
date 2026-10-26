@@ -427,9 +427,8 @@ edits (`device_sections` in `setup.rs`), its one secret
 never persists it. A save of one page never alters another page's
 section. The pages work whether or not a device is `Connected`.
 
-The `config.get` / `config.apply` / `config.schema` actions this driver
-used to expose are gone: `SupportedActions` is empty on every device and
-every `Action` answers `ACTION_NOT_IMPLEMENTED`.
+The driver has no custom Actions: `SupportedActions` is empty on every
+device and every `Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules
 

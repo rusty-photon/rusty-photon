@@ -720,8 +720,8 @@ one restart of a given service runs at any time:
 ## Service Restart API
 
 Sentinel owns **process restart** for the rest of the stack (`rp.md`
-§Sentinel Watchdog Integration; the config-actions plan's service-lifecycle
-split: drivers reload *themselves* via `config.apply`, sentinel restarts
+§Sentinel Watchdog Integration; the service-lifecycle split: drivers
+reload *themselves* after a setup-page save, sentinel restarts
 *processes*). The dashboard router exposes one endpoint:
 
 ```
@@ -758,8 +758,7 @@ for the next start.
 | The request does not say it came from the dashboard itself (below) | `403` `{"error":"<why>"}`, nothing run |
 
 - **`status` reports the action's outcome, not the transport's** — a failed
-  restart command is a domain result (HTTP 200 with `status:"failed"`),
-  mirroring the config-actions protocol's `status:"invalid"` convention.
+  restart command is a domain result (HTTP 200 with `status:"failed"`).
   4xx is reserved for addressing errors (unknown / not restartable / busy).
 - **One restart per service at a time.** Concurrent POSTs for the same
   service are rejected with `409` while the first is running; different

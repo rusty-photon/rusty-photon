@@ -62,11 +62,11 @@ standardized on one `humantime` encoding — see
 **2. The plan API is becoming a published, multi-surface contract.**
 `rp` is ~20 % of the eventual system. Grading, mosaic, and other tools —
 plus more than one UI — will all read and write plans. The way
-rusty-photon already solves "one validation, many surfaces" is the
-`config.get`/`config.schema`/`config.apply` protocol in
-`rusty-photon-config`: one type, a schema *generated from* that type
-(`schema_for`), a `validate()` returning dotted-path field errors the UI
-renders inline, and one authoritative server-side gate. Extending that
+rusty-photon already solves "one validation, many surfaces" is the setup
+pages' `ConfigurableDriver` in `rusty-photon-config`: one type, a schema
+*generated from* that type (`schema_for`), a `validate()` returning
+dotted-path field errors the page renders inline, and one authoritative
+server-side gate. Extending that
 pattern to plan data (targets, goals, naming patterns — see
 [Schema + validate protocol](#schema--validate-protocol-the-decision-1-role))
 needs a crate that owns the *typed vocabulary + its schema + its
@@ -362,8 +362,8 @@ contract.
 
 ## Schema + validate protocol (the decision-1 role)
 
-`rp-vocabulary` is the *enabler* of a plan-data analogue of the
-`config-actions` protocol; it does not own the protocol. The division:
+`rp-vocabulary` is the *enabler* of a plan-data analogue of the setup
+pages' schema and validation; it does not own the protocol. The division:
 
 - **This crate provides**: the validated constructors (the single
   validator, returning typed `thiserror` errors) and — behind the
@@ -374,13 +374,14 @@ contract.
   and naming patterns, and the mapping from a constructor `Err` to a
   dotted-path `FieldError { path, msg }` (e.g.
   `{ path: "ra_hours", msg: "ra_hours 25 is outside [0, 24)" }`) — the same shape
-  `config-actions` returns, so a UI renders the error next to the field.
+  a service's config validation returns, so a UI renders the error next to
+  the field.
 - **Surfaces consume**: Rust linkers (`rp`, future tools) get identical
   validation by construction; non-linking surfaces (the ui-htmx BFF, a
   browser form, a future bridge) render forms from the published schema
   and defer to `rp`'s constructor as the authoritative gate. This keeps
-  ui-htmx a thin renderer (the "UI contains zero application logic" tenet)
-  exactly as it already renders driver-config forms from `config.schema`.
+  ui-htmx a thin renderer (the "UI contains zero application logic" tenet),
+  as the setup pages render a service's config from its schema.
 
 This cross-crate decision is recorded in
 [ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md); this

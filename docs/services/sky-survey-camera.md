@@ -284,8 +284,7 @@ reload wait — and `setup.rs` supplies the driver-specific half
 (`ConfigurableDriver for SkySurveyCameraDriver`): its `Config`,
 validation, its secrets, and which section the camera's page edits. The
 binary has no command-line overrides beyond `--config` / `--log-level`,
-so `Overrides = ()` and no field is ever pinned. The `config.get` /
-`config.apply` / `config.schema` actions are gone: the camera's
+so `Overrides = ()` and no field is ever pinned. The camera's
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 
