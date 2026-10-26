@@ -2828,11 +2828,13 @@ page's save.
     tracking off, cancels any guide pulse, and instant-stops both axes
     (`:L1`, `:L2`). Unlike `AbortSlew` it runs on a parked mount too,
     which stays parked. It answers once both axes report stopped (a goto
-    coasts on for up to 1.5 s), with the page again and its motion.
+    coasts on for up to 1.5 s).
   - **`recover`**, with the box ticked, on a still mount, parked or not:
     - `ap_park_0` clears `AtPark` with no encoder change, the end state
-      of a standard `Unpark()`. The operator plate-solves and syncs before
-      any blind slew.
+      of a standard `Unpark()`. It leaves the frame as it was: an anchored
+      frame stays anchored and its park target armed, as after `Unpark()`,
+      because `ap_park_0` means the encoders are where the telescope is.
+      The operator plate-solves and syncs before any blind slew.
     - `ap_park_1`..`ap_park_5` runs the
       [`ResetMountEncoders` sequence](#resetmountencoders-sequence), which
       writes the pose's encoder values *regardless of the current encoder
@@ -2855,7 +2857,8 @@ page's save.
 | A `POST` names no command the page knows | `400`, nothing run |
 | The recovery's box is not ticked, or its pose is not one of the six | `422`: the form again, with the reason beside its control |
 | The mount is not connected (either command), or is not still (the recovery) | `409`: the page again, the reason in a banner, nothing run |
-| The firmware refuses a command or the transport fails during the reset, or an axis does not report stopped within the Stop's wait | `500`: the page again, the error in a banner |
+| The firmware refuses a command or the transport fails during the reset | `409`: the page again, the error in a banner. The reset may have stopped partway; running the recovery again redoes all of it |
+| The Stop fails: the transport fails, or an axis does not report stopped within its wait | `500`: the page again, the error in a banner |
 
 The pose is the operator's assertion, and the driver believes it: if the
 telescope is elsewhere, every later slew aims as if it were at the pose.
