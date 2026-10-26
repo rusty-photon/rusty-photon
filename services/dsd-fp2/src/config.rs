@@ -158,9 +158,9 @@ pub fn load_config(
 
 /// CLI overrides layered over the file config.
 ///
-/// Tracks which fields are pinned by a command-line flag so the config
-/// actions can distinguish the file layer from the override layer (see
-/// `docs/services/dsd-fp2.md` "Config Actions").
+/// Tracks which fields are pinned by a command-line flag so the setup
+/// pages can tell the file layer from the override layer (see
+/// `docs/services/dsd-fp2.md` "Setup Pages").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.

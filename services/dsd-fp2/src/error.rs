@@ -117,8 +117,7 @@ mod tests {
     #[test]
     fn from_serde_json_error_maps_to_invalid_operation() {
         // `?` / `.into()` on a serde_json failure routes serde_json::Error ->
-        // DsdFp2Error -> ASCOMError (INVALID_OPERATION), which is how the
-        // config-action handlers surface serialization failures.
+        // DsdFp2Error -> ASCOMError (INVALID_OPERATION).
         let serde_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
         let err: DsdFp2Error = serde_err.into();
         assert!(matches!(err, DsdFp2Error::Serialization(_)));

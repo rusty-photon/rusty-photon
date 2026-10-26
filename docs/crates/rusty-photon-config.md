@@ -113,7 +113,7 @@ tests keep its default loadable. Same-host consumers
 (sentinel's health probes, doctor) can then read it. An explicit `--config`
 path is created only when minting has an id to write. What a missing explicit
 file means otherwise is up to each service. Strict-config services treat it as
-an error. The Alpaca drivers run on in-memory defaults.
+an error. Most Alpaca drivers run on in-memory defaults.
 
 ### What a write does to the file
 

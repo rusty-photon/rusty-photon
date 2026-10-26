@@ -118,8 +118,43 @@ mod tests {
         })
     }
 
+    /// Whether `pattern`, whose segments may be the wildcard `*`, names the
+    /// leaf at `pointer`.
+    fn names(pattern: &str, pointer: &str) -> bool {
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let pointer: Vec<&str> = pointer.split('/').collect();
+        pattern.len() == pointer.len()
+            && pattern
+                .iter()
+                .zip(&pointer)
+                .all(|(want, got)| *want == "*" || want == got)
+    }
+
+    /// The pointer of every `password` and `password_hash` string under
+    /// `value`.
+    fn credentials(value: &Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let pointer = format!("{prefix}/{key}");
+                    if child.is_string() && (key == "password" || key == "password_hash") {
+                        out.push(pointer);
+                    } else {
+                        credentials(child, &pointer, out);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    credentials(item, &format!("{prefix}/{index}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[test]
-    fn every_secret_pointer_names_a_credential_rp_stores() {
+    fn the_secret_pointers_name_every_credential_in_a_config_that_sets_each() {
         let config = config_from(serde_json::json!({
             "session": { "data_directory": "/tmp/rp-test" },
             "equipment": {
@@ -151,11 +186,19 @@ mod tests {
             }
         }));
         let value = serde_json::to_value(&config).unwrap();
-        for pattern in RpConfigDriver::secret_pointers() {
-            // Each list holds one entry, so a wildcard names element 0.
-            let pointer = pattern.replace("/*/", "/0/");
+        let mut stored = Vec::new();
+        credentials(&value, "", &mut stored);
+        assert_eq!(stored.len(), 13, "{stored:?}");
+        let pointers = RpConfigDriver::secret_pointers();
+        for credential in &stored {
             assert!(
-                value.pointer(&pointer).is_some_and(Value::is_string),
+                pointers.iter().any(|pattern| names(pattern, credential)),
+                "no secret pointer names {credential}"
+            );
+        }
+        for pattern in pointers {
+            assert!(
+                stored.iter().any(|credential| names(pattern, credential)),
                 "{pattern} names no credential in {value}"
             );
         }
