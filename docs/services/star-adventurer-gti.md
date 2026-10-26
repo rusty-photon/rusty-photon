@@ -2960,7 +2960,7 @@ the running value, disabled, and a save never persists it
 
 The driver configures itself through the HTML pages the Alpaca Management
 API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/driver-setup-pages.md)):
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
 
 | Path | Holds |
 |------|-------|
@@ -3014,7 +3014,7 @@ next lifecycle starts from nothing (see
 path no longer fits once the page has switched the transport to UDP: the
 reload fails to start with the flag named, and the operator drops the flag
 or edits the file over the shell — the same recovery as an unbindable
-`server.port` ([D3](../plans/driver-setup-pages.md#d3-saving)).
+`server.port` ([D3](../plans/archive/driver-setup-pages.md#d3-saving)).
 
 ## Module Structure
 

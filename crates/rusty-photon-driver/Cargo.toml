@@ -14,7 +14,7 @@ default = []
 # placeholder Camera that holds a listed device number whose camera cannot be
 # served, the failed USB scan's background re-scan, and the camera drivers'
 # own part of their setup pages (the Cameras section and each camera's page,
-# docs/plans/driver-setup-pages.md D11). Only the camera drivers with a
+# docs/plans/archive/driver-setup-pages.md D11). Only the camera drivers with a
 # `usb_devices` list turn it on, so no other driver's graph gains
 # ascom-alpaca's `Camera` trait through this crate.
 claims = [

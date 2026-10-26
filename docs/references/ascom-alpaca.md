@@ -85,7 +85,7 @@ selectwheel and SELECTWHEEL all refer to the same action".
 
 The Management API defines two HTML pages, served by the server itself
 (our drivers serve them behind their own TLS and Basic Auth; see
-[driver-setup-pages.md](../plans/driver-setup-pages.md)):
+[driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
 
 | Path | Method | Purpose |
 |------|--------|---------|

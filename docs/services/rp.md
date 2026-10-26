@@ -7347,7 +7347,7 @@ TLS and Basic Auth as every other route: `GET /setup` answers the form,
 driver's server page is, so its rules (the file as the base of a save, the
 origin check on a `POST`, the Security section, file-only fields) are that
 crate's; this section states what is `rp`'s own
-([driver-setup-pages.md](../plans/driver-setup-pages.md), D4–D6, D13).
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md), D4–D6, D13).
 `rp` is not an Alpaca device, so it has no device pages; the equipment
 roster takes their place on this one page.
 

@@ -29,7 +29,7 @@ It serves two surfaces, one nav:
    [`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md).
 
 Configuration is not one of them. Every service configures itself on its own
-`/setup` page ([driver-setup-pages.md](../plans/driver-setup-pages.md)): the
+`/setup` page ([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)): the
 nav's **Setup** link leads to rp's — the equipment roster and rp's settings,
 from which each driver's own pages are linked — and the BFF's own
 configuration is edited on its own `/setup` ([Setup page](#setup-page)).
@@ -874,6 +874,6 @@ avoids.
 - The BFF's origin: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 - Targets inbox (P4): [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
-- The setup pages the BFF's own `/setup` and rp's are served by: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md); why the configuration pages moved there: [`driver-setup-pages.md`](../plans/driver-setup-pages.md)
+- The setup pages the BFF's own `/setup` and rp's are served by: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md); why the configuration pages moved there: [`driver-setup-pages.md`](../plans/archive/driver-setup-pages.md)
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)
 - Lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md) "Plain axum service"
