@@ -9,9 +9,9 @@ Feature: Setup pages
   holds the rp, server, site and spool sections; the Telescope's page holds
   the device section. The credential the bridge presents to rp is an
   optional block the form does not render, so the server page names it as
-  edited in the configuration file and its password never reaches a page;
-  so is assume_epoch, a choice of two words, on the Telescope's page. That
-  credential is bound to rp's address and to the CA that verifies rp
+  edited in the configuration file and its password never reaches a page.
+  assume_epoch, a choice of two words, is a dropdown on the Telescope's
+  page. That credential is bound to rp's address and to the CA that verifies rp
   there: a save that changes either asks first, keeps the credential when
   its password is typed again behind the bridge's own login, and otherwise
   removes it from the file, the saved page saying so and staying on screen
@@ -40,7 +40,7 @@ Feature: Setup pages
     When I open the setup page of device "telescope" 0
     Then the page shows an input named "device.slew_duration" with value "3s"
     And the page shows an input named "device.report_altitude_floor_deg" with value "10.0"
-    And the page names "device.assume_epoch" as edited in the configuration file
+    And the page shows a dropdown named "device.assume_epoch" offering "j2000, jnow" with "j2000" chosen
     And the page shows no input named "rp.mcp_server_url"
 
   Scenario: A valid save is persisted, reloaded, and served back after the wait

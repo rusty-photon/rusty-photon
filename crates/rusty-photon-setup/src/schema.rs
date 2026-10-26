@@ -42,6 +42,9 @@ pub enum FieldKind {
     /// checkbox per enumerated value in schema order. Checked values are
     /// written back in `options` order; nothing checked ⇒ an empty array.
     IntSet { options: Vec<i64> },
+    /// A string enum — a dropdown, one option per value in schema order. The
+    /// chosen value is written verbatim; one outside `options` is refused.
+    Choice { options: Vec<ChoiceOption> },
     /// A `string` leaf the service names as a secret — an empty password
     /// input whose blank submission means "unchanged"; its stored value never
     /// reaches a page.
@@ -53,6 +56,15 @@ pub enum FieldKind {
     /// array of objects, a custom-serde type): named on the page as edited in
     /// the configuration file, and left as the file has it by a save.
     FileOnly,
+}
+
+/// One option of a [`FieldKind::Choice`] dropdown: the value it submits, and
+/// the text it shows — its schema branch's `title` when it has one, else the
+/// value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceOption {
+    pub value: String,
+    pub label: String,
 }
 
 /// One variant of a [`FieldKind::Variants`] enum: its tag value and the
@@ -123,7 +135,10 @@ impl FieldSpec {
             FieldKind::Bool | FieldKind::IntSet { .. } => "checkbox",
             FieldKind::Int { .. } | FieldKind::Num { .. } => "number",
             FieldKind::Secret => "password",
-            FieldKind::Str { .. } | FieldKind::Variants { .. } | FieldKind::FileOnly => "text",
+            FieldKind::Str { .. }
+            | FieldKind::Choice { .. }
+            | FieldKind::Variants { .. }
+            | FieldKind::FileOnly => "text",
         }
     }
 
@@ -406,6 +421,8 @@ enum Shape {
     Scalar { base: String, nullable: bool },
     /// An array of enumerated integers — a checkbox-group leaf.
     IntEnumArray { options: Vec<i64> },
+    /// A string enum — a dropdown leaf.
+    StringEnum { options: Vec<ChoiceOption> },
     /// A plain object to recurse into.
     Object,
     /// An internally tagged enum of object variants.
@@ -417,6 +434,9 @@ enum Shape {
 fn classify(node: &Value, root: &Value) -> Shape {
     if let Some((tag, branches)) = tagged_enum(node, root) {
         return Shape::Tagged { tag, branches };
+    }
+    if let Some(options) = string_enum_options(node, root) {
+        return Shape::StringEnum { options };
     }
     // Composite or enum/const subtrees are never rendered as scalar inputs.
     // (An enum on an array's *items* is fine — that check is on the node
@@ -505,6 +525,54 @@ fn fixed_string(node: &Value) -> Option<String> {
     }
 }
 
+/// The values of a string enum, in schema order, when that is what `node`
+/// is: an `enum` of strings (a unit-variant enum without doc comments), or a
+/// `oneOf` whose every branch is one fixed string (`schemars` renders a
+/// unit-variant enum whose variants carry doc comments as `const` branches).
+/// A branch's `title` labels its option. An `Option<T>` of either has a
+/// `null` branch, which is no fixed string, so it is not one.
+fn string_enum_options(node: &Value, root: &Value) -> Option<Vec<ChoiceOption>> {
+    if node
+        .get("type")
+        .is_some_and(|t| t.as_str() != Some("string"))
+    {
+        return None;
+    }
+    if let Some(values) = node.get("enum").and_then(Value::as_array) {
+        let options = values
+            .iter()
+            .map(|v| {
+                v.as_str().map(|s| ChoiceOption {
+                    value: s.to_string(),
+                    label: s.to_string(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return (!options.is_empty()).then_some(options);
+    }
+    let branches = node.get("oneOf").and_then(Value::as_array)?;
+    let options = branches
+        .iter()
+        .map(|branch| {
+            let branch = resolve(branch, root);
+            if branch.get("properties").is_some()
+                || branch
+                    .get("type")
+                    .is_some_and(|t| t.as_str() != Some("string"))
+            {
+                return None;
+            }
+            let value = fixed_string(branch)?;
+            let label = branch
+                .get("title")
+                .and_then(Value::as_str)
+                .map_or_else(|| value.clone(), str::to_string);
+            Some(ChoiceOption { value, label })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!options.is_empty()).then_some(options)
+}
+
 /// The enumerated integer values of an array node's `items`, when that is
 /// what they are: `items` (after `$ref` resolution) typed `integer` with a
 /// non-empty all-integer `enum`.
@@ -552,6 +620,14 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
                 return;
             }
             let mut spec = field_spec(prefix, FieldKind::IntSet { options });
+            spec.default = default_of(node, resolved);
+            out.push(spec);
+        }
+        Shape::StringEnum { options } => {
+            if prefix.is_empty() {
+                return;
+            }
+            let mut spec = field_spec(prefix, FieldKind::Choice { options });
             spec.default = default_of(node, resolved);
             out.push(spec);
         }
@@ -923,6 +999,130 @@ mod tests {
             },
             "options must carry the schema enum in its declared order"
         );
+    }
+
+    fn option(value: &str, label: &str) -> ChoiceOption {
+        ChoiceOption {
+            value: value.to_string(),
+            label: label.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_string_enum_is_a_dropdown_of_its_values_in_schema_order() {
+        let schema = json!({
+            "$defs": { "Mode": { "type": "string", "enum": ["list", "auto"] } },
+            "type": "object",
+            "properties": {
+                "usb": { "type": "object", "properties": {
+                    "mode": { "$ref": "#/$defs/Mode", "default": "auto" },
+                } },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        let field = model.field("usb.mode").unwrap();
+        assert_eq!(
+            field.kind(),
+            &FieldKind::Choice {
+                options: vec![option("list", "list"), option("auto", "auto")]
+            }
+        );
+        assert_eq!(field.default_value(), Some(&json!("auto")));
+    }
+
+    #[test]
+    fn fixed_string_branches_are_a_dropdown_labelled_by_each_title() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mount": { "type": "object", "properties": {
+                    "pose": { "oneOf": [
+                        { "type": "string", "const": "ap_park_3", "title": "Park 3: at the pole" },
+                        { "type": "string", "const": "ap_park_0", "description": "untitled" },
+                    ] },
+                } },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        assert_eq!(
+            model.field("mount.pose").unwrap().kind(),
+            &FieldKind::Choice {
+                options: vec![
+                    option("ap_park_3", "Park 3: at the pole"),
+                    option("ap_park_0", "ap_park_0"),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn schemars_unit_enums_are_dropdowns_of_their_serde_names() {
+        /// A plain enum: `schemars` renders it as an `enum` of strings.
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        #[serde(rename_all = "lowercase")]
+        enum Rate {
+            Sidereal,
+            Lunar,
+        }
+        /// Documented variants: `schemars` renders a `oneOf` of `const`s.
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        #[serde(rename_all = "snake_case")]
+        enum Contract {
+            /// One step below full scale.
+            SaturationThreshold,
+            /// The container's own maximum.
+            ContainerFullScale,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Camera {
+            rate: Rate,
+            contract: Contract,
+        }
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        struct Config {
+            camera: Camera,
+        }
+        let schema = serde_json::to_value(schema_for!(Config)).unwrap();
+        let model = FieldModel::from_schema(&schema);
+        assert_eq!(
+            model.field("camera.rate").unwrap().kind(),
+            &FieldKind::Choice {
+                options: vec![option("sidereal", "sidereal"), option("lunar", "lunar")]
+            }
+        );
+        assert_eq!(
+            model.field("camera.contract").unwrap().kind(),
+            &FieldKind::Choice {
+                options: vec![
+                    option("saturation_threshold", "saturation_threshold"),
+                    option("container_full_scale", "container_full_scale"),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn an_optional_a_non_string_or_a_single_fixed_string_stays_file_only() {
+        let schema = json!({
+            "$defs": { "Mode": { "type": "string", "enum": ["list", "auto"] } },
+            "type": "object",
+            "properties": {
+                "usb": { "type": "object", "properties": {
+                    "optional": { "anyOf": [ { "$ref": "#/$defs/Mode" }, { "type": "null" } ] },
+                    "nullable": { "type": ["string", "null"], "enum": ["list", null] },
+                    "number": { "type": "integer", "enum": [1, 2] },
+                    "fixed": { "type": "string", "const": "usb" },
+                } },
+            },
+        });
+        let model = FieldModel::from_schema(&schema);
+        for name in ["usb.optional", "usb.nullable", "usb.number", "usb.fixed"] {
+            assert_eq!(
+                model.field(name).unwrap().kind(),
+                &FieldKind::FileOnly,
+                "{name}"
+            );
+        }
     }
 
     #[test]

@@ -142,6 +142,17 @@ fn overlay_at(
                 }
             }
         }
+        // A dropdown submits one of its options; anything else did not come
+        // from the page as drawn.
+        FieldKind::Choice { options } => {
+            if let Some(raw) = form.get(name) {
+                if options.iter().any(|option| option.value == raw) {
+                    set_pointer(config, pointer, Value::String(raw.to_string()));
+                } else {
+                    errors.push(field_error(name, "must be one of the listed values"));
+                }
+            }
+        }
         // A blank secret means "unchanged"; anything else replaces it.
         FieldKind::Secret => {
             if let Some(raw) = form.get(name).filter(|raw| !raw.is_empty()) {
@@ -331,9 +342,10 @@ pub fn submitted_as_shown(spec: &FieldSpec, config: &Value, form: &FormValues) -
             submitted == drawn
         }
         FieldKind::Secret => form.get(name).is_none_or(str::is_empty),
-        FieldKind::Str { .. } | FieldKind::Int { .. } | FieldKind::Num { .. } => {
-            form.get(name).unwrap_or_default() == text_of(shown)
-        }
+        FieldKind::Str { .. }
+        | FieldKind::Choice { .. }
+        | FieldKind::Int { .. }
+        | FieldKind::Num { .. } => form.get(name).unwrap_or_default() == text_of(shown),
         FieldKind::FileOnly => true,
         FieldKind::Variants { .. } => false,
     }
@@ -494,6 +506,7 @@ mod tests {
                         "tilt": { "type": "number", "minimum": -90, "maximum": 90 },
                         "enabled": { "type": "boolean" },
                         "key": { "type": "string" },
+                        "mode": { "type": "string", "enum": ["auto", "list"] },
                     },
                 },
                 "server": {
@@ -791,6 +804,42 @@ mod tests {
         );
         assert_eq!(errors[0].path, "cooling.targets");
         assert_eq!(config["cooling"]["targets"], json!([]));
+    }
+
+    #[test]
+    fn a_dropdown_writes_the_chosen_option_and_refuses_one_it_does_not_offer() {
+        let mut config = json!({ "serial": { "mode": "auto" } });
+        let model = model();
+        let spec = model.field("serial.mode").unwrap();
+        assert!(submitted_as_shown(
+            spec,
+            &config,
+            &form_from(&[("serial.mode", "auto")])
+        ));
+        overlay(
+            &mut config,
+            "serial.mode",
+            &form_from(&[("serial.mode", "list")]),
+        );
+        assert_eq!(config["serial"]["mode"], "list");
+        let errors = overlay(
+            &mut config,
+            "serial.mode",
+            &form_from(&[("serial.mode", "manual")]),
+        );
+        assert_eq!(
+            errors,
+            vec![FieldError {
+                path: "serial.mode".to_string(),
+                msg: "must be one of the listed values".to_string(),
+            }]
+        );
+        assert_eq!(config["serial"]["mode"], "list");
+        overlay(&mut config, "serial.mode", &form_from(&[]));
+        assert_eq!(
+            config["serial"]["mode"], "list",
+            "an absent dropdown is left alone"
+        );
     }
 
     #[test]

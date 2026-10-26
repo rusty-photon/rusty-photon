@@ -3,10 +3,9 @@ Feature: Setup pages
   zwo-camera configures itself through the two HTML pages the Alpaca
   Management API defines, served by the service itself: /setup for the
   whole server and /setup/v1/camera/{n}/setup for each camera it serves.
-  The server page holds the server block, max_adu_reporting (a string enum
-  the generic form cannot render, so named as edited in the configuration
-  file), the Security section and the Cameras section, which edits
-  usb_devices.
+  The server page holds the server block, max_adu_reporting (a dropdown of
+  its two contracts; a value outside them is refused beside it), the
+  Security section and the Cameras section, which edits usb_devices.
 
   The Cameras section has two modes: every camera the USB scan places,
   numbered in port order, or only the checked cameras. It shows one row per
@@ -43,7 +42,7 @@ Feature: Setup pages
     Given a running zwo-camera service with the simulation backend
     When I open the server setup page
     Then the page shows an input named "server.bind_address" with value "0.0.0.0"
-    And the page names "max_adu_reporting" as edited in the configuration file
+    And the page shows a dropdown named "max_adu_reporting" offering "saturation_threshold, container_full_scale" with "saturation_threshold" chosen
     And the Cameras section's mode is "auto"
     And the Cameras section lists the port "simulated-usbv3-0:1" as "camera 0"
     And the page links to the setup page of device "camera" 0
@@ -245,6 +244,19 @@ Feature: Setup pages
     Then the supported actions are empty
     When the action "config.get" is called on camera device 0
     Then the call should fail with an action-not-implemented error
+
+  Scenario: The server page saves the MaxADU contract chosen from its dropdown
+    Given a running zwo-camera service with the simulation backend
+    And the bound port is pinned in the configuration file so a reload keeps the address
+    When I submit the server setup page setting "max_adu_reporting" to "container_full_scale"
+    Then the page reports the configuration was saved and the service is reloading
+    And the configuration file holds "container_full_scale" at "/max_adu_reporting"
+
+  Scenario: A MaxADU contract outside the dropdown's values is refused beside it, the file untouched
+    Given a running zwo-camera service with the simulation backend
+    When I submit the server setup page setting "max_adu_reporting" to "full_scale"
+    Then the page answers 422 with the error "must be one of the listed values" on "max_adu_reporting"
+    And the configuration file has nothing at "/max_adu_reporting"
 
   Scenario: A save from another site is refused and the file is untouched
     Given a running zwo-camera service with the simulation backend
