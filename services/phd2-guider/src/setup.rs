@@ -20,7 +20,7 @@ use axum::http::{header::HOST, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Form, Router};
-use rusty_photon_config::actions::{ApplyDisposition, ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError, SaveDisposition};
 use rusty_photon_setup::{PageRequest, PageResponse, PageScope, SetupPages};
 
 use crate::config::{camera_rule_violations, Config};
@@ -77,8 +77,8 @@ impl ConfigurableDriver for Phd2GuiderDriver {
 
     fn apply_overrides(_config: &mut Config, _overrides: &()) {}
 
-    fn apply_disposition() -> ApplyDisposition {
-        ApplyDisposition::Restart
+    fn save_disposition() -> SaveDisposition {
+        SaveDisposition::Restart
     }
 }
 
@@ -333,8 +333,8 @@ mod tests {
     #[test]
     fn changes_apply_at_the_next_start() {
         assert!(matches!(
-            Phd2GuiderDriver::apply_disposition(),
-            ApplyDisposition::Restart
+            Phd2GuiderDriver::save_disposition(),
+            SaveDisposition::Restart
         ));
     }
 

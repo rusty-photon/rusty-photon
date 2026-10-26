@@ -11,7 +11,7 @@
 //!
 //! [`docs/services/sky-survey-camera.md`]: ../../../docs/services/sky-survey-camera.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::Config;
 

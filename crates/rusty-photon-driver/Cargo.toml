@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared ASCOM-driver runtime layer for rusty-photon: the common DriverError model, its ASCOM error-code mapping, and the generic config.get/apply/schema action dispatch"
+description = "Shared ASCOM-driver runtime layer for rusty-photon: the common DriverError model, its ASCOM error-code mapping, and the glue to the drivers' setup pages"
 
 [features]
 default = []
@@ -17,7 +17,12 @@ default = []
 # docs/plans/driver-setup-pages.md D11). Only the camera drivers with a
 # `usb_devices` list turn it on, so no other driver's graph gains
 # ascom-alpaca's `Camera` trait through this crate.
-claims = ["ascom-alpaca/camera", "dep:async-trait", "dep:tokio-util"]
+claims = [
+    "ascom-alpaca/camera",
+    "dep:async-trait",
+    "dep:tokio-util",
+    "dep:rusty-photon-service-lifecycle",
+]
 
 [lints]
 workspace = true
@@ -42,11 +47,12 @@ maud = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["__anydevice", "server"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-strum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rusty-photon-config = { workspace = true }
-rusty-photon-service-lifecycle = { workspace = true }
+# The reload signal the claims' serve loop rebuilds the server on (the
+# `claims` feature).
+rusty-photon-service-lifecycle = { workspace = true, optional = true }
 rusty-photon-setup = { workspace = true }
 # The header vocabulary the setup glue reads (`Content-Type`); the same
 # crate the pinned ascom-alpaca speaks.

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

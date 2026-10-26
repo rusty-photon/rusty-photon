@@ -243,9 +243,9 @@ rusty-photon/
     rp-fits/                         FITS reader/writer wrapper (ADR-001)
     rp-plate-solver/                 HTTP client for the plate-solver service
     rusty-photon-tls/                TLS serving for inter-service comms (ADR-002; issuance lives in doctor)
-    rusty-photon-config/             Config-path + first-run UniqueID + config.get/apply/schema protocol
+    rusty-photon-config/             Config-path + first-run UniqueID + the ConfigurableDriver trait the setup pages use
     rusty-photon-setup/              The setup pages a service serves for its own configuration
-    rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + config-action dispatch (ADR-007)
+    rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + setup-page glue (ADR-007)
     rusty-photon-i18n/               Workspace Fluent i18n loader + locale resolver
     rusty-photon-i18n-derive/        Proc-macro deriving LocalizedParser for clap structs
     rusty-photon-service-lifecycle/  Unified lifecycle: runtime + signals + optional Windows SCM

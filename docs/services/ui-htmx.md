@@ -187,7 +187,7 @@ password rules:
   the crate's `with_bound_credential`
   ([rusty-photon-setup.md](../crates/rusty-photon-setup.md) § Credentials).
 - **Saving.** The BFF has no in-process reload, so a save is persisted
-  atomically and takes effect at the next start (`ApplyDisposition::Restart`):
+  atomically and takes effect at the next start (`SaveDisposition::Restart`):
   the saved page names the fields that wait for it and says how to restart
   (`systemctl restart rusty-photon-ui-htmx`, the SCM, `brew services`).
   Sentinel's dashboard has a restart button per service for an operator who

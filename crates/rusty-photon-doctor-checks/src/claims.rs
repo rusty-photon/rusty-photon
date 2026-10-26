@@ -162,8 +162,8 @@ pub fn block_entries<E: ListEntry>(list: &[E]) -> Vec<BlockEntry> {
 /// Every rule a configured `usb_devices` list breaks; empty without a list.
 ///
 /// The shared rules, then an [`override_beside_list`] error for each key of
-/// the `devices` map beside the list. A driver's load and its `config.apply`
-/// both refuse a config with any.
+/// the `devices` map beside the list. A driver's load and its setup page's
+/// save both refuse a config with any.
 #[must_use]
 pub fn list_errors<'a, E: ListEntry>(
     list: Option<&[E]>,
@@ -197,7 +197,7 @@ pub fn check_list(errors: &[ListError]) -> Result<(), String> {
 /// A rule a list (or the config around it) breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListError {
-    /// The dotted config path `config.apply` reports it at
+    /// The dotted config path a setup page reports it at
     /// (`usb_devices.1.usb_port`).
     pub path: String,
     /// What a load error names it by (`usb_devices[1]`).
@@ -238,8 +238,7 @@ impl fmt::Display for ListError {
 ///
 /// Each `usb_port` non-blank, unpadded and unique, each `device_number`
 /// unique, and the numbers exactly `0..N-1`. Empty means the list is valid. An
-/// empty list is valid here — it is legal in a file; [`empty_list_over_apply`]
-/// is the one path that refuses it.
+/// empty list is valid: it serves no camera.
 #[must_use]
 pub fn validate_list(entries: &[EntryView<'_>]) -> Vec<ListError> {
     let mut errors = Vec::new();
@@ -356,31 +355,6 @@ pub fn override_beside_list(key: &str) -> ListError {
                   or delete it if the camera is not listed: a devices override is not \
                   read beside a usb_devices list"
             .to_string(),
-    }
-}
-
-/// `config.apply`'s refusal of `"usb_devices": []`: an empty list registers
-/// no device, so none would be left to serve the config actions.
-#[must_use]
-pub fn empty_list_over_apply() -> ListError {
-    ListError::list(
-        "an empty list registers no camera, so no device would be left to serve the \
-         config actions — none to apply a list through again; to hand every camera to \
-         another application, write \"usb_devices\": [] into the file and reload the \
-         service"
-            .to_string(),
-    )
-}
-
-/// The rule `config.apply` adds to the load's: an empty list is refused
-/// ([`empty_list_over_apply`]). Every driver's apply runs it beside the
-/// rules its load applies.
-#[must_use]
-pub fn apply_errors<E>(list: Option<&[E]>) -> Vec<ListError> {
-    if list.is_some_and(<[E]>::is_empty) {
-        vec![empty_list_over_apply()]
-    } else {
-        Vec::new()
     }
 }
 
@@ -1861,15 +1835,6 @@ mod tests {
             .starts_with("devices.SVB0123456789AB: move its fields into the usb_devices entry"));
     }
 
-    #[test]
-    fn config_apply_refuses_an_empty_list_at_the_list() {
-        let error = empty_list_over_apply();
-        assert_eq!(error.path, "usb_devices");
-        assert!(error
-            .message
-            .starts_with("an empty list registers no camera"));
-    }
-
     // --- the join ------------------------------------------------------------
 
     #[test]
@@ -2736,16 +2701,6 @@ mod tests {
                  rejected rather than filled, so renumber the wheels above it",
             ]
         );
-    }
-
-    #[test]
-    fn only_an_empty_list_breaks_the_apply_rule() {
-        let apply = |list: Option<&[UsbDeviceEntry]>| -> Vec<String> {
-            apply_errors(list).iter().map(|e| e.path.clone()).collect()
-        };
-        assert_eq!(apply(Some(&[])), ["usb_devices"]);
-        assert_eq!(apply(Some(&[usb_entry(0, "a")])), Vec::<String>::new());
-        assert_eq!(apply(None), Vec::<String>::new());
     }
 
     #[test]

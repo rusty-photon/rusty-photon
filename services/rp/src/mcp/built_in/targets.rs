@@ -942,7 +942,7 @@ fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
 /// string the write tools have always returned. The structured list is
 /// what `validate_plan` reports; a writer stops at the first offending
 /// field, so it only ever needs this one.
-fn render_first(errors: &[rusty_photon_config::actions::FieldError]) -> String {
+fn render_first(errors: &[rusty_photon_config::driver::FieldError]) -> String {
     errors
         .first()
         .map_or_else(String::new, |e| format!("{}: {}", e.path, e.msg))

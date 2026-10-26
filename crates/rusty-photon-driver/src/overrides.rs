@@ -12,7 +12,7 @@
 //! served without a list (`claims`).
 
 use maud::{html, Markup};
-use rusty_photon_config::actions::{DeviceSection, FieldError};
+use rusty_photon_config::driver::{DeviceSection, FieldError};
 use rusty_photon_setup::{
     BoxFuture, CustomSection, DriverPages, FormValues, PageScope, SectionView,
 };

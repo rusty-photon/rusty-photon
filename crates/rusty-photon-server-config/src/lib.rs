@@ -123,8 +123,8 @@ pub struct AlpacaServerConfig {
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
     /// the default — disables discovery: many rusty-photon servers on one
     /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments. `skip_serializing_if` so
-    /// `config.apply` cannot re-persist a stale key.
+    /// opt-in for single-driver deployments. `skip_serializing_if` so a
+    /// setup page's save cannot re-persist a stale key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared config-path resolution, first-run UniqueID materialization, and the config.get/apply/schema action protocol for rusty-photon drivers"
+description = "Shared config-path resolution, first-run UniqueID materialization, and the per-service half of the setup pages (the ConfigurableDriver trait) for rusty-photon services"
 
 [lints]
 workspace = true
@@ -19,5 +19,4 @@ directories = { workspace = true }
 uuid = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-strum = { workspace = true }
 tracing = { workspace = true }

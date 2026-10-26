@@ -34,8 +34,7 @@ test --keep_going
 #
 # `bdd` suites run BY DEFAULT since 2026-07-06: Bazel caches test results, so
 # after the first run only suites your change actually affects re-execute —
-# and BDD failures (e.g. ui-htmx's snapshots of OTHER services' config.get
-# output) must surface locally, not first on CI. The CI workflows are
+# and BDD failures must surface locally, not first on CI. The CI workflows are
 # unaffected: bazel.yml's fast step and the coverage job pass their own
 # explicit --test_tag_filters (BDD stays a separate CI step for failure
 # attribution). Locally, the OmniSim-backed suites need OMNISIM_PATH or

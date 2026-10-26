@@ -19,7 +19,7 @@ use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorT
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use http::StatusCode;
-use rusty_photon_config::actions::ConfigurableDriver;
+use rusty_photon_config::driver::ConfigurableDriver;
 use rusty_photon_setup::SetupPages;
 use tracing::debug;
 
@@ -57,7 +57,8 @@ pub struct PlaceholderCamera<D: ConfigurableDriver> {
 }
 
 impl<D: ConfigurableDriver> PlaceholderCamera<D> {
-    /// The placeholder `about` describes, serving no config actions.
+    /// The placeholder `about` describes, with no setup page until
+    /// [`with_setup_pages`](Self::with_setup_pages).
     #[must_use]
     pub const fn new(about: Placeholder) -> Self {
         Self { about, pages: None }
@@ -268,7 +269,7 @@ not_connected_camera! {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use rusty_photon_config::actions::FieldError;
+    use rusty_photon_config::driver::FieldError;
 
     /// A driver with nothing to configure, to stand the placeholder up.
     struct NoConfig;
@@ -295,10 +296,6 @@ mod tests {
         }
 
         fn apply_overrides(_config: &mut Empty, _overrides: &()) {}
-
-        fn read_only_paths() -> &'static [&'static str] {
-            &[]
-        }
     }
 
     fn placeholder() -> PlaceholderCamera<NoConfig> {

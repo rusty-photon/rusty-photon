@@ -4,8 +4,8 @@ Feature: Repair — doctor --fix
   default, a retired key deleted (sentinel's services map, ui-htmx's
   drivers map and sentinel block) — then re-diagnoses and reports the post-fix state, exit
   code included. Writes go through the same atomic save path the services' own
-  config.apply uses, every field doctor does not touch is preserved (the
-  formatting normalizes to the pretty-printed shape config.apply writes),
+  setup pages save through, every field doctor does not touch is preserved (the
+  formatting normalizes to the pretty-printed shape a setup page's save writes),
   and a second --fix run applies nothing. Judgment calls stay suggestions:
   discovery_port collisions, hand-set TLS material paths, and rp's
   equipment alpaca_url (inside the device-usage block doctor checks but

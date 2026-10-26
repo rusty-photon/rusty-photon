@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use maud::{html, Markup};
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use rusty_photon_setup::form::overlay_field;
 use rusty_photon_setup::origin::link_for;
 use rusty_photon_setup::render::{self, FieldState};

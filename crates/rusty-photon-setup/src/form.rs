@@ -1,7 +1,7 @@
 //! A submitted form coerced back into config values, field by field, by the
 //! rules [`FieldKind`] states.
 
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use serde_json::Value;
 
 use crate::schema::{FieldKind, FieldSpec};

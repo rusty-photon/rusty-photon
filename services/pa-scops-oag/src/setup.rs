@@ -10,7 +10,7 @@
 //!
 //! [`docs/services/pa-scops-oag.md`]: ../../../docs/services/pa-scops-oag.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, DeviceSection, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError};
 
 use crate::config::{CliOverrides, Config};
 

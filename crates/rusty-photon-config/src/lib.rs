@@ -39,7 +39,7 @@
     )
 )]
 
-pub mod actions;
+pub mod driver;
 
 use std::path::{Path, PathBuf};
 
@@ -498,8 +498,7 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 ///    is never self-created by this step: what a missing explicit file means
 ///    is the caller's policy — strict-config services treat it as a hard load
 ///    error (a typo'd `--config` must not silently run on defaults), while
-///    the `config.apply` drivers deliberately fall back to in-memory
-///    defaults.
+///    the Alpaca drivers deliberately fall back to in-memory defaults.
 ///
 /// Services whose device identities come from elsewhere (camera SDK serials)
 /// or that expose no devices pass `&[]` — declining minting is a visible

@@ -11,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use maud::Markup;
-use rusty_photon_config::actions::{DeviceSection, FieldError};
+use rusty_photon_config::driver::{DeviceSection, FieldError};
 use serde_json::Value;
 
 use crate::form::FormValues;

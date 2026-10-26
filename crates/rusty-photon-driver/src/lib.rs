@@ -10,12 +10,6 @@
 //!   `From<TransportError>`), with device-specific variants spliced in. Kept a
 //!   macro (rather than a shared enum) so each driver's error stays a local type —
 //!   its own `From<SessionError<XxxCodecError>>` would otherwise be orphan-illegal.
-//! - [`apply_error_to_ascom`] — the one mapping that can't be a `From` impl
-//!   (`ApplyError` and `ASCOMError` are both foreign here).
-//! - [`ConfigActionCtx`] + [`dispatch`] + [`supported_actions`] — the generic
-//!   `config.get` / `config.apply` / `config.schema` action dispatch, including the
-//!   fire-after-response in-process reload, for the drivers that still carry
-//!   the actions while they move to their own setup pages.
 //! - `setup` — the glue from the crate's setup hooks (`Device::setup_request`,
 //!   `Server::setup`) to `rusty-photon-setup`'s pages.
 //! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
@@ -28,8 +22,8 @@
 //!   camera cannot be served, and the failed USB scan's background re-scan.
 //!   Only the camera drivers with a `usb_devices` list turn the feature on.
 //!
-//! A driver invokes [`driver_error!`] for its error type and delegates
-//! `Device::action` / `Device::supported_actions` to the functions here. See
+//! A driver invokes [`driver_error!`] for its error type and serves its setup
+//! pages through `setup`. See
 //! [`docs/decisions/007-rusty-photon-driver-shared-crate.md`].
 //!
 //! [`docs/decisions/007-rusty-photon-driver-shared-crate.md`]: ../../../docs/decisions/007-rusty-photon-driver-shared-crate.md
@@ -59,17 +53,13 @@
     )
 )]
 
-pub mod actions;
 #[cfg(feature = "claims")]
 pub mod claims;
 pub mod connection;
 pub mod discovery;
-pub mod error;
 mod macros;
 pub mod overrides;
 pub mod setup;
 
-pub use actions::{dispatch, supported_actions, ConfigActionCtx, RELOAD_AFTER_RESPONSE_DELAY};
 pub use connection::{connected_transition, ConnectedTransition};
-pub use error::apply_error_to_ascom;
 pub use setup::{device_setup_request, ServerPages};

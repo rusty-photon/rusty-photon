@@ -3,14 +3,14 @@
 //! An unset optional field is spelled by the **absence** of its key, never
 //! by an explicit `null`. Every optional field a service persists carries
 //! `#[serde(skip_serializing_if = "Option::is_none")]` so that
-//! `serde_json::to_value` — the round-trip `config.apply` persists through —
+//! `serde_json::to_value` — the round-trip a setup page's save persists through —
 //! drops it instead of writing a null.
 //!
 //! Four things ride on that:
 //!
 //! 1. **A round-trip writes back only what the operator authored.** Without
-//!    it, `config.apply` re-materialises every unset key as a null, so a key
-//!    an operator deleted comes back on the next apply.
+//!    it, a save re-materialises every unset key as a null, so a key an
+//!    operator deleted comes back on the next save.
 //! 2. **Cross-version parsing.** Every config shape is
 //!    `deny_unknown_fields`, so an explicit null is a *present* key that a
 //!    reader one schema-generation behind rejects — over a key carrying no

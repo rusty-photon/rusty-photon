@@ -3,11 +3,11 @@
 //! Fixes are primitive JSON-pointer operations ([`FixOp`]) the checks
 //! planned. They are grouped per service file and applied as one
 //! read-modify-write through `rusty_photon_config::save` — the same atomic
-//! temp→fsync→rename→fsync-dir path the services' own `config.apply` uses —
+//! temp→fsync→rename→fsync-dir path the services' own setup pages save through —
 //! so a crash mid-fix never corrupts a config, and every field doctor does
 //! not touch is preserved (the mutation is on the raw JSON value, not a
 //! typed round-trip; `save` normalizes formatting to the same
-//! pretty-printed shape `config.apply` writes). `save` also carries the
+//! pretty-printed shape a setup page's save writes). `save` also carries the
 //! replaced file's owner and mode onto the new inode, so a sudo'd doctor —
 //! the only way to reach a packaged install's `0750` config root — never
 //! strands a config root-owned and unreadable by its service.

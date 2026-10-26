@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server, SetupRequest, SetupResponse};
-use rusty_photon_config::actions::ConfigurableDriver;
+use rusty_photon_config::driver::ConfigurableDriver;
 use rusty_photon_config::ConfigFile;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;

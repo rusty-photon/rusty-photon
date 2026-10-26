@@ -12,7 +12,7 @@
 //!
 //! [`docs/services/svbony-camera.md`]: ../../../docs/services/svbony-camera.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
 

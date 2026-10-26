@@ -3,7 +3,7 @@
 //! never carries the hash.
 
 use maud::{html, Markup};
-use rusty_photon_config::actions::FieldError;
+use rusty_photon_config::driver::FieldError;
 use serde_json::Value;
 
 use crate::form::FormValues;

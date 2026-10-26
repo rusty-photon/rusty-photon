@@ -14,7 +14,7 @@
 //!
 //! [`docs/services/qhy-camera.md`]: ../../../docs/services/qhy-camera.md
 
-use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_config::driver::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
@@ -167,11 +167,6 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(QhyCameraDriver::validate(&config), Vec::new());
-    }
-
-    #[test]
-    fn no_locked_identity_fields() {
-        assert_eq!(QhyCameraDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

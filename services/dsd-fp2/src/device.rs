@@ -243,7 +243,7 @@ impl CoverCalibrator for DsdFp2Device {
         // calibrator_off() to actually turn the light off.
         let min_brightness = self.config.min_brightness;
         if brightness != 0 && brightness < min_brightness {
-            // config.apply rejects min_brightness > max_brightness (see
+            // A setup page's save rejects min_brightness > max_brightness (see
             // setup.rs), but a hand-edited config file loaded at
             // startup isn't validated — so effective_max can still be below
             // min_brightness here. Don't suggest an unreachable remediation
@@ -252,7 +252,7 @@ impl CoverCalibrator for DsdFp2Device {
                 format!(
                     "cover_calibrator.min_brightness ({min_brightness}) exceeds the effective \
                      max brightness ({effective_max}) — this is a driver misconfiguration; fix \
-                     it via config.apply"
+                     it on the driver's setup page"
                 )
             } else {
                 format!(

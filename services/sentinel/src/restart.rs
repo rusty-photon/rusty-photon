@@ -1,7 +1,7 @@
 //! The Service Restart API's engine: `POST /api/services/{name}/restart`.
 //!
 //! Sentinel owns *process* restart for the rest of the stack (drivers reload
-//! themselves via `config.apply`; sentinel restarts processes). `{name}` is a
+//! themselves after a setup-page save; sentinel restarts processes). `{name}` is a
 //! [discovered service](crate::discovery); the [`RestartManager`] hands its
 //! unit to the platform service manager and then polls the platform's
 //! recovery check until it passes or the constant restart budget elapses.
@@ -54,8 +54,7 @@ pub enum Recovery {
 }
 
 /// Domain outcome of a restart request. `status:"failed"` is still HTTP 200 —
-/// the *action* ran and this is its result (mirroring `config.apply`'s
-/// `status:"invalid"` convention).
+/// the *action* ran and this is its result.
 #[derive(Debug, Clone, Serialize)]
 pub struct RestartReport {
     pub service: String,
