@@ -439,16 +439,25 @@ async fn poll_loop(
 }
 
 /// Store `frame` and feed the sensor windows — only while the AHT20 says it
-/// is attached. The first frame whose flag reads `0` clears the three
-/// windows, so the readings go `VALUE_NOT_SET` at once rather than serving a
-/// mean of samples taken before the sensor went away.
+/// is attached, and only from a field that carries a reading. The first
+/// frame whose flag reads `0` clears the three windows, so the readings go
+/// `VALUE_NOT_SET` at once rather than serving a mean of samples taken
+/// before the sensor went away; a field with no reading while the flag is
+/// `1` adds no sample and clears nothing, and the window ages out on its
+/// own if that persists.
 fn apply_status(state: &mut CachedState, frame: &StatusFrame) {
     state.status = Some(frame.clone());
     state.last_update = Some(SystemTime::now());
     if frame.ambient_sensor_attached {
-        state.temp_mean.add_sample(frame.ambient_temperature);
-        state.humidity_mean.add_sample(frame.humidity);
-        state.dewpoint_mean.add_sample(frame.dew_point);
+        for (mean, reading) in [
+            (&mut state.temp_mean, frame.ambient_temperature),
+            (&mut state.humidity_mean, frame.humidity),
+            (&mut state.dewpoint_mean, frame.dew_point),
+        ] {
+            if let Some(value) = reading {
+                mean.add_sample(value);
+            }
+        }
     } else {
         for mean in [
             &mut state.temp_mean,
@@ -534,7 +543,7 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         let frame = state.status.expect("frame seeded by handshake");
-        assert_eq!(frame.ambient_temperature, 24.47);
+        assert_eq!(frame.ambient_temperature, Some(24.47));
         assert_eq!(state.firmware, Some(308));
         assert_eq!(state.temp_mean.sample_count(), 1);
 

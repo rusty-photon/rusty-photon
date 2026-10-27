@@ -144,10 +144,19 @@ impl GeminiSwitchDevice {
             SwitchId::InputVoltage => frame.input_voltage,
             SwitchId::OutputCurrent => frame.output_current,
             SwitchId::OutputPower => frame.output_power,
-            SwitchId::Temperature if frame.ambient_sensor_attached => frame.ambient_temperature,
-            SwitchId::Humidity if frame.ambient_sensor_attached => frame.humidity,
-            SwitchId::Dewpoint if frame.ambient_sensor_attached => frame.dew_point,
-            SwitchId::LensTemperature if frame.lens_probe_attached => frame.lens_temperature,
+            // A reading the frame does not carry reads as the sentinel too.
+            SwitchId::Temperature if frame.ambient_sensor_attached => {
+                frame.ambient_temperature.unwrap_or(TEMPERATURE_SENTINEL)
+            }
+            SwitchId::Humidity if frame.ambient_sensor_attached => {
+                frame.humidity.unwrap_or(HUMIDITY_SENTINEL)
+            }
+            SwitchId::Dewpoint if frame.ambient_sensor_attached => {
+                frame.dew_point.unwrap_or(TEMPERATURE_SENTINEL)
+            }
+            SwitchId::LensTemperature if frame.lens_probe_attached => {
+                frame.lens_temperature.unwrap_or(TEMPERATURE_SENTINEL)
+            }
             SwitchId::Temperature | SwitchId::Dewpoint | SwitchId::LensTemperature => {
                 TEMPERATURE_SENTINEL
             }
@@ -838,6 +847,25 @@ mod tests {
             sent.iter().filter(|c| c.as_str() == ">G#").count(),
             1,
             "only the handshake's >G# stands alone; no second look was needed: {sent:?}"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_write_whose_first_readback_predates_the_set_is_confirmed_on_the_second_look() {
+        // The hub started a periodic frame before the set reached it, so
+        // the first whole frame read shows the state before the write;
+        // one more look shows it applied.
+        let (device, factory) = connected_device_on(
+            MockGeminiTransportFactory::default().with_a_periodic_frame_started_during_each_set(),
+        )
+        .await;
+        device.set_switch_value(DC2, 0.0).await.unwrap();
+        assert_value(device.get_switch_value(DC2).await.unwrap(), 0.0);
+        // The set, then exactly one more look.
+        assert_eq!(
+            factory.sent_buffers().await,
+            [">H#", ">V#", ">G#", ">C2#\n>G#", ">G#"]
         );
         device.set_connected(false).await.unwrap();
     }

@@ -69,6 +69,10 @@ pub const ENV_STREAMING_AT_START: &str = "GEMINI_MOCK_STREAMING_AT_START";
 /// `1`: once armed, every reply arrives glued to a periodic frame the hub
 /// cut short to answer, in one chunk — what the dev box's unit does.
 pub const ENV_CUT_FRAMES: &str = "GEMINI_MOCK_CUT_FRAMES";
+/// `1`: every set is answered first by the frame the hub started before
+/// acting on it, then by the post-set frame — the periodic frame that
+/// starts during the set, which only the second look sees past.
+pub const ENV_PRE_WRITE_FRAME: &str = "GEMINI_MOCK_PRE_WRITE_FRAME";
 
 /// How often the armed hub streams a frame: measured 3.000 s.
 pub const STREAM_PERIOD: Duration = Duration::from_secs(3);
@@ -126,6 +130,17 @@ struct Quirks {
     cut_frames_before_reply: bool,
     /// The stream is already running when the port opens.
     streaming_at_start: bool,
+    /// What a set is answered with first.
+    readback: Readback,
+}
+
+/// What answers a set: the frame the hub produced after acting on it, or
+/// first the frame it started before the set reached it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Readback {
+    #[default]
+    PostSet,
+    PreSetFirst,
 }
 
 impl Default for MockDeviceState {
@@ -164,6 +179,11 @@ impl Default for MockDeviceState {
                 stale_frames_before_reply: env_flag(ENV_STALE_FRAMES),
                 cut_frames_before_reply: env_flag(ENV_CUT_FRAMES),
                 streaming_at_start: env_flag(ENV_STREAMING_AT_START),
+                readback: if env_flag(ENV_PRE_WRITE_FRAME) {
+                    Readback::PreSetFirst
+                } else {
+                    Readback::PostSet
+                },
             },
             ignore_identity: u32::from(env_flag(ENV_IGNORE_FIRST_IDENTITY)),
             stuck_output: env_stuck_output(),
@@ -464,7 +484,16 @@ impl MockState {
                 }
                 self.reply(&self.device.frame());
             }
-            set => self.device.apply(set),
+            set => {
+                // A periodic frame the hub started before the set reached
+                // it predates the set and is the first whole frame read.
+                let before = (self.device.quirks.readback == Readback::PreSetFirst)
+                    .then(|| self.device.frame());
+                self.device.apply(set);
+                if let Some(frame) = before {
+                    self.reply(&frame);
+                }
+            }
         }
     }
 
@@ -662,6 +691,13 @@ impl MockGeminiTransportFactory {
     #[must_use]
     pub fn with_cut_frames_before_reply(self) -> Self {
         self.map_device(|d| d.quirks.cut_frames_before_reply = true)
+    }
+
+    /// Every set answered first by the frame from before it: the twin of
+    /// [`ENV_PRE_WRITE_FRAME`].
+    #[must_use]
+    pub fn with_a_periodic_frame_started_during_each_set(self) -> Self {
+        self.map_device(|d| d.quirks.readback = Readback::PreSetFirst)
     }
 
     /// Change which sensors are attached on the running hub, as unplugging

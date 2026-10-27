@@ -238,7 +238,7 @@ mod tests {
         let GeminiResponse::Status(frame) = GeminiCodec.decode(&glued).unwrap() else {
             panic!("a cut frame before a whole one must yield the whole one");
         };
-        assert_eq!(frame.ambient_temperature, 24.47);
+        assert_eq!(frame.ambient_temperature, Some(24.47));
     }
 
     #[test]

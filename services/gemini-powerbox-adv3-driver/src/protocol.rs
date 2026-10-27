@@ -10,7 +10,6 @@
 use std::fmt;
 
 use crate::error::{GeminiError, Result};
-use crate::switches::{HUMIDITY_SENTINEL, TEMPERATURE_SENTINEL};
 
 /// What the Advanced 3 answers to `>H#`, compared verbatim.
 pub const IDENTITY: &str = "GeminiPowerBoxPlusAdv3";
@@ -415,14 +414,18 @@ pub struct StatusFrame {
     pub lens_probe_attached: bool,
     /// DEW6 and DEW7 (fields 4 to 9).
     pub dew: [DewChannelState; DEW_CHANNEL_COUNT],
-    /// Lens temperature from the DS18B20, °C (field 10).
-    pub lens_temperature: f64,
-    /// Ambient temperature from the AHT20, °C (field 11).
-    pub ambient_temperature: f64,
-    /// Relative humidity from the AHT20, % (field 12).
-    pub humidity: f64,
-    /// Dew point the hub computes, °C (field 13).
-    pub dew_point: f64,
+    /// Lens temperature from the DS18B20, °C (field 10); `None` when the
+    /// field holds no finite number.
+    pub lens_temperature: Option<f64>,
+    /// Ambient temperature from the AHT20, °C (field 11); `None` when the
+    /// field holds no finite number.
+    pub ambient_temperature: Option<f64>,
+    /// Relative humidity from the AHT20, % (field 12); `None` when the
+    /// field holds no finite number.
+    pub humidity: Option<f64>,
+    /// Dew point the hub computes, °C (field 13); `None` when the field
+    /// holds no finite number.
+    pub dew_point: Option<f64>,
     /// Input voltage, V (field 14).
     pub input_voltage: f64,
     /// Total output current, A (field 15).
@@ -582,20 +585,30 @@ impl<'a> Fields<'a> {
         Ok(value)
     }
 
-    /// A sensor's reading. While the sensor is attached it must be a
-    /// finite decimal number. While it is not, the field is consumed
-    /// whatever it holds — what the firmware writes for an unplugged sensor
-    /// is not known, and the flag is believed over the number — and
-    /// `absent` stands in unless the field does hold a finite number.
-    fn reading(&mut self, name: &str, tag: char, attached: bool, absent: f64) -> Result<f64> {
-        let raw = self.raw(name, tag)?;
-        match raw.trim().parse::<f64>() {
-            Ok(value) if value.is_finite() => Ok(value),
-            _ if attached => Err(GeminiError::ParseError(format!(
-                "{name}: expected a finite number, got {raw:?}"
-            ))),
-            _ => Ok(absent),
-        }
+    /// The raw text up to the next `tag`, for a field whose content may
+    /// carry upper-case letters of its own.
+    fn raw_until(&mut self, name: &str, tag: char) -> Result<&'a str> {
+        let Some(at) = self.rest.find(tag) else {
+            return Err(GeminiError::ParseError(format!(
+                "frame ended before {name} ({tag}): {}",
+                self.frame
+            )));
+        };
+        let (value, tagged) = self.rest.split_at(at);
+        self.rest = tagged.get(tag.len_utf8()..).unwrap_or_default();
+        Ok(value)
+    }
+
+    /// A sensor's reading: `Some` while the field holds a finite decimal
+    /// number, `None` for anything else. What the firmware writes while a
+    /// sensor is unplugged — or, on 3.0.8 with its DS18B20 detection
+    /// defect, misreported as attached — is not known, so the field ends
+    /// at its own tag rather than at the next upper-case letter, and
+    /// nothing in it can fail the frame: a reading the frame does not
+    /// carry is no reading, not an error.
+    fn reading(&mut self, name: &str, tag: char) -> Result<Option<f64>> {
+        let raw = self.raw_until(name, tag)?;
+        Ok(raw.trim().parse::<f64>().ok().filter(|v| v.is_finite()))
     }
 
     /// Nothing may follow the last field.
@@ -637,25 +650,10 @@ impl std::str::FromStr for StatusFrame {
         let dew7_mode = f.mode("DEW7 mode", 'M')?;
         let dew6_duty = f.integer("DEW6 duty", 'C')?;
         let dew7_duty = f.integer("DEW7 duty", 'C')?;
-        let lens_temperature = f.reading(
-            "lens temperature",
-            'S',
-            lens_probe_attached,
-            TEMPERATURE_SENTINEL,
-        )?;
-        let ambient_temperature = f.reading(
-            "ambient temperature",
-            'T',
-            ambient_sensor_attached,
-            TEMPERATURE_SENTINEL,
-        )?;
-        let humidity = f.reading("humidity", 'H', ambient_sensor_attached, HUMIDITY_SENTINEL)?;
-        let dew_point = f.reading(
-            "dew point",
-            'D',
-            ambient_sensor_attached,
-            TEMPERATURE_SENTINEL,
-        )?;
+        let lens_temperature = f.reading("lens temperature", 'S')?;
+        let ambient_temperature = f.reading("ambient temperature", 'T')?;
+        let humidity = f.reading("humidity", 'H')?;
+        let dew_point = f.reading("dew point", 'D')?;
         let input_voltage = f.number("input voltage", 'V')?;
         let output_current = f.number("output current", 'C')?;
         let output_power = f.number("output power", 'P')?;
@@ -918,10 +916,10 @@ mod tests {
             assert_eq!(state.mode, DewMode::Manual, "{channel:?}");
             assert_eq!(state.duty, 100, "{channel:?}");
         }
-        assert_eq!(frame.lens_temperature, 23.25);
-        assert_eq!(frame.ambient_temperature, 24.47);
-        assert_eq!(frame.humidity, 67.76);
-        assert_eq!(frame.dew_point, 18.12);
+        assert_eq!(frame.lens_temperature, Some(23.25));
+        assert_eq!(frame.ambient_temperature, Some(24.47));
+        assert_eq!(frame.humidity, Some(67.76));
+        assert_eq!(frame.dew_point, Some(18.12));
         assert_eq!(frame.input_voltage, 12.2);
         assert_eq!(frame.output_current, 0.02);
         assert_eq!(frame.output_power, 0.36);
@@ -932,14 +930,14 @@ mod tests {
         // Magnus against 24.47 °C / 67.76 % RH gives 18.1 °C, which is what
         // field 13 says: T/H/D belong together, so S is the lens probe.
         let frame: StatusFrame = CAPTURED_PAYLOAD.parse().unwrap();
-        let t = frame.ambient_temperature;
-        let rh = frame.humidity;
+        let t = frame.ambient_temperature.unwrap();
+        let rh = frame.humidity.unwrap();
+        let dew_point = frame.dew_point.unwrap();
         let gamma = (17.62 * t) / (243.12 + t) + (rh / 100.0).ln();
         let magnus = 243.12 * gamma / (17.62 - gamma);
         assert!(
-            (magnus - frame.dew_point).abs() < 0.1,
-            "Magnus {magnus} vs frame {}",
-            frame.dew_point
+            (magnus - dew_point).abs() < 0.1,
+            "Magnus {magnus} vs frame {dew_point}"
         );
     }
 
@@ -991,52 +989,44 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_sensors_fields_need_not_hold_a_number() {
-        // Whatever the firmware writes for an unplugged sensor, the frame
-        // parses and the sentinel stands in; a number it does write is kept.
-        for placeholder in ["   nan", "   ovf", "      ", " --.--", "-127.00"] {
-            let payload = CAPTURED_PAYLOAD
-                .replace("1A1T1A", "0A0T1A")
-                .replace(" 23.25S", &format!("{placeholder}S"))
-                .replace(" 24.47T", &format!("{placeholder}T"))
-                .replace(" 67.76H", &format!("{placeholder}H"))
-                .replace(" 18.12D", &format!("{placeholder}D"));
-            let frame: StatusFrame = payload
-                .parse()
-                .unwrap_or_else(|e| panic!("{placeholder:?}: {e}"));
-            assert!(!frame.ambient_sensor_attached);
-            assert!(!frame.lens_probe_attached);
-            assert_eq!(
-                frame.lens_temperature, TEMPERATURE_SENTINEL,
-                "{placeholder:?}"
-            );
-            assert_eq!(
-                frame.ambient_temperature, TEMPERATURE_SENTINEL,
-                "{placeholder:?}"
-            );
-            assert_eq!(frame.dew_point, TEMPERATURE_SENTINEL, "{placeholder:?}");
-            let humidity = if placeholder == "-127.00" {
-                -127.0
-            } else {
-                HUMIDITY_SENTINEL
-            };
-            assert_eq!(frame.humidity, humidity, "{placeholder:?}");
-            assert_eq!(frame.input_voltage, 12.2, "{placeholder:?}");
+    fn a_sensor_field_that_holds_no_number_carries_no_reading_whatever_the_flag_says() {
+        // What the firmware writes for an unplugged sensor is not known, and
+        // 3.0.8 can misreport a probe as attached: nothing in these fields
+        // may fail the frame, whichever way the flags read, and a field
+        // ends at its own tag even when a placeholder has capitals in it.
+        for flags in ["0A0T1A", "1A1T1A"] {
+            for placeholder in [
+                "   nan", "   NaN", "   INF", "   ERR", "   N/A", "   ovf", "      ", " --.--",
+            ] {
+                let payload = CAPTURED_PAYLOAD
+                    .replace("1A1T1A", flags)
+                    .replace(" 23.25S", &format!("{placeholder}S"))
+                    .replace(" 24.47T", &format!("{placeholder}T"))
+                    .replace(" 67.76H", &format!("{placeholder}H"))
+                    .replace(" 18.12D", &format!("{placeholder}D"));
+                let frame: StatusFrame = payload
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{flags} {placeholder:?}: {e}"));
+                assert_eq!(frame.lens_temperature, None, "{flags} {placeholder:?}");
+                assert_eq!(frame.ambient_temperature, None, "{flags} {placeholder:?}");
+                assert_eq!(frame.humidity, None, "{flags} {placeholder:?}");
+                assert_eq!(frame.dew_point, None, "{flags} {placeholder:?}");
+                assert_eq!(frame.input_voltage, 12.2, "{flags} {placeholder:?}");
+            }
         }
     }
 
     #[test]
-    fn an_attached_sensors_field_must_still_be_a_finite_number() {
-        for (field, tagged, tag) in [
-            ("lens temperature", " 23.25S", 'S'),
-            ("ambient temperature", " 24.47T", 'T'),
-            ("humidity", " 67.76H", 'H'),
-            ("dew point", " 18.12D", 'D'),
-        ] {
-            let payload = CAPTURED_PAYLOAD.replace(tagged, &format!("   nan{tag}"));
-            let err = payload.parse::<StatusFrame>().unwrap_err();
-            assert!(err.to_string().contains(field), "{field}: {err}");
-        }
+    fn a_number_in_a_sensor_field_is_kept_whatever_the_flag_says() {
+        // The DS18B20 library's -127.00 for a disconnected probe is a number
+        // like any other here; the flag, not the value, says what it means.
+        let payload = CAPTURED_PAYLOAD
+            .replace("1A1T1A", "1A0T1A")
+            .replace(" 23.25S", "-127.00S");
+        let frame: StatusFrame = payload.parse().unwrap();
+        assert!(!frame.lens_probe_attached);
+        assert_eq!(frame.lens_temperature, Some(-127.0));
+        assert_eq!(frame.ambient_temperature, Some(24.47));
     }
 
     #[test]
@@ -1052,7 +1042,7 @@ mod tests {
     fn a_negative_temperature_parses() {
         let payload = CAPTURED_PAYLOAD.replace(" 23.25S", "-12.50S");
         let frame: StatusFrame = payload.parse().unwrap();
-        assert_eq!(frame.lens_temperature, -12.5);
+        assert_eq!(frame.lens_temperature, Some(-12.5));
     }
 
     #[test]
@@ -1076,9 +1066,9 @@ mod tests {
 
     #[test]
     fn a_bad_number_names_the_field() {
-        let payload = CAPTURED_PAYLOAD.replace(" 67.76H", " 6x.76H");
+        let payload = CAPTURED_PAYLOAD.replace("12.2V", "1x.2V");
         let err = payload.parse::<StatusFrame>().unwrap_err();
-        assert!(err.to_string().contains("humidity"), "{err}");
+        assert!(err.to_string().contains("input voltage"), "{err}");
     }
 
     #[test]

@@ -19,6 +19,7 @@ const ENV_INPUT_VOLTAGE: &str = "GEMINI_MOCK_INPUT_VOLTAGE";
 const ENV_STALE_FRAMES: &str = "GEMINI_MOCK_STALE_FRAMES";
 const ENV_IGNORE_FIRST_IDENTITY: &str = "GEMINI_MOCK_IGNORE_FIRST_IDENTITY";
 const ENV_STUCK_OUTPUT: &str = "GEMINI_MOCK_STUCK_OUTPUT";
+const ENV_PRE_WRITE_FRAME: &str = "GEMINI_MOCK_PRE_WRITE_FRAME";
 const ENV_STREAMING_AT_START: &str = "GEMINI_MOCK_STREAMING_AT_START";
 const ENV_CUT_FRAMES: &str = "GEMINI_MOCK_CUT_FRAMES";
 
@@ -52,6 +53,7 @@ pub fn preset_env(phrase: &str) -> Vec<(&'static str, String)> {
         "two streamed frames queued ahead of every reply" => (ENV_STALE_FRAMES, "1"),
         "an ignored first identity request" => (ENV_IGNORE_FIRST_IDENTITY, "1"),
         "DC3 tripped and refusing to switch" => (ENV_STUCK_OUTPUT, "3"),
+        "a periodic frame starting during every set" => (ENV_PRE_WRITE_FRAME, "1"),
         other => panic!("unknown hub preset in the feature file: {other:?}"),
     };
     vec![(name, value.to_string())]

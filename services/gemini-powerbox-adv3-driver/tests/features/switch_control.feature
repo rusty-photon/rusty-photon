@@ -67,6 +67,14 @@ Feature: Switch control
     When I set switch 11 value to 40.0
     Then switch 11 value should be 40.0
 
+  Scenario: A write whose first readback predates the set is confirmed on the second look
+    Given a running Gemini hub server with a periodic frame starting during every set and the switch connected
+    When I wait for the switch data to be available
+    And I set switch 1 boolean to false
+    Then switch 1 boolean should be false
+    When I set switch 11 value to 40.0
+    Then switch 11 value should be 40.0
+
   Scenario Outline: A value between steps is rounded to the nearest step
     Given a running Gemini hub server with the switch connected
     When I wait for the switch data to be available

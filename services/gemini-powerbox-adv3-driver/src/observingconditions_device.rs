@@ -413,15 +413,15 @@ mod tests {
         let frame = manager.get_cached_state().await.status.unwrap();
         let t = device.temperature().await.unwrap();
         assert!(
-            (t - frame.ambient_temperature).abs() < 0.01,
+            (t - frame.ambient_temperature.unwrap()).abs() < 0.01,
             "temperature: {t}"
         );
         let h = device.humidity().await.unwrap();
-        assert!((h - frame.humidity).abs() < 0.01, "humidity: {h}");
+        assert!((h - frame.humidity.unwrap()).abs() < 0.01, "humidity: {h}");
         let d = device.dew_point().await.unwrap();
-        assert!((d - frame.dew_point).abs() < 0.01, "dewpoint: {d}");
+        assert!((d - frame.dew_point.unwrap()).abs() < 0.01, "dewpoint: {d}");
         // The lens probe is not an ObservingConditions property.
-        assert_ne!(t, frame.lens_temperature);
+        assert_ne!(Some(t), frame.lens_temperature);
         device.set_connected(false).await.unwrap();
     }
 

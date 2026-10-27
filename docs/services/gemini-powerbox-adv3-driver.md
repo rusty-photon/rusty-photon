@@ -422,19 +422,22 @@ driver believes the flag over the number. When a flag is `0`:
   no-clamp rule under *Read-only* above forbids. `-127` is the DS18B20
   library convention for a disconnected probe, which is why the
   temperature rows declare `-127` as their minimum;
-- that sensor's fields need not hold a number. The parser takes whatever
-  sits between the tags and the sentinel stands in for it in the parsed
-  frame (a finite number it does find is kept), so a placeholder such as
-  `nan` or `ovf` cannot fail every frame — and with it the handshake —
-  on a hub whose sensor is simply not plugged in. With the flag at `1` a
-  field that is not a finite number is a parse error, as for every other
-  field.
+- that sensor's fields need not hold a number — and nor need they while
+  the flag reads `1`, since 3.0.8 can misreport a probe as attached
+  ([Firmware](#firmware)). A sensor field (10–13) ends at its own tag
+  rather than at the next upper-case letter, and whatever sits there
+  that is not a finite number — `nan`, `NaN`, `ovf`, blanks — is a
+  reading the frame does not carry, never a parse error, so no
+  placeholder can fail every frame and with it the handshake. A field
+  with no reading makes its Switch row read the sentinel and gives
+  ObservingConditions no sample (the window ages out on its own if that
+  persists); a finite number is kept, and the flag says what it means.
+  The state and electrical fields stay strict.
 
 What the firmware itself writes into fields 10–13 while a sensor is
 unplugged is not known; neither driver says and the dev box's unit had both
 attached. It is on the [hardware validation list](#hardware-validation);
-until then the mock writes `nan` there, the worst case the parser
-tolerates.
+until then the mock writes `nan` there.
 
 ### Operator labels
 
@@ -795,7 +798,7 @@ binary spawned with `--features mock`, unit tests inline in `src/`.
 |----------------|--------------|--------|
 | Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry |
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
-| Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; the stale-frame second look |
+| Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; a readback that predates the set, rescued by the second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
 | Status frame | `sensor_readings.feature` | the pinned frame's values read back exactly; a field outside its row's range (a 24 V input) published unclamped; sentinel rows with a sensor absent |
 | ObservingConditions | `observing_conditions.feature` | the three means, `AveragePeriod`, `VALUE_NOT_SET` on an empty window and on an absent AHT20 |
@@ -840,6 +843,7 @@ Knobs reaching state the driver cannot set:
 | `GEMINI_MOCK_STUCK_OUTPUT` | a DC output number, 2–5, the hub never switches — a tripped output, for the unconfirmed-write scenario |
 | `GEMINI_MOCK_STREAMING_AT_START` | `1`: the hub is streaming when the port opens, as a unit left armed by an earlier session is |
 | `GEMINI_MOCK_CUT_FRAMES` | `1`: once armed, every reply arrives glued to a periodic frame cut short after 63 bytes, as measured |
+| `GEMINI_MOCK_PRE_WRITE_FRAME` | `1`: every set is answered first by the frame the hub started before acting on it, then by the post-set frame — the second look's rescue |
 
 Each is read once at mock construction; the in-process `with_…` builders
 are the unit-test equivalents. The knobs fix the sensor flags for the run,
