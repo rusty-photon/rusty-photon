@@ -404,37 +404,55 @@ a mount that was already parked, so nothing moved
 *Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.*
 
 A driver that announces its reloads serves `GET /rusty-photon/v1/notices`,
-behind its login like every other path: a Server-Sent Events stream on
-which nothing is sent but a keep-alive comment every 15 s, until the
-server is about to reload. Then it sends
+behind its login like every other path: a Server-Sent Events stream. It
+opens with the server's instance, a fresh id each time the reload loop
+builds the server:
+
+```text
+event: hello
+data: {"instance": "3f2a9c1e"}
+```
+
+After that nothing is sent but a keep-alive comment every 15 s, until
+the server stops. Every stop ends the stream, so the server's drain,
+which waits for every open response, never waits on it. A reload ends
+it with
 
 ```text
 event: reloading
-data: {"back_within_secs": 10}
+data: {"instance": "3f2a9c1e", "back_within_secs": 10}
 ```
 
-and closes the stream. The notice goes out on every reload, whatever
-fired it (a save, `SIGHUP`, or Windows' `ParamChange`), before the
-server starts to drain. `back_within_secs` is the time the driver allows
-itself to serve again: 10 s, against the 1–2 s a reload took on the
-field rig. A stream that closes without a notice announced nothing: the
-server stopped or failed. A client that has heard nothing on the stream
-for 45 s treats it as closed. Safety monitors serve the stream (`filemonitor`); another
-driver may, but `rp` opens only its safety monitors'
+and a shutdown ends it without a notice: a stream that closes without
+one announced nothing, because the server stopped or failed. The
+service's reload loop, the one consumer of its `ReloadSignal`, sends
+the notice, so it goes out on every reload whatever fired it (a save,
+`SIGHUP`, or Windows' `ParamChange`). It goes out only after the server
+has stopped accepting connections and closed its idle ones, so a
+request made after the notice cannot reach the server that sent it.
+`back_within_secs` is the time the driver allows itself to serve again:
+10 s, against the 1–2 s a reload took on the field rig. A client that
+has heard nothing on the stream for 45 s treats it as closed.
+
+Safety monitors serve the stream (`filemonitor`); another driver may,
+but `rp` opens only its safety monitors'
 ([rp.md § Announced reloads](../services/rp.md#announced-reloads)). The
 stream lives in `rusty-photon-driver`, beside the server it is served
-from, because every reload goes through the service's reload loop and
-only some come from this crate's save.
+from, and the notice is sent from the service's reload loop, since only
+some reloads come from this crate's save.
 
 The reload keeps its listening socket while the server's address
 (`server.port`, `bind_address`) is unchanged: the drained server stops
 accepting and the rebuilt one accepts on the same socket. A request made
 in between waits in the socket's queue and is answered by the rebuilt
 server rather than refused, so a client learns that the server is back
-by asking it once. A changed address binds a new socket and closes the
-old one, and a request to the old address is refused, since the server
-is no longer there. A rebuild that fails ends the service, which closes
-the socket.
+by asking it once. That takes serve functions in `rusty-photon-tls`
+that leave the listener to their caller, and a reload loop that holds
+it: `filemonitor`'s, as the safety monitor. A changed address closes
+the old socket before it binds the new one, since the same port on a
+narrower address does not bind while the old socket listens, and a
+request in between is refused. A rebuild that fails ends the service,
+which closes the socket.
 
 ## What is not here
 

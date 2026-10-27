@@ -109,9 +109,10 @@ and `rp` holds the monitor's last reading until it is back, at most
 10 s, reconnecting it as soon as it is
 ([rp.md § Announced reloads](rp.md#announced-reloads)). Only a monitor
 that reads unsafe when it is back, or is not back by then, sets off the
-transition. A change to `server.port` or `bind_address` moves the
-monitor away from the address `rp` is configured with, so it is not
-back, and `rp` parks; point `rp`'s `alpaca_url` at the new address.
+transition. A change to `server.port` or `bind_address` is found only
+at the deadline, and only if the address `rp` is configured with still
+reaches the monitor; otherwise `rp` parks, so point `rp`'s
+`alpaca_url` at the new address.
 Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652), not implemented yet: until it is, the reload
 makes `rp` run the transition whenever a safety poll reads the monitor
 before `rp`'s reconnect supervisor has reconnected it (about five saves

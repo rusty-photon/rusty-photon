@@ -3737,7 +3737,7 @@ devices:
   that finds the session healthy but the stream closed opens it again
   (§ [Announced reloads](#announced-reloads)). A reload the monitor
   announces is re-established as soon as the monitor is back, not at
-  the next pass.
+  the next pass. (Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.)
 - **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
@@ -3775,6 +3775,7 @@ Consequences and constraints:
   safety monitor still reads as unsafe and a device call still errors.
   The one wait is a reload the monitor announced, which `rp` holds out
   until its deadline (§ [Announced reloads](#announced-reloads)).
+  (Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.)
   Recovery is an availability mechanism, not a safety mechanism.
 - **Tenet 3 applies to the reconnect path exactly as to first
   connect:** re-establishing a session re-*reads* state and never
@@ -7053,7 +7054,7 @@ Recovery](#device-session-recovery)); the next poll then reads through
 the new session and the unsafe state clears on its own. A monitor that
 announced a reload is the one exception: `rp` holds its last reading
 until it is back or its deadline passes (§ [Announced
-reloads](#announced-reloads)).
+reloads](#announced-reloads)). (Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.)
 
 The transition below runs whatever is running, at `rp`'s startup
 included (§ [What Survives an rp Restart](#what-survives-an-rp-restart)):
@@ -7156,36 +7157,49 @@ waits for it:
 
 - **The notice stream.** `rp` holds open each safety monitor's
   [notice stream](../crates/rusty-photon-setup.md#the-reload-notice),
-  with the entry's own credential and CA. It opens the stream when it
-  establishes the monitor's session, at startup and on every
-  re-establish (§ [Device Session Recovery](#device-session-recovery)),
-  and whenever a supervisor pass finds the session healthy but the
-  stream closed. A server that serves none (`404`: a third-party
-  monitor, or an older build) is asked again only at the next
-  re-establish, and its reload reads like any lost monitor.
+  with the entry's own credential and CA but without its Alpaca
+  client's 10 s read timeout: an idle stream is healthy, and the
+  stream's 45 s silence rule stands in for the timeout. It opens the
+  stream when it establishes the monitor's session, at startup and on
+  every re-establish (§ [Device Session
+  Recovery](#device-session-recovery)), and whenever a supervisor pass
+  finds the session healthy but the stream closed. A server that
+  answers with anything but an event stream (a `404`, `400` or `405`
+  from a third-party monitor or an older build) serves none: it is
+  asked again only at the next re-establish, and its reload reads like
+  any lost monitor.
 - **The hold.** On a `reloading` notice, `rp` holds that monitor's last
   reading until the notice's deadline, `back_within_secs` after its
   arrival and at most 30 s, so a monitor cannot leave `rp` blind for long. While
   the hold lasts, a failed read of that monitor changes nothing: no
   `safety_changed`, no move of the gate, nothing in flight touched, and
-  sky calls are admitted or refused as before. The first read that
-  succeeds ends the hold and counts as usual. A monitor with no reading
-  yet has nothing to hold and reads like any lost monitor; a second
-  notice replaces the deadline. `get_safety_status` reports a held
+  sky calls are admitted or refused as before. A safe reading before
+  the return changes nothing either, since it may come from the server
+  that is about to drain; an unsafe reading is never held and counts at
+  once. A monitor with no reading yet has nothing to hold and reads
+  like any lost monitor. A further notice before the hold has ended
+  keeps the first deadline. `get_safety_status` reports a held
   monitor's `reloading_until`.
-- **The return.** The monitor's server closes the stream after the
+- **The return.** The monitor's server ends the stream with the
   notice, and `rp` opens it again at once. The reload keeps its
-  listening socket, so that request waits for the rebuilt server, and
-  its answer is the monitor's return: `rp` re-establishes the monitor's
+  listening socket, so that request waits for the rebuilt server. The
+  return is that request answered with an event stream whose `hello`
+  names an instance other than the one that announced the reload. Any
+  other answer is not the return: a `401` (the save changed the
+  credential), a TLS failure or another status leaves the hold to run
+  to its deadline. On the return `rp` re-establishes the monitor's
   session there and then, rather than at the supervisor's next pass,
-  and polls. A safe reading ends the hold, and nothing else has
-  happened. An unsafe one runs the unsafe transition.
+  and polls, and that reading ends the hold: a safe one, and nothing
+  else has happened; an unsafe one, and the unsafe transition runs. A
+  re-establish that fails leaves the hold to run to its deadline.
 - **The deadline.** If the monitor is not back by its deadline, `rp`
   tries the return once more, then polls. A read that still fails
   counts as unsafe, and the unsafe transition runs, park included. A
   reload that moved the monitor's server (a changed `server.port` or
-  `bind_address`) never answers at `rp`'s configured address, so it
-  ends here: `rp` has lost its monitor, and parks.
+  `bind_address`) refuses the first attempt. The second finds it only
+  if `rp`'s configured address still reaches it (a narrower
+  `bind_address` that still covers it); otherwise `rp` has lost its
+  monitor, and parks.
 
 The return and the supervisor's pass never run the connect routine for
 the same entry at once. Only the safety monitors' streams are opened:
@@ -7320,7 +7334,7 @@ does); a monitor whose read failed reports `unsafe` like any other
 unsafe reading. A monitor whose last reading is held through an
 announced reload (§ [Announced reloads](#announced-reloads)) also
 carries `reloading_until`, the hold's deadline; no other monitor
-carries it. With no monitors configured `overall` is `safe` and
+carries it. (Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.) With no monitors configured `overall` is `safe` and
 `monitors` is empty. `gated` lists tools by their class in the table,
 so `capture` is not on it unless an override gates it; its calls are
 classed one by one ([Capture Tool Details](#capture-tool-details),
