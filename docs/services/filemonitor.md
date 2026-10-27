@@ -98,21 +98,19 @@ no command-line overrides beyond `--config` / `--log-level`, so
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 
-A save that changes something reloads the service, which ends `rp`'s
-connection to the monitor. `rp` reads a monitor it cannot read as
-unsafe, and its unsafe transition cancels in-flight sky work, aborts
-the exposures that need the sky, stops guiding and **parks the mount**,
-whatever is running. So the reload announces itself first, on the
-server's notice stream
-([setup crate § The reload notice](../crates/rusty-photon-setup.md#the-reload-notice)),
-and `rp` holds the monitor's last reading until it is back, at most
-10 s, reconnecting it as soon as it is
-([rp.md § Announced reloads](rp.md#announced-reloads)). Only a monitor
-that reads unsafe when it is back, or is not back by then, sets off the
-transition. A change to `server.port` or `bind_address` is found only
-at the deadline, and only if the address `rp` is configured with still
-reaches the monitor; otherwise `rp` parks, so point `rp`'s
-`alpaca_url` at the new address.
+A save that changes something reloads the service. `rp` reads a
+monitor it cannot read as unsafe, and its unsafe transition cancels
+in-flight sky work, aborts the exposures that need the sky, stops
+guiding and **parks the mount**, whatever is running. So the reload
+keeps its clients: it keeps its listening socket, and reconnects its
+rebuilt device when the old one was connected. A read made during the
+reload waits a second or two and is answered with the new
+configuration's reading
+([setup crate § A reload that keeps its clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
+Only a monitor that then reads unsafe, or that `rp` can no longer read,
+sets off the transition. A new `file.path` that does not exist does that,
+and so does a changed address, credential or `unique_id` that `rp`'s
+roster entry does not match.
 Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652), not implemented yet: until it is, the reload
 makes `rp` run the transition whenever a safety poll reads the monitor
 before `rp`'s reconnect supervisor has reconnected it (about five saves

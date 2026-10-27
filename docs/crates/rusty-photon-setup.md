@@ -386,78 +386,64 @@ in-flight sky work, aborts the exposures that need the sky, stops
 guiding and parks the mount
 ([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
 The park is meant for a monitor that is gone, not for one that is
-reloading. So a reload announces itself, with a deadline, and `rp` holds
-the monitor's last reading until it is back or the deadline passes
-([rp.md § Announced reloads](../services/rp.md#announced-reloads)).
-Until that is implemented ([#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)), a monitor's reload makes `rp`
-run the transition whenever a safety poll reads the monitor before the
-reconnect supervisor has reconnected it (with the defaults' 10 s polls
-and 30 s passes, about five reloads in six), and the gate stays closed
-until the first poll after the reconnect, up to `reconnect_interval`
-plus `safety.poll_interval` later (40 s with the defaults). On the
-field rig a `filemonitor` save, with no session running, made `rp` park
-a mount that was already parked, so nothing moved
+reloading, so a safety monitor's reload keeps its clients
+([below](#a-reload-that-keeps-its-clients)). Until that is implemented
+([#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)), a monitor's reload makes `rp` run the transition whenever a
+safety poll reads the monitor before the reconnect supervisor has
+reconnected it (with the defaults' 10 s polls and 30 s passes, about
+five reloads in six), and the gate stays closed until the first poll
+after the reconnect, up to `reconnect_interval` plus
+`safety.poll_interval` later (40 s with the defaults). On the field rig
+a `filemonitor` save, with no session running, made `rp` park a mount
+that was already parked, so nothing moved
 ([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
 
-### The reload notice
+### A reload that keeps its clients
 
 *Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.*
 
-A driver that announces its reloads serves `GET /rusty-photon/v1/notices`,
-behind its login like every other path: a Server-Sent Events stream. It
-opens with the server's instance, a fresh id each time the reload loop
-builds the server:
+A safety monitor's reload (`filemonitor`'s) keeps its clients
+connected, so that to a client the reload is a reply that comes a
+second or two late:
 
-```text
-event: hello
-data: {"instance": "3f2a9c1e"}
-```
+- **The listening socket stays open** while the server's address
+  (`server.port`, `bind_address`) is unchanged. The draining server
+  stops accepting and the rebuilt one accepts on the same socket, so a
+  request made in between waits in the socket's queue and is answered
+  by the rebuilt server rather than refused. That takes serve functions
+  in `rusty-photon-tls` that leave the listener to their caller, plain
+  and TLS alike, and a reload loop that holds it.
+- **The device reconnects itself.** When the device was connected
+  before the reload, the loop connects the rebuilt one before it
+  serves. That re-reads the watched file and restarts its polling, and
+  moves nothing (tenet 3). A client's session therefore survives the
+  reload, and its next read is answered with the new configuration's
+  reading. If that connect fails (say the saved `file.path` does not
+  exist), the device stays disconnected, and its clients' reads fail as
+  they would after a lost session.
+- **The client's own timeouts are the deadline.** A rebuild that has
+  not answered a queued request before the client gives up (`rp`'s
+  Alpaca client allows 5 s to connect and 10 s to read) fails that
+  request, as an unreachable monitor would.
 
-After that nothing is sent but a keep-alive comment every 15 s, until
-the server stops. Every stop ends the stream, so the server's drain,
-which waits for every open response, never waits on it. A reload ends
-it with
+Some changes still end a client's session, and `rp` then reads the
+monitor as one it cannot read, and parks. That is meant, since `rp`
+has lost its monitor until its roster entry is changed to match:
 
-```text
-event: reloading
-data: {"instance": "3f2a9c1e", "back_within_secs": 10}
-```
+- A changed address closes the old socket before it binds the new one
+  (the same port on a narrower address does not bind while the old
+  socket listens), and a request to the old address is refused.
+- A changed credential refuses the client's old one.
+- A changed `unique_id` fails the pin of a client that pinned it
+  ([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
 
-and a shutdown ends it without a notice: a stream that closes without
-one announced nothing, because the server stopped or failed. The
-service's reload loop, the one consumer of its `ReloadSignal`, sends
-the notice, so it goes out on every reload whatever fired it (a save,
-`SIGHUP`, or Windows' `ParamChange`), and the loop tells the server
-whether its stop is a reload or a shutdown. The server's stop then runs
-in three steps: it stops accepting connections and closes its idle
-ones, then ends the notice streams (with the notice on a reload), and
-only then waits for the remaining responses to drain. A request made
-after the notice therefore cannot reach the server that sent it.
-`back_within_secs` is the time the driver allows itself to serve again:
-10 s, against the 1–2 s a reload took on the field rig. A client that
-has heard nothing on the stream for 45 s treats it as closed.
+One narrow window remains. A request written onto a pooled
+connection at the instant the draining server closes that connection
+fails, and `rp` reads that poll as unsafe.
 
-Safety monitors serve the stream (`filemonitor`); another driver may,
-but `rp` opens only its safety monitors'
-([rp.md § Announced reloads](../services/rp.md#announced-reloads)). The
-stream's handler lives in `rusty-photon-driver`, and each service
-mounts it on its own router, ahead of the Alpaca fallback and inside
-its login layer. The notice is sent from the service's reload loop,
-since only some reloads come from this crate's save.
-
-The reload keeps its listening socket while the server's address
-(`server.port`, `bind_address`) is unchanged: the drained server stops
-accepting and the rebuilt one accepts on the same socket. A request made
-in between waits in the socket's queue and is answered by the rebuilt
-server rather than refused, so a client learns that the server is back
-by asking it once. That takes serve functions in `rusty-photon-tls`
-that leave the listener to their caller and run the three-step stop
-above, plain and TLS alike, and a reload loop that holds the listener:
-`filemonitor`'s, as the safety monitor. A changed address closes
-the old socket before it binds the new one, since the same port on a
-narrower address does not bind while the old socket listens, and a
-request in between is refused. A rebuild that fails ends the service,
-which closes the socket.
+Every reload of the monitor takes this path, whatever fired it (a
+save, `SIGHUP`, or Windows' `ParamChange`). Other drivers keep the
+behaviour above, and their reload ends their clients' sessions.
 
 ## What is not here
 
