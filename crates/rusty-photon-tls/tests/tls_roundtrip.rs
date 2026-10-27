@@ -727,3 +727,272 @@ async fn stalled_tls_handshake_is_dropped_after_the_timeout() {
     shutdown_tx.send(()).ok();
     server_handle.await.ok();
 }
+
+/// A router answering `/which` with `name`, so a response tells which
+/// server answered it.
+fn named_router(name: &'static str) -> Router {
+    Router::new().route("/which", get(move || async move { name }))
+}
+
+/// A router whose `/slow` handler signals `started` and then waits for
+/// `release`: a request held in flight on demand.
+fn slow_router(
+    started: &std::sync::Arc<tokio::sync::Notify>,
+    release: &std::sync::Arc<tokio::sync::Notify>,
+) -> Router {
+    let started = std::sync::Arc::clone(started);
+    let release = std::sync::Arc::clone(release);
+    Router::new().route(
+        "/slow",
+        get(move || {
+            let started = std::sync::Arc::clone(&started);
+            let release = std::sync::Arc::clone(&release);
+            async move {
+                started.notify_one();
+                release.notified().await;
+                "done"
+            }
+        }),
+    )
+}
+
+#[tokio::test]
+async fn a_request_queued_while_no_server_accepts_is_answered_by_the_next_server() {
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
+    let bound_addr = listener.local_addr().unwrap();
+
+    // The first server stops at once, and the listener stays open.
+    let first =
+        rusty_photon_tls::server::serve_plain_on(&listener, named_router("first"), async {})
+            .await
+            .unwrap();
+    first.finished().await;
+
+    // Nothing accepts now: the connection and its request wait in the
+    // listener's queue.
+    let mut client = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    client
+        .write_all(b"GET /which HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let second =
+        rusty_photon_tls::server::serve_plain_on(&listener, named_router("second"), async {
+            stop_rx.await.ok();
+        });
+    let read = async {
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        stop_tx.send(()).unwrap();
+        String::from_utf8_lossy(&response).into_owned()
+    };
+    let (second, response) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(second, read)
+    })
+    .await
+    .expect("the queued request should be answered");
+    second.unwrap().finished().await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(response.ends_with("\r\n\r\nsecond"), "{response}");
+}
+
+#[tokio::test]
+async fn the_next_server_answers_while_the_stopped_one_finishes_a_request() {
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
+    let bound_addr = listener.local_addr().unwrap();
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let slow = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/slow", bound_addr.port()))
+            .send()
+            .await
+            .unwrap();
+        (response.status(), response.text().await.unwrap())
+    });
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let first = rusty_photon_tls::server::serve_plain_on(
+        &listener,
+        slow_router(&started, &release),
+        async {
+            stop_rx.await.ok();
+        },
+    );
+    let stop_once_started = async {
+        started.notified().await;
+        stop_tx.send(()).unwrap();
+    };
+    let (first, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(first, stop_once_started)
+    })
+    .await
+    .expect("the first server should stop accepting while its request is in flight");
+    let first = first.unwrap();
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let second =
+        rusty_photon_tls::server::serve_plain_on(&listener, named_router("second"), async {
+            stop_rx.await.ok();
+        });
+    let ask = async {
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap();
+        let body = client
+            .get(format!("http://127.0.0.1:{}/which", bound_addr.port()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        stop_tx.send(()).unwrap();
+        body
+    };
+    let (second, body) =
+        tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(second, ask) })
+            .await
+            .expect("the second server should answer while the first finishes");
+    assert_eq!(body, "second");
+    assert!(
+        !slow.is_finished(),
+        "the first server's request should still be in flight"
+    );
+
+    release.notify_one();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), slow)
+        .await
+        .expect("the first server's request should complete")
+        .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body, "done");
+    tokio::time::timeout(Duration::from_secs(10), first.finished())
+        .await
+        .expect("the first server's drain should end with its request");
+    second.unwrap().finished().await;
+}
+
+#[tokio::test]
+async fn a_tls_server_on_a_kept_listener_stops_accepting_while_its_request_finishes() {
+    let pki_dir = tempfile::tempdir().unwrap();
+    let certs_dir = pki_dir.path().join("certs");
+    rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
+    let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
+    let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
+    rusty_photon_tls::test_cert::generate_service_cert(
+        &ca_cert_pem,
+        &ca_key_pem,
+        "test-service",
+        &certs_dir,
+    )
+    .unwrap();
+    let tls_config = rusty_photon_tls::config::TlsConfig {
+        cert: certs_dir
+            .join("test-service.pem")
+            .to_string_lossy()
+            .into_owned(),
+        key: certs_dir
+            .join("test-service-key.pem")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let acceptor = rusty_photon_tls::server::build_tls_acceptor(&tls_config).unwrap();
+
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
+    let bound_addr = listener.local_addr().unwrap();
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let client =
+        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
+            .unwrap();
+    let slow = tokio::spawn({
+        let client = client.clone();
+        async move {
+            let response = client
+                .get(format!("https://localhost:{}/slow", bound_addr.port()))
+                .send()
+                .await
+                .unwrap();
+            (response.status(), response.text().await.unwrap())
+        }
+    });
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let first = rusty_photon_tls::server::serve_tls_on(
+        &listener,
+        slow_router(&started, &release),
+        acceptor.clone(),
+        async {
+            stop_rx.await.ok();
+        },
+    );
+    let stop_once_started = async {
+        started.notified().await;
+        stop_tx.send(()).unwrap();
+    };
+    let (first, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(first, stop_once_started)
+    })
+    .await
+    .expect("the first TLS server should stop accepting while its request is in flight");
+    let first = first.unwrap();
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let second = rusty_photon_tls::server::serve_tls_on(
+        &listener,
+        named_router("second"),
+        acceptor,
+        async {
+            stop_rx.await.ok();
+        },
+    );
+    let ask = async {
+        let body = client
+            .get(format!("https://localhost:{}/which", bound_addr.port()))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        stop_tx.send(()).unwrap();
+        body
+    };
+    let (second, body) =
+        tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(second, ask) })
+            .await
+            .expect("the second TLS server should answer while the first finishes");
+    assert_eq!(body, "second");
+    assert!(
+        !slow.is_finished(),
+        "the first TLS server's request should still be in flight"
+    );
+
+    release.notify_one();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), slow)
+        .await
+        .expect("the first TLS server's request should complete")
+        .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body, "done");
+    tokio::time::timeout(Duration::from_secs(10), first.finished())
+        .await
+        .expect("the first TLS server's drain should end with its request");
+    tokio::time::timeout(Duration::from_secs(10), second.unwrap().finished())
+        .await
+        .expect("the second TLS server's drain should end");
+}

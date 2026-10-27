@@ -435,6 +435,26 @@ async fn mount_parked_on_simulator(world: &mut RpWorld, seconds: u64) {
     }
 }
 
+#[then("the mount should report unparked on the simulator")]
+async fn mount_unparked_on_simulator(world: &mut RpWorld) {
+    // Read straight from OmniSim, as the parked check above does.
+    let url = format!("{}/api/v1/telescope/0/atpark", world.omnisim_url());
+    let body: Value = reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .expect("the simulator answers AtPark")
+        .json()
+        .await
+        .expect("AtPark answers JSON");
+    assert_eq!(
+        body.get("Value").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "the simulator mount reports parked: {body}"
+    );
+}
+
 // --- Helpers --------------------------------------------------------
 
 async fn call_guider_tool(world: &mut RpWorld, tool: &str, params: Map<String, Value>) {

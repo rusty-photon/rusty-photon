@@ -364,6 +364,15 @@ pub struct RpWorld {
     /// In-process `SkyView` stub serving cutouts to `sky-survey-camera`.
     /// Held on the world so the axum task isn't cancelled mid-scenario.
     pub sky_view_stub: Option<SkyViewStub>,
+
+    // --- A real filemonitor as the safety monitor (safety.feature) ---
+    /// Running `filemonitor` process serving rp's safety monitor. Declared
+    /// above `filemonitor_dir` so the process dies before its files go.
+    pub filemonitor: Option<ServiceHandle>,
+    /// `TempDir` holding filemonitor's config and its watched file.
+    pub filemonitor_dir: Option<tempfile::TempDir>,
+    /// The setup-page steps' state for filemonitor's own pages.
+    pub filemonitor_pages: bdd_infra::setup_pages::SetupPagesState,
 }
 
 impl bdd_infra::setup_pages::SetupPagesWorld for RpWorld {

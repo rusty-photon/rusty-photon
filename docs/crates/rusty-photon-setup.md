@@ -387,20 +387,17 @@ guiding and parks the mount
 ([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
 The park is meant for a monitor that is gone, not for one that is
 reloading, so a safety monitor's reload keeps its clients
-([below](#a-reload-that-keeps-its-clients)). Until that is implemented
-([#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)), a monitor's reload makes `rp` run the transition whenever a
-safety poll reads the monitor before the reconnect supervisor has
+([below](#a-reload-that-keeps-its-clients), since
+[#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)).
+Before it, a monitor's reload made `rp` run the transition whenever a
+safety poll read the monitor before the reconnect supervisor had
 reconnected it (with the defaults' 10 s polls and 30 s passes, about
-five reloads in six), and the gate stays closed until the first poll
-after the reconnect, up to `reconnect_interval` plus
-`safety.poll_interval` later (40 s with the defaults). On the field rig
-a `filemonitor` save, with no session running, made `rp` park a mount
-that was already parked, so nothing moved
+five reloads in six): on the field rig a `filemonitor` save, with no
+session running, made `rp` park a mount that was already parked, so
+nothing moved
 ([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
 
 ### A reload that keeps its clients
-
-*Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.*
 
 A safety monitor's reload (`filemonitor`'s) keeps its clients
 connected, so that to a client the reload is a reply that comes a
@@ -414,10 +411,12 @@ second or two late:
   accepting as soon as the old one has stopped, and the old one
   finishes its drain alongside it, so a queued request waits for the
   rebuild, not for the slowest of the old connections (a TLS handshake
-  in progress can hold a drain for up to 10 s). That takes serve
-  functions in `rusty-photon-tls` that leave the listener to their
-  caller and hand control back once they have stopped accepting, plain
-  and TLS alike, and a reload loop that holds the listener.
+  in progress can hold a drain for up to 10 s). The serve functions
+  `rusty-photon-tls` has for this, `serve_plain_on` and `serve_tls_on`,
+  leave the listener to their caller and return a `Draining` once they
+  have stopped accepting; the reload loop holds the listener. The old
+  server releases the discovery port (`server.discovery_port`) when it
+  stops accepting, so one responder answers at a time.
 - **The device reconnects itself.** When the device was connected
   before the reload, the loop connects the rebuilt one before it
   serves. That re-reads the watched file and restarts its polling, and
@@ -426,6 +425,14 @@ second or two late:
   reading. If that connect fails (say the saved `file.path` does not
   exist), the device stays disconnected, and its clients' reads fail as
   they would after a lost session.
+- **The old device stays connected until its server has finished.** A
+  request the old server is still answering reads the old device as it
+  was. Once the last of the old server's connections has ended, the old
+  device is disconnected, which stops its polling of the file.
+- **A request that has already arrived is answered.** When the old
+  server stops, each of its connections is read before it is closed,
+  so a request already received on it is answered rather than
+  dropped.
 - **The client's own timeouts are the deadline.** A rebuild that has
   not answered a queued request before the client gives up (`rp`'s
   Alpaca client allows 5 s to connect and 10 s to read) fails that
@@ -442,9 +449,10 @@ has lost its monitor until its roster entry is changed to match:
 - A changed `unique_id` fails the pin of a client that pinned it
   ([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
 
-One narrow window remains. A request written onto a pooled
-connection at the instant the draining server closes that connection
-fails, and `rp` reads that poll as unsafe.
+One narrow window remains. A request that arrives on one of the old
+server's connections, pooled or newly accepted, after the server has
+read that connection a last time and closed it fails, and `rp` reads
+that poll as unsafe.
 
 Every reload of the monitor takes this path, whatever fired it (a
 save, `SIGHUP`, or Windows' `ParamChange`). Other drivers keep the
@@ -482,6 +490,13 @@ block kept by its password typed again, a wrong one refused beside the
 control, a refusal for another field asking for it again, no control behind
 no login and one sent anyway ignored, and a saved page naming a removal that
 waits for no reload).
+
+`filemonitor`'s `reload.feature` pins a reload that keeps its clients:
+a connected client's session surviving a save and reading the new
+configuration, every read through the reload answered, a missing
+`file.path` leaving the device disconnected, a changed port refusing on
+the old one, and a stalled TLS handshake on the old server not holding
+up the rebuilt one.
 
 Each service pins its own contract in a `setup_pages.feature` driven by
 the shared steps in `bdd-infra`'s `setup_pages` module

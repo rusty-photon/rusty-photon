@@ -7048,7 +7048,6 @@ keeps its socket and its connection across it, so a poll made
 meanwhile waits for the rebuilt server and reads through the same
 session ([rusty-photon-setup § A reload that keeps its
 clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
-(Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.)
 
 The transition below runs whatever is running, at `rp`'s startup
 included (§ [What Survives an rp Restart](#what-survives-an-rp-restart)):

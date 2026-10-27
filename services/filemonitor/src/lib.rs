@@ -40,11 +40,13 @@ pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
+use rusty_photon_tls::server::Draining;
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::setup::{FileMonitorDriver, DEVICE_TYPE};
 
@@ -326,6 +328,14 @@ impl FileMonitorDevice {
             h.abort();
         }
     }
+
+    /// Disconnect: `is_safe` answers `NotConnected` and the polling stops.
+    async fn disconnect(&self) {
+        let mut conn_state = self.connected.write().await;
+        *conn_state = false;
+        drop(conn_state);
+        self.stop_polling().await;
+    }
 }
 
 #[async_trait::async_trait]
@@ -370,13 +380,7 @@ impl Device for FileMonitorDevice {
             // Start polling
             self.start_polling().await;
         } else {
-            // Set disconnected state
-            let mut conn_state = self.connected.write().await;
-            *conn_state = false;
-            drop(conn_state);
-
-            // Stop polling
-            self.stop_polling().await;
+            self.disconnect().await;
         }
 
         Ok(())
@@ -499,10 +503,27 @@ impl ServerBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the listener cannot be bound or its address
-    /// read, or if the config opts into Alpaca discovery and the
-    /// responder's UDP port cannot be bound.
+    /// Returns an error if the listener cannot be bound, or
+    /// [`Self::build_on`]'s errors.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
+        let listener =
+            rusty_photon_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr())
+                .await?;
+        self.build_on(listener).await
+    }
+
+    /// Consume the builder and build the server on `listener`, already
+    /// bound: the one a reload keeps while the address is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the listener's address cannot be read, or if
+    /// the config opts into Alpaca discovery and the responder's UDP port
+    /// cannot be bound.
+    pub async fn build_on(
+        self,
+        listener: TcpListener,
+    ) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
 
@@ -524,7 +545,9 @@ impl ServerBuilder {
             ))));
             device = device.with_setup_pages(Arc::clone(pages));
         }
-        server.devices.register(device);
+        let device = Arc::new(device);
+        let registered: Arc<dyn SafetyMonitor> = device.clone();
+        server.devices.register(registered);
 
         info!(
             "Starting ASCOM Alpaca server on port {}",
@@ -554,9 +577,6 @@ impl ServerBuilder {
             None => router,
         };
 
-        let listener =
-            rusty_photon_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr())
-                .await?;
         let local_addr = listener.local_addr()?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -578,19 +598,24 @@ impl ServerBuilder {
             local_addr,
             tls,
             discovery,
+            device,
         })
     }
 }
 
 /// A fully bound filemonitor server ready to accept connections.
 pub struct BoundServer {
-    listener: tokio::net::TcpListener,
+    listener: TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
     /// Alpaca UDP discovery responder, when the config opts in. Runs inside
-    /// `start()`'s select so its socket closes when serving ends (reload).
+    /// the serve's select, so its socket closes when the server stops
+    /// accepting (reload), not when its connections have finished.
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
+    /// The device the server serves, which the run loop connects and
+    /// retires across a reload.
+    device: Arc<FileMonitorDevice>,
 }
 
 impl BoundServer {
@@ -598,37 +623,121 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Serve the bound listener (and the discovery responder, when
-    /// bound) until `shutdown` resolves.
+    /// Connect the device before the server serves, as a client's
+    /// `Connected = true` would: the reload's reconnect of a device that was
+    /// connected before it. It reads the watched file and starts polling,
+    /// and moves nothing. A failure (the file cannot be read) leaves the
+    /// device disconnected, as its clients then find it.
+    pub async fn connect_device(&self) {
+        match self.device.set_connected(true).await {
+            Ok(()) => debug!("Reconnected the rebuilt device"),
+            Err(e) => warn!(
+                "The device was connected before the reload, but the rebuilt one could not connect, so it stays disconnected: {}",
+                e.message
+            ),
+        }
+    }
+
+    /// Serve the bound listener (and the discovery responder, when bound)
+    /// until `shutdown` resolves, then until every connection it accepted
+    /// has finished, and disconnect the device.
     ///
     /// # Errors
     ///
-    /// Returns an error if the TLS material cannot be loaded or the
-    /// serve loop fails.
+    /// [`Self::serve_until`]'s errors.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.serve_until(shutdown).await?.close().await;
+        Ok(())
+    }
+
+    /// Serve the bound listener (and the discovery responder, when bound)
+    /// until `stop` resolves, and return as soon as the server has stopped
+    /// accepting: the listener, still open, and the connections it accepted,
+    /// still finishing, come back as a [`Stopped`]. The discovery responder
+    /// is released here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS material cannot be loaded or accepting
+    /// connections fails.
+    pub async fn serve_until(
+        self,
+        stop: impl Future<Output = ()>,
+    ) -> Result<Stopped, Box<dyn std::error::Error + Send + Sync>> {
         let Self {
             listener,
             router,
             local_addr,
             tls,
             discovery,
+            device,
         } = self;
         let serve = async {
             if let Some(ref tls_config) = tls {
+                let acceptor = rusty_photon_tls::server::build_tls_acceptor(tls_config)?;
                 info!("filemonitor started on {} (TLS)", local_addr);
-                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                rusty_photon_tls::server::serve_tls_on(&listener, router, acceptor, stop).await
             } else {
                 info!("filemonitor started on {}", local_addr);
-                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
+                rusty_photon_tls::server::serve_plain_on(&listener, router, stop).await
             }
         };
-        rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
-        debug!("filemonitor shut down");
-        Ok(())
+        let draining = rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
+        debug!("filemonitor stopped accepting");
+        Ok(Stopped {
+            listener,
+            device,
+            draining,
+        })
     }
+}
+
+/// A filemonitor server that has stopped accepting: its listener, still
+/// open, and the connections it accepted, still finishing with its device
+/// connected as it was.
+pub struct Stopped {
+    listener: TcpListener,
+    device: Arc<FileMonitorDevice>,
+    draining: Draining,
+}
+
+impl Stopped {
+    /// Whether the device was connected when the server stopped accepting.
+    pub async fn device_connected(&self) -> bool {
+        *self.device.connected.read().await
+    }
+
+    /// Keep the listener for the next server, and leave the rest to the
+    /// returned future: it waits for the connections to finish, then
+    /// disconnects the device, which stops its polling. The device stays
+    /// connected until then, so a request still in flight on this server
+    /// reads it as it was.
+    pub fn hand_over(self) -> (TcpListener, impl Future<Output = ()> + Send + 'static) {
+        let Self {
+            listener,
+            device,
+            draining,
+        } = self;
+        (listener, retire(device, draining))
+    }
+
+    /// Close the listener, so a new connection is refused, wait for the
+    /// connections to finish, then disconnect the device.
+    pub async fn close(self) {
+        let (listener, retire) = self.hand_over();
+        drop(listener);
+        retire.await;
+    }
+}
+
+/// Wait for `draining` to finish, then disconnect `device`.
+async fn retire(device: Arc<FileMonitorDevice>, draining: Draining) {
+    draining.finished().await;
+    device.disconnect().await;
+    debug!("A filemonitor server has finished its connections; its device is disconnected");
 }
 
 /// Build a fresh `BoundServer` from a `Config` and run it until the
@@ -656,15 +765,16 @@ pub async fn start_server(
 /// Run filemonitor's server in a config-reload loop until `shutdown`
 /// fires.
 ///
-/// Both `shutdown` and the `reload` a setup-page save fires are fed into the
-/// *same* stop future passed to `bound.start()`, so either one drives
-/// the inner `serve_plain`/`serve_tls` call's graceful shutdown —
-/// draining in-flight requests and closing keep-alive connections —
-/// before `run_server_loop` rebuilds from the freshly-persisted config.
-/// Reload needs the same graceful-drain treatment as shutdown, or a
-/// client's pooled keep-alive connection would keep talking to the
-/// torn-down server's in-memory state instead of picking up the rebound
-/// one.
+/// A reload (the `reload` a setup-page save fires, `SIGHUP`, or `ParamChange`)
+/// keeps the server's clients: while the configured address is unchanged the
+/// rebuilt server serves on the same listener, so a request queued while it
+/// rebuilds is answered rather than refused, and it starts accepting as soon
+/// as the old one has stopped, while the old one finishes the connections it
+/// accepted alongside it. When the old device was connected, the rebuilt one
+/// is connected before it serves. A changed address closes the old listener
+/// before the new one is bound: the same port on a narrower address does not
+/// bind while the old socket listens. Shutdown closes the listener and waits
+/// for every server's connections to finish.
 ///
 /// # Errors
 ///
@@ -675,14 +785,34 @@ pub async fn run_server_loop(
     shutdown: CancellationToken,
     reload: ReloadSignal,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The listener a reload keeps, with the configured address it was bound
+    // for, and whether the device it served was connected.
+    let mut kept: Option<(SocketAddr, TcpListener)> = None;
+    let mut connect_device = false;
+    // The old servers still finishing their connections.
+    let mut retiring = tokio::task::JoinSet::new();
     loop {
         let config = load_config(config_path)?;
         info!("Starting filemonitor server on port {}", config.server.port);
+        let addr = config.server.socket_addr();
+        let listener = match kept.take() {
+            Some((kept_addr, listener)) if kept_addr == addr => {
+                debug!("Keeping the listener on {}", addr);
+                listener
+            }
+            other => {
+                drop(other);
+                rusty_photon_tls::server::bind_dual_stack_tokio(addr).await?
+            }
+        };
         let bound = ServerBuilder::new(config)
             .with_config_source(config_path.to_path_buf())
             .with_reload_signal(reload.clone())
-            .build()
+            .build_on(listener)
             .await?;
+        if connect_device {
+            bound.connect_device().await;
+        }
 
         let reloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = {
@@ -696,12 +826,19 @@ pub async fn run_server_loop(
                 }
             }
         };
-        bound.start(stop).await?;
+        let stopped = bound.serve_until(stop).await?;
 
         if reloaded.load(std::sync::atomic::Ordering::SeqCst) {
             info!("Reloading configuration");
+            connect_device = stopped.device_connected().await;
+            let (listener, retire) = stopped.hand_over();
+            kept = Some((addr, listener));
+            _ = retiring.spawn(retire);
+            while retiring.try_join_next().is_some() {}
             continue;
         }
+        stopped.close().await;
+        while retiring.join_next().await.is_some() {}
         return Ok(());
     }
 }
@@ -879,6 +1016,101 @@ mod device_setup_page_tests {
         let device = FileMonitorDevice::new(test_config());
         let response = device.setup_request(get_request()).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod reload_tests {
+    use super::*;
+
+    /// A config serving on loopback, watching a file holding "CLOSED",
+    /// with the discovery responder on `discovery_port` when given.
+    fn loopback_config(dir: &Path, discovery_port: Option<u16>) -> Config {
+        let watched = dir.join("RoofStatusFile.txt");
+        std::fs::write(&watched, "CLOSED").unwrap();
+        let mut server = AlpacaServerConfig::new(0);
+        server.bind_address = std::net::Ipv4Addr::LOCALHOST.into();
+        server.discovery_port = discovery_port;
+        Config {
+            server,
+            file: FileConfig {
+                path: watched,
+                polling_interval: Duration::from_mins(1),
+            },
+            ..Config::default()
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
+    async fn a_handed_over_server_disconnects_its_device_once_its_connections_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let bound = ServerBuilder::new(loopback_config(dir.path(), None))
+            .build()
+            .await
+            .unwrap();
+        bound.connect_device().await;
+        let device = Arc::clone(&bound.device);
+
+        let stopped = bound.serve_until(async {}).await.unwrap();
+        assert!(stopped.device_connected().await);
+        let (_listener, retire) = stopped.hand_over();
+        assert!(
+            device.connected().await.unwrap(),
+            "the device should stay connected until the old connections finish"
+        );
+
+        retire.await;
+        assert!(!device.connected().await.unwrap());
+        assert!(
+            device.polling_handle.lock().await.is_none(),
+            "a retired device should stop polling its file"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
+    async fn a_server_releases_its_discovery_port_when_it_stops_accepting() {
+        let dir = tempfile::tempdir().unwrap();
+        let discovery_port = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let bound = ServerBuilder::new(loopback_config(dir.path(), Some(discovery_port)))
+            .build()
+            .await
+            .unwrap();
+        // A socket without address reuse binds only a port no other socket
+        // holds.
+        assert!(
+            std::net::UdpSocket::bind(("127.0.0.1", discovery_port)).is_err(),
+            "the server should hold its discovery port while it serves"
+        );
+
+        let stopped = bound.serve_until(async {}).await.unwrap();
+        let rebind = std::net::UdpSocket::bind(("127.0.0.1", discovery_port));
+        assert!(
+            rebind.is_ok(),
+            "the discovery port should be free once the server stops accepting, before its connections finish: {:?}",
+            rebind.err()
+        );
+        drop(rebind);
+        stopped.close().await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
+    async fn a_device_whose_file_is_missing_stays_disconnected_when_the_reload_connects_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = loopback_config(dir.path(), None);
+        config.file.path = dir.path().join("missing.txt");
+        let bound = ServerBuilder::new(config).build().await.unwrap();
+
+        bound.connect_device().await;
+
+        assert!(!bound.device.connected().await.unwrap());
     }
 }
 
