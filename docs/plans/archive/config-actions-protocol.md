@@ -1,7 +1,7 @@
 # Config actions — the cross-driver configuration protocol
 
 **Status: RETIRED (archived 2026-10-25).** The setup pages
-([driver-setup-pages.md](../driver-setup-pages.md),
+([driver-setup-pages.md](driver-setup-pages.md),
 [ADR-023](../../decisions/023-services-configure-themselves-on-their-own-setup-pages.md))
 replaced these actions.
 Each service now serves the two HTML pages the Alpaca specification defines,
@@ -179,7 +179,7 @@ locked so the UI can't edit away its own reachability.
 ## Driver coverage
 
 No service carries the protocol any more. Its last two users went in P4 of
-[driver-setup-pages.md](../driver-setup-pages.md): `qhy-focuser`, which
+[driver-setup-pages.md](driver-setup-pages.md): `qhy-focuser`, which
 kept the actions while it was the BFF's BDD vehicle, now configures itself on
 its setup pages, and `rp`'s REST transport (`GET`/`PUT /api/config`,
 `GET /api/config/schema`) gave way to rp's own `/setup`. The plan's P5 archives

@@ -439,7 +439,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 The driver configures itself through the two HTML pages the Alpaca
 Management API defines, served by the driver itself behind its own TLS and
 Basic Auth, with no other process in between
-([driver-setup-pages.md](../plans/driver-setup-pages.md)):
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
 
 | Path | Holds |
 |------|-------|

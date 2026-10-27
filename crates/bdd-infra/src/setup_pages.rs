@@ -1056,6 +1056,17 @@ macro_rules! setup_pages_steps {
             );
         }
 
+        #[::cucumber::then(expr = "the page does not say {string}")]
+        fn setup_pages_does_not_say(world: &mut $world, needle: String) {
+            use $crate::setup_pages::SetupPagesWorld as _;
+            let state = world.setup_pages();
+            assert!(
+                !$crate::setup_pages::dom::text_contains(&state.last_body, "main", &needle),
+                "the page says {needle:?}:\n{}",
+                state.last_body
+            );
+        }
+
         #[::cucumber::then("the page offers no Save button")]
         fn setup_pages_no_save(world: &mut $world) {
             use $crate::setup_pages::SetupPagesWorld as _;

@@ -760,8 +760,10 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
 }
 
 /// The distribution ops for a rotation: the fresh hash into every
-/// installed service's `server.auth`, the plaintext into sentinel's
-/// `service_auth`.
+/// installed service's `server.auth`, and the plaintext into every
+/// client credential that reaches one — the shared `service_auth` pairs
+/// and each per-target `auth` naming a local service — present ones
+/// overwritten.
 fn rotate_ops(
     ctx: &doctor::checks::Context,
     password: &str,
@@ -782,19 +784,23 @@ fn rotate_ops(
                 }),
             },
         ));
-        if service == "sentinel" {
-            ops.push((
-                "provisioning".to_string(),
-                FixOp::SetObject {
-                    service,
-                    pointer: "/service_auth".to_string(),
-                    value: serde_json::json!({
-                        "username": doctor::provision::CREDENTIAL_USERNAME,
-                        "password": password,
-                    }),
-                },
-            ));
-        }
+    }
+    ops.extend(doctor::provision::plan_client_rotation(
+        &ctx.config_dir,
+        password,
+    ));
+    for (service, pointer) in doctor::checks::rotation_credential_pointers(ctx) {
+        ops.push((
+            "provisioning".to_string(),
+            FixOp::SetObject {
+                service,
+                pointer,
+                value: serde_json::json!({
+                    "username": doctor::provision::CREDENTIAL_USERNAME,
+                    "password": password,
+                }),
+            },
+        ));
     }
     Ok(ops)
 }

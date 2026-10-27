@@ -1065,7 +1065,7 @@ use, behind the same TLS and Basic Auth. The shared `rusty-photon-setup`
 crate draws and saves it
 ([rusty-photon-setup.md](../crates/rusty-photon-setup.md)); why the page
 is here and not on the facade is the
-[driver-setup-pages plan](../plans/driver-setup-pages.md)'s D13. The page
+[driver-setup-pages plan](../plans/archive/driver-setup-pages.md)'s D13. The page
 covers the whole config, the `camera` block included:
 
 - **One page.** `server`, `stop_timeout`, `phd2`, `settling` and

@@ -52,7 +52,7 @@ is not involved beyond its existing config-shape checks.
 | T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Merged | [#594](https://github.com/rusty-photon/rusty-photon/pull/594) |
 | T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Merged | [#601](https://github.com/rusty-photon/rusty-photon/pull/601) |
 | T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) + watch-event trigger wiring | Merged | [#617](https://github.com/rusty-photon/rusty-photon/pull/617) |
-| T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started; `/equipment` retired in [driver-setup-pages](driver-setup-pages.md) P4 and the roster is edited on `rp`'s `/setup`, so the phase needs re-scoping there | |
+| T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started; `/equipment` retired in [driver-setup-pages](archive/driver-setup-pages.md) P4 and the roster is edited on `rp`'s `/setup`, so the phase needs re-scoping there | |
 
 Order: T1 first (everything reads the derived model), then T2/T3 in either
 order, T4 after T2+T3, T5/T6 after T2. Each phase follows

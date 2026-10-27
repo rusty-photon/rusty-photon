@@ -10,8 +10,9 @@
 //! changes nothing, and a `POST` runs the command its form names: the
 //! Stop ([`MountDevice::stop_from_page`]), or, with the box ticked, the
 //! recovery ([`MountDevice::recover_from`]) of a mount that is stopped. A
-//! command that ran answers with a redirect to the page, which then says
-//! what it did, so a refresh shows that again and never re-sends it.
+//! command that ran answers with a redirect to the page, which says once
+//! what it did ([`PageResults`]): a refresh never re-sends the command,
+//! and a bookmarked or restored result address shows no result.
 //! The view is this driver's own, the one device command any setup page
 //! carries; it wears the shared pages' shell, sits behind the same TLS and
 //! Basic Auth, and passes the same origin check as a save. See the design
@@ -49,9 +50,9 @@ const COMMAND: &str = "command";
 /// The command the Stop form posts.
 const STOP: &str = "stop";
 
-/// What the Stop's redirect carries in the query, as `?recover=stopped`.
-/// A recovery's carries its pose, as `?recover=ap_park_3`.
-const STOPPED: &str = "stopped";
+/// The query key a command's redirect carries its number in, as
+/// `?recover&ran=3`.
+const RAN: &str = "ran";
 
 /// The recovery form's pose control.
 const POSE: &str = "pose";
@@ -255,7 +256,8 @@ impl MountDevice {
     ) -> SetupResponse {
         match request.method {
             Method::GET => {
-                self.recovery_form(pages, ApPark::ApPark0, &[], done_banner(&request.query))
+                let banner = self.result_banner(&request.query).await;
+                self.recovery_form(pages, ApPark::ApPark0, &[], banner)
                     .await
             }
             Method::POST => self.command_as_asked(pages, &request).await,
@@ -293,7 +295,7 @@ impl MountDevice {
         let e = match self.stop_from_page().await {
             Ok(()) => {
                 tracing::debug!("stop from the mount's setup page");
-                return SetupResponse::see_other(&format!("?{RECOVER}={STOPPED}"));
+                return self.redirect_for(Ran::Stopped).await;
             }
             Err(e) => e,
         };
@@ -344,7 +346,7 @@ impl MountDevice {
         match self.recover_from(pose).await {
             Ok(()) => {
                 tracing::debug!(pose = %pose, "recovery from the mount's setup page");
-                SetupResponse::see_other(&format!("?{RECOVER}={}", pose.as_str()))
+                self.redirect_for(Ran::Recovered(pose)).await
             }
             Err(e) => {
                 tracing::debug!(pose = %pose, error = %e, "recovery from the mount's setup page refused");
@@ -371,6 +373,22 @@ impl MountDevice {
                 .with_status(status)
             }
         }
+    }
+
+    /// Keep `ran` as the page's last result and redirect to the address
+    /// that shows it.
+    async fn redirect_for(&self, ran: Ran) -> SetupResponse {
+        let number = self.page_results.lock().await.record(ran);
+        SetupResponse::see_other(&format!("?{RECOVER}&{RAN}={number}"))
+    }
+
+    /// The banner for the command `query`'s `ran` names, when that is the
+    /// page's last command and no page has shown its result yet.
+    async fn result_banner(&self, query: &[(String, String)]) -> Option<Markup> {
+        let (_, number) = query.iter().find(|(key, _)| key == RAN)?;
+        let number = number.parse::<u64>().ok()?;
+        let ran = self.page_results.lock().await.take(number)?;
+        Some(ran.banner())
     }
 
     /// The recovery page: the mount's motion and the Stop, then the
@@ -465,29 +483,71 @@ impl MountDevice {
     }
 }
 
-/// What the command a redirect followed did, from the `?recover=` value it
-/// carries: the Stop's [`STOPPED`] or a recovery's pose. A bare
-/// `?recover` has none.
-fn done_banner(query: &[(String, String)]) -> Option<Markup> {
-    let (_, done) = query.iter().find(|(key, _)| key == RECOVER)?;
-    if done == STOPPED {
-        return Some(render::banner(
-            "ok",
-            "stopped",
-            "Stopped: both axes reported stopped, and tracking is off.",
-        ));
+/// What a command from the recovery page did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ran {
+    Stopped,
+    Recovered(ApPark),
+}
+
+impl Ran {
+    /// The banner saying what the command did.
+    fn banner(self) -> Markup {
+        match self {
+            Self::Stopped => render::banner(
+                "ok",
+                "stopped",
+                "Stopped: both axes reported stopped, and tracking is off.",
+            ),
+            Self::Recovered(pose) => {
+                let did = if pose == ApPark::ApPark0 {
+                    "AtPark is cleared and the encoders are as they were: plate-solve and sync before any slew."
+                } else {
+                    "The encoders now read this pose, the coordinate frame is anchored, and AtPark is cleared."
+                };
+                render::banner(
+                    "ok",
+                    "recovered",
+                    &format!("Recovered from {}. {did}", pose.title()),
+                )
+            }
+        }
     }
-    let pose = done.parse::<ApPark>().ok()?;
-    let did = if pose == ApPark::ApPark0 {
-        "AtPark is cleared and the encoders are as they were: plate-solve and sync before any slew."
-    } else {
-        "The encoders now read this pose, the coordinate frame is anchored, and AtPark is cleared."
-    };
-    Some(render::banner(
-        "ok",
-        "recovered",
-        &format!("Recovered from {}. {did}", pose.title()),
-    ))
+}
+
+/// The recovery page's last command, kept until a page has shown its
+/// result.
+///
+/// A command that ran takes the next number, which its redirect carries
+/// as `?recover&ran=<n>`. The page that address names shows the result
+/// once and drops it, so a refresh, a bookmark or a restored tab shows
+/// the page with no result rather than one for a command that did not
+/// just run.
+#[derive(Debug, Default)]
+pub(super) struct PageResults {
+    /// The number the last command took.
+    last: u64,
+    /// The last command's result, until a page has shown it.
+    unshown: Option<Ran>,
+}
+
+impl PageResults {
+    /// Keep `ran` as the last command's result, and give it its number.
+    const fn record(&mut self, ran: Ran) -> u64 {
+        self.last = self.last.wrapping_add(1);
+        self.unshown = Some(ran);
+        self.last
+    }
+
+    /// The result of command `number`, once: `None` for any other number,
+    /// or for one a page has already shown.
+    const fn take(&mut self, number: u64) -> Option<Ran> {
+        if number == self.last {
+            self.unshown.take()
+        } else {
+            None
+        }
+    }
 }
 
 /// A page in the shared pages' shell.

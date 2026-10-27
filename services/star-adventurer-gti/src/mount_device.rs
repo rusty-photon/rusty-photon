@@ -364,6 +364,9 @@ pub struct MountDevice {
     /// devices that don't exercise the page.
     #[debug(skip)]
     pages: Option<Arc<SetupPages<StarAdvDriver>>>,
+    /// The recovery page's last command and its result, until the page its
+    /// redirect names has shown it.
+    page_results: Arc<tokio::sync::Mutex<recovery::PageResults>>,
 }
 
 impl MountDevice {
@@ -391,6 +394,7 @@ impl MountDevice {
             live_rate_refused: Arc::new(AtomicBool::new(false)),
             manager,
             pages: None,
+            page_results: Arc::new(tokio::sync::Mutex::new(recovery::PageResults::default())),
         }
     }
 

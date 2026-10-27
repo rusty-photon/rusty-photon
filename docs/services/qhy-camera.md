@@ -504,7 +504,7 @@ stored in config (*Device identity*). A camera's and a placeholder's
 | `/setup/v1/filterwheel/{n}/setup` | Filter names | the wheel's `filter_names`, in its camera's entry or override (below) |
 
 **The Cameras section** is the device-claims plan's C8, settled as
-[driver-setup-pages.md](../plans/driver-setup-pages.md) D11, the section
+[driver-setup-pages.md](../plans/archive/driver-setup-pages.md) D11, the section
 `svbony-camera` and `zwo-camera` serve, with a wheel column:
 
 - **Two modes**, chosen by a radio: *serve every QHY camera the USB scan
