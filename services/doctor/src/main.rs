@@ -221,8 +221,9 @@ struct FlipArgs {
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Mint a fresh observatory credential, overwrite `pki/credential`,
-    /// and re-align to it the `server.auth` of every service with a
-    /// readable config and every client credential that reaches one.
+    /// and re-align to it the `server.auth` of every service with a config
+    /// file and every client credential that reaches one. Refuses, changing
+    /// nothing, while a config file cannot be read or is not valid JSON.
     Rotate,
     /// Hash one password (Argon2id) for hand-written configs. Prompts with
     /// confirmation, or reads one line from stdin with --stdin.
@@ -713,6 +714,21 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     };
     let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
 
+    // A config that exists but cannot be used would keep the old hash
+    // while its clients took the new password: refuse before anything is
+    // written.
+    let unusable = ctx.unusable_configs();
+    if !unusable.is_empty() {
+        for (path, why) in &unusable {
+            eprintln!("doctor: {} {why}", path.display());
+        }
+        eprintln!(
+            "doctor: nothing was rotated; fix the file(s) above, then run \
+             `doctor auth rotate` again"
+        );
+        return ExitCode::from(2);
+    }
+
     let password = match doctor::provision::mint_credential(&config_dir) {
         Ok(password) => password,
         Err(e) => {
@@ -760,7 +776,7 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
 }
 
 /// The distribution ops for a rotation: the fresh hash into the
-/// `server.auth` of every service whose config file doctor can read
+/// `server.auth` of every service that has a config file
 /// ([`Context::configured_services`](doctor::checks::Context::configured_services)),
 /// and the plaintext into every
 /// client credential that reaches one — the shared `service_auth` pairs

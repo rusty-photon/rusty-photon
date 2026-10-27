@@ -3,8 +3,8 @@ Feature: Credential commands
   (the third-party-driver escape hatch). doctor auth rotate mints a fresh
   observatory credential, overwrites the canonical pki/credential copy,
   and re-runs the distribution: the Argon2id hash into the server.auth of
-  every installed service whose config doctor can read, the plaintext
-  into every client auth block —
+  every installed service that has a config, the plaintext into every
+  client auth block —
   including blocks an earlier credential already occupied, which is what
   distinguishes rotate from the never-overwriting --fix pass. The client
   blocks are the shared service_auth pairs (sentinel, the MCP clients,
@@ -112,15 +112,18 @@ Feature: Credential commands
     And the auth hash at "/server/auth/password_hash" in "zwo-camera.json" verifies against the credential file
     And the config file "sky-survey-camera.json" does not exist
 
-  Scenario: rotate passes over a config that is not valid JSON
-    Given a config directory where "dsd-fp2.json" is not valid JSON
-    And a config file "zwo-camera.json" containing:
+  Scenario: rotate refuses, changing nothing, while a config is not valid JSON
+    Given a config file "zwo-camera.json" containing:
       """
       { "server": { "port": 11122 } }
       """
     And doctor has already run with --fix
-    When I run doctor auth rotate
-    Then the pki file "credential" has changed
+    And a config directory where "dsd-fp2.json" is not valid JSON
+    When I try doctor auth rotate
+    Then doctor exits with code 2
+    And stderr contains "dsd-fp2.json is not valid JSON"
+    And stderr contains "nothing was rotated"
+    And the pki file "credential" is unchanged
     And the auth hash at "/server/auth/password_hash" in "zwo-camera.json" verifies against the credential file
 
   Scenario: rotate repairs a mismatched client credential

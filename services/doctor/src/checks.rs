@@ -138,14 +138,34 @@ impl Context {
     /// config-gated service the operator has not configured, or one never
     /// started) has no `server.auth` to rotate; the provisioning pass
     /// writes the current credential into its config once there is one. A
-    /// file doctor cannot read or parse is `config.parse`'s to report, and
-    /// writing into it would stop the rotation partway.
+    /// file that exists but cannot be used never gets this far: rotate
+    /// refuses first ([`Self::unusable_configs`]).
     #[must_use]
     pub fn configured_services(&self) -> Vec<String> {
         self.scans
             .iter()
             .filter(|s| s.value().is_some())
             .map(|s| s.entry.name.to_string())
+            .collect()
+    }
+
+    /// The config files that exist but cannot be used, each with why: one
+    /// that cannot be read, or is not valid JSON. A rotation refuses while
+    /// there is one, since that service would keep the old hash while its
+    /// clients took the new password.
+    #[must_use]
+    pub fn unusable_configs(&self) -> Vec<(PathBuf, String)> {
+        self.scans
+            .iter()
+            .filter_map(|s| match &s.raw {
+                Some(Err(scan::ReadError::Unreadable(e))) => {
+                    Some((s.config_path.clone(), format!("cannot be read: {e}")))
+                }
+                Some(Err(scan::ReadError::InvalidJson(e))) => {
+                    Some((s.config_path.clone(), format!("is not valid JSON: {e}")))
+                }
+                _ => None,
+            })
             .collect()
     }
 
