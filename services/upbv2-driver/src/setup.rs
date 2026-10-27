@@ -13,9 +13,7 @@
 
 use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError};
 
-use crate::config::{CliOverrides, Config};
-
-use rusty_photon_rolling_stats::observing_conditions::MAX_AVERAGING_PERIOD;
+use crate::config::{loader_rules, CliOverrides, Config};
 
 /// The switch's device type in its Alpaca path spelling.
 pub const SWITCH_DEVICE_TYPE: &str = "switch";
@@ -37,41 +35,11 @@ impl ConfigurableDriver for Upbv2Driver {
     }
 
     fn validate(config: &Config) -> Vec<FieldError> {
-        let mut errors = Vec::new();
+        let mut errors = loader_rules(config);
         if config.serial.port.trim().is_empty() {
             errors.push(FieldError {
                 path: "serial.port".to_string(),
                 msg: "must not be empty".to_string(),
-            });
-        }
-        if config.serial.baud_rate == 0 {
-            errors.push(FieldError {
-                path: "serial.baud_rate".to_string(),
-                msg: "must be greater than 0".to_string(),
-            });
-        }
-        if config.serial.polling_interval.is_zero() {
-            errors.push(FieldError {
-                path: "serial.polling_interval".to_string(),
-                msg: "must be greater than 0".to_string(),
-            });
-        }
-        if config.serial.timeout.is_zero() {
-            errors.push(FieldError {
-                path: "serial.timeout".to_string(),
-                msg: "must be greater than 0".to_string(),
-            });
-        }
-        // Deliberately no lower bound. Zero is ASCOM's "the device is not
-        // averaging — give me the most recent value", which
-        // `set_average_period(0.0)` accepts over the wire and
-        // `Upbv2Manager::new` maps to the instantaneous window. Rejecting it
-        // here would leave a client able to select a period at runtime that it
-        // could never persist as the startup default.
-        if config.observingconditions.averaging_period > MAX_AVERAGING_PERIOD {
-            errors.push(FieldError {
-                path: "observingconditions.averaging_period".to_string(),
-                msg: "must not exceed 24h, the ASCOM AveragePeriod ceiling".to_string(),
             });
         }
         for (path, id) in [
@@ -133,6 +101,7 @@ impl ConfigurableDriver for Upbv2Driver {
 mod tests {
     use super::*;
     use crate::config::{Config, ObservingConditionsConfig, SwitchConfig};
+    use rusty_photon_rolling_stats::observing_conditions::MAX_AVERAGING_PERIOD;
     use std::time::Duration;
 
     fn valid_config() -> Config {

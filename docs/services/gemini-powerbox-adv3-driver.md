@@ -774,12 +774,15 @@ to the hub. The driver has no custom Actions.
 | `switch.labels` | the three label rules, at deserialize |
 | `server.auth` | a username needs a password, submitted or stored; the repeat must match |
 
-The same rules apply when the file is **loaded**: a hand-edited config the
-page would refuse to save is refused at startup and on reload, naming the
-fields, rather than starting a service whose poll task dies on a zero
-interval or whose `AveragePeriod` reads back outside ASCOM's range. The
-bootstrap mints the device ids before it loads, so the ids' rule never
-refuses a first start.
+The interval, timeout and averaging-period rules apply when the file is
+**loaded** as well: a hand-edited config that breaks one is refused at
+startup, on reload and by `doctor`, naming the field, rather than starting
+a service whose poll task dies on a zero interval or whose `AveragePeriod`
+reads back outside ASCOM's range. The port and the ids are the start
+path's — `--port` may supply the port and the bootstrap mints the ids —
+and the `server.auth` rules are the form's; none of those is checked at
+load, so a shipped example config with empty ids passes `doctor` before
+its first start.
 
 ## Error behaviour
 
