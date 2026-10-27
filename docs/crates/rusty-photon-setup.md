@@ -373,6 +373,27 @@ The reload is `rusty-photon-service-lifecycle`'s `ReloadSignal`, fired
 from a detached task after `RELOAD_AFTER_RESPONSE_DELAY` so the response
 flushes before the server that served it is torn down.
 
+A reload builds the devices anew, so every client's connection to them
+ends: each device reads `Connected = false` until its client connects
+again. `rp` finds out at its reconnect supervisor's next health check and
+reconnects then, within one `equipment.reconnect_interval` (30 s by
+default); until that check its roster still shows the device connected,
+while every call to it fails
+([rp.md § Device Session Recovery](../services/rp.md#device-session-recovery)).
+A safety monitor costs more, because `rp` reads a disconnected monitor as
+unsafe. A save on its page makes `rp` run its whole unsafe transition: it
+closes the safety gate, cancels in-flight sky work, aborts exposures,
+stops guiding and parks the mount
+([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
+It opens the gate again at the first safety poll after the reconnect, up
+to `reconnect_interval` plus `safety.poll_interval` later (40 s with the
+defaults). On the field rig a `filemonitor` save, with no session
+running, made `rp` park a mount that was already parked, so nothing moved
+([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)). The
+park is meant: `rp` parks whenever a monitor it cannot read leaves it
+unsafe. What the reload lacks is a notice, so that `rp` could wait for
+the monitor to come back instead; that is [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652).
+
 ## What is not here
 
 - Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
@@ -415,3 +436,11 @@ step that waits for a saved value after the reload accepts only a page
 whose generation differs from the one before the save — the old listener,
 which already shows the file's new value, cannot pass for the rebuilt
 one.
+
+On real hardware, the field rig's record
+([2026-10-26-setup-pages-rig-linux](../validation/2026-10-26-setup-pages-rig-linux/README.md))
+opened the pages of the 13 services that serve them there from another
+machine's browser, and saved one change per service through its reload
+or its restart (on `ui-htmx`'s, a save that changed nothing). What it did
+not cover — the cameras' list mode, the confirmations, `rig2` — the
+record lists.
