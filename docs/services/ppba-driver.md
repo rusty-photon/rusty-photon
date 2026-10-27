@@ -358,15 +358,23 @@ at every read. An unbounded window is no better: it would report an hours-old
 sample from a stalled poll loop as current.
 
 Zero therefore maps to the shortest window that still always holds the newest
-sample under healthy polling: `max(3 × serial.polling_interval, 10s)`. It is
-measured in poll intervals rather than seconds because the cadence is
-configurable — a fixed 10 s window against a 60 s cadence would leave the
-sensors reading `VALUE_NOT_SET` for 50 seconds out of every 60. Three
-intervals tolerates two missed polls before readings degrade, and the 10 s
-floor keeps a fast cadence from making the window shorter than one client
-round trip. Config seeding and `SetAveragePeriod` share that one mapping, so a
-period written to the config file behaves exactly like the same period set
-over the wire.
+sample under healthy polling: `max(3 × serial.polling_interval, 10s)`, the
+*instantaneous window*. It is measured in poll intervals rather than seconds
+because the cadence is configurable — a fixed 10 s window against a 60 s
+cadence would leave the sensors reading `VALUE_NOT_SET` for 50 seconds out of
+every 60. Three intervals tolerates two missed polls before readings degrade,
+and the 10 s floor keeps a fast cadence from making the window shorter than
+one client round trip.
+
+**No period maps to a window shorter than that.** A positive period below
+the instantaneous window — `0.001` hours is 3.6 s against the 5 s default
+cadence — would, applied on read, hold no sample for part of every poll
+cycle, and `Temperature`, `Humidity` and `DewPoint` would answer
+`VALUE_NOT_SET` between polls while the sensor is healthy. Such a period is
+served with the instantaneous window; the period itself is still what
+`AveragePeriod` reads back (below). Config seeding and `SetAveragePeriod`
+share that one mapping, so a period written to the config file behaves
+exactly like the same period set over the wire.
 
 The period a client sets is stored verbatim and read back as-is, rather than
 inferred from the resulting window. Inferring it cannot represent zero (the
@@ -390,9 +398,20 @@ seconds-to-`Duration` conversion underneath is fallible too, so no path
 through this code can panic.
 
 All three checks — the device, the manager, and the setup page's bound
-below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
-`manager.rs`, so the runtime range and the persisted range cannot drift
-apart.
+below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant, so the
+runtime range and the persisted range cannot drift apart. The constant,
+the range, the instantaneous window and the mapping above are the
+`observing_conditions` module of
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md),
+shared verbatim with `upbv2-driver` and `gemini-powerbox-adv3-driver`, so a
+change to the policy reaches all three drivers at once.
+
+`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+windows, through the same module. While all three are empty — the state a
+window shrink that evicts every sample leaves behind — it answers what one
+empty window answers, the no-data value, not zero: a client asking whether
+the readings are fresh must not be told "updated just now" when there are
+none.
 
 A setup-page save validates `averaging_period` against the same bounds the
 device enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
@@ -441,6 +460,13 @@ device and every `Action` answers `ACTION_NOT_IMPLEMENTED`.
 | `observingconditions.averaging_period` | `<= 24h`, the ASCOM `AveragePeriod` ceiling; zero allowed |
 | `switch.unique_id`, `observingconditions.unique_id` | non-empty (each device's stable ASCOM `UniqueID`) |
 | `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+The same rules apply when the file is **loaded**: a hand-edited config the
+page would refuse to save is refused at startup and on reload, naming the
+fields, rather than starting a service whose poll task dies on a zero
+interval or whose `AveragePeriod` reads back outside ASCOM's range. The
+bootstrap mints the device ids before it loads, so the ids' rule never
+refuses a first start.
 
 A save that changes a field persists atomically and fires the one in-process
 reload, whichever page it came from; `main.rs` runs under

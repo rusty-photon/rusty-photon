@@ -16,7 +16,7 @@ use rusty_photon_config::driver::{ConfigurableDriver, DeviceSection, FieldError}
 
 use crate::config::{CliOverrides, Config};
 
-use crate::manager::MAX_AVERAGING_PERIOD;
+use rusty_photon_rolling_stats::observing_conditions::MAX_AVERAGING_PERIOD;
 
 /// The switch's device type in its Alpaca path spelling.
 pub const SWITCH_DEVICE_TYPE: &str = "switch";

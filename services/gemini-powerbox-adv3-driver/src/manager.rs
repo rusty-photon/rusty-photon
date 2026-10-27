@@ -23,10 +23,10 @@
 //! ([`GeminiCodec::discard_before_send`]), so a frame that sat in the buffer
 //! never answers a later request.
 
-use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
+use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportError,
@@ -34,7 +34,7 @@ use rusty_photon_shared_transport::{
 };
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::codec::{GeminiCodec, GeminiCodecError, GeminiResponse};
 use crate::config::Config;
@@ -61,7 +61,6 @@ pub struct CachedState {
     pub status: Option<StatusFrame>,
     /// The firmware `>V#` reported, kept for `DriverInfo`.
     pub firmware: Option<u16>,
-    pub last_update: Option<SystemTime>,
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
@@ -75,68 +74,6 @@ pub struct CachedState {
     /// something else — and a client that set exactly the instantaneous
     /// window's length would be told 0.
     pub average_period_hours: f64,
-}
-
-/// The sensor window used when a client asks for `AveragePeriod = 0`.
-///
-/// ASCOM reads 0 as "the device is not averaging — give me the most recent
-/// value". `SensorMean` has no unaveraged mode, and giving it a literally
-/// unbounded window would resurrect the staleness this driver windows
-/// `get_mean` on read to avoid: a stalled poll loop would keep answering with
-/// an hours-old sample.
-///
-/// So 0 becomes the shortest window that still always holds the newest
-/// sample under healthy polling. Three intervals tolerates two missed polls
-/// before readings degrade to `VALUE_NOT_SET`, which is the honest answer once
-/// the device has gone quiet that long. The 10 s floor keeps a very fast poll
-/// interval from making the window shorter than one client round trip.
-fn instantaneous_window(poll_interval: Duration) -> Duration {
-    poll_interval.saturating_mul(3).max(Duration::from_secs(10))
-}
-
-/// ASCOM's ceiling on `ObservingConditions.AveragePeriod`.
-///
-/// The one place the limit is written down. Three checks enforce it and all
-/// three read it from here, so none can drift from the others: the device
-/// rejects an out-of-range `SetAveragePeriod` with `INVALID_VALUE`,
-/// [`GeminiManager::set_averaging_period`] holds the same line for a caller
-/// that bypasses the device, and a setup-page save refuses to persist a
-/// longer `averaging_period` than a client could select at runtime.
-pub const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
-
-/// The `AveragePeriod` range ASCOM allows, in hours.
-///
-/// Derived from [`MAX_AVERAGING_PERIOD`] rather than spelled again — the
-/// conversion is not available in a `const`. There is no lower bound below
-/// zero: zero is ASCOM's "not averaging". `contains` is false for NaN, so a
-/// caller checking against this range rejects NaN without a separate
-/// finiteness test.
-#[must_use]
-pub fn average_period_hours() -> RangeInclusive<f64> {
-    0.0..=MAX_AVERAGING_PERIOD.as_secs_f64() / 3600.0
-}
-
-/// The sensor window that serves `period_hours`.
-///
-/// Anything above zero is that period exactly; zero routes to
-/// [`instantaneous_window`]. `period_hours` is never negative — the device
-/// rejects that before it reaches here — so `<= 0.0` reads as "is zero"
-/// without tripping `clippy::float_cmp`. A value that should have been
-/// rejected (NaN, or a period too large for a `Duration`) also lands on the
-/// instantaneous window rather than panicking.
-fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration {
-    if period_hours <= 0.0 {
-        return instantaneous_window(poll_interval);
-    }
-    // `try_from_secs_f64`, not `from_secs_f64`: the panicking form takes the
-    // whole driver down on a non-finite or out-of-range value, and a driver
-    // that panics at 2am ends the night's imaging (tenet 2). Callers validate
-    // before they get here, so the fallback is unreachable on the wire path;
-    // it is what keeps this function total for one that does not. Falling
-    // back to the instantaneous window fails closed: the shortest window that
-    // still holds the newest sample.
-    Duration::try_from_secs_f64(period_hours * 3600.0)
-        .unwrap_or_else(|_| instantaneous_window(poll_interval))
 }
 
 /// Manager that wraps the shared transport plus the hub's cached state.
@@ -375,8 +312,11 @@ async fn handshake(
         }
     };
     check_firmware(firmware).map_err(GeminiCodecError::Handshake)?;
+    // Not a warning: the vendor publishes no image the operator could
+    // move to (checked 2026-10-26), so there is nothing to act on; the
+    // caveat is in the design doc and the version in `DriverInfo`.
     if firmware == MIN_FIRMWARE {
-        warn!(
+        debug!(
             firmware = %FirmwareVersion(firmware),
             recommended = %FirmwareVersion(RECOMMENDED_FIRMWARE),
             "the hub runs the oldest accepted firmware; the recommended one fixes DS18B20 \
@@ -447,7 +387,6 @@ async fn poll_loop(
 /// own if that persists.
 fn apply_status(state: &mut CachedState, frame: &StatusFrame) {
     state.status = Some(frame.clone());
-    state.last_update = Some(SystemTime::now());
     if frame.ambient_sensor_attached {
         for (mean, reading) in [
             (&mut state.temp_mean, frame.ambient_temperature),
@@ -870,23 +809,6 @@ mod tests {
 
     // ---- averaging -------------------------------------------------------
 
-    #[test]
-    fn the_average_period_range_is_ascoms_zero_to_twenty_four_hours() {
-        let allowed = average_period_hours();
-        assert!((*allowed.start() - 0.0).abs() < f64::EPSILON);
-        assert!((*allowed.end() - 24.0).abs() < f64::EPSILON);
-        assert_eq!(MAX_AVERAGING_PERIOD, Duration::from_hours(24));
-    }
-
-    #[test]
-    fn effective_window_does_not_panic_on_a_non_finite_period() {
-        let poll = Duration::from_secs(5);
-        let expected = instantaneous_window(poll);
-        assert_eq!(effective_window(f64::NAN, poll), expected);
-        assert_eq!(effective_window(f64::INFINITY, poll), expected);
-        assert_eq!(effective_window(f64::MAX, poll), expected);
-    }
-
     #[tokio::test]
     async fn set_averaging_period_leaves_state_unchanged_for_an_unusable_period() {
         let manager = make_manager();
@@ -1046,6 +968,5 @@ mod tests {
         let state = manager.get_cached_state().await;
         assert!(state.status.is_none());
         assert!(state.firmware.is_none());
-        assert!(state.last_update.is_none());
     }
 }

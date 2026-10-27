@@ -8,11 +8,13 @@
 //! sliding-window mean in [`rusty_photon_rolling_stats`].
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::{Device, ObservingConditions};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
+use rusty_photon_rolling_stats::observing_conditions::{
+    average_period_hours, time_since_freshest_update,
+};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
@@ -21,7 +23,7 @@ use tracing::debug;
 use crate::codec::Upbv2Codec;
 use crate::config::ObservingConditionsConfig;
 use crate::error::Upbv2Error;
-use crate::manager::{average_period_hours, Upbv2Manager};
+use crate::manager::Upbv2Manager;
 use crate::setup::{Upbv2Driver, OBSERVING_CONDITIONS_DEVICE_TYPE};
 
 macro_rules! ensure_connected {
@@ -247,18 +249,13 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
         let duration = match sensor_name.to_lowercase().as_str() {
-            "" => {
-                let times = [
-                    state.temp_mean.time_since_last_update(),
-                    state.humidity_mean.time_since_last_update(),
-                    state.dewpoint_mean.time_since_last_update(),
-                ];
-                times
-                    .iter()
-                    .filter_map(|&t| t)
-                    .min()
-                    .or(Some(Duration::ZERO))
-            }
+            // The freshest window; `None` while all three are empty, so the
+            // client reads "no data" rather than "updated just now".
+            "" => time_since_freshest_update([
+                &state.temp_mean,
+                &state.humidity_mean,
+                &state.dewpoint_mean,
+            ]),
             "temperature" => state.temp_mean.time_since_last_update(),
             "humidity" => state.humidity_mean.time_since_last_update(),
             "dewpoint" => state.dewpoint_mean.time_since_last_update(),

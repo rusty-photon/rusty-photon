@@ -16,6 +16,13 @@
 //! applied on **read**, not only on insert — see [`SensorMean::get_mean`]. A
 //! sampler that stops sampling reads as "no value" rather than as an average of
 //! readings that aged out.
+//!
+//! [`observing_conditions`] holds the one piece of ASCOM policy the three
+//! `ObservingConditions` drivers share: how `AveragePeriod` maps onto a window,
+//! and what `TimeSinceLastUpdate` with an empty sensor name answers over
+//! several means.
+
+pub mod observing_conditions;
 
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};

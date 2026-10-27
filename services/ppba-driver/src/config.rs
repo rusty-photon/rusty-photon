@@ -1,8 +1,10 @@
 //! Configuration types for the PPBA Driver
 
+use rusty_photon_config::driver::ConfigurableDriver;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::setup::PpbaDriver;
 use crate::switches::PpbaSwitchLabels;
 use std::path::Path;
 use std::time::Duration;
@@ -17,7 +19,25 @@ pub struct Config {
     pub observingconditions: ObservingConditionsConfig,
 }
 
-impl rusty_photon_config::ConfigFile for Config {}
+impl rusty_photon_config::ConfigFile for Config {
+    /// The setup page's rules, applied at load as well: a hand-edited file
+    /// the page would refuse to save is refused here, naming the fields,
+    /// rather than starting a service whose poll task dies on a zero
+    /// interval or whose `AveragePeriod` reads back outside ASCOM's range.
+    /// The bootstrap mints the device ids before it loads, so the ids' rule
+    /// never refuses a first start.
+    fn check(&self) -> std::result::Result<(), String> {
+        let errors = PpbaDriver::validate(self);
+        if errors.is_empty() {
+            return Ok(());
+        }
+        Err(errors
+            .iter()
+            .map(|e| format!("{}: {}", e.path, e.msg))
+            .collect::<Vec<_>>()
+            .join("; "))
+    }
+}
 
 /// Where each device's ASCOM `UniqueID` lives in the config file: the JSON
 /// pointers the startup bootstrap mints into.
@@ -616,5 +636,38 @@ mod persisted_config_shape {
             Vec::<String>::new(),
             "unset optional fields must be omitted, not written as null: {persisted}"
         );
+    }
+
+    #[test]
+    fn the_loader_refuses_what_the_setup_page_refuses() {
+        use rusty_photon_config::ConfigFile as _;
+        let mut zero_interval = loadable_config();
+        zero_interval.serial.polling_interval = std::time::Duration::ZERO;
+        let mut zero_timeout = loadable_config();
+        zero_timeout.serial.timeout = std::time::Duration::ZERO;
+        let mut long_period = loadable_config();
+        long_period.observingconditions.averaging_period = std::time::Duration::from_hours(25);
+        for (field, config) in [
+            ("serial.polling_interval", zero_interval),
+            ("serial.timeout", zero_timeout),
+            ("observingconditions.averaging_period", long_period),
+        ] {
+            let reason = config.check().unwrap_err();
+            assert!(reason.contains(field), "{field}: {reason}");
+        }
+    }
+
+    #[test]
+    fn a_config_the_setup_page_accepts_passes_the_loader_check() {
+        use rusty_photon_config::ConfigFile as _;
+        loadable_config().check().unwrap();
+    }
+
+    /// The defaults with the ids the bootstrap would have minted.
+    fn loadable_config() -> Config {
+        let mut config = Config::default();
+        config.switch.unique_id = "switch-id".to_string();
+        config.observingconditions.unique_id = "weather-id".to_string();
+        config
     }
 }

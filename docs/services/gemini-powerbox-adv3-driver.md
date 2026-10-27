@@ -7,10 +7,12 @@ Power & Data Hubs Advanced 3 (the box identifies itself on the wire as
 
 **Status: implemented (Phase 3 of [development-workflow.md](../skills/development-workflow.md)), 2026-10-26**,
 against a mock that serves the captured frame and streams as the hub does,
-and started once against the dev box's unit read-only
-([smoke test](#what-the-wire-actually-does)); the
-[hardware validation](#hardware-validation) list is still owed on that
-unit. Everything stated about the wire was either read from the
+and validated on the dev box's unit the same day: the
+[write probe](#what-the-wire-actually-does) answered items 1, 2 and 4 of
+the [hardware validation](#hardware-validation) list and ConformU ran
+clean on the hub ([record](#real-hardware-validation)); items 3 and 5,
+which need a sensor unplugged and a power cycle, are still owed.
+Everything stated about the wire was either read from the
 two open-source drivers named under [Sources](#sources) or measured against
 the dev box's own unit on 2026-10-26, and the document says which.
 
@@ -77,7 +79,7 @@ reply:
 | USB product descriptor | `USB Serial` (manufacturer string empty, **no serial number**) |
 | Linux by-id link | `usb-1a86_USB_Serial-if00-port0` |
 | Serial settings | 19200 baud, 8N1 |
-| Firmware baseline | 308 (`3.0.8`); 309 recommended |
+| Firmware baseline | 308 (`3.0.8`). 309 fixes DS18B20 probe detection, but the vendor publishes no Advanced 3 image for its `FirmwareUpgradeTool` (checked 2026-10-26), so the dev box's unit stays on 308 and the driver treats 308 as the firmware there is |
 | `pkg/doctor.toml` | `usb_vendor = "1a86"`, `usb_product = "7523"`, **no `usb_model`** |
 
 The hub enumerates as several USB functions at once: a VIA Labs VL817 hub
@@ -227,9 +229,7 @@ observation; the drivers' claims it confirms or contradicts are named.
   later `>G#` is answered immediately **and the periodic frame still comes
   on the old schedule**: the stream keeps one phase (every frame in the run
   landed at the same offset modulo 3 s) and a request does not re-phase it.
-- **The CH340's DTR edge does not reset this unit.** AlpacaBridge records
-  that opening the port "pulses the MCU reset line" and keeps DTR high
-  across close (`HUPCL` cleared) to avoid a second reset. Measured here:
+- **The CH340's DTR edge does not reset this unit.** Measured here:
   closing with DTR held and reopening, closing with DTR dropped and
   reopening — in all four open/close cycles the stream continued on its
   original phase, the next frame arriving within 0.5 s of the open. A
@@ -259,6 +259,29 @@ observation; the drivers' claims it confirms or contradicts are named.
   buffer, so the two-request fallback is not needed for the reply. Whether
   the set itself is applied is what a value change shows, which this write
   did not make ([hardware validation](#hardware-validation), item 1).
+- **The write probe, 2026-10-26.** Sixteen sets to the same unit, each in
+  one buffer with a `>G#` behind it, every byte timestamped
+  ([record](#real-hardware-validation)). A bare `>G#` drew its whole
+  frame 49 ms after the send; a set with its `>G#` drew the frame 123–125
+  ms after the send, which with the frame's 42 ms on the wire puts the
+  hub's first byte about 80 ms after a set. `>C3#\n>G#\n` drew a frame
+  with DC3 off and `>O3#\n>G#\n` one with it on again, so the second
+  command of a buffer is applied before the frame is composed (item 1).
+  `>X50#` and `>X100#` in Manual were each reflected in field 8 by the
+  frame behind them (item 2); `>M12#`, `>M10#` and `>M11#` in field 5,
+  `>Z10#`/`>Z11#` in field 4 in Switch, Auto and Manual alike (item 4).
+  In Auto, field 8 kept the manual duty for some twenty seconds and then
+  showed the loop's own output — `0`, the lens being 4 °C above the dew
+  point — and a `>X30#` sent in Auto showed `30` for one frame before the
+  loop overwrote it; switching back to Manual **left the duty at the
+  loop's last value**, not at any duty written earlier. Three of the
+  sixteen sets were followed first by a periodic frame showing the state
+  *before* the set: each had gone out 104–109 ms before that frame's last
+  byte, so the frame's first byte landed some 65 ms *after* the set, yet
+  the frame predated it. The reply proper followed 85 ms behind, showing
+  the set applied. The write path's second look exists for exactly this
+  frame, and the window is about 110 ms per 3 s period — about one write
+  in twenty-seven, not the 5 ms the design first estimated.
 - **The hub's state when found.** DC2–DC5 all on, USB A–F all on, both
   sensors attached, both dew channels **Manual at 100 %**, 12.2 V in,
   0.02–0.06 A. AlpacaBridge reports the same dew state on power-up
@@ -361,7 +384,7 @@ and the mode decides which of the other two means anything:
 
 | Mode | What the hub does | Duty switch | Enabled switch |
 |------|-------------------|-------------|----------------|
-| `0` Auto | PID loop holds the lens probe above the dew point | read-only (reports what the hub reports) | writable: `0` stops the loop, `1` runs it |
+| `0` Auto | PID loop holds the lens probe above the dew point | read-only: the loop's live duty, which the hub writes into the same field `>X`/`>Y` set (measured: `0` with the lens 4 °C above the dew point) | writable: `0` stops the loop, `1` runs it |
 | `1` Manual | heater at the manual duty | writable, 0–100 | read-only |
 | `2` Switch | heater as plain DC | read-only | writable: `0` off, `1` on |
 
@@ -397,6 +420,12 @@ Rules for the mode switch:
 `DEW6 Enabled` is deliberately not named "on": in Auto mode a `1` means
 the loop is running, and the heater may well be at 0 % because the lens is
 already warm enough.
+
+A channel switched from Auto back to Manual keeps **the loop's last duty**,
+not a duty written before Auto was entered (measured 2026-10-26: Manual
+resumed at the `0` the loop had reached). The hub has one duty register
+per channel and both the loop and `>X`/`>Y` write it, so an operator who
+wants a particular manual duty writes the mode first and the duty after.
 
 ### Sensor presence and the absent-sensor sentinel
 
@@ -511,8 +540,10 @@ state; the driver reports it and changes nothing.
 2. `>V#`. Below 308 the connect is refused, naming the version read and
    the vendor's upgrade tool; the frame layout is only known for 3.0.8 and
    later and both open-source drivers refuse likewise. 308 connects with a
-   `warn!` that 309 fixes DS18B20 detection. The value is kept for
-   `DriverInfo`.
+   `debug!` noting that 309 fixes DS18B20 detection — not a warning,
+   because the vendor publishes no image to move to
+   ([Hardware](#hardware)), so there is nothing for the operator to act
+   on. The value is kept for `DriverInfo`.
 3. `>G#`. The first frame seeds the cache. A reply that is not a parseable
    `*G` frame fails the connect.
 
@@ -578,10 +609,14 @@ write addressed with what it asked for:
 - a match stores the frame in the cache and the write succeeds — so a read
   straight after a write reflects the device, as in the siblings;
 - a mismatch is asked once more (discard, `>G#`) before it is believed,
-  because a periodic frame the hub starts during the 5 ms the two commands
-  take to reach it predates the set and is the first whole frame read —
-  about 0.2 % of writes (5 ms of window per 3 s of period), which at a
-  2 a.m. write is still a false failure worth one more 70 ms;
+  because a periodic frame the hub starts after the set went out can
+  still predate it and is then the first whole frame read. Measured on
+  the dev box's unit ([write probe](#what-the-wire-actually-does)): a
+  periodic frame whose first byte landed some 65 ms after the set showed
+  the state before it, so the window is about 110 ms per 3 s period —
+  three of sixteen probe sets, roughly one write in twenty-seven, each a
+  false failure at a 2 a.m. write without the second look, which costs
+  one more 125 ms;
 - a mismatch that survives the second look is reported as
   `INVALID_OPERATION`, naming the switch, the value asked for and the value
   the hub reports — a tripped output that the hub refuses to turn back on
@@ -596,12 +631,14 @@ Which field confirms which write:
 | DC2–DC5, USB A–F | frame 0 / 1 digit |
 | `DEWn Enabled` | frame 4 / 6 |
 | `DEWn Mode` | frame 5 / 7 |
-| `DEWn Duty` | frame 8 / 9 — **provisional**: the INDI driver classes the manual duty as *not confirmable*, without saying why. If hardware validation shows fields 8/9 do not follow `>X`/`>Y` promptly, the duty write keeps the same set-plus-`>G#` request but stops comparing the field: the frame still refreshes the cache, the cache holds the commanded duty until a later frame shows it, and this table is amended. |
+| `DEWn Duty` | frame 8 / 9 — confirmed on hardware 2026-10-26: in Manual the field shows the new duty in the frame behind the set. (The INDI driver classes the manual duty as *not confirmable*; what it may have met is Auto mode, where the loop overwrites the same field — and this driver refuses a duty write outside Manual.) |
 
-The two-commands-in-one-buffer shape has not been exercised on hardware;
-both open-source drivers send sets alone. It is the first item on the
-[hardware validation list](#hardware-validation). The fallback, if the
-firmware drops the second command, is a set command sent on its own
+The two-commands-in-one-buffer shape, which both open-source drivers
+avoid by sending sets alone, was exercised on hardware on 2026-10-26:
+every one of the probe's sixteen sets drew a frame showing it applied
+([hardware validation](#hardware-validation), item 1). The fallback that
+would have been needed had the firmware dropped the second command is
+kept here for a unit that behaves differently: a set command sent on its own
 followed by a `>G#` request — and a set sent alone draws no reply, which
 the shared transport cannot express today: `Connection::request` always
 reads a frame after it writes one, and a read that times out is a
@@ -610,9 +647,8 @@ shared-crate addition alongside `discard_input`:
 `Codec::expects_reply(&cmd) -> bool`, default `true`, under which the
 request returns a reply-less response without reading. The set then
 takes one lock cycle and the readback another, and the readback's
-discard-then-second-look rule covers the gap between them. It is named
-here so the Phase 3 estimate carries it; it is not built unless the
-hardware asks for it.
+discard-then-second-look rule covers the gap between them. The dev box's
+unit did not ask for it, and it is not built.
 
 ### Synchronous switches only
 
@@ -640,15 +676,17 @@ other request.
 `Temperature`, `Humidity` and `DewPoint` are the AHT20's three values from
 the poll loop, each through the shared sliding-window mean of
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
-`AveragePeriod`, the meaning of zero, the `[0, 24]` hour range, the `NaN`
-rejection, the `MAX_AVERAGING_PERIOD` constant shared by the device, the
-manager and the setup page, and the staleness rule (an emptied window
-reads `VALUE_NOT_SET`) are exactly as
+`AveragePeriod`, the meaning of zero, the floor under a short period, the
+`[0, 24]` hour range, the `NaN` rejection, the `MAX_AVERAGING_PERIOD`
+constant shared by the device, the manager and the setup page, and the
+staleness rule (an emptied window reads `VALUE_NOT_SET`) are exactly as
 [`ppba-driver`](ppba-driver.md#averageperiod-staleness-and-the-meaning-of-zero)
-specifies them; this document does not restate them. `TimeSinceLastUpdate`
-with an empty sensor name is the freshest of the three windows, and while
-all three are empty it answers what one empty window answers — the no-data
-value, not zero. A sample is fed only while the AHT20's attached flag is
+specifies them, and the three drivers share the one implementation in
+`rusty-photon-rolling-stats`; this document does not restate them.
+`TimeSinceLastUpdate` with an empty sensor name is the freshest of the
+three windows, and while all three are empty it answers what one empty
+window answers — the no-data value, not zero. A sample is fed only while
+the AHT20's attached flag is
 `1`, and a frame with that flag at `0` clears the three windows
 ([Sensor presence](#sensor-presence-and-the-absent-sensor-sentinel)).
 
@@ -736,6 +774,13 @@ to the hub. The driver has no custom Actions.
 | `switch.labels` | the three label rules, at deserialize |
 | `server.auth` | a username needs a password, submitted or stored; the repeat must match |
 
+The same rules apply when the file is **loaded**: a hand-edited config the
+page would refuse to save is refused at startup and on reload, naming the
+fields, rather than starting a service whose poll task dies on a zero
+interval or whose `AveragePeriod` reads back outside ASCOM's range. The
+bootstrap mints the device ids before it loads, so the ids' rule never
+refuses a first start.
+
 ## Error behaviour
 
 | Condition | Result |
@@ -745,7 +790,7 @@ to the hub. The driver has no custom Actions.
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
 | `>V#` below 308 | Connect refused, naming the version and the vendor's `FirmwareUpgradeTool`. |
-| `>V#` is 308 | Connects; `warn!` that 309 fixes DS18B20 detection. |
+| `>V#` is 308 | Connects; a `debug!` notes that 309 fixes DS18B20 detection. |
 | `*G` frame with a tag out of sequence, a wrong digit count, or an unparseable number | `ParseError` naming the field; cache untouched; the request fails and the poll goes on. |
 | Frame not starting with `*` (a discarded frame's tail) or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
 | Skip budget exhausted | The request fails as a communication error; the cache is untouched. |
@@ -775,7 +820,8 @@ dev box's unit.
 exists; its frame is unknown); `>O1#`/`>C1#`; consuming the hub's stream as
 the poll instead of discarding it (a receive-only request would hold the
 transport lock across the 3 s cadence and delay writes — not worth it while
-`>G#` answers in 20 ms); any persistence of dew modes.
+a `>G#` draws its whole frame in about 50 ms, measured on the dev box's
+unit); any persistence of dew modes.
 
 ## Relationship to issue #1173
 
@@ -876,19 +922,25 @@ facts this design could not, each recorded in the run's
 
 1. **Two commands in one buffer.** Does `>O3#\n>G#\n` yield a frame
    showing output 3 changed? If the firmware drops the second command, the
-   write path falls back to two requests. *Half answered 2026-10-26:*
-   `>X100#\n>G#\n` drew its frame in one request
-   ([smoke test](#what-the-wire-actually-does)), so the second command is
-   not dropped; that the frame shows the set applied awaits a write that
-   changes a value.
+   write path falls back to two requests. *Answered 2026-10-26:* yes —
+   `>C3#\n>G#\n` drew a frame with DC3 off and `>O3#\n>G#\n` one with
+   it on, 124 ms after each send
+   ([write probe](#what-the-wire-actually-does)); no fallback is needed.
 2. **Fields 8/9 under `>X`/`>Y`.** Does the duty field follow the set at
    once in Manual mode, and what does it show in Auto mode — the manual
-   setpoint or the loop's live duty?
+   setpoint or the loop's live duty? *Answered 2026-10-26:* in Manual the
+   frame behind the set shows the new duty; in Auto the field is the
+   loop's live duty, which overwrites a `>X` within a few seconds, and a
+   return to Manual keeps the loop's last value
+   ([dew heaters](#dew-heaters-three-switches-per-channel)).
 3. **Absent sensors.** The frame with the AHT20 unplugged, and with the
    DS18B20 unplugged: fields 2/3 and whatever the firmware puts in 10–13.
 4. **Dew modes.** That `>M1x#` is reflected in field 5, that `>Z1x#` is
    reflected in field 4 in Auto and Switch modes, and what `>Z10#` does in
-   Manual.
+   Manual. *Answered 2026-10-26:* every mode digit and every flag write
+   showed in the frame behind it, in Manual too, where the flag changed
+   and the duty field did not (the heater's behaviour there was not
+   observed; the driver refuses the write in Manual regardless).
 5. **Output state across a hub power cycle.** Whether DC2–DC5 and USB come
    back as they were or all on. Not a driver behaviour, but an operator
    fact for this document.
@@ -896,10 +948,19 @@ facts this design could not, each recorded in the run's
    version gate first and **both sensors attached**: a `DEWn Mode` write
    to Auto is refused while either sensor is absent, so a run started with
    a sensor still unplugged after item 3 records that refusal as an error.
+   *Done 2026-10-26* ([record](#real-hardware-validation)).
+
+### Real-hardware validation
+
+[2026-10-26, the dev box's unit on Linux](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md):
+ConformU 4.5.3, both Switch suites with both channels in Manual and again
+in Auto, both ObservingConditions suites, all clean; the write probe for
+items 1, 2 and 4 with its log.
 
 ## Open items
 
-1. **`DEWn Duty` confirmation** — provisional until item 2 above.
+1. ~~**`DEWn Duty` confirmation**~~ — settled by item 2 above on
+   2026-10-26: the field confirms the write in Manual.
 2. **The absent-sensor sentinel** — `-127`/`0` is this design's choice
    pending item 3; if the firmware's own value is a usable sentinel, the
    rows may publish it instead.

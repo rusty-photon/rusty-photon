@@ -1,7 +1,9 @@
 # `rusty-photon-rolling-stats` Crate Design
 
 Time-windowed statistics over timestamped samples. Today that is one type,
-[`SensorMean`] — a rolling mean of `f64` readings over a configurable window.
+[`SensorMean`] — a rolling mean of `f64` readings over a configurable window —
+and one module of policy, `observing_conditions`, which the three ASCOM
+`ObservingConditions` drivers that hold such means share.
 
 This is a workspace library, not a service. It is `std`-only and depends on
 nothing: no async runtime, no serialiser, no device library. That is deliberate,
@@ -72,13 +74,43 @@ ASCOM drivers surface as `f64::MAX` seconds — the opposite of the truth. A
 sample stamped in the future is as new as a sample can be, so it reports
 `Duration::ZERO`.
 
+## The `observing_conditions` policy module
+
+`SensorMean` knows nothing about ASCOM, and the crate still depends on
+nothing. What `observing_conditions` adds is the policy the three drivers
+that hold three means each had written out three times, and which a fix had
+already reached in one copy only:
+
+- **`AveragePeriod` onto a window.** `MAX_AVERAGING_PERIOD` (24 h, ASCOM's
+  ceiling) and `average_period_hours()` (the `[0, 24]` range every check
+  reads, which `contains` makes NaN-safe); `instantaneous_window(poll)`, the
+  window that serves `AveragePeriod = 0`: `max(3 × poll interval, 10 s)`, the
+  shortest window that still always holds the newest sample under healthy
+  polling; and `effective_window(hours, poll)`, the window for any period —
+  the period itself, **never shorter than the instantaneous window**. A
+  window shorter than the poll cadence, applied on read, holds no sample
+  for part of every poll cycle, so a client that set a period of a few
+  seconds would read "no value" between polls while the sensor is healthy;
+  the floor keeps the newest sample inside. The period the client set is
+  recorded verbatim by the driver and read back as-is, so the floor changes
+  what the means average over, not what `AveragePeriod` reports. A
+  non-finite or oversized period lands on the instantaneous window rather
+  than panicking.
+- **The empty-name `TimeSinceLastUpdate`.** `time_since_freshest_update`
+  answers over several means: the freshest sample's age, and `None` while
+  every mean is empty, so the client reads "no data" rather than "updated
+  just now". An empty mean does not hide a fresher one beside it.
+
+The policy speaks in hours and `Duration`s; the ASCOM error codes stay with
+the drivers.
+
 ## Consumers
 
 `ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` each hold
-three (temperature, humidity, dewpoint) and resize them from ASCOM's
-`AveragePeriod`. Mapping `AveragePeriod = 0` onto a window is driver policy
-and lives there, not here — all three currently scale it to their poll
-cadence, but nothing in this crate assumes that. See
+three (temperature, humidity, dewpoint), size them through
+`effective_window` from the configured `averaging_period` and from every
+`SetAveragePeriod`, and answer the empty-name `TimeSinceLastUpdate` through
+`time_since_freshest_update`. See
 [`docs/services/ppba-driver.md`](../services/ppba-driver.md),
 [`docs/services/upbv2-driver.md`](../services/upbv2-driver.md) and
 [`docs/services/gemini-powerbox-adv3-driver.md`](../services/gemini-powerbox-adv3-driver.md).
