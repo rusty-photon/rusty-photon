@@ -81,17 +81,19 @@ on and the page named nothing waiting.
    monitor read failed; treating as unsafe`, then `conditions unsafe`, at
    01:24:18 UTC). The gate stayed closed for 30 s, until the reconnect
    and the next safety poll ("conditions safe again", 01:24:48). No
-   session was running, so nothing was cancelled, but the transition
-   still parks the mount: `rp` sent the GTi a `Park`, and the GTi sent a
+   session was running, so nothing was cancelled, and the transition
+   parked the mount: `rp` sent the GTi a `Park`, and the GTi sent a
    goto (`:G`, `:S`, `:J` on both axes) to its park target. The mount was
    already at that target (the `:j` position reads before and after are
    identical), so nothing moved. Anywhere else, the save would have
    parked it. The setup crate's
    [§ Reload](../../crates/rusty-photon-setup.md#reload) and
    [filemonitor.md § Setup pages](../../services/filemonitor.md#setup-pages)
-   now say so. That `rp` parks outside an operator session is the open
-   issue [#1468](https://github.com/rusty-photon/rusty-photon/issues/1468). This is its case of a monitor's service restarting, with a
-   setup-page save as the trigger.
+   now say so. The park is meant: `rp` parks
+   on a monitor it cannot read, whatever is running
+   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468), closed as by design). The reload does not announce
+   itself, so `rp` cannot tell it from a monitor that is gone;
+   [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652) has the monitor announce it with a deadline `rp` waits for.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").

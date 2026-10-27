@@ -106,8 +106,9 @@ session or none. The gate stays closed until `rp`'s reconnect supervisor
 has reconnected the monitor and the next safety poll reads it, up to
 `equipment.reconnect_interval` plus `safety.poll_interval` (40 s with the
 defaults) ([setup crate § Reload](../crates/rusty-photon-setup.md#reload)).
-That park, outside any operator session, is the open issue [#1468](https://github.com/rusty-photon/rusty-photon/issues/1468): this is
-its case of a monitor's service restarting.
+The park is meant: a monitor `rp` cannot read is unsafe, whatever is
+running. What the reload lacks is a notice, so that `rp` could wait for
+the monitor to come back instead of parking; that is [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652).
 
 | Page | Section | Fields |
 |------|---------|--------|
