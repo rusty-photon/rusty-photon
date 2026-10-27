@@ -233,7 +233,7 @@ mockall = "0.15.0"
 # The Servo html5ever/selectors stack: CSS-selector assertions on rendered
 # pages, in ui-htmx's suite and in bdd-infra's shared setup-page steps.
 scraper = "0.29"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 # Single-file embedded stores: rp-targets (the imaging plan),
 # calibrator-flats (flat timing per train and filter) and focus-model (each
 # train's focus record and run history). Pinned to the 4.x
