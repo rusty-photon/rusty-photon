@@ -7658,8 +7658,37 @@ fn recovery_post(form: &[(&str, &str)]) -> ascom_alpaca::SetupRequest {
     }
 }
 
+/// The `GET` a browser sends after a redirect to `location`, a query
+/// such as `?recover&ran=1`.
+fn location_get(location: &str) -> ascom_alpaca::SetupRequest {
+    let query = location
+        .trim_start_matches('?')
+        .split('&')
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (key.to_string(), value.to_string())
+        })
+        .collect();
+    ascom_alpaca::SetupRequest {
+        query,
+        ..get_request()
+    }
+}
+
+/// The `Location` of a response that must be a `303 See Other`.
+fn see_other_location(response: &ascom_alpaca::SetupResponse) -> String {
+    assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+    response
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
 #[tokio::test]
-async fn a_command_that_ran_redirects_so_a_refresh_cannot_send_it_again() {
+async fn a_command_that_ran_redirects_to_the_number_the_driver_gave_it() {
     let d = connected_device_with_pages().await;
     let stop: &[(&str, &str)] = &[("command", "stop")];
     let recover: &[(&str, &str)] = &[
@@ -7667,37 +7696,90 @@ async fn a_command_that_ran_redirects_so_a_refresh_cannot_send_it_again() {
         ("pose", "ap_park_0"),
         ("confirm", "on"),
     ];
-    for (form, location) in [(stop, "?recover=stopped"), (recover, "?recover=ap_park_0")] {
-        let response = d.setup_request(recovery_post(form)).await;
-        assert_eq!(
-            response.status(),
-            axum::http::StatusCode::SEE_OTHER,
-            "{form:?}"
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::LOCATION)
-                .unwrap(),
-            location
-        );
-    }
+    let first = d.setup_request(recovery_post(stop)).await;
+    assert_eq!(see_other_location(&first), "?recover&ran=1");
+    let second = d.setup_request(recovery_post(recover)).await;
+    assert_eq!(see_other_location(&second), "?recover&ran=2");
 }
 
 #[tokio::test]
-async fn the_page_a_redirect_lands_on_says_what_ran_and_a_bare_one_says_nothing() {
+async fn a_result_shows_once_on_the_page_its_redirect_names() {
     let d = connected_device_with_pages().await;
-    let recovered = d.setup_request(recovery_get("ap_park_3")).await;
-    assert_eq!(recovered.status(), axum::http::StatusCode::OK);
+    let recover: &[(&str, &str)] = &[
+        ("command", "recover"),
+        ("pose", "ap_park_0"),
+        ("confirm", "on"),
+    ];
+    let location = see_other_location(&d.setup_request(recovery_post(recover)).await);
+    let landed = d.setup_request(location_get(&location)).await;
+    assert_eq!(landed.status(), axum::http::StatusCode::OK);
     assert!(
-        recovered.body().contains("Recovered from ap_park_3: OTA"),
+        landed.body().contains("Recovered from ap_park_0"),
         "{}",
-        recovered.body()
+        landed.body()
     );
-    let stopped = d.setup_request(recovery_get("stopped")).await;
-    assert!(stopped.body().contains("both axes reported stopped"));
-    let bare = d.setup_request(recovery_get("")).await;
-    assert!(!bare.body().contains("Recovered from") && !bare.body().contains("reported stopped"));
+    // A refresh of that address shows the page without the result.
+    let refreshed = d.setup_request(location_get(&location)).await;
+    assert!(
+        !refreshed.body().contains("Recovered from"),
+        "{}",
+        refreshed.body()
+    );
+    let stopped = see_other_location(&d.setup_request(recovery_post(&[("command", "stop")])).await);
+    assert!(d
+        .setup_request(location_get(&stopped))
+        .await
+        .body()
+        .contains("both axes reported stopped"));
+}
+
+#[tokio::test]
+async fn an_address_no_redirect_named_shows_no_result() {
+    let d = connected_device_with_pages().await;
+    let stopped = see_other_location(&d.setup_request(recovery_post(&[("command", "stop")])).await);
+    // An earlier number, a number nothing took, the pose an earlier build
+    // carried, and the bare page: none shows a result, and none of them
+    // spends the one the redirect names.
+    for address in [
+        "?recover&ran=0",
+        "?recover&ran=99",
+        "?recover=ap_park_3",
+        "?recover=stopped",
+        "?recover",
+    ] {
+        let body = d
+            .setup_request(location_get(address))
+            .await
+            .body()
+            .to_string();
+        assert!(
+            !body.contains("Recovered from") && !body.contains("reported stopped"),
+            "{address}: {body}"
+        );
+    }
+    assert!(d
+        .setup_request(location_get(&stopped))
+        .await
+        .body()
+        .contains("both axes reported stopped"));
+}
+
+#[tokio::test]
+async fn a_later_command_retires_an_earlier_ones_unshown_result() {
+    let d = connected_device_with_pages().await;
+    let first = see_other_location(&d.setup_request(recovery_post(&[("command", "stop")])).await);
+    let second = see_other_location(&d.setup_request(recovery_post(&[("command", "stop")])).await);
+    assert_ne!(first, second);
+    assert!(!d
+        .setup_request(location_get(&first))
+        .await
+        .body()
+        .contains("reported stopped"));
+    assert!(d
+        .setup_request(location_get(&second))
+        .await
+        .body()
+        .contains("reported stopped"));
 }
 
 #[tokio::test]

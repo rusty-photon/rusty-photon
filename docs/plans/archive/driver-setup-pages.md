@@ -1,6 +1,55 @@
 # Driver-served setup pages
 
-**Status:** accepted (merged 2026-10-17,
+**Status: COMPLETE (archived 2026-10-26).** Every rusty-photon Alpaca
+server configures itself on its own two setup pages, behind its own TLS
+and Basic Auth, and the `config.get` / `config.apply` / `config.schema`
+actions, `rp`'s REST config routes and `ui-htmx`'s config pages are
+retired. Delivered in phases: the plan
+([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)) and
+ADR-023 with ADR-016 amendment 9
+([#1636](https://github.com/rusty-photon/rusty-photon/pull/1636)); P1, the
+`ascom-alpaca` fork's specification paths and request-taking hooks
+([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)); P2, the
+shared crate and `dsd-fp2`
+([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)); P3, one
+family at a time
+([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549),
+[#1557](https://github.com/rusty-photon/rusty-photon/pull/1557),
+[#1558](https://github.com/rusty-photon/rusty-photon/pull/1558),
+[#1613](https://github.com/rusty-photon/rusty-photon/pull/1613),
+[#1614](https://github.com/rusty-photon/rusty-photon/pull/1614),
+[#1615](https://github.com/rusty-photon/rusty-photon/pull/1615),
+[#1616](https://github.com/rusty-photon/rusty-photon/pull/1616),
+[#1621](https://github.com/rusty-photon/rusty-photon/pull/1621),
+[#1625](https://github.com/rusty-photon/rusty-photon/pull/1625)); P4,
+Sentinel's restart button, `rp`'s `/setup` and `ui-htmx`'s, and a
+follow-up ([#1626](https://github.com/rusty-photon/rusty-photon/pull/1626),
+[#1627](https://github.com/rusty-photon/rusty-photon/pull/1627),
+[#1630](https://github.com/rusty-photon/rusty-photon/pull/1630),
+[#1631](https://github.com/rusty-photon/rusty-photon/pull/1631)); P5, the
+retirement ([#1634](https://github.com/rusty-photon/rusty-photon/pull/1634),
+[#1635](https://github.com/rusty-photon/rusty-photon/pull/1635)).
+
+Two of the plan's statements were overtaken after its phases shipped.
+The `GTi`'s AP-park actions, which §Goal, §What stays and D8 keep, are
+retired ([#1643](https://github.com/rusty-photon/rusty-photon/pull/1643)):
+the power-up pose and the park target are fields of the mount's page, and
+the recovery is a command on that page (ADR-023 decision 3 records that a
+page may carry one). And `zwo-camera`'s `max_adu_reporting`, which D11's
+as-built note calls file-only, is a dropdown
+([#1637](https://github.com/rusty-photon/rusty-photon/pull/1637)) whose
+options are labelled and explained on the page
+([#1645](https://github.com/rusty-photon/rusty-photon/pull/1645)).
+
+Left open: the rig validation §Testing asks for (each driver's page
+opened, saved and reloaded from a laptop on `pier1` and `rig2`, a
+validation record per rig) has not been recorded. The fork's fixes are
+still not offered upstream, as the owner decided on 2026-10-17. Of
+§Found on the way, the origin check's trust in `Host` stays open; the
+`doctor auth rotate` and `doctor.md` items were fixed in the PR that
+archived this plan.
+
+**History:** accepted (merged 2026-10-17,
 [#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)); P1 merged
 ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)); P2 merged
 ([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)); P3
@@ -67,7 +116,7 @@ enter that address and credential on the entry that uses the driver.
 
 Every driver but `planetarium-bridge` exposes three vendor ASCOM
 `Action`s on each of its devices
-([config-actions.md](archive/config-actions-protocol.md)). `config.get`
+([config-actions.md](config-actions-protocol.md)). `config.get`
 returns the effective config as a JSON string with secrets replaced by a
 sentinel; `config.schema` returns a JSON Schema plus two lists of dotted
 paths (`locked_fields`, `read_only_fields`) that the schema cannot
@@ -293,7 +342,7 @@ reach. It names the top-level keys its sections edit (the walker leaves
 them off every page), the devices the server serves when the
 configuration alone cannot name them, and its sections on each page,
 each with its markup, its parse and an optional confirmation
-([rusty-photon-setup.md](../crates/rusty-photon-setup.md), "A driver's
+([rusty-photon-setup.md](../../crates/rusty-photon-setup.md), "A driver's
 own part"). The tagged-enum selector
 is built and unit-tested in the crate (one radio button per variant, the
 chosen variant's fields shown by CSS, the others' switched off by a few
@@ -500,7 +549,7 @@ the final pass (P5):
   saved on the server page like any other). The placeholder camera's
   `ConfigurableDriver` parameter was to go too, but P3 gave the
   placeholder a setup page through it, so it stays;
-- [config-actions.md](archive/config-actions-protocol.md), archived with the
+- [config-actions.md](config-actions-protocol.md), archived with the
   2026-05 plan it documents; the "Config actions" section of every
   service doc, replaced by a "Setup pages" section.
 
@@ -599,7 +648,7 @@ a page of ours — none, after P3 — gets the crate's default, and so does
 every other user of the crate. The workspace pin moves to the fork
 branch carrying both pull requests — a `Cargo.lock` change, so
 `MODULE.bazel.lock` is repinned (rule 10) — and
-[workspace.md](../workspace.md)'s note on the pin names #23 and the
+[workspace.md](../../workspace.md)'s note on the pin names #23 and the
 setup-page change, and says which has been offered upstream. If upstream
 merges, the pin follows upstream as the existing one is meant to; nothing
 of ours waits on it.
@@ -814,12 +863,12 @@ Small, each mergeable alone, in this order.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | Merged | The plan: `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)). The ADRs, once P5 had shipped (`docs/setup-pages-adrs`): [ADR-023](../decisions/023-services-configure-themselves-on-their-own-setup-pages.md) records the rule, and [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) amendment 9 carries its recovery model over to the pages. |
+| P0 | This plan; ADR-023 and the ADR-016 amendment once D1–D13 are settled | Merged | The plan: `feature/driver-setup-pages` ([#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)). The ADRs, once P5 had shipped (`docs/setup-pages-adrs`): [ADR-023](../../decisions/023-services-configure-themselves-on-their-own-setup-pages.md) records the rule, and [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) amendment 9 carries its recovery model over to the pages. |
 | P1 | **Specification compliance first.** The `ascom-alpaca` fork, in the two changes D10 describes (not offered upstream yet, the owner's call): the paths and statuses — the specification's device setup path routed, linked from `/setup`, the old path redirected, the statuses the specifications give, with tests — and the request-taking hooks, `setup_request` on a device and a setup handler on `Server`, routed for `GET` and `POST`, with their defaults. The workspace pin moves to the fork branch, `MODULE.bazel.lock` repinned. Our `Action` names match case-insensitively (D8), with a scenario per action family. After P1 every driver answers both spec paths — with the crate's default pages until P2 | Merged | `feature/setup-pages-p1` ([#1542](https://github.com/rusty-photon/rusty-photon/pull/1542)) |
 | P2 | **The shared crate and the first driver.** `rusty-photon-setup` (the walker and renderer moved out of `ui-htmx`, the stylesheet, the password-input and secret rules), the shared handler behind the pages (the render, the save, the origin check, the reload hook) and its tagged-enum and file-only rules, the shared BDD steps in `bdd-infra`; on `dsd-fp2`, the reference driver, whose device and server hooks (D10) call that handler, with its `config.*` removed in the same PR. `ui-htmx`'s capability probe keeps `config.*` first, so a driver still carrying the actions keeps its Configure form through P3; when `supportedactions` answers `401` or lists no `config.*`, the probe asks for the spec-path setup page and treats a `401` there as a page that exists (the browser will ask for the credential). A driver that loses the actions therefore gains the link in the same step, on an auth-on rig too, with the link's host following D5; on such a rig an unmigrated driver's link leads to the crate's default page until its family lands. `ui-htmx`'s own config-page suites move their vehicle from `dsd-fp2` to `qhy-focuser`, which still carries the actions, until P4 retires those pages | Merged | `feature/setup-pages-p2` ([#1545](https://github.com/rusty-photon/rusty-photon/pull/1545)) |
 | P3 | **Rollout**, one PR per family, each driver's actions removed as its pages land: the serial drivers (`qhy-focuser`, `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver`, `star-adventurer-gti`); `filemonitor` and `sky-survey-camera`; the camera drivers with the `usb_devices` editor (D11) and the placeholder's page (`svbony-camera`, `zwo-camera`, `qhy-camera`); `zwo-focuser`; `planetarium-bridge`, which has no config actions and no reload today, so its item adds the seam the others have — a `ConfigurableDriver` for its config and `run_with_reload` — and its page then saves and applies like any driver's (Reload, unless the item finds its spool makes a restart the safer disposition); `phd2-guider` (D13: its `/setup` on the service listener; the facade keeps loopback and redirects there) | Merged | Serial family merged: `pa-scops-oag`, `pa-falcon-rotator`, `ppba-driver`, `upbv2-driver` ([#1549](https://github.com/rusty-photon/rusty-photon/pull/1549)). `star-adventurer-gti` merged on its own ([#1557](https://github.com/rusty-photon/rusty-photon/pull/1557)), the tagged-enum gaps below closed in the crate first. `filemonitor` and `sky-survey-camera` merged together ([#1558](https://github.com/rusty-photon/rusty-photon/pull/1558)): no overrides, so nothing pinned; `filemonitor`'s rules list and the camera's follow-mode blocks are file-only on the page. The camera family in three PRs (the owner's choice, 2026-10-22), each a driver with its `usb_devices` editor: `svbony-camera` merged first ([#1613](https://github.com/rusty-photon/rusty-photon/pull/1613)), with the shared crate's `DriverPages` hook and the editor and camera pages shared in `rusty-photon-driver`'s `claims` module; `zwo-camera` second ([#1614](https://github.com/rusty-photon/rusty-photon/pull/1614)), its placed cameras' override keys optional, since an ASI serial is read only by opening the camera; then `qhy-camera` ([#1615](https://github.com/rusty-photon/rusty-photon/pull/1615)), its declared wheels numbered by the page as the cameras are and each wheel's page editing its filter names. `zwo-focuser` merged ([#1616](https://github.com/rusty-photon/rusty-photon/pull/1616)): its devices are the EAFs the SDK enumerates, which the file only renames, so its own part of the pages is `rusty-photon-driver`'s `overrides` module — a page per EAF that edits its `devices` override, with the override editor the camera pages' unlisted camera now shares. `planetarium-bridge` merged ([#1621](https://github.com/rusty-photon/rusty-photon/pull/1621)): it reloads rather than restarts, once its spool was made safe across a stop: the import worker had stopped only at a bound and been abandoned past it, replaying on meanwhile, which a process exit ends but a reload would have left beside the next worker on the same spool file; it now stops after the delivery in flight and is aborted and waited for past the bound. Its `rp.service_auth` block and `assume_epoch` are file-only on the page, and the altitude floor's schema is an optional number, so clearing it saves the `null` that disables it. `phd2-guider` merged ([#1625](https://github.com/rusty-photon/rusty-photon/pull/1625)) as D13 has it: the page on the service listener over the whole config, the facade's two setup paths answering `303` to it, the facade's config Actions gone; a save waits for the restart, and the page says how to restart (D12). `qhy-focuser` is the BFF's BDD vehicle for its config pages and keeps the actions until P4 retires those pages. |
 | P4 | **`rp`'s own `/setup`** (D4): the roster with live state, per-entry credentials (D6), the links with the host rule (D5), add/edit/remove; the REST config routes retired; `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page, and gets its own `/setup`. Sentinel's dashboard restart button (D12) | Merged | Three PRs (the owner's choice, 2026-10-24), and a follow-up. First, Sentinel's restart button and the origin check on its `POST` (`feature/setup-pages-p4-sentinel-restart`, [#1626](https://github.com/rusty-photon/rusty-photon/pull/1626)); `ui-htmx`'s restart client sends an `Origin` naming Sentinel until its card retires. Second, `rp`'s `/setup` (`feature/setup-pages-p4-rp`, [#1627](https://github.com/rusty-photon/rusty-photon/pull/1627)), with the roster on that one page: each entry a collapsed row (its address, live state, the credential `rp` presents, the driver's links), its fields when opened, a Remove box per entry and an Add block per kind, one Save; `/api/config` stays for `ui-htmx` until the third. As built: the roster is `rp`'s own part of the shared page (a `DriverPages` owning `equipment` and `plugins`); a row's controls are named by the entry's place in the file, as `rp`'s validation names its errors, and each row carries its place and id there, so a save from a page drawn before the file's roster changed is refused rather than written onto the wrong entry, and a page drawn again after a rejected save carries the entries that save removes; the host rule (D5) moved into the crate (`origin::link_for`) from `ui-htmx`, which now calls it; the facade (D13) is recognized by its `SupportedActions`, asked of each connected camera with a two-second bound when the page is drawn. Third (`feature/setup-pages-p4-ui-htmx`, [#1630](https://github.com/rusty-photon/rusty-photon/pull/1630)), `ui-htmx` drops its config pages and `/equipment`, links to `rp`'s page and gets its own `/setup`; `rp`'s REST config routes retire, the targets inbox's join (the wheels' filter names, the imaging trains' default position angles) moving to a new ungated MCP read tool on `rp`; and `qhy-focuser`, no longer the config pages' vehicle, gets its pages and loses its actions. As built: the read tool is `get_target_context` (the filter roster goals are validated against, each name once, and every train's default angle); `ui-htmx` keeps the stream (now its front page) and the targets inbox, its nav carrying **Setup**, `rp`'s page by D5's host rule, and **UI settings**, its own page on the shared crate (`Restart`, its `rp.auth` block edited in the file); its `sentinel` block is retired with the restart card (the owner's choice, 2026-10-24) — doctor's `config.retired-keys` deletes it and doctor no longer wires it as a client target; the `@browser` scenarios move to the stream page, where an rp event landing in the feed through the SSE swap stands in for the config page's unlock click; `rp`'s train-rule scenarios, which put configs through `PUT /api/config`, now save `rp`'s page over an edited file, whose save holds the whole file to the load rules. The follow-up ([#1631](https://github.com/rusty-photon/rusty-photon/pull/1631)): `ui-htmx` starts over a file that still has the retired `sentinel` block, ignoring it with a warning, and doctor's check of that block warns rather than fails; the keep-credential box is offered only behind the page's own login, and each guess costs an Argon2id hash. |
-| P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Merged | Two PRs (the owner's choice, 2026-10-25). First, the code (`feature/setup-pages-p5-retirement`, [#1634](https://github.com/rusty-photon/rusty-photon/pull/1634)): the module, now `rusty_photon_config::driver` (the owner's choice), keeps `ConfigurableDriver`, `FieldError`, `DeviceSection` and the save disposition, renamed `SaveDisposition` / `save_disposition`; the wire types, the redaction sentinel with its wildcard expansion and by-`id` pairing, `config_get` / `config_apply` / `config_schema`, and the trait's `locked_paths` and `read_only_paths` are gone, with `rusty-photon-driver`'s dispatch and `apply_error_to_ascom` and doctor-checks' `empty_list_over_apply` / `apply_errors`; `rp`'s `config_actions.rs` moved to `setup/driver.rs`. The placeholder camera keeps its `ConfigurableDriver` parameter, which now serves its setup page. Second, the docs (`docs/setup-pages-p5-retirement-docs`, [#1635](https://github.com/rusty-photon/rusty-photon/pull/1635)): `config-actions.md` archived as [config-actions-protocol.md](archive/config-actions-protocol.md), beside its 2026-05 plan; P3 had already replaced each service doc's "Config actions" section, so what was left was the sentences, links and index rows still naming the actions. The README's and the packaging docs' account of the setup pages landed with P4. |
+| P5 | **Retirement.** `rusty-photon-config::actions` reduced to what D3 uses; `config-actions.md` archived; every service doc's "Config actions" section replaced; README, packaging docs, `workspace.md`, `service-lifecycle.md` updated | Merged | Two PRs (the owner's choice, 2026-10-25). First, the code (`feature/setup-pages-p5-retirement`, [#1634](https://github.com/rusty-photon/rusty-photon/pull/1634)): the module, now `rusty_photon_config::driver` (the owner's choice), keeps `ConfigurableDriver`, `FieldError`, `DeviceSection` and the save disposition, renamed `SaveDisposition` / `save_disposition`; the wire types, the redaction sentinel with its wildcard expansion and by-`id` pairing, `config_get` / `config_apply` / `config_schema`, and the trait's `locked_paths` and `read_only_paths` are gone, with `rusty-photon-driver`'s dispatch and `apply_error_to_ascom` and doctor-checks' `empty_list_over_apply` / `apply_errors`; `rp`'s `config_actions.rs` moved to `setup/driver.rs`. The placeholder camera keeps its `ConfigurableDriver` parameter, which now serves its setup page. Second, the docs (`docs/setup-pages-p5-retirement-docs`, [#1635](https://github.com/rusty-photon/rusty-photon/pull/1635)): `config-actions.md` archived as [config-actions-protocol.md](config-actions-protocol.md), beside its 2026-05 plan; P3 had already replaced each service doc's "Config actions" section, so what was left was the sentences, links and index rows still naming the actions. The README's and the packaging docs' account of the setup pages landed with P4. |
 
 *Closed in the `GTi`'s PR, for the first driver with a tagged-enum
 section (`star-adventurer-gti`'s transport), from P2's review and the
@@ -902,16 +951,24 @@ noted.
 - **`doctor auth rotate` rewrites `server.auth` on every service and
   sentinel's `service_auth`, nothing else**; `doctor.md` says it
   "re-runs the same distribution". `rp`'s equipment entries and
-  `ui-htmx`'s targets keep the old plaintext.
+  `ui-htmx`'s targets keep the old plaintext. Fixed with this plan's
+  archiving: rotate now writes the new plaintext into every shared
+  `service_auth` pair and every per-target credential whose address
+  resolves to a local service.
 - **`doctor.md` disagrees with itself** on whether `rp` holds the
   observatory credential (the client-wiring table says CA only; the
   `joins.client-auth` fix writes it into `rp`'s equipment entries).
+  Fixed with this plan's archiving: `rp` has no shared pair, and its
+  per-target credentials are `joins.client-auth`'s.
 - **`config-actions.md`'s coverage table is stale:** it lists nine
-  services; fifteen implement the trait.
+  services; fifteen implement the trait. Moot since P5 archived it, with
+  the trait's wire protocol, as `config-actions-protocol.md`.
 - **`ui-htmx.md` drift:** the restart callout's text, the two
   `equipment_page` scenarios it describes that do not exist, `RpApi`'s
   members; and `pages/mod.rs`'s comment says "three surface tabs" where
-  the doc and the page have four.
+  the doc and the page have four. Gone with P4, which rewrote those
+  parts: `RpApi` is `equipment_status` alone, the page has two surface
+  tabs, and the doc says both.
 - **Sentinel's dashboard has the restart API and no button.** P4.
 - **The pages' origin check trusts the request's `Host`.** A page on
   another site that rebinds its name to the rig's address passes the
@@ -937,12 +994,12 @@ noted.
   "Alpaca Web Configuration" —
   <https://download.ascom-standards.org/docs/RemoteInstConf.pdf>
 - The design being retired:
-  [config-actions.md](archive/config-actions-protocol.md),
-  [ui-htmx.md](../services/ui-htmx.md), and the 2026-05 plan,
-  [archive/config-actions.md](archive/config-actions.md)
+  [config-actions.md](config-actions-protocol.md),
+  [ui-htmx.md](../../services/ui-htmx.md), and the 2026-05 plan,
+  [archive/config-actions.md](config-actions.md)
 - Config ownership, doctor, the credential:
-  [ADR-016](../decisions/016-service-config-ownership-and-doctor.md);
-  auth: [ADR-003](../decisions/003-authentication-for-device-access.md);
-  TLS: [ADR-002](../decisions/002-tls-for-inter-service-communication.md)
+  [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md);
+  auth: [ADR-003](../../decisions/003-authentication-for-device-access.md);
+  TLS: [ADR-002](../../decisions/002-tls-for-inter-service-communication.md)
 - The `usb_devices` editor's origin: the device-claims plan's C8,
-  [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)
+  [device-claims-and-phd2-camera.md](../device-claims-and-phd2-camera.md)

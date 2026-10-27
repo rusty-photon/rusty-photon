@@ -215,6 +215,31 @@ fn sentinel_client_password_verifies(world: &mut DoctorWorld, name: String) {
     );
 }
 
+#[then(
+    expr = "the client password at {string} in {string} verifies against the auth hash in {string}"
+)]
+fn client_password_verifies(
+    world: &mut DoctorWorld,
+    pointer: String,
+    client: String,
+    target: String,
+) {
+    let value = world.config_value(&client);
+    let password = value
+        .pointer(&pointer)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{client} has no password at {pointer}: {value}"));
+    let target_value = world.config_value(&target);
+    let hash = target_value
+        .pointer("/server/auth/password_hash")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{target} has no server.auth hash: {target_value}"));
+    assert!(
+        rp_auth::credentials::verify_password(password, hash),
+        "the password at {pointer} in {client} does not verify against {target}'s hash"
+    );
+}
+
 #[then(expr = "the sentinel client CA path points at the pki file {string}")]
 fn sentinel_client_ca_path(world: &mut DoctorWorld, name: String) {
     let value = world.config_value("sentinel.json");

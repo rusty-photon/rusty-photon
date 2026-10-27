@@ -289,7 +289,7 @@ brief open, and never writes it.
 
 The service configures itself on the two HTML pages the Alpaca Management
 API defines, served on its own listener behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/driver-setup-pages.md)): `/setup` for the
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)): `/setup` for the
 whole server and `/setup/v1/focuser/{n}/setup` for each EAF it serves. The
 pages are the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md)
 crate's — the render, the save, the cross-site check, the Security section

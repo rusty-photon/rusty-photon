@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-10-17, with the plan
-[`docs/plans/driver-setup-pages.md`](../plans/driver-setup-pages.md),
+[`docs/plans/archive/driver-setup-pages.md`](../plans/archive/driver-setup-pages.md),
 [#1538](https://github.com/rusty-photon/rusty-photon/pull/1538)). Recorded
 2026-10-25, once the plan's decisions D1–D13 were settled and its phases
 P1–P5 had shipped.
@@ -151,7 +151,7 @@ generated page with a hand-built one later, through the same hooks.
 
 ## References
 
-- [`docs/plans/driver-setup-pages.md`](../plans/driver-setup-pages.md) —
+- [`docs/plans/archive/driver-setup-pages.md`](../plans/archive/driver-setup-pages.md) —
   the plan, decisions D1–D13 and phases P0–P5
 - [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md) —
   the pages, the save and the reload

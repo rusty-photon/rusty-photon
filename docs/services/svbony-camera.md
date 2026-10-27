@@ -948,7 +948,7 @@ and any `Action` answers `ActionNotImplemented`.
 | `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
 
 **The Cameras section** is the device-claims plan's C8, settled as
-[driver-setup-pages.md](../plans/driver-setup-pages.md) D11:
+[driver-setup-pages.md](../plans/archive/driver-setup-pages.md) D11:
 
 - **Two modes**, chosen by a radio: *serve every SVBony camera the USB scan
   places, numbered in port order* — no list (U10) — and *serve only the

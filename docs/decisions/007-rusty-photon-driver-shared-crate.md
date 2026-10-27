@@ -8,7 +8,7 @@ duplication.
 
 Amended 2026-10-25: items 1 and 2 of the decision (the config-action dispatch
 and `apply_error_to_ascom`) retired with the config actions, which the setup
-pages replaced ([driver-setup-pages.md](../plans/driver-setup-pages.md), P5).
+pages replaced ([driver-setup-pages.md](../plans/archive/driver-setup-pages.md), P5).
 The crate keeps `driver_error!`, and gained the glue from the pinned crate's
 setup hooks to `rusty-photon-setup`'s pages, `connected_transition`, the
 `overrides` pages and the `claims` feature.

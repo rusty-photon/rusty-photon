@@ -6,7 +6,7 @@ save a `POST` to it performs, and the rules both follow. The pages are the
 ones the Alpaca Management API defines — `/setup` for the whole server and
 `/setup/v1/{device_type}/{device_number}/setup` for one device — served by
 the service itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/driver-setup-pages.md)).
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)).
 
 This is a workspace library, not a service. It depends on neither
 `ascom-alpaca` nor any service: an Alpaca driver reaches it through

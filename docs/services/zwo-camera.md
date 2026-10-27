@@ -632,7 +632,7 @@ value applies at the reload the save fires, which re-creates every device;
 a hand edit applies at the next reload (`SIGHUP`) or restart.
 
 **The Cameras section** is the device-claims plan's C8, settled as
-[driver-setup-pages.md](../plans/driver-setup-pages.md) D11, the same
+[driver-setup-pages.md](../plans/archive/driver-setup-pages.md) D11, the same
 section `svbony-camera` serves:
 
 - **Two modes**, chosen by a radio: *serve every ZWO camera the USB scan

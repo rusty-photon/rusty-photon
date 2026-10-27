@@ -282,7 +282,7 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 # routes both specification paths for GET and POST through request-taking
 # hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
 # and answers the statuses the specifications give (see
-# `docs/plans/driver-setup-pages.md` D10; not offered upstream yet). Drop
+# `docs/plans/archive/driver-setup-pages.md` D10; not offered upstream yet). Drop
 # the fork and go back to upstream `main` once both are merged there; see
 # `docs/workspace.md` "Build Notes".
 ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }

@@ -1255,21 +1255,32 @@ canonical plaintext copy is `pki/credential`; because doctor mints it, it
 can write **both forms everywhere they belong**:
 
 - the **Argon2id hash** into each installed service's `server.auth`;
-- the **plaintext** into each client auth block — rp's `equipment[].auth`
-  entries, sentinel's service-probe `auth`, ui-htmx's `rp` target, and
-  the MCP clients' `service_auth` (session-runner,
-  calibrator-flats, focus-model, polar-align — see
-  [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
-  alongside the CA path each client trusts.
+- the **plaintext** into each client auth block, alongside the CA path
+  each client trusts. The blocks are of two kinds:
+  - the shared `service_auth` pairs, written by the provisioning pass
+    (`CLIENT_WIRING`): sentinel's, the MCP clients' (session-runner,
+    calibrator-flats, focus-model, polar-align — see
+    [ADR-017](../decisions/017-standard-mcp-client-construction.md)) and
+    planetarium-bridge's under its `rp` block;
+  - the per-target `auth` blocks beside a client's address of another
+    local service, written by `joins.client-auth`'s fix
+    (§Client-target joins): rp's equipment entries, plate solver, guider
+    and plugins, ui-htmx's `rp` target, and sentinel's monitors.
 
-`rp` itself gets only the CA path, into its own top-level `ca_cert`
-(rp.md §Configuration) — it has no shared-observatory-credential client
-role (its outbound Alpaca/plate-solver/guider clients use per-device
-`auth` blocks or no auth at all), just the CA trust an `https://` target
-signed by the observatory CA requires (issue #609).
+`rp` has no shared pair. The provisioning pass gives it only the CA path,
+into its own top-level `ca_cert` (rp.md §Configuration), which an
+`https://` target signed by the observatory CA requires (issue #609). Its
+outbound clients carry a credential per target: the observatory
+plaintext where the target is a local service requiring auth, written by
+`joins.client-auth`, and the operator's own for anything else.
 
 `doctor auth rotate` overwrites `pki/credential` with a fresh mint and
-re-runs the same distribution; services pick the new `server.auth` up at
+re-runs the same distribution, overwriting present blocks: the new hash
+into every installed service's `server.auth`, and the new plaintext into
+every shared pair and every per-target `auth` whose address resolves to
+a local service. A per-target `auth` for an address that is no local
+service is the operator's credential for someone else's device, and
+rotation leaves it as it is. Services pick the new `server.auth` up at
 their next restart (rotation is operator-initiated and rare — no reload
 machinery). A forgotten credential is recovered by reading
 `pki/credential`, or by rotating.

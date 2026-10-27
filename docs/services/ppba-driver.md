@@ -407,7 +407,7 @@ The rolling-mean implementation is shared with `upbv2-driver` and lives in
 
 The driver configures itself through the HTML pages the Alpaca Management
 API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/driver-setup-pages.md)):
+([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
 
 | Path | Holds |
 |------|-------|
