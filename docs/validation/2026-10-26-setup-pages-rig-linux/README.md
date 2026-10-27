@@ -3,7 +3,8 @@
 The rig check the driver-setup-pages plan's §Testing asks of `pier1`
 ([archived plan](../../plans/archive/driver-setup-pages.md#testing)): each
 service's setup pages opened from another machine, a change saved on each
-and seen through its reload or restart, and a credential set on a driver's
+(on `ui-htmx`'s, a save that changed nothing) and seen through its reload
+or restart, and a credential set on a driver's
 page and entered on `rp`'s. Every page served, and every save landed: the
 reloading services reopened their page by themselves within 1.0–1.8 s
 showing the saved value, and the restarting ones named the waiting fields
@@ -71,16 +72,24 @@ on and the page named nothing waiting.
 
 ## Observations
 
-1. **A reload drops a driver's clients.** After its reload the device
-   reads `Connected = false` until its client reconnects; `rp`'s reconnect
-   supervisor did, within its 30 s interval, for every driver here. For
-   the safety monitor that means `rp` reads unsafe for up to 30 s after
-   `filemonitor`'s page is saved (`safety monitor read failed; treating as
-   unsafe`), so a save during a session cancels the in-flight work that
-   needs the sky. The setup crate's
+1. **A reload drops a driver's clients, and a safety monitor's makes `rp`
+   park the mount.** After its reload a device reads `Connected = false`
+   until its client reconnects. `rp`'s reconnect supervisor did, within
+   its 30 s interval, for every driver here. `rp` reads a disconnected
+   safety monitor as unsafe, so each `filemonitor` save set off its unsafe
+   transition (`safety monitor read failed; treating as unsafe`, then
+   `conditions unsafe`). It stayed closed for about 30 s, until the
+   reconnect and the next safety poll ("conditions safe again"). No
+   session was running, so nothing was cancelled, but the transition
+   still parks the mount: at the first save `rp` sent the GTi a `Park`,
+   and the GTi sent a goto (`:G`, `:S`, `:J` on both axes) to its park
+   target. The mount was already at that target (the `:j` position reads
+   before and after are identical), so nothing moved. Anywhere else, the
+   save would have parked it. The setup crate's
    [§ Reload](../../crates/rusty-photon-setup.md#reload) and
    [filemonitor.md § Setup pages](../../services/filemonitor.md#setup-pages)
-   now say so.
+   now say so; whether a page save should be able to do this is the
+   owner's to decide.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").

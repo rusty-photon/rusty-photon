@@ -375,13 +375,21 @@ flushes before the server that served it is torn down.
 
 A reload builds the devices anew, so every client's connection to them
 ends: each device reads `Connected = false` until its client connects
-again. `rp`'s reconnect supervisor does that within one
-`equipment.reconnect_interval` (30 s by default;
-[rp.md](../services/rp.md)), and until then `rp` holds the device as
-disconnected. For a safety monitor that means `rp` reads unsafe and
-cancels the in-flight work that needs the sky, so a save during a
-session costs that work (seen on the field rig:
-[record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
+again. `rp` finds out at its reconnect supervisor's next health check and
+reconnects then, within one `equipment.reconnect_interval` (30 s by
+default); until that check its roster still shows the device connected,
+while every call to it fails
+([rp.md § Device Session Recovery](../services/rp.md#device-session-recovery)).
+A safety monitor costs more, because `rp` reads a disconnected monitor as
+unsafe. A save on its page makes `rp` run its whole unsafe transition: it
+closes the safety gate, cancels in-flight sky work, aborts exposures,
+stops guiding and parks the mount
+([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
+It opens the gate again at the first safety poll after the reconnect, up
+to `reconnect_interval` plus `safety.poll_interval` later (40 s with the
+defaults). On the field rig a `filemonitor` save, with no session
+running, made `rp` park a mount that was already parked, so nothing moved
+([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
 
 ## What is not here
 
@@ -429,4 +437,4 @@ one.
 On real hardware, the field rig's record
 ([2026-10-26-setup-pages-rig-linux](../validation/2026-10-26-setup-pages-rig-linux/README.md)) opened every page from
 another machine's browser and saved one change on each, through its
-reload or its restart.
+reload or its restart; on `ui-htmx`'s, a save that changed nothing.
