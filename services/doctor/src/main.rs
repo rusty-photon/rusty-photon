@@ -770,7 +770,7 @@ fn rotate_ops(
 ) -> Result<Vec<(String, doctor::report::FixOp)>, String> {
     use doctor::report::FixOp;
     let mut ops = Vec::new();
-    for service in ctx.installed_services() {
+    for service in ctx.configured_services() {
         let hash = rp_auth::credentials::hash_password(password)
             .map_err(|e| format!("could not hash the credential: {e}"))?;
         ops.push((

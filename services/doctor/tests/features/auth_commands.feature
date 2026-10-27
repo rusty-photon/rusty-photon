@@ -2,8 +2,9 @@ Feature: Credential commands
   doctor auth hash-password hashes one password for hand-written configs
   (the third-party-driver escape hatch). doctor auth rotate mints a fresh
   observatory credential, overwrites the canonical pki/credential copy,
-  and re-runs the distribution: the Argon2id hash into every installed
-  service's server.auth, the plaintext into every client auth block —
+  and re-runs the distribution: the Argon2id hash into the server.auth of
+  every installed service that has a config, the plaintext into every
+  client auth block —
   including blocks an earlier credential already occupied, which is what
   distinguishes rotate from the never-overwriting --fix pass. The client
   blocks are the shared service_auth pairs (sentinel, the MCP clients,
@@ -95,6 +96,21 @@ Feature: Credential commands
     When I run doctor auth rotate
     Then the config file "rp.json" has the string "camera-owner" at "/equipment/cameras/0/auth/username"
     And the config file "rp.json" has the string "their-password" at "/equipment/cameras/0/auth/password"
+
+  Scenario: rotate passes over an installed service that has no config
+    Given platform facts with enabled units:
+      | unit                           |
+      | rusty-photon-sky-survey-camera |
+      | rusty-photon-zwo-camera        |
+    And a config file "zwo-camera.json" containing:
+      """
+      { "server": { "port": 11122 } }
+      """
+    And doctor has already run with --fix
+    When I run doctor auth rotate
+    Then the pki file "credential" has changed
+    And the auth hash at "/server/auth/password_hash" in "zwo-camera.json" verifies against the credential file
+    And the config file "sky-survey-camera.json" does not exist
 
   Scenario: rotate repairs a mismatched client credential
     Given a config file "ppba-driver.json" whose auth hash is of the password "right-password"

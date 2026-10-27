@@ -133,6 +133,20 @@ impl Context {
             .collect()
     }
 
+    /// The services whose config file exists: the files a rotation
+    /// rewrites. An installed service without one (a config-gated service
+    /// the operator has not configured, or one never started) has no
+    /// `server.auth` to rotate; the provisioning pass writes the current
+    /// credential into its config once there is one.
+    #[must_use]
+    pub fn configured_services(&self) -> Vec<String> {
+        self.scans
+            .iter()
+            .filter(|s| s.config_present())
+            .map(|s| s.entry.name.to_string())
+            .collect()
+    }
+
     fn installed(&self, entry: &CatalogEntry) -> bool {
         self.facts.unit(&entry.unit_name()).is_some()
     }
