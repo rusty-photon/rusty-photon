@@ -743,9 +743,9 @@ async fn retire(device: Arc<FileMonitorDevice>, draining: Draining) {
 /// Build a fresh `BoundServer` from a `Config` and run it until the
 /// `shutdown` future resolves.
 ///
-/// The drain semantics are whatever
-/// `rusty_photon_tls::server::serve_plain` / `serve_tls` provide for
-/// graceful shutdown.
+/// The drain is [`BoundServer::start`]'s: stop accepting, close the
+/// listener, wait for every connection to finish, then disconnect the
+/// device.
 ///
 /// # Errors
 ///
