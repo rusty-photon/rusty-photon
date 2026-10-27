@@ -389,7 +389,8 @@ It opens the gate again at the first safety poll after the reconnect, up
 to `reconnect_interval` plus `safety.poll_interval` later (40 s with the
 defaults). On the field rig a `filemonitor` save, with no session
 running, made `rp` park a mount that was already parked, so nothing moved
-([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
+([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)). That
+`rp` parks outside an operator session at all is the open issue [#1468](https://github.com/rusty-photon/rusty-photon/issues/1468).
 
 ## What is not here
 
@@ -435,6 +436,9 @@ which already shows the file's new value, cannot pass for the rebuilt
 one.
 
 On real hardware, the field rig's record
-([2026-10-26-setup-pages-rig-linux](../validation/2026-10-26-setup-pages-rig-linux/README.md)) opened every page from
-another machine's browser and saved one change on each, through its
-reload or its restart; on `ui-htmx`'s, a save that changed nothing.
+([2026-10-26-setup-pages-rig-linux](../validation/2026-10-26-setup-pages-rig-linux/README.md))
+opened the pages of the 13 services that serve them there from another
+machine's browser, and saved one change per service through its reload
+or its restart (on `ui-htmx`'s, a save that changed nothing). What it did
+not cover — the cameras' list mode, the confirmations, `rig2` — the
+record lists.

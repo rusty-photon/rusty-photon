@@ -76,20 +76,22 @@ on and the page named nothing waiting.
    park the mount.** After its reload a device reads `Connected = false`
    until its client reconnects. `rp`'s reconnect supervisor did, within
    its 30 s interval, for every driver here. `rp` reads a disconnected
-   safety monitor as unsafe, so each `filemonitor` save set off its unsafe
-   transition (`safety monitor read failed; treating as unsafe`, then
-   `conditions unsafe`). It stayed closed for about 30 s, until the
-   reconnect and the next safety poll ("conditions safe again"). No
+   safety monitor as unsafe. The two `filemonitor` saves, the change and
+   the restore about 3 s apart, set off one unsafe transition (`safety
+   monitor read failed; treating as unsafe`, then `conditions unsafe`, at
+   01:24:18 UTC). The gate stayed closed for 30 s, until the reconnect
+   and the next safety poll ("conditions safe again", 01:24:48). No
    session was running, so nothing was cancelled, but the transition
-   still parks the mount: at the first save `rp` sent the GTi a `Park`,
-   and the GTi sent a goto (`:G`, `:S`, `:J` on both axes) to its park
-   target. The mount was already at that target (the `:j` position reads
-   before and after are identical), so nothing moved. Anywhere else, the
-   save would have parked it. The setup crate's
+   still parks the mount: `rp` sent the GTi a `Park`, and the GTi sent a
+   goto (`:G`, `:S`, `:J` on both axes) to its park target. The mount was
+   already at that target (the `:j` position reads before and after are
+   identical), so nothing moved. Anywhere else, the save would have
+   parked it. The setup crate's
    [§ Reload](../../crates/rusty-photon-setup.md#reload) and
    [filemonitor.md § Setup pages](../../services/filemonitor.md#setup-pages)
-   now say so; whether a page save should be able to do this is the
-   owner's to decide.
+   now say so. That `rp` parks outside an operator session is the open
+   issue [#1468](https://github.com/rusty-photon/rusty-photon/issues/1468). This is its case of a monitor's service restarting, with a
+   setup-page save as the trigger.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").
