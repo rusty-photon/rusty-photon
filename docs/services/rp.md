@@ -3607,17 +3607,14 @@ the entry binds on the first pass that finds the pinned device back at
 binds anything else. A refused safety monitor reads unsafe, like any
 monitor without a live session (§ Safety: a monitor read is
 fail-unsafe), and the enforcer answers that unsafe transition the way it
-answers any other. Tenet 3 permits stop, abort and park on a safety
-transition only *inside an operator-started session*. The enforcer
-today parks on every unsafe transition, session or not, so a refused
-pin can lead to a park outside a session, as a monitor service restart
-or a mistyped `alpaca_url` already can. That predates the pin and is
-tracked in issue #1468; the pin does not change the enforcer. Reading
-`IsSafe` from a monitor the pin says is not the one configured would be
-the worse failure. The logging follows the usual shape: a refusal at
-startup is an `error!`, a live session lost to one is a `warn!` once
-(with `equipment_changed` `connected: false`), and later passes log at
-`debug!`. Entries of one kind that pin the same `UniqueID` on the same
+answers any other, park included: tenet 3 permits `rp`'s safety
+response at any time, and a monitor that may not be the one configured
+cannot vouch for the sky. Reading `IsSafe` from a monitor the pin says
+is not the one configured would be the worse failure. The logging
+follows the usual shape: a refusal at startup is an `error!`, a live
+session lost to one is a `warn!` once (with `equipment_changed`
+`connected: false`), and later passes log at `debug!`. Entries of one
+kind that pin the same `UniqueID` on the same
 server at two or more different `device_number`s are rejected at load.
 Every entry of that group is flagged with the numbers and the other
 entries named, because a server lists a device at one number, so the
@@ -7045,7 +7042,19 @@ A monitor whose device session died (its service restarted, or it was
 unreachable at `rp` startup) reads unsafe only until the reconnect
 supervisor re-establishes the session (§ [Device Session
 Recovery](#device-session-recovery)); the next poll then reads through
-the new session and the unsafe state clears on its own.
+the new session and the unsafe state clears on its own. A rusty-photon
+safety monitor's own reload does not end the session: the monitor
+keeps its socket and its connection across it, so a poll made
+meanwhile waits for the rebuilt server and reads through the same
+session ([rusty-photon-setup § A reload that keeps its
+clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
+(Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.)
+
+The transition below runs whatever is running, at `rp`'s startup
+included (§ [What Survives an rp Restart](#what-survives-an-rp-restart)):
+`rp` is built to run the observatory on its own, so no operator or
+session has to be there for it, and tenet 3 permits its safety response
+at any time ([workspace.md](../workspace.md#project-tenets)).
 
 On the overall safe → unsafe transition:
 

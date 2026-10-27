@@ -91,9 +91,9 @@ on and the page named nothing waiting.
    [filemonitor.md § Setup pages](../../services/filemonitor.md#setup-pages)
    now say so. The park is meant: `rp` parks
    on a monitor it cannot read, whatever is running
-   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468), closed as by design). The reload does not announce
-   itself, so `rp` cannot tell it from a monitor that is gone;
-   [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652) has the monitor announce it with a deadline `rp` waits for.
+   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468), closed as by design). The reload ends `rp`'s
+   session, so `rp` cannot tell it from a monitor that is gone;
+   [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652) has the monitor's reload keep its clients' sessions.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").

@@ -23,9 +23,16 @@ these away, the decision is wrong.
    moves, or guide pulses. Actuation requires an operator or workflow
    decision. **Stop-class commands are always permitted** (halting
    in-flight motion, aborting an exposure — stopping is inherently
-   safe), and automatic cleanup *inside* an operator-started session
-   (abort/stop/park on a safety transition, warm-up on session end) is
-   a workflow decision, not a violation. Corollaries: connect/reconnect
+   safe). **So is `rp`'s response to unsafe conditions, at any
+   time.** `rp` is built to run the observatory on its own, so no
+   operator or session has to be there for it: on an unsafe reading,
+   and a safety monitor it cannot read counts as one, it stops the
+   work that needs the sky and parks the mount, whatever is running,
+   at its own startup included. An unparked scope under a closing roof
+   is the dangerous outcome, not the park
+   ([rp.md § Safety](services/rp.md#safety)). A workflow's own cleanup
+   (warm-up at its end) is that workflow's decision, not a violation.
+   Corollaries: connect/reconnect
    handshake hooks stay read-only (they re-run on every serial glitch);
    a setup page's save must never push output states to hardware; a driver
    that cannot know where its axes are must never guess with the motors
@@ -36,7 +43,9 @@ these away, the decision is wrong.
    to on a QHY178M + CFW3 or a QHY600M) are documented in the owning service's design
    doc rather than silently accepted.
    Adopted 2026-07-20 after a connect-time park slewed a physically
-   parked mount 90°/90° to a fabricated pose.
+   parked mount 90°/90° to a fabricated pose. Amended 2026-10-26: the
+   safety response no longer needs an operator-started session
+   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468)).
 
 ## Services
 

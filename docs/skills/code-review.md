@@ -133,7 +133,9 @@ record shows), most productive first:
 - **Hardware actuation on connect** — project tenet 3 (AGENTS.md rule
   13): no path from startup, connect/reconnect, config apply or a
   supervisory transition may move, home, park, toggle power or change a
-  setpoint.
+  setpoint. Stop-class commands are exempt, and so is `rp`'s safety
+  response to an unsafe or unreadable monitor, park included, at any
+  time.
 - **Races and lifetimes** — guards held across `.await`, detached tasks,
   error paths that skip rollback, missing timeouts; in shell and infra
   state machines too (crash and restart windows).
@@ -235,7 +237,9 @@ A finding that shows a path from startup, connect or reconnect, config
 apply or a supervisory transition that physically actuates hardware —
 project tenet 3, no actuation on connect (AGENTS.md rule 13) — rates
 **fix** whatever its realism, a repeat included: that tenet holds on
-every path, not only the likely ones.
+every path, not only the likely ones. Stop-class commands and `rp`'s
+safety response to an unsafe or unreadable monitor, park included, are
+no such path: the tenet permits them at any time.
 
 A finding that repeats one an earlier round declined is declined with a
 link to that round, unless the code it points at has changed since.
@@ -356,9 +360,8 @@ disagreements running both ways.
 By verdict that is 134 fix (13.5 %), 181 optional (18 %) and 678
 decline (68 %). Sixteen findings were realistic and high severity, and
 those are where review pays for itself: a camera that could never be
-served (#1466), frames shot through the wrong filter (#1472), a park
-slew outside any session (#1465), an unmerged branch published as the
-public nightly (#1506).
+served (#1466), frames shot through the wrong filter (#1472), an
+unmerged branch published as the public nightly (#1506).
 
 - **The useful findings taper; the count does not.** Fix-rated findings
   by round ran 46, 33, 20, 17, 6 and 12 (rounds 1 to 6 and later), yet

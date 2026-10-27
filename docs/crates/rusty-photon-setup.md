@@ -380,19 +380,75 @@ reconnects then, within one `equipment.reconnect_interval` (30 s by
 default); until that check its roster still shows the device connected,
 while every call to it fails
 ([rp.md § Device Session Recovery](../services/rp.md#device-session-recovery)).
-A safety monitor costs more, because `rp` reads a disconnected monitor as
-unsafe. A save on its page makes `rp` run its whole unsafe transition: it
-closes the safety gate, cancels in-flight sky work, aborts exposures,
-stops guiding and parks the mount
+A safety monitor costs more, because `rp` reads a monitor it cannot read
+as unsafe, and its unsafe transition closes the safety gate, cancels
+in-flight sky work, aborts the exposures that need the sky, stops
+guiding and parks the mount
 ([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
-It opens the gate again at the first safety poll after the reconnect, up
-to `reconnect_interval` plus `safety.poll_interval` later (40 s with the
-defaults). On the field rig a `filemonitor` save, with no session
-running, made `rp` park a mount that was already parked, so nothing moved
-([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)). The
-park is meant: `rp` parks whenever a monitor it cannot read leaves it
-unsafe. What the reload lacks is a notice, so that `rp` could wait for
-the monitor to come back instead; that is [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652).
+The park is meant for a monitor that is gone, not for one that is
+reloading, so a safety monitor's reload keeps its clients
+([below](#a-reload-that-keeps-its-clients)). Until that is implemented
+([#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)), a monitor's reload makes `rp` run the transition whenever a
+safety poll reads the monitor before the reconnect supervisor has
+reconnected it (with the defaults' 10 s polls and 30 s passes, about
+five reloads in six), and the gate stays closed until the first poll
+after the reconnect, up to `reconnect_interval` plus
+`safety.poll_interval` later (40 s with the defaults). On the field rig
+a `filemonitor` save, with no session running, made `rp` park a mount
+that was already parked, so nothing moved
+([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
+
+### A reload that keeps its clients
+
+*Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.*
+
+A safety monitor's reload (`filemonitor`'s) keeps its clients
+connected, so that to a client the reload is a reply that comes a
+second or two late:
+
+- **The listening socket stays open** while the server's address
+  (`server.port`, `bind_address`) is unchanged. The draining server
+  stops accepting and the rebuilt one accepts on the same socket, so a
+  request made in between waits in the socket's queue and is answered
+  by the rebuilt server rather than refused. The rebuilt server starts
+  accepting as soon as the old one has stopped, and the old one
+  finishes its drain alongside it, so a queued request waits for the
+  rebuild, not for the slowest of the old connections (a TLS handshake
+  in progress can hold a drain for up to 10 s). That takes serve
+  functions in `rusty-photon-tls` that leave the listener to their
+  caller and hand control back once they have stopped accepting, plain
+  and TLS alike, and a reload loop that holds the listener.
+- **The device reconnects itself.** When the device was connected
+  before the reload, the loop connects the rebuilt one before it
+  serves. That re-reads the watched file and restarts its polling, and
+  moves nothing (tenet 3). A client's session therefore survives the
+  reload, and its next read is answered with the new configuration's
+  reading. If that connect fails (say the saved `file.path` does not
+  exist), the device stays disconnected, and its clients' reads fail as
+  they would after a lost session.
+- **The client's own timeouts are the deadline.** A rebuild that has
+  not answered a queued request before the client gives up (`rp`'s
+  Alpaca client allows 5 s to connect and 10 s to read) fails that
+  request, as an unreachable monitor would.
+
+Some changes still end a client's session, and `rp` then reads the
+monitor as one it cannot read, and parks. That is meant, since `rp`
+has lost its monitor until its roster entry is changed to match:
+
+- A changed address closes the old socket before it binds the new one
+  (the same port on a narrower address does not bind while the old
+  socket listens), and a request to the old address is refused.
+- A changed credential refuses the client's old one.
+- A changed `unique_id` fails the pin of a client that pinned it
+  ([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
+
+One narrow window remains. A request written onto a pooled
+connection at the instant the draining server closes that connection
+fails, and `rp` reads that poll as unsafe.
+
+Every reload of the monitor takes this path, whatever fired it (a
+save, `SIGHUP`, or Windows' `ParamChange`). Other drivers keep the
+behaviour above, and their reload ends their clients' sessions.
 
 ## What is not here
 
