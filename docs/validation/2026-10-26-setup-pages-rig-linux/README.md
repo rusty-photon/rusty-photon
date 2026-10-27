@@ -77,7 +77,10 @@ on and the page named nothing waiting.
    the safety monitor that means `rp` reads unsafe for up to 30 s after
    `filemonitor`'s page is saved (`safety monitor read failed; treating as
    unsafe`), so a save during a session cancels the in-flight work that
-   needs the sky.
+   needs the sky. The setup crate's
+   [§ Reload](../../crates/rusty-photon-setup.md#reload) and
+   [filemonitor.md § Setup pages](../../services/filemonitor.md#setup-pages)
+   now say so.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").
@@ -97,8 +100,13 @@ on and the page named nothing waiting.
 
 ## Evidence
 
-`pages.txt` is the outline of every page above as the browser read it
-after the run (titles, banners, sections, fields — a password field only
-as empty or filled — file-only notes, hints, links and buttons), made by
-opening each page only. The rig's hostnames are replaced by `<rig-host>`
-throughout, the one edit made to it.
+`pages.txt` is the outline of every page above, read from the browser's
+DOM after the run by opening each page only, nothing saved: its title,
+banners, sections, fields (a password field only as empty or filled),
+file-only notes, hints, errors and notes, each collapsed row's summary
+with its LED's state and the opened row's details, links with their
+labels, and buttons. The text is the DOM's, untruncated, including what a
+closed `<details>` hides (`rp`'s roster rows, whose LED and "State" /
+"Bound to" lines back observation 2). The one edit made to it: each of
+the rig's hostnames is replaced by `<rig-host>`, so every line that edit
+touched contains `<rig-host>`.

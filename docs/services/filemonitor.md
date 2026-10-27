@@ -98,6 +98,13 @@ no command-line overrides beyond `--config` / `--log-level`, so
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 
+A save that changes something reloads the service, which ends `rp`'s
+connection to the monitor. Until `rp`'s reconnect supervisor connects
+again (within one `equipment.reconnect_interval`, 30 s by default), `rp`
+reads the conditions as unsafe and cancels in-flight work that needs the
+sky, so a save during a session costs that work
+([setup crate § Reload](../crates/rusty-photon-setup.md#reload)).
+
 | Page | Section | Fields |
 |------|---------|--------|
 | `/setup` | `file` | `path`, `polling_interval` (a humantime string, shown as humantime spells it: the file's `60s` as `1m`) |

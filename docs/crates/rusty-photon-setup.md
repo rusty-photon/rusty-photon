@@ -373,6 +373,16 @@ The reload is `rusty-photon-service-lifecycle`'s `ReloadSignal`, fired
 from a detached task after `RELOAD_AFTER_RESPONSE_DELAY` so the response
 flushes before the server that served it is torn down.
 
+A reload builds the devices anew, so every client's connection to them
+ends: each device reads `Connected = false` until its client connects
+again. `rp`'s reconnect supervisor does that within one
+`equipment.reconnect_interval` (30 s by default;
+[rp.md](../services/rp.md)), and until then `rp` holds the device as
+disconnected. For a safety monitor that means `rp` reads unsafe and
+cancels the in-flight work that needs the sky, so a save during a
+session costs that work (seen on the field rig:
+[record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
+
 ## What is not here
 
 - Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
