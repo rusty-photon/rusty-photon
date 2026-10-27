@@ -221,8 +221,10 @@ struct FlipArgs {
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Mint a fresh observatory credential, overwrite `pki/credential`,
-    /// and re-align every installed service's `server.auth` and sentinel's
-    /// `service_auth` to it.
+    /// and re-align to it the `server.auth` of every service with a config
+    /// file and every client credential that reaches one. Refuses, changing
+    /// nothing, while a config file cannot be read, is not valid JSON, or
+    /// has a server block its service refuses.
     Rotate,
     /// Hash one password (Argon2id) for hand-written configs. Prompts with
     /// confirmation, or reads one line from stdin with --stdin.
@@ -713,6 +715,21 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     };
     let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
 
+    // A config that exists but cannot be used would leave its service and
+    // the clients aimed at it on different credentials: refuse before
+    // anything is written.
+    let unusable = ctx.unusable_configs();
+    if !unusable.is_empty() {
+        for (path, why) in &unusable {
+            eprintln!("doctor: {} {why}", path.display());
+        }
+        eprintln!(
+            "doctor: nothing was rotated; fix the file(s) above, then run \
+             `doctor auth rotate` again"
+        );
+        return ExitCode::from(2);
+    }
+
     let password = match doctor::provision::mint_credential(&config_dir) {
         Ok(password) => password,
         Err(e) => {
@@ -759,8 +776,10 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The distribution ops for a rotation: the fresh hash into every
-/// installed service's `server.auth`, and the plaintext into every
+/// The distribution ops for a rotation: the fresh hash into the
+/// `server.auth` of every service that has a config file
+/// ([`Context::configured_services`](doctor::checks::Context::configured_services)),
+/// and the plaintext into every
 /// client credential that reaches one — the shared `service_auth` pairs
 /// and each per-target `auth` naming a local service — present ones
 /// overwritten.
@@ -770,7 +789,7 @@ fn rotate_ops(
 ) -> Result<Vec<(String, doctor::report::FixOp)>, String> {
     use doctor::report::FixOp;
     let mut ops = Vec::new();
-    for service in ctx.installed_services() {
+    for service in ctx.configured_services() {
         let hash = rp_auth::credentials::hash_password(password)
             .map_err(|e| format!("could not hash the credential: {e}"))?;
         ops.push((

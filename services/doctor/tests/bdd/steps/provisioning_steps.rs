@@ -111,6 +111,16 @@ fn pki_file_absent(world: &mut DoctorWorld, name: String) {
     assert!(!path.exists(), "unexpected pki file at {}", path.display());
 }
 
+#[then(expr = "the config file {string} does not exist")]
+fn config_file_absent(world: &mut DoctorWorld, name: String) {
+    let path = world.config_dir().join(&name);
+    assert!(
+        !path.exists(),
+        "unexpected config file at {}",
+        path.display()
+    );
+}
+
 #[then("no pki directory exists")]
 fn no_pki_dir(world: &mut DoctorWorld) {
     let dir = world.pki_dir();

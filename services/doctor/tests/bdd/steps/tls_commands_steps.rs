@@ -260,6 +260,13 @@ async fn run_auth_rotate(world: &mut DoctorWorld) {
     );
 }
 
+// Runs rotate without asserting its outcome, for a scenario that expects
+// a refusal.
+#[when("I try doctor auth rotate")]
+async fn try_auth_rotate(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["auth", "rotate"], None).await;
+}
+
 #[when("I run doctor auth rotate with --json")]
 async fn run_auth_rotate_json(world: &mut DoctorWorld) {
     world
