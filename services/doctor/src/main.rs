@@ -221,8 +221,8 @@ struct FlipArgs {
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Mint a fresh observatory credential, overwrite `pki/credential`,
-    /// and re-align every installed service's `server.auth` and sentinel's
-    /// `service_auth` to it.
+    /// and re-align to it the `server.auth` of every service with a
+    /// readable config and every client credential that reaches one.
     Rotate,
     /// Hash one password (Argon2id) for hand-written configs. Prompts with
     /// confirmation, or reads one line from stdin with --stdin.
@@ -759,8 +759,10 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The distribution ops for a rotation: the fresh hash into every
-/// installed service's `server.auth`, and the plaintext into every
+/// The distribution ops for a rotation: the fresh hash into the
+/// `server.auth` of every service whose config file doctor can read
+/// ([`Context::configured_services`](doctor::checks::Context::configured_services)),
+/// and the plaintext into every
 /// client credential that reaches one — the shared `service_auth` pairs
 /// and each per-target `auth` naming a local service — present ones
 /// overwritten.

@@ -1276,15 +1276,18 @@ plaintext where the target is a local service requiring auth, written by
 
 `doctor auth rotate` overwrites `pki/credential` with a fresh mint and
 re-runs the same distribution, overwriting present blocks: the new hash
-into the `server.auth` of every installed service that has a config file,
-and the new plaintext into
+into the `server.auth` of every installed service whose config file
+doctor can read, and the new plaintext into
 every shared pair and every per-target `auth` whose address resolves to
 a local service. A per-target `auth` for an address that is no local
 service is the operator's credential for someone else's device, and
 rotation leaves it as it is. An installed service with no config file —
 a config-gated one the operator has not configured, or one never started
 — is passed over: it has no `server.auth` to rotate, and the provisioning
-pass writes the current credential once its config exists. Services pick the new `server.auth` up at
+pass writes the current credential once its config exists. So is a
+config file that cannot be read or is not valid JSON, which
+`config.parse` reports: writing into it would stop the rotation partway,
+with the new credential minted and only some files rewritten. Services pick the new `server.auth` up at
 their next restart (rotation is operator-initiated and rare — no reload
 machinery). A forgotten credential is recovered by reading
 `pki/credential`, or by rotating.

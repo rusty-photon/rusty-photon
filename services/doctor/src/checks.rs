@@ -133,16 +133,18 @@ impl Context {
             .collect()
     }
 
-    /// The services whose config file exists: the files a rotation
-    /// rewrites. An installed service without one (a config-gated service
-    /// the operator has not configured, or one never started) has no
-    /// `server.auth` to rotate; the provisioning pass writes the current
-    /// credential into its config once there is one.
+    /// The services whose config file exists and is valid JSON: the files
+    /// a rotation rewrites. An installed service without one (a
+    /// config-gated service the operator has not configured, or one never
+    /// started) has no `server.auth` to rotate; the provisioning pass
+    /// writes the current credential into its config once there is one. A
+    /// file doctor cannot read or parse is `config.parse`'s to report, and
+    /// writing into it would stop the rotation partway.
     #[must_use]
     pub fn configured_services(&self) -> Vec<String> {
         self.scans
             .iter()
-            .filter(|s| s.config_present())
+            .filter(|s| s.value().is_some())
             .map(|s| s.entry.name.to_string())
             .collect()
     }
