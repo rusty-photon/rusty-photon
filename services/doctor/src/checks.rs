@@ -670,6 +670,7 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
 
     checks.extend(retired_keys(sentinel_view.as_ref(), ui_view.as_ref()));
     checks.extend(gti_retired_keys(ctx));
+    checks.extend(zwo_camera_renamed_values(ctx));
     if let Some(sentinel) = &sentinel_view {
         checks.extend(watchdog_joins(ctx, sentinel));
     }
@@ -782,6 +783,47 @@ fn gti_retired_keys(ctx: &Context) -> Vec<Check> {
     .with_fixes(vec![crate::report::FixOp::RemoveKey {
         service: "star-adventurer-gti".to_string(),
         pointer: POINTER.to_string(),
+    }])]
+}
+
+/// zwo-camera's `max_adu_reporting` values, renamed by what each reports:
+/// `saturation_threshold` is `sensor_ceiling`, `container_full_scale` is
+/// `zwo_driver`. The service's self-created default config wrote the field,
+/// so every install upgraded from before the rename carries a former name,
+/// and the strict load refuses to start over it. The remedy is the same
+/// contract under its new name.
+fn zwo_camera_renamed_values(ctx: &Context) -> Vec<Check> {
+    const POINTER: &str = "/max_adu_reporting";
+    const RENAMED: [(&str, &str); 2] = [
+        ("saturation_threshold", "sensor_ceiling"),
+        ("container_full_scale", "zwo_driver"),
+    ];
+    let Some(former) = ctx
+        .scan("zwo-camera")
+        .and_then(ServiceScan::value)
+        .and_then(|v| v.pointer(POINTER))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let Some((_, current)) = RENAMED.iter().find(|(name, _)| *name == former) else {
+        return Vec::new();
+    };
+    vec![Check::fail(
+        "config.retired-keys",
+        Some("zwo-camera".to_string()),
+        format!(
+            "zwo-camera.json names max_adu_reporting \"{former}\", the former name of \
+             \"{current}\" — zwo-camera refuses to start while the file has it"
+        ),
+        Some(format!(
+            "set max_adu_reporting to \"{current}\", the same contract under its new name"
+        )),
+    )
+    .with_fixes(vec![crate::report::FixOp::SetString {
+        service: "zwo-camera".to_string(),
+        pointer: POINTER.to_string(),
+        value: (*current).to_string(),
     }])]
 }
 
@@ -4877,6 +4919,60 @@ mod tests {
                 assert_eq!(pointer, "/mount/flip_policy/flip_range_hours");
             }
             other => unreachable!("{other:?}"),
+        }
+    }
+
+    // zwo-camera's self-created config wrote max_adu_reporting; a value the
+    // service has since renamed refuses to load, and the fix renames it.
+    #[test]
+    fn test_zwo_camera_former_max_adu_names_are_renamed() {
+        for (former, current) in [
+            ("saturation_threshold", "sensor_ceiling"),
+            ("container_full_scale", "zwo_driver"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_json(
+                dir.path(),
+                "zwo-camera.json",
+                serde_json::json!({ "max_adu_reporting": former, "devices": {} }),
+            );
+            let ctx = config_only_ctx(dir.path());
+            let checks = zwo_camera_renamed_values(&ctx);
+            assert_eq!(checks.len(), 1, "{former}: {checks:?}");
+            let check = &checks[0];
+            assert_eq!(check.name, "config.retired-keys");
+            assert_eq!(check.status, Status::Fail);
+            assert_eq!(check.service.as_deref(), Some("zwo-camera"));
+            assert!(check.detail.contains(former), "{}", check.detail);
+            match &check.fixes[..] {
+                [crate::report::FixOp::SetString {
+                    service,
+                    pointer,
+                    value,
+                }] => {
+                    assert_eq!(service, "zwo-camera");
+                    assert_eq!(pointer, "/max_adu_reporting");
+                    assert_eq!(value, current, "{former}");
+                }
+                other => unreachable!("{other:?}"),
+            }
+        }
+    }
+
+    // A current name, an unknown value (the service's own error names it)
+    // and an absent field leave the check silent.
+    #[test]
+    fn test_zwo_camera_current_or_absent_max_adu_names_are_silent() {
+        for config in [
+            serde_json::json!({ "max_adu_reporting": "sensor_ceiling" }),
+            serde_json::json!({ "max_adu_reporting": "zwo_driver" }),
+            serde_json::json!({ "max_adu_reporting": "65535" }),
+            serde_json::json!({ "devices": {} }),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_json(dir.path(), "zwo-camera.json", config.clone());
+            let ctx = config_only_ctx(dir.path());
+            assert!(zwo_camera_renamed_values(&ctx).is_empty(), "{config}");
         }
     }
 
