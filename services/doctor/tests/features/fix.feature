@@ -2,7 +2,9 @@ Feature: Repair — doctor --fix
   A default doctor run is read-only. --fix applies the machine-applicable
   fixes the checks planned — a port collision moved back to a free catalog
   default, a retired key deleted (sentinel's services map, ui-htmx's
-  drivers map and sentinel block) — then re-diagnoses and reports the post-fix state, exit
+  drivers map and sentinel block), a renamed value given its new name
+  (zwo-camera's chosen max_adu_reporting; the default's former name is
+  deleted) — then re-diagnoses and reports the post-fix state, exit
   code included. Writes go through the same atomic save path the services' own
   setup pages save through, every field doctor does not touch is preserved (the
   formatting normalizes to the pretty-printed shape a setup page's save writes),
@@ -66,6 +68,31 @@ Feature: Repair — doctor --fix
     And the config file "ui-htmx.json" has no value at "/drivers"
     And the config file "ui-htmx.json" has no value at "/sentinel"
     And the config file "ui-htmx.json" has the number 11120 at "/server/port"
+
+  Scenario: A zwo-camera MaxADU value under its former name is renamed
+    Given a config directory with "zwo-camera.json" containing:
+      """
+      { "server": { "port": 11122 }, "max_adu_reporting": "container_full_scale",
+        "devices": { "ASI120MC-S-1234": { "name": "guide" } } }
+      """
+    When I run doctor with --fix and --json
+    Then doctor exits with code 0
+    And the report records an applied fix for check "config.retired-keys" on service "zwo-camera"
+    And the config file "zwo-camera.json" has the string "zwo_driver" at "/max_adu_reporting"
+    And the config file "zwo-camera.json" has the string "guide" at "/devices/ASI120MC-S-1234/name"
+    And the report has no checks named "config.retired-keys"
+
+  Scenario: The default zwo-camera MaxADU value under its former name is deleted
+    Given a config directory with "zwo-camera.json" containing:
+      """
+      { "server": { "port": 11122 }, "max_adu_reporting": "saturation_threshold" }
+      """
+    When I run doctor with --fix and --json
+    Then doctor exits with code 0
+    And the report records an applied fix for check "config.retired-keys" on service "zwo-camera"
+    And the config file "zwo-camera.json" has no value at "/max_adu_reporting"
+    And the config file "zwo-camera.json" has the number 11122 at "/server/port"
+    And the report has no checks named "config.retired-keys"
 
   Scenario: A second --fix run applies nothing
     Given a config directory with "sentinel.json" containing:

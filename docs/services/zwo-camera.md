@@ -585,7 +585,11 @@ Sections:
   (*Setup pages*), baked into each device at construction, so it takes effect
   on the next reload or restart rather than on the live objects. See ST3
   *the compatibility switch*: on a sub-16-bit sensor `zwo_driver` may disable
-  a client's saturation detection.
+  a client's saturation detection. The values' former names
+  (`saturation_threshold`, `container_full_scale`) are refused at load.
+  `doctor --fix` deletes `saturation_threshold`, so the field takes its
+  default, and renames `container_full_scale` to `zwo_driver`
+  (`config.retired-keys`).
 - **server.port** — Listening port (**11122**, next free in the 1112x family;
   11121 is `qhy-camera`). One port hosts all enumerated devices. `--port`
   pins it. Editable on the server page, whose save answers with the address

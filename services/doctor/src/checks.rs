@@ -133,6 +133,50 @@ impl Context {
             .collect()
     }
 
+    /// The services whose config file exists and is valid JSON: the files
+    /// a rotation rewrites. An installed service without one (a
+    /// config-gated service the operator has not configured, or one never
+    /// started) has no `server.auth` to rotate; the provisioning pass
+    /// writes the current credential into its config once there is one. A
+    /// file that exists but cannot be used never gets this far: rotate
+    /// refuses first ([`Self::unusable_configs`]).
+    #[must_use]
+    pub fn configured_services(&self) -> Vec<String> {
+        self.scans
+            .iter()
+            .filter(|s| s.value().is_some())
+            .map(|s| s.entry.name.to_string())
+            .collect()
+    }
+
+    /// The config files that exist but cannot be used, each with why: one
+    /// that cannot be read, is not valid JSON, or has a `server` block its
+    /// service refuses (`config.unreadable`, `config.json-syntax`,
+    /// `config.server-shape`). A rotation refuses while there is one: that
+    /// service and the clients aimed at it would end on different
+    /// credentials, since the client half resolves no target to it.
+    #[must_use]
+    pub fn unusable_configs(&self) -> Vec<(PathBuf, String)> {
+        self.scans
+            .iter()
+            .filter_map(|s| {
+                let why = match (&s.raw, &s.server) {
+                    (Some(Err(scan::ReadError::Unreadable(e))), _) => {
+                        format!("cannot be read: {e}")
+                    }
+                    (Some(Err(scan::ReadError::InvalidJson(e))), _) => {
+                        format!("is not valid JSON: {e}")
+                    }
+                    (_, ServerBlock::Invalid(e)) => {
+                        format!("has a server block its service refuses: {e}")
+                    }
+                    _ => return None,
+                };
+                Some((s.config_path.clone(), why))
+            })
+            .collect()
+    }
+
     fn installed(&self, entry: &CatalogEntry) -> bool {
         self.facts.unit(&entry.unit_name()).is_some()
     }
@@ -670,6 +714,7 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
 
     checks.extend(retired_keys(sentinel_view.as_ref(), ui_view.as_ref()));
     checks.extend(gti_retired_keys(ctx));
+    checks.extend(zwo_camera_renamed_values(ctx));
     if let Some(sentinel) = &sentinel_view {
         checks.extend(watchdog_joins(ctx, sentinel));
     }
@@ -783,6 +828,61 @@ fn gti_retired_keys(ctx: &Context) -> Vec<Check> {
         service: "star-adventurer-gti".to_string(),
         pointer: POINTER.to_string(),
     }])]
+}
+
+/// zwo-camera's `max_adu_reporting` values, renamed by what each reports:
+/// `saturation_threshold` is `sensor_ceiling`, `container_full_scale` is
+/// `zwo_driver`. The service's self-created default config wrote the field,
+/// so every install upgraded from before the rename carries a former name,
+/// and the strict load refuses to start over it.
+///
+/// Doctor ships with sentinel, so it can meet a zwo-camera from before the
+/// rename, which refuses the new names. The default is therefore deleted
+/// rather than renamed: both versions read an absent field as the same
+/// contract. Only `container_full_scale`, which an operator chose, takes its
+/// new name.
+fn zwo_camera_renamed_values(ctx: &Context) -> Vec<Check> {
+    const POINTER: &str = "/max_adu_reporting";
+    let Some(former) = ctx
+        .scan("zwo-camera")
+        .and_then(ServiceScan::value)
+        .and_then(|v| v.pointer(POINTER))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let service = "zwo-camera".to_string();
+    let (current, suggestion, fix) = match former {
+        "saturation_threshold" => (
+            "sensor_ceiling",
+            "delete max_adu_reporting: absent, it is the default contract under either name",
+            crate::report::FixOp::RemoveKey {
+                service: service.clone(),
+                pointer: POINTER.to_string(),
+            },
+        ),
+        "container_full_scale" => (
+            "zwo_driver",
+            "set max_adu_reporting to \"zwo_driver\", the same contract under its new name",
+            crate::report::FixOp::SetString {
+                service: service.clone(),
+                pointer: POINTER.to_string(),
+                value: "zwo_driver".to_string(),
+            },
+        ),
+        _ => return Vec::new(),
+    };
+    vec![Check::fail(
+        "config.retired-keys",
+        Some(service),
+        format!(
+            "zwo-camera.json names max_adu_reporting \"{former}\", the former name of \
+             \"{current}\" — a zwo-camera from the rename on refuses to start while the \
+             file has it"
+        ),
+        Some(suggestion.to_string()),
+    )
+    .with_fixes(vec![fix])]
 }
 
 /// The installed rusty-photon units' service names (unit minus the prefix) —
@@ -4848,6 +4948,65 @@ mod tests {
 
     // #1301 retired star-adventurer-gti's flip_range_hours; configs the
     // pre-#1301 service self-created still carry it and refuse to load.
+    // A rotation writes only where a config parses; an absent file and one
+    // that is not valid JSON are left to the refusal and the provisioning
+    // pass.
+    #[test]
+    fn test_configured_services_are_those_whose_config_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122 } }),
+        );
+        std::fs::write(dir.path().join("dsd-fp2.json"), "{ not json").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(ctx.configured_services(), vec!["zwo-camera".to_string()]);
+    }
+
+    // Each way a present config cannot be used names its file. A directory
+    // at the config's path cannot be read, even by a privileged run.
+    #[test]
+    fn test_unusable_configs_name_each_file_and_why() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("dsd-fp2.json")).unwrap();
+        std::fs::write(dir.path().join("ppba-driver.json"), "{ not json").unwrap();
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120, "discovery_port": 32227 } }),
+        );
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let named: BTreeMap<String, String> = ctx
+            .unusable_configs()
+            .into_iter()
+            .map(|(path, why)| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    why,
+                )
+            })
+            .collect();
+        assert_eq!(named.len(), 3, "{named:?}");
+        assert!(
+            named["dsd-fp2.json"].starts_with("cannot be read"),
+            "{named:?}"
+        );
+        assert!(
+            named["ppba-driver.json"].starts_with("is not valid JSON"),
+            "{named:?}"
+        );
+        assert!(
+            named["ui-htmx.json"].starts_with("has a server block its service refuses"),
+            "{named:?}"
+        );
+    }
+
     #[test]
     fn test_gti_flip_range_hours_is_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();
@@ -4877,6 +5036,76 @@ mod tests {
                 assert_eq!(pointer, "/mount/flip_policy/flip_range_hours");
             }
             other => unreachable!("{other:?}"),
+        }
+    }
+
+    // zwo-camera's self-created config wrote max_adu_reporting; a value the
+    // service has since renamed refuses to load, and the fix renames it.
+    fn zwo_camera_check_for(former: &str) -> Check {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "max_adu_reporting": former, "devices": {} }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let mut checks = zwo_camera_renamed_values(&ctx);
+        assert_eq!(checks.len(), 1, "{former}: {checks:?}");
+        let check = checks.remove(0);
+        assert_eq!(check.name, "config.retired-keys");
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(check.service.as_deref(), Some("zwo-camera"));
+        assert!(check.detail.contains(former), "{}", check.detail);
+        check
+    }
+
+    // The default's former name is deleted, not renamed: a zwo-camera from
+    // before the rename refuses the new name, and both read an absent field
+    // as the default.
+    #[test]
+    fn test_zwo_camera_former_default_max_adu_name_is_deleted() {
+        let check = zwo_camera_check_for("saturation_threshold");
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "zwo-camera");
+                assert_eq!(pointer, "/max_adu_reporting");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    // A chosen container_full_scale keeps its contract under the new name.
+    #[test]
+    fn test_zwo_camera_former_zwo_driver_name_is_renamed() {
+        let check = zwo_camera_check_for("container_full_scale");
+        match &check.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "zwo-camera");
+                assert_eq!(pointer, "/max_adu_reporting");
+                assert_eq!(value, "zwo_driver");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    // A current name, an unknown value (the service's own error names it)
+    // and an absent field leave the check silent.
+    #[test]
+    fn test_zwo_camera_current_or_absent_max_adu_names_are_silent() {
+        for config in [
+            serde_json::json!({ "max_adu_reporting": "sensor_ceiling" }),
+            serde_json::json!({ "max_adu_reporting": "zwo_driver" }),
+            serde_json::json!({ "max_adu_reporting": "65535" }),
+            serde_json::json!({ "devices": {} }),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_json(dir.path(), "zwo-camera.json", config.clone());
+            let ctx = config_only_ctx(dir.path());
+            assert!(zwo_camera_renamed_values(&ctx).is_empty(), "{config}");
         }
     }
 
