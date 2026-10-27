@@ -790,14 +790,15 @@ fn gti_retired_keys(ctx: &Context) -> Vec<Check> {
 /// `saturation_threshold` is `sensor_ceiling`, `container_full_scale` is
 /// `zwo_driver`. The service's self-created default config wrote the field,
 /// so every install upgraded from before the rename carries a former name,
-/// and the strict load refuses to start over it. The remedy is the same
-/// contract under its new name.
+/// and the strict load refuses to start over it.
+///
+/// Doctor ships with sentinel, so it can meet a zwo-camera from before the
+/// rename, which refuses the new names. The default is therefore deleted
+/// rather than renamed: both versions read an absent field as the same
+/// contract. Only `container_full_scale`, which an operator chose, takes its
+/// new name.
 fn zwo_camera_renamed_values(ctx: &Context) -> Vec<Check> {
     const POINTER: &str = "/max_adu_reporting";
-    const RENAMED: [(&str, &str); 2] = [
-        ("saturation_threshold", "sensor_ceiling"),
-        ("container_full_scale", "zwo_driver"),
-    ];
     let Some(former) = ctx
         .scan("zwo-camera")
         .and_then(ServiceScan::value)
@@ -806,25 +807,38 @@ fn zwo_camera_renamed_values(ctx: &Context) -> Vec<Check> {
     else {
         return Vec::new();
     };
-    let Some((_, current)) = RENAMED.iter().find(|(name, _)| *name == former) else {
-        return Vec::new();
+    let service = "zwo-camera".to_string();
+    let (current, suggestion, fix) = match former {
+        "saturation_threshold" => (
+            "sensor_ceiling",
+            "delete max_adu_reporting: absent, it is the default contract under either name",
+            crate::report::FixOp::RemoveKey {
+                service: service.clone(),
+                pointer: POINTER.to_string(),
+            },
+        ),
+        "container_full_scale" => (
+            "zwo_driver",
+            "set max_adu_reporting to \"zwo_driver\", the same contract under its new name",
+            crate::report::FixOp::SetString {
+                service: service.clone(),
+                pointer: POINTER.to_string(),
+                value: "zwo_driver".to_string(),
+            },
+        ),
+        _ => return Vec::new(),
     };
     vec![Check::fail(
         "config.retired-keys",
-        Some("zwo-camera".to_string()),
+        Some(service),
         format!(
             "zwo-camera.json names max_adu_reporting \"{former}\", the former name of \
-             \"{current}\" — zwo-camera refuses to start while the file has it"
+             \"{current}\" — a zwo-camera from the rename on refuses to start while the \
+             file has it"
         ),
-        Some(format!(
-            "set max_adu_reporting to \"{current}\", the same contract under its new name"
-        )),
+        Some(suggestion.to_string()),
     )
-    .with_fixes(vec![crate::report::FixOp::SetString {
-        service: "zwo-camera".to_string(),
-        pointer: POINTER.to_string(),
-        value: (*current).to_string(),
-    }])]
+    .with_fixes(vec![fix])]
 }
 
 /// The installed rusty-photon units' service names (unit minus the prefix) —
@@ -4924,38 +4938,54 @@ mod tests {
 
     // zwo-camera's self-created config wrote max_adu_reporting; a value the
     // service has since renamed refuses to load, and the fix renames it.
+    fn zwo_camera_check_for(former: &str) -> Check {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "max_adu_reporting": former, "devices": {} }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let mut checks = zwo_camera_renamed_values(&ctx);
+        assert_eq!(checks.len(), 1, "{former}: {checks:?}");
+        let check = checks.remove(0);
+        assert_eq!(check.name, "config.retired-keys");
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(check.service.as_deref(), Some("zwo-camera"));
+        assert!(check.detail.contains(former), "{}", check.detail);
+        check
+    }
+
+    // The default's former name is deleted, not renamed: a zwo-camera from
+    // before the rename refuses the new name, and both read an absent field
+    // as the default.
     #[test]
-    fn test_zwo_camera_former_max_adu_names_are_renamed() {
-        for (former, current) in [
-            ("saturation_threshold", "sensor_ceiling"),
-            ("container_full_scale", "zwo_driver"),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            write_json(
-                dir.path(),
-                "zwo-camera.json",
-                serde_json::json!({ "max_adu_reporting": former, "devices": {} }),
-            );
-            let ctx = config_only_ctx(dir.path());
-            let checks = zwo_camera_renamed_values(&ctx);
-            assert_eq!(checks.len(), 1, "{former}: {checks:?}");
-            let check = &checks[0];
-            assert_eq!(check.name, "config.retired-keys");
-            assert_eq!(check.status, Status::Fail);
-            assert_eq!(check.service.as_deref(), Some("zwo-camera"));
-            assert!(check.detail.contains(former), "{}", check.detail);
-            match &check.fixes[..] {
-                [crate::report::FixOp::SetString {
-                    service,
-                    pointer,
-                    value,
-                }] => {
-                    assert_eq!(service, "zwo-camera");
-                    assert_eq!(pointer, "/max_adu_reporting");
-                    assert_eq!(value, current, "{former}");
-                }
-                other => unreachable!("{other:?}"),
+    fn test_zwo_camera_former_default_max_adu_name_is_deleted() {
+        let check = zwo_camera_check_for("saturation_threshold");
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "zwo-camera");
+                assert_eq!(pointer, "/max_adu_reporting");
             }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    // A chosen container_full_scale keeps its contract under the new name.
+    #[test]
+    fn test_zwo_camera_former_zwo_driver_name_is_renamed() {
+        let check = zwo_camera_check_for("container_full_scale");
+        match &check.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "zwo-camera");
+                assert_eq!(pointer, "/max_adu_reporting");
+                assert_eq!(value, "zwo_driver");
+            }
+            other => unreachable!("{other:?}"),
         }
     }
 
