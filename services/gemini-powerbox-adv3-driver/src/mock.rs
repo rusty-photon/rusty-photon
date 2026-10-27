@@ -245,11 +245,20 @@ fn flags(states: &[bool]) -> String {
 }
 
 impl MockDeviceState {
-    /// The `*G` frame in the capture's exact layout and field widths.
+    /// The `*G` frame in the capture's exact layout and field widths. An
+    /// absent sensor's fields read `nan`: what the firmware writes there is
+    /// not known, and this is the worst case the parser tolerates.
     fn frame(&self) -> String {
+        let reading = |value: f64, attached: bool| {
+            if attached {
+                format!("{value:6.2}")
+            } else {
+                "   nan".to_string()
+            }
+        };
         format!(
-            "*G{dc}D{usb}U{a}A{t}T{e6}A{m6}M{e7}B{m7}M{d6}C{d7}C{lens:6.2}S{amb:6.2}T\
-             {hum:6.2}H{dp:6.2}D{v:.1}V{cur:5.2}C{pow:6.2}P#",
+            "*G{dc}D{usb}U{a}A{t}T{e6}A{m6}M{e7}B{m7}M{d6}C{d7}C{lens}S{amb}T\
+             {hum}H{dp}D{v:.1}V{cur:5.2}C{pow:6.2}P#",
             dc = flags(&self.dc),
             usb = flags(&self.usb),
             a = u8::from(self.ambient_sensor_attached),
@@ -260,10 +269,10 @@ impl MockDeviceState {
             m7 = self.dew[1].mode,
             d6 = self.dew[0].duty,
             d7 = self.dew[1].duty,
-            lens = self.lens_temperature,
-            amb = self.ambient_temperature,
-            hum = self.humidity,
-            dp = self.dew_point,
+            lens = reading(self.lens_temperature, self.lens_probe_attached),
+            amb = reading(self.ambient_temperature, self.ambient_sensor_attached),
+            hum = reading(self.humidity, self.ambient_sensor_attached),
+            dp = reading(self.dew_point, self.ambient_sensor_attached),
             v = self.input_voltage,
             cur = self.output_current,
             pow = self.output_power,

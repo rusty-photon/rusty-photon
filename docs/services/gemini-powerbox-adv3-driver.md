@@ -421,11 +421,20 @@ driver believes the flag over the number. When a flag is `0`:
   the frame does not carry; it is not a clamp of one it does, which the
   no-clamp rule under *Read-only* above forbids. `-127` is the DS18B20
   library convention for a disconnected probe, which is why the
-  temperature rows declare `-127` as their minimum.
+  temperature rows declare `-127` as their minimum;
+- that sensor's fields need not hold a number. The parser takes whatever
+  sits between the tags and the sentinel stands in for it in the parsed
+  frame (a finite number it does find is kept), so a placeholder such as
+  `nan` or `ovf` cannot fail every frame — and with it the handshake —
+  on a hub whose sensor is simply not plugged in. With the flag at `1` a
+  field that is not a finite number is a parse error, as for every other
+  field.
 
 What the firmware itself writes into fields 10–13 while a sensor is
 unplugged is not known; neither driver says and the dev box's unit had both
-attached. It is on the [hardware validation list](#hardware-validation).
+attached. It is on the [hardware validation list](#hardware-validation);
+until then the mock writes `nan` there, the worst case the parser
+tolerates.
 
 ### Operator labels
 

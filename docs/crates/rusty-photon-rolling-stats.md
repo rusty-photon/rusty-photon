@@ -74,13 +74,14 @@ sample stamped in the future is as new as a sample can be, so it reports
 
 ## Consumers
 
-`ppba-driver` and `upbv2-driver` each hold three (temperature, humidity,
-dewpoint) and resize them from ASCOM's `AveragePeriod`. Mapping
-`AveragePeriod = 0` onto a window is driver policy and lives there, not here —
-both currently scale it to their poll cadence, but nothing in this crate
-assumes that. See
-[`docs/services/ppba-driver.md`](../services/ppba-driver.md) and
-[`docs/services/upbv2-driver.md`](../services/upbv2-driver.md).
+`ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` each hold
+three (temperature, humidity, dewpoint) and resize them from ASCOM's
+`AveragePeriod`. Mapping `AveragePeriod = 0` onto a window is driver policy
+and lives there, not here — all three currently scale it to their poll
+cadence, but nothing in this crate assumes that. See
+[`docs/services/ppba-driver.md`](../services/ppba-driver.md),
+[`docs/services/upbv2-driver.md`](../services/upbv2-driver.md) and
+[`docs/services/gemini-powerbox-adv3-driver.md`](../services/gemini-powerbox-adv3-driver.md).
 
 ## Testing
 
