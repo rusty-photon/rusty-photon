@@ -380,19 +380,61 @@ reconnects then, within one `equipment.reconnect_interval` (30 s by
 default); until that check its roster still shows the device connected,
 while every call to it fails
 ([rp.md § Device Session Recovery](../services/rp.md#device-session-recovery)).
-A safety monitor costs more, because `rp` reads a disconnected monitor as
-unsafe. A save on its page makes `rp` run its whole unsafe transition: it
-closes the safety gate, cancels in-flight sky work, aborts exposures,
-stops guiding and parks the mount
+A safety monitor costs more, because `rp` reads a monitor it cannot read
+as unsafe, and its unsafe transition closes the safety gate, cancels
+in-flight sky work, aborts the exposures that need the sky, stops
+guiding and parks the mount
 ([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
-It opens the gate again at the first safety poll after the reconnect, up
-to `reconnect_interval` plus `safety.poll_interval` later (40 s with the
-defaults). On the field rig a `filemonitor` save, with no session
-running, made `rp` park a mount that was already parked, so nothing moved
-([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)). The
-park is meant: `rp` parks whenever a monitor it cannot read leaves it
-unsafe. What the reload lacks is a notice, so that `rp` could wait for
-the monitor to come back instead; that is [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652).
+The park is meant for a monitor that is gone, not for one that is
+reloading. So a reload announces itself, with a deadline, and `rp` holds
+the monitor's last reading until it is back or the deadline passes
+([rp.md § Announced reloads](../services/rp.md#announced-reloads)).
+Until that is implemented ([#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)), a monitor's reload makes `rp`
+run the transition whenever a safety poll reads the monitor before the
+reconnect supervisor has reconnected it (with the defaults' 10 s polls
+and 30 s passes, about five reloads in six), and the gate stays closed
+until the first poll after the reconnect, up to `reconnect_interval`
+plus `safety.poll_interval` later (40 s with the defaults). On the
+field rig a `filemonitor` save, with no session running, made `rp` park
+a mount that was already parked, so nothing moved
+([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
+
+### The reload notice
+
+*Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652); not implemented yet.*
+
+A driver that announces its reloads serves `GET /rusty-photon/v1/notices`,
+behind its login like every other path: a Server-Sent Events stream on
+which nothing is sent but a keep-alive comment every 15 s, until the
+server is about to reload. Then it sends
+
+```text
+event: reloading
+data: {"back_within_secs": 10}
+```
+
+and closes the stream. The notice goes out on every reload, whatever
+fired it (a save, `SIGHUP`, or Windows' `ParamChange`), before the
+server starts to drain. `back_within_secs` is the time the driver allows
+itself to serve again: 10 s, against the 1–2 s a reload took on the
+field rig. A stream that closes without a notice announced nothing: the
+server stopped or failed. A client that has heard nothing on the stream
+for 45 s treats it as closed. Safety monitors serve the stream (`filemonitor`); another
+driver may, but `rp` opens only its safety monitors'
+([rp.md § Announced reloads](../services/rp.md#announced-reloads)). The
+stream lives in `rusty-photon-driver`, beside the server it is served
+from, because every reload goes through the service's reload loop and
+only some come from this crate's save.
+
+The reload keeps its listening socket while the server's address
+(`server.port`, `bind_address`) is unchanged: the drained server stops
+accepting and the rebuilt one accepts on the same socket. A request made
+in between waits in the socket's queue and is answered by the rebuilt
+server rather than refused, so a client learns that the server is back
+by asking it once. A changed address binds a new socket and closes the
+old one, and a request to the old address is refused, since the server
+is no longer there. A rebuild that fails ends the service, which closes
+the socket.
 
 ## What is not here
 
