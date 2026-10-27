@@ -223,7 +223,8 @@ enum AuthCommand {
     /// Mint a fresh observatory credential, overwrite `pki/credential`,
     /// and re-align to it the `server.auth` of every service with a config
     /// file and every client credential that reaches one. Refuses, changing
-    /// nothing, while a config file cannot be read or is not valid JSON.
+    /// nothing, while a config file cannot be read, is not valid JSON, or
+    /// has a server block its service refuses.
     Rotate,
     /// Hash one password (Argon2id) for hand-written configs. Prompts with
     /// confirmation, or reads one line from stdin with --stdin.
@@ -714,9 +715,9 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     };
     let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
 
-    // A config that exists but cannot be used would keep the old hash
-    // while its clients took the new password: refuse before anything is
-    // written.
+    // A config that exists but cannot be used would leave its service and
+    // the clients aimed at it on different credentials: refuse before
+    // anything is written.
     let unusable = ctx.unusable_configs();
     if !unusable.is_empty() {
         for (path, why) in &unusable {

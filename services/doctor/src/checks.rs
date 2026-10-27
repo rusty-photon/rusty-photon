@@ -150,21 +150,29 @@ impl Context {
     }
 
     /// The config files that exist but cannot be used, each with why: one
-    /// that cannot be read, or is not valid JSON. A rotation refuses while
-    /// there is one, since that service would keep the old hash while its
-    /// clients took the new password.
+    /// that cannot be read, is not valid JSON, or has a `server` block its
+    /// service refuses (`config.unreadable`, `config.json-syntax`,
+    /// `config.server-shape`). A rotation refuses while there is one: that
+    /// service and the clients aimed at it would end on different
+    /// credentials, since the client half resolves no target to it.
     #[must_use]
     pub fn unusable_configs(&self) -> Vec<(PathBuf, String)> {
         self.scans
             .iter()
-            .filter_map(|s| match &s.raw {
-                Some(Err(scan::ReadError::Unreadable(e))) => {
-                    Some((s.config_path.clone(), format!("cannot be read: {e}")))
-                }
-                Some(Err(scan::ReadError::InvalidJson(e))) => {
-                    Some((s.config_path.clone(), format!("is not valid JSON: {e}")))
-                }
-                _ => None,
+            .filter_map(|s| {
+                let why = match (&s.raw, &s.server) {
+                    (Some(Err(scan::ReadError::Unreadable(e))), _) => {
+                        format!("cannot be read: {e}")
+                    }
+                    (Some(Err(scan::ReadError::InvalidJson(e))), _) => {
+                        format!("is not valid JSON: {e}")
+                    }
+                    (_, ServerBlock::Invalid(e)) => {
+                        format!("has a server block its service refuses: {e}")
+                    }
+                    _ => return None,
+                };
+                Some((s.config_path.clone(), why))
             })
             .collect()
     }
@@ -4884,6 +4892,65 @@ mod tests {
 
     // #1301 retired star-adventurer-gti's flip_range_hours; configs the
     // pre-#1301 service self-created still carry it and refuse to load.
+    // A rotation writes only where a config parses; an absent file and one
+    // that is not valid JSON are left to the refusal and the provisioning
+    // pass.
+    #[test]
+    fn test_configured_services_are_those_whose_config_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122 } }),
+        );
+        std::fs::write(dir.path().join("dsd-fp2.json"), "{ not json").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(ctx.configured_services(), vec!["zwo-camera".to_string()]);
+    }
+
+    // Each way a present config cannot be used names its file. A directory
+    // at the config's path cannot be read, even by a privileged run.
+    #[test]
+    fn test_unusable_configs_name_each_file_and_why() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("dsd-fp2.json")).unwrap();
+        std::fs::write(dir.path().join("ppba-driver.json"), "{ not json").unwrap();
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120, "discovery_port": 32227 } }),
+        );
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let named: BTreeMap<String, String> = ctx
+            .unusable_configs()
+            .into_iter()
+            .map(|(path, why)| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    why,
+                )
+            })
+            .collect();
+        assert_eq!(named.len(), 3, "{named:?}");
+        assert!(
+            named["dsd-fp2.json"].starts_with("cannot be read"),
+            "{named:?}"
+        );
+        assert!(
+            named["ppba-driver.json"].starts_with("is not valid JSON"),
+            "{named:?}"
+        );
+        assert!(
+            named["ui-htmx.json"].starts_with("has a server block its service refuses"),
+            "{named:?}"
+        );
+    }
+
     #[test]
     fn test_gti_flip_range_hours_is_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();
