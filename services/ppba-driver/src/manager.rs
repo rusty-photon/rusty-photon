@@ -11,7 +11,7 @@
 //!   tracking, sensor sliding-window means).
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
@@ -36,7 +36,6 @@ pub struct CachedState {
     pub power_stats: Option<PpbaPowerStats>,
     /// USB hub state — not part of the PA reply, tracked separately.
     pub usb_hub_enabled: bool,
-    pub last_update: Option<SystemTime>,
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
@@ -299,7 +298,6 @@ fn session_err_to_warn(op: &str, err: &SessionError<PpbaCodecError>) {
 
 fn apply_status(state: &mut CachedState, status: &PpbaStatus) {
     state.status = Some(status.clone());
-    state.last_update = Some(SystemTime::now());
     state.temp_mean.add_sample(status.temperature);
     state.humidity_mean.add_sample(status.humidity);
     state.dewpoint_mean.add_sample(status.dewpoint);
@@ -626,6 +624,5 @@ mod tests {
             state.power_stats.is_none(),
             "handshake should not have seeded power stats"
         );
-        assert!(state.last_update.is_none());
     }
 }

@@ -22,7 +22,7 @@
 //! function of what the device last said.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
@@ -57,7 +57,6 @@ pub struct CachedState {
     /// Last `PS` frame. Read for one field only — the variable-output
     /// setpoint, which `PA` does not carry.
     pub boot_state: Option<Upbv2BootState>,
-    pub last_update: Option<SystemTime>,
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
@@ -394,7 +393,6 @@ fn session_err_to_warn(op: &str, err: &SessionError<Upbv2CodecError>) {
 
 fn apply_status(state: &mut CachedState, status: &Upbv2Status) {
     state.status = Some(status.clone());
-    state.last_update = Some(SystemTime::now());
     state.temp_mean.add_sample(status.temperature);
     state.humidity_mean.add_sample(status.humidity);
     state.dewpoint_mean.add_sample(status.dewpoint);
@@ -544,11 +542,10 @@ mod tests {
         })
         .await;
 
-        // The PC frame rides the same tick, and `last_update` proves the
-        // status arm ran rather than the cache still holding the handshake's
-        // seed.
+        // The wait above proved the status arm ran — the output's state
+        // moved off the handshake's seed — and the PC frame rides the same
+        // tick.
         assert!(state.power.is_some(), "poll loop should refresh PC");
-        assert!(state.last_update.is_some());
 
         session.close().await.unwrap();
     }
@@ -921,6 +918,5 @@ mod tests {
             state.boot_state.is_none(),
             "handshake should not have seeded boot state"
         );
-        assert!(state.last_update.is_none());
     }
 }

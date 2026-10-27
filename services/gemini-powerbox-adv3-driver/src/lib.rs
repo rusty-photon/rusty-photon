@@ -75,7 +75,7 @@ pub mod switches;
 
 pub use codec::{GeminiCodec, GeminiCodecError, GeminiResponse};
 pub use config::{
-    load_config, AlpacaServerConfig, Config, ObservingConditionsConfig, SerialConfig, SwitchConfig,
+    AlpacaServerConfig, Config, ObservingConditionsConfig, SerialConfig, SwitchConfig,
 };
 pub use error::{GeminiError, Result};
 pub use manager::{CachedState, GeminiManager};

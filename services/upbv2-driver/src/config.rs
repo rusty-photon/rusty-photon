@@ -236,20 +236,6 @@ pub struct DeviceConfig {
     pub description: String,
 }
 
-/// Load configuration from a JSON file.
-///
-/// # Errors
-///
-/// Returns the I/O error if `path` cannot be read, or the JSON error if its
-/// contents do not deserialize as a [`Config`].
-pub fn load_config(
-    path: &Path,
-) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
-    let content = std::fs::read_to_string(path)?;
-    let config: Config = serde_json::from_str(&content)?;
-    Ok(config)
-}
-
 /// CLI overrides layered over the file config.
 ///
 /// Tracks which fields are pinned by a command-line flag so the setup pages
