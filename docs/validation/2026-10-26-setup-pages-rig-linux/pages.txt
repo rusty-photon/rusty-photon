@@ -1,0 +1,815 @@
+######## dsd-fp2
+TITLE Setup · dsd-fp2 | URL /setup
+FIELDSET SERIAL
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD serial.baud_rate (number) = "115200"
+FIELD serial.polling_interval (text) = "500ms"
+FIELD serial.port (text) = "/dev/serial/by-id/usb-Deep_Sky_Dad_Deep_Sky_Dad_FP2_E46534A193132921-if00"
+FIELD serial.timeout (text) = "3s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11119"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK Deep Sky Dad FP2 -> setup/v1/covercalibrator/0/setup
+BUTTON Save type=submit
+---- setup/v1/covercalibrator/0/setup
+TITLE Deep Sky Dad FP2 setup · dsd-fp2 | URL /setup/v1/covercalibrator/0/setup
+FIELDSET COVER CALIBRATOR
+FIELD cover_calibrator.description (text) = "Deep Sky Dad Flat Panel 2 (motorised flat field panel)"
+FIELD cover_calibrator.enabled (checkbox) = [x] on
+FIELD cover_calibrator.max_brightness (number) = "4096"
+FIELD cover_calibrator.min_brightness (number) = "250"
+FIELD cover_calibrator.name (text) = "Deep Sky Dad FP2"
+FIELD cover_calibrator.unique_id (text) = "45260548-7853-404b-9cf9-bab1542ae6c5"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## ppba-driver
+TITLE Setup · ppba-driver | URL /setup
+FIELDSET SERIAL
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD serial.baud_rate (number) = "9600"
+FIELD serial.polling_interval (text) = "5s"
+FIELD serial.port (text) = "/dev/serial/by-id/usb-Pegasus_Astro_PPBADV_Gen2C_PPBAAYSK3N-if00-port0"
+FIELD serial.timeout (text) = "2s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11112"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK Pegasus PPBA Switch -> setup/v1/switch/0/setup
+LINK Pegasus PPBA Weather -> setup/v1/observingconditions/0/setup
+BUTTON Save type=submit
+---- setup/v1/switch/0/setup
+TITLE Pegasus PPBA Switch setup · ppba-driver | URL /setup/v1/switch/0/setup
+FIELDSET SWITCH
+FIELD switch.description (text) = "Pegasus Astro PPBA Gen2 Power Control"
+FIELD switch.enabled (checkbox) = [x] on
+FIELD switch.name (text) = "Pegasus PPBA Switch"
+FIELD switch.unique_id (text) = "7d03e178-5936-44b7-bf57-7409dbd6f285"
+FILE-ONLY switch.labels is edited in the configuration file; it is not set.
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+---- setup/v1/observingconditions/0/setup
+TITLE Pegasus PPBA Weather setup · ppba-driver | URL /setup/v1/observingconditions/0/setup
+FIELDSET OBSERVINGCONDITIONS
+FIELD observingconditions.averaging_period (text) = "5m"
+FIELD observingconditions.description (text) = "Pegasus Astro PPBA Environmental Sensors"
+FIELD observingconditions.enabled (checkbox) = [x] on
+FIELD observingconditions.name (text) = "Pegasus PPBA Weather"
+FIELD observingconditions.unique_id (text) = "0a9f6950-233c-40a4-9b15-7038ae9cc105"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## pa-falcon-rotator
+TITLE Setup · pa-falcon-rotator | URL /setup
+FIELDSET SERIAL
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD serial.baud_rate (number) = "9600"
+FIELD serial.port (text) = "/dev/serial/by-id/usb-Pegasus_Astro_Falcon_Rotator_FR6RMZHV-if00-port0"
+FIELD serial.timeout (text) = "2s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11118"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK Pegasus Falcon Rotator -> setup/v1/rotator/0/setup
+LINK Pegasus Falcon Status -> setup/v1/switch/0/setup
+BUTTON Save type=submit
+---- setup/v1/rotator/0/setup
+TITLE Pegasus Falcon Rotator setup · pa-falcon-rotator | URL /setup/v1/rotator/0/setup
+FIELDSET ROTATOR
+FIELD rotator.description (text) = "Pegasus Astro Falcon Rotator (firmware >= 1.3)"
+FIELD rotator.enabled (checkbox) = [x] on
+FIELD rotator.name (text) = "Pegasus Falcon Rotator"
+FIELD rotator.unique_id (text) = "bd10d3bb-320b-4d77-a6a4-a510803d65d1"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+---- setup/v1/switch/0/setup
+TITLE Pegasus Falcon Status setup · pa-falcon-rotator | URL /setup/v1/switch/0/setup
+FIELDSET SWITCH
+FIELD switch.description (text) = "Pegasus Falcon Rotator status sensors (voltage + limit-hit)"
+FIELD switch.enabled (checkbox) = [x] on
+FIELD switch.name (text) = "Pegasus Falcon Status"
+FIELD switch.unique_id (text) = "af587808-5f17-4055-8e1c-72e2c421b91d"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## pa-scops-oag
+TITLE Setup · pa-scops-oag | URL /setup
+FIELDSET SERIAL
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD serial.baud_rate (number) = "19200"
+FIELD serial.polling_interval (text) = "1s"
+FIELD serial.port (text) = "/dev/serial/by-id/usb-Pegasus_Astro_Scops_OAG_PA6166LF-if00-port0"
+FIELD serial.timeout (text) = "2s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11123"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK Pegasus Scops OAG -> setup/v1/focuser/0/setup
+BUTTON Save type=submit
+---- setup/v1/focuser/0/setup
+TITLE Pegasus Scops OAG setup · pa-scops-oag | URL /setup/v1/focuser/0/setup
+FIELDSET FOCUSER
+FIELD focuser.description (text) = "Pegasus Astro Scops OAG motorized off-axis guider focuser"
+FIELD focuser.enabled (checkbox) = [x] on
+FIELD focuser.max_step (number) = "22000"
+FIELD focuser.name (text) = "Pegasus Scops OAG"
+FIELD focuser.unique_id (text) = "9c5bc30d-546c-44a4-af1f-f0a747282fea"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## filemonitor
+TITLE Setup · filemonitor | URL /setup
+FIELDSET FILE
+FIELDSET PARSING
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD file.path (text) = "/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt"
+FIELD file.polling_interval (text) = "1m"
+FIELD parsing.case_sensitive (checkbox) = [ ] on
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11111"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY parsing.rules is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK File Safety Monitor -> setup/v1/safetymonitor/0/setup
+BUTTON Save type=submit
+---- setup/v1/safetymonitor/0/setup
+TITLE File Safety Monitor setup · filemonitor | URL /setup/v1/safetymonitor/0/setup
+FIELDSET DEVICE
+FIELD device.description (text) = "ASCOM Alpaca SafetyMonitor that monitors file content"
+FIELD device.name (text) = "File Safety Monitor"
+FIELD device.unique_id (text) = "filemonitor-001"
+HINT 
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## star-adventurer-gti
+TITLE Setup · star-adventurer-gti | URL /setup
+FIELDSET SERVER
+FIELDSET TRANSPORT
+FIELDSET (no legend)
+FIELDSET (no legend) [disabled]
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11117"
+FIELD transport (radio) = [x] usb
+FIELD transport:usb.baud_rate (number) = "115200"
+FIELD transport:usb.command_timeout (text) = "2s"
+FIELD transport:usb.polling_interval (text) = "200ms"
+FIELD transport:usb.port (text) = "/dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_4E8741795300-if00"
+FIELD transport (radio) = [ ] udp
+FIELD transport:udp.address (text) = ""
+FIELD transport:udp.bind_address (text) = ""
+FIELD transport:udp.command_timeout (text) = "2s"
+FIELD transport:udp.polling_interval (text) = "200ms"
+FIELD transport:udp.port (number) = "11880"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK Star Adventurer GTi -> setup/v1/telescope/0/setup
+BUTTON Save type=submit
+---- setup/v1/telescope/0/setup
+TITLE Star Adventurer GTi setup · star-adventurer-gti | URL /setup/v1/telescope/0/setup
+FIELDSET MOUNT
+FIELDSET RECOVERY
+FIELD mount.auto_flip.enabled (checkbox) = [ ] on
+FIELD mount.auto_flip.meridian_offset_hours (number) = "0.0"
+FIELD mount.description (text) = "Sky-Watcher Star Adventurer GTi German Equatorial Mount"
+FIELD mount.enabled (checkbox) = [x] on
+FIELD mount.min_altitude_degrees (number) = "0.0"
+FIELD mount.name (text) = "Star Adventurer GTi"
+FIELD mount.preferred_ap_park (select-one) = ap_park_3 of {ap_park_1=ap_park_1: OTA west, level, facing the polar-side horizon; ap_park_2=ap_park_2: OTA level facing east, counterweight down; ap_park_3=ap_park_3: OTA at the pole, counterweight down (Sky-Watcher's home); ap_park_4=ap_park_4: OTA east, level, facing the anti-polar horizon; ap_park_5=ap_park_5: OTA east, level, facing the polar-side horizon}
+FIELD mount.ra_pulse_edge_steps.east (number) = "1.5"
+FIELD mount.ra_pulse_edge_steps.west (number) = "1.5"
+FIELD mount.settle_after_slew (text) = "2s"
+FIELD mount.site_elevation_m (number) = "20.0"
+FIELD mount.site_latitude_deg (number) = "32.7157"
+FIELD mount.site_longitude_deg (number) = "-117.1611"
+FIELD mount.tracking_guard_margin_hours (number) = "0.05"
+FIELD mount.tracking_rate (select-one) = sidereal of {sidereal=sidereal}
+FIELD mount.unpark_from_ap_position (select-one) = ap_park_3 of {ap_park_0=ap_park_0: current position (no seed; plate-solve and sync); ap_park_1=ap_park_1: OTA west, level, facing the polar-side horizon; ap_park_2=ap_park_2: OTA level facing east, counterweight down; ap_park_3=ap_park_3: OTA at the pole, counterweight down (Sky-Watcher's home); ap_park_4=ap_park_4: OTA east, level, facing the anti-polar horizon; ap_park_5=ap_park_5: OTA east, level, facing the polar-side horizon}
+FIELD mount.unique_id (text) = "b7afdd2e-851a-4b82-9e9a-2258ff652821"
+FILE-ONLY mount.cw_exclusion_zone is edited in the configuration file; it is set.
+FILE-ONLY mount.park_dec_ticks is edited in the configuration file; it is set.
+FILE-ONLY mount.park_ra_ticks is edited in the configuration file; it is set.
+HINT 
+HINT What the mount is doing, a Stop, and the recovery: after a crash or a lost position, tell the driver the telescope is physically at a named pose, and it sets the encoders to that pose.
+LINK ← Server setup -> ../../../../setup
+LINK Open the recovery page -> ?recover
+BUTTON Save type=submit
+######## svbony-camera
+TITLE Setup · svbony-camera | URL /setup
+FIELDSET SERVER
+FIELDSET CAMERAS
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11125"
+FIELD usb_devices.mode (radio) = [x] auto
+FIELD usb_devices.mode (radio) = [ ] list
+FIELD usb_devices.0.port (hidden) = "platform-xhci-hcd.0-usbv3-0:1"
+FIELD usb_devices.0.serve (checkbox) = [x] on
+FIELD usb_devices.0.name (text) = ""
+FIELD usb_devices.0.description (text) = ""
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT No list: a camera added or removed moves the numbers after it.
+HINT A list: every other SVBony camera is left to other applications, and a listed port with no camera is held by a placeholder.
+HINT The checked rows keep the order of the numbers they have, from 0; a newly checked row takes the next. Unchecking a camera moves the numbers after it down, and a save that moves one asks to confirm fir
+HINT Changing to a list keeps every number, and each camera's names, from its own page, fill its row.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK SVBONY SV605CC -> setup/v1/camera/0/setup
+BUTTON Save type=submit
+---- setup/v1/camera/0/setup
+TITLE SVBONY SV605CC setup · svbony-camera | URL /setup/v1/camera/0/setup
+FIELDSET OVERRIDE
+FIELD override.name (text) = ""
+FIELD override.description (text) = ""
+HINT Blank keeps the name the camera gives itself.
+HINT Saved under 0123481353808C03EE2512150035 in the devices map. Served without a list, numbered in port order; to pin its number, list it in the server page's Cameras section.
+LINK ← Server setup -> ../../../../setup
+LINK Cameras section -> ../../../../setup#cameras
+BUTTON Save type=submit
+######## qhy-camera
+TITLE Setup · qhy-camera | URL /setup
+FIELDSET SERVER
+FIELDSET CAMERAS
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11121"
+FIELD usb_devices.mode (radio) = [x] auto
+FIELD usb_devices.mode (radio) = [ ] list
+FIELD usb_devices.0.port (hidden) = "platform-xhci-hcd.1-usbv3-0:1"
+FIELD usb_devices.0.serve (checkbox) = [x] on
+FIELD usb_devices.0.name (text) = ""
+FIELD usb_devices.0.description (text) = ""
+FIELD usb_devices.0.wheel (checkbox) = [ ] on
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT No list: a camera added or removed moves the numbers after it.
+HINT A list: every other QHY camera is left to other applications, and a listed port with no camera is held by a placeholder.
+HINT The checked rows keep the order of the numbers they have, from 0; a newly checked row takes the next. Unchecking a camera moves the numbers after it down, and a save that moves one asks to confirm fir
+HINT A checked filter wheel is numbered the same way among the wheels, and goes with its camera when the camera is unchecked. Its filter names are edited on the wheel's own page.
+HINT Without a list, a wheel is served on each camera whose CFW probe finds one, numbered in their cameras' port order.
+HINT Changing to a list keeps every number, and each camera's names, from its own page, fill its row.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK QHY5III715C-6cf42c41a8b2f3188 -> setup/v1/camera/0/setup
+BUTTON Save type=submit
+---- setup/v1/camera/0/setup
+TITLE QHY5III715C-6cf42c41a8b2f3188 setup · qhy-camera | URL /setup/v1/camera/0/setup
+FIELDSET OVERRIDE
+FIELD override.name (text) = ""
+FIELD override.description (text) = ""
+HINT Blank keeps the name the camera gives itself.
+HINT Saved under QHY5III715C-6cf42c41a8b2f3188 in the devices map. Served without a list, numbered in port order; to pin its number, list it in the server page's Cameras section.
+LINK ← Server setup -> ../../../../setup
+LINK Cameras section -> ../../../../setup#cameras
+BUTTON Save type=submit
+######## zwo-camera
+TITLE Setup · zwo-camera | URL /setup
+FIELDSET MAX ADU REPORTING
+FIELDSET SERVER
+FIELDSET CAMERAS
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD max_adu_reporting (select-one) = sensor_ceiling of {sensor_ceiling=sensor_ceiling: a value saturated pixels reach (the default); zwo_driver=zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection}
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11122"
+FIELD usb_devices.mode (radio) = [x] auto
+FIELD usb_devices.mode (radio) = [ ] list
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT What each camera reports as MaxADU: the brightest value a pixel can have, which clients compare pixels against to find saturated ones. The two choices differ only in the 16-bit readout (Raw16) of a se
+HINT No list: a camera added or removed moves the numbers after it.
+HINT A list: every other ZWO camera is left to other applications, and a listed port with no camera is held by a placeholder.
+HINT The checked rows keep the order of the numbers they have, from 0; a newly checked row takes the next. Unchecking a camera moves the numbers after it down, and a save that moves one asks to confirm fir
+HINT Changing to a list keeps every number, and each camera's names, from its own page, fill its row.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+BUTTON Save type=submit
+######## zwo-focuser
+TITLE Setup · zwo-focuser | URL /setup
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11124"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK EAF -> setup/v1/focuser/0/setup
+BUTTON Save type=submit
+---- setup/v1/focuser/0/setup
+TITLE EAF setup · zwo-focuser | URL /setup/v1/focuser/0/setup
+FIELDSET OVERRIDE
+FIELD override.name (text) = ""
+FIELD override.description (text) = ""
+HINT Blank keeps the name the focuser gives itself.
+HINT Saved under 6000e072a1e28f94 in the devices map.
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## phd2-guider
+TITLE Setup · phd2-guider | URL /setup
+FIELDSET CAMERA
+FIELDSET PHD2
+FIELDSET SERVER
+FIELDSET SETTLING
+FIELDSET STOP TIMEOUT
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD camera.capture_grace (text) = "10s"
+FIELD camera.enabled (checkbox) = [ ] on
+FIELD camera.image_dir (text) = ""
+FIELD camera.pixel_size_x_um (number) = ""
+FIELD camera.pixel_size_y_um (number) = ""
+FIELD camera.server.bind_address (text) = "127.0.0.1"
+FIELD camera.server.port (number) = "11128"
+FIELD camera.unique_id (text) = ""
+FIELD phd2.auto_connect_equipment (checkbox) = [ ] on
+FIELD phd2.auto_start (checkbox) = [ ] on
+FIELD phd2.command_timeout (text) = "30s"
+FIELD phd2.connection_timeout (text) = "10s"
+FIELD phd2.executable_path (text) = ""
+FIELD phd2.host (text) = "localhost"
+FIELD phd2.port (number) = "4400"
+FIELD phd2.reconnect.enabled (checkbox) = [x] on
+FIELD phd2.reconnect.interval (text) = "5s"
+FIELD phd2.reconnect.max_retries (number) = ""
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.port (number) = "11130"
+FIELD settling.pixels (number) = "0.5"
+FIELD settling.time (text) = "10s"
+FIELD settling.timeout (text) = "1m"
+FIELD stop_timeout (text) = "10s"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY camera.server.auth is edited in the configuration file; it is not set.
+FILE-ONLY camera.server.tls is edited in the configuration file; it is not set.
+FILE-ONLY phd2.spawn_env is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT 
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+BUTTON Save type=submit
+######## ui-htmx
+TITLE Setup · ui-htmx | URL /setup
+FIELDSET RP
+FIELDSET SERVER
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD rp.base_url (text) = "https://<rig-host>:11115"
+FIELD rp.ca_cert_path (text) = ""
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.port (number) = "11120"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY rp.auth is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+BUTTON Save type=submit
+######## rp
+TITLE Setup · rp | URL /setup
+FIELDSET CA CERT
+FIELDSET CENTERING
+FIELDSET COOLING
+FIELDSET IMAGING
+FIELDSET PLANNER
+FIELDSET PLATE SOLVER
+FIELDSET SAFETY
+FIELDSET SERVER
+FIELDSET SESSION
+FIELDSET SITE
+FIELDSET TARGET STORE
+FIELDSET EQUIPMENT
+FIELDSET PLUGINS
+FIELDSET SECURITY
+FIELDSET DEVICES
+FIELD centering.slew_overhead_estimate (text) = "10s"
+FIELD centering.solve_time_estimate (text) = "30s"
+FIELD cooling.max_cooldown (text) = "20m"
+FIELD cooling.max_cooler_power_pct (number) = "90.0"
+FIELD cooling.plateau_threshold_c (number) = "0.5"
+FIELD cooling.plateau_window (text) = "2m"
+FIELD cooling.poll_interval (text) = "10s"
+FIELD cooling.regulation_margin_c (number) = "3.0"
+FIELD cooling.tolerance_c (number) = "1.0"
+FIELD cooling.warm_target_c (number) = "10.0"
+FIELD cooling.warmup_step_interval (text) = "2m"
+FIELD imaging.cache_max_images (number) = "8"
+FIELD imaging.cache_max_mib (number) = "1024"
+FIELD safety.poll_interval (text) = "10s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.port (number) = "11115"
+FIELD session.data_directory (text) = "/var/lib/rusty-photon/rp/data"
+FIELD session.directory_pattern (text) = ""
+FIELD session.file_naming_pattern (text) = "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
+FIELD target_store.db_path (text) = ""
+FIELD target_store.default_scheduling.max_moon_illumination_fraction (number) = ""
+FIELD target_store.default_scheduling.meridian_window_hours (number) = ""
+FIELD target_store.default_scheduling.min_altitude_degrees (number) = ""
+FIELD target_store.default_scheduling.min_moon_separation_degrees (number) = ""
+FIELD target_store.import.dedup_arcsec (number) = "30.0"
+FIELD target_store.import.naming_tolerance_arcmin (number) = "10.0"
+FIELD target_store.import.star_naming_tolerance_arcmin (number) = "2.0"
+FIELD equipment.reconnect_interval (text) = "30s"
+FIELD equipment.temperature_event_delta_c (number) = "0.5"
+FIELD equipment.temperature_poll_interval (text) = "30s"
+FIELD origin:equipment.cameras.0 (hidden) = "file:0:qhy5iii715c"
+FIELD equipment.cameras.0.id (text) = "qhy5iii715c"
+FIELD equipment.cameras.0.name (text) = "QHY5III715C (guide)"
+FIELD equipment.cameras.0.alpaca_url (text) = "https://<rig-host>:11121"
+FIELD equipment.cameras.0.device_number (number) = "0"
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -40
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -35
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -30
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -25
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -20
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -15
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -10
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -5
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 0
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 5
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 10
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 15
+FIELD equipment.cameras.0.device_type (text) = "camera"
+FIELD equipment.cameras.0.gain (number) = ""
+FIELD equipment.cameras.0.offset (number) = ""
+FIELD equipment.cameras.0.readout_time_estimate (text) = ""
+FIELD equipment.cameras.0.auth.username (text) = "observatory"
+FIELD equipment.cameras.0.auth.password (password) = <empty>
+FIELD equipment.cameras.0.unique_id (text) = ""
+FIELD remove:equipment.cameras.0 (checkbox) = [ ] on
+FIELD origin:equipment.cameras.1 (hidden) = "file:1:sv605cc"
+FIELD equipment.cameras.1.id (text) = "sv605cc"
+FIELD equipment.cameras.1.name (text) = "SVBONY SV605CC"
+FIELD equipment.cameras.1.alpaca_url (text) = "https://<rig-host>:11125"
+FIELD equipment.cameras.1.device_number (number) = "0"
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -40
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -35
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -30
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -25
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -20
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -15
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -10
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] -5
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] 0
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [x] 5
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] 10
+FIELD equipment.cameras.1.cooler_targets_c (checkbox) = [ ] 15
+FIELD equipment.cameras.1.device_type (text) = ""
+FIELD equipment.cameras.1.gain (number) = ""
+FIELD equipment.cameras.1.offset (number) = ""
+FIELD equipment.cameras.1.readout_time_estimate (text) = ""
+FIELD equipment.cameras.1.auth.username (text) = "observatory"
+FIELD equipment.cameras.1.auth.password (password) = <empty>
+FIELD equipment.cameras.1.unique_id (text) = ""
+FIELD remove:equipment.cameras.1 (checkbox) = [ ] on
+FIELD add.cameras.id (text) = ""
+FIELD add.cameras.name (text) = ""
+FIELD add.cameras.alpaca_url (text) = ""
+FIELD add.cameras.device_number (number) = "0"
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -40
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -35
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -30
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -25
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -20
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -15
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -10
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -5
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 0
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 5
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 10
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 15
+FIELD add.cameras.device_type (text) = ""
+FIELD add.cameras.gain (number) = ""
+FIELD add.cameras.offset (number) = ""
+FIELD add.cameras.readout_time_estimate (text) = ""
+FIELD add.cameras.auth.username (text) = ""
+FIELD add.cameras.auth.password (password) = <empty>
+FIELD add.cameras.unique_id (text) = ""
+FIELD add.filter_wheels.id (text) = ""
+FIELD add.filter_wheels.alpaca_url (text) = ""
+FIELD add.filter_wheels.device_number (number) = "0"
+FIELD add.filter_wheels.auth.username (text) = ""
+FIELD add.filter_wheels.auth.password (password) = <empty>
+FIELD add.filter_wheels.unique_id (text) = ""
+FIELD origin:equipment.focusers.0 (hidden) = "file:0:scops-oag"
+FIELD equipment.focusers.0.id (text) = "scops-oag"
+FIELD equipment.focusers.0.alpaca_url (text) = "https://<rig-host>:11123"
+FIELD equipment.focusers.0.device_number (number) = "0"
+FIELD equipment.focusers.0.max_position (number) = ""
+FIELD equipment.focusers.0.min_position (number) = ""
+FIELD equipment.focusers.0.steps_per_sec (number) = "500.0"
+FIELD equipment.focusers.0.auth.username (text) = "observatory"
+FIELD equipment.focusers.0.auth.password (password) = <empty>
+FIELD equipment.focusers.0.unique_id (text) = ""
+FIELD remove:equipment.focusers.0 (checkbox) = [ ] on
+FIELD origin:equipment.focusers.1 (hidden) = "file:1:zwo-eaf"
+FIELD equipment.focusers.1.id (text) = "zwo-eaf"
+FIELD equipment.focusers.1.alpaca_url (text) = "https://<rig-host>:11124"
+FIELD equipment.focusers.1.device_number (number) = "0"
+FIELD equipment.focusers.1.max_position (number) = ""
+FIELD equipment.focusers.1.min_position (number) = ""
+FIELD equipment.focusers.1.steps_per_sec (number) = "500.0"
+FIELD equipment.focusers.1.auth.username (text) = "observatory"
+FIELD equipment.focusers.1.auth.password (password) = <empty>
+FIELD equipment.focusers.1.unique_id (text) = ""
+FIELD remove:equipment.focusers.1 (checkbox) = [ ] on
+FIELD add.focusers.id (text) = ""
+FIELD add.focusers.alpaca_url (text) = ""
+FIELD add.focusers.device_number (number) = "0"
+FIELD add.focusers.max_position (number) = ""
+FIELD add.focusers.min_position (number) = ""
+FIELD add.focusers.steps_per_sec (number) = "500.0"
+FIELD add.focusers.auth.username (text) = ""
+FIELD add.focusers.auth.password (password) = <empty>
+FIELD add.focusers.unique_id (text) = ""
+FIELD origin:equipment.cover_calibrators.0 (hidden) = "file:0:dsd-fp2"
+FIELD equipment.cover_calibrators.0.id (text) = "dsd-fp2"
+FIELD equipment.cover_calibrators.0.alpaca_url (text) = "https://<rig-host>:11119"
+FIELD equipment.cover_calibrators.0.device_number (number) = "0"
+FIELD equipment.cover_calibrators.0.poll_interval (text) = "3s"
+FIELD equipment.cover_calibrators.0.auth.username (text) = "observatory"
+FIELD equipment.cover_calibrators.0.auth.password (password) = <empty>
+FIELD equipment.cover_calibrators.0.unique_id (text) = ""
+FIELD remove:equipment.cover_calibrators.0 (checkbox) = [ ] on
+FIELD add.cover_calibrators.id (text) = ""
+FIELD add.cover_calibrators.alpaca_url (text) = ""
+FIELD add.cover_calibrators.device_number (number) = "0"
+FIELD add.cover_calibrators.poll_interval (text) = "3s"
+FIELD add.cover_calibrators.auth.username (text) = ""
+FIELD add.cover_calibrators.auth.password (password) = <empty>
+FIELD add.cover_calibrators.unique_id (text) = ""
+FIELD origin:equipment.rotators.0 (hidden) = "file:0:falcon"
+FIELD equipment.rotators.0.id (text) = "falcon"
+FIELD equipment.rotators.0.name (text) = "Pegasus Falcon Rotator"
+FIELD equipment.rotators.0.alpaca_url (text) = "https://<rig-host>:11118"
+FIELD equipment.rotators.0.device_number (number) = "0"
+FIELD equipment.rotators.0.auth.username (text) = "observatory"
+FIELD equipment.rotators.0.auth.password (password) = <empty>
+FIELD equipment.rotators.0.unique_id (text) = ""
+FIELD remove:equipment.rotators.0 (checkbox) = [ ] on
+FIELD add.rotators.id (text) = ""
+FIELD add.rotators.name (text) = ""
+FIELD add.rotators.alpaca_url (text) = ""
+FIELD add.rotators.device_number (number) = "0"
+FIELD add.rotators.auth.username (text) = ""
+FIELD add.rotators.auth.password (password) = <empty>
+FIELD add.rotators.unique_id (text) = ""
+FIELD origin:equipment.switches.0 (hidden) = "file:0:ppba"
+FIELD equipment.switches.0.id (text) = "ppba"
+FIELD equipment.switches.0.name (text) = "Pegasus PPBA Switch"
+FIELD equipment.switches.0.alpaca_url (text) = "https://<rig-host>:11112"
+FIELD equipment.switches.0.device_number (number) = "0"
+FIELD equipment.switches.0.auth.username (text) = "observatory"
+FIELD equipment.switches.0.auth.password (password) = <empty>
+FIELD equipment.switches.0.unique_id (text) = ""
+FIELD remove:equipment.switches.0 (checkbox) = [ ] on
+FIELD origin:equipment.switches.1 (hidden) = "file:1:falcon-status"
+FIELD equipment.switches.1.id (text) = "falcon-status"
+FIELD equipment.switches.1.name (text) = "Pegasus Falcon Status"
+FIELD equipment.switches.1.alpaca_url (text) = "https://<rig-host>:11118"
+FIELD equipment.switches.1.device_number (number) = "0"
+FIELD equipment.switches.1.auth.username (text) = "observatory"
+FIELD equipment.switches.1.auth.password (password) = <empty>
+FIELD equipment.switches.1.unique_id (text) = ""
+FIELD remove:equipment.switches.1 (checkbox) = [ ] on
+FIELD add.switches.id (text) = ""
+FIELD add.switches.name (text) = ""
+FIELD add.switches.alpaca_url (text) = ""
+FIELD add.switches.device_number (number) = "0"
+FIELD add.switches.auth.username (text) = ""
+FIELD add.switches.auth.password (password) = <empty>
+FIELD add.switches.unique_id (text) = ""
+FIELD origin:equipment.safety_monitors.0 (hidden) = "file:0:filemonitor"
+FIELD equipment.safety_monitors.0.id (text) = "filemonitor"
+FIELD equipment.safety_monitors.0.alpaca_url (text) = "https://<rig-host>:11111"
+FIELD equipment.safety_monitors.0.device_number (number) = "0"
+FIELD equipment.safety_monitors.0.auth.username (text) = "observatory"
+FIELD equipment.safety_monitors.0.auth.password (password) = <empty>
+FIELD equipment.safety_monitors.0.unique_id (text) = ""
+FIELD remove:equipment.safety_monitors.0 (checkbox) = [ ] on
+FIELD add.safety_monitors.id (text) = ""
+FIELD add.safety_monitors.alpaca_url (text) = ""
+FIELD add.safety_monitors.device_number (number) = "0"
+FIELD add.safety_monitors.auth.username (text) = ""
+FIELD add.safety_monitors.auth.password (password) = <empty>
+FIELD add.safety_monitors.unique_id (text) = ""
+FIELD origin:equipment.observing_conditions.0 (hidden) = "file:0:ppba-weather"
+FIELD equipment.observing_conditions.0.id (text) = "ppba-weather"
+FIELD equipment.observing_conditions.0.name (text) = "Pegasus PPBA Weather"
+FIELD equipment.observing_conditions.0.alpaca_url (text) = "https://<rig-host>:11112"
+FIELD equipment.observing_conditions.0.device_number (number) = "0"
+FIELD equipment.observing_conditions.0.auth.username (text) = "observatory"
+FIELD equipment.observing_conditions.0.auth.password (password) = <empty>
+FIELD equipment.observing_conditions.0.unique_id (text) = ""
+FIELD remove:equipment.observing_conditions.0 (checkbox) = [ ] on
+FIELD add.observing_conditions.id (text) = ""
+FIELD add.observing_conditions.name (text) = ""
+FIELD add.observing_conditions.alpaca_url (text) = ""
+FIELD add.observing_conditions.device_number (number) = "0"
+FIELD add.observing_conditions.auth.username (text) = ""
+FIELD add.observing_conditions.auth.password (password) = <empty>
+FIELD add.observing_conditions.unique_id (text) = ""
+FIELD add.domes.id (text) = ""
+FIELD add.domes.name (text) = ""
+FIELD add.domes.alpaca_url (text) = ""
+FIELD add.domes.device_number (number) = "0"
+FIELD add.domes.auth.username (text) = ""
+FIELD add.domes.auth.password (password) = <empty>
+FIELD add.domes.unique_id (text) = ""
+FIELD origin:equipment.mount (hidden) = "file:0:https://<rig-host>:11117"
+FIELD equipment.mount.alpaca_url (text) = "https://<rig-host>:11117"
+FIELD equipment.mount.device_number (number) = "0"
+FIELD equipment.mount.settle_after_slew (text) = ""
+FIELD equipment.mount.slew_rate_arcsec_per_sec (number) = "7200.0"
+FIELD equipment.mount.auth.username (text) = "observatory"
+FIELD equipment.mount.auth.password (password) = <empty>
+FIELD equipment.mount.unique_id (text) = ""
+FIELD remove:equipment.mount (checkbox) = [ ] on
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY ca_cert is edited in the configuration file; it is not set.
+FILE-ONLY planner is edited in the configuration file; it is not set.
+FILE-ONLY plate_solver is edited in the configuration file; it is set.
+FILE-ONLY safety.gate.gated is edited in the configuration file; it is set.
+FILE-ONLY safety.gate.ungated is edited in the configuration file; it is set.
+FILE-ONLY server.advertised_url is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+FILE-ONLY site is edited in the configuration file; it is not set.
+FILE-ONLY target_store.default_goals is edited in the configuration file; it is set.
+FILE-ONLY target_store.default_grading is edited in the configuration file; it is not set.
+FILE-ONLY equipment.optical_trains is edited in the configuration file; it is set.
+FILE-ONLY 
+FILE-ONLY 
+FILE-ONLY 
+FILE-ONLY 
+FILE-ONLY 
+FILE-ONLY A registration is the plugin's own vocabulary, which no form here renders: the plugins are edited in the configuration file (plugins).
+HINT The roster: what rp connects to. Each entry opens to its settings; the links lead to its driver's own pages.
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT None.
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT None.
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT 
+HINT None registered.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+LINK  -> https://<rig-host>:11121/setup
+LINK  -> https://<rig-host>:11121/setup/v1/camera/0/setup
+LINK  -> https://<rig-host>:11125/setup
+LINK  -> https://<rig-host>:11125/setup/v1/camera/0/setup
+LINK  -> https://<rig-host>:11123/setup
+LINK  -> https://<rig-host>:11123/setup/v1/focuser/0/setup
+LINK  -> https://<rig-host>:11124/setup
+LINK  -> https://<rig-host>:11124/setup/v1/focuser/0/setup
+LINK  -> https://<rig-host>:11119/setup
+LINK  -> https://<rig-host>:11119/setup/v1/covercalibrator/0/setup
+LINK  -> https://<rig-host>:11118/setup
+LINK  -> https://<rig-host>:11118/setup/v1/rotator/0/setup
+LINK  -> https://<rig-host>:11112/setup
+LINK  -> https://<rig-host>:11112/setup/v1/switch/0/setup
+LINK  -> https://<rig-host>:11118/setup
+LINK  -> https://<rig-host>:11118/setup/v1/switch/0/setup
+LINK  -> https://<rig-host>:11111/setup
+LINK  -> https://<rig-host>:11111/setup/v1/safetymonitor/0/setup
+LINK  -> https://<rig-host>:11112/setup
+LINK  -> https://<rig-host>:11112/setup/v1/observingconditions/0/setup
+LINK  -> https://<rig-host>:11117/setup
+LINK  -> https://<rig-host>:11117/setup/v1/telescope/0/setup
+BUTTON Save type=submit
+######## star-adventurer-gti recovery page
+TITLE Recovery · star-adventurer-gti | URL /setup/v1/telescope/0/setup?recover
+FIELDSET MOTION
+FIELDSET RECOVER FROM A KNOWN POSE
+FIELD command (hidden) = "stop"
+FIELD command (hidden) = "recover"
+FIELD pose (select-one) = ap_park_0 of {ap_park_0=ap_park_0: current position (no seed; plate-solve and sync); ap_park_1=ap_park_1: OTA west, level, facing the polar-side horizon; ap_park_2=ap_park_2: OTA level facing east, counterweight down; ap_park_3=ap_park_3: OTA at the pole, counterweight down (Sky-Watcher's home); ap_park_4=ap_park_4: OTA east, level, facing the anti-polar horizon; ap_park_5=ap_park_5: OTA east, level, facing the polar-side horizon}
+FIELD confirm (checkbox) = [ ] on
+HINT Stop halts a slew or park, tracking and any guide pulse at once, parked or not, and leaves tracking off.
+LINK ← The mount's page -> /setup/v1/telescope/0/setup
+LINK Refresh -> ?recover
+BUTTON Stop type=submit
+BUTTON Recover type=submit

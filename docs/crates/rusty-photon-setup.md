@@ -415,3 +415,8 @@ step that waits for a saved value after the reload accepts only a page
 whose generation differs from the one before the save — the old listener,
 which already shows the file's new value, cannot pass for the rebuilt
 one.
+
+On real hardware, the field rig's record
+([2026-10-26-setup-pages-rig-linux](../validation/2026-10-26-setup-pages-rig-linux/README.md)) opened every page from
+another machine's browser and saved one change on each, through its
+reload or its restart.
