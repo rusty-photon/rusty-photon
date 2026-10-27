@@ -98,17 +98,27 @@ no command-line overrides beyond `--config` / `--log-level`, so
 `SupportedActions` is empty, and any `Action` answers
 `ActionNotImplemented`.
 
-A save that changes something reloads the service, which ends `rp`'s
-connection to the monitor. `rp` reads a disconnected monitor as unsafe,
-so the save sets off `rp`'s whole unsafe transition: it cancels in-flight
-sky work, aborts exposures, stops guiding and **parks the mount**,
-session or none. The gate stays closed until `rp`'s reconnect supervisor
-has reconnected the monitor and the next safety poll reads it, up to
-`equipment.reconnect_interval` plus `safety.poll_interval` (40 s with the
-defaults) ([setup crate § Reload](../crates/rusty-photon-setup.md#reload)).
-The park is meant: a monitor `rp` cannot read is unsafe, whatever is
-running. What the reload lacks is a notice, so that `rp` could wait for
-the monitor to come back instead of parking; that is [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652).
+A save that changes something reloads the service. `rp` reads a
+monitor it cannot read as unsafe, and its unsafe transition cancels
+in-flight sky work, aborts the exposures that need the sky, stops
+guiding and **parks the mount**, whatever is running. So the reload
+keeps its clients: it keeps its listening socket, and reconnects its
+rebuilt device when the old one was connected. A read made during the
+reload waits a second or two and is answered with the new
+configuration's reading
+([setup crate § A reload that keeps its clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
+Only a monitor that then reads unsafe, or that `rp` can no longer read,
+sets off the transition. A new `file.path` that does not exist does that,
+and so does a changed address, credential or `unique_id` that `rp`'s
+roster entry does not match.
+Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652), not implemented yet: until it is, the reload
+makes `rp` run the transition whenever a safety poll reads the monitor
+before `rp`'s reconnect supervisor has reconnected it (about five saves
+in six with the defaults), and the gate stays closed until the
+supervisor has reconnected the monitor and the next safety poll reads
+it, up to `equipment.reconnect_interval` plus `safety.poll_interval`
+(40 s with the defaults)
+([setup crate § Reload](../crates/rusty-photon-setup.md#reload)).
 
 | Page | Section | Fields |
 |------|---------|--------|
