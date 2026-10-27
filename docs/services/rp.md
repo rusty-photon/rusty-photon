@@ -7181,10 +7181,12 @@ waits for it:
   keeps the first deadline. `get_safety_status` reports a held
   monitor's `reloading_until`.
 - **The return.** The monitor's server ends the stream with the
-  notice, and `rp` opens it again at once. The reload keeps its
-  listening socket, so that request waits for the rebuilt server. The
-  return is that request answered with an event stream whose `hello`
-  names an instance other than the one that announced the reload. Any
+  notice, and `rp` opens it again at once, on a new connection, never
+  one the old server may be closing. The reload keeps its listening
+  socket, so that request waits for the rebuilt server; like every
+  return attempt, it waits at most 5 s for an answer. The return is
+  that request answered with an event stream whose `hello` names an
+  instance other than the one that announced the reload. Any
   other answer is not the return: a `401` (the save changed the
   credential), a TLS failure or another status leaves the hold to run
   to its deadline. On the return `rp` re-establishes the monitor's
@@ -7193,8 +7195,10 @@ waits for it:
   else has happened; an unsafe one, and the unsafe transition runs. A
   re-establish that fails leaves the hold to run to its deadline.
 - **The deadline.** If the monitor is not back by its deadline, `rp`
-  tries the return once more, then polls. A read that still fails
-  counts as unsafe, and the unsafe transition runs, park included. A
+  tries the return once more and polls once that attempt has answered
+  or run out its 5 s, so the hold ends 5 s after its deadline at the
+  latest, whatever the attempt is still waiting on. A read that still
+  fails counts as unsafe, and the unsafe transition runs, park included. A
   reload that moved the monitor's server (a changed `server.port` or
   `bind_address`) refuses the first attempt. The second finds it only
   if `rp`'s configured address still reaches it (a narrower
@@ -7202,7 +7206,9 @@ waits for it:
   monitor, and parks.
 
 The return and the supervisor's pass never run the connect routine for
-the same entry at once. Only the safety monitors' streams are opened:
+the same entry at once. A supervisor pass that re-establishes the
+monitor during the hold, and whose stream's `hello` names another
+instance, is the return too, and `rp` drops its own attempt. Only the safety monitors' streams are opened:
 another device's reload reads as it does without one (§ [Device Session
 Recovery](#device-session-recovery)). A restart of the monitor's
 service (Sentinel's Restart button, a package upgrade) is not

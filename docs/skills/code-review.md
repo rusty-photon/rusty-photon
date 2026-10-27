@@ -237,7 +237,9 @@ A finding that shows a path from startup, connect or reconnect, config
 apply or a supervisory transition that physically actuates hardware —
 project tenet 3, no actuation on connect (AGENTS.md rule 13) — rates
 **fix** whatever its realism, a repeat included: that tenet holds on
-every path, not only the likely ones.
+every path, not only the likely ones. Stop-class commands and `rp`'s
+safety response to an unsafe or unreadable monitor, park included, are
+no such path: the tenet permits them at any time.
 
 A finding that repeats one an earlier round declined is declined with a
 link to that round, unless the code it points at has changed since.

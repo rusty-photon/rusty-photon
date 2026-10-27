@@ -427,9 +427,12 @@ and a shutdown ends it without a notice: a stream that closes without
 one announced nothing, because the server stopped or failed. The
 service's reload loop, the one consumer of its `ReloadSignal`, sends
 the notice, so it goes out on every reload whatever fired it (a save,
-`SIGHUP`, or Windows' `ParamChange`). It goes out only after the server
-has stopped accepting connections and closed its idle ones, so a
-request made after the notice cannot reach the server that sent it.
+`SIGHUP`, or Windows' `ParamChange`), and the loop tells the server
+whether its stop is a reload or a shutdown. The server's stop then runs
+in three steps: it stops accepting connections and closes its idle
+ones, then ends the notice streams (with the notice on a reload), and
+only then waits for the remaining responses to drain. A request made
+after the notice therefore cannot reach the server that sent it.
 `back_within_secs` is the time the driver allows itself to serve again:
 10 s, against the 1–2 s a reload took on the field rig. A client that
 has heard nothing on the stream for 45 s treats it as closed.
@@ -437,9 +440,10 @@ has heard nothing on the stream for 45 s treats it as closed.
 Safety monitors serve the stream (`filemonitor`); another driver may,
 but `rp` opens only its safety monitors'
 ([rp.md § Announced reloads](../services/rp.md#announced-reloads)). The
-stream lives in `rusty-photon-driver`, beside the server it is served
-from, and the notice is sent from the service's reload loop, since only
-some reloads come from this crate's save.
+stream's handler lives in `rusty-photon-driver`, and each service
+mounts it on its own router, ahead of the Alpaca fallback and inside
+its login layer. The notice is sent from the service's reload loop,
+since only some reloads come from this crate's save.
 
 The reload keeps its listening socket while the server's address
 (`server.port`, `bind_address`) is unchanged: the drained server stops
@@ -447,8 +451,9 @@ accepting and the rebuilt one accepts on the same socket. A request made
 in between waits in the socket's queue and is answered by the rebuilt
 server rather than refused, so a client learns that the server is back
 by asking it once. That takes serve functions in `rusty-photon-tls`
-that leave the listener to their caller, and a reload loop that holds
-it: `filemonitor`'s, as the safety monitor. A changed address closes
+that leave the listener to their caller and run the three-step stop
+above, plain and TLS alike, and a reload loop that holds the listener:
+`filemonitor`'s, as the safety monitor. A changed address closes
 the old socket before it binds the new one, since the same port on a
 narrower address does not bind while the old socket listens, and a
 request in between is refused. A rebuild that fails ends the service,
