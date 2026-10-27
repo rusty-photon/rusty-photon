@@ -410,9 +410,14 @@ second or two late:
   (`server.port`, `bind_address`) is unchanged. The draining server
   stops accepting and the rebuilt one accepts on the same socket, so a
   request made in between waits in the socket's queue and is answered
-  by the rebuilt server rather than refused. That takes serve functions
-  in `rusty-photon-tls` that leave the listener to their caller, plain
-  and TLS alike, and a reload loop that holds it.
+  by the rebuilt server rather than refused. The rebuilt server starts
+  accepting as soon as the old one has stopped, and the old one
+  finishes its drain alongside it, so a queued request waits for the
+  rebuild, not for the slowest of the old connections (a TLS handshake
+  in progress can hold a drain for up to 10 s). That takes serve
+  functions in `rusty-photon-tls` that leave the listener to their
+  caller and hand control back once they have stopped accepting, plain
+  and TLS alike, and a reload loop that holds the listener.
 - **The device reconnects itself.** When the device was connected
   before the reload, the loop connects the rebuilt one before it
   serves. That re-reads the watched file and restarts its polling, and
