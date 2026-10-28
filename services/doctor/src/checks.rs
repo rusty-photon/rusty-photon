@@ -4946,8 +4946,6 @@ mod tests {
         }
     }
 
-    // #1301 retired star-adventurer-gti's flip_range_hours; configs the
-    // pre-#1301 service self-created still carry it and refuse to load.
     // A rotation writes only where a config parses; an absent file and one
     // that is not valid JSON are left to the refusal and the provisioning
     // pass.
@@ -5007,6 +5005,8 @@ mod tests {
         );
     }
 
+    // star-adventurer-gti retired flip_range_hours; configs the service
+    // self-created before that still carry it and refuse to load.
     #[test]
     fn test_gti_flip_range_hours_is_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();

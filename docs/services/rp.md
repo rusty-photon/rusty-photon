@@ -7387,28 +7387,32 @@ focusers, cover calibrators, rotators, switches, safety monitors, observing
 conditions, domes, then the mount — each a collapsed row whose summary
 shows:
 
+- a light for its live state, from the registry `rp` is running: on while
+  connected, off while not, idle for an entry the running `rp` does not
+  have;
 - the entry's `id` (the mount's is `mount`) and its `name` where it has one;
 - its address: `alpaca_url` and `device_number`;
-- its live state, from the registry `rp` is running: connected or not, and
-  the device name and unique ID it bound (`GET /api/equipment`'s view). An
-  entry the file has and the running `rp` does not reads "not in the
-  roster rp is running: connects after rp restarts";
-- the credential `rp` presents to it: the username, or none;
-- two links: the driver's server page (`<alpaca_url>/setup`) and the
-  device's own page (`<alpaca_url>/setup/v1/<type>/<n>/setup`, the type
-  being the entry's kind in Alpaca's spelling: `camera`, `filterwheel`,
-  `focuser`, `covercalibrator`, `rotator`, `switch`, `safetymonitor`,
-  `observingconditions`, `dome`, `telescope`), each following the host
-  rule below. A camera that is `phd2-guider`'s facade — while connected,
-  its `SupportedActions` lists the sweep lease's acquire — links the
-  guider's `/setup` instead, at `mount.guiding.url` under the same host
-  rule; the facade answers only on the guider's host, and its page is the
-  guider's (D13). Without a `guiding` block the row says that `rp` has no
-  guider address to link. Each connected camera is asked when the page is
-  drawn, and one that has not answered within two seconds is drawn as any
-  camera.
+- the credential `rp` presents to it: the username, or none.
 
-Opened, a row shows the entry's fields, generated from its kind's type
+Opened, a row shows first what the running `rp` knows of the entry
+(`GET /api/equipment`'s view): its state in words, connected or not, and
+the device name and unique ID it bound. An entry the file has and the
+running `rp` does not reads "not in the roster rp is running: connects
+after rp restarts". Then two links: the driver's server page
+(`<alpaca_url>/setup`) and the device's own page
+(`<alpaca_url>/setup/v1/<type>/<n>/setup`, the type being the entry's kind
+in Alpaca's spelling: `camera`, `filterwheel`, `focuser`,
+`covercalibrator`, `rotator`, `switch`, `safetymonitor`,
+`observingconditions`, `dome`, `telescope`), each following the host rule
+below. A camera that is `phd2-guider`'s facade — while connected, its
+`SupportedActions` lists the sweep lease's acquire — links the guider's
+`/setup` instead, at `mount.guiding.url` under the same host rule; the
+facade answers only on the guider's host, and its page is the guider's
+(D13). Without a `guiding` block the row says that `rp` has no guider
+address to link. Each connected camera is asked when the page is drawn,
+and one that has not answered within two seconds is drawn as any camera.
+
+Then come the entry's fields, generated from its kind's type
 (`id`, `name`, `alpaca_url` and `device_number` first, then the rest: a
 camera's `gain`, …), with a field
 the form cannot render named as edited in the file (a filter wheel's

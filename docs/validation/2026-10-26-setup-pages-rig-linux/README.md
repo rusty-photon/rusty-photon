@@ -97,8 +97,8 @@ on and the page named nothing waiting.
 2. **`rp`'s roster summary shows less than `rp.md` says.** The collapsed
    row shows the live state as an LED; the bound device's name and
    `UniqueID` are in the opened row ("Bound to Deep Sky Dad FP2 · …").
-   [rp.md § The roster](../../services/rp.md#the-roster) puts them in the
-   summary.
+   [rp.md § The roster](../../services/rp.md#the-roster) put them in the
+   summary; it has since been corrected.
 3. **`rp`'s package starts `rp` during the upgrade**, so stopping it
    first did not keep it from seeing the drivers restart after it; its
    reconnect supervisor reconnected every one, `filemonitor` included,
