@@ -151,18 +151,23 @@ USB identity declarations are measured from real hardware (the values a
 device reports on the bus), so the code-parity guard cannot cover them;
 the vendor-vs-rule assertion, the transcribed-descriptor table above, and the
 on-rig verification leg do.
-Every device-bearing service now declares its identity. Two of them declare
-a VID:PID and deliberately no `usb_model`: `qhy-focuser` is a GigaDevice
-GD32 publishing the stock `GD32-CDC_ACM`, and `star-adventurer-gti` is an
-STM32 publishing ST's stock `STM32 Virtual ComPort`. Both descriptors name
-the microcontroller rather than the instrument, so there is no product
-string to discriminate on. An omitted model is the honest answer whenever
-the descriptor carries no device identity — the check then asserts exactly
-what the bus can prove, which for those two is "a device of this family is
-present". Their serial-node checks carry the sharper identification, since
-a `by-id` path embeds the unit's own serial number.
+Every device-bearing service now declares its identity. Three of them
+declare a VID:PID and deliberately no `usb_model`: `qhy-focuser` is a
+GigaDevice GD32 publishing the stock `GD32-CDC_ACM`, `star-adventurer-gti`
+is an STM32 publishing ST's stock `STM32 Virtual ComPort`, and
+`gemini-powerbox-adv3-driver` is a CH340 publishing the stock `USB Serial`.
+Those descriptors name the bridge or the microcontroller rather than the
+instrument, so there is no product string to discriminate on. An omitted
+model is the honest answer whenever the descriptor carries no device
+identity — the check then asserts exactly what the bus can prove, which for
+those three is "a device of this family is present". For the first two the
+serial-node check carries the sharper identification, since their `by-id`
+paths embed the unit's own serial number; the Gemini's CH340 has no serial
+number, so its `by-id` name is shared with every other such CH340 and the
+driver's own `>H#` handshake is what tells the hub from them
+([gemini-powerbox-adv3-driver.md](gemini-powerbox-adv3-driver.md#device-identity)).
 
-The catalog today (22 packaged services):
+The catalog today (24 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -182,8 +187,10 @@ The catalog today (22 packaged services):
 | zwo-focuser | alpaca | 11124 |
 | svbony-camera | alpaca | 11125 |
 | planetarium-bridge | alpaca | 11126 |
+| upbv2-driver | alpaca | 11127 |
 | phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
+| gemini-powerbox-adv3-driver | alpaca | 11132 |
 | calibrator-flats | core | 11170 |
 | session-runner | core | 11171 |
 | polar-align | core | 11172 |

@@ -2,9 +2,10 @@
 //!
 //! These tests verify ASCOM Alpaca compliance by running the `ConformU` test
 //! suite against the driver running in mock mode: two Switch passes, one
-//! with both dew channels in Manual (the hub's power-up state, where the
-//! duty rows are writable and the enabled rows are not) and one with both
-//! in Auto (the reverse), and both `ObservingConditions` suites once.
+//! with both dew channels in Manual (the state the dev box's unit was found
+//! in, where the duty rows are writable and the enabled rows are not) and
+//! one with both in Auto (the reverse), and both `ObservingConditions`
+//! suites once.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -86,7 +87,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .to_str()
         .expect("conformu temp path must be UTF-8");
 
-    // Pass one: the hub as it powers up, both channels in Manual.
+    // Pass one: both channels in Manual, as the unit was found.
     let mut handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), config_arg).await?;
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
