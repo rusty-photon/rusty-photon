@@ -795,7 +795,7 @@ fn rotate_ops(
         ops.push((
             "provisioning".to_string(),
             FixOp::SetObject {
-                service: service.clone(),
+                service,
                 pointer: "/server/auth".to_string(),
                 value: serde_json::json!({
                     "username": doctor::provision::CREDENTIAL_USERNAME,
