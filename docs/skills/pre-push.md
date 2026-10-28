@@ -555,11 +555,12 @@ cargo metadata --format-version 1 --no-deps | \
   jq -r '.packages[] | select(.metadata.conformu.command) | "\(.name): \(.metadata.conformu.command)"'
 ```
 
-Current services (14), every one with the same command shape,
+Current services (15), every one with the same command shape,
 `cargo test -p <service> --features conformu --test conformu_integration -- --nocapture`:
-dsd-fp2, filemonitor, pa-falcon-rotator, pa-scops-oag, planetarium-bridge,
-ppba-driver, qhy-camera, qhy-focuser, sky-survey-camera,
-star-adventurer-gti, svbony-camera, upbv2-driver, zwo-camera, zwo-focuser.
+dsd-fp2, filemonitor, gemini-powerbox-adv3-driver, pa-falcon-rotator,
+pa-scops-oag, planetarium-bridge, ppba-driver, qhy-camera, qhy-focuser,
+sky-survey-camera, star-adventurer-gti, svbony-camera, upbv2-driver,
+zwo-camera, zwo-focuser.
 The tests self-skip unless `CONFORMU_PATH` is set, which is what keeps them
 inert in the ordinary suites. star-adventurer-gti is the long pole at about
 12 minutes, seven of them ConformU's fixed wait while the mount tracks
@@ -614,8 +615,9 @@ Current services and their commands:
 - **qhy-focuser**: `cargo miri test -p qhy-focuser`
 - **rp-auth**: `cargo miri test -p rp-auth`
 
-`ppba-driver` and `upbv2-driver` keep their `[package.metadata.miri]` block
-commented out. Under Miri they take over 6 hours on GitHub runners.
+`ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` keep their
+`[package.metadata.miri]` block commented out. Under Miri they take over 6
+hours on GitHub runners.
 
 > **Note:** Miri runs on push to main, nightly, and on manual dispatch, never
 > on PRs. It requires `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build

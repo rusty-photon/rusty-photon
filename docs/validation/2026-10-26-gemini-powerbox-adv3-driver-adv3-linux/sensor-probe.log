@@ -1,0 +1,1235 @@
+[   0.022] [baseline both attached] opened /dev/ttyUSB0
+[   0.043] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   0.060] [baseline both attached] rx b'0C 24.06S 25.17T 71.20H 19.58D12'
+[   0.071] [baseline both attached] rx b'.2V 0.04C  0.50P#'
+[   0.071] [baseline both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.17T 71.20H 19.58D12.2V 0.04C  0.50P#
+[   0.071] [baseline both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   0.071] [baseline both attached]   sensor+electrical remainder: ' 24.06S 25.17T 71.20H 19.58D12.2V 0.04C  0.50P#'
+[   0.071] [baseline both attached]   driver shape OK: lens=' 24.06' ambient=' 25.17' humidity=' 71.20' dewpoint=' 19.58' V='12.2' A='0.04' W='0.50'
+[   0.968] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   0.985] [baseline both attached] rx b'0C 24.13S 25.16T 71.24H 19.58D12'
+[   0.996] [baseline both attached] rx b'.2V 0.02C  0.36P#'
+[   0.996] [baseline both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.13S 25.16T 71.24H 19.58D12.2V 0.02C  0.36P#
+[   0.996] [baseline both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   0.996] [baseline both attached]   sensor+electrical remainder: ' 24.13S 25.16T 71.24H 19.58D12.2V 0.02C  0.36P#'
+[   0.996] [baseline both attached]   driver shape OK: lens=' 24.13' ambient=' 25.16' humidity=' 71.24' dewpoint=' 19.58' V='12.2' A='0.02' W='0.36'
+[   2.043] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   2.060] [baseline both attached] rx b'0C 24.13S 25.16T 71.24H 19.58D12'
+[   2.071] [baseline both attached] rx b'.2V 0.02C  0.36P#'
+[   2.071] [baseline both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.13S 25.16T 71.24H 19.58D12.2V 0.02C  0.36P#
+[   3.969] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   3.985] [baseline both attached] rx b'0C 24.06S 25.14T 71.24H 19.56D12'
+[   3.996] [baseline both attached] rx b'.2V 0.04C  0.50P#'
+[   3.996] [baseline both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.24H 19.56D12.2V 0.04C  0.50P#
+[   3.996] [baseline both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   3.996] [baseline both attached]   sensor+electrical remainder: ' 24.06S 25.14T 71.24H 19.56D12.2V 0.04C  0.50P#'
+[   3.996] [baseline both attached]   driver shape OK: lens=' 24.06' ambient=' 25.14' humidity=' 71.24' dewpoint=' 19.56' V='12.2' A='0.04' W='0.50'
+[   4.044] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   4.060] [baseline both attached] rx b'0C 24.06S 25.14T 71.24H 19.56D12'
+[   4.071] [baseline both attached] rx b'.2V 0.04C  0.50P#'
+[   4.071] [baseline both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.24H 19.56D12.2V 0.04C  0.50P#
+[   6.044] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   6.061] [baseline both attached] rx b'0C 24.06S 25.14T 71.24H 19.56D12'
+[   6.072] [baseline both attached] rx b'.2V 0.04C  0.50P#'
+[   6.072] [baseline both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.24H 19.56D12.2V 0.04C  0.50P#
+[   6.968] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   6.985] [baseline both attached] rx b'0C 24.06S 25.14T 71.25H 19.56D12'
+[   6.996] [baseline both attached] rx b'.2V 0.06C  0.72P#'
+[   6.996] [baseline both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.25H 19.56D12.2V 0.06C  0.72P#
+[   6.996] [baseline both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   6.996] [baseline both attached]   sensor+electrical remainder: ' 24.06S 25.14T 71.25H 19.56D12.2V 0.06C  0.72P#'
+[   6.996] [baseline both attached]   driver shape OK: lens=' 24.06' ambient=' 25.14' humidity=' 71.25' dewpoint=' 19.56' V='12.2' A='0.06' W='0.72'
+[   8.044] [baseline both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   8.061] [baseline both attached] rx b'0C 24.06S 25.14T 71.25H 19.56D12'
+[   8.072] [baseline both attached] rx b'.2V 0.06C  0.72P#'
+[   8.072] [baseline both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.25H 19.56D12.2V 0.06C  0.72P#
+[   9.968] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   9.985] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.26H 19.57D12'
+[   9.996] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[   9.996] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.26H 19.57D12.2V 0.04C  0.50P#
+[   9.996] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   9.996] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.14T 71.26H 19.57D12.2V 0.04C  0.50P#'
+[   9.996] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.14' humidity=' 71.26' dewpoint=' 19.57' V='12.2' A='0.04' W='0.50'
+[  10.044] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  10.061] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.26H 19.57D12'
+[  10.072] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  10.072] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.26H 19.57D12.2V 0.04C  0.50P#
+[  12.045] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  12.061] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.26H 19.57D12'
+[  12.072] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  12.072] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.26H 19.57D12.2V 0.04C  0.50P#
+[  12.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  12.986] [step 1 AHT20 out] rx b'0C 24.06S 25.13T 71.25H 19.56D12'
+[  12.996] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  12.996] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.13T 71.25H 19.56D12.2V 0.03C  0.36P#
+[  12.996] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  12.996] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.13T 71.25H 19.56D12.2V 0.03C  0.36P#'
+[  12.996] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.13' humidity=' 71.25' dewpoint=' 19.56' V='12.2' A='0.03' W='0.36'
+[  14.045] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  14.062] [step 1 AHT20 out] rx b'0C 24.06S 25.13T 71.25H 19.56D12'
+[  14.073] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  14.073] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.13T 71.25H 19.56D12.2V 0.03C  0.36P#
+[  15.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  15.986] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.30H 19.58D12'
+[  15.997] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  15.997] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.30H 19.58D12.2V 0.03C  0.36P#
+[  15.997] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  15.997] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.14T 71.30H 19.58D12.2V 0.03C  0.36P#'
+[  15.997] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.14' humidity=' 71.30' dewpoint=' 19.58' V='12.2' A='0.03' W='0.36'
+[  16.045] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  16.062] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.30H 19.58D12'
+[  16.073] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  16.073] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.30H 19.58D12.2V 0.03C  0.36P#
+[  18.046] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  18.062] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.30H 19.58D12'
+[  18.073] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  18.073] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.30H 19.58D12.2V 0.03C  0.36P#
+[  18.968] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  18.985] [step 1 AHT20 out] rx b'0C 24.06S 25.13T 71.25H 19.55D12'
+[  18.996] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  18.996] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.13T 71.25H 19.55D12.2V 0.03C  0.36P#
+[  18.996] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  18.996] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.13T 71.25H 19.55D12.2V 0.03C  0.36P#'
+[  18.996] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.13' humidity=' 71.25' dewpoint=' 19.55' V='12.2' A='0.03' W='0.36'
+[  20.046] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  20.062] [step 1 AHT20 out] rx b'0C 24.06S 25.13T 71.25H 19.55D12'
+[  20.073] [step 1 AHT20 out] rx b'.2V 0.03C  0.36P#'
+[  20.073] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.13T 71.25H 19.55D12.2V 0.03C  0.36P#
+[  21.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  21.985] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.32H 19.58D12'
+[  21.996] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  21.996] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.32H 19.58D12.2V 0.05C  0.62P#
+[  21.996] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  21.996] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.14T 71.32H 19.58D12.2V 0.05C  0.62P#'
+[  21.996] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.14' humidity=' 71.32' dewpoint=' 19.58' V='12.2' A='0.05' W='0.62'
+[  22.046] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  22.062] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.32H 19.58D12'
+[  22.073] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  22.073] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.32H 19.58D12.2V 0.05C  0.62P#
+[  24.046] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  24.063] [step 1 AHT20 out] rx b'0C 24.06S 25.14T 71.32H 19.58D12'
+[  24.074] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  24.074] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.14T 71.32H 19.58D12.2V 0.05C  0.62P#
+[  24.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  24.986] [step 1 AHT20 out] rx b'0C 24.13S 25.15T 71.25H 19.57D12'
+[  24.997] [step 1 AHT20 out] rx b'.2V 0.01C  0.14P#'
+[  24.997] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.13S 25.15T 71.25H 19.57D12.2V 0.01C  0.14P#
+[  24.997] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  24.997] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.13S 25.15T 71.25H 19.57D12.2V 0.01C  0.14P#'
+[  24.997] [step 1 AHT20 out]   driver shape OK: lens=' 24.13' ambient=' 25.15' humidity=' 71.25' dewpoint=' 19.57' V='12.2' A='0.01' W='0.14'
+[  26.046] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  26.063] [step 1 AHT20 out] rx b'0C 24.13S 25.15T 71.25H 19.57D12'
+[  26.074] [step 1 AHT20 out] rx b'.2V 0.01C  0.14P#'
+[  26.074] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.13S 25.15T 71.25H 19.57D12.2V 0.01C  0.14P#
+[  27.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  27.985] [step 1 AHT20 out] rx b'0C 24.06S 25.12T 71.25H 19.55D12'
+[  27.996] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  27.996] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.12T 71.25H 19.55D12.2V 0.04C  0.50P#
+[  27.996] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  27.996] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.12T 71.25H 19.55D12.2V 0.04C  0.50P#'
+[  27.996] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.12' humidity=' 71.25' dewpoint=' 19.55' V='12.2' A='0.04' W='0.50'
+[  28.047] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  28.063] [step 1 AHT20 out] rx b'0C 24.06S 25.12T 71.25H 19.55D12'
+[  28.074] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  28.074] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.12T 71.25H 19.55D12.2V 0.04C  0.50P#
+[  30.047] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  30.064] [step 1 AHT20 out] rx b'0C 24.06S 25.12T 71.25H 19.55D12'
+[  30.075] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  30.075] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.12T 71.25H 19.55D12.2V 0.04C  0.50P#
+[  30.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  30.986] [step 1 AHT20 out] rx b'0C 24.06S 25.12T 71.30H 19.56D12'
+[  30.997] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  30.997] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.12T 71.30H 19.56D12.2V 0.04C  0.50P#
+[  30.997] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  30.997] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.12T 71.30H 19.56D12.2V 0.04C  0.50P#'
+[  30.997] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.12' humidity=' 71.30' dewpoint=' 19.56' V='12.2' A='0.04' W='0.50'
+[  32.047] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  32.064] [step 1 AHT20 out] rx b'0C 24.06S 25.12T 71.30H 19.56D12'
+[  32.075] [step 1 AHT20 out] rx b'.2V 0.04C  0.50P#'
+[  32.075] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.12T 71.30H 19.56D12.2V 0.04C  0.50P#
+[  33.969] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  33.986] [step 1 AHT20 out] rx b'0C 24.06S 25.11T 71.29H 19.55D12'
+[  33.997] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  33.997] [step 1 AHT20 out] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.11T 71.29H 19.55D12.2V 0.05C  0.62P#
+[  33.997] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  33.997] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S 25.11T 71.29H 19.55D12.2V 0.05C  0.62P#'
+[  33.997] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient=' 25.11' humidity=' 71.29' dewpoint=' 19.55' V='12.2' A='0.05' W='0.62'
+[  34.047] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  34.064] [step 1 AHT20 out] rx b'0C 24.06S 25.11T 71.29H 19.55D12'
+[  34.075] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  34.075] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.11T 71.29H 19.55D12.2V 0.05C  0.62P#
+[  36.048] [step 1 AHT20 out] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  36.064] [step 1 AHT20 out] rx b'0C 24.06S 25.11T 71.29H 19.55D12'
+[  36.075] [step 1 AHT20 out] rx b'.2V 0.05C  0.62P#'
+[  36.075] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.06S 25.11T 71.29H 19.55D12.2V 0.05C  0.62P#
+[  36.904] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  36.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.06C  0.72'
+[  36.924] [step 1 AHT20 out] rx b'P#'
+[  36.924] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.06C  0.72P#
+[  36.924] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  36.924] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.06C  0.72P#'
+[  36.924] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.06' W='0.72'
+[  38.047] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  38.064] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.06C  0.72'
+[  38.067] [step 1 AHT20 out] rx b'P#'
+[  38.067] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.06C  0.72P#
+[  39.905] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  39.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  39.924] [step 1 AHT20 out] rx b'P#'
+[  39.924] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  39.924] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  39.924] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.03C  0.36P#'
+[  39.924] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  40.048] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  40.064] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  40.067] [step 1 AHT20 out] rx b'P#'
+[  40.067] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  42.048] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  42.065] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  42.068] [step 1 AHT20 out] rx b'P#'
+[  42.068] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  42.905] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  42.922] [step 1 AHT20 out] rx b'0C 24.13S0T0H0D12.2V 0.04C  0.50'
+[  42.925] [step 1 AHT20 out] rx b'P#'
+[  42.925] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.13S0T0H0D12.2V 0.04C  0.50P#
+[  42.925] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  42.925] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.13S0T0H0D12.2V 0.04C  0.50P#'
+[  42.925] [step 1 AHT20 out]   driver shape OK: lens=' 24.13' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  44.048] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  44.065] [step 1 AHT20 out] rx b'0C 24.13S0T0H0D12.2V 0.04C  0.50'
+[  44.068] [step 1 AHT20 out] rx b'P#'
+[  44.068] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.13S0T0H0D12.2V 0.04C  0.50P#
+[  45.904] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  45.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.05C  0.62'
+[  45.924] [step 1 AHT20 out] rx b'P#'
+[  45.924] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.05C  0.62P#
+[  45.924] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  45.924] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.05C  0.62P#'
+[  45.924] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[  46.048] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  46.065] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.05C  0.62'
+[  46.068] [step 1 AHT20 out] rx b'P#'
+[  46.068] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.05C  0.62P#
+[  48.049] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  48.065] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.05C  0.62'
+[  48.068] [step 1 AHT20 out] rx b'P#'
+[  48.068] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.05C  0.62P#
+[  48.905] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  48.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.02C  0.22'
+[  48.924] [step 1 AHT20 out] rx b'P#'
+[  48.924] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.02C  0.22P#
+[  48.925] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  48.925] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.02C  0.22P#'
+[  48.925] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  50.049] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  50.066] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.02C  0.22'
+[  50.069] [step 1 AHT20 out] rx b'P#'
+[  50.069] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.02C  0.22P#
+[  51.905] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  51.922] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.07C  0.86'
+[  51.925] [step 1 AHT20 out] rx b'P#'
+[  51.925] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.07C  0.86P#
+[  51.925] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  51.925] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.07C  0.86P#'
+[  51.925] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.07' W='0.86'
+[  52.049] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  52.066] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.07C  0.86'
+[  52.069] [step 1 AHT20 out] rx b'P#'
+[  52.069] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.07C  0.86P#
+[  54.049] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  54.066] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.07C  0.86'
+[  54.069] [step 1 AHT20 out] rx b'P#'
+[  54.069] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.07C  0.86P#
+[  54.904] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  54.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.06C  0.72'
+[  54.924] [step 1 AHT20 out] rx b'P#'
+[  54.924] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.06C  0.72P#
+[  54.924] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  54.924] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.06C  0.72P#'
+[  54.924] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.06' W='0.72'
+[  56.050] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  56.066] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.06C  0.72'
+[  56.069] [step 1 AHT20 out] rx b'P#'
+[  56.070] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.06C  0.72P#
+[  57.905] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  57.921] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.08C  0.98'
+[  57.925] [step 1 AHT20 out] rx b'P#'
+[  57.925] [step 1 AHT20 out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.08C  0.98P#
+[  57.925] [step 1 AHT20 out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  57.925] [step 1 AHT20 out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.08C  0.98P#'
+[  57.925] [step 1 AHT20 out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.08' W='0.98'
+[  58.050] [step 1 AHT20 out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  58.067] [step 1 AHT20 out] rx b'0C 24.06S0T0H0D12.2V 0.08C  0.98'
+[  58.070] [step 1 AHT20 out] rx b'P#'
+[  58.070] [step 1 AHT20 out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.08C  0.98P#
+[  60.050] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  60.067] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.08C  0.98'
+[  60.070] [step 2 both out] rx b'P#'
+[  60.070] [step 2 both out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.08C  0.98P#
+[  60.905] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  60.922] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.01C  0.14'
+[  60.925] [step 2 both out] rx b'P#'
+[  60.925] [step 2 both out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.01C  0.14P#
+[  60.925] [step 2 both out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  60.925] [step 2 both out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.01C  0.14P#'
+[  60.925] [step 2 both out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.14'
+[  62.051] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  62.067] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.01C  0.14'
+[  62.070] [step 2 both out] rx b'P#'
+[  62.070] [step 2 both out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.01C  0.14P#
+[  63.906] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  63.922] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  63.925] [step 2 both out] rx b'P#'
+[  63.925] [step 2 both out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  63.926] [step 2 both out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  63.926] [step 2 both out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.03C  0.36P#'
+[  63.926] [step 2 both out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  64.051] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  64.067] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  64.070] [step 2 both out] rx b'P#'
+[  64.071] [step 2 both out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  66.051] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  66.068] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.03C  0.36'
+[  66.071] [step 2 both out] rx b'P#'
+[  66.071] [step 2 both out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.03C  0.36P#
+[  66.905] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  66.922] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.02C  0.22'
+[  66.925] [step 2 both out] rx b'P#'
+[  66.925] [step 2 both out] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.02C  0.22P#
+[  66.925] [step 2 both out]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  66.925] [step 2 both out]   sensor+electrical remainder: ' 24.06S0T0H0D12.2V 0.02C  0.22P#'
+[  66.925] [step 2 both out]   driver shape OK: lens=' 24.06' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  68.051] [step 2 both out] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  68.068] [step 2 both out] rx b'0C 24.06S0T0H0D12.2V 0.02C  0.22'
+[  68.071] [step 2 both out] rx b'P#'
+[  68.071] [step 2 both out] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.02C  0.22P#
+[  70.031] [step 2 both out] closed
+Traceback (most recent call last):
+  File "<probe-dir>/gemini_sensor_probe.py", line 145, in <module>
+    os.write(fd, b">G#\n")
+    ~~~~~~~~^^^^^^^^^^^^^^
+OSError: [Errno 5] Input/output error
+
+===== probe (re)started 2026-10-28T00:06:32Z, label: step 2 both out, after the USB re-enumeration =====
+[   0.022] [step 2 both out, after the USB re-enumeration] opened /dev/ttyUSB0
+[   0.042] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   0.060] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[   0.060] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[   0.060] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   0.060] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.05C  0.62P#'
+[   0.060] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[   2.043] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   2.060] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[   2.060] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[   2.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   2.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[   2.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[   2.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   2.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.02C  0.22P#'
+[   2.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[   4.043] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   4.060] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[   4.060] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[   5.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   5.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.01C  0.72P#'
+[   5.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.72P#
+[   5.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   5.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.72P#'
+[   5.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.72'
+[   6.043] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   6.060] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.01C  0.72P#'
+[   6.060] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.72P#
+[   8.044] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   8.061] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.01C  0.72P#'
+[   8.061] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.72P#
+[   8.909] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[   8.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[   8.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[   8.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   8.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.05C  0.62P#'
+[   8.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[  10.044] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  10.061] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[  10.061] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[  11.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  11.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  11.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  11.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  11.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.03C  0.36P#'
+[  11.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  12.044] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  12.061] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  12.061] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  14.044] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  14.062] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  14.062] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  14.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  14.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  14.928] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  14.928] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  14.928] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.04C  0.50P#'
+[  14.928] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  16.045] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  16.062] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  16.062] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  17.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  17.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.08C  0.98P#'
+[  17.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.08C  0.98P#
+[  17.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  17.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.08C  0.98P#'
+[  17.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.08' W='0.98'
+[  18.045] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  18.062] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.08C  0.98P#'
+[  18.062] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.08C  0.98P#
+[  20.045] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  20.062] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.08C  0.98P#'
+[  20.062] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.08C  0.98P#
+[  20.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  20.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  20.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  20.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  20.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.14P#'
+[  20.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.14'
+[  22.045] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  22.063] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  22.063] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  23.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  23.928] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  23.928] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  23.928] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  23.928] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.04C  0.50P#'
+[  23.928] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  24.046] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  24.063] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  24.063] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  26.046] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  26.063] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  26.063] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  26.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  26.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  26.927] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  28.046] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  28.063] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  28.063] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  29.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  29.927] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  29.927] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  29.927] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  29.927] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.03C  0.36P#'
+[  29.927] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  30.046] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  30.064] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  30.064] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  32.047] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  32.064] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  32.064] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  32.910] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  32.928] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  32.928] [step 2 both out, after the USB re-enumeration] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  32.928] [step 2 both out, after the USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  32.928] [step 2 both out, after the USB re-enumeration]   sensor+electrical remainder: '0S0T0H0D12.2V 0.02C  0.22P#'
+[  32.928] [step 2 both out, after the USB re-enumeration]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  34.047] [step 2 both out, after the USB re-enumeration] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  34.064] [step 2 both out, after the USB re-enumeration] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  34.064] [step 2 both out, after the USB re-enumeration] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  35.910] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  35.927] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  35.927] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  36.047] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  36.064] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  36.064] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  38.048] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  38.065] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  38.065] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  38.910] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  38.927] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V-0.00C  0.00P#'
+[  38.927] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V-0.00C  0.00P#
+[  38.927] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  38.927] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V-0.00C  0.00P#'
+[  38.927] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='-0.00' W='0.00'
+[  40.048] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  40.065] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V-0.00C  0.00P#'
+[  40.065] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V-0.00C  0.00P#
+[  41.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  41.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  41.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  41.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  41.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.02C  0.22P#'
+[  41.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  42.048] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  42.065] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  42.065] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  44.048] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  44.065] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  44.065] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  44.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  44.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  44.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  44.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  44.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.03C  0.36P#'
+[  44.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  46.048] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  46.066] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  46.066] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  47.910] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  47.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.07C  0.86P#'
+[  47.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.07C  0.86P#
+[  47.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  47.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.07C  0.86P#'
+[  47.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.07' W='0.86'
+[  48.049] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  48.066] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.07C  0.86P#'
+[  48.066] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.07C  0.86P#
+[  50.049] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  50.066] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.07C  0.86P#'
+[  50.066] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.07C  0.86P#
+[  50.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  50.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  50.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  50.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  50.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.14P#'
+[  50.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.14'
+[  52.049] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  52.066] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  52.066] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  53.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  53.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V-0.00C  0.00P#'
+[  53.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V-0.00C  0.00P#
+[  53.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  53.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V-0.00C  0.00P#'
+[  53.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='-0.00' W='0.00'
+[  54.049] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  54.066] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V-0.00C  0.00P#'
+[  54.067] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V-0.00C  0.00P#
+[  56.050] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  56.067] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V-0.00C  0.00P#'
+[  56.067] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V-0.00C  0.00P#
+[  56.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  56.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.06C  0.72P#'
+[  56.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.06C  0.72P#
+[  56.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  56.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.06C  0.72P#'
+[  56.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.06' W='0.72'
+[  58.050] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  58.067] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.06C  0.72P#'
+[  58.067] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.06C  0.72P#
+[  59.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  59.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  59.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  59.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  59.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.14P#'
+[  59.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.14'
+[  60.050] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  60.067] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  60.067] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  62.050] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  62.068] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  62.068] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  62.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  62.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[  62.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[  62.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  62.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.05C  0.62P#'
+[  62.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[  64.051] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  64.068] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[  64.068] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[  65.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  65.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  65.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  65.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  65.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.03C  0.36P#'
+[  65.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  66.051] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  66.068] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  66.068] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  68.051] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  68.068] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[  68.068] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[  68.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  68.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  68.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  68.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  68.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.04C  0.50P#'
+[  68.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  70.051] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  70.069] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  70.069] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  71.912] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  71.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.06C  0.72P#'
+[  71.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.06C  0.72P#
+[  71.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  71.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.06C  0.72P#'
+[  71.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.06' W='0.72'
+[  72.052] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  72.069] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.06C  0.72P#'
+[  72.069] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.06C  0.72P#
+[  74.052] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  74.069] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.06C  0.72P#'
+[  74.069] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.06C  0.72P#
+[  74.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  74.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  74.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  74.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  74.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.04C  0.50P#'
+[  74.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  76.052] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  76.069] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.04C  0.50P#'
+[  76.069] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.04C  0.50P#
+[  77.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  77.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  77.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  77.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  77.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.02C  0.22P#'
+[  77.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  78.052] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  78.070] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  78.070] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  80.053] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  80.070] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.02C  0.22P#'
+[  80.070] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.02C  0.22P#
+[  80.912] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  80.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[  80.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[  80.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  80.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.05C  0.62P#'
+[  80.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[  82.053] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  82.070] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.05C  0.62P#'
+[  82.070] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.05C  0.62P#
+[  83.911] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  83.928] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  83.928] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  83.928] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  83.928] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.14P#'
+[  83.928] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.14'
+[  84.053] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  84.070] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  84.070] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  86.054] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[  86.071] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.14P#'
+[  86.071] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.14P#
+[  86.976] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  86.993] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.13T 71.55H 19.63D12.2V 0'
+[  87.001] [step 3 DS18B20 back, AHT20 still out] rx b'.03C  0.36P#'
+[  87.001] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U1A0T1A1M1B1M100C100C0S 25.13T 71.55H 19.63D12.2V 0.03C  0.36P#
+[  87.001] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=1 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  87.001] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S 25.13T 71.55H 19.63D12.2V 0.03C  0.36P#'
+[  87.001] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient=' 25.13' humidity=' 71.55' dewpoint=' 19.63' V='12.2' A='0.03' W='0.36'
+[  88.054] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  88.071] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.13T 71.55H 19.63D12.2V 0'
+[  88.079] [step 3 DS18B20 back, AHT20 still out] rx b'.03C  0.36P#'
+[  88.079] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.13T 71.55H 19.63D12.2V 0.03C  0.36P#
+[  89.976] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  89.993] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.60H 19.62D12.2V 0'
+[  90.001] [step 3 DS18B20 back, AHT20 still out] rx b'.01C  0.14P#'
+[  90.001] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.60H 19.62D12.2V 0.01C  0.14P#
+[  90.001] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=1 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  90.001] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S 25.12T 71.60H 19.62D12.2V 0.01C  0.14P#'
+[  90.002] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient=' 25.12' humidity=' 71.60' dewpoint=' 19.62' V='12.2' A='0.01' W='0.14'
+[  90.055] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  90.071] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.60H 19.62D12.2V 0'
+[  90.080] [step 3 DS18B20 back, AHT20 still out] rx b'.01C  0.14P#'
+[  90.080] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.60H 19.62D12.2V 0.01C  0.14P#
+[  92.055] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  92.071] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.60H 19.62D12.2V 0'
+[  92.080] [step 3 DS18B20 back, AHT20 still out] rx b'.01C  0.14P#'
+[  92.080] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.60H 19.62D12.2V 0.01C  0.14P#
+[  92.977] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  92.993] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.13T 71.59H 19.63D12.2V 0'
+[  93.002] [step 3 DS18B20 back, AHT20 still out] rx b'.03C  0.62P#'
+[  93.002] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U1A0T1A1M1B1M100C100C0S 25.13T 71.59H 19.63D12.2V 0.03C  0.62P#
+[  93.002] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=1 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  93.002] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S 25.13T 71.59H 19.63D12.2V 0.03C  0.62P#'
+[  93.002] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient=' 25.13' humidity=' 71.59' dewpoint=' 19.63' V='12.2' A='0.03' W='0.62'
+[  94.055] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  94.072] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.13T 71.59H 19.63D12.2V 0'
+[  94.080] [step 3 DS18B20 back, AHT20 still out] rx b'.03C  0.62P#'
+[  94.080] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.13T 71.59H 19.63D12.2V 0.03C  0.62P#
+[  95.976] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  95.993] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.58H 19.62D12.2V 0'
+[  96.001] [step 3 DS18B20 back, AHT20 still out] rx b'.07C  0.86P#'
+[  96.001] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.58H 19.62D12.2V 0.07C  0.86P#
+[  96.001] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=1 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  96.001] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S 25.12T 71.58H 19.62D12.2V 0.07C  0.86P#'
+[  96.001] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient=' 25.12' humidity=' 71.58' dewpoint=' 19.62' V='12.2' A='0.07' W='0.86'
+[  96.055] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  96.072] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.58H 19.62D12.2V 0'
+[  96.080] [step 3 DS18B20 back, AHT20 still out] rx b'.07C  0.86P#'
+[  96.080] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.58H 19.62D12.2V 0.07C  0.86P#
+[  98.056] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  98.072] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.12T 71.58H 19.62D12.2V 0'
+[  98.081] [step 3 DS18B20 back, AHT20 still out] rx b'.07C  0.86P#'
+[  98.081] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.12T 71.58H 19.62D12.2V 0.07C  0.86P#
+[  98.976] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[  98.993] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.14T 71.60H 19.64D12.2V 0'
+[  99.001] [step 3 DS18B20 back, AHT20 still out] rx b'.06C  0.72P#'
+[  99.002] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U1A0T1A1M1B1M100C100C0S 25.14T 71.60H 19.64D12.2V 0.06C  0.72P#
+[  99.002] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=1 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  99.002] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S 25.14T 71.60H 19.64D12.2V 0.06C  0.72P#'
+[  99.002] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient=' 25.14' humidity=' 71.60' dewpoint=' 19.64' V='12.2' A='0.06' W='0.72'
+[ 100.056] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U1A0T1A1M1B1M100C10'
+[ 100.072] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S 25.14T 71.60H 19.64D12.2V 0'
+[ 100.081] [step 3 DS18B20 back, AHT20 still out] rx b'.06C  0.72P#'
+[ 100.081] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U1A0T1A1M1B1M100C100C0S 25.14T 71.60H 19.64D12.2V 0.06C  0.72P#
+[ 101.912] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 101.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.36P#'
+[ 101.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.36P#
+[ 101.930] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 101.930] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.01C  0.36P#'
+[ 101.930] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.01' W='0.36'
+[ 102.055] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 102.073] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.36P#'
+[ 102.073] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.36P#
+[ 104.056] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 104.073] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.01C  0.36P#'
+[ 104.073] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.36P#
+[ 104.912] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 104.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.07C  0.86P#'
+[ 104.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.07C  0.86P#
+[ 104.929] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 104.929] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.07C  0.86P#'
+[ 104.929] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.07' W='0.86'
+[ 106.056] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 106.073] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.07C  0.86P#'
+[ 106.073] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.07C  0.86P#
+[ 107.912] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 107.929] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[ 107.929] [step 3 DS18B20 back, AHT20 still out] FRAME *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[ 107.930] [step 3 DS18B20 back, AHT20 still out]   DC=1111 USB=111111 AHT20=0 DS18B20=0 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 107.930] [step 3 DS18B20 back, AHT20 still out]   sensor+electrical remainder: '0S0T0H0D12.2V 0.03C  0.36P#'
+[ 107.930] [step 3 DS18B20 back, AHT20 still out]   driver shape OK: lens='0' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[ 108.056] [step 3 DS18B20 back, AHT20 still out] rx b'*G1111D111111U0A0T1A1M1B1M100C10'
+[ 108.073] [step 3 DS18B20 back, AHT20 still out] rx b'0C0S0T0H0D12.2V 0.03C  0.36P#'
+[ 108.074] [step 3 DS18B20 back, AHT20 still out] FRAME (unchanged) *G1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.03C  0.36P#
+[ 110.036] [step 3 DS18B20 back, AHT20 still out] closed
+Traceback (most recent call last):
+  File "<probe-dir>/gemini_sensor_probe.py", line 145, in <module>
+    os.write(fd, b">G#\n")
+    ~~~~~~~~^^^^^^^^^^^^^^
+OSError: [Errno 5] Input/output error
+
+===== probe (re)started 2026-10-28T00:08:55Z, label: step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration =====
+[   0.022] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] opened /dev/ttyUSB0
+[   0.043] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   0.059] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.07C  0.86'
+[   0.062] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   0.062] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.07C  0.86P#
+[   0.062] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   0.062] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.07C  0.86P#'
+[   0.062] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.07' W='0.86'
+[   1.654] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   1.671] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[   1.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   1.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[   1.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   1.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.03C  0.36P#'
+[   1.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[   2.043] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   2.060] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[   2.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   2.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[   4.043] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   4.060] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[   4.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   4.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[   4.655] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   4.671] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.06C  0.72'
+[   4.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   4.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.06C  0.72P#
+[   4.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   4.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.06C  0.72P#'
+[   4.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.06' W='0.72'
+[   6.044] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   6.060] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.06C  0.72'
+[   6.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   6.063] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.06C  0.72P#
+[   7.655] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   7.672] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.05C  0.62'
+[   7.675] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   7.675] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.05C  0.62P#
+[   7.675] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[   7.675] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.05C  0.62P#'
+[   7.675] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.05' W='0.62'
+[   8.044] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[   8.060] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.05C  0.62'
+[   8.064] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[   8.064] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.05C  0.62P#
+[  10.044] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  10.061] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.05C  0.62'
+[  10.064] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[  10.064] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.05C  0.62P#
+[  10.654] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  10.671] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'0C 24.38S0T0H0D12.2V 0.07C  0.86'
+[  10.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] rx b'P#'
+[  10.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.07C  0.86P#
+[  10.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  10.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.07C  0.86P#'
+[  10.674] [step 3 DS18B20 back, AHT20 out, after the second USB re-enumeration]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.07' W='0.86'
+[  12.044] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  12.061] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.07C  0.86'
+[  12.064] [step 4 AHT20 back, both attached] rx b'P#'
+[  12.064] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.07C  0.86P#
+[  13.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  13.671] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  13.674] [step 4 AHT20 back, both attached] rx b'P#'
+[  13.675] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  13.675] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  13.675] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.02C  0.22P#'
+[  13.675] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  14.045] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  14.061] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  14.065] [step 4 AHT20 back, both attached] rx b'P#'
+[  14.065] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  16.045] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  16.062] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  16.065] [step 4 AHT20 back, both attached] rx b'P#'
+[  16.065] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  16.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  16.672] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  16.675] [step 4 AHT20 back, both attached] rx b'P#'
+[  16.675] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  16.675] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  16.675] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.04C  0.50P#'
+[  16.675] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  18.045] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  18.062] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  18.065] [step 4 AHT20 back, both attached] rx b'P#'
+[  18.065] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  19.654] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  19.671] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  19.674] [step 4 AHT20 back, both attached] rx b'P#'
+[  19.674] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  20.045] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  20.062] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  20.065] [step 4 AHT20 back, both attached] rx b'P#'
+[  20.065] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  22.046] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  22.063] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  22.066] [step 4 AHT20 back, both attached] rx b'P#'
+[  22.066] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  22.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  22.671] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  22.675] [step 4 AHT20 back, both attached] rx b'P#'
+[  22.675] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  22.675] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  22.675] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.02C  0.22P#'
+[  22.675] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  24.046] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  24.063] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  24.066] [step 4 AHT20 back, both attached] rx b'P#'
+[  24.066] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  25.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  25.672] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[  25.675] [step 4 AHT20 back, both attached] rx b'P#'
+[  25.675] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[  25.675] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  25.675] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.03C  0.36P#'
+[  25.675] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.03' W='0.36'
+[  26.046] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  26.063] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[  26.066] [step 4 AHT20 back, both attached] rx b'P#'
+[  26.066] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[  28.047] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  28.063] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.03C  0.36'
+[  28.066] [step 4 AHT20 back, both attached] rx b'P#'
+[  28.066] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.03C  0.36P#
+[  28.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  28.671] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  28.674] [step 4 AHT20 back, both attached] rx b'P#'
+[  28.674] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  28.674] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  28.674] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.04C  0.50P#'
+[  28.674] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.04' W='0.50'
+[  30.047] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  30.064] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.04C  0.50'
+[  30.067] [step 4 AHT20 back, both attached] rx b'P#'
+[  30.067] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.04C  0.50P#
+[  31.655] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  31.672] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  31.675] [step 4 AHT20 back, both attached] rx b'P#'
+[  31.675] [step 4 AHT20 back, both attached] FRAME *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  31.675] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=0 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  31.675] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S0T0H0D12.2V 0.02C  0.22P#'
+[  31.675] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient='0' humidity='0' dewpoint='0' V='12.2' A='0.02' W='0.22'
+[  32.047] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  32.064] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  32.067] [step 4 AHT20 back, both attached] rx b'P#'
+[  32.067] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  34.048] [step 4 AHT20 back, both attached] rx b'*G1111D111111U0A1T1A1M1B1M100C10'
+[  34.064] [step 4 AHT20 back, both attached] rx b'0C 24.38S0T0H0D12.2V 0.02C  0.22'
+[  34.067] [step 4 AHT20 back, both attached] rx b'P#'
+[  34.067] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.02C  0.22P#
+[  34.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  34.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.57H 19.58D12'
+[  34.747] [step 4 AHT20 back, both attached] rx b'.2V 0.02C  0.22P#'
+[  34.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.57H 19.58D12.2V 0.02C  0.22P#
+[  34.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  34.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.08T 71.57H 19.58D12.2V 0.02C  0.22P#'
+[  34.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.08' humidity=' 71.57' dewpoint=' 19.58' V='12.2' A='0.02' W='0.22'
+[  36.048] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  36.065] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.57H 19.58D12'
+[  36.076] [step 4 AHT20 back, both attached] rx b'.2V 0.02C  0.22P#'
+[  36.076] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.57H 19.58D12.2V 0.02C  0.22P#
+[  37.719] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  37.736] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.55H 19.59D12'
+[  37.747] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  37.747] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.55H 19.59D12.2V 0.01C  0.14P#
+[  37.747] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  37.747] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.55H 19.59D12.2V 0.01C  0.14P#'
+[  37.747] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.55' dewpoint=' 19.59' V='12.2' A='0.01' W='0.14'
+[  38.048] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  38.065] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.55H 19.59D12'
+[  38.076] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  38.076] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.55H 19.59D12.2V 0.01C  0.14P#
+[  40.049] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  40.065] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.55H 19.59D12'
+[  40.076] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  40.076] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.55H 19.59D12.2V 0.01C  0.14P#
+[  40.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  40.736] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.62H 19.60D12'
+[  40.747] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  40.747] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.62H 19.60D12.2V 0.06C  0.72P#
+[  40.747] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  40.747] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.62H 19.60D12.2V 0.06C  0.72P#'
+[  40.747] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.62' dewpoint=' 19.60' V='12.2' A='0.06' W='0.72'
+[  42.049] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  42.066] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.62H 19.60D12'
+[  42.077] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  42.077] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.62H 19.60D12.2V 0.06C  0.72P#
+[  43.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  43.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.61D12'
+[  43.748] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  43.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.61D12.2V 0.04C  0.50P#
+[  43.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  43.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.64H 19.61D12.2V 0.04C  0.50P#'
+[  43.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.64' dewpoint=' 19.61' V='12.2' A='0.04' W='0.50'
+[  44.049] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  44.066] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.61D12'
+[  44.077] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  44.077] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.61D12.2V 0.04C  0.50P#
+[  46.049] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  46.066] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.61D12'
+[  46.077] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  46.077] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.61D12.2V 0.04C  0.50P#
+[  46.719] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  46.736] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.10T 71.65H 19.62D12'
+[  46.747] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  46.747] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.10T 71.65H 19.62D12.2V 0.01C  0.14P#
+[  46.747] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  46.747] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.10T 71.65H 19.62D12.2V 0.01C  0.14P#'
+[  46.747] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.10' humidity=' 71.65' dewpoint=' 19.62' V='12.2' A='0.01' W='0.14'
+[  48.050] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  48.066] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.10T 71.65H 19.62D12'
+[  48.077] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  48.077] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.10T 71.65H 19.62D12.2V 0.01C  0.14P#
+[  49.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  49.736] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.61H 19.59D12'
+[  49.747] [step 4 AHT20 back, both attached] rx b'.2V 0.05C  0.62P#'
+[  49.747] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.61H 19.59D12.2V 0.05C  0.62P#
+[  49.747] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  49.747] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.08T 71.61H 19.59D12.2V 0.05C  0.62P#'
+[  49.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.08' humidity=' 71.61' dewpoint=' 19.59' V='12.2' A='0.05' W='0.62'
+[  50.050] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  50.067] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.61H 19.59D12'
+[  50.077] [step 4 AHT20 back, both attached] rx b'.2V 0.05C  0.62P#'
+[  50.077] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.61H 19.59D12.2V 0.05C  0.62P#
+[  52.050] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  52.067] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.61H 19.59D12'
+[  52.078] [step 4 AHT20 back, both attached] rx b'.2V 0.05C  0.62P#'
+[  52.078] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.61H 19.59D12.2V 0.05C  0.62P#
+[  52.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  52.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.65H 19.60D12'
+[  52.748] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  52.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.65H 19.60D12.2V 0.07C  0.86P#
+[  52.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  52.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.08T 71.65H 19.60D12.2V 0.07C  0.86P#'
+[  52.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.08' humidity=' 71.65' dewpoint=' 19.60' V='12.2' A='0.07' W='0.86'
+[  54.050] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  54.067] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.65H 19.60D12'
+[  54.078] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  54.078] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.65H 19.60D12.2V 0.07C  0.86P#
+[  55.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  55.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.68H 19.61D12'
+[  55.748] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  55.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.68H 19.61D12.2V 0.01C  0.14P#
+[  55.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  55.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.68H 19.61D12.2V 0.01C  0.14P#'
+[  55.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.68' dewpoint=' 19.61' V='12.2' A='0.01' W='0.14'
+[  56.051] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  56.067] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.68H 19.61D12'
+[  56.078] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  56.078] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.68H 19.61D12.2V 0.01C  0.14P#
+[  58.051] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  58.068] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.68H 19.61D12'
+[  58.079] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[  58.079] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.68H 19.61D12.2V 0.01C  0.14P#
+[  58.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  58.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.64H 19.58D12'
+[  58.748] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  58.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.64H 19.58D12.2V 0.04C  0.50P#
+[  58.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  58.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.64H 19.58D12.2V 0.04C  0.50P#'
+[  58.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.64' dewpoint=' 19.58' V='12.2' A='0.04' W='0.50'
+[  60.051] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  60.068] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.64H 19.58D12'
+[  60.079] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  60.079] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.64H 19.58D12.2V 0.04C  0.50P#
+[  61.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  61.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  61.748] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  61.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.07C  0.86P#
+[  61.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  61.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.67H 19.59D12.2V 0.07C  0.86P#'
+[  61.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.67' dewpoint=' 19.59' V='12.2' A='0.07' W='0.86'
+[  62.051] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  62.068] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  62.079] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  62.079] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.07C  0.86P#
+[  64.052] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  64.068] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  64.079] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  64.079] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.07C  0.86P#
+[  64.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  64.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.67H 19.61D12'
+[  64.748] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  64.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.67H 19.61D12.2V 0.06C  0.72P#
+[  64.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  64.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.67H 19.61D12.2V 0.06C  0.72P#'
+[  64.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.67' dewpoint=' 19.61' V='12.2' A='0.06' W='0.72'
+[  66.052] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  66.069] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.67H 19.61D12'
+[  66.080] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  66.080] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.67H 19.61D12.2V 0.06C  0.72P#
+[  67.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  67.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.60D12'
+[  67.748] [step 4 AHT20 back, both attached] rx b'.2V 0.08C  0.98P#'
+[  67.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.60D12.2V 0.08C  0.98P#
+[  67.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  67.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.64H 19.60D12.2V 0.08C  0.98P#'
+[  67.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.64' dewpoint=' 19.60' V='12.2' A='0.08' W='0.98'
+[  68.052] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  68.069] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.60D12'
+[  68.080] [step 4 AHT20 back, both attached] rx b'.2V 0.08C  0.98P#'
+[  68.080] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.60D12.2V 0.08C  0.98P#
+[  70.052] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  70.069] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.64H 19.60D12'
+[  70.080] [step 4 AHT20 back, both attached] rx b'.2V 0.08C  0.98P#'
+[  70.080] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.64H 19.60D12.2V 0.08C  0.98P#
+[  70.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  70.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.67H 19.60D12'
+[  70.748] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  70.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.67H 19.60D12.2V 0.04C  0.50P#
+[  70.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  70.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.08T 71.67H 19.60D12.2V 0.04C  0.50P#'
+[  70.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.08' humidity=' 71.67' dewpoint=' 19.60' V='12.2' A='0.04' W='0.50'
+[  72.053] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  72.069] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.08T 71.67H 19.60D12'
+[  72.080] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  72.080] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.08T 71.67H 19.60D12.2V 0.04C  0.50P#
+[  73.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  73.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.62H 19.60D12'
+[  73.748] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  73.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.62H 19.60D12.2V 0.07C  0.86P#
+[  73.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  73.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.62H 19.60D12.2V 0.07C  0.86P#'
+[  73.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.62' dewpoint=' 19.60' V='12.2' A='0.07' W='0.86'
+[  74.053] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  74.069] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.62H 19.60D12'
+[  74.080] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  74.080] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.62H 19.60D12.2V 0.07C  0.86P#
+[  76.053] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  76.070] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.62H 19.60D12'
+[  76.081] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  76.081] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.62H 19.60D12.2V 0.07C  0.86P#
+[  76.720] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  76.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.66H 19.61D12'
+[  76.748] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  76.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.66H 19.61D12.2V 0.04C  0.50P#
+[  76.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  76.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.66H 19.61D12.2V 0.04C  0.50P#'
+[  76.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.66' dewpoint=' 19.61' V='12.2' A='0.04' W='0.50'
+[  78.053] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  78.070] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.66H 19.61D12'
+[  78.081] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  78.081] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.66H 19.61D12.2V 0.04C  0.50P#
+[  79.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  79.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.63H 19.59D12'
+[  79.748] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  79.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.63H 19.59D12.2V 0.07C  0.86P#
+[  79.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  79.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.63H 19.59D12.2V 0.07C  0.86P#'
+[  79.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.63' dewpoint=' 19.59' V='12.2' A='0.07' W='0.86'
+[  80.054] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  80.070] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.63H 19.59D12'
+[  80.081] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  80.081] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.63H 19.59D12.2V 0.07C  0.86P#
+[  82.054] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  82.071] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.63H 19.59D12'
+[  82.082] [step 4 AHT20 back, both attached] rx b'.2V 0.07C  0.86P#'
+[  82.082] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.63H 19.59D12.2V 0.07C  0.86P#
+[  82.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  82.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  82.749] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  82.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#
+[  82.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  82.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#'
+[  82.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.67' dewpoint=' 19.59' V='12.2' A='0.06' W='0.72'
+[  84.054] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  84.071] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  84.082] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  84.082] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#
+[  85.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  85.737] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.08T 71.62H 19.59D12'
+[  85.748] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  85.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.08T 71.62H 19.59D12.2V 0.06C  0.72P#
+[  85.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  85.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.08T 71.62H 19.59D12.2V 0.06C  0.72P#'
+[  85.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.08' humidity=' 71.62' dewpoint=' 19.59' V='12.2' A='0.06' W='0.72'
+[  86.054] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  86.071] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.08T 71.62H 19.59D12'
+[  86.082] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  86.082] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.08T 71.62H 19.59D12.2V 0.06C  0.72P#
+[  88.055] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  88.071] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.08T 71.62H 19.59D12'
+[  88.082] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  88.082] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.08T 71.62H 19.59D12.2V 0.06C  0.72P#
+[  88.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  88.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.63H 19.60D12'
+[  88.748] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  88.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.63H 19.60D12.2V 0.04C  0.50P#
+[  88.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  88.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.09T 71.63H 19.60D12.2V 0.04C  0.50P#'
+[  88.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.09' humidity=' 71.63' dewpoint=' 19.60' V='12.2' A='0.04' W='0.50'
+[  90.055] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  90.071] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.09T 71.63H 19.60D12'
+[  90.082] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[  90.083] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.09T 71.63H 19.60D12.2V 0.04C  0.50P#
+[  91.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  91.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.61H 19.58D12'
+[  91.749] [step 4 AHT20 back, both attached] rx b'.2V 0.02C  0.22P#'
+[  91.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.61H 19.58D12.2V 0.02C  0.22P#
+[  91.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  91.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.61H 19.58D12.2V 0.02C  0.22P#'
+[  91.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.61' dewpoint=' 19.58' V='12.2' A='0.02' W='0.22'
+[  92.055] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  92.072] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.61H 19.58D12'
+[  92.083] [step 4 AHT20 back, both attached] rx b'.2V 0.02C  0.22P#'
+[  92.083] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.61H 19.58D12.2V 0.02C  0.22P#
+[  94.055] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  94.072] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.61H 19.58D12'
+[  94.083] [step 4 AHT20 back, both attached] rx b'.2V 0.02C  0.22P#'
+[  94.083] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.61H 19.58D12.2V 0.02C  0.22P#
+[  94.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  94.737] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.60H 19.57D12'
+[  94.748] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[  94.748] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.60H 19.57D12.2V 0.03C  0.36P#
+[  94.748] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  94.748] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.60H 19.57D12.2V 0.03C  0.36P#'
+[  94.748] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.60' dewpoint=' 19.57' V='12.2' A='0.03' W='0.36'
+[  96.056] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  96.072] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.60H 19.57D12'
+[  96.083] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[  96.083] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.60H 19.57D12.2V 0.03C  0.36P#
+[  97.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  97.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  97.749] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  97.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#
+[  97.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[  97.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#'
+[  97.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.67' dewpoint=' 19.59' V='12.2' A='0.06' W='0.72'
+[  98.056] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  98.072] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[  98.083] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[  98.083] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#
+[ 100.056] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 100.073] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.67H 19.59D12'
+[ 100.084] [step 4 AHT20 back, both attached] rx b'.2V 0.06C  0.72P#'
+[ 100.084] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.67H 19.59D12.2V 0.06C  0.72P#
+[ 100.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 100.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.64H 19.59D12'
+[ 100.749] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[ 100.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.64H 19.59D12.2V 0.01C  0.14P#
+[ 100.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 100.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.07T 71.64H 19.59D12.2V 0.01C  0.14P#'
+[ 100.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.07' humidity=' 71.64' dewpoint=' 19.59' V='12.2' A='0.01' W='0.14'
+[ 102.056] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 102.073] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.07T 71.64H 19.59D12'
+[ 102.084] [step 4 AHT20 back, both attached] rx b'.2V 0.01C  0.14P#'
+[ 102.084] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.07T 71.64H 19.59D12.2V 0.01C  0.14P#
+[ 103.722] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 103.738] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.07T 71.63H 19.59D12'
+[ 103.749] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[ 103.750] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.07T 71.63H 19.59D12.2V 0.03C  0.36P#
+[ 103.750] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 103.750] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.07T 71.63H 19.59D12.2V 0.03C  0.36P#'
+[ 103.750] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.07' humidity=' 71.63' dewpoint=' 19.59' V='12.2' A='0.03' W='0.36'
+[ 104.057] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 104.073] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.07T 71.63H 19.59D12'
+[ 104.084] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[ 104.084] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.07T 71.63H 19.59D12.2V 0.03C  0.36P#
+[ 106.057] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 106.074] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.07T 71.63H 19.59D12'
+[ 106.085] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[ 106.085] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.07T 71.63H 19.59D12.2V 0.03C  0.36P#
+[ 106.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 106.738] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.06T 71.64H 19.57D12'
+[ 106.749] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[ 106.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.06T 71.64H 19.57D12.2V 0.03C  0.36P#
+[ 106.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 106.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.38S 25.06T 71.64H 19.57D12.2V 0.03C  0.36P#'
+[ 106.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.38' ambient=' 25.06' humidity=' 71.64' dewpoint=' 19.57' V='12.2' A='0.03' W='0.36'
+[ 108.057] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 108.074] [step 4 AHT20 back, both attached] rx b'0C 24.38S 25.06T 71.64H 19.57D12'
+[ 108.085] [step 4 AHT20 back, both attached] rx b'.2V 0.03C  0.36P#'
+[ 108.085] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.38S 25.06T 71.64H 19.57D12.2V 0.03C  0.36P#
+[ 109.722] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 109.738] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 109.749] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 109.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 109.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 109.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#'
+[ 109.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.06' humidity=' 71.61' dewpoint=' 19.57' V='12.2' A='0.04' W='0.50'
+[ 110.057] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 110.074] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 110.085] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 110.085] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 112.058] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 112.074] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 112.085] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 112.085] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 112.722] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 112.739] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.05T 71.64H 19.56D12'
+[ 112.750] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 112.750] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.05T 71.64H 19.56D12.2V 0.04C  0.50P#
+[ 112.750] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 112.750] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.05T 71.64H 19.56D12.2V 0.04C  0.50P#'
+[ 112.750] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.05' humidity=' 71.64' dewpoint=' 19.56' V='12.2' A='0.04' W='0.50'
+[ 114.058] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 114.074] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.05T 71.64H 19.56D12'
+[ 114.085] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 114.085] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.05T 71.64H 19.56D12.2V 0.04C  0.50P#
+[ 115.721] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 115.738] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 115.749] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 115.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 115.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 115.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#'
+[ 115.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.06' humidity=' 71.61' dewpoint=' 19.57' V='12.2' A='0.04' W='0.50'
+[ 116.058] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 116.075] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 116.086] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 116.086] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 118.058] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 118.075] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.61H 19.57D12'
+[ 118.086] [step 4 AHT20 back, both attached] rx b'.2V 0.04C  0.50P#'
+[ 118.086] [step 4 AHT20 back, both attached] FRAME (unchanged) *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.61H 19.57D12.2V 0.04C  0.50P#
+[ 118.722] [step 4 AHT20 back, both attached] rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[ 118.738] [step 4 AHT20 back, both attached] rx b'0C 24.31S 25.06T 71.65H 19.58D12'
+[ 118.749] [step 4 AHT20 back, both attached] rx b'.2V 0.05C  0.62P#'
+[ 118.749] [step 4 AHT20 back, both attached] FRAME *G1111D111111U1A1T1A1M1B1M100C100C 24.31S 25.06T 71.65H 19.58D12.2V 0.05C  0.62P#
+[ 118.749] [step 4 AHT20 back, both attached]   DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100
+[ 118.749] [step 4 AHT20 back, both attached]   sensor+electrical remainder: ' 24.31S 25.06T 71.65H 19.58D12.2V 0.05C  0.62P#'
+[ 118.749] [step 4 AHT20 back, both attached]   driver shape OK: lens=' 24.31' ambient=' 25.06' humidity=' 71.65' dewpoint=' 19.58' V='12.2' A='0.05' W='0.62'
+[ 120.038] [step 4 AHT20 back, both attached] closed
+probe complete

@@ -61,8 +61,7 @@ pub mod switches;
 
 pub use codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
 pub use config::{
-    load_config, AlpacaServerConfig, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig,
-    SwitchConfig,
+    AlpacaServerConfig, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig, SwitchConfig,
 };
 pub use error::{PpbaError, Result};
 pub use manager::{CachedState, PpbaManager};

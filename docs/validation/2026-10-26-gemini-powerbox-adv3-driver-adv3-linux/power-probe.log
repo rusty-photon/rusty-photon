@@ -1,0 +1,195 @@
+
+===== phase before, 2026-10-28T00:11:26Z =====
+[   0.014] opened /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -> /dev/ttyUSB0
+[   0.027] silence rx b'0C 24.38S 25.02T 71.68H 19.55D12'
+[   0.038] silence rx b'.2V 0.05C  0.62P#'
+
+----- baseline >G#
+[   1.014] tx '>G#\n'
+[   1.036] baseline rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   1.052] baseline rx b'0C 24.38S 25.02T 71.68H 19.55D12'
+[   1.063] baseline rx b'.2V 0.05C  0.62P#'
+[   1.063] baseline FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.38 amb=25.02 hum=71.68 dew=19.55 12.2V 0.05A 0.62W
+[   3.010] baseline rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   3.026] baseline rx b'0C 24.31S 25.02T 71.67H 19.54D12'
+[   3.037] baseline rx b'.2V 0.03C  0.36P#'
+[   3.037] baseline FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.31 amb=25.02 hum=71.67 dew=19.54 12.2V 0.03A 0.36W
+
+----- set DC3 off
+[   3.515] tx '>C3#\n>G#\n'
+[   3.611] set rx b'*G1011D111111U1A1T1A1M1B1M100C10'
+[   3.627] set rx b'0C 24.31S 25.02T 71.67H 19.54D12'
+[   3.638] set rx b'.2V 0.03C  0.36P#'
+[   3.638] set FRAME DC=1011 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.31 amb=25.02 hum=71.67 dew=19.54 12.2V 0.03A 0.36W
+[   6.010] set rx b'*G1011D111111U1A1T1A1M1B1M100C10'
+
+----- set USB-A off
+[   6.015] tx '>C6#\n>G#\n'
+[   6.027] set rx b'0C 24.31S 24.99T 71.72H 19.53D12'
+[   6.038] set rx b'.2V 0.02C  0.22P#'
+[   6.038] set FRAME DC=1011 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.31 amb=24.99 hum=71.72 dew=19.53 12.2V 0.02A 0.22W
+[   6.111] set rx b'*G1011D011111U1A1T1A1M1B1M100C10'
+[   6.127] set rx b'0C 24.31S 24.99T 71.72H 19.53D12'
+[   6.138] set rx b'.2V 0.02C  0.22P#'
+[   6.138] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.31 amb=24.99 hum=71.72 dew=19.53 12.2V 0.02A 0.22W
+
+----- set DEW6 duty 50
+[   8.515] tx '>X50#\n>G#\n'
+[   8.612] set rx b'*G1011D011111U1A1T1A1M1B1M50C100'
+[   8.628] set rx b'C 24.31S 24.99T 71.72H 19.53D12.'
+[   8.639] set rx b'2V 0.02C  0.22P#'
+[   8.639] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=24.99 hum=71.72 dew=19.53 12.2V 0.02A 0.22W
+[   9.011] set rx b'*G1011D011111U1A1T1A1M1B1M50C100'
+[   9.027] set rx b'C 24.31S 25.01T 71.65H 19.53D12.'
+[   9.038] set rx b'2V 0.02C  0.22P#'
+[   9.038] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.01 hum=71.65 dew=19.53 12.2V 0.02A 0.22W
+
+----- set DEW6 mode Switch
+[  11.015] tx '>M12#\n>G#\n'
+[  11.112] set rx b'*G1011D011111U1A1T1A2M1B1M50C100'
+[  11.129] set rx b'C 24.31S 25.01T 71.65H 19.53D12.'
+[  11.139] set rx b'2V 0.02C  0.22P#'
+[  11.139] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=1 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.01 hum=71.65 dew=19.53 12.2V 0.02A 0.22W
+[  12.010] set rx b'*G1011D011111U1A1T1A2M1B1M50C100'
+[  12.027] set rx b'C 24.31S 25.00T 71.72H 19.54D12.'
+[  12.037] set rx b'2V 0.05C  0.62P#'
+[  12.037] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=1 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.00 hum=71.72 dew=19.54 12.2V 0.05A 0.62W
+
+----- set DEW6 disabled
+[  13.516] tx '>Z10#\n>G#\n'
+[  13.612] set rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[  13.629] set rx b'C 24.31S 25.00T 71.72H 19.54D12.'
+[  13.639] set rx b'2V 0.05C  0.62P#'
+[  13.639] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.00 hum=71.72 dew=19.54 12.2V 0.05A 0.62W
+[  15.010] set rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[  15.027] set rx b'C 24.31S 25.00T 71.73H 19.54D12.'
+[  15.037] set rx b'2V 0.04C  0.50P#'
+[  15.037] set FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.00 hum=71.73 dew=19.54 12.2V 0.04A 0.50W
+
+----- state before the cut >G#
+[  16.016] tx '>G#\n'
+[  16.037] state rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[  16.054] state rx b'C 24.31S 25.00T 71.73H 19.54D12.'
+[  16.064] state rx b'2V 0.04C  0.50P#'
+[  16.064] state FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.00 hum=71.73 dew=19.54 12.2V 0.04A 0.50W
+[  18.011] state rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[  18.027] state rx b'C 24.31S 25.00T 71.70H 19.53D12.'
+[  18.038] state rx b'2V 0.05C  0.62P#'
+[  18.038] state FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.31 amb=25.00 hum=71.70 dew=19.53 12.2V 0.05A 0.62W
+[  18.517] closed
+
+before complete
+
+===== phase after, 2026-10-28T00:12:05Z =====
+[   0.000] waiting for the power cut
+[  75.439] port gone: the hub is off
+[  90.648] port present: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -> /dev/ttyUSB0
+[  91.670] opened /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -> /dev/ttyUSB0
+
+----- the hub's own output after power-up (12 s, nothing sent)
+
+----- identity >H#
+[ 103.670] tx '>H#\n'
+[ 103.788] identity rx b'*HGeminiPowerBoxPlusAdv3#'
+[ 103.788] identity SPAN *HGeminiPowerBoxPlusAdv3#
+
+----- firmware >V#
+[ 106.171] tx '>V#\n'
+[ 106.278] firmware rx b'*V308#'
+[ 106.278] firmware SPAN *V308#
+
+----- state after the cut >G#
+[ 108.671] tx '>G#\n'
+[ 108.692] state rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[ 108.708] state rx b'C 24.38S 24.86T 72.14H 19.49D12.'
+[ 108.719] state rx b'2V 0.02C  0.22P#'
+[ 108.719] state FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.86 hum=72.14 dew=19.49 12.2V 0.02A 0.22W
+[ 110.687] state rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[ 110.703] state rx b'C 24.38S 24.85T 72.13H 19.48D12.'
+[ 110.714] state rx b'2V 0.02C  0.22P#'
+[ 110.714] state FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.85 hum=72.13 dew=19.48 12.2V 0.02A 0.22W
+
+----- second >G#
+[ 111.171] tx '>G#\n'
+[ 111.192] second rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[ 111.209] second rx b'C 24.38S 24.85T 72.13H 19.48D12.'
+[ 111.219] second rx b'2V 0.02C  0.22P#'
+[ 111.219] second FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.85 hum=72.13 dew=19.48 12.2V 0.02A 0.22W
+[ 113.672] closed
+
+after complete
+
+===== phase restore, 2026-10-28T00:14:20Z =====
+[   0.014] opened /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -> /dev/ttyUSB0
+
+----- before restore >G#
+[   0.014] tx '>G#\n'
+[   0.035] before rx b'*G1011D011111U1A1T0A2M1B1M50C100'
+[   0.051] before rx b'C 24.44S 24.83T 72.15H 19.47D12.'
+[   0.062] before rx b'2V 0.01C  0.14P#'
+[   0.062] before FRAME DC=1011 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.83 hum=72.15 dew=19.47 12.2V 0.01A 0.14W
+
+----- restore DC3 on
+[   2.514] tx '>O3#\n>G#\n'
+[   2.610] restore rx b'*G1111D011111U1A1T0A2M1B1M50C100'
+[   2.627] restore rx b'C 24.44S 24.83T 72.15H 19.47D12.'
+[   2.637] restore rx b'2V 0.01C  0.14P#'
+[   2.637] restore FRAME DC=1111 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.83 hum=72.15 dew=19.47 12.2V 0.01A 0.14W
+[   2.965] restore rx b'*G1111D011111U1A1T0A2M1B1M50C100'
+[   2.981] restore rx b'C 24.44S 24.84T 72.13H 19.48D12.'
+[   2.992] restore rx b'2V 0.01C  0.14P#'
+[   2.992] restore FRAME DC=1111 USB=011111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.84 hum=72.13 dew=19.48 12.2V 0.01A 0.14W
+
+----- restore USB-A on
+[   5.014] tx '>O6#\n>G#\n'
+[   5.110] restore rx b'*G1111D111111U1A1T0A2M1B1M50C100'
+[   5.127] restore rx b'C 24.44S 24.84T 72.13H 19.48D12.'
+[   5.137] restore rx b'2V 0.01C  0.14P#'
+[   5.137] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.84 hum=72.13 dew=19.48 12.2V 0.01A 0.14W
+[   5.964] restore rx b'*G1111D111111U1A1T0A2M1B1M50C100'
+[   5.980] restore rx b'C 24.44S 24.83T 72.15H 19.47D12.'
+[   5.991] restore rx b'2V 0.02C  0.22P#'
+[   5.991] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=0 mode=2 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.83 hum=72.15 dew=19.47 12.2V 0.02A 0.22W
+
+----- restore DEW6 mode Manual
+[   7.514] tx '>M11#\n>G#\n'
+[   7.611] restore rx b'*G1111D111111U1A1T0A1M1B1M50C100'
+[   7.627] restore rx b'C 24.44S 24.83T 72.15H 19.47D12.'
+[   7.638] restore rx b'2V 0.02C  0.22P#'
+[   7.638] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=0 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.44 amb=24.83 hum=72.15 dew=19.47 12.2V 0.02A 0.22W
+[   8.964] restore rx b'*G1111D111111U1A1T0A1M1B1M50C100'
+[   8.981] restore rx b'C 24.38S 24.83T 72.14H 19.46D12.'
+[   8.991] restore rx b'2V 0.03C  0.36P#'
+[   8.991] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=0 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.83 hum=72.14 dew=19.46 12.2V 0.03A 0.36W
+
+----- restore DEW6 enabled
+[  10.014] tx '>Z11#\n>G#\n'
+[  10.111] restore rx b'*G1111D111111U1A1T1A1M1B1M50C100'
+[  10.128] restore rx b'C 24.38S 24.83T 72.14H 19.46D12.'
+[  10.138] restore rx b'2V 0.03C  0.36P#'
+[  10.138] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.83 hum=72.14 dew=19.46 12.2V 0.03A 0.36W
+[  11.965] restore rx b'*G1111D111111U1A1T1A1M1B1M50C100'
+[  11.981] restore rx b'C 24.38S 24.82T 72.15H 19.46D12.'
+[  11.991] restore rx b'2V 0.03C  0.36P#'
+[  11.991] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=50 duty7=100 lens=24.38 amb=24.82 hum=72.15 dew=19.46 12.2V 0.03A 0.36W
+
+----- restore DEW6 duty 100
+[  12.514] tx '>X100#\n>G#\n'
+[  12.612] restore rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  12.628] restore rx b'0C 24.38S 24.82T 72.15H 19.46D12'
+[  12.639] restore rx b'.2V 0.03C  0.36P#'
+[  12.639] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.38 amb=24.82 hum=72.15 dew=19.46 12.2V 0.03A 0.36W
+[  14.964] restore rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  14.981] restore rx b'0C 24.38S 24.83T 72.14H 19.46D12'
+[  14.991] restore rx b'.2V 0.05C  0.62P#'
+[  14.991] restore FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.38 amb=24.83 hum=72.14 dew=19.46 12.2V 0.05A 0.62W
+
+----- final >G#
+[  15.015] tx '>G#\n'
+[  15.036] final rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  15.052] final rx b'0C 24.38S 24.83T 72.14H 19.46D12'
+[  15.063] final rx b'.2V 0.05C  0.62P#'
+[  15.063] final FRAME DC=1111 USB=111111 AHT20=1 DS18B20=1 DEW6en=1 mode=1 DEW7en=1 mode=1 duty6=100 duty7=100 lens=24.38 amb=24.83 hum=72.14 dew=19.46 12.2V 0.05A 0.62W
+[  17.515] closed
+
+restore complete

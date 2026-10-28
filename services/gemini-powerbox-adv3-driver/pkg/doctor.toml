@@ -1,0 +1,18 @@
+# Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
+# This service's own unit tests assert these values match its config defaults.
+class = "alpaca"
+port = 11132
+
+# Hardware identity (docs/services/doctor.md §Hardware).
+# The hub's control channel is a QinHeng CH340 USB-serial bridge whose stock
+# descriptor reads "USB Serial" with no serial number — it names the chip,
+# not the instrument, the same situation as qhy-focuser's GD32-CDC_ACM. So no
+# usb_model: the check means "a CH340 is on the bus", and the >H# handshake
+# is what tells a Gemini hub from any other CH340 device. Transcribed from
+# the dev box's bus on 2026-10-26.
+# See docs/services/gemini-powerbox-adv3-driver.md §Device identity.
+serial_pointer = "/serial/port"
+serial_default_unix = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+serial_default_windows = "COM3"
+usb_vendor = "1a86"
+usb_product = "7523"

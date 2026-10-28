@@ -31,6 +31,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`) |
 | [planetarium-bridge](services/planetarium-bridge) | ASCOM Telescope (virtual) | 11126 | Virtual target-entry telescope for planetarium apps (SkySafari etc.): Align imports the selection as a paused rp target; never touches hardware |
 | [upbv2-driver](services/upbv2-driver) | ASCOM Switch + ObservingConditions | 11127 | Driver for Pegasus Astro Ultimate Powerbox v2: four 12V outputs, three dew channels, six USB ports, a 3-12V variable output, and per-channel current and overcurrent telemetry |
+| [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver) | ASCOM Switch + ObservingConditions | 11132 | Driver for the Gemini Astro Power & Data Hubs Advanced 3: four switched 12V outputs plus the always-on rail, six USB ports, two dew channels (duty, enabled, mode), voltage / current / power telemetry, and the AHT20 and DS18B20 sensors |
 | [doctor](services/doctor) | Install diagnosis CLI | — | Read-only diagnosis of a multi-service install: config parsing, port collisions, cross-service wiring, unit and privilege gaps (ADR-016) |
 
 ### RP (Main Application)
@@ -259,6 +260,7 @@ rusty-photon/
     filemonitor/           ASCOM SafetyMonitor (file-based)
     ppba-driver/           ASCOM Switch + ObservingConditions (serial)
     upbv2-driver/          ASCOM Switch + ObservingConditions — Pegasus UPBv2 (serial)
+    gemini-powerbox-adv3-driver/  ASCOM Switch + ObservingConditions — Gemini Power & Data Hubs Adv3 (serial)
     qhy-focuser/           ASCOM Focuser (serial)
     dsd-fp2/               ASCOM CoverCalibrator — Deep Sky Dad FP2 (serial)
     pa-falcon-rotator/     ASCOM Rotator + Switch — Pegasus Falcon (serial)

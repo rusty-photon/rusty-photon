@@ -470,6 +470,17 @@ impl<C: Codec> Exchange<C> {
         // request still queueing for the wire, or by one that gave up
         // while it queued.
         let bytes = codec.encode(&cmd);
+        // A device that speaks unasked may have left a frame in the
+        // input buffer; for a command whose reply that frame could pass
+        // for, the codec asks for it to be dropped first. A discard that
+        // fails is a conduit that cannot be read, which is what a failed
+        // read would have said a moment later.
+        if codec.discard_before_send(&cmd) {
+            if let Err(e) = transport.discard_input().await {
+                failures.signal_reconnect();
+                return Err(SessionError::Transport(e));
+            }
+        }
         trace!(
             len = bytes.len(),
             bytes = %DisplayWire(&bytes),
@@ -880,6 +891,139 @@ mod tests {
             timing.round_trip(),
             REPLY_DELAY.saturating_mul(2),
             "the timing ends at the answering frame, not at the skipped one"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // discard_before_send: the input is dropped before the frame goes
+    // out, and only for the commands the codec names.
+    // -----------------------------------------------------------------
+
+    /// What a transport saw, in order: `discard` and `send:<frame>`.
+    #[derive(Default)]
+    struct Journal(std::sync::Mutex<Vec<String>>);
+
+    /// Echoes like [`EchoTransport`] and journals every call.
+    struct JournalledEcho {
+        inner: EchoTransport,
+        journal: Arc<Journal>,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameTransport for JournalledEcho {
+        async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            self.journal
+                .0
+                .lock()
+                .unwrap()
+                .push(format!("send:{}", String::from_utf8_lossy(bytes)));
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            self.inner.recv_frame(buf).await
+        }
+
+        async fn discard_input(&mut self) -> Result<(), TransportError> {
+            self.journal.0.lock().unwrap().push("discard".to_string());
+            Ok(())
+        }
+    }
+
+    /// Identity codec that asks for a discard before any command that
+    /// starts with `poll`.
+    #[derive(Clone)]
+    struct DiscardsBeforePolls;
+
+    impl Codec for DiscardsBeforePolls {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            cmd.clone()
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(bytes.to_vec())
+        }
+
+        fn discard_before_send(&self, cmd: &Self::Command) -> bool {
+            cmd.starts_with(b"poll")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_the_codec_flags_is_preceded_by_a_discard_and_one_it_does_not_is_not() {
+        let journal = Arc::new(Journal::default());
+        let conn = Connection::new(
+            Box::new(JournalledEcho {
+                inner: EchoTransport(None),
+                journal: Arc::clone(&journal),
+            }),
+            DiscardsBeforePolls,
+        );
+
+        conn.request(b"identify".to_vec()).await.unwrap();
+        conn.request(b"poll".to_vec()).await.unwrap();
+
+        assert_eq!(
+            *journal.0.lock().unwrap(),
+            ["send:identify", "discard", "send:poll"],
+            "the discard comes right before the flagged command's frame, and only there"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_codec_never_asks_for_a_discard() {
+        // Every codec that predates the hook keeps its behaviour: the
+        // default answers false for every command.
+        let journal = Arc::new(Journal::default());
+        let conn = Connection::new(
+            Box::new(JournalledEcho {
+                inner: EchoTransport(None),
+                journal: Arc::clone(&journal),
+            }),
+            StubCodec::<true>,
+        );
+
+        conn.request(b"poll".to_vec()).await.unwrap();
+
+        assert_eq!(*journal.0.lock().unwrap(), ["send:poll"]);
+    }
+
+    /// Fails the discard, as a conduit that has gone away would.
+    struct DiscardFails;
+
+    #[async_trait::async_trait]
+    impl FrameTransport for DiscardFails {
+        async fn send_frame(&mut self, _bytes: &[u8]) -> Result<(), TransportError> {
+            panic!("the frame must not go out after a failed discard");
+        }
+
+        async fn recv_frame(&mut self, _buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            panic!("nothing is read after a failed discard");
+        }
+
+        async fn discard_input(&mut self) -> Result<(), TransportError> {
+            Err(TransportError::Io(io::Error::other("port gone")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_discard_fails_the_request_as_a_wire_failure_before_anything_is_sent() {
+        let conn = Connection::new(Box::new(DiscardFails), DiscardsBeforePolls);
+
+        let err = conn.request(b"poll".to_vec()).await.unwrap_err();
+
+        assert!(
+            matches!(err, SessionError::Transport(TransportError::Io(_))),
+            "got {err:?}"
+        );
+        assert_eq!(
+            conn.wire_failures(),
+            1,
+            "a conduit that cannot be drained is one the command never reached"
         );
     }
 

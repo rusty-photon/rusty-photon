@@ -38,6 +38,7 @@ _SERVICES = [
     "dsd-fp2",
     "filemonitor",
     "focus-model",
+    "gemini-powerbox-adv3-driver",
     "pa-falcon-rotator",
     "pa-scops-oag",
     "phd2-guider",

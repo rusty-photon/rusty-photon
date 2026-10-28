@@ -48,6 +48,7 @@ doubles as the PHD2 CLI via subcommands.)
 | svbony-camera | 11125 | USB camera; its SDK installed on the target by a helper (below) |
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
+| gemini-powerbox-adv3-driver | 11132 | serial (dialout; deb adds plugdev) |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below); its opt-in camera facade adds 11128 on loopback only ([below](#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
@@ -282,8 +283,8 @@ shipped providers up first. It is ordering only, not a requirement — an
 `rp` config that registers no provider starts either way, and a
 config-gated provider unit with no config file is simply skipped.
 
-**Serial-device drivers** (`ppba-driver`, `upbv2-driver`, `qhy-focuser`,
-`pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`) validate their
+**Serial-device drivers** (`ppba-driver`, `upbv2-driver`, `gemini-powerbox-adv3-driver`,
+`qhy-focuser`, `pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`) validate their
 hardware eagerly at startup and exit if the device is missing — by design,
 so a broken device is never advertised on the network. Until the device is
 attached (and its path matches the config), the unit sits in a
@@ -343,10 +344,10 @@ sudo systemctl reload rusty-photon-<svc>    # reload-capable services
 sudo systemctl restart rusty-photon-<svc>   # the rest
 ```
 
-Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver, qhy-focuser,
-sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
-star-adventurer-gti, qhy-camera, zwo-camera, svbony-camera, zwo-focuser,
-planetarium-bridge. Note that a service's setup page (`/setup`) rewrites
+Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver,
+gemini-powerbox-adv3-driver, qhy-focuser, sky-survey-camera,
+pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera,
+zwo-camera, svbony-camera, zwo-focuser, planetarium-bridge. Note that a service's setup page (`/setup`) rewrites
 its file when a page is saved — hand-edits and page edits share the same
 file.
 

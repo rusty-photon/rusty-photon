@@ -1,0 +1,209 @@
+[   0.022] opened /dev/ttyUSB0
+
+----- baseline >G#
+[   1.022] tx b'>G#\n'
+[   1.043] baseline rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   1.060] baseline rx b'0C 24.38S 25.73T 70.29H 19.91D12'
+[   1.071] baseline rx b'.2V-0.00C  0.00P#'
+[   1.071] baseline FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+[   2.105] baseline rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   2.121] baseline rx b'0C 24.38S 25.72T 70.36H 19.92D12'
+[   2.133] baseline rx b'.2V 0.04C  0.50P#'
+[   2.133] baseline FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+
+----- item1 DC3 off in one buffer
+[   3.522] tx b'>C3#\n>G#\n'
+[   3.618] item1 rx b'*G1011D111111U1A1T1A1M1B1M100C10'
+[   3.635] item1 rx b'0C 24.38S 25.72T 70.36H 19.92D12'
+[   3.646] item1 rx b'.2V 0.04C  0.50P#'
+[   3.646] item1 FRAME DC=1011 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[   5.104] item1 rx b'*G1011D111111U1A1T1A1M1B1M100C10'
+[   5.121] item1 rx b'0C 24.38S 25.71T 70.32H 19.90D12'
+[   5.132] item1 rx b'.2V 0.05C  0.62P#'
+[   5.132] item1 FRAME DC=1011 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item1 DC3 on in one buffer
+[   6.023] tx b'>O3#\n>G#\n'
+[   6.119] item1 rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   6.136] item1 rx b'0C 24.38S 25.71T 70.32H 19.90D12'
+[   6.147] item1 rx b'.2V 0.05C  0.62P#'
+[   6.147] item1 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[   8.105] item1 rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[   8.121] item1 rx b'0C 24.38S 25.73T 70.29H 19.91D12'
+[   8.132] item1 rx b'.2V 0.02C  0.22P#'
+[   8.132] item1 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+
+----- item2 Manual duty 50
+[   8.523] tx b'>X50#\n>G#\n'
+[   8.620] item2 rx b'*G1111D111111U1A1T1A1M1B1M50C100'
+[   8.636] item2 rx b'C 24.38S 25.73T 70.29H 19.91D12.'
+[   8.647] item2 rx b'2V 0.02C  0.22P#'
+[   8.647] item2 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=50 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+
+----- item2 Manual duty 100
+[  11.023] tx b'>X100#\n>G#\n'
+[  11.105] item2 rx b'*G1111D111111U1A1T1A1M1B1M50C100'
+[  11.121] item2 rx b'C 24.38S 25.71T 70.30H 19.90D12.'
+[  11.132] item2 rx b'2V 0.05C  0.62P#'
+[  11.132] item2 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=50 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  11.190] item2 rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  11.206] item2 rx b'0C 24.38S 25.71T 70.30H 19.90D12'
+[  11.217] item2 rx b'.2V 0.05C  0.62P#'
+[  11.217] item2 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 DEW6 Switch mode
+[  13.524] tx b'>M12#\n>G#\n'
+[  13.620] item4 rx b'*G1111D111111U1A1T1A2M1B1M100C10'
+[  13.637] item4 rx b'0C 24.38S 25.71T 70.30H 19.90D12'
+[  13.648] item4 rx b'.2V 0.05C  0.62P#'
+[  13.648] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  14.104] item4 rx b'*G1111D111111U1A1T1A2M1B1M100C10'
+[  14.121] item4 rx b'0C 24.38S 25.71T 70.30H 19.90D12'
+[  14.132] item4 rx b'.2V 0.04C  0.50P#'
+[  14.132] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 Switch: disable
+[  16.024] tx b'>Z10#\n>G#\n'
+[  16.121] item4 rx b'*G1111D111111U1A1T0A2M1B1M100C10'
+[  16.138] item4 rx b'0C 24.38S 25.71T 70.30H 19.90D12'
+[  16.149] item4 rx b'.2V 0.04C  0.50P#'
+[  16.149] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  17.105] item4 rx b'*G1111D111111U1A1T0A2M1B1M100C10'
+[  17.122] item4 rx b'0C 24.44S 25.73T 70.32H 19.92D12'
+[  17.132] item4 rx b'.2V 0.04C  0.50P#'
+[  17.132] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.44 amb=25.73 12.2V
+
+----- item4 Switch: enable
+[  18.524] tx b'>Z11#\n>G#\n'
+[  18.621] item4 rx b'*G1111D111111U1A1T1A2M1B1M100C10'
+[  18.638] item4 rx b'0C 24.44S 25.73T 70.32H 19.92D12'
+[  18.649] item4 rx b'.2V 0.04C  0.50P#'
+[  18.649] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.44 amb=25.73 12.2V
+[  20.105] item4 rx b'*G1111D111111U1A1T1A2M1B1M100C10'
+[  20.122] item4 rx b'0C 24.38S 25.73T 70.31H 19.91D12'
+[  20.133] item4 rx b'.2V 0.08C  0.98P#'
+[  20.133] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=2 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+
+----- item4 DEW6 Auto mode
+[  21.025] tx b'>M10#\n>G#\n'
+[  21.122] item4 rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  21.138] item4 rx b'0C 24.38S 25.73T 70.31H 19.91D12'
+[  21.149] item4 rx b'.2V 0.08C  0.98P#'
+[  21.149] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+[  23.105] item4 rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  23.121] item4 rx b'0C 24.38S 25.71T 70.33H 19.90D12'
+[  23.132] item4 rx b'.2V 0.04C  0.50P#'
+[  23.132] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- stream in Auto (what does field 8 show?)
+[  26.105] auto-stream rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  26.121] auto-stream rx b'0C 24.38S 25.73T 70.31H 19.92D12'
+[  26.133] auto-stream rx b'.2V 0.02C  0.22P#'
+[  26.133] auto-stream FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+[  29.105] auto-stream rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  29.122] auto-stream rx b'0C 24.38S 25.72T 70.30H 19.91D12'
+[  29.133] auto-stream rx b'.2V 0.07C  0.86P#'
+[  29.133] auto-stream FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  32.105] auto-stream rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  32.121] auto-stream rx b'0C 24.38S 25.72T 70.31H 19.90D12'
+[  32.132] auto-stream rx b'.2V 0.02C  0.22P#'
+[  32.132] auto-stream FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+
+----- item4 Auto: disable
+[  33.025] tx b'>Z10#\n>G#\n'
+[  33.122] item4 rx b'*G1111D111111U1A1T0A0M1B1M100C10'
+[  33.139] item4 rx b'0C 24.38S 25.72T 70.31H 19.90D12'
+[  33.150] item4 rx b'.2V 0.02C  0.22P#'
+[  33.150] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  35.105] item4 rx b'*G1111D111111U1A1T0A0M1B1M100C10'
+[  35.122] item4 rx b'0C 24.38S 25.72T 70.32H 19.91D12'
+[  35.133] item4 rx b'.2V 0.03C  0.36P#'
+[  35.133] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  38.106] auto-disabled rx b'*G1111D111111U1A1T0A0M1B1M100C10'
+[  38.122] auto-disabled rx b'0C 24.38S 25.71T 70.28H 19.89D12'
+[  38.133] auto-disabled rx b'.2V 0.03C  0.36P#'
+[  38.133] auto-disabled FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 Auto: enable
+[  39.026] tx b'>Z11#\n>G#\n'
+[  39.123] item4 rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  39.140] item4 rx b'0C 24.38S 25.71T 70.28H 19.89D12'
+[  39.150] item4 rx b'.2V 0.03C  0.36P#'
+[  39.150] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  41.106] item4 rx b'*G1111D111111U1A1T1A0M1B1M100C10'
+[  41.123] item4 rx b'0C 24.38S 25.71T 70.28H 19.89D12'
+[  41.134] item4 rx b'.2V 0.04C  0.50P#'
+[  41.134] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item2 Auto: duty 30
+[  41.527] tx b'>X30#\n>G#\n'
+[  41.624] item2 rx b'*G1111D111111U1A1T1A0M1B1M30C100'
+[  41.640] item2 rx b'C 24.38S 25.71T 70.28H 19.89D12.'
+[  41.651] item2 rx b'2V 0.04C  0.50P#'
+[  41.651] item2 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=30 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  44.106] auto-after-X30 rx b'*G1111D111111U1A1T1A0M1B1M30C100'
+[  44.122] auto-after-X30 rx b'C 24.38S 25.71T 70.31H 19.89D12.'
+[  44.133] auto-after-X30 rx b'2V 0.04C  0.50P#'
+[  44.133] auto-after-X30 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=30 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  47.106] auto-after-X30 rx b'*G1111D111111U1A1T1A0M1B1M0C100C'
+[  47.122] auto-after-X30 rx b' 24.38S 25.71T 70.27H 19.88D12.2'
+[  47.133] auto-after-X30 rx b'V 0.04C  0.50P#'
+[  47.133] auto-after-X30 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=0 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 DEW6 Manual mode
+[  47.528] tx b'>M11#\n>G#\n'
+[  47.625] item4 rx b'*G1111D111111U1A1T1A1M1B1M0C100C'
+[  47.641] item4 rx b' 24.38S 25.71T 70.27H 19.88D12.2'
+[  47.651] item4 rx b'V 0.04C  0.50P#'
+[  47.651] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 Manual: disable (what happens?)
+[  50.028] tx b'>Z10#\n>G#\n'
+[  50.106] item4 rx b'*G1111D111111U1A1T1A1M1B1M0C100C'
+[  50.123] item4 rx b' 24.38S 25.71T 70.31H 19.90D12.2'
+[  50.133] item4 rx b'V 0.03C  0.36P#'
+[  50.133] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  50.190] item4 rx b'*G1111D111111U1A1T0A1M1B1M0C100C'
+[  50.207] item4 rx b' 24.38S 25.71T 70.31H 19.90D12.2'
+[  50.217] item4 rx b'V 0.03C  0.36P#'
+[  50.217] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+[  53.105] manual-disabled rx b'*G1111D111111U1A1T0A1M1B1M0C100C'
+[  53.122] manual-disabled rx b' 24.38S 25.71T 70.26H 19.89D12.2'
+[  53.132] manual-disabled rx b'V 0.02C  0.22P#'
+[  53.132] manual-disabled FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.71 12.2V
+
+----- item4 Manual: enable
+[  56.029] tx b'>Z11#\n>G#\n'
+[  56.106] item4 rx b'*G1111D111111U1A1T0A1M1B1M0C100C'
+[  56.123] item4 rx b' 24.38S 25.72T 70.31H 19.91D12.2'
+[  56.132] item4 rx b'V 0.02C  0.22P#'
+[  56.132] item4 FRAME DC=1111 USB=111111 DEW6en=0 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  56.190] item4 rx b'*G1111D111111U1A1T1A1M1B1M0C100C'
+[  56.206] item4 rx b' 24.38S 25.72T 70.31H 19.91D12.2'
+[  56.216] item4 rx b'V 0.02C  0.22P#'
+[  56.216] item4 FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=0 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+
+----- restore duty 100
+[  58.529] tx b'>X100#\n>G#\n'
+[  58.627] restore rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  58.643] restore rx b'0C 24.38S 25.72T 70.31H 19.91D12'
+[  58.654] restore rx b'.2V 0.02C  0.22P#'
+[  58.654] restore FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  59.106] restore rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  59.123] restore rx b'0C 24.38S 25.72T 70.31H 19.91D12'
+[  59.134] restore rx b'.2V 0.01C  0.14P#'
+[  59.134] restore FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+
+----- final >G#
+[  61.030] tx b'>G#\n'
+[  61.051] final rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  61.068] final rx b'0C 24.38S 25.72T 70.31H 19.91D12'
+[  61.079] final rx b'.2V 0.01C  0.14P#'
+[  61.079] final FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.72 12.2V
+[  62.105] final rx b'*G1111D111111U1A1T1A1M1B1M100C10'
+[  62.122] final rx b'0C 24.38S 25.73T 70.34H 19.92D12'
+[  62.133] final rx b'.2V 0.04C  0.50P#'
+[  62.133] final FRAME DC=1111 USB=111111 DEW6en=1 DEW6mode=1 DEW7en=1 DEW7mode=1 DEW6duty=100 DEW7duty=100 | lens=24.38 amb=25.73 12.2V
+[  63.530] closed
+
+probe complete

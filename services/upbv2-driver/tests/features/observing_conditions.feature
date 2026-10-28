@@ -198,10 +198,10 @@ Feature: Observing Conditions
 
   Scenario: Background polling refreshes the sensor cache
     # The test config sets polling_interval to 200ms. After a 500ms wait
-    # at least two poll cycles must have fired, so the most recent
-    # `last_update` cannot be older than one polling interval. If the
-    # poll loop were dead, time_since_last_update would grow without
-    # bound and this assertion would fail.
+    # at least two poll cycles must have fired, so the newest sample in
+    # the temperature window cannot be older than one polling interval.
+    # If the poll loop were dead, time_since_last_update would grow
+    # without bound and this assertion would fail.
     Given a running UPBv2 server with the OC device connected
     When I wait for the OC data to be available
     And I wait 500 milliseconds

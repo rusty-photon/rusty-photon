@@ -95,4 +95,28 @@ pub trait Codec: Send + Sync + Clone + 'static {
     fn max_skip(&self) -> usize {
         0
     }
+
+    /// Whether the connection discards everything buffered on the input
+    /// side ([`crate::FrameTransport::discard_input`]) right before
+    /// `cmd`'s frame goes out.
+    ///
+    /// Default: `false`, which is right for a device that sends nothing
+    /// unasked. A device that streams frames on its own — the Gemini
+    /// power hub emits its status frame every 3 s once asked — would
+    /// otherwise have a frame that landed *before* the command read as
+    /// the command's reply; after a write, that frame shows the state
+    /// before the write. A codec for such a device answers `true` for
+    /// the commands whose reply the stream could pass for. What can
+    /// still precede the real reply is a frame whose first byte lands
+    /// after the discard. [`Self::matches`] and [`Self::max_skip`] skip
+    /// such a frame only when `matches` can tell it from the reply; a
+    /// readback that is the same kind of frame the stream carries is
+    /// taken as the reply, and it is the codec's caller that must look
+    /// again before believing a readback that does not show its write.
+    /// Measured on the hub, a periodic frame that starts about 65 ms
+    /// after a set went out can still show the state before it.
+    fn discard_before_send(&self, cmd: &Self::Command) -> bool {
+        let _ = cmd;
+        false
+    }
 }

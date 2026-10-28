@@ -23,7 +23,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tokio_serial::SerialPortBuilderExt;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::error::TransportError;
 
@@ -78,6 +78,23 @@ pub trait FrameTransport: Send {
     /// [`UdpFrameTransport`], reads exactly one datagram; the buffer is
     /// resized to the datagram's length.
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError>;
+
+    /// Drop whatever input has arrived on this conduit and not been read,
+    /// so that the next `recv_frame` returns only bytes that land after
+    /// this call.
+    ///
+    /// The connection calls it right before `send_frame` when the codec's
+    /// [`discard_before_send`](crate::Codec::discard_before_send) says so:
+    /// a device that streams frames unasked would otherwise have one that
+    /// arrived before the command answer it. It must return without
+    /// waiting for the device — an empty input is the common case — and
+    /// within the same bound every other operation here honours.
+    ///
+    /// Default: a no-op, right for a request/reply device and for a
+    /// transport whose peer never speaks first.
+    async fn discard_input(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 /// Constructs a fresh [`FrameTransport`] each time the 0→1 connect
@@ -282,7 +299,53 @@ where
             Err(_) => Err(TransportError::Timeout(self.read_timeout)),
         }
     }
+
+    /// Drops the [`BufReader`]'s buffered bytes — which can hold whole
+    /// frames, not only the tail of one, since it fills by the chunk —
+    /// then reads the stream dry without waiting: each read is polled
+    /// once, and the first `Pending` ends it. A frame whose first byte is
+    /// still on the wire is therefore not caught here, and is not meant to
+    /// be; the codec's skip budget is what covers it.
+    ///
+    /// Bounded in bytes as well as in waiting, so a peer that streams
+    /// faster than this loop reads cannot keep it here: after
+    /// [`DISCARD_CHUNKS`] reads of a frame's worth each, the rest is left
+    /// to the skip budget too.
+    async fn discard_input(&mut self) -> Result<(), TransportError> {
+        let buffered = self.stream.buffer().len();
+        self.stream.consume(buffered);
+
+        let mut scratch = vec![0_u8; self.max_frame_size.max(1)];
+        for _ in 0..DISCARD_CHUNKS {
+            let stream = self.stream.get_mut();
+            let drained = std::future::poll_fn(|cx| {
+                let mut read_buf = tokio::io::ReadBuf::new(&mut scratch);
+                match std::pin::Pin::new(&mut *stream).poll_read(cx, &mut read_buf) {
+                    std::task::Poll::Pending => std::task::Poll::Ready(Ok(None)),
+                    std::task::Poll::Ready(Ok(())) => {
+                        std::task::Poll::Ready(Ok(Some(read_buf.filled().len())))
+                    }
+                    std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                }
+            })
+            .await
+            .map_err(|e| classify_io_error(e, self.read_timeout))?;
+            match drained {
+                // Nothing waiting, or the peer has gone: either way there
+                // is nothing more to drop. EOF is left for the next
+                // `recv_frame` to report.
+                None | Some(0) => break,
+                Some(n) => trace!(len = n, "discarded buffered input"),
+            }
+        }
+        Ok(())
+    }
 }
+
+/// How many frame-sized reads [`SerialFrameTransport::discard_input`]
+/// makes before it stops draining: a bound on bytes, since the loop
+/// already never waits.
+const DISCARD_CHUNKS: usize = 16;
 
 /// UDP-datagram frame transport.
 ///
@@ -561,6 +624,111 @@ mod tests {
             buf.len(),
             CAP
         );
+    }
+
+    // ============================================================================
+    // discard_input: what arrived before the call is gone, what arrives
+    // after it is the next frame.
+    // ============================================================================
+
+    #[tokio::test]
+    async fn serial_frame_transport_discard_input_drops_frames_the_reader_has_not_touched() {
+        // The common case on the Gemini hub: a streamed frame sits in the
+        // OS buffer when a request is about to go out.
+        let (mut server, client) = duplex(256);
+        let mut transport = SerialFrameTransport::new(client, b'#', 64);
+        tokio::io::AsyncWriteExt::write_all(&mut server, b"*Gstale#*Gstale too#tail")
+            .await
+            .unwrap();
+
+        transport.discard_input().await.unwrap();
+
+        tokio::io::AsyncWriteExt::write_all(&mut server, b"*Hreply#")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        transport.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(buf, b"*Hreply#");
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_discard_input_drops_a_frame_already_buffered_by_the_reader() {
+        // `BufReader` reads by the chunk, so a whole second frame can be
+        // sitting in its buffer after the first was returned. Dropping only
+        // the OS side would leave it there to answer the next request.
+        let (mut server, client) = duplex(256);
+        let mut transport = SerialFrameTransport::new(client, b'#', 64);
+        tokio::io::AsyncWriteExt::write_all(&mut server, b"*Gone#*Gtwo#")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        transport.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(buf, b"*Gone#");
+        assert!(
+            !transport.stream.buffer().is_empty(),
+            "the second frame must be in the reader's buffer for this test to mean anything"
+        );
+
+        transport.discard_input().await.unwrap();
+
+        tokio::io::AsyncWriteExt::write_all(&mut server, b"*Gthree#")
+            .await
+            .unwrap();
+        transport.recv_frame(&mut buf).await.unwrap();
+        assert_eq!(buf, b"*Gthree#");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn serial_frame_transport_discard_input_does_not_wait_on_a_quiet_line() {
+        // The discard runs before every poll and every write; it must cost
+        // nothing when there is nothing to drop, and must never wait for a
+        // byte that is not coming.
+        let (_server, client) = duplex(64);
+        let mut transport =
+            SerialFrameTransport::new(client, b'#', 32).with_read_timeout(Duration::from_secs(5));
+        let started = tokio::time::Instant::now();
+
+        transport.discard_input().await.unwrap();
+
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_discard_input_leaves_eof_for_the_next_read() {
+        // A closed peer is reported by the read that needs a frame, not by
+        // the discard, which has nothing to drop.
+        let reader = Cursor::new(Vec::<u8>::new());
+        let writer = Vec::<u8>::new();
+        let stream = tokio::io::join(reader, writer);
+        let mut transport = SerialFrameTransport::new(stream, b'#', 32);
+
+        transport.discard_input().await.unwrap();
+
+        let mut buf = Vec::new();
+        let err = transport.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Eof), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_discard_input_is_bounded_under_a_firehose() {
+        // A peer writing faster than the drain reads must not keep the
+        // discard — and the command lock it runs under — busy; past the
+        // bound the rest is the skip budget's.
+        const CAP: usize = 8;
+        let (mut server, client) = duplex(64 * 1024);
+        let mut transport = SerialFrameTransport::new(client, b'#', CAP);
+        tokio::io::AsyncWriteExt::write_all(&mut server, &[b'A'; 4096])
+            .await
+            .unwrap();
+
+        transport.discard_input().await.unwrap();
+
+        // At most DISCARD_CHUNKS reads of CAP bytes were dropped; the rest
+        // is still there, so the next read runs into the frame-size guard
+        // rather than finding the line empty.
+        let mut buf = Vec::new();
+        let err = transport.recv_frame(&mut buf).await.unwrap_err();
+        assert!(matches!(err, TransportError::Framing(_)), "got {err:?}");
     }
 
     #[tokio::test]
