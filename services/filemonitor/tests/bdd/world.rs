@@ -34,6 +34,8 @@ pub struct FilemonitorWorld {
     // Temp file management
     pub temp_dir: Option<TempDir>,
     pub temp_file_path: Option<PathBuf>,
+    /// A second watched file a save can point `file.path` at.
+    pub second_file_path: Option<PathBuf>,
 
     // Result capture
     pub safety_result: Option<bool>,
@@ -58,6 +60,15 @@ pub struct FilemonitorWorld {
 
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+
+    /// The port the service bound at its start, which a reload that moves
+    /// the address leaves behind.
+    pub started_port: Option<u16>,
+    /// A client reading `is_safe` in the background (`reload.feature`).
+    pub reader: Option<crate::steps::reload_steps::Reader>,
+    /// A connection that sent a TLS handshake's first byte and nothing
+    /// more, which the old server waits on through its drain.
+    pub stalled: Option<tokio::net::TcpStream>,
 }
 
 impl SetupPagesWorld for FilemonitorWorld {
@@ -81,12 +92,25 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for FilemonitorWorld {
 
 impl FilemonitorWorld {
     pub fn create_temp_file(&mut self, content: &str) -> PathBuf {
+        let path = self.write_temp_file("monitored.txt", content);
+        self.temp_file_path = Some(path.clone());
+        path
+    }
+
+    /// Write the second watched file, which the scenario's save points
+    /// `file.path` at.
+    pub fn create_second_temp_file(&mut self, content: &str) -> PathBuf {
+        let path = self.write_temp_file("monitored-second.txt", content);
+        self.second_file_path = Some(path.clone());
+        path
+    }
+
+    fn write_temp_file(&mut self, name: &str, content: &str) -> PathBuf {
         let dir = self
             .temp_dir
             .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
-        let path = dir.path().join("monitored.txt");
+        let path = dir.path().join(name);
         std::fs::write(&path, content).expect("failed to write temp file");
-        self.temp_file_path = Some(path.clone());
         path
     }
 
@@ -160,6 +184,7 @@ impl FilemonitorWorld {
             ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
         let monitor = self.acquire_monitor(&handle).await;
         setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
+        self.started_port = Some(handle.port());
         self.monitor = Some(monitor);
         self.filemonitor = Some(handle);
     }
@@ -181,6 +206,7 @@ impl FilemonitorWorld {
         let config_path = bdd_infra::tls_auth::staged_config_path(&self.tls_auth)
             .expect("the TLS fixture staged a config file");
         setup_pages::adopt_tls_auth(&mut self.setup_pages, &self.tls_auth, config_path);
+        self.started_port = Some(handle.port());
         self.filemonitor = Some(handle);
     }
 

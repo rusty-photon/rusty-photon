@@ -111,14 +111,6 @@ Only a monitor that then reads unsafe, or that `rp` can no longer read,
 sets off the transition. A new `file.path` that does not exist does that,
 and so does a changed address, credential or `unique_id` that `rp`'s
 roster entry does not match.
-Designed in [#1652](https://github.com/rusty-photon/rusty-photon/issues/1652), not implemented yet: until it is, the reload
-makes `rp` run the transition whenever a safety poll reads the monitor
-before `rp`'s reconnect supervisor has reconnected it (about five saves
-in six with the defaults), and the gate stays closed until the
-supervisor has reconnected the monitor and the next safety poll reads
-it, up to `equipment.reconnect_interval` plus `safety.poll_interval`
-(40 s with the defaults)
-([setup crate § Reload](../crates/rusty-photon-setup.md#reload)).
 
 | Page | Section | Fields |
 |------|---------|--------|
@@ -146,13 +138,16 @@ is reloading, and fires the in-process reload after the response has
 flushed: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop
 (`run_server_loop`) rebuilds the server from the freshly-persisted file.
-Both the shutdown signal and a save-fired reload drive the *same*
-graceful-shutdown future passed to the running server, so a reload drains
-in-flight requests and closes keep-alive connections before rebinding — a
-client's persistent connection reconnects and observes the new
-configuration rather than continuing to talk to the torn-down server's
-stale in-memory state. A save that changes nothing says so and fires no
-reload.
+The shutdown signal and a reload both stop the running server's
+accepting. On a reload the loop keeps the listener while the address is
+unchanged, builds the new server on it, connects the new device when the
+old one was connected, and serves at once, while the old server finishes
+its connections with the old device and then disconnects it. An old
+connection is closed once its in-flight request is answered, so a
+client's next request reaches the rebuilt server and the new
+configuration, never the old server's in-memory state. On shutdown the
+loop closes the listener and waits for every server's connections to
+finish. A save that changes nothing says so and fires no reload.
 
 ## Operation
 
@@ -176,6 +171,11 @@ The `set_connected()` method controls the monitoring behavior:
 - **When set to `false`**:
   - Stops the background polling task
   - `is_safe()` returns a `NotConnected` error when called
+
+A reload keeps the device connected for its clients: when it was
+connected, the rebuilt device is connected before the rebuilt server
+serves, which re-reads the file as above
+([Setup pages](#setup-pages)).
 
 The polling runs in a background task that periodically reads the file and updates the cached content. This ensures `is_safe()` calls are fast and don't block on file I/O.
 

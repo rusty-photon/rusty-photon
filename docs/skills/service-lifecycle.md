@@ -195,6 +195,16 @@ SCM sends `ParamChange` in Windows service mode. On Windows console
 mode there is no SIGHUP equivalent; `reload.recv()` returns a never-
 resolving future.
 
+A reload like this ends every client's connection to the rebuilt
+devices. A safety monitor keeps its clients instead, because `rp` parks
+on a monitor it cannot read: `filemonitor`'s `run_server_loop` keeps its
+listener while the address is unchanged, serves the rebuilt server on it
+through `rusty-photon-tls`'s `serve_plain_on` / `serve_tls_on` (which
+return once they have stopped accepting, leaving the old connections to
+finish), and connects the rebuilt device when the old one was connected
+([rusty-photon-setup § A reload that keeps its
+clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
+
 ---
 
 ## Windows Service Control Manager mode

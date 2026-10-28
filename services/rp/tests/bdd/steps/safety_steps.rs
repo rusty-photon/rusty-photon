@@ -15,6 +15,8 @@ use cucumber::{given, then, when};
 use serde_json::Value;
 
 use bdd_infra::rp_harness::{MountConfig, OmniSimHandle, SafetyMonitorConfig};
+use bdd_infra::setup_pages;
+use bdd_infra::ServiceHandle;
 
 use crate::steps::cover_calibrator_steps::add_cover_calibrator;
 use crate::steps::focuser_steps::add_focuser;
@@ -39,6 +41,75 @@ async fn safety_monitor_on_simulator(world: &mut RpWorld) {
     // Fast polling so transitions are detected in test time, not the
     // production default (10 s).
     world.safety_poll_interval = Some(Duration::from_millis(250));
+}
+
+/// A real `filemonitor` watching a roof file that reads safe, as rp's
+/// safety monitor: a rusty-photon monitor, whose own reload keeps its
+/// clients (rusty-photon-setup.md § A reload that keeps its clients).
+#[given("a filemonitor safety monitor reading safe")]
+async fn filemonitor_safety_monitor(world: &mut RpWorld) {
+    let dir = tempfile::tempdir().expect("create temp dir for filemonitor");
+    let roof = dir.path().join("RoofStatusFile.txt");
+    std::fs::write(&roof, "Roof CLOSED").expect("write the roof file");
+    let config = serde_json::json!({
+        "device": {
+            "name": "Roof file",
+            "unique_id": "roof-file-001",
+            "description": "The roof status file",
+        },
+        "file": {
+            "path": roof.to_string_lossy(),
+            "polling_interval": "60s",
+        },
+        "parsing": {
+            "rules": [{"type": "contains", "pattern": "CLOSED", "safe": true}],
+            "case_sensitive": false,
+        },
+        "server": {"port": 0, "bind_address": "127.0.0.1"},
+    });
+    let config_path = dir.path().join("filemonitor.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the filemonitor config");
+    let handle =
+        ServiceHandle::start("filemonitor", config_path.to_str().expect("utf-8 path")).await;
+    setup_pages::adopt_plain(
+        &mut world.filemonitor_pages,
+        handle.bound_port(),
+        config_path,
+    );
+    world.safety_monitors.push(SafetyMonitorConfig {
+        id: "roof-file".to_string(),
+        alpaca_url: format!("http://127.0.0.1:{}", handle.port()),
+        device_number: 0,
+    });
+    // Fast polling, so rp reads the monitor many times through a reload.
+    world.safety_poll_interval = Some(Duration::from_millis(250));
+    world.filemonitor = Some(handle);
+    world.filemonitor_dir = Some(dir);
+}
+
+#[when(expr = "filemonitor's server setup page is saved with {string} set to {string}")]
+async fn save_filemonitor_page(world: &mut RpWorld, name: String, value: String) {
+    let pages = &mut world.filemonitor_pages;
+    setup_pages::submit(pages, setup_pages::SERVER_PATH, &[(&name, &value)], None).await;
+    assert_eq!(
+        pages.last_status,
+        Some(200),
+        "filemonitor's save failed:\n{}",
+        pages.last_body
+    );
+}
+
+/// Waits until filemonitor's server page is answered by the server its
+/// reload built.
+#[when("filemonitor's rebuilt server answers its setup page")]
+async fn filemonitor_rebuilt_server_answers(world: &mut RpWorld) {
+    setup_pages::wait_until(
+        &mut world.filemonitor_pages,
+        setup_pages::SERVER_PATH,
+        "a page",
+        |_| true,
+    )
+    .await;
 }
 
 /// The gated set's two shapes on one rig: mount motion and exposed
@@ -168,6 +239,25 @@ async fn safety_status_reports_overall(world: &mut RpWorld, expected: String, se
             "safety status never reported overall {expected:?} within {seconds}s; last: {status}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `get_safety_status` reads `expected` throughout the window, and its
+/// `since` never moves: no transition at all, not even one that turned
+/// back between two reads.
+#[then(expr = "the safety status stays overall {string} for {int} seconds")]
+async fn safety_status_stays_overall(world: &mut RpWorld, expected: String, seconds: u64) {
+    let first = read_safety_status(world).await;
+    assert_eq!(first["overall"], expected, "safety status: {first}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = read_safety_status(world).await;
+        assert_eq!(status["overall"], expected, "safety status: {status}");
+        assert_eq!(
+            status["since"], first["since"],
+            "the overall state changed in the window: {status}"
+        );
     }
 }
 

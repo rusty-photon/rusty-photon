@@ -46,6 +46,12 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // A stalled TLS handshake holds the server that
+                    // accepted it to its 10 s handshake timeout, and
+                    // shutdown waits for every server's connections:
+                    // close it first, or the stop outlasts its 5 s grace
+                    // and the process is killed.
+                    world.stalled = None;
                     if let Some(fm) = world.filemonitor.as_mut() {
                         fm.stop().await;
                     }

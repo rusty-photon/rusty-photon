@@ -177,6 +177,25 @@ Feature: Safety enforcement
       | tool       | arguments                                                                                             |
       | auto_focus | {"camera_id": "main-cam", "focuser_id": "main-focuser", "duration": "100ms", "step_size": 100, "half_width": 2} |
 
+  # A rusty-photon safety monitor's reload keeps its clients
+  # (rusty-photon-setup.md § A reload that keeps its clients): rp polls
+  # the monitor every 250 ms through the rebuild, every poll reads safe,
+  # and nothing of the unsafe transition runs. The two-second window
+  # holds eight polls of the rebuilt monitor.
+  Scenario: A safety monitor's reload sets off no unsafe transition
+    Given a running Alpaca simulator
+    And a filemonitor safety monitor reading safe
+    And a test webhook receiver subscribed to "safety_changed"
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    And the mount is unparked
+    When the safety status reports overall "safe" within 5 seconds
+    And filemonitor's server setup page is saved with "file.polling_interval" set to "30s"
+    And filemonitor's rebuilt server answers its setup page
+    Then the safety status stays overall "safe" for 2 seconds
+    And the test webhook receiver should not have received a "safety_changed" event
+    And the mount should report unparked on the simulator
+
   Scenario: An override naming an unknown tool fails startup
     Given an rp config with a safety gate override gating "no_such_tool"
     When rp attempts to start

@@ -186,11 +186,11 @@ where
 /// acceptor (e.g. one from [`acceptor_from_resolver`]).
 ///
 /// Accepts TCP connections, wraps them with TLS, and serves the router.
-/// When `shutdown` completes it stops accepting, asks every open
-/// connection to finish gracefully — an in-flight request completes, an
-/// idle kept-alive connection closes — and returns only once they have
-/// all ended. That is the drain [`serve_plain`] gets from axum, and like
-/// it the wait has no bound.
+/// When `shutdown` completes it stops accepting, closes the listener, asks
+/// every open connection to finish gracefully — an in-flight request
+/// completes, an idle kept-alive connection closes — and returns only once
+/// they have all ended. That is the drain [`serve_plain`] gets from axum,
+/// and like it the wait has no bound.
 ///
 /// # Errors
 ///
@@ -205,49 +205,172 @@ pub async fn serve_tls_with_acceptor<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    use tokio::pin;
+    let draining = serve_tls_on(&listener, router, acceptor, shutdown).await?;
+    drop(listener);
+    draining.finished().await;
+    Ok(())
+}
 
-    let shutdown = shutdown;
-    pin!(shutdown);
+/// Serve an axum router over plain HTTP on a listener the caller keeps.
+///
+/// When `stop` completes it stops accepting and returns at once, leaving
+/// the listener open and the connections it accepted finishing under the
+/// returned [`Draining`]. A caller that serves again on the same listener
+/// therefore answers the connections that queued meanwhile, while the old
+/// ones finish alongside it.
+///
+/// # Errors
+///
+/// Returns the I/O error if accepting connections fails.
+pub async fn serve_plain_on<F>(
+    listener: &TcpListener,
+    router: axum::Router,
+    stop: F,
+) -> Result<Draining>
+where
+    F: std::future::Future<Output = ()>,
+{
+    debug!(
+        "Serving plain HTTP on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
+    accept_until(listener, stop, |stream, remote_addr, stop| {
+        serve_http(stream, remote_addr, router.clone(), stop)
+    })
+    .await
+}
 
-    // `stop` asks the open connections to finish. Every connection task
-    // also holds a clone of `open_rx`, so `open_tx.closed()` resolves once
-    // the last of them has ended.
+/// Serve an axum router over TLS on a listener the caller keeps, with a
+/// caller-built acceptor: [`serve_tls_with_acceptor`]'s connections, and
+/// [`serve_plain_on`]'s return once `stop` completes.
+///
+/// # Errors
+///
+/// Returns the I/O error if accepting connections fails; per-connection
+/// TLS handshake failures are logged and skipped, not returned.
+pub async fn serve_tls_on<F>(
+    listener: &TcpListener,
+    router: axum::Router,
+    acceptor: TlsAcceptor,
+    stop: F,
+) -> Result<Draining>
+where
+    F: std::future::Future<Output = ()>,
+{
+    debug!(
+        "Serving TLS on {}",
+        listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
+    );
+    accept_until(listener, stop, |stream, remote_addr, stop| {
+        handle_connection(stream, remote_addr, acceptor.clone(), router.clone(), stop)
+    })
+    .await
+}
+
+/// A server that has stopped accepting, while the connections it accepted
+/// finish: an in-flight request completes, an idle kept-alive connection
+/// closes.
+#[derive(Debug)]
+#[must_use = "dropping a Draining does not wait for its connections"]
+pub struct Draining {
+    /// Every connection task holds a receiver of this channel, so
+    /// `closed()` resolves once the last of them has ended.
+    open: watch::Sender<()>,
+}
+
+impl Draining {
+    /// Resolve once every connection the server accepted has ended. The
+    /// wait has no bound: a TLS handshake in progress holds it for up to
+    /// its own timeout, and a request for as long as the router takes.
+    pub async fn finished(self) {
+        debug!(
+            "Waiting for {} open connection(s) to finish",
+            self.open.receiver_count()
+        );
+        self.open.closed().await;
+        debug!("Server drained");
+    }
+}
+
+/// Accept connections on `listener`, handing each to a task from `handle`,
+/// until `stop` completes; then ask the connections to finish and return
+/// them as a [`Draining`].
+///
+/// `stop` is checked before each accept, so once it has completed no
+/// further connection is taken: one still queued is left to whoever
+/// accepts on the listener next.
+async fn accept_until<F, H, C>(listener: &TcpListener, stop: F, handle: H) -> Result<Draining>
+where
+    F: std::future::Future<Output = ()>,
+    H: Fn(TcpStream, SocketAddr, watch::Receiver<bool>) -> C,
+    C: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::pin!(stop);
+
+    // `stop_tx` asks the open connections to finish; see `Draining` for
+    // `open_tx`.
     let (stop_tx, stop_rx) = watch::channel(false);
     let (open_tx, open_rx) = watch::channel(());
 
     loop {
         tokio::select! {
+            biased;
+            () = &mut stop => {
+                debug!("Server stopped accepting");
+                break;
+            }
             result = listener.accept() => {
                 let (stream, remote_addr) = result?;
-                let acceptor = acceptor.clone();
-                let router = router.clone();
-                let stop = stop_rx.clone();
+                let connection = handle(stream, remote_addr, stop_rx.clone());
                 let open = open_rx.clone();
-
                 tokio::spawn(async move {
-                    handle_connection(stream, remote_addr, acceptor, router, stop).await;
+                    connection.await;
                     drop(open);
                 });
-            }
-            () = &mut shutdown => {
-                debug!("TLS server shutting down");
-                break;
             }
         }
     }
 
-    drop(listener);
     drop(open_rx);
     stop_tx.send_replace(true);
-    debug!(
-        "Waiting for {} open TLS connection(s) to finish",
-        open_tx.receiver_count()
-    );
-    open_tx.closed().await;
-    debug!("TLS server drained");
+    Ok(Draining { open: open_tx })
+}
 
-    Ok(())
+/// Serve HTTP on one connection until it ends, finishing gracefully once
+/// `stop` resolves. The connection is polled before `stop` is, so a
+/// request that has already arrived when the server stops is read and
+/// answered rather than dropped; one that has not arrived yet finds the
+/// connection closed.
+async fn serve_http<I>(
+    io: I,
+    remote_addr: SocketAddr,
+    router: axum::Router,
+    stop: watch::Receiver<bool>,
+) where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(io);
+    let service = TowerToHyperService::new(router.into_service());
+    let builder =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    let conn = builder.serve_connection(io, service);
+    tokio::pin!(conn);
+
+    let result = tokio::select! {
+        biased;
+        result = conn.as_mut() => result,
+        () = stop_requested(stop) => {
+            conn.as_mut().graceful_shutdown();
+            conn.await
+        }
+    };
+    if let Err(e) = result {
+        debug!("Error serving connection from {}: {}", remote_addr, e);
+    }
 }
 
 /// Resolve once the serve loop asks its connections to stop. A dropped
@@ -317,23 +440,7 @@ async fn handle_connection(
             }
         };
 
-        let io = TokioIo::new(tls_stream);
-        let service = TowerToHyperService::new(router.into_service());
-        let builder =
-            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-        let conn = builder.serve_connection(io, service);
-        tokio::pin!(conn);
-
-        let result = tokio::select! {
-            result = conn.as_mut() => result,
-            () = stop_requested(stop) => {
-                conn.as_mut().graceful_shutdown();
-                conn.await
-            }
-        };
-        if let Err(e) = result {
-            debug!("Error serving TLS connection from {}: {}", remote_addr, e);
-        }
+        serve_http(tls_stream, remote_addr, router, stop).await;
         return;
     }
 
@@ -969,6 +1076,50 @@ mod tests {
         assert!(
             response.contains("Location: https://127.0.0.1:11121/\r\n"),
             "{response}"
+        );
+    }
+
+    /// A router answering `/` with "ok", for the connection-level tests.
+    fn ok_router() -> axum::Router {
+        axum::Router::new().route("/", axum::routing::get(|| async { "ok" }))
+    }
+
+    /// The connection's peer address, which only the debug log reads.
+    fn peer() -> SocketAddr {
+        "127.0.0.1:1".parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_request_that_has_arrived_when_the_server_stops_is_answered() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let (_stop_tx, stop_rx) = watch::channel(true);
+
+        serve_http(server, peer(), ok_router(), stop_rx).await;
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("\r\n\r\nok"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_with_no_request_is_closed_when_the_server_stops() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop_tx, stop_rx) = watch::channel(true);
+
+        serve_http(server, peer(), ok_router(), stop_rx).await;
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(
+            response.is_empty(),
+            "a connection that sent nothing should be closed unanswered: {}",
+            String::from_utf8_lossy(&response)
         );
     }
 }

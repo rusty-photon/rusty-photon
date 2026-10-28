@@ -133,6 +133,9 @@ bdd_infra::bdd_main! {
                     if let Some(cam) = world.sky_survey_camera.as_mut() {
                         cam.stop().await;
                     }
+                    if let Some(filemonitor) = world.filemonitor.as_mut() {
+                        filemonitor.stop().await;
+                    }
                 }
                 trace(&format!("EXIT scenario={scenario_name:?}"));
             })
