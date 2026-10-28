@@ -11,7 +11,8 @@ and validated on the dev box's unit the same day: the
 [write probe](#what-the-wire-actually-does) answered items 1, 2 and 4 of
 the [hardware validation](#hardware-validation) list and ConformU ran
 clean on the hub ([record](#real-hardware-validation)); items 3 and 5,
-which need a sensor unplugged and a power cycle, are still owed.
+the absent-sensor frames and a power cycle, were answered on the same unit
+on 2026-10-27.
 Everything stated about the wire was either read from the
 two open-source drivers named under [Sources](#sources) or measured against
 the dev box's own unit on 2026-10-26, and the document says which.
@@ -285,12 +286,14 @@ observation; the drivers' claims it confirms or contradicts are named.
 - **The hub's state when found.** DC2–DC5 all on, USB A–F all on, both
   sensors attached, both dew channels **Manual at 100 %**, 12.2 V in,
   0.02–0.06 A. AlpacaBridge reports the same dew state on power-up
-  ("both dew channels came up Manual at 100 %"). Whether the hub persists
-  output states across its own power cycle was not tested; what the capture
-  does say is that **a heater plugged into DEW6 or DEW7 runs at full power
-  from the moment the hub powers up until some client changes it.** That
-  is a property of the hub, not of this driver, and the operator needs to
-  know it.
+  ("both dew channels came up Manual at 100 %"), which is the state both
+  units were found in, not a default they return to: **the hub keeps every
+  output and dew setting across a power cycle**
+  ([hardware validation](#hardware-validation), item 5). So **a heater
+  plugged into DEW6 or DEW7 runs at whatever its channel last held — 100 %
+  Manual on a unit nobody has changed — from the moment the hub powers up
+  until some client changes it.** That is a property of the hub, not of
+  this driver, and the operator needs to know it.
 
 ### Sources
 
@@ -414,8 +417,10 @@ Rules for the mode switch:
   vendor driver remembers the mode in its own settings and pushes it on
   every connect; that is actuation on connect
   ([tenet 3](../workspace.md#project-tenets)) and is exactly what this
-  driver does not do. After a hub power cycle the channels are back at the
-  hub's own default (Manual, 100 %), and the driver reports that.
+  driver does not do. A hub power cycle keeps the mode, the flag and the
+  duty each channel held when the power went
+  ([hardware validation](#hardware-validation), item 5), and the driver
+  reports what it finds.
 
 `DEW6 Enabled` is deliberately not named "on": in Auto mode a `1` means
 the loop is running, and the heater may well be at 0 % because the lens is
@@ -463,10 +468,14 @@ driver believes the flag over the number. When a flag is `0`:
   persists); a finite number is kept, and the flag says what it means.
   The state and electrical fields stay strict.
 
-What the firmware itself writes into fields 10–13 while a sensor is
-unplugged is not known; neither driver says and the dev box's unit had both
-attached. It is on the [hardware validation list](#hardware-validation);
-until then the mock writes `nan` there.
+What the firmware writes into fields 10–13 while a sensor is unplugged is
+a bare `0`, no padding, in each field the sensor would fill, with the flag
+dropped in the same frame: `…C 24.06S0T0H0D…` with the AHT20 out,
+`…C0S0T0H0D…` with both out ([hardware validation](#hardware-validation),
+item 3). The mock writes the same. A `0` is a finite number, so the parser
+keeps it, and it is the flag that makes the rows read the sentinel and the
+windows take no sample; the tolerance for non-numbers stays for whatever
+3.0.8 leaves in a field it misreports as attached.
 
 ### Operator labels
 
@@ -789,6 +798,7 @@ its first start.
 | Condition | Result |
 |-----------|--------|
 | Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| The DS18B20's jack pulled or inserted while the hub is powered | The hub's USB side re-enumerates and the port is gone for about three seconds (measured); the request in flight fails as a transport error and the shared supervisor reconnects with the read-only handshake, retrying every 5 s until the port is back. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
@@ -873,10 +883,10 @@ that a broken discard fails a write on both looks instead of being rescued
 by the second. Its `discard_input` drops the queue; a scenario asserts
 that a write's readback is the post-write frame with those frames queued
 ahead of it. Set commands change the mock's state and produce no reply;
-the mock applies `>X`/`>Y` to fields 8/9 at once until hardware says
-otherwise. Each refusal the handshake can give has a knob too, since the
-service then exits before it binds and the scenario reads the refusal off
-its stderr.
+the mock applies `>X`/`>Y` to fields 8/9 at once, as the hub does in
+Manual, and runs no Auto loop. Each refusal the handshake can give has a
+knob too, since the service then exits before it binds and the scenario
+reads the refusal off its stderr.
 
 Knobs reaching state the driver cannot set:
 
@@ -938,6 +948,13 @@ facts this design could not, each recorded in the run's
    ([dew heaters](#dew-heaters-three-switches-per-channel)).
 3. **Absent sensors.** The frame with the AHT20 unplugged, and with the
    DS18B20 unplugged: fields 2/3 and whatever the firmware puts in 10–13.
+   *Answered 2026-10-27:* the flag drops and each of the sensor's fields
+   reads a bare `0` — `0T0H0D` for the AHT20, `0S` for the probe — and
+   nothing else in the frame changes; a replugged sensor's flag and
+   readings return the same way. Pulling or inserting the DS18B20's 3.5 mm
+   jack while the hub is powered drops the hub's whole USB side for about
+   three seconds, so the serial port goes away and comes back; the AHT20's
+   connector does not ([record](#real-hardware-validation)).
 4. **Dew modes.** That `>M1x#` is reflected in field 5, that `>Z1x#` is
    reflected in field 4 in Auto and Switch modes, and what `>Z10#` does in
    Manual. *Answered 2026-10-26:* every mode digit and every flag write
@@ -946,7 +963,10 @@ facts this design could not, each recorded in the run's
    observed; the driver refuses the write in Manual regardless).
 5. **Output state across a hub power cycle.** Whether DC2–DC5 and USB come
    back as they were or all on. Not a driver behaviour, but an operator
-   fact for this document.
+   fact for this document. *Answered 2026-10-27:* as they were. DC3 and
+   USB A off, DEW6 at 50 % in Switch mode and disabled, set before a 14 s
+   cut, were all in the first frame after it; the hub also sent nothing on
+   its own for the 12 s before the first `>G#`, as on a fresh open.
 6. **ConformU**, all four suites, clean, in both dew modes, with the
    version gate first and **both sensors attached**: a `DEWn Mode` write
    to Auto is refused while either sensor is absent, so a run started with
@@ -958,15 +978,17 @@ facts this design could not, each recorded in the run's
 [2026-10-26, the dev box's unit on Linux](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md):
 ConformU 4.5.3, both Switch suites with both channels in Manual and again
 in Auto, both ObservingConditions suites, all clean; the write probe for
-items 1, 2 and 4 with its log.
+items 1, 2 and 4 with its log; and, added on 2026-10-27, the sensor and
+power-cycle probes for items 3 and 5 with their logs and the kernel's
+record of the USB re-enumeration.
 
 ## Open items
 
 1. ~~**`DEWn Duty` confirmation**~~ — settled by item 2 above on
    2026-10-26: the field confirms the write in Manual.
-2. **The absent-sensor sentinel** — `-127`/`0` is this design's choice
-   pending item 3; if the firmware's own value is a usable sentinel, the
-   rows may publish it instead.
+2. ~~**The absent-sensor sentinel**~~ — settled by item 3 on 2026-10-27:
+   the firmware writes `0`, which is a reading a working sensor gives at
+   0 °C, so the rows keep `-127`/`0`.
 3. **A second Gemini CH340 device on the same rig** shares the by-id name;
    the design points operators at `by-path`. Whether doctor should warn
    when two `1a86:7523` devices are present is a doctor question, not

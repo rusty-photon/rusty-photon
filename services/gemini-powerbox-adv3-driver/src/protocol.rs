@@ -600,12 +600,13 @@ impl<'a> Fields<'a> {
     }
 
     /// A sensor's reading: `Some` while the field holds a finite decimal
-    /// number, `None` for anything else. What the firmware writes while a
-    /// sensor is unplugged — or, on 3.0.8 with its DS18B20 detection
-    /// defect, misreported as attached — is not known, so the field ends
-    /// at its own tag rather than at the next upper-case letter, and
-    /// nothing in it can fail the frame: a reading the frame does not
-    /// carry is no reading, not an error.
+    /// number, `None` for anything else. The firmware writes a bare `0`
+    /// into an unplugged sensor's fields (measured), and the flag, not the
+    /// value, says what a number means; what a probe that 3.0.8's DS18B20
+    /// detection defect misreports as attached leaves there is not known,
+    /// so the field ends at its own tag rather than at the next upper-case
+    /// letter, and nothing in it can fail the frame: a reading the frame
+    /// does not carry is no reading, not an error.
     fn reading(&mut self, name: &str, tag: char) -> Result<Option<f64>> {
         let raw = self.raw_until(name, tag)?;
         Ok(raw.trim().parse::<f64>().ok().filter(|v| v.is_finite()))
@@ -989,11 +990,69 @@ mod tests {
     }
 
     #[test]
+    fn the_frames_captured_with_a_sensor_unplugged_carry_a_zero_flag_and_a_bare_zero() {
+        // Captured from the dev box's unit while the operator pulled the
+        // sensors: the firmware drops the flag and writes a bare `0`, no
+        // padding, into each field the missing sensor would fill. The
+        // zero is a number like any other here; the flag says what it means.
+        let aht20_out = "1111D111111U0A1T1A1M1B1M100C100C 24.06S0T0H0D12.2V 0.06C  0.72P";
+        let both_out = "1111D111111U0A0T1A1M1B1M100C100C0S0T0H0D12.2V 0.01C  0.72P";
+        let probe_back = "1111D111111U0A1T1A1M1B1M100C100C 24.38S0T0H0D12.2V 0.07C  0.86P";
+
+        let frame: StatusFrame = aht20_out.parse().unwrap();
+        assert!(!frame.ambient_sensor_attached);
+        assert!(frame.lens_probe_attached);
+        assert_eq!(frame.lens_temperature, Some(24.06));
+        assert_eq!(frame.ambient_temperature, Some(0.0));
+        assert_eq!(frame.humidity, Some(0.0));
+        assert_eq!(frame.dew_point, Some(0.0));
+        assert_eq!(frame.output_current, 0.06);
+
+        let frame: StatusFrame = both_out.parse().unwrap();
+        assert!(!frame.ambient_sensor_attached);
+        assert!(!frame.lens_probe_attached);
+        assert_eq!(frame.lens_temperature, Some(0.0));
+        assert_eq!(frame.ambient_temperature, Some(0.0));
+        assert_eq!(frame.input_voltage, 12.2);
+        assert_eq!(frame.output_power, 0.72);
+
+        let frame: StatusFrame = probe_back.parse().unwrap();
+        assert!(!frame.ambient_sensor_attached);
+        assert!(frame.lens_probe_attached);
+        assert_eq!(frame.lens_temperature, Some(24.38));
+        assert_eq!(frame.humidity, Some(0.0));
+    }
+
+    #[test]
+    fn the_frame_captured_after_a_power_cycle_parses_with_the_state_the_hub_kept() {
+        // The first frame the unit gave after its 12 V was cut for fourteen
+        // seconds: DC3 and USB A off, DEW6 disabled, in Switch mode, at
+        // 50 % — the state set before the cut, which the hub restored.
+        let payload =
+            "1011D011111U1A1T0A2M1B1M50C100C 24.38S 24.86T 72.14H 19.49D12.2V 0.02C  0.22P";
+        let frame: StatusFrame = payload.parse().unwrap();
+        assert!(!frame.dc_on(DcOutput::Dc3));
+        assert!(frame.dc_on(DcOutput::Dc2));
+        assert!(!frame.usb_on(UsbPort::A));
+        assert!(frame.usb_on(UsbPort::B));
+        let six = frame.dew(DewChannel::Dew6);
+        assert!(!six.enabled);
+        assert_eq!(six.mode, DewMode::Switch);
+        assert_eq!(six.duty, 50);
+        let seven = frame.dew(DewChannel::Dew7);
+        assert!(seven.enabled);
+        assert_eq!(seven.mode, DewMode::Manual);
+        assert_eq!(seven.duty, 100);
+        assert_eq!(frame.humidity, Some(72.14));
+    }
+
+    #[test]
     fn a_sensor_field_that_holds_no_number_carries_no_reading_whatever_the_flag_says() {
-        // What the firmware writes for an unplugged sensor is not known, and
-        // 3.0.8 can misreport a probe as attached: nothing in these fields
-        // may fail the frame, whichever way the flags read, and a field
-        // ends at its own tag even when a placeholder has capitals in it.
+        // The firmware writes `0` for an unplugged sensor, but 3.0.8 can
+        // misreport a probe as attached and what it writes then is not
+        // known: nothing in these fields may fail the frame, whichever way
+        // the flags read, and a field ends at its own tag even when a
+        // placeholder has capitals in it.
         for flags in ["0A0T1A", "1A1T1A"] {
             for placeholder in [
                 "   nan", "   NaN", "   INF", "   ERR", "   N/A", "   ovf", "      ", " --.--",

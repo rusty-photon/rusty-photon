@@ -1,0 +1,121 @@
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1: USB disconnect, device number 8
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1.3: USB disconnect, device number 9
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1: clear tt 4 (9042) error -71
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1.4: ch341_read_int_callback - usb_submit_urb failed: -19
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1.4: USB disconnect, device number 10
+2026-10-27T17:05:57-07:00 <dev-box> kernel: ch341-uart ttyUSB0: ch341-uart converter now disconnected from ttyUSB0
+2026-10-27T17:05:57-07:00 <dev-box> kernel: ch341 1-1.4:1.0: device disconnected
+2026-10-27T17:05:57-07:00 <dev-box> kernel: usb 1-1.5: USB disconnect, device number 11
+2026-10-27T17:05:58-07:00 <dev-box> kernel: usb 2-1: USB disconnect, device number 5
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1: new high-speed USB device number 12 using xhci_hcd
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1: New USB device found, idVendor=2109, idProduct=2817, bcdDevice= 7.00
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1: Product: USB2.0 Hub             
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:05:59-07:00 <dev-box> kernel: hub 1-1:1.0: USB hub found
+2026-10-27T17:05:59-07:00 <dev-box> kernel: hub 1-1:1.0: 5 ports detected
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 2-1: new SuperSpeed USB device number 6 using xhci_hcd
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 2-1: New USB device found, idVendor=2109, idProduct=0817, bcdDevice= 7.00
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 2-1: Product: USB3.0 Hub             
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 2-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:05:59-07:00 <dev-box> kernel: hub 2-1:1.0: USB hub found
+2026-10-27T17:05:59-07:00 <dev-box> kernel: hub 2-1:1.0: 4 ports detected
+2026-10-27T17:05:59-07:00 <dev-box> kernel: usb 1-1.3: new high-speed USB device number 13 using xhci_hcd
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.3: New USB device found, idVendor=1a86, idProduct=8091, bcdDevice=13.10
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.3: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.3: Product: USB HUB
+2026-10-27T17:06:00-07:00 <dev-box> kernel: hub 1-1.3:1.0: USB hub found
+2026-10-27T17:06:00-07:00 <dev-box> kernel: hub 1-1.3:1.0: 4 ports detected
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.4: new full-speed USB device number 14 using xhci_hcd
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.4: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice=81.34
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.4: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.4: Product: USB Serial
+2026-10-27T17:06:00-07:00 <dev-box> kernel: ch341 1-1.4:1.0: ch341-uart converter detected
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.4: ch341-uart converter now attached to ttyUSB0
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: new high-speed USB device number 15 using xhci_hcd
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: New USB device found, idVendor=2109, idProduct=8817, bcdDevice= 0.01
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: Product: USB Billboard Device   
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:06:00-07:00 <dev-box> kernel: usb 1-1.5: SerialNumber: 0000000000000001
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1: USB disconnect, device number 12
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1.3: USB disconnect, device number 13
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1: clear tt 4 (9042) error -71
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1.4: ch341_read_int_callback - usb_submit_urb failed: -19
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1.4: USB disconnect, device number 14
+2026-10-27T17:08:21-07:00 <dev-box> kernel: ch341-uart ttyUSB0: ch341-uart converter now disconnected from ttyUSB0
+2026-10-27T17:08:21-07:00 <dev-box> kernel: ch341 1-1.4:1.0: device disconnected
+2026-10-27T17:08:21-07:00 <dev-box> kernel: usb 1-1.5: USB disconnect, device number 15
+2026-10-27T17:08:22-07:00 <dev-box> kernel: usb 2-1: USB disconnect, device number 6
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 1-1: new high-speed USB device number 16 using xhci_hcd
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 1-1: New USB device found, idVendor=2109, idProduct=2817, bcdDevice= 7.00
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 1-1: Product: USB2.0 Hub             
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 1-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:08:23-07:00 <dev-box> kernel: hub 1-1:1.0: USB hub found
+2026-10-27T17:08:23-07:00 <dev-box> kernel: hub 1-1:1.0: 5 ports detected
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 2-1: new SuperSpeed USB device number 7 using xhci_hcd
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 2-1: New USB device found, idVendor=2109, idProduct=0817, bcdDevice= 7.00
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 2-1: Product: USB3.0 Hub             
+2026-10-27T17:08:23-07:00 <dev-box> kernel: usb 2-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:08:23-07:00 <dev-box> kernel: hub 2-1:1.0: USB hub found
+2026-10-27T17:08:23-07:00 <dev-box> kernel: hub 2-1:1.0: 4 ports detected
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.3: new high-speed USB device number 17 using xhci_hcd
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.3: New USB device found, idVendor=1a86, idProduct=8091, bcdDevice=13.10
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.3: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.3: Product: USB HUB
+2026-10-27T17:08:24-07:00 <dev-box> kernel: hub 1-1.3:1.0: USB hub found
+2026-10-27T17:08:24-07:00 <dev-box> kernel: hub 1-1.3:1.0: 4 ports detected
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.4: new full-speed USB device number 18 using xhci_hcd
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.4: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice=81.34
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.4: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.4: Product: USB Serial
+2026-10-27T17:08:24-07:00 <dev-box> kernel: ch341 1-1.4:1.0: ch341-uart converter detected
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.4: ch341-uart converter now attached to ttyUSB0
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: new high-speed USB device number 19 using xhci_hcd
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: New USB device found, idVendor=2109, idProduct=8817, bcdDevice= 0.01
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: Product: USB Billboard Device   
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:08:24-07:00 <dev-box> kernel: usb 1-1.5: SerialNumber: 0000000000000001
+2026-10-27T17:13:20-07:00 <dev-box> kernel: usb 1-1: USB disconnect, device number 16
+2026-10-27T17:13:20-07:00 <dev-box> kernel: usb 1-1.3: USB disconnect, device number 17
+2026-10-27T17:13:20-07:00 <dev-box> kernel: usb 1-1.4: USB disconnect, device number 18
+2026-10-27T17:13:20-07:00 <dev-box> kernel: ch341-uart ttyUSB0: ch341-uart converter now disconnected from ttyUSB0
+2026-10-27T17:13:20-07:00 <dev-box> kernel: ch341 1-1.4:1.0: device disconnected
+2026-10-27T17:13:20-07:00 <dev-box> kernel: usb 1-1.5: USB disconnect, device number 19
+2026-10-27T17:13:21-07:00 <dev-box> kernel: usb 2-1: USB disconnect, device number 7
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 1-1: new high-speed USB device number 20 using xhci_hcd
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 1-1: New USB device found, idVendor=2109, idProduct=2817, bcdDevice= 7.00
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 1-1: Product: USB2.0 Hub             
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 1-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:13:34-07:00 <dev-box> kernel: hub 1-1:1.0: USB hub found
+2026-10-27T17:13:34-07:00 <dev-box> kernel: hub 1-1:1.0: 5 ports detected
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 2-1: new SuperSpeed USB device number 8 using xhci_hcd
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 2-1: New USB device found, idVendor=2109, idProduct=0817, bcdDevice= 7.00
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 2-1: Product: USB3.0 Hub             
+2026-10-27T17:13:34-07:00 <dev-box> kernel: usb 2-1: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:13:34-07:00 <dev-box> kernel: hub 2-1:1.0: USB hub found
+2026-10-27T17:13:34-07:00 <dev-box> kernel: hub 2-1:1.0: 4 ports detected
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.3: new high-speed USB device number 21 using xhci_hcd
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.3: New USB device found, idVendor=1a86, idProduct=8091, bcdDevice=13.10
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.3: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.3: Product: USB HUB
+2026-10-27T17:13:35-07:00 <dev-box> kernel: hub 1-1.3:1.0: USB hub found
+2026-10-27T17:13:35-07:00 <dev-box> kernel: hub 1-1.3:1.0: 4 ports detected
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.4: new full-speed USB device number 22 using xhci_hcd
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.4: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice=81.34
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.4: New USB device strings: Mfr=0, Product=2, SerialNumber=0
+2026-10-27T17:13:35-07:00 <dev-box> kernel: usb 1-1.4: Product: USB Serial
+2026-10-27T17:13:36-07:00 <dev-box> kernel: ch341 1-1.4:1.0: ch341-uart converter detected
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.4: ch341-uart converter now attached to ttyUSB0
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: new high-speed USB device number 23 using xhci_hcd
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: New USB device found, idVendor=2109, idProduct=8817, bcdDevice= 0.01
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: Product: USB Billboard Device   
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: Manufacturer: VIA Labs, Inc.         
+2026-10-27T17:13:36-07:00 <dev-box> kernel: usb 1-1.5: SerialNumber: 0000000000000001

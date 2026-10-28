@@ -13,7 +13,8 @@
 //! discard before a poll or a write is load-bearing on every request rather
 //! than by chance. Its `discard_input` drops the queue. Set commands change
 //! the state and draw no reply; `>X`/`>Y` apply to the duty fields at once,
-//! until hardware says otherwise.
+//! as the hub's do in Manual. The mock runs no Auto loop, so in Auto the
+//! field keeps the value written where the hub's loop would overwrite it.
 //!
 //! State the driver cannot set is preset from the environment, which is the
 //! only channel a BDD harness has into a binary it launches as a subprocess:
@@ -266,14 +267,14 @@ fn flags(states: &[bool]) -> String {
 
 impl MockDeviceState {
     /// The `*G` frame in the capture's exact layout and field widths. An
-    /// absent sensor's fields read `nan`: what the firmware writes there is
-    /// not known, and this is the worst case the parser tolerates.
+    /// absent sensor's fields read a bare `0` with no padding, as the
+    /// firmware writes them (measured on the dev box's unit, 2026-10-27).
     fn frame(&self) -> String {
         let reading = |value: f64, attached: bool| {
             if attached {
                 format!("{value:6.2}")
             } else {
-                "   nan".to_string()
+                "0".to_string()
             }
         };
         format!(

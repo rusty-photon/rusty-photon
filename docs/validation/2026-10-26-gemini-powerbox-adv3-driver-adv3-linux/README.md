@@ -11,7 +11,8 @@ channels in Manual, the hub's power-up state, and once with both in Auto, so eac
 dew row is found writable in the mode that allows it and read-only in the other.
 
 Items 3 (the frame with a sensor unplugged) and 5 (output state across a hub power
-cycle) need hands on the unit and are still owed.
+cycle) needed hands on the unit and were answered on 2026-10-27 by two more probes
+over the serial port, recorded [below](#items-3-and-5-2026-10-27).
 
 The repository owner authorised the run with the ports as they were. ConformU
 switched DC2–DC5 and USB A–F off and on, drove both dew duties across 0–100 % and
@@ -25,7 +26,7 @@ after the runs, so nothing drawing power hung on the outputs it switched.
 | Commit | [`a647bae7`](https://github.com/rusty-photon/rusty-photon/commit/a647bae7) (branch `feature/gemini-powerbox-adv3-driver`, PR #1646), on `main` at `355ae19b`. The binary was built from that tree before its one later change, a rewording of a loader-check unit test for clippy; no line outside a test module differs |
 | Service | `gemini-powerbox-adv3-driver`, default features, `cargo run -p gemini-powerbox-adv3-driver -- --config <config> -l debug` (dev profile); rustc 1.99.1 (58cf8f9c3 2026-10-13) |
 | Config | `serial.port` `/dev/ttyUSB0`, `polling_interval` 5 s, `timeout` 2 s, `server.port` 11132 bound to 127.0.0.1, no TLS or auth, `averaging_period` 5 m |
-| Probe | [`gemini_write_probe.py`](gemini_write_probe.py), run with the service stopped, before it; its output is [`write-probe.log`](write-probe.log) |
+| Probe | [`gemini_write_probe.py`](gemini_write_probe.py), run with the service stopped, before it; its output is [`write-probe.log`](write-probe.log). On 2026-10-27, with the tree at [`8b8941a2`](https://github.com/rusty-photon/rusty-photon/commit/8b8941a2) and no service running: [`gemini_sensor_probe.py`](gemini_sensor_probe.py), output [`sensor-probe.log`](sensor-probe.log), and [`gemini_power_probe.py`](gemini_power_probe.py), output [`power-probe.log`](power-probe.log); the kernel's USB log of that session is [`usb-journal.log`](usb-journal.log) |
 | Platform | Fedora Linux 44 (Workstation Edition) x86_64, kernel 7.2.11-200.fc44, Linux `ch341` driver |
 | Device | Gemini Astro Power & Data Hubs Advanced 3, `*HGeminiPowerBoxPlusAdv3#`, firmware `*V308#`; CH340 `1a86:7523` with no serial number, so the `UniqueID`s are the config's (`hw-smoke-switch`, `hw-smoke-weather`) |
 | Sensors | AHT20 and DS18B20 both attached (frame flags `1`/`1`); 25.5 °C, 70 % RH, 19.7 °C dew point, lens 24.3 °C; 12.2 V in |
@@ -106,7 +107,71 @@ therefore about 110 ms per 3 s period, roughly one write in twenty-seven, agains
 5 ms the design doc had estimated; the doc now carries the measurement. The driver's
 second look is what covers it, and the ConformU passes above are the proof.
 
+## Items 3 and 5, 2026-10-27
+
+Both probes open the port as the write probe does and log every chunk with a
+timestamp. Neither involves the driver: the facts are the hub's. Times are PDT.
+
+### Item 3: the frame with a sensor unplugged
+
+[`gemini_sensor_probe.py`](gemini_sensor_probe.py) sends a bare `>G#` every two
+seconds and prints every frame raw, then split: the fixed fields 0–9, the sensor
+and electrical remainder exactly as written, and whether the driver's shape (each
+sensor field ending at its own tag) still matches. A label file names the phase on
+every line. The operator pulled and replugged the sensors in four steps, 17:03–17:11;
+the output is [`sensor-probe.log`](sensor-probe.log).
+
+| Step | State | Flags | Sensor fields as written | Driver shape |
+|---|---|---|---|---|
+| 0 | both attached | `U1A1T` | ` 24.06S 25.17T 71.20H 19.58D` | matches |
+| 1 | AHT20 out | `U0A1T` | ` 24.06S0T0H0D` | matches |
+| 2 | both out | `U0A0T` | `0S0T0H0D` | matches |
+| 3 | DS18B20 back, AHT20 out | `U0A1T` | ` 24.38S0T0H0D` | matches |
+| 4 | both back | `U1A1T` | ` 24.38S 25.07T 71.63H 19.59D` | matches |
+
+**The firmware writes a bare `0`** — one character, no padding — into each field
+the missing sensor would fill, and drops the flag in the same frame; nothing else
+in the frame changes, no `*`, no letter, no blank. A replugged sensor comes back
+the same way, flag and readings together. How long the firmware takes to notice a
+pull was not timed: the operator waited a few seconds before answering, and the
+first frame read after each answer already showed the change.
+
+**The DS18B20's 3.5 mm jack resets the hub's USB side.** Pulling it (17:05:57) and
+inserting it (17:08:21) each dropped the hub's whole USB tree — its VIA Labs hub,
+the internal `1a86:8091` hub, the CH340 serial link and a VIA Labs billboard
+device — which re-enumerated about three seconds later with `ttyUSB0` back under
+the same name ([`usb-journal.log`](usb-journal.log)); the probe's next write failed
+with `EIO`, which is the two tracebacks in the sensor log, and it was restarted
+each time. Pulling and replugging the AHT20 did not: the probe ran through both
+without losing the port. The operator confirmed only the probe's plug moved. Two of
+two for the jack, zero of two for the AHT20's connector.
+
+### Item 5: output state across a power cycle
+
+[`gemini_power_probe.py`](gemini_power_probe.py) runs in three phases, each its own
+process because the hub's CH340 dies with its 12 V; the output is
+[`power-probe.log`](power-probe.log).
+
+| Phase | Time | What happened |
+|---|---|---|
+| `before` | 17:11 | Baseline every output on, both channels Manual, enabled, 100 %. Set, each in one buffer with a `>G#` behind it: DC3 off, USB A off, DEW6 duty 50, DEW6 mode Switch, DEW6 disabled. Frame before the cut: `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`, DEW7 untouched |
+| the cut | 17:13:20–17:13:34 | The operator cut the hub's 12 V input; the kernel saw the USB tree go at 17:13:20 and come back at 17:13:34, `ttyUSB0` attached at 17:13:36 — 14 s without power |
+| `after` | 17:13 | Waited for the port to vanish and return, then listened 12 s without sending: **nothing arrived** — the hub does not stream until asked, after a power-up as after an open. `>H#` → `*HGeminiPowerBoxPlusAdv3#`, `>V#` → `*V308#`, `>G#` → `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`: **every setting as before the cut** |
+| `restore` | 17:14 | DC3 on, USB A on, DEW6 Manual, enabled, 100 %, each confirmed in the frame behind it; final frame the power-up state found on 2026-10-26 |
+
+**The hub keeps its outputs, its USB ports and each dew channel's mode, flag and
+duty across a power cycle.** One cycle of 14 s on one unit; the USB chips were
+down for all of it, so this is stored state, not hold-up. The design doc's earlier
+reading of the capture — that a heater runs at full power from power-up — holds
+only for a unit whose channels were left at 100 % Manual, which is how this unit
+was found and how AlpacaBridge reports its own came up.
+
 ## Privacy scrub
 
-None needed: the logs name only `127.0.0.1:11132` and the operating system; no
-hostname, address or user name appears in them.
+The 2026-10-26 logs name only `127.0.0.1:11132` and the operating system; no
+hostname, address or user name appears in them. The 2026-10-27 probe logs name
+only `/dev/ttyUSB0` and its `by-id` link, except the two Python tracebacks in
+[`sensor-probe.log`](sensor-probe.log), whose script path under the operator's
+home directory is replaced by `<probe-dir>`. [`usb-journal.log`](usb-journal.log)
+is the kernel log of 17:05–17:15 filtered to the USB lines, with the machine's
+hostname replaced by `<dev-box>` on every line; nothing else in either was touched.
