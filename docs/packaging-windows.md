@@ -56,6 +56,7 @@ its port:
 | zwo-focuser | 11124 | `ZwoFocuser` | its SDK DLL bundled |
 | planetarium-bridge | 11126 | `PlanetariumBridge` | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | `Upbv2Driver` | serial (COM port) |
+| gemini-powerbox-adv3-driver | 11132 | `GeminiPowerboxAdv3Driver` | serial (COM port; Windows needs the vendor's CH341SER driver for the CH340 bridge) |
 | phd2-guider | 11130 | `Phd2Guider` | wraps PHD2 (installed separately); its opt-in camera facade adds 11128 on loopback only, which needs no firewall rule ([packaging.md](packaging.md#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |
@@ -203,9 +204,10 @@ Restart-Service rusty-photon-<svc>              # the rest
 ```
 
 Reload-capable (SCM `ParamChange`, the SIGHUP analogue): filemonitor,
-ppba-driver, upbv2-driver, qhy-focuser, sky-survey-camera,
-pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera,
-zwo-camera, zwo-focuser, planetarium-bridge.
+ppba-driver, upbv2-driver, gemini-powerbox-adv3-driver, qhy-focuser,
+sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
+star-adventurer-gti, qhy-camera, zwo-camera, zwo-focuser,
+planetarium-bridge.
 A service's setup page (`/setup`) rewrites its file when a page is saved —
 hand-edits and page edits share the same file.
 

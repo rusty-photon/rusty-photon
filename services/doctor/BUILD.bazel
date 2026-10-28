@@ -24,6 +24,7 @@ _CATALOG_METADATA = [
     "//services/dsd-fp2:pkg/doctor.toml",
     "//services/filemonitor:pkg/doctor.toml",
     "//services/focus-model:pkg/doctor.toml",
+    "//services/gemini-powerbox-adv3-driver:pkg/doctor.toml",
     "//services/pa-falcon-rotator:pkg/doctor.toml",
     "//services/pa-scops-oag:pkg/doctor.toml",
     "//services/phd2-guider:pkg/doctor.toml",

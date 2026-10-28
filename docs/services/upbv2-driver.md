@@ -403,11 +403,18 @@ loop as current, which is the staleness the read-side window exists to
 prevent.
 
 Zero therefore maps to the shortest window that still always holds the newest
-sample under healthy polling: `max(3 × serial.polling_interval, 10s)`. Three
-intervals tolerates two missed polls before readings degrade to
-`VALUE_NOT_SET` — the honest answer once the device has been quiet that long
-— and the 10 s floor keeps a fast poll cadence from making the window shorter
-than one client round trip.
+sample under healthy polling: `max(3 × serial.polling_interval, 10s)`, the
+*instantaneous window*. Three intervals tolerates two missed polls before
+readings degrade to `VALUE_NOT_SET` — the honest answer once the device has
+been quiet that long — and the 10 s floor keeps a fast poll cadence from
+making the window shorter than one client round trip.
+
+**No period maps to a window shorter than that.** A positive period below
+the instantaneous window would, applied on read, hold no sample for part of
+every poll cycle, and the three readings would answer `VALUE_NOT_SET`
+between polls while the sensor is healthy. Such a period is served with the
+instantaneous window; the period itself is still what `AveragePeriod` reads
+back (below).
 
 The period a client sets is stored verbatim and read back as-is, rather than
 inferred from the resulting window. Inferring it cannot represent zero (the
@@ -431,9 +438,13 @@ seconds-to-`Duration` conversion underneath is fallible too, so no path
 through this code can panic.
 
 All three checks — the device, the manager, and the setup page's bound
-below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
-`manager.rs`, so the runtime range and the persisted range cannot drift
-apart.
+below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant, so the
+runtime range and the persisted range cannot drift apart.
+
+`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+windows. While all three are empty it answers what one empty window
+answers, the no-data value, not zero: a client asking whether the readings
+are fresh must not be told "updated just now" when there are none.
 
 A setup-page save validates `averaging_period` against the same bounds the
 device enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
@@ -441,9 +452,12 @@ hour ceiling, which is ASCOM's. The two must agree — a period a client can
 select at runtime but not persist, or persist but not select, is a trap either
 way.
 
-The rolling-mean implementation is shared with `ppba-driver`, which handles
-`AveragePeriod` the same way, and lives in
-[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
+The rolling-mean implementation, and the whole of the policy above — the
+ceiling, the range, the instantaneous window, the mapping and the
+empty-name `TimeSinceLastUpdate` — is the `observing_conditions` module of
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md),
+shared verbatim with `ppba-driver` and `gemini-powerbox-adv3-driver`, so a
+change to the policy reaches all three drivers at once.
 
 ### Setup pages
 
@@ -483,6 +497,16 @@ device and every `Action` answers `ACTION_NOT_IMPLEMENTED`.
 | `observingconditions.averaging_period` | `<= 24h`, the ASCOM `AveragePeriod` ceiling; zero allowed |
 | `switch.unique_id`, `observingconditions.unique_id` | non-empty (each device's stable ASCOM `UniqueID`) |
 | `server.auth` | a username needs a password, submitted or already stored; the repeat must match |
+
+The baud-rate, interval, timeout and averaging-period rules apply when the
+file is **loaded** as well: a hand-edited config that breaks one is refused at
+startup, on reload and by `doctor`, naming the field, rather than starting
+a service whose poll task dies on a zero interval or whose `AveragePeriod`
+reads back outside ASCOM's range. The port and the ids are the start
+path's — `--port` may supply the port and the bootstrap mints the ids —
+and the `server.auth` rules are the form's; none of those is checked at
+load, so a shipped example config with empty ids passes `doctor` before
+its first start.
 
 ## Error behavior
 

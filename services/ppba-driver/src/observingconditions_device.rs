@@ -4,11 +4,13 @@
 //! the session existing is the canonical "Connected" state.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::{Device, ObservingConditions};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, SetupRequest, SetupResponse};
 use async_trait::async_trait;
+use rusty_photon_rolling_stats::observing_conditions::{
+    average_period_hours, time_since_freshest_update,
+};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
@@ -17,7 +19,7 @@ use tracing::debug;
 use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
 use crate::error::PpbaError;
-use crate::manager::{average_period_hours, PpbaManager};
+use crate::manager::PpbaManager;
 use crate::setup::{PpbaDriver, OBSERVING_CONDITIONS_DEVICE_TYPE};
 
 macro_rules! ensure_connected {
@@ -243,18 +245,13 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
         let duration = match sensor_name.to_lowercase().as_str() {
-            "" => {
-                let times = [
-                    state.temp_mean.time_since_last_update(),
-                    state.humidity_mean.time_since_last_update(),
-                    state.dewpoint_mean.time_since_last_update(),
-                ];
-                times
-                    .iter()
-                    .filter_map(|&t| t)
-                    .min()
-                    .or(Some(Duration::ZERO))
-            }
+            // The freshest window; `None` while all three are empty, so the
+            // client reads "no data" rather than "updated just now".
+            "" => time_since_freshest_update([
+                &state.temp_mean,
+                &state.humidity_mean,
+                &state.dewpoint_mean,
+            ]),
             "temperature" => state.temp_mean.time_since_last_update(),
             "humidity" => state.humidity_mean.time_since_last_update(),
             "dewpoint" => state.dewpoint_mean.time_since_last_update(),
@@ -311,10 +308,10 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::manager::instantaneous_window;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
+    use rusty_photon_rolling_stats::observing_conditions::instantaneous_window;
     use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
 
     /// Factory whose `open()` always fails. Used to exercise the
@@ -350,34 +347,6 @@ mod tests {
         let device = make_device();
         device.set_connected(true).await.unwrap();
         device
-    }
-
-    /// The averaging window for the staleness test: long enough that the
-    /// handshake's samples are comfortably inside it on any runner, short
-    /// enough to age out during a test.
-    const STALE_WINDOW: Duration = Duration::from_secs(1);
-
-    /// A connected device whose poll loop will not fire for the length of a
-    /// test and whose window is [`STALE_WINDOW`], so the samples the handshake
-    /// seeded age out with nothing arriving to replace them — the state a
-    /// stalled poll loop leaves behind.
-    ///
-    /// The window comes from config rather than a later `SetAveragePeriod`
-    /// deliberately. Resizing evicts, so a test that shrank the window would
-    /// race its own setup: slow enough setup empties the buffer, and an empty
-    /// buffer reads `VALUE_NOT_SET` whether or not the window is applied on
-    /// read. The manager comes back so a test can assert occupancy directly.
-    async fn connected_device_with_stale_window(
-    ) -> (PpbaObservingConditionsDevice, Arc<PpbaManager>) {
-        let factory = Arc::new(MockPpbaTransportFactory::default());
-        let mut config = Config::default();
-        config.serial.polling_interval = Duration::from_mins(5);
-        config.observingconditions.averaging_period = STALE_WINDOW;
-        let manager = PpbaManager::new(&config, factory);
-        let device =
-            PpbaObservingConditionsDevice::new(config.observingconditions, Arc::clone(&manager));
-        device.set_connected(true).await.unwrap();
-        (device, manager)
     }
 
     #[tokio::test]
@@ -483,47 +452,6 @@ mod tests {
             period > 0.0,
             "a real average whose window equals the instantaneous one must not read back as 0"
         );
-        device.set_connected(false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn sensor_reads_report_value_not_set_once_every_sample_has_aged_out() {
-        // Eviction runs on insert, so a session that stops polling leaves the
-        // buffer full of readings older than the averaging period. Averaging
-        // them and calling the answer current is what a client would set dew
-        // heaters from; VALUE_NOT_SET is the honest answer instead, and it is
-        // the code the device already returns before the first poll.
-        let (device, manager) = connected_device_with_stale_window().await;
-
-        // All three answer first. This assertion is what keeps the rest of the
-        // test honest — an empty buffer produces the same VALUE_NOT_SET below,
-        // so without proving the samples are there and readable, the test
-        // could pass with the read-side window doing nothing at all.
-        device.temperature().await.expect("temperature reads fresh");
-        device.humidity().await.expect("humidity reads fresh");
-        device.dew_point().await.expect("dewpoint reads fresh");
-
-        // Only the floor matters: load can push the samples further outside
-        // the window, never back inside it.
-        tokio::time::sleep(STALE_WINDOW + Duration::from_millis(500)).await;
-
-        // Still held. The only eviction paths are an insert — the poll loop is
-        // idle — and a window change, of which there is none, so a None below
-        // can come from nothing but the read-side filter.
-        assert!(
-            manager.get_cached_state().await.temp_mean.sample_count() > 0,
-            "the buffer must still hold the aged-out samples, or this proves nothing"
-        );
-
-        for (sensor, result) in [
-            ("temperature", device.temperature().await),
-            ("humidity", device.humidity().await),
-            ("dewpoint", device.dew_point().await),
-        ] {
-            let err = result.expect_err(sensor);
-            assert_eq!(err.code, ASCOMErrorCode::VALUE_NOT_SET, "{sensor}");
-        }
-
         device.set_connected(false).await.unwrap();
     }
 

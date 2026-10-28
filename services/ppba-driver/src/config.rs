@@ -1,5 +1,7 @@
 //! Configuration types for the PPBA Driver
 
+use rusty_photon_config::driver::FieldError;
+use rusty_photon_rolling_stats::observing_conditions::MAX_AVERAGING_PERIOD;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +19,72 @@ pub struct Config {
     pub observingconditions: ObservingConditionsConfig,
 }
 
-impl rusty_photon_config::ConfigFile for Config {}
+impl rusty_photon_config::ConfigFile for Config {
+    /// The loader's own rules ([`loader_rules`]), which the setup page's
+    /// `validate` builds on: a hand-edited file that breaks one is refused
+    /// here, naming the field, rather than starting a service whose poll
+    /// task dies on a zero interval or whose `AveragePeriod` reads back
+    /// outside ASCOM's range. The port and the device ids are the start
+    /// path's — `--port` may supply the port and the bootstrap mints the
+    /// ids — so neither is checked at load, and `doctor` on a shipped
+    /// example config with empty ids passes before the first start.
+    fn check(&self) -> std::result::Result<(), String> {
+        let errors = loader_rules(self);
+        if errors.is_empty() {
+            return Ok(());
+        }
+        Err(errors
+            .iter()
+            .map(|e| format!("{}: {}", e.path, e.msg))
+            .collect::<Vec<_>>()
+            .join("; "))
+    }
+}
+
+/// The rules a config must meet to be loaded at all.
+///
+/// As [`FieldError`]s so the setup page can render them beside their
+/// fields: a poll interval and
+/// a timeout above zero (`tokio::time::interval` panics on a zero period),
+/// a baud rate above zero,
+/// and an averaging period no longer than ASCOM's `AveragePeriod` ceiling.
+/// The setup page's `validate` adds the rules the start path fills in for
+/// a loaded file: a non-empty port and the device ids.
+#[must_use]
+pub fn loader_rules(config: &Config) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    if config.serial.baud_rate == 0 {
+        errors.push(FieldError {
+            path: "serial.baud_rate".to_string(),
+            msg: "must be greater than 0".to_string(),
+        });
+    }
+    if config.serial.polling_interval.is_zero() {
+        errors.push(FieldError {
+            path: "serial.polling_interval".to_string(),
+            msg: "must be greater than 0".to_string(),
+        });
+    }
+    if config.serial.timeout.is_zero() {
+        errors.push(FieldError {
+            path: "serial.timeout".to_string(),
+            msg: "must be greater than 0".to_string(),
+        });
+    }
+    // Deliberately no lower bound. Zero is ASCOM's "the device is not
+    // averaging — give me the most recent value", which
+    // `set_average_period(0.0)` accepts over the wire and
+    // `effective_window` maps to the instantaneous window. Rejecting it
+    // here would leave a client able to select a period at runtime that it
+    // could never persist as the startup default.
+    if config.observingconditions.averaging_period > MAX_AVERAGING_PERIOD {
+        errors.push(FieldError {
+            path: "observingconditions.averaging_period".to_string(),
+            msg: "must not exceed 24h, the ASCOM AveragePeriod ceiling".to_string(),
+        });
+    }
+    errors
+}
 
 /// Where each device's ASCOM `UniqueID` lives in the config file: the JSON
 /// pointers the startup bootstrap mints into.
@@ -166,20 +233,6 @@ pub struct DeviceConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
-}
-
-/// Load configuration from a JSON file.
-///
-/// # Errors
-///
-/// Returns the I/O error if `path` cannot be read, or the JSON error if its
-/// contents do not deserialize as a [`Config`].
-pub fn load_config(
-    path: &Path,
-) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
-    let content = std::fs::read_to_string(path)?;
-    let config: Config = serde_json::from_str(&content)?;
-    Ok(config)
 }
 
 /// CLI overrides layered over the file config.
@@ -616,5 +669,54 @@ mod persisted_config_shape {
             Vec::<String>::new(),
             "unset optional fields must be omitted, not written as null: {persisted}"
         );
+    }
+
+    #[test]
+    fn the_loader_refuses_a_zero_interval_or_timeout_and_a_period_over_the_ceiling() {
+        use rusty_photon_config::ConfigFile as _;
+        let mut zero_interval = loadable_config();
+        zero_interval.serial.polling_interval = std::time::Duration::ZERO;
+        let mut zero_timeout = loadable_config();
+        zero_timeout.serial.timeout = std::time::Duration::ZERO;
+        let mut long_period = loadable_config();
+        long_period.observingconditions.averaging_period = std::time::Duration::from_hours(25);
+        let mut zero_baud = loadable_config();
+        zero_baud.serial.baud_rate = 0;
+        for (field, config) in [
+            ("serial.baud_rate", zero_baud),
+            ("serial.polling_interval", zero_interval),
+            ("serial.timeout", zero_timeout),
+            ("observingconditions.averaging_period", long_period),
+        ] {
+            let reason = config.check().unwrap_err();
+            assert!(reason.contains(field), "{field}: {reason}");
+        }
+    }
+
+    #[test]
+    fn the_loader_leaves_the_port_and_the_ids_to_the_start_path() {
+        use rusty_photon_config::ConfigFile as _;
+        // A shipped example config: ids the bootstrap will mint and a port
+        // `--port` may supply. `doctor` loads such a file before the first
+        // start and must not call it broken.
+        let mut config = Config::default();
+        config.serial.port = String::new();
+        assert_eq!(config.switch.unique_id, "");
+        assert_eq!(config.observingconditions.unique_id, "");
+        config.check().unwrap();
+    }
+
+    #[test]
+    fn a_config_the_setup_page_accepts_passes_the_loader_check() {
+        use rusty_photon_config::ConfigFile as _;
+        loadable_config().check().unwrap();
+    }
+
+    /// The defaults with the ids the bootstrap would have minted.
+    fn loadable_config() -> Config {
+        let mut config = Config::default();
+        config.switch.unique_id = "switch-id".to_string();
+        config.observingconditions.unique_id = "weather-id".to_string();
+        config
     }
 }
