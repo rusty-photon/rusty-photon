@@ -458,6 +458,12 @@ Every reload of the monitor takes this path, whatever fired it (a
 save, `SIGHUP`, or Windows' `ParamChange`). Other drivers keep the
 behaviour above, and their reload ends their clients' sessions.
 
+On Windows, `rig2`'s record
+([2026-10-28-setup-pages-rig2-windows](../validation/2026-10-28-setup-pages-rig2-windows/README.md),
+observation 1) read `is_safe` every 200 ms through two `filemonitor`
+saves: all 186 reads were answered `true`, and `rp` logged no safety
+transition.
+
 ## What is not here
 
 - Nothing Alpaca: the glue from the crate's `SetupRequest` and a device's
