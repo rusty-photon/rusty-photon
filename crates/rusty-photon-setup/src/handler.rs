@@ -448,8 +448,7 @@ impl<D: ConfigurableDriver> SetupPages<D> {
         let owned = self
             .driver_pages
             .as_ref()
-            .map(|p| p.owned_keys())
-            .unwrap_or_default();
+            .map_or_default(|p| p.owned_keys());
         let model = FieldModel::from_schema(&schema)
             .with_secrets(D::secret_pointers())
             .with_file_only(D::file_only_pointers())
