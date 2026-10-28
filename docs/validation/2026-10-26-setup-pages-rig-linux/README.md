@@ -13,7 +13,8 @@ back to the value it replaced, so the configuration ended as it began; the
 credentials ended rotated.
 
 This is not a ConformU run: no driver's Alpaca behaviour was under test.
-`rig2`'s record (Windows, its FocusLynx entry) is still owed.
+`rig2`'s (Windows, its FocusLynx entry) is
+[its own record](../2026-10-28-setup-pages-rig2-windows/README.md).
 
 ## What was tested
 

@@ -1,0 +1,371 @@
+######## filemonitor (localhost:11111)
+TITLE Setup · filemonitor | URL /setup
+FIELDSET File
+FIELDSET Parsing
+FIELDSET Server
+FIELDSET Security
+FIELDSET Devices
+FIELD file.path (text) = "\\\\<share-host>\\<share>\\RoofStatusFile.txt"
+FIELD file.polling_interval (text) = "1m"
+FIELD parsing.case_sensitive (checkbox) = [ ] on
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11111"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY parsing.rules is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+LINK File Safety Monitor -> setup/v1/safetymonitor/0/setup
+BUTTON Save type=submit
+---- setup/v1/safetymonitor/0/setup
+TITLE File Safety Monitor setup · filemonitor | URL /setup/v1/safetymonitor/0/setup
+FIELDSET Device
+FIELD device.description (text) = "ASCOM Alpaca SafetyMonitor that monitors file content"
+FIELD device.name (text) = "File Safety Monitor"
+FIELD device.unique_id (text) = "filemonitor-001"
+HINT The driver owns and mints this id; editing it is an escape hatch for a misbehaving driver, not routine configuration.
+ROW Identity
+LINK ← Server setup -> ../../../../setup
+BUTTON Save type=submit
+######## qhy-camera (localhost:11121)
+TITLE Setup · qhy-camera | URL /setup
+FIELDSET Server
+FIELDSET Cameras
+FIELDSET Security
+FIELDSET Devices
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.discovery_port (number) = ""
+FIELD server.port (number) = "11121"
+FIELD usb_devices.mode (radio) = [x] auto
+FIELD usb_devices.mode (radio) = [ ] list
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT No list: a camera added or removed moves the numbers after it.
+HINT A list: every other QHY camera is left to other applications, and a listed port with no camera is held by a placeholder.
+HINT The checked rows keep the order of the numbers they have, from 0; a newly checked row takes the next. Unchecking a camera moves the numbers after it down, and a save that moves one asks to confirm first.
+HINT A checked filter wheel is numbered the same way among the wheels, and goes with its camera when the camera is unchecked. Its filter names are edited on the wheel's own page.
+HINT Without a list, a wheel is served on each camera whose CFW probe finds one, numbered in their cameras' port order.
+HINT Changing to a list keeps every number, and each camera's names, from its own page, fill its row.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+BUTTON Save type=submit
+######## rp (localhost:11115)
+TITLE Setup · rp | URL /setup
+FIELDSET Ca cert
+FIELDSET Centering
+FIELDSET Cooling
+FIELDSET Imaging
+FIELDSET Planner
+FIELDSET Plate solver
+FIELDSET Safety
+FIELDSET Server
+FIELDSET Session
+FIELDSET Site
+FIELDSET Target store
+FIELDSET Equipment
+FIELDSET Plugins
+FIELDSET Security
+FIELDSET Devices
+FIELD centering.slew_overhead_estimate (text) = "10s"
+FIELD centering.solve_time_estimate (text) = "30s"
+FIELD cooling.max_cooldown (text) = "20m"
+FIELD cooling.max_cooler_power_pct (number) = "90.0"
+FIELD cooling.plateau_threshold_c (number) = "0.5"
+FIELD cooling.plateau_window (text) = "2m"
+FIELD cooling.poll_interval (text) = "10s"
+FIELD cooling.regulation_margin_c (number) = "3.0"
+FIELD cooling.tolerance_c (number) = "1.0"
+FIELD cooling.warm_target_c (number) = "10.0"
+FIELD cooling.warmup_step_interval (text) = "2m"
+FIELD imaging.cache_max_images (number) = "8"
+FIELD imaging.cache_max_mib (number) = "1024"
+FIELD safety.poll_interval (text) = "10s"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.port (number) = "11115"
+FIELD session.data_directory (text) = "C:\\ProgramData\\rusty-photon\\rp\\data"
+FIELD session.directory_pattern (text) = ""
+FIELD session.file_naming_pattern (text) = ""
+FIELD target_store.db_path (text) = ""
+FIELD target_store.default_scheduling.max_moon_illumination_fraction (number) = ""
+FIELD target_store.default_scheduling.meridian_window_hours (number) = ""
+FIELD target_store.default_scheduling.min_altitude_degrees (number) = ""
+FIELD target_store.default_scheduling.min_moon_separation_degrees (number) = ""
+FIELD target_store.import.dedup_arcsec (number) = "30.0"
+FIELD target_store.import.naming_tolerance_arcmin (number) = "10.0"
+FIELD target_store.import.star_naming_tolerance_arcmin (number) = "2.0"
+FIELD equipment.reconnect_interval (text) = "30s"
+FIELD equipment.temperature_event_delta_c (number) = "0.5"
+FIELD equipment.temperature_poll_interval (text) = "30s"
+FIELD origin:equipment.cameras.0 (hidden) = "file:0:qhy600m"
+FIELD equipment.cameras.0.id (text) = "qhy600m"
+FIELD equipment.cameras.0.name (text) = "QHY600M"
+FIELD equipment.cameras.0.alpaca_url (text) = "https://127.0.0.1:11121"
+FIELD equipment.cameras.0.device_number (number) = "1"
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -40
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -35
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -30
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -25
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -20
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -15
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -10
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] -5
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 0
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 5
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 10
+FIELD equipment.cameras.0.cooler_targets_c (checkbox) = [ ] 15
+FIELD equipment.cameras.0.device_type (text) = "camera"
+FIELD equipment.cameras.0.gain (number) = ""
+FIELD equipment.cameras.0.offset (number) = ""
+FIELD equipment.cameras.0.readout_time_estimate (text) = ""
+FIELD equipment.cameras.0.auth.username (text) = "observatory"
+FIELD equipment.cameras.0.auth.password (password) = <empty>
+FIELD equipment.cameras.0.unique_id (text) = ""
+FIELD remove:equipment.cameras.0 (checkbox) = [ ] on
+FIELD add.cameras.id (text) = ""
+FIELD add.cameras.name (text) = ""
+FIELD add.cameras.alpaca_url (text) = ""
+FIELD add.cameras.device_number (number) = "0"
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -40
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -35
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -30
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -25
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -20
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -15
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -10
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] -5
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 0
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 5
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 10
+FIELD add.cameras.cooler_targets_c (checkbox) = [ ] 15
+FIELD add.cameras.device_type (text) = ""
+FIELD add.cameras.gain (number) = ""
+FIELD add.cameras.offset (number) = ""
+FIELD add.cameras.readout_time_estimate (text) = ""
+FIELD add.cameras.auth.username (text) = ""
+FIELD add.cameras.auth.password (password) = <empty>
+FIELD add.cameras.unique_id (text) = ""
+FIELD add.filter_wheels.id (text) = ""
+FIELD add.filter_wheels.alpaca_url (text) = ""
+FIELD add.filter_wheels.device_number (number) = "0"
+FIELD add.filter_wheels.auth.username (text) = ""
+FIELD add.filter_wheels.auth.password (password) = <empty>
+FIELD add.filter_wheels.unique_id (text) = ""
+FIELD origin:equipment.focusers.0 (hidden) = "file:0:focuslynx"
+FIELD equipment.focusers.0.id (text) = "focuslynx"
+FIELD equipment.focusers.0.alpaca_url (text) = "http://127.0.0.1:4247"
+FIELD equipment.focusers.0.device_number (number) = "0"
+FIELD equipment.focusers.0.max_position (number) = ""
+FIELD equipment.focusers.0.min_position (number) = ""
+FIELD equipment.focusers.0.steps_per_sec (number) = "500.0"
+FIELD equipment.focusers.0.auth.username (text) = ""
+FIELD equipment.focusers.0.auth.password (password) = <empty>
+FIELD equipment.focusers.0.unique_id (text) = ""
+FIELD remove:equipment.focusers.0 (checkbox) = [ ] on
+FIELD add.focusers.id (text) = ""
+FIELD add.focusers.alpaca_url (text) = ""
+FIELD add.focusers.device_number (number) = "0"
+FIELD add.focusers.max_position (number) = ""
+FIELD add.focusers.min_position (number) = ""
+FIELD add.focusers.steps_per_sec (number) = "500.0"
+FIELD add.focusers.auth.username (text) = ""
+FIELD add.focusers.auth.password (password) = <empty>
+FIELD add.focusers.unique_id (text) = ""
+FIELD origin:equipment.cover_calibrators.0 (hidden) = "file:0:flat-panel"
+FIELD equipment.cover_calibrators.0.id (text) = "flat-panel"
+FIELD equipment.cover_calibrators.0.alpaca_url (text) = "https://127.0.0.1:11119"
+FIELD equipment.cover_calibrators.0.device_number (number) = "0"
+FIELD equipment.cover_calibrators.0.poll_interval (text) = "3s"
+FIELD equipment.cover_calibrators.0.auth.username (text) = "observatory"
+FIELD equipment.cover_calibrators.0.auth.password (password) = <empty>
+FIELD equipment.cover_calibrators.0.unique_id (text) = ""
+FIELD remove:equipment.cover_calibrators.0 (checkbox) = [ ] on
+FIELD add.cover_calibrators.id (text) = ""
+FIELD add.cover_calibrators.alpaca_url (text) = ""
+FIELD add.cover_calibrators.device_number (number) = "0"
+FIELD add.cover_calibrators.poll_interval (text) = "3s"
+FIELD add.cover_calibrators.auth.username (text) = ""
+FIELD add.cover_calibrators.auth.password (password) = <empty>
+FIELD add.cover_calibrators.unique_id (text) = ""
+FIELD add.rotators.id (text) = ""
+FIELD add.rotators.name (text) = ""
+FIELD add.rotators.alpaca_url (text) = ""
+FIELD add.rotators.device_number (number) = "0"
+FIELD add.rotators.auth.username (text) = ""
+FIELD add.rotators.auth.password (password) = <empty>
+FIELD add.rotators.unique_id (text) = ""
+FIELD add.switches.id (text) = ""
+FIELD add.switches.name (text) = ""
+FIELD add.switches.alpaca_url (text) = ""
+FIELD add.switches.device_number (number) = "0"
+FIELD add.switches.auth.username (text) = ""
+FIELD add.switches.auth.password (password) = <empty>
+FIELD add.switches.unique_id (text) = ""
+FIELD origin:equipment.safety_monitors.0 (hidden) = "file:0:roof"
+FIELD equipment.safety_monitors.0.id (text) = "roof"
+FIELD equipment.safety_monitors.0.alpaca_url (text) = "https://127.0.0.1:11111"
+FIELD equipment.safety_monitors.0.device_number (number) = "0"
+FIELD equipment.safety_monitors.0.auth.username (text) = "observatory"
+FIELD equipment.safety_monitors.0.auth.password (password) = <empty>
+FIELD equipment.safety_monitors.0.unique_id (text) = ""
+FIELD remove:equipment.safety_monitors.0 (checkbox) = [ ] on
+FIELD add.safety_monitors.id (text) = ""
+FIELD add.safety_monitors.alpaca_url (text) = ""
+FIELD add.safety_monitors.device_number (number) = "0"
+FIELD add.safety_monitors.auth.username (text) = ""
+FIELD add.safety_monitors.auth.password (password) = <empty>
+FIELD add.safety_monitors.unique_id (text) = ""
+FIELD add.observing_conditions.id (text) = ""
+FIELD add.observing_conditions.name (text) = ""
+FIELD add.observing_conditions.alpaca_url (text) = ""
+FIELD add.observing_conditions.device_number (number) = "0"
+FIELD add.observing_conditions.auth.username (text) = ""
+FIELD add.observing_conditions.auth.password (password) = <empty>
+FIELD add.observing_conditions.unique_id (text) = ""
+FIELD add.domes.id (text) = ""
+FIELD add.domes.name (text) = ""
+FIELD add.domes.alpaca_url (text) = ""
+FIELD add.domes.device_number (number) = "0"
+FIELD add.domes.auth.username (text) = ""
+FIELD add.domes.auth.password (password) = <empty>
+FIELD add.domes.unique_id (text) = ""
+FIELD add.mount.alpaca_url (text) = ""
+FIELD add.mount.device_number (number) = "0"
+FIELD add.mount.settle_after_slew (text) = ""
+FIELD add.mount.slew_rate_arcsec_per_sec (number) = "7200.0"
+FIELD add.mount.auth.username (text) = ""
+FIELD add.mount.auth.password (password) = <empty>
+FIELD add.mount.unique_id (text) = ""
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY ca_cert is edited in the configuration file; it is set.
+FILE-ONLY planner is edited in the configuration file; it is not set.
+FILE-ONLY plate_solver is edited in the configuration file; it is not set.
+FILE-ONLY safety.gate.gated is edited in the configuration file; it is set.
+FILE-ONLY safety.gate.ungated is edited in the configuration file; it is set.
+FILE-ONLY server.advertised_url is edited in the configuration file; it is not set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+FILE-ONLY site is edited in the configuration file; it is set.
+FILE-ONLY target_store.default_goals is edited in the configuration file; it is set.
+FILE-ONLY target_store.default_grading is edited in the configuration file; it is not set.
+FILE-ONLY equipment.optical_trains is edited in the configuration file; it is set.
+FILE-ONLY equipment.focusers.0.backlash is edited in the configuration file; it is set.
+FILE-ONLY equipment.focusers.0.microns_per_step is edited in the configuration file; it is not set.
+FILE-ONLY A registration is the plugin's own vocabulary, which no form here renders: the plugins are edited in the configuration file (plugins).
+HINT The roster: what rp connects to. Each entry opens to its settings; the links lead to its driver's own pages.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Blank keeps the stored password while the address stays as it is.
+HINT The UniqueID the device at this number must report, or rp refuses the connect. Blank leaves the entry unpinned.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT The UniqueID the device at this number must report, or rp refuses the connect. Blank leaves the entry unpinned.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Blank keeps the stored password while the address stays as it is.
+HINT The UniqueID the device at this number must report, or rp refuses the connect. Blank leaves the entry unpinned.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Blank keeps the stored password while the address stays as it is.
+HINT The UniqueID the device at this number must report, or rp refuses the connect. Blank leaves the entry unpinned.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its id is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None.
+HINT Saved with the page when its address is filled.
+HINT Blank, with a blank password: rp presents no credential.
+HINT Needed with a username.
+HINT None registered.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+ROW [led off] qhy600m | QHY600M | https://127.0.0.1:11121 · device 1 | as observatory
+  ROW-DETAIL State: not connected
+ROW Identity
+ROW Add a camera
+ROW Add a filter wheel
+ROW [led off] focuslynx | http://127.0.0.1:4247 · device 0 | no credential
+  ROW-DETAIL State: not connected
+ROW Identity
+ROW Add a focuser
+ROW [led off] flat-panel | https://127.0.0.1:11119 · device 0 | as observatory
+  ROW-DETAIL State: not connected
+ROW Identity
+ROW Add a cover calibrator
+ROW Add a rotator
+ROW Add a switch
+ROW [led on] roof | https://127.0.0.1:11111 · device 0 | as observatory
+  ROW-DETAIL State: connected | Bound to: File Safety Monitor · filemonitor-001
+ROW Identity
+ROW Add a safety monitor
+ROW Add an observing conditions device
+ROW Add a dome
+ROW Add a mount
+LINK Driver's setup page -> https://localhost:11121/setup
+LINK This device's page -> https://localhost:11121/setup/v1/camera/1/setup
+LINK Driver's setup page -> http://localhost:4247/setup
+LINK This device's page -> http://localhost:4247/setup/v1/focuser/0/setup
+LINK Driver's setup page -> https://localhost:11119/setup
+LINK This device's page -> https://localhost:11119/setup/v1/covercalibrator/0/setup
+LINK Driver's setup page -> https://localhost:11111/setup
+LINK This device's page -> https://localhost:11111/setup/v1/safetymonitor/0/setup
+BUTTON Save type=submit
+######## ui-htmx (localhost:11120)
+TITLE Setup · ui-htmx | URL /setup
+FIELDSET Rp
+FIELDSET Server
+FIELDSET Security
+FIELDSET Devices
+FIELD rp.base_url (text) = "https://127.0.0.1:11115"
+FIELD rp.ca_cert_path (text) = "C:\\ProgramData\\rusty-photon\\pki\\ca.pem"
+FIELD server.bind_address (text) = "0.0.0.0"
+FIELD server.port (number) = "11120"
+FIELD auth.username (text) = "observatory"
+FIELD auth.password (password) = <empty>
+FIELD auth.password_repeat (password) = <empty>
+FILE-ONLY rp.auth is edited in the configuration file; it is set.
+FILE-ONLY server.tls is edited in the configuration file; it is set.
+HINT Requests need this username and password. Leave the password blank to keep the stored one; clear the username and the password fields to require no credential.
+HINT Blank keeps the stored password.
+HINT This server serves no device.
+BUTTON Save type=submit
+######## sentinel (localhost:11114)
+TITLE Sentinel Dashboard | URL /
+BUTTON Restart type=submit
+BUTTON Restart type=submit
+BUTTON Restart type=submit
+BUTTON Restart type=submit
+BUTTON Restart type=submit
+BUTTON Restart type=submit
