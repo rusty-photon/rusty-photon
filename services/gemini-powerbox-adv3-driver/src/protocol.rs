@@ -1021,6 +1021,17 @@ mod tests {
         assert!(frame.lens_probe_attached);
         assert_eq!(frame.lens_temperature, Some(24.38));
         assert_eq!(frame.humidity, Some(0.0));
+
+        // The AHT20 back in while the probe was still out: the lens field
+        // alone holds the bare `0`.
+        let probe_out = "1111D111111U1A0T1A1M1B1M100C100C0S 25.13T 71.55H 19.63D12.2V 0.03C  0.36P";
+        let frame: StatusFrame = probe_out.parse().unwrap();
+        assert!(frame.ambient_sensor_attached);
+        assert!(!frame.lens_probe_attached);
+        assert_eq!(frame.lens_temperature, Some(0.0));
+        assert_eq!(frame.ambient_temperature, Some(25.13));
+        assert_eq!(frame.humidity, Some(71.55));
+        assert_eq!(frame.dew_point, Some(19.63));
     }
 
     #[test]

@@ -7,7 +7,7 @@ It covers items 1, 2, 4 and 6 of the design doc's
 [hardware validation list](../../services/gemini-powerbox-adv3-driver.md#hardware-validation):
 a write probe over the serial port for the three protocol questions, and ConformU
 through the driver for both devices, the Switch suites twice — once with both dew
-channels in Manual, the hub's power-up state, and once with both in Auto, so each
+channels in Manual, the state the unit was found in, and once with both in Auto, so each
 dew row is found writable in the mode that allows it and read-only in the other.
 
 Items 3 (the frame with a sensor unplugged) and 5 (output state across a hub power
@@ -61,13 +61,13 @@ ConformU found `DEW6 Duty` and `DEW7 Duty` writable (and drove them 0–100) and
 — the loop's own output with the lens 4 °C above the dew point — and the `Enabled`
 and `Mode` rows written and read back. Between the passes the modes were set to Auto
 through the driver; after the Auto pass the enabled flags, the modes, the duties and
-every output were written back, and the driver read the power-up state again: every
+every output were written back, and the driver read the as-found state again: every
 output `1`, both channels Manual, enabled, 100 %.
 
 ### The write path on hardware
 
 The driver's log over both passes: **414 switch writes — ConformU's, and the
-eighteen that set the modes to Auto between its passes and restored the power-up
+eighteen that set the modes to Auto between its passes and restored the as-found
 state after them — all confirmed, none failed.** 30 of them (7 %) took the write
 path's second look — the first frame read
 after the set was a periodic frame that predated it, showing the old value — and the
@@ -84,7 +84,7 @@ window it covers.
 with a `>G#` behind it**, exactly the request the driver composes, and logs every
 chunk with a timestamp and every complete `*G` frame parsed. Sixteen sets, DEW7 and
 the USB ports never touched, DC3 the one output toggled, and the end state the
-power-up state. Its output is [`write-probe.log`](write-probe.log).
+as-found state. Its output is [`write-probe.log`](write-probe.log).
 
 | Item | Question | Measured |
 |---|---|---|
@@ -118,16 +118,22 @@ timestamp. Neither involves the driver: the facts are the hub's. Times are PDT.
 seconds and prints every frame raw, then split: the fixed fields 0–9, the sensor
 and electrical remainder exactly as written, and whether the driver's shape (each
 sensor field ending at its own tag) still matches. A label file names the phase on
-every line. The operator pulled and replugged the sensors in four steps, 17:03–17:11;
+every line. The operator pulled and replugged the sensors between 17:03 and 17:11;
 the output is [`sensor-probe.log`](sensor-probe.log).
 
 | Step | State | Flags | Sensor fields as written | Driver shape |
 |---|---|---|---|---|
 | 0 | both attached | `U1A1T` | ` 24.06S 25.17T 71.20H 19.58D` | matches |
 | 1 | AHT20 out | `U0A1T` | ` 24.06S0T0H0D` | matches |
-| 2 | both out | `U0A0T` | `0S0T0H0D` | matches |
-| 3 | DS18B20 back, AHT20 out | `U0A1T` | ` 24.38S0T0H0D` | matches |
-| 4 | both back | `U1A1T` | ` 24.38S 25.07T 71.63H 19.59D` | matches |
+| 2 | DS18B20 out too: both out | `U0A0T` | `0S0T0H0D` | matches |
+| 3a | AHT20 back in, DS18B20 still out | `U1A0T` | `0S 25.13T 71.55H 19.63D` | matches |
+| 3b | AHT20 out again: both out | `U0A0T` | `0S0T0H0D` | matches |
+| 3c | DS18B20 back in, AHT20 out | `U0A1T` | ` 24.38S0T0H0D` | matches |
+| 4 | AHT20 back in: both attached | `U1A1T` | ` 24.38S 25.07T 71.63H 19.59D` | matches |
+
+Step 3 was asked for as one move — the probe back in, the AHT20 left out — and the
+log shows the operator made three: the AHT20 in at 87 s of the second run, out again
+at 102 s, then the probe in. The table follows the log.
 
 **The firmware writes a bare `0`** — one character, no padding — into each field
 the missing sensor would fill, and drops the flag in the same frame; nothing else
@@ -142,9 +148,10 @@ the internal `1a86:8091` hub, the CH340 serial link and a VIA Labs billboard
 device — which re-enumerated about three seconds later with `ttyUSB0` back under
 the same name ([`usb-journal.log`](usb-journal.log)); the probe's next write failed
 with `EIO`, which is the two tracebacks in the sensor log, and it was restarted
-each time. Pulling and replugging the AHT20 did not: the probe ran through both
-without losing the port. The operator confirmed only the probe's plug moved. Two of
-two for the jack, zero of two for the AHT20's connector.
+each time. The AHT20's connector did not: it moved four times (steps 1, 3a, 3b and
+4) and the probe ran through every one without losing the port. The operator
+confirmed only the probe's plug moved. Two of two for the jack, zero of four for the
+AHT20's connector.
 
 ### Item 5: output state across a power cycle
 
@@ -157,7 +164,7 @@ process because the hub's CH340 dies with its 12 V; the output is
 | `before` | 17:11 | Baseline every output on, both channels Manual, enabled, 100 %. Set, each in one buffer with a `>G#` behind it: DC3 off, USB A off, DEW6 duty 50, DEW6 mode Switch, DEW6 disabled. Frame before the cut: `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`, DEW7 untouched |
 | the cut | 17:13:20–17:13:34 | The operator cut the hub's 12 V input; the kernel saw the USB tree go at 17:13:20 and come back at 17:13:34, `ttyUSB0` attached at 17:13:36 — 14 s without power |
 | `after` | 17:13 | Waited for the port to vanish and return, then listened 12 s without sending: **nothing arrived** — the hub does not stream until asked, after a power-up as after an open. `>H#` → `*HGeminiPowerBoxPlusAdv3#`, `>V#` → `*V308#`, `>G#` → `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`: **every setting as before the cut** |
-| `restore` | 17:14 | DC3 on, USB A on, DEW6 Manual, enabled, 100 %, each confirmed in the frame behind it; final frame the power-up state found on 2026-10-26 |
+| `restore` | 17:14 | DC3 on, USB A on, DEW6 Manual, enabled, 100 %, each confirmed in the frame behind it; final frame the state the unit was found in on 2026-10-26 |
 
 **The hub keeps its outputs, its USB ports and each dew channel's mode, flag and
 duty across a power cycle.** One cycle of 14 s on one unit; the USB chips were

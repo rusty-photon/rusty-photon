@@ -371,8 +371,8 @@ ports, dew channels, then telemetry.
 The voltage, current and power ceilings are the vendor driver's (19 V,
 15 A, 180 W); the box is rated 10 A at 12 V. The temperature ceilings are
 the sensors' own: 85 °C is the AHT20's operating maximum and 125 °C the
-DS18B20's, so a probe strapped under a heater at full power — the hub's
-power-up default — still reads inside its row. The voltage step is 0.1
+DS18B20's, so a probe strapped under a heater at full power — a channel left
+at 100 % Manual, as both units were found — still reads inside its row. The voltage step is 0.1
 because the frame carries one decimal there and two everywhere else.
 Every row publishes what the frame carries: the parser neither clamps nor
 range-checks, as [`ppba-driver`](ppba-driver.md#the-current-is-a-sense-count-not-amps)
@@ -432,6 +432,14 @@ resumed at the `0` the loop had reached). The hub has one duty register
 per channel and both the loop and `>X`/`>Y` write it, so an operator who
 wants a particular manual duty writes the mode first and the duty after.
 
+The enabled flag persists across modes the same way (measured 2026-10-27:
+a channel disabled in Switch mode and then set to Manual read `Enabled 0`
+in Manual, and the hub took a `>Z11#` there). `DEWn Enabled` stays
+read-only in Manual all the same — the owner's decision on 2026-10-27 —
+so an operator who finds a channel disabled in Manual sets the flag from
+Switch or Auto and returns to Manual. Whether the flag gates the heater in
+Manual was not measured: no heater was attached.
+
 ### Sensor presence and the absent-sensor sentinel
 
 The frame says whether each sensor is attached (fields 2 and 3), and the
@@ -471,8 +479,8 @@ driver believes the flag over the number. When a flag is `0`:
 What the firmware writes into fields 10–13 while a sensor is unplugged is
 a bare `0`, no padding, in each field the sensor would fill, with the flag
 dropped in the same frame: `…C 24.06S0T0H0D…` with the AHT20 out,
-`…C0S0T0H0D…` with both out ([hardware validation](#hardware-validation),
-item 3). The mock writes the same. A `0` is a finite number, so the parser
+`…C0S 25.13T 71.55H 19.63D…` with the probe out, `…C0S0T0H0D…` with both
+out ([hardware validation](#hardware-validation), item 3). The mock writes the same. A `0` is a finite number, so the parser
 keeps it, and it is the flag that makes the rows read the sentinel and the
 windows take no sample; the tolerance for non-numbers stays for whatever
 3.0.8 leaves in a field it misreports as attached.
@@ -798,7 +806,7 @@ its first start.
 | Condition | Result |
 |-----------|--------|
 | Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
-| The DS18B20's jack pulled or inserted while the hub is powered | The hub's USB side re-enumerates and the port is gone for about three seconds (measured); the request in flight fails as a transport error and the shared supervisor reconnects with the read-only handshake, retrying every 5 s until the port is back. Plug the lens probe before powering the hub. |
+| The DS18B20's jack pulled or inserted while the hub is powered | The hub's USB side re-enumerates and the port is gone for about three seconds (measured with no port open; not yet with the driver holding it). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake. A `by-path` or `by-id` link in `serial.port` is found again when it returns; a raw `/dev/ttyUSBn` node — the default — can come back under the next number while the driver still holds the old one, and then no retry finds it: restart the service. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
@@ -949,8 +957,8 @@ facts this design could not, each recorded in the run's
 3. **Absent sensors.** The frame with the AHT20 unplugged, and with the
    DS18B20 unplugged: fields 2/3 and whatever the firmware puts in 10–13.
    *Answered 2026-10-27:* the flag drops and each of the sensor's fields
-   reads a bare `0` — `0T0H0D` for the AHT20, `0S` for the probe — and
-   nothing else in the frame changes; a replugged sensor's flag and
+   reads a bare `0` — `0T0H0D` for the AHT20, `0S` for the probe, in every
+   combination — and nothing else in the frame changes; a replugged sensor's flag and
    readings return the same way. Pulling or inserting the DS18B20's 3.5 mm
    jack while the hub is powered drops the hub's whole USB side for about
    three seconds, so the serial port goes away and comes back; the AHT20's

@@ -53,7 +53,7 @@ pub const RAW_IDENTITY_PREFIX: &str = "raw:";
 /// Two flags, AHT20 then DS18B20: `10` is the AHT20 only. Default `11`.
 pub const ENV_SENSORS: &str = "GEMINI_MOCK_SENSORS";
 /// The two mode digits at start, DEW6 then DEW7: `00` is both in Auto.
-/// Default `11`, the hub's power-up state.
+/// Default `11`, both Manual: the state the dev box's unit was found in.
 pub const ENV_DEW_MODES: &str = "GEMINI_MOCK_DEW_MODES";
 /// The input voltage the frame carries, e.g. `24.0`. Default `12.2`.
 pub const ENV_INPUT_VOLTAGE: &str = "GEMINI_MOCK_INPUT_VOLTAGE";
