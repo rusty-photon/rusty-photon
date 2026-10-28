@@ -44,8 +44,8 @@ options are labelled and explained on the page
 Left open: the rig validation §Testing asks for (each driver's page
 opened, saved and reloaded from a laptop on `pier1` and `rig2`, a
 validation record per rig) is recorded for `pier1`
-([record](../../validation/2026-10-26-setup-pages-rig-linux/README.md), 2026-10-26) and still owed
-for `rig2`. The fork's fixes are
+([record](../../validation/2026-10-26-setup-pages-rig-linux/README.md), 2026-10-26) and for
+`rig2` ([record](../../validation/2026-10-28-setup-pages-rig2-windows/README.md), 2026-10-28). The fork's fixes are
 still not offered upstream, as the owner decided on 2026-10-17. Of
 §Found on the way, the origin check's trust in `Host` stays open; the
 `doctor auth rotate` and `doctor.md` items were fixed in the PR that

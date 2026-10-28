@@ -16,7 +16,7 @@ or restart. Every page that rig2 serves loaded, and every save landed:
 Each change was then saved back to the value it replaced, and every
 config file ended byte-identical to its copy taken before the upgrade.
 Two services served no page: `dsd-fp2`'s panel was unpowered, and
-`upbv2-driver` stays stopped on this rig. So the credential round trip is
+`upbv2-driver` is kept stopped on this rig. So the credential round trip is
 `pier1`'s alone ([its record](../2026-10-26-setup-pages-rig-linux/README.md)).
 
 This is not a ConformU run: no driver's Alpaca behaviour was under test.
@@ -27,7 +27,7 @@ This is not a ConformU run: no driver's Alpaca behaviour was under test.
 |---|---|
 | Commit | [`63979d2f`](https://github.com/rusty-photon/rusty-photon/commit/63979d2f) (`main`, the merge of #1655), published by the nightly run [40607323460](https://github.com/rusty-photon/rusty-photon/actions/runs/40607323460) as `0.1.0+nightly.202610280013.g63979d2` |
 | Build | The published nightly's suite MSI, `rusty-photon-0.1.0+nightly.202610280013.g63979d2-x64.msi`. Its SHA256 matched the release's `SHA256SUMS.txt`; nightlies are not Authenticode-signed |
-| Host | `rig2`: Windows 11 Pro (10.0.26200, x64) at a remote observatory, the services running under the SCM. Every service serves TLS with a certificate from doctor's private CA and asks for the observatory credential. Pegasus Unity owns the UPBv2 hub's port, so `upbv2-driver` is kept stopped. Optec's FocusLynx Alpaca server (plain HTTP, port 4247) drives the focuser. The cameras and the flat panel were unpowered |
+| Host | `rig2`: Windows 11 Pro (10.0.26200, x64) at a remote observatory, the services running under the SCM. Every service serves TLS with a certificate from doctor's private CA and asks for the observatory credential. Pegasus Unity owns the UPBv2 hub's port, so `upbv2-driver` is kept stopped by hand. Its start type is automatic, so a reboot or an upgrade starts it again (observation 2). Optec's FocusLynx Alpaca server (plain HTTP, port 4247) drives the focuser. The cameras and the flat panel were unpowered |
 | Upgrade | From nightly `g689f851` (2026-10-03) with `msiexec /i … /qn`, in place, the feature set carried over (Programs & Features: `0.1.0.26276` to `0.1.0.26301`). Before it, each new binary's read-only `doctor --config`, run from an administrative extract of the MSI, passed on rig2's 7 configs. The new central doctor reported the same 4 hardware findings as the installed one: the flat panel's and the QHY cameras' devices absent, and one USB device Windows had stopped (code 43). No file was migrated, and the upgrade changed no config file |
 | Client | A Fedora 44 x86_64 machine off-site, standing in for the laptop: headless Firefox 158.0 driven over W3C WebDriver (geckodriver 0.37.1). It reached rig2 over SSH, with each service's port forwarded to the client's loopback, because rig2's certificates name only `localhost` and the rig's own host name. The browser accepted those certificates for the session, and `curl` verified the same endpoints against rig2's CA. Each page was opened, filled and saved through the browser, so the requests carried the browser's own `Sec-Fetch-Site` and `Origin`, and the reload wait ran its own script. The Basic credential was entered once per origin |
 
@@ -53,6 +53,10 @@ by a second that restored the value; both are counted in the times.
   confirmation: no camera was powered.
 - FocusLynx's pages were checked from rig2, not opened in the browser:
   port 4247 was not forwarded.
+- Whether `qhy-camera`'s discovery responder bound UDP 32227 while the
+  port was set. On rig2 Optec's FocusLynx server holds that port for its
+  own responder, and only the first endpoint on it was read during the
+  save; after the port was cleared, FocusLynx's was the only one.
 - The bound-credential confirmation (a changed address with its stored
   credential kept or removed).
 
@@ -70,7 +74,8 @@ by a second that restored the value; both are counted in the times.
    2026-10-03 upgrade it went on retrying for days. A plain stop lands
    between restarts and does not end the loop. It was ended by disabling
    the service until its next restart failed, then setting it back to
-   automatic, which leaves it stopped as it was found.
+   automatic. That leaves it as it was found: stopped, but automatic, so
+   the next reboot or upgrade starts the loop again.
 3. **`dsd-fp2` without its panel restarts every 5 s.** The upgrade
    restarted it while the panel was unpowered, so its startup check found
    no port and the service stopped with a failure, which the SCM restarts
