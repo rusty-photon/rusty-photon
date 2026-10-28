@@ -100,9 +100,13 @@ Two consequences of the CH340's stock descriptor:
 - **The by-id link is not unit-specific.** Every CH340 without a serial
   number — the Gemini Motorized Flat Panel V3 and the Gemini focuser
   included — gets the same `usb-1a86_USB_Serial-if00-port0` name, and udev
-  keeps only one of them. A rig with two such devices configures
-  `serial.port` as a `/dev/serial/by-path/…` link (stable per physical USB
-  port) or the raw node, not the by-id link.
+  keeps only one of them. On a rig with one such device that link is the
+  right `serial.port`, and the Linux default: it follows the hub when its
+  USB side re-enumerates and the kernel hands it another `ttyUSBn`
+  ([error behaviour](#error-behaviour)). A rig with two such devices
+  configures a `/dev/serial/by-path/…` link (stable per physical USB port)
+  instead — not the raw node, which is not found again after a
+  re-enumeration.
 
 On Windows the vendor's download page says the CH341SER driver "must be
 installed first during initial setup"; the hub then appears as a COM port.
@@ -477,10 +481,12 @@ driver believes the flag over the number. When a flag is `0`:
   The state and electrical fields stay strict.
 
 What the firmware writes into fields 10–13 while a sensor is unplugged is
-a bare `0`, no padding, in each field the sensor would fill, with the flag
-dropped in the same frame: `…C 24.06S0T0H0D…` with the AHT20 out,
-`…C0S 25.13T 71.55H 19.63D…` with the probe out, `…C0S0T0H0D…` with both
-out ([hardware validation](#hardware-validation), item 3). The mock writes the same. A `0` is a finite number, so the parser
+a bare `0`, no padding, in each field the sensor would fill:
+`…C 24.06S0T0H0D…` with the AHT20 out, `…C0S 25.13T 71.55H 19.63D…` with
+the probe out, `…C0S0T0H0D…` with both out
+([hardware validation](#hardware-validation), item 3). The AHT20's flag
+dropped in the same frame as its fields; the probe's transitions were not
+seen in-stream, since its jack resets the hub's USB side. The mock writes the same. A `0` is a finite number, so the parser
 keeps it, and it is the flag that makes the rows read the sentinel and the
 windows take no sample; the tolerance for non-numbers stays for whatever
 3.0.8 leaves in a field it misreports as attached.
@@ -716,7 +722,7 @@ boxes.
 ```json
 {
   "serial": {
-    "port": "/dev/ttyUSB0",
+    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
     "polling_interval": "5s",
     "timeout": "2s"
   },
@@ -749,11 +755,11 @@ would refuse. Two differences:
 | Field | Here |
 |-------|------|
 | `serial.baud_rate` | **absent**. The hub speaks 19200 only ([Link and framing](#link-and-framing)). |
-| `serial.port` default | `/dev/ttyUSB0` on Unix, `COM3` on Windows — the repo's placeholder convention, which the operator edits. On a rig with a second CH340 device, a `by-path` link ([Device identity](#device-identity)). |
+| `serial.port` default | `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` on Linux — the link every Gemini CH340 gets, which follows the hub across a USB re-enumeration; `COM3` on Windows, a placeholder the operator edits, as on macOS. On a rig with a second CH340 device, a `by-path` link ([Device identity](#device-identity)). |
 
 | Section | Field | Description | Default |
 |---------|-------|-------------|---------|
-| serial | port | Serial port path | placeholder, see above |
+| serial | port | Serial port path | the by-id link on Linux, a placeholder elsewhere; see above |
 | serial | polling_interval | Status poll interval (humantime) | `"5s"` |
 | serial | timeout | Reply timeout per request (humantime) | `"2s"` |
 | server | port | HTTP server port | 11132 |
@@ -806,7 +812,7 @@ its first start.
 | Condition | Result |
 |-----------|--------|
 | Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
-| The DS18B20's jack pulled or inserted while the hub is powered | The hub's USB side re-enumerates and the port is gone for about three seconds (measured with no port open; not yet with the driver holding it). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake. A `by-path` or `by-id` link in `serial.port` is found again when it returns; a raw `/dev/ttyUSBn` node — the default — can come back under the next number while the driver still holds the old one, and then no retry finds it: restart the service. Plug the lens probe before powering the hub. |
+| The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not yet with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
@@ -958,8 +964,10 @@ facts this design could not, each recorded in the run's
    DS18B20 unplugged: fields 2/3 and whatever the firmware puts in 10–13.
    *Answered 2026-10-27:* the flag drops and each of the sensor's fields
    reads a bare `0` — `0T0H0D` for the AHT20, `0S` for the probe, in every
-   combination — and nothing else in the frame changes; a replugged sensor's flag and
-   readings return the same way. Pulling or inserting the DS18B20's 3.5 mm
+   combination — and nothing else in the frame changes; the AHT20's flag
+   and fields changed in one frame, out and back, while the probe's
+   transitions fell inside the USB reset its jack causes and were not
+   seen in-stream. Pulling or inserting the DS18B20's 3.5 mm
    jack while the hub is powered drops the hub's whole USB side for about
    three seconds, so the serial port goes away and comes back; the AHT20's
    connector does not ([record](#real-hardware-validation)).
@@ -974,7 +982,8 @@ facts this design could not, each recorded in the run's
    fact for this document. *Answered 2026-10-27:* as they were. DC3 and
    USB A off, DEW6 at 50 % in Switch mode and disabled, set before a 14 s
    cut, were all in the first frame after it; the hub also sent nothing on
-   its own for the 12 s before the first `>G#`, as on a fresh open.
+   its own for the 12 s before the first `>G#`: a power-up disarms the
+   stream, which a port close does not.
 6. **ConformU**, all four suites, clean, in both dew modes, with the
    version gate first and **both sensors attached**: a `DEWn Mode` write
    to Auto is refused while either sensor is absent, so a run started with

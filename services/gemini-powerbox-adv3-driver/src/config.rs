@@ -174,15 +174,17 @@ const fn default_averaging_period() -> Duration {
     Duration::from_mins(5)
 }
 
-/// Platform-dependent default serial port. Both values are placeholders the
-/// operator replaces with the real device path: the driver restart-loops
-/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyUSB0`). On a
-/// rig with a second CH340 device, a `/dev/serial/by-path/…` link, since
-/// every Gemini CH340 shares the one by-id name.
+/// Platform-dependent default serial port. On Linux it is the hub's `by-id`
+/// link, which every Gemini CH340 gets and which follows the device when
+/// the hub's USB side re-enumerates and the kernel hands it another
+/// `ttyUSBn` (a raw node would not be found again). A rig with a second
+/// CH340 device sets a `/dev/serial/by-path/…` link instead, since the
+/// by-id name is shared. On Windows (`COM3`) and macOS the value is a
+/// placeholder the operator replaces; the driver restart-loops until then.
 #[cfg(windows)]
 const DEFAULT_SERIAL_PORT: &str = "COM3";
 #[cfg(not(windows))]
-const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+const DEFAULT_SERIAL_PORT: &str = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0";
 
 impl Default for SerialConfig {
     fn default() -> Self {
@@ -352,7 +354,10 @@ mod tests {
         );
 
         #[cfg(not(windows))]
-        assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        assert_eq!(
+            config.serial.port,
+            "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+        );
         #[cfg(windows)]
         assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.polling_interval, Duration::from_secs(5));

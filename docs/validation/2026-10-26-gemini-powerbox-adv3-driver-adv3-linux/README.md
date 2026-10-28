@@ -136,9 +136,10 @@ log shows the operator made three: the AHT20 in at 87 s of the second run, out a
 at 102 s, then the probe in. The table follows the log.
 
 **The firmware writes a bare `0`** — one character, no padding — into each field
-the missing sensor would fill, and drops the flag in the same frame; nothing else
-in the frame changes, no `*`, no letter, no blank. A replugged sensor comes back
-the same way, flag and readings together. How long the firmware takes to notice a
+the missing sensor would fill; nothing else in the frame changes, no `*`, no
+letter, no blank. The AHT20's flag and its fields changed in one frame, out and
+back; the probe's transitions fell inside the USB reset its jack causes, so no
+frame shows one. How long the firmware takes to notice a
 pull was not timed: the operator waited a few seconds before answering, and the
 first frame read after each answer already showed the change.
 
@@ -163,7 +164,7 @@ process because the hub's CH340 dies with its 12 V; the output is
 |---|---|---|
 | `before` | 17:11 | Baseline every output on, both channels Manual, enabled, 100 %. Set, each in one buffer with a `>G#` behind it: DC3 off, USB A off, DEW6 duty 50, DEW6 mode Switch, DEW6 disabled. Frame before the cut: `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`, DEW7 untouched |
 | the cut | 17:13:20–17:13:34 | The operator cut the hub's 12 V input; the kernel saw the USB tree go at 17:13:20 and come back at 17:13:34, `ttyUSB0` attached at 17:13:36 — 14 s without power |
-| `after` | 17:13 | Waited for the port to vanish and return, then listened 12 s without sending: **nothing arrived** — the hub does not stream until asked, after a power-up as after an open. `>H#` → `*HGeminiPowerBoxPlusAdv3#`, `>V#` → `*V308#`, `>G#` → `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`: **every setting as before the cut** |
+| `after` | 17:13 | Waited for the port to vanish and return, then listened 12 s without sending: **nothing arrived** — a hub nobody has asked since power-up does not stream; one that was asked keeps streaming across a close and reopen, as the `before` phase's first bytes show. `>H#` → `*HGeminiPowerBoxPlusAdv3#`, `>V#` → `*V308#`, `>G#` → `DC=1011 USB=011111 DEW6 en=0 mode=2 duty=50`: **every setting as before the cut** |
 | `restore` | 17:14 | DC3 on, USB A on, DEW6 Manual, enabled, 100 %, each confirmed in the frame behind it; final frame the state the unit was found in on 2026-10-26 |
 
 **The hub keeps its outputs, its USB ports and each dew channel's mode, flag and
