@@ -39,6 +39,8 @@ rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-setup = { workspace = true }
 tokio-util = { workspace = true }
+# `ServiceExt::oneshot`: a request answered by the router current when it arrives.
+tower = { workspace = true, features = ["util"] }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no

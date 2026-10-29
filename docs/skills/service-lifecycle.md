@@ -197,11 +197,11 @@ resolving future.
 
 A reload like this ends every client's connection to the rebuilt
 devices. A safety monitor keeps its clients instead, because `rp` parks
-on a monitor it cannot read: `filemonitor`'s `run_server_loop` keeps its
-listener while the address is unchanged, serves the rebuilt server on it
-through `rusty-photon-tls`'s `serve_plain_on` / `serve_tls_on` (which
-return once they have stopped accepting, leaving the old connections to
-finish), and connects the rebuilt device when the old one was connected
+on a monitor it cannot read. While the address and `server.tls` are
+unchanged, `filemonitor`'s `run_server_loop` keeps accepting and closes
+no connection. Each request is answered by the router current when it
+arrives, and the reload makes the rebuilt server's router current after
+connecting its device, when the old one was connected
 ([rusty-photon-setup § A reload that keeps its
 clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
 

@@ -7,7 +7,7 @@ use std::time::Duration;
 use ascom_alpaca::api::SafetyMonitor;
 use bdd_infra::setup_pages;
 use cucumber::{given, then, when};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 use crate::world::FilemonitorWorld;
@@ -22,6 +22,10 @@ const READER_BUDGET: Duration = Duration::from_secs(60);
 
 /// The first byte of a TLS handshake record.
 const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
+
+/// How long a read over the kept-alive connection may take, a bound on a
+/// response that never comes rather than an expected duration.
+const KEPT_ALIVE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A client reading `is_safe` on a fixed period until told the reload is
 /// over, then for [`READS_AFTER_THE_RELOAD`] more reads.
@@ -57,6 +61,81 @@ impl Reader {
             .await
             .unwrap_or_else(|_| panic!("the reader did not finish within {READER_BUDGET:?}"))
             .expect("the reader task panicked")
+    }
+}
+
+/// One HTTP/1.1 connection a client keeps open, spoken by hand so that
+/// every request it makes goes over that one connection.
+#[derive(Debug)]
+pub struct KeptAlive {
+    stream: tokio::net::TcpStream,
+    port: u16,
+    requests: u32,
+}
+
+impl KeptAlive {
+    async fn open(port: u16) -> Self {
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("the kept-alive client connects");
+        Self {
+            stream,
+            port,
+            requests: 0,
+        }
+    }
+
+    /// `GET` `is_safe` over this connection and return its `Value`, or
+    /// how the connection failed.
+    async fn is_safe(&mut self) -> Result<bool, String> {
+        self.requests += 1;
+        let request = format!(
+            "GET /api/v1/safetymonitor/0/issafe?ClientID=1&ClientTransactionID={} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            self.requests, self.port
+        );
+        self.stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| format!("the request did not send: {e}"))?;
+
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            match self.stream.read(&mut byte).await {
+                Ok(0) => {
+                    return Err(format!(
+                        "the server closed the connection after {} byte(s) of a response",
+                        head.len()
+                    ))
+                }
+                Ok(_) => head.extend_from_slice(&byte),
+                Err(e) => return Err(format!("the connection failed: {e}")),
+            }
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        if !head.starts_with("HTTP/1.1 200") {
+            return Err(format!("the response was not a 200: {head:?}"));
+        }
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .ok_or_else(|| format!("the response has no Content-Length: {head:?}"))?;
+        let mut body = vec![0u8; length];
+        self.stream
+            .read_exact(&mut body)
+            .await
+            .map_err(|e| format!("the response body did not arrive: {e}"))?;
+        let body: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| format!("the response body is not JSON: {e}"))?;
+        body["Value"]
+            .as_bool()
+            .ok_or_else(|| format!("the response has no boolean Value: {body}"))
     }
 }
 
@@ -112,6 +191,33 @@ async fn rebuilt_server_answers(world: &mut FilemonitorWorld) {
         |_| true,
     )
     .await;
+}
+
+#[when("a client opens a kept-alive connection")]
+async fn client_opens_kept_alive(world: &mut FilemonitorWorld) {
+    let port = world
+        .filemonitor
+        .as_ref()
+        .expect("filemonitor is not running")
+        .port();
+    world.kept_alive = Some(KeptAlive::open(port).await);
+}
+
+#[then(expr = "is_safe read over the kept-alive connection returns {word}")]
+async fn kept_alive_reads(world: &mut FilemonitorWorld, expected: String) {
+    let expected = expected == "true";
+    let connection = world
+        .kept_alive
+        .as_mut()
+        .expect("no client opened a kept-alive connection");
+    let read = tokio::time::timeout(KEPT_ALIVE_BUDGET, connection.is_safe())
+        .await
+        .unwrap_or_else(|_| panic!("no response within {KEPT_ALIVE_BUDGET:?}"));
+    assert_eq!(
+        read,
+        Ok(expected),
+        "is_safe over the kept-alive connection did not return {expected}"
+    );
 }
 
 #[when(expr = "a client reads is_safe every {int} milliseconds")]

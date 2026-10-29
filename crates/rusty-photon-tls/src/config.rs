@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// When present in a service config, the service will serve over HTTPS.
 /// When absent (`None`), the service runs plain HTTP.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TlsConfig {
     /// Path to the PEM-encoded certificate file
     pub cert: String,
