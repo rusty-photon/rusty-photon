@@ -4845,7 +4845,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "saphyr",
- "saphyr-parser",
+ "saphyr-parser 0.3.1",
  "serde",
  "serde_json",
  "sha2",
@@ -5045,7 +5045,7 @@ checksum = "0662b098655e5e779a80041b640702e341cf3ede4560ecc103cf0ef098c8e33e"
 dependencies = [
  "hashlink",
  "ordered-float",
- "saphyr-parser",
+ "saphyr-parser 0.2.2",
  "thiserror 2.0.21",
 ]
 
@@ -5054,6 +5054,16 @@ name = "saphyr-parser"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c6220586c3dacac54bfddec87af86ddb31862d29666e7e35cf4baf70a25d387"
+dependencies = [
+ "arraydeque",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "saphyr-parser"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e39f50490c8d521be778875a670f4f3e0b8e08e208cdd10f33560f87e09996b4"
 dependencies = [
  "arraydeque",
  "thiserror 2.0.21",
