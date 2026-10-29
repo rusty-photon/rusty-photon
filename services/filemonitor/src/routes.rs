@@ -165,16 +165,17 @@ mod tests {
         });
         has_arrived.await.unwrap();
 
-        let replaced = routes.replace(named("second"));
-        let answered = tokio::spawn(replaced.answered());
+        let answered = routes.replace(named("second")).answered();
+        tokio::pin!(answered);
         assert_eq!(ask(&service).await, "second");
-        assert!(
-            !answered.is_finished(),
-            "the replaced router should wait for the request it is answering"
-        );
+        tokio::select! {
+            biased;
+            () = &mut answered => panic!("the replaced router should wait for the request it is answering"),
+            () = std::future::ready(()) => {}
+        }
 
         release.send(()).unwrap();
         assert_eq!(in_flight.await.unwrap(), "first");
-        answered.await.unwrap();
+        answered.await;
     }
 }
