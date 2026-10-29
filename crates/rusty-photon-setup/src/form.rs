@@ -335,8 +335,7 @@ pub fn submitted_as_shown(spec: &FieldSpec, config: &Value, form: &FormValues) -
             let mut submitted: Vec<String> = form.get_all(name).map(str::to_string).collect();
             let mut drawn: Vec<String> = shown
                 .as_array()
-                .map(|items| items.iter().map(text_of).collect())
-                .unwrap_or_default();
+                .map_or_default(|items| items.iter().map(text_of).collect());
             submitted.sort_unstable();
             drawn.sort_unstable();
             submitted == drawn

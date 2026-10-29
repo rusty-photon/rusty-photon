@@ -559,9 +559,7 @@ impl RosterSection {
             .submitted
             .filter(|_| !view.errors.contains(&moved_on(kind)));
         let planned = submitted.map(|form| plan(form, kind));
-        let removed = submitted
-            .map(|form| removed_origins(form, kind))
-            .unwrap_or_default();
+        let removed = submitted.map_or_default(|form| removed_origins(form, kind));
         html! {
             h3.kind { (kind.heading) }
             @if !removed.is_empty() {
@@ -832,10 +830,7 @@ impl RosterSection {
                     overlay_field(&mut scratch, &spec, &sub, &mut row_errors);
                 }
             }
-            let mut entry = scratch
-                .get_mut(SCRATCH)
-                .map(Value::take)
-                .unwrap_or_default();
+            let mut entry = scratch.get_mut(SCRATCH).map_or_default(Value::take);
             let moved = entry.get("alpaca_url").cloned() != stored_address;
             row_errors.extend(apply_credential(&sub, &mut entry, moved));
             errors.extend(row_errors.into_iter().map(|e| renamed(e, &to)));

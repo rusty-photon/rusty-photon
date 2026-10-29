@@ -437,10 +437,7 @@ impl ServerBuilder {
         let mut wheels = Vec::new();
         for (entry, outcome) in resolve_list(&claims, list) {
             let camera = outcome.and_then(|index| {
-                let model = cameras
-                    .get(index)
-                    .map(|c| c.model.clone())
-                    .unwrap_or_default();
+                let model = cameras.get(index).map_or_default(|c| c.model.clone());
                 sdk.as_ref()
                     .and_then(|sdk| sdk.cameras().nth(index).cloned())
                     .map(|camera| (camera, model))

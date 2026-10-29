@@ -686,8 +686,7 @@ impl CamerasSection {
         let mut ports: Vec<String> = self
             .bus
             .as_ref()
-            .map(|bus| bus.iter().map(|c| c.port.clone()).collect())
-            .unwrap_or_default();
+            .map_or_default(|bus| bus.iter().map(|c| c.port.clone()).collect());
         ports.extend(list.unwrap_or_default().iter().map(|e| e.port.clone()));
         ports.extend(
             self.registry
@@ -722,8 +721,8 @@ impl CamerasSection {
         let entry = list.iter().find(|e| e.port == port);
         Row {
             checked: entry.is_some(),
-            name: entry.map(|e| e.text("name")).unwrap_or_default(),
-            description: entry.map(|e| e.text("description")).unwrap_or_default(),
+            name: entry.map_or_default(|e| e.text("name")),
+            description: entry.map_or_default(|e| e.text("description")),
             wheel: entry.is_some_and(|e| e.wheel.is_some()),
             port,
         }
@@ -793,8 +792,7 @@ impl CamerasSection {
                 let mut object = previous
                     .iter()
                     .find(|e| e.port == row.port)
-                    .map(|e| e.object.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|e| e.object.clone());
                 _ = object.insert("device_number".to_string(), Value::from(number));
                 _ = object.insert("usb_port".to_string(), Value::String(row.port.clone()));
                 set_text(&mut object, "name", &row.name);
@@ -1625,13 +1623,12 @@ impl WheelPage {
         object
             .and_then(|o| o.get(FILTER_NAMES))
             .and_then(Value::as_array)
-            .map(|names| {
+            .map_or_default(|names| {
                 names
                     .iter()
                     .filter_map(|n| n.as_str().map(str::to_string))
                     .collect()
             })
-            .unwrap_or_default()
     }
 }
 
