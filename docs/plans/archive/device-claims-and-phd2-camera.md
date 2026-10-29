@@ -19,12 +19,15 @@ focused by a capture sweep under rp's train lease, came in [#1509](https://githu
 learned to connect to a camera PHD2 reports as 0 × 0 ([#1572](https://github.com/rusty-photon/rusty-photon/pull/1572)). C8,
 editing `usb_devices` in `ui-htmx`, was superseded by each camera
 driver's own setup page ([driver-setup-pages.md](driver-setup-pages.md),
-D11). Three readings of the port key, which the owner accepted without
-real hardware, are still owed: macOS's `location_id`, never read on a
-real Mac, and, on Windows, a camera on a controller's root port and a
-move to another port, both read only on a VM (decision 2; C1 and C5
-above). They are the "waiting list" the text refers to, which was never
-kept as a list of its own. A
+D11). Four things on the plan's waiting list, its closing list of what
+waits on evidence, are still owed, and none blocks a phase. Two are
+readings of the port key that the owner accepted without real hardware:
+on Windows, a camera on a real controller's root port and a move between
+its ports, both read only on a VM (decision 2), and macOS's
+`location_id`, never read on a real Mac (the C1 and C5 rows below). The
+other two are the facade's `image_dir` recipe on Windows, never run
+there, and the guide camera's udev rule on a board whose USB controller
+udev names `xhci-hcd.N.auto`, not worked out. A
 cross-service `doctor` check for a contested guide camera stays
 withdrawn unless ADR-016 is amended (Goal).
 
