@@ -220,7 +220,7 @@ thiserror = "2.0.18"
 # A YAML 1.2 parser that keeps each node's line, for rusty-photon-ci's tests
 # that read the workflows and .github/actionlint.yaml. Pinned exactly: its 0.x
 # API still changes in minor releases (0.2.0 made a duplicate key an error).
-saphyr = { version = "=0.2.2", default-features = false }
+saphyr = { version = "=0.3.1", default-features = false }
 # saphyr's parser, whose events keep the tags saphyr drops; the same pin.
 saphyr-parser = { version = "=0.2.2", default-features = false }
 # A TOML reader, for rusty-photon-ci's rust-toolchain-sha256s, which reads Rust's
