@@ -1422,18 +1422,19 @@ leaves old records fresh and predicting (O8). S9 is provider-side fitting with i
 unit tests over generated curves across a spread of focal ratios,
 `microns_per_step` and seeing floors, the rig's two recorded sweeps as
 regression cases; the guide-metric sweep gets the same model in `rp`.
-S10 starts by refusing what it has not built: a guard on
-`get_train_info.purpose`, which the provider receives and drops today,
-so a direct training call on a guiding train — `focus_train` without
-`shared`, `determine_filter_offsets` — is refused by name until the
-rest of the slice exists, while `focus_train {shared: true}` on it
-keeps serving the escalation with its metric guide step (D16). The
-rest of S10 is [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md)'s
-C7: the facade (its C6) as the guiding train's camera, its three
+S10 was [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md)'s
+C7, and it shipped there as C7's slices, all merged (the S10 row
+above): the facade (its C6) as the guiding train's camera, its three
 leases taken before the first move and released from any point, and
-the provider's guiding-train support on top. The two plans agreed on
-the one contract on 2026-10-13 (that plan's D12, "Settled in C7"), and
-S10 is in design there as C7's slices. It needs a rig meeting O4's rules 1
+the provider's guiding-train support on top, which reads
+`get_train_info.purpose`. A training run on a guiding train —
+`focus_train` without `shared`, `determine_filter_offsets` — is
+refused by name when the guiding train's terminal focuser belongs to
+another train, whose sweep focuses it, while
+`focus_train {shared: true}` on it keeps serving the escalation with
+its metric guide step (D16; [focus-model.md](../services/focus-model.md) § Training runs on
+a guiding train). The two plans agreed on the one contract on
+2026-10-13 (that plan's D12, "Settled in C7"). It needs a rig meeting O4's rules 1
 and 7 — a guide path with its own motorised focuser *and* the facade
 configured with the vendor driver excluded from the guide camera. A
 filter in the guide path (rule 5) is the extra condition for the

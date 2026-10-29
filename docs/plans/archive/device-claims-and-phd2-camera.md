@@ -10,8 +10,8 @@ paste-ready list. C1, the passive USB identity, came in [#1306](https://github.c
 the list in each driver, came in [#1466](https://github.com/rusty-photon/rusty-photon/pull/1466), [#1476](https://github.com/rusty-photon/rusty-photon/pull/1476) and [#1479](https://github.com/rusty-photon/rusty-photon/pull/1479);
 the last also moved QHY's filter-wheel probe off startup and reload.
 C5, the `usb-devices.*` checks and numbering by port order without a
-list, came in [#1501](https://github.com/rusty-photon/rusty-photon/pull/1501), after the macOS collector fix [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500) and
-the QHY178M record [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504). Part B: `phd2-guider` serves an Alpaca
+list, came in [#1501](https://github.com/rusty-photon/rusty-photon/pull/1501), after the macOS collector fix [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500); the
+QHY178M record of C4's gate and list followed in [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504). Part B: `phd2-guider` serves an Alpaca
 Camera backed by PHD2's own frames. The `save_image` fix [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)
 and the facade, C6 ([#1507](https://github.com/rusty-photon/rusty-photon/pull/1507)), came first. C7, the guiding train
 focused by a capture sweep under rp's train lease, came in [#1509](https://github.com/rusty-photon/rusty-photon/pull/1509),
