@@ -80,9 +80,9 @@ Feature: A reload keeps its clients
     And the rebuilt server answers its setup page
     Then a connection to the port the service served before is refused
 
-  Scenario: A TLS handshake still in progress does not hold up a reload
+  Scenario: A TLS handshake still in progress does not hold up a reload that moves the port
     Given filemonitor is running with TLS and auth
     And a client has started a TLS handshake and stalled
-    When I submit the server setup page setting "file.polling_interval" to "30s"
+    When I submit the server setup page moving "server.port" to a free port
     And the rebuilt server answers its setup page
     Then the stalled handshake is still open

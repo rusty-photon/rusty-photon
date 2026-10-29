@@ -1198,15 +1198,54 @@ mod reload_tests {
             .unwrap();
         built.connect_device().await;
         let device = Arc::clone(&built.device);
-        let routes = Routes::new(built.router);
 
-        let replaced = routes.replace(axum::Router::new());
+        // A router holding a request until the test releases it.
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let released = Arc::new(Mutex::new(Some(released)));
+        let (arrived, has_arrived) = tokio::sync::oneshot::channel::<()>();
+        let arrived = Arc::new(Mutex::new(Some(arrived)));
+        let held = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || async move {
+                if let Some(arrived) = arrived.lock().await.take() {
+                    arrived.send(()).unwrap();
+                }
+                if let Some(released) = released.lock().await.take() {
+                    released.await.unwrap();
+                }
+            }),
+        );
+        let routes = Routes::new(held);
+        let in_flight = tokio::spawn({
+            let service = routes.service();
+            async move {
+                tower::ServiceExt::oneshot(
+                    service,
+                    axum::extract::Request::get("/")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        has_arrived.await.unwrap();
+
+        let retiring = retire(Arc::clone(&device), routes.replace(axum::Router::new()));
+        tokio::pin!(retiring);
+        tokio::select! {
+            biased;
+            () = &mut retiring => panic!("the device retired while its router was answering"),
+            () = std::future::ready(()) => {}
+        }
         assert!(
             device.connected().await.unwrap(),
             "the replaced device should stay connected until its router has answered"
         );
 
-        retire(Arc::clone(&device), replaced).await;
+        release.send(()).unwrap();
+        in_flight.await.unwrap();
+        retiring.await;
         assert!(!device.connected().await.unwrap());
         assert!(
             device.polling_handle.lock().await.is_none(),
