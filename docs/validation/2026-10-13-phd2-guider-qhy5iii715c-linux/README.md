@@ -205,7 +205,7 @@ were not tried. The installed `qhy-camera` predated `doctor
 --devices` was not run. What links the two is earlier evidence: on
 2026-10-08 the USB collector behind `doctor --devices` matched udev's
 `ID_PATH_WITH_USB_REVISION` for every one of this host's 10 devices
-([device-claims plan, D2](../../plans/device-claims-and-phd2-camera.md)).
+([device-claims plan, D2](../../plans/archive/device-claims-and-phd2-camera.md)).
 
 ## Service log
 

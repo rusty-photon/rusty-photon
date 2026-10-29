@@ -3513,7 +3513,7 @@ a QHY600M (imaging) and a QHY5III678M (guiding); after a power cycle the
 two swapped numbers, and `rp` bound the guide camera as the imaging
 camera without complaint (issue #1184). The lasting fix is that drivers
 pin numbers to USB ports
-([device-claims plan](../plans/device-claims-and-phd2-camera.md),
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md),
 Part A). The pin below is the cheap guard `rp` adds in the meantime.
 
 **Every equipment entry, of every kind, takes an optional
@@ -3735,7 +3735,7 @@ devices:
 - **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
-  ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  ASCOM error `0x540` ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
   D4.5, [svbony-camera.md](svbony-camera.md) U4,
   [zwo-camera.md](zwo-camera.md) U4). Retrying it cannot
   help — a placeholder becomes a device only when its driver reloads —
@@ -4255,7 +4255,7 @@ or dither between samples. The motion gate and the capture slots each
 cover one call. A **train lease** holds all three off for the whole run.
 The caller takes it before the first move, passes its id on every call
 of the run, and releases it after the put-back
-([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D12,
 "Settled in C7", and its decision 20). rp takes no lease on its own: it
 cannot tell a training run from the in-session walk a focus provider
 also makes through it, and that walk runs while PHD2 guides.

@@ -389,7 +389,7 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   query's own problem-code expression, read without the filter, gave
   problem code 45 for every one of the VM's 15 stale USB records, the
   camera's and other devices' alike
-  ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
+  ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md), D2
   spike item 7).
 
   **A scan has three outcomes, and they must not be confused.**
@@ -597,7 +597,7 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   its own `simulation` feature as it gains device claims. Doctor,
   `svbony-camera` and `zwo-camera` read the USB inventory today: a camera
   driver with a `usb_devices` list places each SDK camera on a port from it
-  before it registers or opens anything ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  before it registers or opens anything ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
   D4, [svbony-camera.md](svbony-camera.md) U1-U9,
   [zwo-camera.md](zwo-camera.md) U1-U9). The collectors are the same
   for both: a driver takes the USB scan alone (`facts::scan_usb`), without
@@ -1019,7 +1019,7 @@ the camera drivers with device claims:
 |---|---|---|
 | `config.full-shape` | all | The service's config file does not survive the service's **own typed load path** — the same parse a start would perform, `deny_unknown_fields` included, so a typo'd key anywhere in the file is named here (the detail carries serde's path and message). This is the full-config validation D2 deferred: central doctor knows only the shared blocks; the binary that owns the shape validates all of it. An absent file is `ok` — most services write their defaults on first start, config-gated ones stay inert, and either way there is nothing to validate (central doctor's inventory and `units.config-gated` checks own that judgment). |
 | `hardware.sdk-devices` | qhy-camera, zwo-camera, zwo-focuser | The SDK cannot see the hardware: enumeration (`ScanQHYCCD`, the ASI/EAF list calls) errors (`fail` — with the D4 `hardware.usb-device` check this splits "not on the bus" from "on the bus but the SDK is blind", which is the firmware/driver signature), or enumerates zero devices (`warn` — the binary cannot see unit state, so unplugged-on-purpose and unplugged-by-accident are indistinguishable here; the D4 checks carry the unit-aware severity). `ok` lists the models the SDK reports. **Enumeration only, never an open** — an open against a device the running service holds is the camera-lock class of bug, and the subcommand must stay safe to run by hand at any time. |
-| `usb-devices.resolve` | qhy-camera, zwo-camera, svbony-camera, with a `usb_devices` list | Each listed entry, judged from this run's own USB scan, SDK enumeration and join — what a start would serve now, not what a running instance holds, since placement is not watched ([device-claims plan](../plans/device-claims-and-phd2-camera.md) D8). `ok` once, counting the entries, when every one resolves to a camera; a `warn` per entry a placeholder would hold, with the placeholder's reason: a fault at the port, the device that is there instead, a look-alike, an unrecognised model, or no working camera on the port. `fail` when the USB scan failed — every listed number would be a placeholder — naming the collector's error. An empty list registers nothing and resolves nothing: `ok`, saying so. A camera the driver would fail to open (a ZWO camera's identity read, a QHY camera's CFW probe) is not visible here, because the run opens nothing: the driver's `warn!` and the placeholder's connect error report it. |
+| `usb-devices.resolve` | qhy-camera, zwo-camera, svbony-camera, with a `usb_devices` list | Each listed entry, judged from this run's own USB scan, SDK enumeration and join — what a start would serve now, not what a running instance holds, since placement is not watched ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D8). `ok` once, counting the entries, when every one resolves to a camera; a `warn` per entry a placeholder would hold, with the placeholder's reason: a fault at the port, the device that is there instead, a look-alike, an unrecognised model, or no working camera on the port. `fail` when the USB scan failed — every listed number would be a placeholder — naming the collector's error. An empty list registers nothing and resolves nothing: `ok`, saying so. A camera the driver would fail to open (a ZWO camera's identity read, a QHY camera's CFW probe) is not visible here, because the run opens nothing: the driver's `warn!` and the placeholder's connect error report it. |
 | `usb-devices.unlisted` | the same, with a list | One `ok` per camera the join placed on a port no entry lists, naming its port and model, so a camera moved to another port shows here while its old number's `usb-devices.resolve` warns. An empty list names every placed camera. Nothing when every placed camera is listed. Being `ok`, it is counted rather than printed by the text report (§Report): `--json` carries it, and `--devices`' rows show the same cameras as `not listed`. |
 | `usb-devices.implicit` | the same, without a list | What the no-list default would serve. With more than one placed camera, one `ok` naming each camera with the number port order gives it, and the paste-ready block of exactly those cameras with what pasting it needs (delete the `devices` map; `qhy-camera`: check the wheels' numbers); nothing for one or none. Being `ok`, it is counted rather than printed by the text report: `--json` carries it, and `--devices` prints the same numbers and block. Whatever the count, a `warn` for each camera the default refuses — a look-alike, naming the collision; an unrecognised model, with its SDK model and the product id the bus shows; a known model with no working record — and for each record of the driver's vendor no camera is placed on, and each fault that could be the camera. A failed USB scan is one `fail`, naming the collector's error, and no block, since a failed scan has no ports. |
 
@@ -1040,7 +1040,7 @@ central-doctor concern, so `--fix` semantics live in exactly one binary.
 A camera driver with device claims also answers `doctor --devices`: instead
 of the report, a listing of every camera of its SDK on the bus by USB port,
 and a paste-ready `usb_devices` block
-([device-claims plan](../plans/device-claims-and-phd2-camera.md) D5). It
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D5). It
 holds to the same rules — read-only, enumeration only, never an open — and
 the same exit codes, and it is text only. `svbony-camera`, `zwo-camera` and
 `qhy-camera` have it ([svbony-camera.md](svbony-camera.md) U8,
@@ -1089,7 +1089,7 @@ installed service, and the two paths are naturally exclusive:
 
   **A placeholder is reported as one, not as a device.** A camera driver
   with device claims holds a listed number it cannot serve with a
-  placeholder ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  placeholder ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
   D4.5), which `configureddevices` lists under its entry's name like any
   device. Its `UniqueID` has one fixed form, `placeholder:<service>:<port>`
   (`placeholder:qhy-camera:CFW-<port>` for a declared wheel), so

@@ -1121,7 +1121,7 @@ process, on port **11128**, loopback only, with one Camera at device
 number 0. Its reason to exist is rp's guiding train: with the facade, the
 guide camera can be a train's terminal camera like any other (the
 device-claims plan, C7). The plan's Part B
-([`device-claims-and-phd2-camera.md`](../plans/device-claims-and-phd2-camera.md)
+([`device-claims-and-phd2-camera.md`](../plans/archive/device-claims-and-phd2-camera.md)
 D9–D11) records how this design was reached; this section is the contract.
 
 ### Prerequisites
@@ -1427,7 +1427,7 @@ moved; one that is stopped again in time leaves frames taken under other
 conditions in one V-curve. The sweep lease holds guiding off for a whole
 sweep. rp's train lease ([rp.md § Train Lease](rp.md#train-lease)) takes
 it for a guiding train's training run
-([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D12,
 "Settled in C7").
 
 The lease is three ASCOM `Action`s on the facade's Camera.

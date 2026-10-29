@@ -643,7 +643,7 @@ camera facade, under `rp`'s train lease ([rp.md § Train
 Lease](rp.md#train-lease)). The rules are O4's of the [focus-model
 plan](../plans/focus-model.md), whose table is their normative
 statement, and the leases are the [device-claims
-plan](../plans/device-claims-and-phd2-camera.md)'s D12 ("Settled in
+plan](../plans/archive/device-claims-and-phd2-camera.md)'s D12 ("Settled in
 C7"). In-session guide focus is not a training run and is unchanged: a
 `shared: true` walk on the guiding train keeps its guide step on `rp`'s
 PHD2-metric `auto_focus`. An imaging train's run takes no lease.
@@ -1413,7 +1413,7 @@ credential — and that `tools/list` answers with no `rp` running.
   is the single normative statement of them — this doc deliberately
   does not restate the conditions. The transport itself is the PHD2
   camera facade of
-  [device-claims-and-phd2-camera.md](../plans/device-claims-and-phd2-camera.md),
+  [device-claims-and-phd2-camera.md](../plans/archive/device-claims-and-phd2-camera.md),
   to which that O4 defers. In summary: an independently
   focused guide path is swept in its own right and can carry its own
   offsets, a guide path with no focuser of its own gets no sweep and

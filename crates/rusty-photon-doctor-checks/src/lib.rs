@@ -5,7 +5,7 @@
 //! behind the `hardware.*` check family, and, since D5, the canonical
 //! report schema, the text renderer, and the per-service runner every
 //! service binary's `doctor` subcommand calls. Since device claims
-//! (docs/plans/device-claims-and-phd2-camera.md), the camera drivers read
+//! (docs/plans/archive/device-claims-and-phd2-camera.md), the camera drivers read
 //! the USB scan here too: [`claims`] places each SDK camera on a port before
 //! a driver registers anything.
 //!

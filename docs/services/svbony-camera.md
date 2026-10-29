@@ -35,7 +35,7 @@
 > CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
 >
-> **Device claims ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+> **Device claims ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
 > C2): an optional `usb_devices` list pins each USB port to an Alpaca device
 > number.** A camera on a listed port is served at that entry's number every
 > time, whatever order the SDK enumerates in; a camera on an unlisted port is
@@ -1397,7 +1397,7 @@ one core at load average 65, see "Real-hardware validation").
 ### Device claims (`usb_devices`)
 
 The rules for an operator's `usb_devices` list (see "Configuration"),
-following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
+following the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
 Part A, of which this driver is phase C2. U1-U9 are the list's rules. U10 is
 the no-list default's, which runs the same scan and join (plan C5), and U11
 is what `svbony-camera doctor` reports about both.

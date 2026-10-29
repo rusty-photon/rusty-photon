@@ -10,7 +10,7 @@ description = "Shared ASCOM-driver runtime layer for rusty-photon: the common Dr
 
 [features]
 default = []
-# Device claims (docs/plans/device-claims-and-phd2-camera.md, Part A): the
+# Device claims (docs/plans/archive/device-claims-and-phd2-camera.md, Part A): the
 # placeholder Camera that holds a listed device number whose camera cannot be
 # served, the failed USB scan's background re-scan, and the camera drivers'
 # own part of their setup pages (the Cameras section and each camera's page,
