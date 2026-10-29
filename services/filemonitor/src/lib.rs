@@ -25,6 +25,7 @@
 )]
 
 pub mod doctor;
+mod routes;
 pub mod setup;
 
 use std::future::Future;
@@ -48,6 +49,7 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::routes::{Replaced, Routes};
 use crate::setup::{FileMonitorDriver, DEVICE_TYPE};
 
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
@@ -503,27 +505,31 @@ impl ServerBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the listener cannot be bound, or
-    /// [`Self::build_on`]'s errors.
+    /// Returns an error if the listener cannot be bound or its address
+    /// read, or if the config opts into Alpaca discovery and the
+    /// responder's UDP port cannot be bound.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let listener =
             rusty_photon_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr())
                 .await?;
-        self.build_on(listener).await
+        let local_addr = listener.local_addr()?;
+        let tls = self.config.server.tls.clone();
+        let built = self.build_for(local_addr).await?;
+        Ok(BoundServer {
+            listener,
+            local_addr,
+            tls,
+            built,
+        })
     }
 
-    /// Consume the builder and build the server on `listener`, already
-    /// bound: the one a reload keeps while the address is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the listener's address cannot be read, or if
-    /// the config opts into Alpaca discovery and the responder's UDP port
-    /// cannot be bound.
-    pub async fn build_on(
+    /// Consume the builder and build what the config describes for a
+    /// server listening at `local_addr`: the router, the device behind it,
+    /// and the discovery responder advertising it.
+    async fn build_for(
         self,
-        listener: TcpListener,
-    ) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
+        local_addr: SocketAddr,
+    ) -> Result<Built, Box<dyn std::error::Error + Send + Sync>> {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
 
@@ -559,7 +565,6 @@ impl ServerBuilder {
         );
         info!("Monitoring file: {:?}", self.config.file.path);
 
-        let tls = self.config.server.tls.clone();
         let router = axum::Router::new().fallback_service(server.into_service());
 
         // Layer authentication if configured
@@ -577,10 +582,9 @@ impl ServerBuilder {
             None => router,
         };
 
-        let local_addr = listener.local_addr()?;
-
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
-        // bound here so a taken port fails startup, run in start().
+        // bound here so a taken port fails startup, run while the server
+        // waits for its next shutdown or reload.
         let discovery =
             rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
                 .await?;
@@ -592,43 +596,30 @@ impl ServerBuilder {
             println!("Bound Alpaca server bound_addr={local_addr}");
         }
 
-        Ok(BoundServer {
-            listener,
+        Ok(Built {
             router,
-            local_addr,
-            tls,
-            discovery,
             device,
+            discovery,
         })
     }
 }
 
-/// A fully bound filemonitor server ready to accept connections.
-pub struct BoundServer {
-    listener: TcpListener,
+/// What one configuration builds for a server: the router that answers
+/// its requests, the device behind the router, and the discovery responder
+/// advertising the server.
+struct Built {
     router: axum::Router,
-    local_addr: SocketAddr,
-    tls: Option<TlsConfig>,
-    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
-    /// the serve's select, so its socket closes when the server stops
-    /// accepting (reload), not when its connections have finished.
-    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
-    /// The device the server serves, which the run loop connects and
-    /// retires across a reload.
     device: Arc<FileMonitorDevice>,
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
 }
 
-impl BoundServer {
-    pub const fn listen_addr(&self) -> SocketAddr {
-        self.local_addr
-    }
-
-    /// Connect the device before the server serves, as a client's
+impl Built {
+    /// Connect the device before its router answers, as a client's
     /// `Connected = true` would: the reload's reconnect of a device that was
     /// connected before it. It reads the watched file and starts polling,
     /// and moves nothing. A failure (the file cannot be read) leaves the
     /// device disconnected, as its clients then find it.
-    pub async fn connect_device(&self) {
+    async fn connect_device(&self) {
         match self.device.set_connected(true).await {
             Ok(()) => debug!("Reconnected the rebuilt device"),
             Err(e) => warn!(
@@ -637,6 +628,20 @@ impl BoundServer {
             ),
         }
     }
+}
+
+/// A fully bound filemonitor server ready to accept connections.
+pub struct BoundServer {
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    tls: Option<TlsConfig>,
+    built: Built,
+}
+
+impl BoundServer {
+    pub const fn listen_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
 
     /// Serve the bound listener (and the discovery responder, when bound)
     /// until `shutdown` resolves, then until every connection it accepted
@@ -644,100 +649,55 @@ impl BoundServer {
     ///
     /// # Errors
     ///
-    /// [`Self::serve_until`]'s errors.
+    /// Returns an error if the TLS material cannot be loaded or accepting
+    /// connections fails.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.serve_until(shutdown).await?.close().await;
-        Ok(())
-    }
-
-    /// Serve the bound listener (and the discovery responder, when bound)
-    /// until `stop` resolves, and return as soon as the server has stopped
-    /// accepting: the listener, still open, and the connections it accepted,
-    /// still finishing, come back as a [`Stopped`]. The discovery responder
-    /// is released here.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TLS material cannot be loaded or accepting
-    /// connections fails.
-    pub async fn serve_until(
-        self,
-        stop: impl Future<Output = ()>,
-    ) -> Result<Stopped, Box<dyn std::error::Error + Send + Sync>> {
         let Self {
             listener,
-            router,
             local_addr,
             tls,
-            discovery,
-            device,
+            built,
         } = self;
-        let serve = async {
-            if let Some(ref tls_config) = tls {
-                let acceptor = rusty_photon_tls::server::build_tls_acceptor(tls_config)?;
-                info!("filemonitor started on {} (TLS)", local_addr);
-                rusty_photon_tls::server::serve_tls_on(&listener, router, acceptor, stop).await
-            } else {
-                info!("filemonitor started on {}", local_addr);
-                rusty_photon_tls::server::serve_plain_on(&listener, router, stop).await
-            }
-        };
-        let draining = rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
-        debug!("filemonitor stopped accepting");
-        Ok(Stopped {
-            listener,
-            device,
-            draining,
-        })
-    }
-}
-
-/// A filemonitor server that has stopped accepting: its listener, still
-/// open, and the connections it accepted, still finishing with its device
-/// connected as it was.
-pub struct Stopped {
-    listener: TcpListener,
-    device: Arc<FileMonitorDevice>,
-    draining: Draining,
-}
-
-impl Stopped {
-    /// Whether the device was connected when the server stopped accepting.
-    pub async fn device_connected(&self) -> bool {
-        *self.device.connected.read().await
-    }
-
-    /// Keep the listener for the next server, and leave the rest to the
-    /// returned future: it waits for the connections to finish, then
-    /// disconnects the device, which stops its polling. The device stays
-    /// connected until then, so a request still in flight on this server
-    /// reads it as it was.
-    pub fn hand_over(self) -> (TcpListener, impl Future<Output = ()> + Send + 'static) {
-        let Self {
-            listener,
-            device,
-            draining,
-        } = self;
-        (listener, retire(device, draining))
-    }
-
-    /// Close the listener, so a new connection is refused, wait for the
-    /// connections to finish, then disconnect the device.
-    pub async fn close(self) {
-        let (listener, retire) = self.hand_over();
+        let stop = rusty_photon_driver::discovery::serve_with(built.discovery, shutdown);
+        let draining = accept(&listener, local_addr, tls, built.router, stop).await?;
         drop(listener);
-        retire.await;
+        draining.finished().await;
+        built.device.disconnect().await;
+        Ok(())
     }
 }
 
-/// Wait for `draining` to finish, then disconnect `device`.
-async fn retire(device: Arc<FileMonitorDevice>, draining: Draining) {
-    draining.finished().await;
+/// Accept on `listener`, over TLS when `tls` is set, answering every
+/// connection with `router`, until `stop` resolves. Return as soon as the
+/// accepting has stopped, with the connections it accepted still finishing.
+async fn accept(
+    listener: &TcpListener,
+    local_addr: SocketAddr,
+    tls: Option<TlsConfig>,
+    router: axum::Router,
+    stop: impl Future<Output = ()>,
+) -> Result<Draining, Box<dyn std::error::Error + Send + Sync>> {
+    let draining = if let Some(ref tls_config) = tls {
+        let acceptor = rusty_photon_tls::server::build_tls_acceptor(tls_config)?;
+        info!("filemonitor started on {} (TLS)", local_addr);
+        rusty_photon_tls::server::serve_tls_on(listener, router, acceptor, stop).await?
+    } else {
+        info!("filemonitor started on {}", local_addr);
+        rusty_photon_tls::server::serve_plain_on(listener, router, stop).await?
+    };
+    debug!("filemonitor stopped accepting");
+    Ok(draining)
+}
+
+/// Wait until every request the replaced router took has been answered,
+/// then disconnect `device`, the device behind it, which stops its polling.
+async fn retire(device: Arc<FileMonitorDevice>, replaced: Replaced) {
+    replaced.answered().await;
     device.disconnect().await;
-    debug!("A filemonitor server has finished its connections; its device is disconnected");
+    debug!("A replaced filemonitor device has answered its last request; it is disconnected");
 }
 
 /// Build a fresh `BoundServer` from a `Config` and run it until the
@@ -762,19 +722,111 @@ pub async fn start_server(
         .await
 }
 
+/// Why the server stopped accepting.
+enum Restart {
+    Shutdown,
+    /// A reload changed the address or the TLS setting: the new
+    /// configuration.
+    Transport(Box<Config>),
+}
+
+/// What [`run_server_loop`] keeps across reloads.
+struct Reloading<'a> {
+    config_path: &'a Path,
+    shutdown: CancellationToken,
+    reload: ReloadSignal,
+    /// The configuration the server answers with now.
+    config: Config,
+    /// The router every connection answers with.
+    routes: Routes,
+    /// The device behind the current router.
+    device: Arc<FileMonitorDevice>,
+    /// The current discovery responder, until the wait for the next
+    /// shutdown or reload takes it.
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
+    /// The replaced devices, and the connections of an accepting a changed
+    /// address or TLS setting stopped, still finishing.
+    retiring: tokio::task::JoinSet<()>,
+}
+
+impl Reloading<'_> {
+    fn builder(&self, config: Config) -> ServerBuilder {
+        ServerBuilder::new(config)
+            .with_config_source(self.config_path.to_path_buf())
+            .with_reload_signal(self.reload.clone())
+    }
+
+    /// Answer each reload that keeps the address and the TLS setting by
+    /// putting the rebuilt server in front of the connections, until
+    /// shutdown or a reload that changes either. The discovery responder
+    /// answers while it waits, and stops when the wait ends.
+    async fn until_restart(
+        &mut self,
+        local_addr: SocketAddr,
+    ) -> Result<Restart, Box<dyn std::error::Error + Send + Sync>> {
+        loop {
+            let shutdown = self.shutdown.clone();
+            let reload = self.reload.clone();
+            let reloaded =
+                rusty_photon_driver::discovery::serve_with(self.discovery.take(), async {
+                    tokio::select! {
+                        () = shutdown.cancelled() => false,
+                        () = reload.recv() => true,
+                    }
+                })
+                .await;
+            if !reloaded {
+                return Ok(Restart::Shutdown);
+            }
+            info!("Reloading configuration");
+            let config = load_config(self.config_path)?;
+            if config.server.socket_addr() != self.config.server.socket_addr()
+                || config.server.tls != self.config.server.tls
+            {
+                return Ok(Restart::Transport(Box::new(config)));
+            }
+            self.rebuild(config, local_addr).await?;
+        }
+    }
+
+    /// Build the server `config` describes for the listener at
+    /// `local_addr` and put it in front of every connection. Its device is
+    /// connected first when the one it replaces was; the replaced device
+    /// stays connected until the requests its router took are answered.
+    async fn rebuild(
+        &mut self,
+        config: Config,
+        local_addr: SocketAddr,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let built = self.builder(config.clone()).build_for(local_addr).await?;
+        if *self.device.connected.read().await {
+            built.connect_device().await;
+        }
+        let replaced = self.routes.replace(built.router);
+        let device = std::mem::replace(&mut self.device, built.device);
+        _ = self.retiring.spawn(retire(device, replaced));
+        while self.retiring.try_join_next().is_some() {}
+        self.discovery = built.discovery;
+        self.config = config;
+        Ok(())
+    }
+}
+
 /// Run filemonitor's server in a config-reload loop until `shutdown`
 /// fires.
 ///
 /// A reload (the `reload` a setup-page save fires, `SIGHUP`, or `ParamChange`)
-/// keeps the server's clients: while the configured address is unchanged the
-/// rebuilt server serves on the same listener, so a request queued while it
-/// rebuilds is answered rather than refused, and it starts accepting as soon
-/// as the old one has stopped, while the old one finishes the connections it
-/// accepted alongside it. When the old device was connected, the rebuilt one
-/// is connected before it serves. A changed address closes the old listener
-/// before the new one is bound: the same port on a narrower address does not
-/// bind while the old socket listens. Shutdown closes the listener and waits
-/// for every server's connections to finish.
+/// keeps the server's clients. While the configured address and TLS setting
+/// are unchanged the server keeps accepting and closes no connection: every
+/// connection answers each request with the router current when it arrives,
+/// and the reload puts the rebuilt server's router there. When the old
+/// device was connected, the rebuilt one is connected first. The old device
+/// stays connected until the requests the old router took are answered. A
+/// changed address or TLS setting stops the accepting, and its connections
+/// close once their requests are answered; a changed address closes the
+/// old listener before the new one is bound, since the same port on a
+/// narrower address does not bind while the old socket listens. Shutdown
+/// closes the listener and waits for every connection to finish.
 ///
 /// # Errors
 ///
@@ -785,61 +837,65 @@ pub async fn run_server_loop(
     shutdown: CancellationToken,
     reload: ReloadSignal,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // The listener a reload keeps, with the configured address it was bound
-    // for, and whether the device it served was connected.
-    let mut kept: Option<(SocketAddr, TcpListener)> = None;
-    let mut connect_device = false;
-    // The old servers still finishing their connections.
-    let mut retiring = tokio::task::JoinSet::new();
+    let config = load_config(config_path)?;
+    info!("Starting filemonitor server on port {}", config.server.port);
+    let listener =
+        rusty_photon_tls::server::bind_dual_stack_tokio(config.server.socket_addr()).await?;
+    serve_reloading(config_path, config, listener, shutdown, reload).await
+}
+
+/// [`run_server_loop`] from its first config, on a listener already bound
+/// for that config's address.
+async fn serve_reloading(
+    config_path: &Path,
+    config: Config,
+    mut listener: TcpListener,
+    shutdown: CancellationToken,
+    reload: ReloadSignal,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut local_addr = listener.local_addr()?;
+    let built = ServerBuilder::new(config.clone())
+        .with_config_source(config_path.to_path_buf())
+        .with_reload_signal(reload.clone())
+        .build_for(local_addr)
+        .await?;
+    let mut reloading = Reloading {
+        config_path,
+        shutdown,
+        reload,
+        config,
+        routes: Routes::new(built.router),
+        device: built.device,
+        discovery: built.discovery,
+        retiring: tokio::task::JoinSet::new(),
+    };
     loop {
-        let config = load_config(config_path)?;
-        info!("Starting filemonitor server on port {}", config.server.port);
+        let tls = reloading.config.server.tls.clone();
+        let service = reloading.routes.service();
+        let mut restart = Ok(Restart::Shutdown);
+        let draining = accept(&listener, local_addr, tls, service, async {
+            restart = reloading.until_restart(local_addr).await;
+        })
+        .await?;
+
+        let Restart::Transport(config) = restart? else {
+            drop(listener);
+            draining.finished().await;
+            reloading.device.disconnect().await;
+            while reloading.retiring.join_next().await.is_some() {}
+            return Ok(());
+        };
+        _ = reloading.retiring.spawn(draining.finished());
         let addr = config.server.socket_addr();
-        let listener = match kept.take() {
-            Some((kept_addr, listener)) if kept_addr == addr => {
-                debug!("Keeping the listener on {}", addr);
-                listener
-            }
-            other => {
-                drop(other);
-                rusty_photon_tls::server::bind_dual_stack_tokio(addr).await?
-            }
-        };
-        let bound = ServerBuilder::new(config)
-            .with_config_source(config_path.to_path_buf())
-            .with_reload_signal(reload.clone())
-            .build_on(listener)
-            .await?;
-        if connect_device {
-            bound.connect_device().await;
+        if addr == reloading.config.server.socket_addr() {
+            debug!("Keeping the listener on {}", addr);
+        } else {
+            info!("Starting filemonitor server on port {}", config.server.port);
+            drop(listener);
+            listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr).await?;
+            local_addr = listener.local_addr()?;
         }
-
-        let reloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop = {
-            let reloaded = Arc::clone(&reloaded);
-            let shutdown = shutdown.clone().cancelled_owned();
-            let reload = reload.clone();
-            async move {
-                tokio::select! {
-                    () = shutdown => {}
-                    () = reload.recv() => reloaded.store(true, std::sync::atomic::Ordering::SeqCst),
-                }
-            }
-        };
-        let stopped = bound.serve_until(stop).await?;
-
-        if reloaded.load(std::sync::atomic::Ordering::SeqCst) {
-            info!("Reloading configuration");
-            connect_device = stopped.device_connected().await;
-            let (listener, retire) = stopped.hand_over();
-            kept = Some((addr, listener));
-            _ = retiring.spawn(retire);
-            while retiring.try_join_next().is_some() {}
-            continue;
-        }
-        stopped.close().await;
-        while retiring.join_next().await.is_some() {}
-        return Ok(());
+        reloading.rebuild(*config, local_addr).await?;
     }
 }
 
@@ -1023,6 +1079,14 @@ mod device_setup_page_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod reload_tests {
     use super::*;
+    use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    /// How long a test waits for the loop to answer, on the slowest runner
+    /// the suites meet: a bound on an answer that never comes, not an
+    /// expected duration.
+    const BUDGET: Duration = Duration::from_secs(30);
 
     /// A config serving on loopback, watching a file holding "CLOSED",
     /// with the discovery responder on `discovery_port` when given.
@@ -1042,26 +1106,146 @@ mod reload_tests {
         }
     }
 
+    /// The reload loop, running on a listener the test bound.
+    struct Running {
+        port: u16,
+        config_path: PathBuf,
+        shutdown: CancellationToken,
+        reload: ReloadSignal,
+        task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    }
+
+    impl Running {
+        async fn start(dir: &Path, config: &Config) -> Self {
+            let config_path = dir.join("filemonitor.json");
+            std::fs::write(&config_path, serde_json::to_string(config).unwrap()).unwrap();
+            let listener =
+                rusty_photon_tls::server::bind_dual_stack_tokio(config.server.socket_addr())
+                    .await
+                    .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let shutdown = CancellationToken::new();
+            let reload = ReloadSignal::new();
+            let task = tokio::spawn({
+                let config_path = config_path.clone();
+                let config = config.clone();
+                let shutdown = shutdown.clone();
+                let reload = reload.clone();
+                async move { serve_reloading(&config_path, config, listener, shutdown, reload).await }
+            });
+            Self {
+                port,
+                config_path,
+                shutdown,
+                reload,
+                task,
+            }
+        }
+
+        /// Save `config` and fire the reload.
+        fn reload_with(&self, config: &Config) {
+            std::fs::write(&self.config_path, serde_json::to_string(config).unwrap()).unwrap();
+            self.reload.notify();
+        }
+
+        async fn stop(self) {
+            self.shutdown.cancel();
+            self.task.await.unwrap().unwrap();
+        }
+    }
+
+    /// Send a plain HTTP/1.1 `GET` of `path` over `stream` and return the
+    /// response head, reading the body its `Content-Length` announces.
+    async fn get(stream: &mut TcpStream, port: u16, path: &str) -> String {
+        let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            assert_eq!(stream.read(&mut byte).await.unwrap(), 1, "{head:?}");
+            head.extend_from_slice(&byte);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        let mut body = vec![0u8; length];
+        stream.read_exact(&mut body).await.unwrap();
+        head
+    }
+
+    /// The device's description, as an Alpaca client reads it.
+    async fn description(port: u16) -> Option<String> {
+        let url = format!(
+            "http://127.0.0.1:{port}/api/v1/safetymonitor/0/description?ClientID=1&ClientTransactionID=1"
+        );
+        let body: serde_json::Value = reqwest::get(url).await.ok()?.json().await.ok()?;
+        body["Value"].as_str().map(str::to_string)
+    }
+
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
-    async fn a_handed_over_server_disconnects_its_device_once_its_connections_finish() {
+    async fn a_replaced_device_is_disconnected_once_its_router_has_answered() {
         let dir = tempfile::tempdir().unwrap();
-        let bound = ServerBuilder::new(loopback_config(dir.path(), None))
-            .build()
+        let built = ServerBuilder::new(loopback_config(dir.path(), None))
+            .build_for(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
             .unwrap();
-        bound.connect_device().await;
-        let device = Arc::clone(&bound.device);
+        built.connect_device().await;
+        let device = Arc::clone(&built.device);
 
-        let stopped = bound.serve_until(async {}).await.unwrap();
-        assert!(stopped.device_connected().await);
-        let (_listener, retire) = stopped.hand_over();
+        // A router holding a request until the test releases it.
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let released = Arc::new(Mutex::new(Some(released)));
+        let (arrived, has_arrived) = tokio::sync::oneshot::channel::<()>();
+        let arrived = Arc::new(Mutex::new(Some(arrived)));
+        let held = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || async move {
+                if let Some(arrived) = arrived.lock().await.take() {
+                    arrived.send(()).unwrap();
+                }
+                if let Some(released) = released.lock().await.take() {
+                    released.await.unwrap();
+                }
+            }),
+        );
+        let routes = Routes::new(held);
+        let in_flight = tokio::spawn({
+            let service = routes.service();
+            async move {
+                tower::ServiceExt::oneshot(
+                    service,
+                    axum::extract::Request::get("/")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        has_arrived.await.unwrap();
+
+        let retiring = retire(Arc::clone(&device), routes.replace(axum::Router::new()));
+        tokio::pin!(retiring);
+        tokio::select! {
+            biased;
+            () = &mut retiring => panic!("the device retired while its router was answering"),
+            () = std::future::ready(()) => {}
+        }
         assert!(
             device.connected().await.unwrap(),
-            "the device should stay connected until the old connections finish"
+            "the replaced device should stay connected until its router has answered"
         );
 
-        retire.await;
+        release.send(()).unwrap();
+        in_flight.await.unwrap();
+        retiring.await;
         assert!(!device.connected().await.unwrap());
         assert!(
             device.polling_handle.lock().await.is_none(),
@@ -1071,33 +1255,80 @@ mod reload_tests {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
-    async fn a_server_releases_its_discovery_port_when_it_stops_accepting() {
+    async fn a_reload_rebinds_the_discovery_port_the_replaced_server_held() {
         let dir = tempfile::tempdir().unwrap();
         let discovery_port = std::net::UdpSocket::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let bound = ServerBuilder::new(loopback_config(dir.path(), Some(discovery_port)))
-            .build()
-            .await
-            .unwrap();
+        let mut config = loopback_config(dir.path(), Some(discovery_port));
+        let running = Running::start(dir.path(), &config).await;
+
+        config.device.description = "rebuilt".to_string();
+        running.reload_with(&config);
+        let started = Instant::now();
+        while description(running.port).await.as_deref() != Some("rebuilt") {
+            assert!(
+                started.elapsed() < BUDGET,
+                "the rebuilt server did not answer within {:?}",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
         // A socket without address reuse binds only a port no other socket
         // holds.
         assert!(
             std::net::UdpSocket::bind(("127.0.0.1", discovery_port)).is_err(),
-            "the server should hold its discovery port while it serves"
+            "the rebuilt server should hold the discovery port"
         );
+        running.stop().await;
+    }
 
-        let stopped = bound.serve_until(async {}).await.unwrap();
-        let rebind = std::net::UdpSocket::bind(("127.0.0.1", discovery_port));
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // binds sockets, which Miri cannot
+    async fn a_changed_tls_setting_closes_the_old_connections_and_accepts_over_tls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = loopback_config(dir.path(), None);
+        let running = Running::start(dir.path(), &config).await;
+        let mut kept = TcpStream::connect(("127.0.0.1", running.port))
+            .await
+            .unwrap();
+        let head = get(&mut kept, running.port, "/management/apiversions").await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+
+        rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
+        rusty_photon_tls::test_cert::generate_service_cert(
+            &std::fs::read_to_string(dir.path().join("ca.pem")).unwrap(),
+            &std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap(),
+            "filemonitor",
+            dir.path(),
+        )
+        .unwrap();
+        config.server.tls = Some(TlsConfig {
+            cert: dir.path().join("filemonitor.pem").display().to_string(),
+            key: dir.path().join("filemonitor-key.pem").display().to_string(),
+        });
+        running.reload_with(&config);
+
+        let mut byte = [0u8; 1];
+        let closed = tokio::time::timeout(BUDGET, kept.read(&mut byte))
+            .await
+            .unwrap_or_else(|_| panic!("the old connection was still open after {BUDGET:?}"));
         assert!(
-            rebind.is_ok(),
-            "the discovery port should be free once the server stops accepting, before its connections finish: {:?}",
-            rebind.err()
+            matches!(closed, Ok(0) | Err(_)),
+            "the old connection should be closed, but read {closed:?}"
         );
-        drop(rebind);
-        stopped.close().await;
+        let mut fresh = TcpStream::connect(("127.0.0.1", running.port))
+            .await
+            .unwrap();
+        let head = get(&mut fresh, running.port, "/management/apiversions").await;
+        assert!(
+            head.starts_with("HTTP/1.1 308"),
+            "plain HTTP on the same port should now be redirected to TLS: {head}"
+        );
+        running.stop().await;
     }
 
     #[tokio::test]
@@ -1106,11 +1337,14 @@ mod reload_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = loopback_config(dir.path(), None);
         config.file.path = dir.path().join("missing.txt");
-        let bound = ServerBuilder::new(config).build().await.unwrap();
+        let built = ServerBuilder::new(config)
+            .build_for(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
 
-        bound.connect_device().await;
+        built.connect_device().await;
 
-        assert!(!bound.device.connected().await.unwrap());
+        assert!(!built.device.connected().await.unwrap());
     }
 }
 

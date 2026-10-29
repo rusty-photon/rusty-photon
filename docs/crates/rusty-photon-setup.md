@@ -400,43 +400,36 @@ nothing moved
 ### A reload that keeps its clients
 
 A safety monitor's reload (`filemonitor`'s) keeps its clients
-connected, so that to a client the reload is a reply that comes a
-second or two late:
+connected, so that to a client the reload does not show: every request
+is answered, by the old configuration until the rebuilt server is ready
+and by the new one after.
 
-- **The listening socket stays open** while the server's address
-  (`server.port`, `bind_address`) is unchanged. The draining server
-  stops accepting and the rebuilt one accepts on the same socket, so a
-  request made in between waits in the socket's queue and is answered
-  by the rebuilt server rather than refused. The rebuilt server starts
-  accepting as soon as the old one has stopped, and the old one
-  finishes its drain alongside it, so a queued request waits for the
-  rebuild, not for the slowest of the old connections (a TLS handshake
-  in progress can hold a drain for up to 10 s). The serve functions
-  `rusty-photon-tls` has for this, `serve_plain_on` and `serve_tls_on`,
-  leave the listener to their caller and return a `Draining` once they
-  have stopped accepting; the reload loop holds the listener. The old
-  server releases the discovery port (`server.discovery_port`) when it
-  stops accepting, so one responder answers at a time.
+- **The server keeps its connections.** While the server's address
+  (`server.port`, `bind_address`) and `server.tls` are unchanged, the
+  reload does not stop the server: it keeps accepting, and closes no
+  connection. A connection answers each request with the router that is
+  current when the request arrives, and the reload makes the rebuilt
+  server's router current once it is built, so a kept-alive
+  connection's next request reaches the rebuilt server and the new
+  configuration. The accept loop is `rusty-photon-tls`'s
+  `serve_plain_on` or `serve_tls_on`, which lasts until shutdown or a
+  change of address or `server.tls`. The router lookup is
+  `filemonitor`'s own.
 - **The device reconnects itself.** When the device was connected
-  before the reload, the loop connects the rebuilt one before it
-  serves. That re-reads the watched file and restarts its polling, and
-  moves nothing (tenet 3). A client's session therefore survives the
-  reload, and its next read is answered with the new configuration's
-  reading. If that connect fails (say the saved `file.path` does not
-  exist), the device stays disconnected, and its clients' reads fail as
-  they would after a lost session.
-- **The old device stays connected until its server has finished.** A
-  request the old server is still answering reads the old device as it
-  was. Once the last of the old server's connections has ended, the old
-  device is disconnected, which stops its polling of the file.
-- **A request that has already arrived is answered.** When the old
-  server stops, each of its connections is read before it is closed,
-  so a request already received on it is answered rather than
-  dropped.
-- **The client's own timeouts are the deadline.** A rebuild that has
-  not answered a queued request before the client gives up (`rp`'s
-  Alpaca client allows 5 s to connect and 10 s to read) fails that
-  request, as an unreachable monitor would.
+  before the reload, the loop connects the rebuilt one before its
+  router becomes current. That re-reads the watched file and restarts
+  its polling, and moves nothing (tenet 3). A client's session therefore
+  survives the reload, and its next read is answered with the new
+  configuration's reading. If that connect fails (say the saved
+  `file.path` does not exist), the device stays disconnected, and its
+  clients' reads fail as they would after a lost session.
+- **The old device stays connected until its router has answered.** A
+  request the old router took before the swap reads the old device as
+  it was. Once the last of them is answered, the old device is
+  disconnected, which stops its polling of the file.
+- **One discovery responder answers at a time.** The responder on
+  `server.discovery_port` stops when the reload begins, and the rebuilt
+  server's binds the port again.
 
 Some changes still end a client's session, and `rp` then reads the
 monitor as one it cannot read, and parks. That is meant, since `rp`
@@ -449,10 +442,13 @@ has lost its monitor until its roster entry is changed to match:
 - A changed `unique_id` fails the pin of a client that pinned it
   ([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
 
-One narrow window remains. A request that arrives on one of the old
-server's connections, pooled or newly accepted, after the server has
-read that connection a last time and closed it fails, and `rp` reads
-that poll as unsafe.
+A changed `server.tls`, which `doctor` writes and the pages do not,
+starts the accepting again on the same socket, with or without TLS as
+the new setting says. Each old connection is closed once it has
+answered the request it has already received. A request that reaches
+one after that fails, and `rp` reads that poll as unsafe. A TLS
+handshake still in progress on an old connection holds up neither kind
+of reload.
 
 Every reload of the monitor takes this path, whatever fired it (a
 save, `SIGHUP`, or Windows' `ParamChange`). Other drivers keep the

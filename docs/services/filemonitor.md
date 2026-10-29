@@ -102,10 +102,10 @@ A save that changes something reloads the service. `rp` reads a
 monitor it cannot read as unsafe, and its unsafe transition cancels
 in-flight sky work, aborts the exposures that need the sky, stops
 guiding and **parks the mount**, whatever is running. So the reload
-keeps its clients: it keeps its listening socket, and reconnects its
+keeps its clients: it keeps their connections, and reconnects its
 rebuilt device when the old one was connected. A read made during the
-reload waits a second or two and is answered with the new
-configuration's reading
+reload is answered, with the old configuration's reading until the
+rebuilt server is ready and the new one's after
 ([setup crate § A reload that keeps its clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
 Only a monitor that then reads unsafe, or that `rp` can no longer read,
 sets off the transition. A new `file.path` that does not exist does that,
@@ -138,16 +138,18 @@ is reloading, and fires the in-process reload after the response has
 flushed: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop
 (`run_server_loop`) rebuilds the server from the freshly-persisted file.
-The shutdown signal and a reload both stop the running server's
-accepting. On a reload the loop keeps the listener while the address is
-unchanged, builds the new server on it, connects the new device when the
-old one was connected, and serves at once, while the old server finishes
-its connections with the old device and then disconnects it. An old
-connection is closed once its in-flight request is answered, so a
-client's next request reaches the rebuilt server and the new
-configuration, never the old server's in-memory state. On shutdown the
-loop closes the listener and waits for every server's connections to
-finish. A save that changes nothing says so and fires no reload.
+A reload that keeps the address and `server.tls` does not stop the
+server. The loop builds the new server, connects its device when the old
+one was connected, and makes its router the one every connection answers
+with. A connection looks its router up for each request, so a client's
+next request reaches the rebuilt server and the new configuration, never
+the old server's in-memory state. The old device stays connected until
+the requests the old router took are answered, and is then disconnected.
+A changed address or `server.tls` stops the accepting: the old
+connections close once their in-flight requests are answered, and the
+loop accepts again, on the same listener when only `server.tls` changed.
+On shutdown the loop closes the listener and waits for every connection
+to finish. A save that changes nothing says so and fires no reload.
 
 ## Operation
 

@@ -67,8 +67,10 @@ pub struct FilemonitorWorld {
     /// A client reading `is_safe` in the background (`reload.feature`).
     pub reader: Option<crate::steps::reload_steps::Reader>,
     /// A connection that sent a TLS handshake's first byte and nothing
-    /// more, which the old server waits on through its drain.
+    /// more, which the server waits on for its handshake timeout.
     pub stalled: Option<tokio::net::TcpStream>,
+    /// One HTTP/1.1 connection a client keeps open across a reload.
+    pub kept_alive: Option<crate::steps::reload_steps::KeptAlive>,
 }
 
 impl SetupPagesWorld for FilemonitorWorld {
