@@ -673,7 +673,12 @@ struct Client {
 ///
 /// The socket is put back into blocking mode: Windows hands out an
 /// accepted socket in its listener's non-blocking mode, and the client
-/// loop relies on its read timeout rather than spinning on `WouldBlock`.
+/// loop waits on its reads rather than spinning on `WouldBlock`. Reads
+/// carry no timeout. On Windows a receive that times out leaves the
+/// connection "in an indeterminate state" that "should be closed"
+/// (`SO_RCVTIMEO`), and the loop would read on from it. An idle client
+/// thread ends when its peer closes, or with the process once a
+/// `shutdown` request ends the accept loop.
 /// The client is sent its `Version` event, then registered, here, in
 /// accept order, before its thread runs. So an event broadcast on behalf
 /// of a later client (as `mock_report_frame` does) reaches every client
@@ -682,7 +687,6 @@ struct Client {
 fn accept_client(stream: TcpStream) -> Option<Client> {
     let set_up = stream
         .set_nonblocking(false)
-        .and_then(|()| stream.set_read_timeout(Some(std::time::Duration::from_secs(5))))
         .and_then(|()| stream.set_write_timeout(Some(std::time::Duration::from_secs(5))))
         .and_then(|()| stream.try_clone());
     match set_up {
@@ -750,15 +754,6 @@ fn handle_client(
                 }
 
                 // Check if we should shutdown
-                if shutdown.load(Ordering::Relaxed) {
-                    break;
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // Timeout, check shutdown flag
                 if shutdown.load(Ordering::Relaxed) {
                     break;
                 }
