@@ -1193,6 +1193,14 @@ a success at its natural end
 ([record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)).
 A driver that ignores it finishes the frame.
 
+Every single frame also makes PHD2 send one `ConfigurationChange` event,
+about 1 ms after the request. PHD2 fills a missing `binning` or `gain`
+with the camera's current value, then sets both for the frame
+(`SingleExposure::Activate`, `src/myframe_events.cpp:415`). Each set
+writes the value into the profile, and a profile write raises the
+event. The facade's request names neither, so neither changes
+([record](../validation/2026-10-30-phd2-guider-phd2-simulator-linux-frame-size/README.md#phd2-sends-a-configurationchange-for-each-single-frame)).
+
 ### Capturing a frame
 
 `StartExposure(duration, light)` checks the request, starts PHD2's
@@ -1315,7 +1323,11 @@ The frame is needed only until PHD2 has taken one with its current
 camera: a PHD2 that has looped or guided reports the size, and the
 connect takes no frame. On the Simulator the frame adds about 0.1 s to
 the connect (PHD2 reported a 1 ms frame 87 ms after the request,
-[above](#what-phd2-does-with-a-single-frame)). The facade keeps no size
+[above](#what-phd2-does-with-a-single-frame)). On the field rig a
+connect that took the frame answered in 85 ms, and one that did not in
+1 ms
+([record](../validation/2026-10-30-phd2-guider-phd2-simulator-linux-frame-size/README.md)).
+The facade keeps no size
 of its own: a size it remembered could go stale when PHD2 switches or
 rebins its camera, while PHD2's own answer after a frame cannot.
 
@@ -1749,6 +1761,15 @@ sweep lease is held return `camera_busy` (409), see
   until it has taken one, which the connect now handles (see
   [A frame size PHD2 does not know yet](#a-frame-size-phd2-does-not-know-yet)).
   [Record](../validation/2026-10-14-phd2-guider-phd2-simulator-linux-sweep-lease/README.md).
+- **2026-10-30, field rig, PHD2 2.6.14 with its Simulator camera, a
+  connect before PHD2's first frame:** a probe that asserts each outcome
+  found PHD2 reporting 0 × 0. It then connected the facade twice. The
+  first connect took one 1 ms frame, deleted its file and served
+  752 × 580, and the second took no frame. No ConformU run: the fix
+  changed only the connect. PHD2 sends a `ConfigurationChange` for each
+  single frame, writing its current binning and gain back unchanged (see
+  [What PHD2 does with a single frame](#what-phd2-does-with-a-single-frame)).
+  [Record](../validation/2026-10-30-phd2-guider-phd2-simulator-linux-frame-size/README.md).
 
 ### Not in this version
 

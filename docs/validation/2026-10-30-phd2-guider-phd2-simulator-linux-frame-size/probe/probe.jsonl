@@ -1,0 +1,48 @@
+{"t": 0.0019, "kind": "event", "event": {"Event": "Version", "PHDVersion": "2.6.14", "PHDSubver": "", "OverlapSupport": true, "MsgVersion": 1}}
+{"t": 0.002, "kind": "check", "what": "PHD2 reported its version", "ok": true, "version": "2.6.14"}
+{"t": 0.0021, "kind": "event", "event": {"Event": "AppState", "State": "Stopped"}}
+{"t": 0.0024, "kind": "rpc", "req": {"method": "get_profile", "id": 1}, "reply": {"jsonrpc": "2.0", "result": {"id": 2, "name": "Simulator"}, "id": 1}}
+{"t": 0.0024, "kind": "check", "what": "PHD2's profile is the Simulator", "ok": true, "profile": {"id": 2, "name": "Simulator"}}
+{"t": 0.0026, "kind": "rpc", "req": {"method": "get_current_equipment", "id": 2}, "reply": {"jsonrpc": "2.0", "result": {"camera": {"name": "Simulator", "connected": true}, "mount": {"name": "On Camera", "connected": true}}, "id": 2}}
+{"t": 0.0026, "kind": "check", "what": "PHD2's Simulator camera is connected", "ok": true, "camera": {"name": "Simulator", "connected": true}}
+{"t": 0.0028, "kind": "rpc", "req": {"method": "get_app_state", "id": 3}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 3}}
+{"t": 0.0029, "kind": "check", "what": "PHD2 is Stopped", "ok": true}
+{"t": 0.0031, "kind": "rpc", "req": {"method": "get_camera_frame_size", "id": 4}, "reply": {"jsonrpc": "2.0", "result": [0, 0], "id": 4}}
+{"t": 0.0031, "kind": "check", "what": "PHD2 does not know the frame size yet", "ok": true, "size": [0, 0]}
+{"t": 0.0031, "kind": "check", "what": "image_dir starts empty", "ok": true, "entries": []}
+{"t": 0.0202, "kind": "alpaca", "method": "GET", "member": "connected", "form": null, "took": 0.0167, "value": false, "error": 0, "message": ""}
+{"t": 0.0203, "kind": "check", "what": "the facade starts disconnected", "ok": true}
+{"t": 0.0458, "kind": "event", "event": {"Event": "ConfigurationChange"}}
+{"t": 0.091, "kind": "event", "event": {"Event": "SingleFrameComplete", "Success": true, "Path": "<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits"}}
+{"t": 0.0911, "kind": "event", "event": {"Event": "LoopingExposuresStopped"}}
+{"t": 0.1054, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "took": 0.085, "value": null, "error": 0, "message": ""}
+{"t": 0.1055, "kind": "check", "what": "first connect: Connected = true succeeds", "ok": true, "message": "", "took": 0.085}
+{"t": 0.1057, "kind": "rpc", "req": {"method": "get_camera_frame_size", "id": 5}, "reply": {"jsonrpc": "2.0", "result": [752, 580], "id": 5}}
+{"t": 0.1063, "kind": "alpaca", "method": "GET", "member": "connected", "form": null, "took": 0.0005, "value": true, "error": 0, "message": ""}
+{"t": 0.1067, "kind": "alpaca", "method": "GET", "member": "cameraxsize", "form": null, "took": 0.0003, "value": 752, "error": 0, "message": ""}
+{"t": 0.1071, "kind": "alpaca", "method": "GET", "member": "cameraysize", "form": null, "took": 0.0003, "value": 580, "error": 0, "message": ""}
+{"t": 0.1074, "kind": "alpaca", "method": "GET", "member": "sensorname", "form": null, "took": 0.0003, "value": "Simulator", "error": 0, "message": ""}
+{"t": 0.1074, "kind": "check", "what": "first connect: the facade reads Connected", "ok": true}
+{"t": 0.1074, "kind": "check", "what": "first connect: PHD2 took exactly one frame", "ok": true, "frames": 1}
+{"t": 0.1074, "kind": "check", "what": "first connect: the frame succeeded", "ok": true}
+{"t": 0.1075, "kind": "check", "what": "first connect: the frame was the facade's, in image_dir", "ok": true, "path": "<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits"}
+{"t": 0.1075, "kind": "check", "what": "first connect: the frame's file was deleted", "ok": true, "path": "<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits"}
+{"t": 0.1075, "kind": "check", "what": "first connect: PHD2 now reports the Simulator's size", "ok": true, "size": [752, 580]}
+{"t": 0.1075, "kind": "check", "what": "first connect: the facade serves PHD2's size", "ok": true, "served": {"connected": true, "cameraxsize": 752, "cameraysize": 580, "sensorname": "Simulator"}}
+{"t": 0.1075, "kind": "check", "what": "first connect: SensorName is PHD2's camera name", "ok": true, "served": {"connected": true, "cameraxsize": 752, "cameraysize": 580, "sensorname": "Simulator"}}
+{"t": 0.1079, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "false"}, "took": 0.0003, "value": null, "error": 0, "message": ""}
+{"t": 0.1079, "kind": "check", "what": "first connect: Connected = false succeeds", "ok": true}
+{"t": 0.1088, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "took": 0.0009, "value": null, "error": 0, "message": ""}
+{"t": 0.1089, "kind": "check", "what": "second connect: Connected = true succeeds", "ok": true, "message": "", "took": 0.0009}
+{"t": 0.1091, "kind": "rpc", "req": {"method": "get_camera_frame_size", "id": 6}, "reply": {"jsonrpc": "2.0", "result": [752, 580], "id": 6}}
+{"t": 0.1096, "kind": "alpaca", "method": "GET", "member": "connected", "form": null, "took": 0.0004, "value": true, "error": 0, "message": ""}
+{"t": 0.11, "kind": "alpaca", "method": "GET", "member": "cameraxsize", "form": null, "took": 0.0003, "value": 752, "error": 0, "message": ""}
+{"t": 0.1103, "kind": "alpaca", "method": "GET", "member": "cameraysize", "form": null, "took": 0.0003, "value": 580, "error": 0, "message": ""}
+{"t": 0.1106, "kind": "alpaca", "method": "GET", "member": "sensorname", "form": null, "took": 0.0003, "value": "Simulator", "error": 0, "message": ""}
+{"t": 0.1107, "kind": "check", "what": "second connect: the facade reads Connected", "ok": true}
+{"t": 0.1107, "kind": "check", "what": "second connect: PHD2 took no frame", "ok": true, "frames": 0}
+{"t": 0.1107, "kind": "check", "what": "second connect: the facade serves PHD2's size", "ok": true, "served": {"connected": true, "cameraxsize": 752, "cameraysize": 580, "sensorname": "Simulator"}}
+{"t": 0.111, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "false"}, "took": 0.0003, "value": null, "error": 0, "message": ""}
+{"t": 0.111, "kind": "check", "what": "second connect: Connected = false succeeds", "ok": true}
+{"t": 0.1111, "kind": "check", "what": "image_dir is empty after: no frame file, no restart marker", "ok": true, "entries": []}
+{"t": 0.1111, "kind": "done"}
