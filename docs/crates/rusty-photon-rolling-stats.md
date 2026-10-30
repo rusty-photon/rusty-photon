@@ -1,15 +1,17 @@
 # `rusty-photon-rolling-stats` Crate Design
 
-Time-windowed statistics over timestamped samples. Today that is one type,
-[`SensorMean`] — a rolling mean of `f64` readings over a configurable window —
-and one module of policy, `observing_conditions`, which the three ASCOM
-`ObservingConditions` drivers that hold such means share.
+Rolling statistics. Today that is two types and one module of policy:
+[`SensorMean`], a rolling mean of `f64` readings over a configurable time
+window; [`SquareSums`], a count and sum of squares that is never reset, for the
+RMS over an interval the caller picks; and `observing_conditions`, the policy
+the three ASCOM `ObservingConditions` drivers that hold such means share.
 
 This is a workspace library, not a service. It is `std`-only and depends on
 nothing: no async runtime, no serialiser, no device library. That is deliberate,
 and it is the reason the type lives here rather than in a driver crate. A
 rolling mean is wanted anywhere something is sampled on a cadence, and a
-consumer should not inherit `ascom-alpaca` to get one.
+consumer should not inherit `ascom-alpaca` to get one; the same goes for a
+guide error's RMS.
 
 ## Scope
 
@@ -17,9 +19,11 @@ consumer should not inherit `ascom-alpaca` to get one.
 - Answer the mean of the samples **inside** that window.
 - Answer how long ago the newest sample arrived.
 - Resize the window, evicting what no longer fits.
+- Keep a running count and sum of squares, and answer the RMS over the values
+  folded between two readings of it.
 
-Out of scope: persistence, interpolation, any statistic other than the mean
-(RMS, min/max and percentiles would be additions here, not new crates), and any
+Out of scope: persistence, interpolation, statistics beyond the mean and the
+RMS (min/max and percentiles would be additions here, not new crates), and any
 knowledge of what the samples measure.
 
 ## The window is applied on read
@@ -74,6 +78,34 @@ ASCOM drivers surface as `f64::MAX` seconds — the opposite of the truth. A
 sample stamped in the future is as new as a sample can be, so it reports
 `Duration::ZERO`.
 
+## `SquareSums`: the RMS over an interval the caller picks
+
+A window answers "what is it now". Some callers need the statistic over an
+interval of their own instead, timed by something the sampler knows nothing
+about: rp records the RMS guide error over one camera exposure from the guider
+service's steps. A window cannot serve that once the interval outlasts it, and
+the sampler cannot size one for intervals it never hears of.
+
+`SquareSums` is cumulative instead. `add` folds a value into a count and a sum
+of squares, and nothing is ever evicted or reset. A caller reads it at both ends
+of its interval, and `since(&earlier)` subtracts the two readings into the
+values folded in between, whose `rms` is the interval's. The readings can cross
+a process boundary: `count` and `sum_of_squares` go on the wire, and
+`from_parts` rebuilds a reading on the other side, refusing a sum that is
+negative or not finite, which no accumulator reports.
+
+- **A non-finite square is skipped, not counted.** One would leave the sum
+  non-finite for good, every later interval with it, and JSON has no spelling
+  for it.
+- **`since` refuses a reading that is not earlier.** A count or a sum that went
+  backwards means the two readings are not of one accumulator in order, so
+  their difference means nothing. The sum only ever grows, so two genuine
+  readings never differ by a negative amount. A caller that may read two
+  accumulators, such as two runs of a service, needs its own way to tell them
+  apart: the guider service sends an `epoch` beside its readings.
+- **`rms` converts the count through `u32`.** A count past `u32::MAX` answers
+  `None` rather than an approximate root; no caller comes near it.
+
 ## The `observing_conditions` policy module
 
 `SensorMean` knows nothing about ASCOM, and the crate still depends on
@@ -110,7 +142,13 @@ the drivers.
 three (temperature, humidity, dewpoint), size them through
 `effective_window` from the configured `averaging_period` and from every
 `SetAveragePeriod`, and answer the empty-name `TimeSinceLastUpdate` through
-`time_since_freshest_update`. See
+`time_since_freshest_update`.
+
+`phd2-guider` keeps a `SquareSums` per axis of PHD2's guide distances as its
+running totals, and `rp` subtracts two readings of them into the guiding over
+an exposure. See [`docs/services/phd2-guider.md` § Running
+totals](../services/phd2-guider.md#running-totals) and [`docs/services/rp.md`
+§ Rig state](../services/rp.md#rig-state). See
 [`docs/services/ppba-driver.md`](../services/ppba-driver.md),
 [`docs/services/upbv2-driver.md`](../services/upbv2-driver.md) and
 [`docs/services/gemini-powerbox-adv3-driver.md`](../services/gemini-powerbox-adv3-driver.md).

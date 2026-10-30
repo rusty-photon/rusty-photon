@@ -26,6 +26,12 @@ Feature: Guider HTTP service contract
   on their own: one step and two both read 0.3 / 0.4 / 0.5 here.
   sample_count is the field that pins it down.
 
+  The stats also carry the service's running totals, which only ever
+  grow while the service runs: starting guiding again clears the
+  rolling window but not the totals. A client reads them at both ends
+  of an interval and subtracts, which gives it the guiding over exactly
+  that interval, however many steps it spans.
+
   Scenario: Starting guiding blocks until PHD2 settles and reports the guiding RMS
     Given a mock PHD2 that settles successfully
     And the guider service is running
@@ -138,6 +144,25 @@ Feature: Guider HTTP service contract
     And the response field "rms_ra_px" should be 0.3
     And the response field "snr" should be 25.1
     And the response field "sample_count" should be 2
+
+  Scenario: Guiding stats report running totals that starting guiding again does not reset
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client starts guiding
+    And the client starts guiding
+    And the client requests the guiding stats
+    Then the response status should be 200
+    And the response field "sample_count" should be 2
+    And the guiding stats totals should be:
+      | field          | value |
+      | guide_steps    | 4     |
+      | ra_samples     | 4     |
+      | ra_sum_sq_px2  | 0.36  |
+      | dec_samples    | 4     |
+      | dec_sum_sq_px2 | 0.64  |
+      | star_lost      | 2     |
+      | interruptions  | 0     |
+    And the guiding stats totals epoch should be a UUID
 
   Scenario: The metrics window reports per-frame star metrics including star-lost frames
     Given a mock PHD2 that settles successfully

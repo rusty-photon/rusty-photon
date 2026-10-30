@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Time-windowed rolling statistics over timestamped samples: the sliding-window mean an ObservingConditions device or any other periodic sampler reads from"
+description = "Rolling statistics: the sliding-window mean an ObservingConditions device or any other periodic sampler reads from, and the never-reset sum of squares a caller subtracts into the RMS over its own interval"
 rust-version.workspace = true
 
 [lints]

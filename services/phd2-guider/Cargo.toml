@@ -40,6 +40,7 @@ rusty-photon-setup = { workspace = true }
 schemars = { workspace = true }
 ndarray = { workspace = true }
 uuid = { workspace = true }
+rusty-photon-rolling-stats = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no

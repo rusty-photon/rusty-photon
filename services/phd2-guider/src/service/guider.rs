@@ -1,5 +1,6 @@
 //! Guiding operations behind the HTTP API: settle-blocking guide and
-//! dither, the confirmed stop, and the rolling RMS window.
+//! dither, the confirmed stop, the rolling RMS window and the running
+//! totals.
 //!
 //! Behavior contract: `docs/services/phd2-guider.md` § "HTTP Service
 //! Mode". The mutating operations serialize behind a single-flight
@@ -23,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use rusty_photon_rolling_stats::SquareSums;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
@@ -120,6 +122,37 @@ impl StatsWindow {
             snr: self.last_snr,
             star_mass: self.last_star_mass,
             sample_count: self.steps.len(),
+        }
+    }
+}
+
+/// The running totals (`docs/services/phd2-guider.md` § "Running
+/// totals"): what the event pump has folded since the service started.
+///
+/// They are never reset, so a client that reads them at both ends of an
+/// interval gets the guiding over exactly that interval by subtracting.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GuideTotals {
+    pub guide_steps: u64,
+    /// `RADistanceRaw`, in px.
+    pub ra: SquareSums,
+    /// `DECDistanceRaw`, in px.
+    pub dec: SquareSums,
+    pub star_lost: u64,
+    pub interruptions: u64,
+}
+
+impl GuideTotals {
+    /// Fold one guide step. A distance the step omits is skipped for
+    /// its axis, as in the rolling window ([`SquareSums::add`] also
+    /// skips one whose square is not finite).
+    fn add_step(&mut self, ra: Option<f64>, dec: Option<f64>) {
+        self.guide_steps = self.guide_steps.saturating_add(1);
+        if let Some(ra) = ra {
+            self.ra.add(ra);
+        }
+        if let Some(dec) = dec {
+            self.dec.add(dec);
         }
     }
 }
@@ -234,11 +267,14 @@ fn claim_held(claim: &CaptureClaim) -> String {
 }
 
 /// Stats endpoint payload: the window snapshot plus PHD2's current
-/// application state.
+/// application state, and the running totals read after it under this
+/// run's epoch.
 #[derive(Debug)]
 pub struct GuidingStats {
     pub app_state: AppState,
     pub snapshot: StatsSnapshot,
+    pub epoch: uuid::Uuid,
+    pub totals: GuideTotals,
 }
 
 /// Per-frame metrics ring size, in events (`GuideStep` + `StarLost`).
@@ -272,6 +308,11 @@ pub struct GuiderOps {
     /// Per-frame metrics ring (newest at the back), cleared together
     /// with the RMS window on `guiding/start`.
     metrics: std::sync::Mutex<std::collections::VecDeque<FrameMetrics>>,
+    /// Names this run of the service, so a client never subtracts
+    /// totals from two runs.
+    epoch: uuid::Uuid,
+    /// The running totals; unlike the window, never reset.
+    totals: std::sync::Mutex<GuideTotals>,
     /// Settle verdicts, published by the event pump *after* it folds
     /// the events that preceded them. Waiting here rather than on the
     /// raw PHD2 stream is what makes the snapshot a guide response
@@ -304,6 +345,8 @@ impl GuiderOps {
             metrics: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
                 METRICS_WINDOW,
             )),
+            epoch: uuid::Uuid::new_v4(),
+            totals: std::sync::Mutex::new(GuideTotals::default()),
             settle_events: broadcast::channel(SETTLE_CHANNEL_CAPACITY).0,
             frame_reports: broadcast::channel(FRAME_CHANNEL_CAPACITY).0,
             capture: std::sync::Mutex::new(None),
@@ -536,6 +579,23 @@ impl GuiderOps {
         Ok(())
     }
 
+    fn update_totals(&self, update: impl FnOnce(&mut GuideTotals)) {
+        update(
+            &mut self
+                .totals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+
+    /// Count an interruption: guiding stopped or paused, or the totals
+    /// may have missed steps.
+    fn note_interruption(&self) {
+        self.update_totals(|totals| {
+            totals.interruptions = totals.interruptions.saturating_add(1);
+        });
+    }
+
     fn push_metrics(&self, entry: FrameMetrics) {
         let mut ring = self
             .metrics
@@ -562,8 +622,9 @@ impl GuiderOps {
         }
     }
 
-    /// Fold one PHD2 event into the rolling window and the metrics
-    /// ring, then republish a settle verdict for the waiters.
+    /// Fold one PHD2 event into the rolling window, the running totals
+    /// and the metrics ring, then republish a settle verdict for the
+    /// waiters.
     ///
     /// The order within this function is the contract: a settle
     /// verdict becomes observable only once the events that preceded
@@ -585,6 +646,9 @@ impl GuiderOps {
                         step.star_mass,
                     );
                 }
+                self.update_totals(|totals| {
+                    totals.add_step(step.ra_distance_raw, step.dec_distance_raw);
+                });
                 self.push_metrics(FrameMetrics {
                     frame: step.frame,
                     hfd: step.hfd,
@@ -599,6 +663,9 @@ impl GuiderOps {
                 snr,
                 ..
             } => {
+                self.update_totals(|totals| {
+                    totals.star_lost = totals.star_lost.saturating_add(1);
+                });
                 self.push_metrics(FrameMetrics {
                     frame,
                     hfd: None,
@@ -607,6 +674,12 @@ impl GuiderOps {
                     star_lost: true,
                 });
             }
+            // Guiding is no longer running after these, and events sent
+            // while the connection is down are lost.
+            Phd2Event::GuidingStopped
+            | Phd2Event::Paused
+            | Phd2Event::LoopingExposuresStopped
+            | Phd2Event::ConnectionLost { .. } => self.note_interruption(),
             Phd2Event::SettleDone { status, error } => {
                 // No receiver means no guide or dither is waiting.
                 let _ = self.settle_events.send(SettleOutcome { status, error });
@@ -628,23 +701,31 @@ impl GuiderOps {
     }
 
     /// The single consumer of the client's event stream: it feeds the
-    /// rolling window, the metrics ring, and the settle verdicts that
-    /// guide and dither wait on. Runs until the event channel closes
-    /// (client dropped).
+    /// rolling window, the running totals, the metrics ring, and the
+    /// settle verdicts that guide and dither wait on. Runs until the
+    /// event channel closes (client dropped).
     pub fn spawn_event_pump(self: &Arc<Self>) {
         let ops = Arc::clone(self);
         tokio::spawn(async move {
             let mut rx = ops.client.subscribe();
-            loop {
-                match rx.recv().await {
-                    Ok(event) => ops.ingest(event),
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("guide event pump lagged, skipped {n} events");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
+            while ops.pump_one(rx.recv().await) {}
         });
+    }
+
+    /// One receive of the event pump: fold the event, or count a pump
+    /// that fell behind as an interruption, since the events it skipped
+    /// may have been guide steps the totals now lack. `false` once the
+    /// stream has closed.
+    fn pump_one(&self, received: Result<Phd2Event, broadcast::error::RecvError>) -> bool {
+        match received {
+            Ok(event) => self.ingest(event),
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                debug!("guide event pump lagged, skipped {n} events");
+                self.note_interruption();
+            }
+            Err(broadcast::error::RecvError::Closed) => return false,
+        }
+        true
     }
 
     /// Keep trying to establish the initial PHD2 connection. Once
@@ -862,6 +943,8 @@ impl GuiderOps {
         Ok(GuidingStats {
             app_state,
             snapshot: self.stats_snapshot(),
+            epoch: self.epoch,
+            totals: self.totals(),
         })
     }
 
@@ -937,6 +1020,13 @@ impl GuiderOps {
             .find_star(None)
             .await
             .map_err(ServiceError::from)
+    }
+
+    fn totals(&self) -> GuideTotals {
+        *self
+            .totals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn stats_snapshot(&self) -> StatsSnapshot {
@@ -1064,6 +1154,68 @@ mod tests {
             SettleParams::default(),
             Duration::from_secs(10),
         ))
+    }
+
+    #[test]
+    fn the_running_totals_fold_every_guide_step_and_lost_star() {
+        let ops = test_ops();
+        for json in [GUIDE_STEP_1, GUIDE_STEP_2, STAR_LOST_3] {
+            ops.ingest(event(json));
+        }
+        let totals = ops.totals();
+        assert_eq!(totals.guide_steps, 2);
+        assert_eq!(totals.ra.count(), 2);
+        approx(totals.ra.sum_of_squares(), 0.18);
+        assert_eq!(totals.dec.count(), 2);
+        approx(totals.dec.sum_of_squares(), 0.32);
+        assert_eq!(totals.star_lost, 1);
+        assert_eq!(totals.interruptions, 0);
+    }
+
+    #[test]
+    fn a_stop_a_pause_and_a_lost_connection_each_count_an_interruption() {
+        let ops = test_ops();
+        for json in [
+            r#"{"Event":"GuidingStopped"}"#,
+            r#"{"Event":"Paused"}"#,
+            r#"{"Event":"LoopingExposuresStopped"}"#,
+        ] {
+            ops.ingest(event(json));
+        }
+        ops.ingest(Phd2Event::ConnectionLost {
+            reason: "socket closed".to_string(),
+        });
+        assert_eq!(ops.totals().interruptions, 4);
+    }
+
+    #[test]
+    fn a_resume_or_a_dither_is_no_interruption() {
+        let ops = test_ops();
+        ops.ingest(event(r#"{"Event":"Resumed"}"#));
+        ops.ingest(event(r#"{"Event":"GuidingDithered","dx":1.0,"dy":1.0}"#));
+        assert_eq!(ops.totals().interruptions, 0);
+    }
+
+    #[test]
+    fn a_pump_that_fell_behind_counts_an_interruption_and_keeps_going() {
+        let ops = test_ops();
+        assert!(ops.pump_one(Err(broadcast::error::RecvError::Lagged(3))));
+        assert_eq!(ops.totals().interruptions, 1);
+    }
+
+    #[test]
+    fn the_pump_stops_once_the_event_stream_closes() {
+        assert!(!test_ops().pump_one(Err(broadcast::error::RecvError::Closed)));
+    }
+
+    #[test]
+    fn a_step_missing_a_distance_counts_but_skips_that_axis() {
+        let mut totals = GuideTotals::default();
+        totals.add_step(None, Some(0.5));
+        assert_eq!(totals.guide_steps, 1);
+        assert_eq!(totals.ra.count(), 0);
+        assert_eq!(totals.dec.count(), 1);
+        approx(totals.dec.sum_of_squares(), 0.25);
     }
 
     /// Drive a settle to completion the way the event pump does — one

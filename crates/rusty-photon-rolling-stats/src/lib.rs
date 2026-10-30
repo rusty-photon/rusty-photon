@@ -1,6 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! `rusty-photon-rolling-stats` — time-windowed statistics over timestamped
-//! samples.
+//! `rusty-photon-rolling-stats` — rolling statistics: time-windowed over
+//! timestamped samples, and cumulative over an interval the caller picks.
 //!
 //! [`SensorMean`] keeps a rolling window of `f64` samples and answers the mean
 //! over that window. The ASCOM `ObservingConditions` drivers serve
@@ -21,8 +21,15 @@
 //! `ObservingConditions` drivers share: how `AveragePeriod` maps onto a window,
 //! and what `TimeSinceLastUpdate` with an empty sensor name answers over
 //! several means.
+//!
+//! [`SquareSums`] is the cumulative counterpart of a window: a count and sum of
+//! squares that is never reset, read at both ends of an interval the caller
+//! picks and subtracted to the RMS over that interval, however long it is.
 
 pub mod observing_conditions;
+mod square_sums;
+
+pub use square_sums::SquareSums;
 
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};

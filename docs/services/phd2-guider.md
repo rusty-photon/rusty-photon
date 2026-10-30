@@ -752,7 +752,9 @@ Default port: **11130** (matches the `guider.url` placeholder in
 - It is **stateless across restarts** in the way that matters:
   guiding runs *in PHD2*, so a service restart never interrupts an
   active guide loop. The only state lost is the rolling RMS window,
-  which refills within a few guide exposures. Restart is always cheap
+  which refills within a few guide exposures, and the
+  [running totals](#running-totals), which start again under a new
+  `epoch`. Restart is always cheap
   — the same property that makes the plate-solver's supervision
   posture safe. The camera facade's one piece of persisted state is the
   marker of a capture in flight, which keeps guiding refused after a
@@ -878,7 +880,17 @@ mutating-request queue.
   "total_rms_px": 0.5,
   "snr": 25.1,
   "star_mass": 5340.0,
-  "sample_count": 12
+  "sample_count": 12,
+  "totals": {
+    "epoch": "0d6f2b8e-5c1a-4f0e-9a43-2a8f6e1c7b90",
+    "guide_steps": 1530,
+    "ra_samples": 1530,
+    "ra_sum_sq_px2": 245.7,
+    "dec_samples": 1528,
+    "dec_sum_sq_px2": 198.2,
+    "star_lost": 2,
+    "interruptions": 4
+  }
 }
 ```
 
@@ -887,6 +899,8 @@ it). `snr`/`star_mass` mirror the most recent `GuideStep` event
 exactly — `null` when the latest step omitted the measurement, so the
 snapshot never reports stale telemetry. RMS comes from the rolling
 window; all nullable fields are `null` when no samples exist.
+`totals` are the [running totals](#running-totals), read after the
+app state.
 
 #### `GET /api/v1/guiding/metrics`
 
@@ -1004,6 +1018,41 @@ would be a second, independent subscriber racing the pump, and a
 response could then report fewer samples than PHD2 had already sent.
 The RMS figures would not give it away — a window short one step still
 looks plausible — so `sample_count` is the field that shows it.
+
+#### Running totals
+
+The rolling window answers "how is guiding now". A client that wants
+the error over an interval of its own, such as rp recording the
+guiding over one exposure ([rp.md § Core
+Fields](rp.md#core-fields-owned-by-rp), `guiding`), needs every step
+of that interval, and an exposure can outlast the window: 50 steps at
+a 2 s guide cadence are 100 s. So the event pump also keeps running
+totals, which `stats` reports as `totals`. They only ever grow while
+the service runs, and are never reset, not even by `guiding/start`. A
+client reads them at both ends of its interval and subtracts:
+
+- `epoch` names this run of the service, a UUID drawn when it starts.
+  A restart loses the totals and starts them again under a new epoch,
+  so two readings with different epochs cannot be subtracted.
+- `guide_steps` counts `GuideStep` events.
+- `ra_samples` and `ra_sum_sq_px2` count the steps that carried
+  `RADistanceRaw` and sum its square, in px²; `dec_samples` and
+  `dec_sum_sq_px2` do the same for `DECDistanceRaw`. A step missing a
+  distance is skipped for that axis, as in the window. So an
+  interval's RMS on an axis is √(Δsum ÷ Δsamples), the window's
+  formula over exactly the interval's steps.
+- `star_lost` counts `StarLost` events.
+- `interruptions` counts the events after which guiding is no longer
+  running, or the totals may have missed steps: PHD2's
+  `GuidingStopped`, `Paused` and `LoopingExposuresStopped`, the loss
+  of the connection to PHD2 (events sent meanwhile are lost), and an
+  event pump that fell behind and skipped events. With PHD2 guiding
+  at both readings, an unchanged count means guiding ran through the
+  interval.
+
+Each axis's count and sum is a `SquareSums` from
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md),
+the never-reset counterpart of a window that rp subtracts with too.
 
 ### Concurrency
 

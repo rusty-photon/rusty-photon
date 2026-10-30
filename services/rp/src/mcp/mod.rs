@@ -77,6 +77,7 @@ pub mod inflight;
 pub mod internals;
 pub mod progress;
 pub mod providers;
+mod rig_state;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

@@ -243,6 +243,32 @@ async fn response_field_true(world: &mut GuiderWorld, field: String) {
     );
 }
 
+#[then("the guiding stats totals should be:")]
+async fn stats_totals_are(world: &mut GuiderWorld, step: &cucumber::gherkin::Step) {
+    let body = &world.last_response().body;
+    let totals = &body["totals"];
+    let table = step.table.as_ref().expect("the step needs a data table");
+    for row in table.rows.iter().skip(1) {
+        let (field, expected) = (&row[0], &row[1]);
+        let expected: f64 = expected
+            .parse()
+            .unwrap_or_else(|e| panic!("value for {field} must be a number: {e}"));
+        let actual = totals[field]
+            .as_f64()
+            .unwrap_or_else(|| panic!("totals field {field} is not a number in {body}"));
+        approx(actual, expected);
+    }
+}
+
+#[then("the guiding stats totals epoch should be a UUID")]
+async fn stats_totals_epoch_is_uuid(world: &mut GuiderWorld) {
+    let body = &world.last_response().body;
+    let epoch = body["totals"]["epoch"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no totals epoch in {body}"));
+    uuid::Uuid::parse_str(epoch).unwrap_or_else(|e| panic!("epoch {epoch} is not a UUID: {e}"));
+}
+
 #[then(expr = "the response error should be {string}")]
 async fn response_error(world: &mut GuiderWorld, code: String) {
     let body = &world.last_response().body;
