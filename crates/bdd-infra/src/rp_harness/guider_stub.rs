@@ -81,6 +81,52 @@ pub struct CannedGuiding {
     /// would degrade before the session even begins and the events
     /// would be lost to the engine's from-run-start intake.
     pub lifecycle: bool,
+    /// The running totals `guiding/stats` reports, or `None` (the
+    /// default) for a guider service that predates them. See
+    /// [`CannedTotals`].
+    pub totals: Option<CannedTotals>,
+}
+
+/// Running totals the stub reports on `guiding/stats`
+/// (phd2-guider.md § Running totals).
+///
+/// They grow by the same amount on every stats read: read N reports N
+/// times each per-read value, so any two consecutive reads differ by
+/// exactly one read's growth. Every step carries both distances, so
+/// each axis's sample count is the step count.
+#[derive(Debug, Clone, Default)]
+pub struct CannedTotals {
+    pub guide_steps_per_read: u64,
+    pub ra_sum_sq_px2_per_read: f64,
+    pub dec_sum_sq_px2_per_read: f64,
+    pub star_lost_per_read: u64,
+    pub interruptions_per_read: u64,
+    /// Report a new `epoch` on every read: a guider service that
+    /// restarted between any two reads.
+    pub new_epoch_per_read: bool,
+}
+
+impl CannedTotals {
+    /// The `totals` object of the `read`-th stats read (1-based).
+    fn at_read(&self, read: u32) -> Value {
+        let steps = self.guide_steps_per_read.saturating_mul(u64::from(read));
+        let reads = f64::from(read);
+        let epoch = if self.new_epoch_per_read {
+            format!("stub-epoch-{read}")
+        } else {
+            "stub-epoch".to_string()
+        };
+        serde_json::json!({
+            "epoch": epoch,
+            "guide_steps": steps,
+            "ra_samples": steps,
+            "ra_sum_sq_px2": self.ra_sum_sq_px2_per_read * reads,
+            "dec_samples": steps,
+            "dec_sum_sq_px2": self.dec_sum_sq_px2_per_read * reads,
+            "star_lost": self.star_lost_per_read.saturating_mul(u64::from(read)),
+            "interruptions": self.interruptions_per_read.saturating_mul(u64::from(read)),
+        })
+    }
 }
 
 impl Default for CannedGuiding {
@@ -97,6 +143,7 @@ impl Default for CannedGuiding {
             phd2_rotator_connected: false,
             metrics_hfd_script: vec![2.5],
             lifecycle: false,
+            totals: None,
         }
     }
 }
@@ -138,6 +185,9 @@ struct StubState {
     /// Whether the lifecycle-mode guide loop is currently active
     /// (`CannedGuiding::lifecycle`); unused for the static flag.
     lifecycle_active: Arc<std::sync::atomic::AtomicBool>,
+    /// Count of `guiding/stats` requests served — what
+    /// [`CannedTotals`] grows by.
+    stats_reads: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl StubState {
@@ -168,6 +218,7 @@ impl GuiderStub {
             requests: requests.clone(),
             metrics_polls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lifecycle_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stats_reads: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let app = Router::new()
@@ -366,7 +417,11 @@ async fn stats_handler(
     }
     let c = canned(&state);
     let guiding = state.effective_guiding(c);
-    Json(serde_json::json!({
+    let read = state
+        .stats_reads
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        .saturating_add(1);
+    let mut body = serde_json::json!({
         "app_state": if guiding { "Guiding" } else { "Stopped" },
         "guiding": guiding,
         "rms_ra_px": c.rms_ra_px,
@@ -375,8 +430,11 @@ async fn stats_handler(
         "snr": c.snr,
         "star_mass": c.star_mass,
         "sample_count": c.sample_count,
-    }))
-    .into_response()
+    });
+    if let (Some(totals), Some(fields)) = (&c.totals, body.as_object_mut()) {
+        fields.insert("totals".to_string(), totals.at_read(read));
+    }
+    Json(body).into_response()
 }
 
 async fn health_handler(State(_state): State<StubState>) -> axum::response::Response {
@@ -529,6 +587,89 @@ mod tests {
 
         let starts = stub.requests_to("/guiding/start").await;
         assert_eq!(starts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stats_totals_grow_by_one_reads_worth_on_every_read() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+            totals: Some(CannedTotals {
+                guide_steps_per_read: 10,
+                ra_sum_sq_px2_per_read: 5.625,
+                dec_sum_sq_px2_per_read: 10.0,
+                star_lost_per_read: 1,
+                interruptions_per_read: 0,
+                new_epoch_per_read: false,
+            }),
+            ..CannedGuiding::default()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+        let mut reads = Vec::new();
+        for _ in 0..2 {
+            let stats: Value = client
+                .get(format!("{}/api/v1/guiding/stats", stub.url))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reads.push(stats["totals"].clone());
+        }
+        assert_eq!(
+            reads[1],
+            serde_json::json!({
+                "epoch": "stub-epoch",
+                "guide_steps": 20,
+                "ra_samples": 20,
+                "ra_sum_sq_px2": 11.25,
+                "dec_samples": 20,
+                "dec_sum_sq_px2": 20.0,
+                "star_lost": 2,
+                "interruptions": 0,
+            })
+        );
+        assert_eq!(reads[0]["guide_steps"], 10);
+    }
+
+    #[tokio::test]
+    async fn stats_totals_start_a_new_epoch_on_every_read_when_asked() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+            totals: Some(CannedTotals {
+                new_epoch_per_read: true,
+                ..CannedTotals::default()
+            }),
+            ..CannedGuiding::default()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+        let mut epochs = Vec::new();
+        for _ in 0..2 {
+            let stats: Value = client
+                .get(format!("{}/api/v1/guiding/stats", stub.url))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            epochs.push(stats["totals"]["epoch"].clone());
+        }
+        assert_eq!(epochs, vec!["stub-epoch-1", "stub-epoch-2"]);
+    }
+
+    #[tokio::test]
+    async fn stats_carry_no_totals_by_default() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding::default())).await;
+        let stats: Value = reqwest::Client::new()
+            .get(format!("{}/api/v1/guiding/stats", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(stats.get("totals"), None);
     }
 
     #[tokio::test]

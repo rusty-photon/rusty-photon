@@ -51,7 +51,7 @@ pub use config::{
     STARLESS_THRESHOLD_SIGMA,
 };
 pub use facade_stub::{FacadeCall, FacadeCameraStub, SWEEP_LEASE_ACTIONS};
-pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
+pub use guider_stub::{CannedGuiding, CannedTotals, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;

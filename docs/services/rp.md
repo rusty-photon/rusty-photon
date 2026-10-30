@@ -204,12 +204,6 @@ line with the rules, each tracked by its own issue:
     `fits_path`. A frame whose pairs were copied to a new directory is
     solved, measured and written at its old copy; one whose pairs were
     moved fails, although the lookup found it.
-- Rig state the sidecar does not record: the focuser's position and
-  temperature, the rotator's angle and the position angle the frame
-  was meant to be taken at, the mount's pier side and tracking state,
-  the guider's state over the exposure, and the observing-conditions
-  and safety-monitor readings
-  ([#1496](https://github.com/rusty-photon/rusty-photon/issues/1496)).
 - `rp`'s own plate solves lean on the header and on live state.
   `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
   pass ASTAP no scale, and plate solvers derive a frame's scale from
@@ -246,6 +240,7 @@ line with the rules, each tracked by its own issue:
   "telescope": "Takahashi FSQ-106EDX4",
   "train_devices": [
     { "id": "main-focuser", "kind": "focuser" },
+    { "id": "main-rotator", "kind": "rotator" },
     { "id": "main-wheel", "kind": "filter wheel" },
     { "id": "main-camera-1", "kind": "camera" }
   ],
@@ -273,6 +268,35 @@ line with the rules, each tracked by its own issue:
     "ra_hours": 0.7121,
     "dec_degrees": 41.2702
   },
+  "pier_side": "West",
+  "tracking": true,
+  "focusers": [
+    { "id": "main-focuser", "position": 21450, "temperature_c": 3.8 }
+  ],
+  "rotators": [
+    { "id": "main-rotator", "angle_degrees": 92.0, "mechanical_angle_degrees": 90.5 }
+  ],
+  "intended_position_angle_degrees": 92.0,
+  "guiding": {
+    "guided_throughout": true,
+    "guide_steps": 148,
+    "rms_ra_px": 0.41,
+    "rms_dec_px": 0.35,
+    "total_rms_px": 0.54,
+    "star_lost": 0
+  },
+  "observing_conditions": [
+    {
+      "id": "ppba-weather",
+      "temperature_c": 4.1,
+      "humidity_pct": 71.0,
+      "dew_point_c": -0.8,
+      "pressure_hpa": 1013.2
+    }
+  ],
+  "safety_monitors": [
+    { "id": "roof", "is_safe": true }
+  ],
   "site": {
     "latitude_degrees": 51.0786,
     "longitude_degrees": -0.2944
@@ -450,7 +474,8 @@ sidecar is the record ([Ground rules](#ground-rules)).
   costs the frame nothing and a wedged one at most that second. A read
   still out then is dropped and aborted, as it is when the exposure
   fails or the capture is cancelled. Also omitted when no mount is
-  configured or connected, or the read fails.
+  configured or connected, or the read fails. The same read gives the
+  frame's `pier_side` and `tracking` ([Rig state](#rig-state)).
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 - `site` — the configured observer site's `latitude_degrees` and
@@ -609,6 +634,138 @@ The `plate_solve` built-in tool (Phase 6c-2 in
 ASTAP's `-fov` semantics ("image height in degrees"). Where a solve
 called without it gets its scale is covered in
 [Ground rules](#ground-rules).
+
+#### Rig state
+
+The rig state is what the rest of the rig was doing while the frame
+was exposed: the mount, the focusers and rotators in the
+camera's train, the guider, and the site's observing-conditions
+devices and safety monitors. Each is a fact about the frame that is
+lost once the rig moves on. A focus model fits focuser position
+against temperature and filter, flats and mosaics match on rotator
+angle, calibration and plate solving around a meridian flip need the
+pier side, and frame grading can use the guiding error and the
+conditions.
+
+These follow the acquisition facts' rules. Each is auxiliary: a
+device that is not configured or not connected, a read that fails, a
+property the driver does not implement, or a value that is not
+finite drops that one field (logged at `debug!`), never the capture
+or the other fields, and an unavailable field is omitted (absent, not
+`null`). No placeholder is written for a reading `rp` did not get.
+The mount is read with `pointing`, as the exposure starts. The guider
+is read at both ends of the exposure. Everything else is read once
+the frame is ready, while the capture still holds the camera, beside
+the camera's own reads: all at once, each read bounded at the same
+3 s, so a healthy rig costs the frame milliseconds and a wedged
+device at most those 3 s. The header exports none of them yet
+([FITS header](#fits-header);
+[#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)
+tracks the export).
+
+- `pier_side` is the mount's ASCOM `SideOfPier`, `"East"` or
+  `"West"`, from the frame's one mount read, the one that gives
+  `pointing`. With `pointing` it says which side of the meridian the
+  frame was taken on. A mount that reports `Unknown` records none.
+- `tracking` is the mount's ASCOM `Tracking`, from the same read.
+  `false` is recorded too: a frame taken with tracking off is trailed,
+  and that is a fact about it.
+
+  Both follow `pointing`'s rule for a mount in motion: a mount that
+  reports `Slewing`, or fails to say, records neither, since a
+  mid-slew read describes nothing the frame saw. Otherwise each read
+  stands on its own.
+- `focusers` has one entry for each focuser in the camera's train, in
+  the train's optical order: `{id, position, temperature_c}`, the
+  driver's ASCOM `Position` in steps and `Temperature` in °C. A
+  focuser that reports `IsMoving`, or fails to say, records no
+  position, because the frame was not focused at a point the focuser
+  passed through. A relative focuser has no `Position`, and a focuser
+  without a probe no `Temperature`. With `filter` and
+  `optics.microns_per_step`, this is what a focus model fits against.
+- `rotators` has one entry for each rotator in the camera's train, in
+  the same order: `{id, angle_degrees, mechanical_angle_degrees}`,
+  ASCOM `Position`, the sky angle `move_rotator` moves to, and
+  `MechanicalPosition` ([Rotator Tool Details](#rotator-tool-details)).
+  A rotator that reports `IsMoving`, or fails to say, records neither
+  angle.
+
+  In both lists an entry with no reading is left out, a device whose
+  session is down among them, and the list is omitted when it would
+  be empty and for a camera outside every train. `train_devices`
+  names every device the light passed through, read or not.
+- `intended_position_angle_degrees` is the sky position angle the
+  frame was meant to be taken at, in degrees east of north, the frame
+  of `rotators[].angle_degrees`. For a frame of a target from the
+  target store it is the target's effective position angle
+  ([Position angle](#position-angle)), with the camera's train as
+  layer two: the target's own `position_angle_degrees`, else the
+  train's `default_position_angle_degrees`, else `0.0`. For any other
+  frame, an untyped capture or a calibration frame filed under its
+  reserved slug, it is the train's `default_position_angle_degrees`,
+  and it is omitted when the train has none or the camera is outside
+  every train. Both come from the target store and the config as they
+  stood at capture time. Next to the rotator's angle, it shows whether
+  the frame got its intended framing.
+- `guiding` is what the guider did over the exposure. It comes from
+  the guider service's `guiding/stats`, read twice: once as the
+  exposure starts, on its own task beside the mount's read, and once
+  when the frame is ready. The steps it counts are the ones between
+  the two reads, from just after the exposure starts to just after its
+  image is ready, the readout included. Like the mount's, the first
+  read is untimed while the camera exposes and gets one second more
+  once the image is ready. The second goes out only once the first has
+  answered, so the service takes the two readings in order, and it is
+  bounded by the same 3 s as the frame's other reads. The block is
+  recorded only when a guider is configured ([Guider
+  Service](#guider-service)) and both reads answer with the service's
+  running totals ([phd2-guider.md § Running
+  totals](phd2-guider.md#running-totals)), which the RMS over an
+  exposure needs: the service's rolling RMS covers its last 50 steps,
+  and an exposure can outlast them.
+  - `guided_throughout` is `true` when PHD2 reported `Guiding` at both
+    reads, the totals' `epoch` is the same in both, and no
+    interruption was counted between them: guiding was neither
+    stopped nor paused, and the service neither lost PHD2 nor skipped
+    events. It is `false` otherwise, for a frame taken with no guiding
+    at all among them.
+  - `guide_steps` is the number of guide steps PHD2 sent between the
+    two reads.
+  - `rms_ra_px`, `rms_dec_px` and `total_rms_px` are the RMS guide
+    error over those steps, in guide-camera pixels, by the guider
+    service's formulas ([phd2-guider.md § RMS
+    statistics](phd2-guider.md#rms-statistics)). An axis with no
+    samples records no RMS, and `total_rms_px` needs both axes.
+  - `star_lost` is the number of times PHD2 lost the guide star
+    between the two reads.
+
+  When the `epoch` changed, because the guider service restarted
+  during the exposure, the block records only
+  `guided_throughout: false`: totals from two runs of the service
+  cannot be subtracted.
+- `observing_conditions` has one entry for each configured
+  observing-conditions device (`equipment.observing_conditions`), in
+  config order. Each entry carries the device's `id` and every sensor
+  it reports: `temperature_c`, `humidity_pct`, `dew_point_c`,
+  `pressure_hpa`, `cloud_cover_pct`, `rain_rate_mm_per_hour`,
+  `sky_brightness_lux`, `sky_quality_mag_per_arcsec2`,
+  `sky_temperature_c`, `star_fwhm_arcsec`, `wind_direction_degrees`,
+  `wind_speed_m_per_s` and `wind_gust_m_per_s`. They are ASCOM's
+  `Temperature`, `Humidity`, `DewPoint`, `Pressure`, `CloudCover`,
+  `RainRate`, `SkyBrightness`, `SkyQuality`, `SkyTemperature`,
+  `StarFWHM`, `WindDirection`, `WindSpeed` and `WindGust`, in the
+  units ASCOM gives them, recorded as the driver reports them. A
+  driver answers `NOT_IMPLEMENTED` for a sensor it does not have, so
+  each device records only its own.
+- `safety_monitors` has one entry for each configured safety monitor
+  (`equipment.safety_monitors`), in config order: `{id, is_safe}`,
+  the monitor's ASCOM `IsSafe`. It is the monitor's reading, not the
+  safety gate's verdict: a monitor that fails the read is left out,
+  where the gate counts it unsafe ([SafetyMonitor
+  Polling](#safetymonitor-polling)).
+
+  In both lists an entry with no reading is left out, and the list is
+  omitted when it would be empty.
 
 ### Plugin Sections (contributed via API)
 
@@ -808,6 +965,8 @@ promise that every fact in the document reaches the header.
 `cooler_power_pct` is recorded in the sidecar only, because no card for
 it is in common use; so is `electrons_per_adu`, because its ADU need
 not be the file's (below); and a binned frame carries no Bayer pattern.
+The [rig state](#rig-state) is recorded in the sidecar only for now
+([#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)).
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -4540,7 +4699,9 @@ internally (phd2-guider.md § HTTP API): the per-frame **metrics**
 window (the guide-train sweep and the
 [Guide Focus Watch](#guide-focus-watch)), **equipment** (the
 rotate-while-guiding ladder's rotator branch), **calibration/clear**
-and **star/reselect** (the ladder's tail). When `start_guiding`
+and **star/reselect** (the ladder's tail). And every capture reads
+**stats** at both ends of its exposure, whose running totals give the
+sidecar's `guiding` block ([Rig state](#rig-state)). When `start_guiding`
 settles and the guiding train contains a rotator but PHD2 reports no
 connected rotator, rp emits the point event
 `guide_rotator_unmodeled` (plus a warning log): rotations of the
@@ -8195,6 +8356,14 @@ services/rp/src/
                           (forwarding, progress relay, cancellation),
                           the outage error, and the reconnect
                           supervisor's provider lane.
+    rig_state.rs        The rig-state reads a capture records
+                          (§ Rig state): the train's focusers and
+                          rotators, the observing-conditions devices
+                          and safety monitors at frame ready, the
+                          guider's running totals at both ends of the
+                          exposure, and the intended position angle.
+                          The mount's pier side and tracking ride the
+                          frame's one mount read in internals.rs.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
                           persist_capture_artifact,

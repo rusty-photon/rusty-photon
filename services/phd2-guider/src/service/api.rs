@@ -106,6 +106,21 @@ struct StatsResponse {
     snr: Option<f64>,
     star_mass: Option<f64>,
     sample_count: usize,
+    totals: TotalsResponse,
+}
+
+/// The running totals on the wire (`docs/services/phd2-guider.md`
+/// § "Running totals").
+#[derive(Debug, Serialize)]
+struct TotalsResponse {
+    epoch: String,
+    guide_steps: u64,
+    ra_samples: u64,
+    ra_sum_sq_px2: f64,
+    dec_samples: u64,
+    dec_sum_sq_px2: f64,
+    star_lost: u64,
+    interruptions: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +228,16 @@ async fn stats(State(ops): State<Arc<GuiderOps>>) -> Result<Json<StatsResponse>,
         snr: stats.snapshot.snr,
         star_mass: stats.snapshot.star_mass,
         sample_count: stats.snapshot.sample_count,
+        totals: TotalsResponse {
+            epoch: stats.epoch.to_string(),
+            guide_steps: stats.totals.guide_steps,
+            ra_samples: stats.totals.ra.count(),
+            ra_sum_sq_px2: stats.totals.ra.sum_of_squares(),
+            dec_samples: stats.totals.dec.count(),
+            dec_sum_sq_px2: stats.totals.dec.sum_of_squares(),
+            star_lost: stats.totals.star_lost,
+            interruptions: stats.totals.interruptions,
+        },
     }))
 }
 

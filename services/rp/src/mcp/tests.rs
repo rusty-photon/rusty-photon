@@ -1023,6 +1023,9 @@ struct MockTelescope {
     can_unpark_value: bool,
     ra_value: f64,
     dec_value: f64,
+    /// `side_of_pier()`'s answer; `None` (the default) answers
+    /// `NOT_IMPLEMENTED`.
+    side_of_pier_value: Option<ascom_alpaca::api::telescope::PierSide>,
 }
 
 impl Default for MockTelescope {
@@ -1059,6 +1062,7 @@ impl Default for MockTelescope {
             can_unpark_value: true,
             ra_value: 0.0,
             dec_value: 0.0,
+            side_of_pier_value: None,
         }
     }
 }
@@ -1151,6 +1155,12 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
             return Err(ASCOMError::invalid_operation("tracking read failed"));
         }
         Ok(self.tracking_value)
+    }
+
+    async fn side_of_pier(
+        &self,
+    ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::PierSide> {
+        self.side_of_pier_value.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_tracking(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
@@ -2746,10 +2756,57 @@ async fn a_dark_reads_no_filter_however_slow_the_wheel() {
     }
 }
 
-fn pointing_of(
-    mount: MockTelescope,
-) -> impl std::future::Future<Output = Option<persistence::MountPointing>> {
-    super::internals::read_pointing(Arc::new(mount))
+async fn pointing_of(mount: MockTelescope) -> Option<persistence::MountPointing> {
+    super::internals::read_mount(Arc::new(mount)).await.pointing
+}
+
+#[tokio::test]
+async fn a_still_mount_reports_its_pier_side_and_tracking() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::West),
+        tracking_value: false,
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading.pier_side, Some(persistence::PierSide::West));
+    assert_eq!(reading.tracking, Some(false));
+}
+
+#[tokio::test]
+async fn an_unknown_pier_side_is_left_out_and_the_rest_kept() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::Unknown),
+        ra_value: 5.5,
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading.pier_side, None);
+    assert_eq!(reading.tracking, Some(true));
+    assert_eq!(reading.pointing.unwrap().ra_hours, 5.5);
+}
+
+#[tokio::test]
+async fn a_failed_tracking_read_costs_only_tracking() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        fail_tracking: true,
+        side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::East),
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading.tracking, None);
+    assert_eq!(reading.pier_side, Some(persistence::PierSide::East));
+    assert!(reading.pointing.is_some());
+}
+
+#[tokio::test]
+async fn a_slewing_mount_reports_no_pier_side_or_tracking() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        stuck_slewing: true,
+        side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::East),
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading, super::internals::MountReading::default());
 }
 
 #[tokio::test]
@@ -8178,6 +8235,8 @@ async fn auto_focus_rejects_the_sparse_gate_for_the_guiding_train() {
 struct MockRotator {
     fail_position: bool,
     fail_move: bool,
+    /// `is_moving` reports `true` forever.
+    moving: bool,
     position_value: std::sync::Mutex<f64>,
 }
 
@@ -8190,7 +8249,7 @@ impl ascom_alpaca::api::Rotator for MockRotator {
     }
 
     async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
+        Ok(self.moving)
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<f64> {
@@ -8501,6 +8560,7 @@ fn guiding_stats_active() -> rp_guider::GuidingStats {
         snr: None,
         star_mass: None,
         sample_count: 0,
+        totals: None,
     }
 }
 
@@ -9170,6 +9230,7 @@ fn stats_with_guiding(guiding: bool) -> GuidingStats {
         snr: None,
         star_mass: None,
         sample_count: 0,
+        totals: None,
     }
 }
 
@@ -9320,7 +9381,9 @@ async fn refocus_train_pauses_and_resumes_around_a_guiding_coupled_step() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut mock = MockGuiderClient::new();
     mock.expect_guiding_stats()
-        .times(1)
+        // The handshake's check, then each sweep capture's two reads
+        // (rp.md § Rig state, `guiding`).
+        .times(1..)
         .returning(|| Ok(stats_with_guiding(true)));
     mock.expect_pause_guiding()
         .with(mockall::predicate::eq(false))
@@ -9353,7 +9416,9 @@ async fn refocus_train_skips_the_handshake_when_not_guiding() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut mock = MockGuiderClient::new();
     mock.expect_guiding_stats()
-        .times(1)
+        // The handshake's check, then each sweep capture's two reads
+        // (rp.md § Rig state, `guiding`).
+        .times(1..)
         .returning(|| Ok(stats_with_guiding(false)));
     // No pause/resume expectations: reaching either would panic.
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
@@ -9402,7 +9467,9 @@ async fn refocus_train_resume_failure_after_success_is_an_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut mock = MockGuiderClient::new();
     mock.expect_guiding_stats()
-        .times(1)
+        // The handshake's check, then each sweep capture's two reads
+        // (rp.md § Rig state, `guiding`).
+        .times(1..)
         .returning(|| Ok(stats_with_guiding(true)));
     mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
     mock.expect_resume_guiding()
@@ -12710,6 +12777,7 @@ async fn get_guiding_stats_passes_the_snapshot_through() {
                     snr: None,
                     star_mass: None,
                     sample_count: 12,
+                    totals: None,
                 })
             });
         },
@@ -13835,4 +13903,403 @@ async fn a_move_of_a_reserved_focuser_waits_from_the_reservation_on() {
     ok_text(acquire.await.unwrap());
     release_lease(&handler, "a").await;
     ok_text(ordinary.await.unwrap().unwrap());
+}
+
+// -----------------------------------------------------------------------
+// Rig state (rp.md § Core Fields, Rig state)
+// -----------------------------------------------------------------------
+
+/// A safety monitor whose `IsSafe` answers `is_safe`, or fails.
+struct MockSafetyMonitor {
+    is_safe: Option<bool>,
+}
+
+impl_mock_device!(MockSafetyMonitor);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::SafetyMonitor for MockSafetyMonitor {
+    async fn is_safe(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        self.is_safe
+            .ok_or_else(|| ASCOMError::invalid_operation("sensor offline"))
+    }
+}
+
+/// An observing-conditions device with a thermometer and a hygrometer
+/// and no other sensor; `None` fails that read.
+struct MockConditions {
+    temperature: Option<f64>,
+    humidity: Option<f64>,
+}
+
+impl_mock_device!(MockConditions);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::ObservingConditions for MockConditions {
+    async fn average_period(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(0.0)
+    }
+
+    async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.temperature
+            .ok_or_else(|| ASCOMError::invalid_operation("thermometer offline"))
+    }
+
+    async fn humidity(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.humidity
+            .ok_or_else(|| ASCOMError::invalid_operation("hygrometer offline"))
+    }
+}
+
+fn rig_config<T: serde::de::DeserializeOwned>(id: &str) -> T {
+    serde_json::from_value(serde_json::json!({"id": id, "alpaca_url": "http://localhost:1"}))
+        .unwrap()
+}
+
+fn rig_focuser(id: &str, focuser: Option<MockFocuser>) -> crate::equipment::FocuserEntry {
+    let session = match focuser {
+        Some(focuser) => crate::equipment::DeviceSession::connected_with(
+            Arc::new(focuser) as Arc<dyn ascom_alpaca::api::Focuser>,
+            crate::equipment::FocuserInvariants::default(),
+        ),
+        None => crate::equipment::DeviceSession::disconnected(),
+    };
+    crate::equipment::FocuserEntry {
+        id: id.to_string(),
+        config: rig_config(id),
+        session,
+        slot: crate::equipment::DeviceSlot::default(),
+    }
+}
+
+fn rig_rotator(id: &str, rotator: MockRotator) -> crate::equipment::RotatorEntry {
+    crate::equipment::RotatorEntry {
+        id: id.to_string(),
+        config: rig_config(id),
+        session: crate::equipment::DeviceSession::connected(
+            Arc::new(rotator) as Arc<dyn ascom_alpaca::api::Rotator>
+        ),
+        slot: crate::equipment::DeviceSlot::default(),
+    }
+}
+
+fn rig_monitor(id: &str, is_safe: Option<bool>) -> crate::equipment::SafetyMonitorEntry {
+    crate::equipment::SafetyMonitorEntry {
+        id: id.to_string(),
+        config: rig_config(id),
+        session: crate::equipment::DeviceSession::connected(
+            Arc::new(MockSafetyMonitor { is_safe }) as Arc<dyn ascom_alpaca::api::SafetyMonitor>,
+        ),
+    }
+}
+
+fn rig_conditions(
+    id: &str,
+    conditions: MockConditions,
+) -> crate::equipment::ObservingConditionsEntry {
+    crate::equipment::ObservingConditionsEntry {
+        id: id.to_string(),
+        config: rig_config(id),
+        session: crate::equipment::DeviceSession::connected(
+            Arc::new(conditions) as Arc<dyn ascom_alpaca::api::ObservingConditions>
+        ),
+    }
+}
+
+/// Train "main": focusers "foc-a" and "foc-b", rotator "rot", camera
+/// "cam", in that optical order.
+fn rig_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [
+            {"id": "foc-a", "alpaca_url": "http://localhost:1"},
+            {"id": "foc-b", "alpaca_url": "http://localhost:1"}
+        ],
+        "rotators": [{"id": "rot", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [
+            {"id": "main", "devices": ["foc-a", "foc-b", "rot", "cam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+async fn rig_state_of(
+    registry: crate::equipment::EquipmentRegistry,
+    camera_id: &str,
+) -> super::rig_state::RigState {
+    test_handler(registry)
+        .with_trains(rig_trains())
+        .read_rig_state(camera_id, None, super::internals::auxiliary_read_deadline())
+        .await
+}
+
+#[tokio::test]
+async fn a_ready_frame_records_each_train_focuser_and_rotator_in_optical_order() {
+    let registry = crate::equipment::EquipmentRegistry {
+        focusers: vec![
+            rig_focuser(
+                "foc-b",
+                Some(MockFocuser {
+                    position_value: 900,
+                    temperature_not_implemented: true,
+                    ..Default::default()
+                }),
+            ),
+            rig_focuser(
+                "foc-a",
+                Some(MockFocuser {
+                    position_value: 21450,
+                    temperature_value: 3.8,
+                    ..Default::default()
+                }),
+            ),
+        ],
+        rotators: vec![rig_rotator(
+            "rot",
+            MockRotator {
+                position_value: std::sync::Mutex::new(92.0),
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    };
+    let rig = rig_state_of(registry, "cam").await;
+    assert_eq!(
+        rig.focusers.unwrap(),
+        vec![
+            persistence::ExposureFocuser {
+                id: "foc-a".to_string(),
+                position: Some(21450),
+                temperature_c: Some(3.8),
+            },
+            persistence::ExposureFocuser {
+                id: "foc-b".to_string(),
+                position: Some(900),
+                temperature_c: None,
+            },
+        ]
+    );
+    assert_eq!(
+        rig.rotators.unwrap(),
+        vec![persistence::ExposureRotator {
+            id: "rot".to_string(),
+            angle_degrees: Some(92.0),
+            mechanical_angle_degrees: Some(92.0),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_moving_focuser_records_its_temperature_but_no_position() {
+    let registry = crate::equipment::EquipmentRegistry {
+        focusers: vec![rig_focuser(
+            "foc-a",
+            Some(MockFocuser {
+                stuck_moving: true,
+                position_value: 21450,
+                temperature_value: 4.5,
+                ..Default::default()
+            }),
+        )],
+        ..Default::default()
+    };
+    let focusers = rig_state_of(registry, "cam").await.focusers.unwrap();
+    assert_eq!(focusers[0].position, None);
+    assert_eq!(focusers[0].temperature_c, Some(4.5));
+}
+
+#[tokio::test]
+async fn a_focuser_that_cannot_say_whether_it_moves_records_no_position() {
+    let registry = crate::equipment::EquipmentRegistry {
+        focusers: vec![rig_focuser(
+            "foc-a",
+            Some(MockFocuser {
+                fail_is_moving: true,
+                temperature_not_implemented: true,
+                ..Default::default()
+            }),
+        )],
+        ..Default::default()
+    };
+    assert_eq!(rig_state_of(registry, "cam").await.focusers, None);
+}
+
+#[tokio::test]
+async fn focusers_with_no_reading_or_no_session_are_left_out() {
+    let registry = crate::equipment::EquipmentRegistry {
+        focusers: vec![
+            rig_focuser(
+                "foc-a",
+                Some(MockFocuser {
+                    fail_position: true,
+                    fail_temperature: true,
+                    ..Default::default()
+                }),
+            ),
+            rig_focuser("foc-b", None),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(rig_state_of(registry, "cam").await.focusers, None);
+}
+
+#[tokio::test]
+async fn a_moving_rotator_is_left_out() {
+    let registry = crate::equipment::EquipmentRegistry {
+        rotators: vec![rig_rotator(
+            "rot",
+            MockRotator {
+                moving: true,
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    };
+    assert_eq!(rig_state_of(registry, "cam").await.rotators, None);
+}
+
+#[tokio::test]
+async fn a_camera_outside_every_train_records_no_focusers_or_rotators() {
+    let registry = crate::equipment::EquipmentRegistry {
+        focusers: vec![rig_focuser("foc-a", Some(MockFocuser::default()))],
+        rotators: vec![rig_rotator("rot", MockRotator::default())],
+        ..Default::default()
+    };
+    let rig = rig_state_of(registry, "other-cam").await;
+    assert_eq!(rig.focusers, None);
+    assert_eq!(rig.rotators, None);
+}
+
+#[tokio::test]
+async fn a_conditions_device_records_only_the_finite_sensors_it_reports() {
+    let registry = crate::equipment::EquipmentRegistry {
+        observing_conditions: vec![rig_conditions(
+            "weather",
+            MockConditions {
+                temperature: Some(4.1),
+                humidity: Some(f64::NAN),
+            },
+        )],
+        ..Default::default()
+    };
+    assert_eq!(
+        rig_state_of(registry, "cam")
+            .await
+            .observing_conditions
+            .unwrap(),
+        vec![persistence::ExposureObservingConditions {
+            id: "weather".to_string(),
+            temperature_c: Some(4.1),
+            ..Default::default()
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_conditions_device_with_no_reading_is_left_out() {
+    let registry = crate::equipment::EquipmentRegistry {
+        observing_conditions: vec![rig_conditions(
+            "weather",
+            MockConditions {
+                temperature: None,
+                humidity: None,
+            },
+        )],
+        ..Default::default()
+    };
+    assert_eq!(
+        rig_state_of(registry, "cam").await.observing_conditions,
+        None
+    );
+}
+
+#[tokio::test]
+async fn each_safety_monitor_records_its_reading_and_a_failed_read_is_left_out() {
+    let registry = crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![
+            rig_monitor("roof", Some(true)),
+            rig_monitor("rain", None),
+            rig_monitor("clouds", Some(false)),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        rig_state_of(registry, "cam").await.safety_monitors.unwrap(),
+        vec![
+            persistence::ExposureSafetyMonitor {
+                id: "roof".to_string(),
+                is_safe: true,
+            },
+            persistence::ExposureSafetyMonitor {
+                id: "clouds".to_string(),
+                is_safe: false,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn no_guider_means_no_guiding() {
+    let rig = rig_state_of(crate::equipment::EquipmentRegistry::default(), "cam").await;
+    assert_eq!(rig.guiding, None);
+}
+
+fn guiding_stats_with_steps(guide_steps: u64) -> rp_guider::GuidingStats {
+    rp_guider::GuidingStats {
+        totals: Some(rp_guider::GuidingTotals {
+            epoch: "e".to_string(),
+            guide_steps,
+            ra_samples: guide_steps,
+            ra_sum_sq_px2: 0.25 * f64::from(u32::try_from(guide_steps).unwrap()),
+            dec_samples: guide_steps,
+            dec_sum_sq_px2: 0.0,
+            star_lost: 0,
+            interruptions: 0,
+        }),
+        ..guiding_stats_active()
+    }
+}
+
+#[tokio::test]
+async fn the_guider_is_read_as_the_exposure_starts_and_again_once_the_frame_is_ready() {
+    let mut guider = rp_guider::MockGuiderClient::new();
+    let mut reads = 0_u64;
+    guider.expect_guiding_stats().times(2).returning(move || {
+        reads += 1;
+        Ok(guiding_stats_with_steps(reads * 4))
+    });
+    let handler = test_handler(crate::equipment::EquipmentRegistry::default())
+        .with_guider(Some(Arc::new(guider)), GuiderDefaults::default());
+    let start = handler.start_guiding_read();
+    let rig = handler
+        .read_rig_state("cam", start, super::internals::auxiliary_read_deadline())
+        .await;
+    assert_eq!(
+        rig.guiding.unwrap(),
+        persistence::ExposureGuiding {
+            guided_throughout: true,
+            guide_steps: Some(4),
+            rms_ra_px: Some(0.5),
+            rms_dec_px: Some(0.0),
+            total_rms_px: Some(0.5),
+            star_lost: Some(0),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_failed_guider_read_leaves_guiding_out() {
+    let mut guider = rp_guider::MockGuiderClient::new();
+    guider.expect_guiding_stats().returning(|| {
+        Err(rp_guider::GuiderError::ServiceUnreachable(
+            "down".to_string(),
+        ))
+    });
+    let handler = test_handler(crate::equipment::EquipmentRegistry::default())
+        .with_guider(Some(Arc::new(guider)), GuiderDefaults::default());
+    let start = handler.start_guiding_read();
+    let rig = handler
+        .read_rig_state("cam", start, super::internals::auxiliary_read_deadline())
+        .await;
+    assert_eq!(rig.guiding, None);
 }

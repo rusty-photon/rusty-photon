@@ -40,6 +40,7 @@ use super::gate;
 use super::handler::McpHandler;
 use super::inflight::Cancel;
 use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
+use super::rig_state::{Framing, GuidingStartRead, RigState};
 
 /// What a move, rotation or filter change holds while it runs (see
 /// [`McpHandler::device_hold`]); dropping it gives the slot back and
@@ -367,14 +368,16 @@ pub(super) struct FilterInBeam {
 /// filename does not depend on it — before counting it as failed (rp.md
 /// § Core Fields). A healthy read answers in milliseconds; the bound
 /// keeps a wedged device from adding its whole Alpaca timeout to every
-/// frame. The mount's read is bounded by [`POINTING_GRACE`] instead.
+/// frame. The reads started with the exposure, the mount's and the
+/// guider's, are bounded by [`START_READ_GRACE`] instead.
 const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// How long a frame that is ready waits for a mount read still out — in
-/// parallel with the camera's own reads, so a healthy mount costs
-/// nothing. Past it the read is dropped rather than let the mount delay
-/// the frame (rp.md § Core Fields, `pointing`).
-const POINTING_GRACE: Duration = Duration::from_secs(1);
+/// How long a frame that is ready waits for a read started with its
+/// exposure that is still out, the mount's or the guider's, in parallel
+/// with the camera's own reads, so a healthy device costs nothing. Past
+/// it the read is dropped rather than let the device delay the frame
+/// (rp.md § Core Fields, `pointing`, and § Rig state, `guiding`).
+const START_READ_GRACE: Duration = Duration::from_secs(1);
 
 /// Slack on each side of the exposure window `rp` observed, within
 /// which a driver's `LastExposureStartTime` is believed: clocks on the
@@ -450,32 +453,44 @@ fn exposure_start(
     }
 }
 
-/// The frame's one mount read (rp.md § Core Fields, `pointing`): RA,
-/// Dec and `Slewing` together. Untimed of its own: it runs on its own
-/// task while the camera exposes, and [`finished_pointing`] bounds how
-/// long a ready frame waits for it. `None` for a read that fails or is
-/// non-finite, and for a mount that is slewing — or cannot say whether
-/// it is: the motion gate only holds the mount still under an
-/// imaging-train exposure, and a mid-slew read names nowhere the frame
-/// saw. A driver without `Slewing` (`NOT_IMPLEMENTED`, a mount that
-/// cannot slew) counts as still.
-pub(super) async fn read_pointing(
-    mount: Arc<dyn ascom_alpaca::api::Telescope>,
-) -> Option<MountPointing> {
-    let (ra, dec, slewing) = tokio::join!(
+/// What the frame's one mount read found (rp.md § Core Fields,
+/// `pointing`, and § Rig state): where it pointed, its pier side, and
+/// whether it tracked, each `None` when unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct MountReading {
+    pub(super) pointing: Option<MountPointing>,
+    pub(super) pier_side: Option<persistence::PierSide>,
+    pub(super) tracking: Option<bool>,
+}
+
+/// The frame's one mount read (rp.md § Core Fields, `pointing`, and
+/// § Rig state): RA, Dec, `SideOfPier`, `Tracking` and `Slewing`
+/// together. Untimed of its own: it runs on its own task while the
+/// camera exposes, and [`finished_spawned_read`] bounds how long a
+/// ready frame waits for it. A mount that is slewing, or cannot say
+/// whether it is, gives nothing: the motion gate only holds the mount
+/// still under an imaging-train exposure, and a mid-slew read names
+/// nowhere the frame saw. A driver without `Slewing` (`NOT_IMPLEMENTED`,
+/// a mount that cannot slew) counts as still. Otherwise each reading
+/// stands on its own: one that fails, a non-finite position or an
+/// `Unknown` pier side is left out.
+pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> MountReading {
+    let (ra, dec, side_of_pier, tracking, slewing) = tokio::join!(
         mount.right_ascension(),
         mount.declination(),
+        mount.side_of_pier(),
+        mount.tracking(),
         mount.slewing()
     );
     match slewing {
         Ok(false) => {}
         Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {}
         other => {
-            debug!(slewing = ?other, "mount slewing, or unable to say; omitting pointing");
-            return None;
+            debug!(slewing = ?other, "mount slewing, or unable to say; omitting pointing, pier side and tracking");
+            return MountReading::default();
         }
     }
-    match (ra, dec) {
+    let pointing = match (ra, dec) {
         (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
             Some(MountPointing {
                 ra_hours,
@@ -486,36 +501,77 @@ pub(super) async fn read_pointing(
             debug!(?ra, ?dec, "mount pointing unavailable; omitting it");
             None
         }
+    };
+    let pier_side = match side_of_pier {
+        Ok(ascom_alpaca::api::telescope::PierSide::East) => Some(persistence::PierSide::East),
+        Ok(ascom_alpaca::api::telescope::PierSide::West) => Some(persistence::PierSide::West),
+        other => {
+            debug!(side_of_pier = ?other, "mount pier side unknown; omitting it");
+            None
+        }
+    };
+    let tracking = match tracking {
+        Ok(tracking) => Some(tracking),
+        Err(e) => {
+            debug!(error = %e, "mount tracking unavailable; omitting it");
+            None
+        }
+    };
+    MountReading {
+        pointing,
+        pier_side,
+        tracking,
     }
 }
 
-/// The frame's spawned mount read. Dropping it — a failed, cancelled or
-/// abandoned capture, or a read past its grace — aborts the read, so a
-/// capture never leaves one running behind it.
-struct PointingRead(tokio::task::JoinHandle<Option<MountPointing>>);
+/// A device read spawned on its own task: one a capture starts with its
+/// exposure, or one of its per-device rig-state reads. Dropping it (a
+/// failed, cancelled or abandoned capture, or a read past its grace)
+/// aborts the read, so a capture never leaves one running behind it.
+pub(super) struct SpawnedRead<T>(pub(super) tokio::task::JoinHandle<T>);
 
-impl Drop for PointingRead {
+impl<T> Drop for SpawnedRead<T> {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-/// The pointing read's result once the frame is ready: what it found if
-/// it answers within [`POINTING_GRACE`], else `None` — the mount never
-/// delays a frame by more than the grace.
-async fn finished_pointing(read: Option<PointingRead>) -> Option<MountPointing> {
+/// A read started with the exposure, once the frame is ready: what it
+/// found if it answers within [`START_READ_GRACE`], else `None`. The
+/// device, named `device` in the log, never delays a frame by more than
+/// the grace.
+pub(super) async fn finished_spawned_read<T>(
+    read: Option<SpawnedRead<T>>,
+    device: &str,
+) -> Option<T> {
     let mut read = read?;
-    match tokio::time::timeout(POINTING_GRACE, &mut read.0).await {
-        Ok(Ok(pointing)) => pointing,
+    match tokio::time::timeout(START_READ_GRACE, &mut read.0).await {
+        Ok(Ok(found)) => Some(found),
         Ok(Err(e)) => {
-            debug!(error = %e, "mount pointing read failed to finish; omitting it");
+            debug!(device, error = %e, "read started with the exposure failed to finish; the frame omits what it gives");
             None
         }
         Err(_elapsed) => {
-            debug!("mount pointing read still out after the frame was ready; omitting it");
+            debug!(device, "read started with the exposure still out after the frame was ready; the frame omits what it gives");
             None
         }
     }
+}
+
+/// The reads a capture starts as its exposure starts, each on its own
+/// task: the mount's and the guider's. Dropping them aborts both.
+struct StartReads {
+    mount: Option<SpawnedRead<MountReading>>,
+    guiding: Option<GuidingStartRead>,
+}
+
+/// What a frame's reads found once it was ready: the mount's, the
+/// camera's, the filter wheel's and the rest of the rig's.
+struct ReadyReads {
+    mount: MountReading,
+    conditions: CaptureConditions,
+    filter_read: FilterRead,
+    rig: RigState,
 }
 
 /// The deadline a finished frame's bounded reads share:
@@ -544,7 +600,7 @@ async fn cancelled_past_read_bound(cancel: &Cancel, deadline: tokio::time::Insta
 /// One auxiliary device read bounded by `deadline` (see
 /// [`auxiliary_read_deadline`]), so a slow property costs only its own
 /// field.
-async fn bounded_read<T, E: std::fmt::Display>(
+pub(super) async fn bounded_read<T, E: std::fmt::Display>(
     deadline: tokio::time::Instant,
     read: impl std::future::Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, String> {
@@ -579,9 +635,11 @@ struct FrameRecord<'a> {
     binning: Binning,
     invariants: &'a CameraInvariants,
     conditions: CaptureConditions,
-    pointing: Option<MountPointing>,
+    mount: MountReading,
+    rig: RigState,
     filter_read: FilterRead,
     target: Option<persistence::ExposureTarget>,
+    framing: Framing,
     frame_type: Option<FrameType>,
     light_source: Option<persistence::LightSource>,
 }
@@ -772,6 +830,7 @@ fn row_major_pixels(
 #[derive(Default)]
 struct FrameNaming {
     target: Option<persistence::ExposureTarget>,
+    framing: Framing,
     frame_type: Option<FrameType>,
     path: Option<String>,
 }
@@ -995,6 +1054,21 @@ fn readout_mode_name(
         debug!(readout_mode = index, ?readout_modes, "readout mode lies outside the camera's ReadoutModes; the frame omits readout_mode_name");
     }
     name
+}
+
+/// The sidecar's `train_devices` (rp.md § Core Fields): the train's
+/// devices in optical order, as `get_train_info` lists them.
+fn exposure_train_devices(
+    train: &crate::equipment::trains::Train,
+) -> Vec<persistence::ExposureTrainDevice> {
+    train
+        .devices
+        .iter()
+        .map(|device| persistence::ExposureTrainDevice {
+            id: device.id.clone(),
+            kind: device.kind.name().to_string(),
+        })
+        .collect()
 }
 
 /// The sidecar's `optics` block (rp.md § Core Fields): the camera's
@@ -1483,13 +1557,13 @@ impl McpHandler {
 
             let exposure_start = Instant::now();
 
-            // The mount is read once, on its own task while the camera
-            // exposes: it is never the camera, and a read still out past
-            // its grace once the frame is ready is dropped, not waited
-            // on (rp.md § Core Fields, `pointing`).
-            let pointing_read = self.start_pointing_read();
+            // The mount and the guider are read on their own tasks while
+            // the camera exposes; a read still out past its grace once the
+            // frame is ready is dropped, not waited on (rp.md § Core
+            // Fields, `pointing`, and § Rig state).
+            let start_reads = self.start_reads();
             // A failed or cancelled exposure returns at once, and drops
-            // (so aborts) the mount read with it.
+            // (so aborts) those reads with it.
             if let Err(e) = Self::wait_for_image_ready(&cam, duration, progress, cancel).await {
                 // A cancelled capture gives the gate back as soon as its
                 // abort is sent, and keeps only its camera's slot while
@@ -1512,14 +1586,14 @@ impl McpHandler {
             // the reads' deadline; on a tie the reads win (`biased`).
             let deadline = auxiliary_read_deadline();
             let reads_cooler_power = invariants.can_get_cooler_power == Some(true);
-            let (pointing, conditions, filter_read) = tokio::select! {
+            let reads = tokio::select! {
                 biased;
-                reads = self.ready_frame_reads(&req, &cam, window, pointing_read, reads_cooler_power, deadline) => reads,
+                reads = self.ready_frame_reads(&req, &cam, window, start_reads, reads_cooler_power, deadline) => reads,
                 () = cancelled_past_read_bound(cancel, deadline) => return Err(cancel.error()),
             };
 
             let naming = self
-                .frame_naming(&req, binning, &conditions, &filter_read, &uuid8)
+                .frame_naming(&req, binning, &reads.conditions, &reads.filter_read, &uuid8)
                 .await?;
             if let Some(rendered) = naming.path {
                 image_path = rendered;
@@ -1535,10 +1609,12 @@ impl McpHandler {
                     duration,
                     binning,
                     invariants: &invariants,
-                    conditions,
-                    pointing,
-                    filter_read,
+                    conditions: reads.conditions,
+                    mount: reads.mount,
+                    rig: reads.rig,
+                    filter_read: reads.filter_read,
                     target: naming.target,
+                    framing: naming.framing,
                     frame_type: naming.frame_type,
                     light_source: req.light_source,
                 },
@@ -1579,7 +1655,8 @@ impl McpHandler {
         let Some(frame_type) = req.frame_type else {
             return Ok(FrameNaming::default());
         };
-        let (target, target_slug) = self.resolve_capture_target(req.target, frame_type).await?;
+        let (target, target_slug, framing) =
+            self.resolve_capture_target(req.target, frame_type).await?;
         let path = if self.names_files(req.frame_type) {
             let ctx = TemplateRenderCtx {
                 frame_type,
@@ -1596,6 +1673,7 @@ impl McpHandler {
         };
         Ok(FrameNaming {
             target: Some(target),
+            framing,
             frame_type: Some(frame_type),
             path,
         })
@@ -1650,17 +1728,6 @@ impl McpHandler {
             frame.conditions.readout_mode,
             frame.invariants.readout_modes.as_deref(),
         );
-        let train_devices = train.map(|train| {
-            train
-                .devices
-                .iter()
-                .map(|device| persistence::ExposureTrainDevice {
-                    id: device.id.clone(),
-                    kind: device.kind.name().to_string(),
-                })
-                .collect()
-        });
-
         let doc = ExposureDocument {
             id: frame.document_id.to_string(),
             captured_at: frame.conditions.captured_at.to_rfc3339(),
@@ -1674,7 +1741,7 @@ impl McpHandler {
             camera_name: frame.invariants.name.clone(),
             train_id: train.map(|train| train.id.clone()),
             telescope: train.and_then(|train| train.telescope.clone()),
-            train_devices,
+            train_devices: train.map(exposure_train_devices),
             duration: Some(frame.duration),
             binning: Some(frame.binning),
             filter,
@@ -1695,7 +1762,15 @@ impl McpHandler {
             cooler_setpoint_c: frame.conditions.cooler_setpoint_c,
             sensor_temperature_c: frame.conditions.sensor_temperature_c,
             cooler_power_pct: frame.conditions.cooler_power_pct,
-            pointing: frame.pointing,
+            pointing: frame.mount.pointing,
+            pier_side: frame.mount.pier_side,
+            tracking: frame.mount.tracking,
+            focusers: frame.rig.focusers,
+            rotators: frame.rig.rotators,
+            intended_position_angle_degrees: frame.framing.intended_position_angle(train),
+            guiding: frame.rig.guiding,
+            observing_conditions: frame.rig.observing_conditions,
+            safety_monitors: frame.rig.safety_monitors,
             site: self.site.as_ref().map(persistence::ExposureSite::from),
             rp_version: Some(persistence::RP_VERSION.to_string()),
             optics,
@@ -1961,8 +2036,9 @@ impl McpHandler {
     }
 
     /// The reads a frame takes once it is ready, while the capture still
-    /// holds the camera: the mount read's grace ([`finished_pointing`]),
-    /// the camera's conditions and the filter wheel, all at once. The
+    /// holds the camera: the mount read's grace
+    /// ([`finished_spawned_read`]), the camera's conditions, the filter
+    /// wheel and the rest of the rig ([`RigState`]), all at once. The
     /// wheel is read only now, beside the camera's own reads: a
     /// camera-integrated wheel answers through the camera's driver,
     /// which is not queried mid-exposure. When the filename depends on
@@ -1973,12 +2049,12 @@ impl McpHandler {
         req: &CaptureRequest<'_>,
         cam: &Arc<dyn Camera>,
         window: ExposureWindow,
-        pointing_read: Option<PointingRead>,
+        start_reads: StartReads,
         reads_cooler_power: bool,
         deadline: tokio::time::Instant,
-    ) -> (Option<MountPointing>, CaptureConditions, FilterRead) {
-        tokio::join!(
-            finished_pointing(pointing_read),
+    ) -> ReadyReads {
+        let (mount, conditions, filter_read, rig) = tokio::join!(
+            finished_spawned_read(start_reads.mount, "mount"),
             self.capture_conditions(
                 req.camera_id,
                 cam,
@@ -1988,7 +2064,14 @@ impl McpHandler {
                 deadline
             ),
             self.capture_filter(req.camera_id, req.frame_type, deadline),
-        )
+            self.read_rig_state(req.camera_id, start_reads.guiding, deadline),
+        );
+        ReadyReads {
+            mount: mount.unwrap_or_default(),
+            conditions,
+            filter_read,
+            rig,
+        }
     }
 
     /// Whether a capture of `frame_type` renders its filename from the
@@ -2000,16 +2083,22 @@ impl McpHandler {
         frame_type.is_some() && self.naming_templates.is_some()
     }
 
-    /// Start the frame's one mount read ([`read_pointing`]) on its own
-    /// task, so the exposure never waits on it. `None` — no pointing for
-    /// this frame — when no mount is configured or connected.
-    fn start_pointing_read(&self) -> Option<PointingRead> {
-        match self.resolve_mount() {
-            Ok((_entry, mount)) => Some(PointingRead(tokio::spawn(read_pointing(mount)))),
+    /// Start the reads a capture takes as its exposure starts, each on
+    /// its own task so the exposure never waits on them: the frame's one
+    /// mount read ([`read_mount`]), `None` when no mount is configured or
+    /// connected, and its first guider read, `None` when no guider is
+    /// configured.
+    fn start_reads(&self) -> StartReads {
+        let mount = match self.resolve_mount() {
+            Ok((_entry, mount)) => Some(SpawnedRead(tokio::spawn(read_mount(mount)))),
             Err(reason) => {
-                debug!(%reason, "no mount pointing for this frame");
+                debug!(%reason, "no mount reading for this frame");
                 None
             }
+        };
+        StartReads {
+            mount,
+            guiding: self.start_guiding_read(),
         }
     }
 
@@ -2398,7 +2487,8 @@ impl McpHandler {
         &self,
         target: Option<&str>,
         frame_type: FrameType,
-    ) -> std::result::Result<(persistence::ExposureTarget, rp_targets::TargetSlug), String> {
+    ) -> std::result::Result<(persistence::ExposureTarget, rp_targets::TargetSlug, Framing), String>
+    {
         if let Some(target) = target {
             let slug = rp_targets::TargetSlug::new(target)
                 .map_err(|e| format!("capture: invalid target slug '{target}': {e}"))?;
@@ -2411,7 +2501,10 @@ impl McpHandler {
                 .await
                 .map_err(|e| format!("capture: failed to look up target '{target}': {e}"))?
                 .ok_or_else(|| format!("capture: unknown target '{target}'"))?;
-            return Ok((persistence::ExposureTarget::from(&found), slug));
+            let framing = Framing::StoreTarget {
+                position_angle_degrees: found.position_angle_degrees,
+            };
+            return Ok((persistence::ExposureTarget::from(&found), slug, framing));
         }
 
         match frame_type.calibration_slug() {
@@ -2429,7 +2522,7 @@ impl McpHandler {
                     ra_hours: None,
                     dec_degrees: None,
                 };
-                Ok((field, slug))
+                Ok((field, slug, Framing::NoStoreTarget))
             }
             None => Err("capture: frame_type Light requires target".to_string()),
         }
@@ -3887,7 +3980,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_pointing_read_still_out_after_the_grace_is_dropped() {
+    async fn a_start_read_still_out_after_the_grace_is_dropped() {
         let read = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Some(MountPointing {
@@ -3895,7 +3988,10 @@ mod tests {
                 dec_degrees: 2.0,
             })
         });
-        assert_eq!(finished_pointing(Some(PointingRead(read))).await, None);
+        assert_eq!(
+            finished_spawned_read(Some(SpawnedRead(read)), "mount").await,
+            None
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3923,13 +4019,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn dropping_a_pointing_read_aborts_it() {
+    async fn dropping_a_spawned_read_aborts_it() {
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&finished);
-        let read = PointingRead(tokio::spawn(async move {
+        let read = SpawnedRead(tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            None
         }));
         drop(read);
         tokio::time::sleep(Duration::from_secs(20)).await;
@@ -3937,14 +4032,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_finished_pointing_read_is_kept() {
+    async fn a_finished_start_read_is_kept() {
         let pointing = MountPointing {
             ra_hours: 1.0,
             dec_degrees: 2.0,
         };
-        let read = tokio::spawn(async move { Some(pointing) });
+        let read = tokio::spawn(async move { pointing });
         assert_eq!(
-            finished_pointing(Some(PointingRead(read))).await,
+            finished_spawned_read(Some(SpawnedRead(read)), "mount").await,
             Some(pointing)
         );
     }

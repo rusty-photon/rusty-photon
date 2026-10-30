@@ -142,6 +142,32 @@ pub struct GuidingStats {
     /// Star mass from the most recent guide step.
     pub star_mass: Option<f64>,
     pub sample_count: u32,
+    /// The service's running totals, read after `app_state`; `None`
+    /// from a guider service that predates them.
+    #[serde(default)]
+    pub totals: Option<GuidingTotals>,
+}
+
+/// The guider service's running totals (phd2-guider.md § "Running
+/// totals"): what it has folded since it started, never reset. Two
+/// readings under the same `epoch` subtract to the guiding between
+/// them.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuidingTotals {
+    /// Names the run of the service; a restart draws a new one.
+    pub epoch: String,
+    pub guide_steps: u64,
+    /// Steps that carried `RADistanceRaw`, and the sum of its square
+    /// in px².
+    pub ra_samples: u64,
+    pub ra_sum_sq_px2: f64,
+    /// Steps that carried `DECDistanceRaw`, and the sum of its square
+    /// in px².
+    pub dec_samples: u64,
+    pub dec_sum_sq_px2: f64,
+    pub star_lost: u64,
+    /// Stops, pauses, and moments the totals may have missed steps.
+    pub interruptions: u64,
 }
 
 /// One entry of `GET /api/v1/guiding/metrics`: a PHD2 guide frame's
@@ -618,6 +644,16 @@ mod tests {
                 "snr": 25.0,
                 "star_mass": 5432.0,
                 "sample_count": 2,
+                "totals": {
+                    "epoch": "0d6f2b8e-5c1a-4f0e-9a43-2a8f6e1c7b90",
+                    "guide_steps": 1530,
+                    "ra_samples": 1530,
+                    "ra_sum_sq_px2": 245.7,
+                    "dec_samples": 1528,
+                    "dec_sum_sq_px2": 198.2,
+                    "star_lost": 2,
+                    "interruptions": 4,
+                },
             }),
         )
     }
@@ -764,6 +800,19 @@ mod tests {
         assert_eq!(stats.snr, Some(25.0));
         assert_eq!(stats.star_mass, Some(5432.0));
         assert_eq!(stats.sample_count, 2);
+        assert_eq!(
+            stats.totals,
+            Some(GuidingTotals {
+                epoch: "0d6f2b8e-5c1a-4f0e-9a43-2a8f6e1c7b90".to_string(),
+                guide_steps: 1530,
+                ra_samples: 1530,
+                ra_sum_sq_px2: 245.7,
+                dec_samples: 1528,
+                dec_sum_sq_px2: 198.2,
+                star_lost: 2,
+                interruptions: 4,
+            })
+        );
     }
 
     #[tokio::test]
@@ -793,6 +842,8 @@ mod tests {
         assert!(stats.rms_ra_px.is_none());
         assert!(stats.snr.is_none());
         assert_eq!(stats.sample_count, 0);
+        // A guider service that predates the running totals.
+        assert_eq!(stats.totals, None);
     }
 
     #[tokio::test]

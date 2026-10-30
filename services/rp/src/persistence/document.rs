@@ -175,6 +175,45 @@ pub struct ExposureDocument {
     /// failed. The FITS header's `RA`/`DEC`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointing: Option<MountPointing>,
+    /// The mount's ASCOM `SideOfPier`, from the read that gives
+    /// `pointing`. Omitted when the mount reports `Unknown`, is slewing
+    /// or cannot say, or the read failed — see `docs/services/rp.md`
+    /// §"Rig state".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pier_side: Option<PierSide>,
+    /// The mount's ASCOM `Tracking`, from the same read and under the
+    /// same rule for a mount in motion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<bool>,
+    /// Each focuser in the camera's train, in optical order, with what
+    /// it reported once the frame was ready. A focuser with no reading
+    /// is left out; omitted when none has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focusers: Option<Vec<ExposureFocuser>>,
+    /// Each rotator in the camera's train, under the same rules as
+    /// `focusers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotators: Option<Vec<ExposureRotator>>,
+    /// The sky position angle the frame was meant to be taken at: a
+    /// store target's effective angle, else the train's
+    /// `default_position_angle_degrees`. Omitted when neither applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_position_angle_degrees: Option<f64>,
+    /// What the guider did over the exposure, from its running totals
+    /// read at both ends. Omitted when no guider is configured or either
+    /// read failed or lacked the totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guiding: Option<ExposureGuiding>,
+    /// Each configured observing-conditions device with every sensor it
+    /// reported once the frame was ready. A device with no reading is
+    /// left out; omitted when none has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observing_conditions: Option<Vec<ExposureObservingConditions>>,
+    /// Each configured safety monitor's `IsSafe` once the frame was
+    /// ready. A monitor whose read failed is left out; omitted when
+    /// none answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_monitors: Option<Vec<ExposureSafetyMonitor>>,
     /// The configured observer site at capture time — the FITS
     /// header's `SITELAT`/`SITELONG`. Omitted when no site is
     /// configured.
@@ -258,6 +297,133 @@ pub struct ExposureTarget {
 pub struct MountPointing {
     pub ra_hours: f64,
     pub dec_degrees: f64,
+}
+
+/// The exposure document's `pier_side` field: the mount's ASCOM
+/// `SideOfPier`. ASCOM's `Unknown` is never recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PierSide {
+    /// The normal pointing state: the mount on the east side of the
+    /// pier, looking west.
+    East,
+    /// The through-the-pole state: the mount on the west side of the
+    /// pier, looking east.
+    West,
+}
+
+/// One entry of the exposure document's `focusers`: a train focuser
+/// and what it reported once the frame was ready.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExposureFocuser {
+    pub id: String,
+    /// ASCOM `Position`, in steps. Omitted for a relative focuser, one
+    /// that reported `IsMoving` or could not say, and a failed read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
+    /// ASCOM `Temperature`, in °C. Omitted for a focuser without a
+    /// probe and a failed read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+}
+
+/// One entry of the exposure document's `rotators`: a train rotator
+/// and the angles it reported once the frame was ready, both omitted
+/// for a rotator that reported `IsMoving` or could not say.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExposureRotator {
+    pub id: String,
+    /// ASCOM `Position`: the sky angle, in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_degrees: Option<f64>,
+    /// ASCOM `MechanicalPosition`, in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanical_angle_degrees: Option<f64>,
+}
+
+/// The exposure document's `guiding` field: what the guider did over
+/// the exposure.
+///
+/// That is what happened between its two reads, one as the exposure
+/// started and one when its image was ready. Only `guided_throughout`
+/// is recorded when the guider service restarted in between.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExposureGuiding {
+    /// PHD2 reported `Guiding` at both reads, and guiding was neither
+    /// stopped nor paused, nor the totals left incomplete, in between.
+    pub guided_throughout: bool,
+    /// The guide steps PHD2 sent between the reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_steps: Option<u64>,
+    /// RMS of `RADistanceRaw` over those steps, in guide-camera pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms_ra_px: Option<f64>,
+    /// RMS of `DECDistanceRaw` over those steps, in guide-camera pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms_dec_px: Option<f64>,
+    /// `√(rms_ra_px² + rms_dec_px²)`; omitted unless both are present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_rms_px: Option<f64>,
+    /// The times PHD2 lost the guide star between the reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub star_lost: Option<u64>,
+}
+
+/// One entry of the exposure document's `observing_conditions`: a
+/// configured device and the sensors it reported.
+///
+/// Every ASCOM sensor the device reported once the frame was ready, in
+/// the units ASCOM gives them. A sensor the driver does not implement,
+/// a failed read and a non-finite value are omitted.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExposureObservingConditions {
+    pub id: String,
+    /// `Temperature`, °C.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+    /// `Humidity`, %.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub humidity_pct: Option<f64>,
+    /// `DewPoint`, °C.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dew_point_c: Option<f64>,
+    /// `Pressure`, hPa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure_hpa: Option<f64>,
+    /// `CloudCover`, %.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_cover_pct: Option<f64>,
+    /// `RainRate`, mm per hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rain_rate_mm_per_hour: Option<f64>,
+    /// `SkyBrightness`, lux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_brightness_lux: Option<f64>,
+    /// `SkyQuality`, magnitudes per square arcsecond.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_quality_mag_per_arcsec2: Option<f64>,
+    /// `SkyTemperature`, °C.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_temperature_c: Option<f64>,
+    /// `StarFWHM`, arcseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub star_fwhm_arcsec: Option<f64>,
+    /// `WindDirection`, degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_direction_degrees: Option<f64>,
+    /// `WindSpeed`, metres per second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_speed_m_per_s: Option<f64>,
+    /// `WindGust`, metres per second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_gust_m_per_s: Option<f64>,
+}
+
+/// One entry of the exposure document's `safety_monitors`: a configured
+/// monitor's `IsSafe` once the frame was ready.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposureSafetyMonitor {
+    pub id: String,
+    pub is_safe: bool,
 }
 
 /// One entry of the exposure document's `train_devices`: a roster id
