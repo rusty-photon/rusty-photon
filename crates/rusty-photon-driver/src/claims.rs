@@ -1,5 +1,5 @@
 //! Device claims: the runtime half of a camera driver's `usb_devices` list
-//! ([device-claims plan](../../../docs/plans/device-claims-and-phd2-camera.md),
+//! ([device-claims plan](../../../docs/plans/archive/device-claims-and-phd2-camera.md),
 //! Part A), behind this crate's `claims` feature.
 //!
 //! The pure half — the list's validation, the join that places each SDK

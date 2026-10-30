@@ -143,7 +143,7 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
 
    **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4, and
    again 2026-09-27 to defer to
-   [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)**
+   [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md)**
    — for a *training* run only, on a guiding train meeting the
    focus-model plan's O4 rules 1 and 7. Its leases are built (that
    plan's C7b, the facade's sweep lease, and C7c, rp's train lease,

@@ -1,5 +1,5 @@
 //! Device claims: the vendor-neutral half of a camera driver's `usb_devices`
-//! list ([device-claims plan](../../../docs/plans/device-claims-and-phd2-camera.md),
+//! list ([device-claims plan](../../../docs/plans/archive/device-claims-and-phd2-camera.md),
 //! Part A).
 //!
 //! A list pins each USB port to an Alpaca device number. What is the same in

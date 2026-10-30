@@ -369,7 +369,7 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// the time cards real PHD2's `usImage::Save` writes (`EXPOSURE`, `DATE`,
 /// `DATE-OBS`): their values depend on when an exposure ran. A completion
 /// watermark that compares `DATE-OBS` (option 3 of D9 in
-/// `docs/plans/device-claims-and-phd2-camera.md`) has to add them here,
+/// `docs/plans/archive/device-claims-and-phd2-camera.md`) has to add them here,
 /// together with an exposure model.
 ///
 /// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with

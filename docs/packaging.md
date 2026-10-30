@@ -635,7 +635,7 @@ and PHD2 both open it.
 
    On a board whose USB controller udev names `xhci-hcd.N.auto`
    (Rockchip, i.MX), doctor's port and udev's differ
-   ([device-claims plan, D2](plans/device-claims-and-phd2-camera.md)),
+   ([device-claims plan, D2](plans/archive/device-claims-and-phd2-camera.md)),
    and udev's cannot key this rule. The kernel numbers `.auto`
    controllers in probe order, so after a reboot the same name can
    belong to the other controller, and the rule would then give your

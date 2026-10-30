@@ -1,5 +1,36 @@
 # Device Claims + the PHD2 Guide-Camera Facade
 
+**Status: COMPLETE (archived 2026-10-29).** Both parts shipped, from the
+plan itself ([#1263](https://github.com/rusty-photon/rusty-photon/pull/1263)) on. Part A: `svbony-camera`, `zwo-camera` and
+`qhy-camera` each pin every USB port they serve to an Alpaca device
+number with a `usb_devices` list, joined from a passive host USB scan
+before any probe opens a camera, and `doctor --devices` prints the
+paste-ready list. C1, the passive USB identity, came in [#1306](https://github.com/rusty-photon/rusty-photon/pull/1306),
+[#1308](https://github.com/rusty-photon/rusty-photon/pull/1308), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365), [#1450](https://github.com/rusty-photon/rusty-photon/pull/1450), [#1458](https://github.com/rusty-photon/rusty-photon/pull/1458) and [#1462](https://github.com/rusty-photon/rusty-photon/pull/1462). C2–C4,
+the list in each driver, came in [#1466](https://github.com/rusty-photon/rusty-photon/pull/1466), [#1476](https://github.com/rusty-photon/rusty-photon/pull/1476) and [#1479](https://github.com/rusty-photon/rusty-photon/pull/1479);
+the last also moved QHY's filter-wheel probe off startup and reload.
+C5, the `usb-devices.*` checks and numbering by port order without a
+list, came in [#1501](https://github.com/rusty-photon/rusty-photon/pull/1501), after the macOS collector fix [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500); the
+QHY178M record of C4's gate and list followed in [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504). Part B: `phd2-guider` serves an Alpaca
+Camera backed by PHD2's own frames. The `save_image` fix [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)
+and the facade, C6 ([#1507](https://github.com/rusty-photon/rusty-photon/pull/1507)), came first. C7, the guiding train
+focused by a capture sweep under rp's train lease, came in [#1509](https://github.com/rusty-photon/rusty-photon/pull/1509),
+[#1517](https://github.com/rusty-photon/rusty-photon/pull/1517), [#1520](https://github.com/rusty-photon/rusty-photon/pull/1520), [#1528](https://github.com/rusty-photon/rusty-photon/pull/1528) and [#1535](https://github.com/rusty-photon/rusty-photon/pull/1535). The facade later
+learned to connect to a camera PHD2 reports as 0 × 0 ([#1572](https://github.com/rusty-photon/rusty-photon/pull/1572)). C8,
+editing `usb_devices` in `ui-htmx`, was superseded by each camera
+driver's own setup page ([driver-setup-pages.md](driver-setup-pages.md),
+D11). Four things on the plan's waiting list, its closing list of what
+waits on evidence, are still owed, and none blocks a phase. Two are
+readings of the port key that the owner accepted without real hardware:
+on Windows, a camera on a real controller's root port and a move between
+its ports, both read only on a VM (decision 2), and macOS's
+`location_id`, never read on a real Mac (the C1 and C5 rows below). The
+other two are the facade's `image_dir` recipe on Windows, never run
+there, and the guide camera's udev rule on a board whose USB controller
+udev names `xhci-hcd.N.auto`, not worked out. A
+cross-service `doctor` check for a contested guide camera stays
+withdrawn unless ADR-016 is amended (Goal).
+
 ## Goal
 
 Two problems that look unrelated share one root: **the guide camera is the
@@ -11,7 +42,7 @@ only device in the rig that no Alpaca driver may own.**
    `qhy-camera`, `zwo-camera` and `svbony-camera` register each camera the
    vendor SDK reports. There is no way to say *"this one belongs to PHD2."*
    For QHY it is worse than an ownership question: `Sdk::new()`
-   ([`crates/qhyccd-rs/src/sdk.rs`](../../crates/qhyccd-rs/src/sdk.rs)) runs
+   ([`crates/qhyccd-rs/src/sdk.rs`](../../../crates/qhyccd-rs/src/sdk.rs)) runs
    `cfw_probe` — `OpenQHYCCD` → `InitQHYCCD` → `IsQHYCCDCFWPlugged` ×3 →
    `CloseQHYCCD` — against **every** camera the scan returns, before any
    config is consulted. `InitQHYCCD` is a full device configuration, not a
@@ -21,7 +52,7 @@ only device in the rig that no Alpaca driver may own.**
 
 2. **The guide camera is outside Alpaca, so rp cannot capture through it.**
    PHD2 owns it at the SDK level, which is why
-   [`rp.md` § Guide-train sweep](../services/rp.md) makes guide-train
+   [`rp.md` § Guide-train sweep](../../services/rp.md) makes guide-train
    autofocus a special case: it moves the focuser and reads PHD2's per-frame
    HFD instead of capturing. That variant requires an *active guide loop*,
    which is exactly the wrong precondition for "focus the guide camera
@@ -74,7 +105,7 @@ exists to end. Two things close that, both in C6/C7 scope:
 violates an accepted architecture decision.** `docs/services/doctor.md`
 says doctor audits service facts and *"never learns device usage (which
 camera is the guide cam belongs to `rp`)"*, and
-[ADR-016](../decisions/016-service-config-ownership-and-doctor.md)
+[ADR-016](../../decisions/016-service-config-ownership-and-doctor.md)
 decision 4 is explicit: *"Which camera is the guide cam, dark-library
 setpoints, focal length, and device identity binding are **usage**, owned
 by `rp`. Doctor never needs to know a serial exists."* A
@@ -97,13 +128,13 @@ recorded here so the option is not lost.
 |-------|-------------|--------|-------------|
 | C0 | This plan | Merged; revised 2026-09-29 and 2026-10-01 | [#1263](https://github.com/rusty-photon/rusty-photon/pull/1263), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365) |
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7), and a camera plugged straight into a real controller's root port was not read, a gap the owner accepted (decision 2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
-| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
-| C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
-| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Merged — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
-| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Merged — [svbony-camera.md](../services/svbony-camera.md) U10-U11, [zwo-camera.md](../services/zwo-camera.md) U10-U11, [qhy-camera.md](../services/qhy-camera.md) U11-U12, [doctor.md](../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). The macOS check that held it is closed: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), merged, and the location-id half accepted for C5 by the owner on 2026-10-13, to be read on a real Mac later. C4's one-SDK gate and list were read on the QHY178M + CFW3 with ConformU clean ([2026-10-13 record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md), [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504)) | `feature/device-claims-c5` ([#1501](https://github.com/rusty-photon/rusty-photon/pull/1501)) |
-| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Merged — the `save_image` wire-format fix (D9) merged first. The watermark was measured on 2026-10-13 against PHD2 2.6.14, which turned out to have one: `capture_single_frame` saves to a path the caller names and announces the finished file with a `SingleFrameComplete` event (D9, "Settled in C6"). Design: [phd2-guider.md](../services/phd2-guider.md) § Camera facade. In C6 the facade listens on loopback only, so no catalog, firewall or verify-script change is needed yet (D10, "Settled in C6"). ConformU was clean against PHD2 2.6.14's simulator on the field rig, and the `image_dir` recipe passed its acceptance test ([2026-10-13 record](../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md)). After the merge ConformU was clean again with the rig's real guide camera, the QHY5III715C, behind PHD2. That run found the facade recipe's one gap: PHD2's account needs access to the guide camera's device node, which the packaged udev rule gives to the service group ([2026-10-13 record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)) | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)), `feature/device-claims-c6-phd2-camera` ([#1507](https://github.com/rusty-photon/rusty-photon/pull/1507)) |
-| C7 | The guide camera as a train-terminal camera, and capture-sweep focusing for the guiding train: the facade lease (`phd2-guider`), rp's train lease and the gate change, and `focus-model`'s training run on a guiding train. It is [`focus-model.md`](focus-model.md)'s S10. The reconciliation with that plan's S7/D17 that held it was settled on 2026-10-13: the sweep is a training run of `focus_train` (D12, "Settled in C7"; decision 19) | Merged — C7a, the design, is D12's "Settled in C7" and merged. C7b, `phd2-guider`'s sweep lease and its `UInt16` frames ([phd2-guider.md](../services/phd2-guider.md) § The sweep lease), merged. C7c, rp's train lease and the gate change ([rp.md](../services/rp.md) § Train Lease), merged, its hardware check on `pier1` passed. C7d, `focus-model`'s training run on a guiding train ([focus-model.md](../services/focus-model.md) § Training runs on a guiding train), merged, its hardware check on `pier1` with the QHY5III715C passed. C7e, the shared focuser focused through the imaging camera alone (the [focus-model plan](focus-model.md)'s O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
-| C8 | `ui-htmx` editing of `usb_devices` | Superseded — the editor becomes a section of each camera driver's own `/setup` page, where the two problems that held it (reachable only through a device; an empty list cuts the page off) do not arise: [driver-setup-pages.md](archive/driver-setup-pages.md), D11 | |
+| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
+| C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
+| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Merged — [qhy-camera.md](../../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
+| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Merged — [svbony-camera.md](../../services/svbony-camera.md) U10-U11, [zwo-camera.md](../../services/zwo-camera.md) U10-U11, [qhy-camera.md](../../services/qhy-camera.md) U11-U12, [doctor.md](../../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). The macOS check that held it is closed: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), merged, and the location-id half accepted for C5 by the owner on 2026-10-13, to be read on a real Mac later. C4's one-SDK gate and list were read on the QHY178M + CFW3 with ConformU clean ([2026-10-13 record](../../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md), [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504)) | `feature/device-claims-c5` ([#1501](https://github.com/rusty-photon/rusty-photon/pull/1501)) |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Merged — the `save_image` wire-format fix (D9) merged first. The watermark was measured on 2026-10-13 against PHD2 2.6.14, which turned out to have one: `capture_single_frame` saves to a path the caller names and announces the finished file with a `SingleFrameComplete` event (D9, "Settled in C6"). Design: [phd2-guider.md](../../services/phd2-guider.md) § Camera facade. In C6 the facade listens on loopback only, so no catalog, firewall or verify-script change is needed yet (D10, "Settled in C6"). ConformU was clean against PHD2 2.6.14's simulator on the field rig, and the `image_dir` recipe passed its acceptance test ([2026-10-13 record](../../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md)). After the merge ConformU was clean again with the rig's real guide camera, the QHY5III715C, behind PHD2. That run found the facade recipe's one gap: PHD2's account needs access to the guide camera's device node, which the packaged udev rule gives to the service group ([2026-10-13 record](../../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)) | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)), `feature/device-claims-c6-phd2-camera` ([#1507](https://github.com/rusty-photon/rusty-photon/pull/1507)) |
+| C7 | The guide camera as a train-terminal camera, and capture-sweep focusing for the guiding train: the facade lease (`phd2-guider`), rp's train lease and the gate change, and `focus-model`'s training run on a guiding train. It is [`focus-model.md`](../focus-model.md)'s S10. The reconciliation with that plan's S7/D17 that held it was settled on 2026-10-13: the sweep is a training run of `focus_train` (D12, "Settled in C7"; decision 19) | Merged — C7a, the design, is D12's "Settled in C7" and merged. C7b, `phd2-guider`'s sweep lease and its `UInt16` frames ([phd2-guider.md](../../services/phd2-guider.md) § The sweep lease), merged. C7c, rp's train lease and the gate change ([rp.md](../../services/rp.md) § Train Lease), merged, its hardware check on `pier1` passed. C7d, `focus-model`'s training run on a guiding train ([focus-model.md](../../services/focus-model.md) § Training runs on a guiding train), merged, its hardware check on `pier1` with the QHY5III715C passed. C7e, the shared focuser focused through the imaging camera alone (the [focus-model plan](../focus-model.md)'s O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
+| C8 | `ui-htmx` editing of `usb_devices` | Superseded — the editor becomes a section of each camera driver's own `/setup` page, where the two problems that held it (reachable only through a device; an empty list cuts the page off) do not arise: [driver-setup-pages.md](driver-setup-pages.md), D11 | |
 
 Order: C1 first and **blocking** — no schema commits to the Windows port
 spelling, the one still unchosen, until it has been read stable (D2). On
@@ -131,7 +162,7 @@ blocker, which C5 also inherited, was settled in C4's design, D6). C6 needs noth
 Part A but is only *operationally* safe after C4. C7 needs C6.
 
 Each phase follows
-[development-workflow.md](../skills/development-workflow.md): design-doc
+[development-workflow.md](../../skills/development-workflow.md): design-doc
 update first (`qhy-camera.md` / `zwo-camera.md` / `svbony-camera.md` /
 `phd2-guider.md` / `rp.md`), BDD second, implementation third.
 `doctor.md` is updated **three times** — in C6 as well, because the
@@ -269,7 +300,7 @@ passively and cross-platform for the D4 `hardware.usb-device` check, with
   id (a hex encoding of the port chain) per device: `SPUSBDataType`
   through macOS 15, `SPUSBHostDataType` from macOS 26, which no longer
   lists the first and answers it with an empty list. The collector reads
-  whichever the host lists ([doctor.md](../services/doctor.md), "USB
+  whichever the host lists ([doctor.md](../../services/doctor.md), "USB
   inventory").
 - **Windows** — `Get-PnpDevice` + `Get-PnpDeviceProperty`. Today it reads
   the instance id and `DEVPKEY_Device_BusReportedDeviceDesc`; the port
@@ -559,7 +590,7 @@ Validated at load, before any SDK work, with the offending entry named:
 - `usb_port` non-blank, free of leading or trailing whitespace, and
   unique across entries. A padded port is rejected rather than trimmed:
   it is compared verbatim against the USB inventory, which never carries
-  padding ([doctor.md](../services/doctor.md), "USB inventory"), so it
+  padding ([doctor.md](../../services/doctor.md), "USB inventory"), so it
   could only ever become a placeholder for a port that holds a camera.
 - `device_number` unique, and the set exactly `0..N-1`.
 - `filter_wheel_number` unique across the entries that set one, and that
@@ -642,12 +673,12 @@ date. (`name` is display text, never a key.)
    disposition or per-path apply machinery is needed. (An earlier draft
    required restart-only on the premise that the change could land
    mid-exposure; that premise was rejected.) What a reload must still
-   never do is **actuate**: [workspace tenet 3](../workspace.md#project-tenets)
+   never do is **actuate**: [workspace tenet 3](../../workspace.md#project-tenets)
    binds every reload, with or without this list, and `qhy-camera`'s
    reload reruns the CFW probe, whose precondition `InitQHYCCD` may
    auto-home a filter wheel — the vendor's statement, measured not to on a
    QHY178M + CFW3 or a QHY600M
-   ([`qhy-camera.md`](../services/qhy-camera.md) C5). That is C4's problem
+   ([`qhy-camera.md`](../../services/qhy-camera.md) C5). That is C4's problem
    for every reload (D6), not a property of this field.
 2. **Placing an SDK camera on a port is a join.** None of the three SDKs
    reports a USB location: `ASI_CAMERA_INFO`, `SVB_CAMERA_INFO` and
@@ -833,7 +864,7 @@ date. (`name` is display text, never a key.)
    `usb-devices.resolve` / `usb-devices.implicit` (D5). Nothing else in
    this plan makes doctor fail over USB; a device absent from the bus
    keeps central doctor's existing severity (`fail` for an installed,
-   enabled unit, [doctor.md](../services/doctor.md) "Hardware").
+   enabled unit, [doctor.md](../../services/doctor.md) "Hardware").
 
    **A failed scan is not final.** The collector's 10 s deadline is sized
    to tell a wedged child from a working one, but a healthy host under
@@ -910,7 +941,7 @@ date. (`name` is display text, never a key.)
    driver exposes it as a hidden `--usb-inventory <file>` flag under its
    own `simulation` feature — the same affordance shape as doctor's
    `--platform-facts`, and absent from release builds for the same
-   reason. The contract is in [doctor.md](../services/doctor.md) under
+   reason. The contract is in [doctor.md](../../services/doctor.md) under
    "USB inventory".
 5. **A listed number whose camera cannot be served gets a placeholder.**
    A listed port with no working camera found on it, a listed look-alike
@@ -1215,7 +1246,7 @@ since there is no CHANGELOG to carry it.
 **Migration note for C5: rp's roster pins.** rp gained an optional
 `unique_id` on every roster entry, which refuses a connect when the
 device at the entry's number reports a different `UniqueID`
-([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
+([rp.md § Device Identity Pin](../../services/rp.md#device-identity-pin)).
 It is an interim guard for #1184, outside this plan, and it is only as
 strong as each driver's `UniqueID`. QHY's is serial-derived and tells
 two cameras apart. The `noserial-{index}` fallback in `zwo-camera` and
@@ -1327,7 +1358,7 @@ free to read.
 
 Three checks join the per-service set in C5, alongside
 `config.full-shape` and `hardware.sdk-devices`. They follow the rule
-central doctor applies to USB ([doctor.md](../services/doctor.md),
+central doctor applies to USB ([doctor.md](../../services/doctor.md),
 "Hardware"): **a device that is on the bus but not working never fails
 doctor, and a scan that could not run does.** These three checks
 therefore fail only on a failed scan: a camera that is not working, a
@@ -1348,7 +1379,7 @@ that cannot load fails `config.full-shape`, as any invalid config does.
 **On a running rig, placeholders reach the central report through
 `service.devices`, not through these checks.** Per-service checks reach
 a central report only through the shell-out, and that runs only while
-the unit is inactive ([doctor.md](../services/doctor.md), "Aggregation —
+the unit is inactive ([doctor.md](../../services/doctor.md), "Aggregation —
 the two probe paths"). With the unit active, central doctor reads
 `configureddevices`, where a placeholder carries its entry's `name` and
 would otherwise be listed `ok` as a served camera. C5 therefore teaches
@@ -1420,7 +1451,7 @@ in Part A.** Filtering to the cameras this driver serves stops the probe reachin
 *other people's* devices, but it does not make the probe itself
 permissible: `InitQHYCCD` is what may auto-home a connected CFW (measured not
 to on a QHY178M + CFW3 or a QHY600M — `qhy-camera.md` C5), and
-[workspace tenet 3](../workspace.md#project-tenets) forbids any code path
+[workspace tenet 3](../../workspace.md#project-tenets) forbids any code path
 reachable from **service startup, reconnect, or config apply** from
 physically actuating hardware. A filter changes who gets actuated, not
 whether actuation happens on a passive transition. `qhy-camera.md` only
@@ -1441,9 +1472,9 @@ startup altogether. Options, to be settled in C4's design phase:
 3. **An explicitly operator-started probe** — but **not** via the two
    paths a previous draft of this bullet named, because both forbid it:
    `config.apply` is inside tenet 3's no-actuation set
-   ([workspace.md](../workspace.md#project-tenets)), and doctor's
+   ([workspace.md](../../workspace.md#project-tenets)), and doctor's
    hardware probes are read-only and *never* an open
-   ([doctor.md](../services/doctor.md)). Proposing either would have had
+   ([doctor.md](../../services/doctor.md)). Proposing either would have had
    C4 violating a contract while trying to satisfy one. If this option is
    taken it needs a **distinct, explicitly-unsafe operator command** that
    says what it will actuate before it does, with its own amended
@@ -1474,7 +1505,7 @@ slot count gave exactly the answers an init gives — a wheel 3 of 3 with its
 slot 3 stayed there at the at-rest status pace throughout. So the probe drops
 the init: open, ask up to three times, close. No `InitQHYCCD` is reachable
 from startup or reload in either path, and the tenet-3 problem is discharged
-rather than narrowed ([`qhy-camera.md`](../services/qhy-camera.md) C0, C5).
+rather than narrowed ([`qhy-camera.md`](../../services/qhy-camera.md) C0, C5).
 
 The camera had been initialised by earlier processes since it last powered
 on, so it was re-plugged and asked again as the first process to open it
@@ -1651,7 +1682,7 @@ This is the single largest unknown in Part B, and C6's design-doc phase
 does not end until one of these is demonstrated against a real PHD2.
 
 **Prerequisite defect (fixed in C6's first PR, [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)):** `Phd2Client::save_image`
-([`services/phd2-guider/src/client.rs`](../../services/phd2-guider/src/client.rs))
+([`services/phd2-guider/src/client.rs`](../../../services/phd2-guider/src/client.rs))
 parsed the result as a bare string, but PHD2 returns the object above, so
 it failed against real PHD2 every time; it passed CI only because
 `mock_phd2.rs` returned the same wrong shape. The client now accepts only
@@ -1777,7 +1808,7 @@ all.
   ```
 
   **Being an Alpaca device, the facade owes the shared configuration
-  contract too.** [`config-actions.md`](archive/config-actions-protocol.md)
+  contract too.** [`config-actions.md`](config-actions-protocol.md)
   requires every driver to expose `config.get`, `config.apply` and
   `config.schema`; without them `ui-htmx` cannot edit `enabled`, the
   pixel sizes or `image_dir`, and a change to the listener has no defined
@@ -2132,7 +2163,7 @@ all.
   (the directory disappearing, a permission change mid-session).
 
 **Settled in C6 (design, 2026-10-13).** The contract as built is in
-[`phd2-guider.md` § Camera facade](../services/phd2-guider.md#camera-facade-camera).
+[`phd2-guider.md` § Camera facade](../../services/phd2-guider.md#camera-facade-camera).
 Each bullet below settles a choice this section left open, or changes a
 rule D9's measurement overtook. The rest stand as written.
 
@@ -2520,7 +2551,7 @@ camera of the guiding train. Then:
   focusing.
 
 - **C7 cannot hang the capture sweep off rp's `auto_focus`, because that
-  tool is being retired.** [`focus-model.md`](focus-model.md) D17 is
+  tool is being retired.** [`focus-model.md`](../focus-model.md) D17 is
   explicit: S7 *"removes `rp`'s capture-based `auto_focus`,
   `refocus_train`, and the `auto_focus` block on imaging trains"*, and
   *"the PHD2-metric sweep keeps the `auto_focus` name for guiding trains
@@ -2548,7 +2579,7 @@ camera of the guiding train. Then:
 - `rp.md`'s flat statements that the guide camera "is never captured
   through — PHD2 may own it at the SDK level" (three places) become
   conditional on whether the facade is configured. The same sentence in
-  [`optical-trains.md`](optical-trains.md) needs the same treatment.
+  [`optical-trains.md`](../optical-trains.md) needs the same treatment.
 - **The mount motion gate must learn about guide captures.** rp's
   `imaging_permit` returns `None` for a camera in the guiding train —
   guide-train exposures deliberately bypass the gate, and the code
@@ -2576,7 +2607,7 @@ on 2026-10-13: the guide-train capture sweep is a **training run of
 `focus-model`'s `focus_train`**, and of `determine_filter_offsets`,
 addressed to the guiding train without `shared`. rp gains no focus
 operation of its own, and its `auto_focus` on a guiding train stays the
-PHD2-metric sweep ([focus-model.md](focus-model.md) O4, rule 8). C7 is
+PHD2-metric sweep ([focus-model.md](../focus-model.md) O4, rule 8). C7 is
 that plan's S10. It does not wait for S7: it builds on `focus_train`,
 which exists, and touches nothing S7 retires. The three leases, as
 designed:
@@ -2842,7 +2873,7 @@ designed:
     document and `measure_stars` on a full 3864 × 2192 guide frame, was
     an estimate. C7d's hardware check on `pier1` measured the whole
     per-frame cost at 1.40 s on average and 1.47 s at most, so the
-    constant stays 2 s ([focus-model.md](../services/focus-model.md)
+    constant stays 2 s ([focus-model.md](../../services/focus-model.md)
     § Training runs on a guiding train). It refuses
     before anything moves when the total is over 10 minutes, naming the
     numbers, so a configuration that cannot finish
@@ -2903,7 +2934,7 @@ designed:
   V-curve does.
 - **What the guide camera costs a sweep**, measured on `pier1` with the
   QHY5III715C behind PHD2 2.6.14
-  ([record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)).
+  ([record](../../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)).
   Each sample takes its exposure plus about 0.8 s: PHD2's readout and
   save, the facade's read, and a 34 MB download. The download is twice
   what it needs to be, because the facade builds its `ImageArray` from
@@ -2957,7 +2988,7 @@ review.
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 | 18 | **QHY keeps its raw `GetQHYCCDId` as `UniqueID` and `devices` key; no port-based identity** (D4.6, the QHY note after D4.8) — 2026-10-12 | Two cameras share an id only by sharing a model, and so the product id QHY's join matches on: they are look-alikes, refused with or without a list from C5, so no two registered cameras can carry one id. A port-based identity would change nothing a client sees and would cost a `devices`-key and wheel-id migration. |
-| 19 | **The guide-train capture sweep is a training run of `focus-model`'s `focus_train`, not an rp operation** (D12, its first option) — 2026-10-13 | The provider is becoming the one expert on focusing a train ([focus-model.md](focus-model.md) D1, D17), and the facade only gives it a camera it lacked. A separately named rp operation would add a tool during `auto_focus`'s retirement that the provider would want back. C7 is that plan's S10 and does not wait for its S7. |
+| 19 | **The guide-train capture sweep is a training run of `focus-model`'s `focus_train`, not an rp operation** (D12, its first option) — 2026-10-13 | The provider is becoming the one expert on focusing a train ([focus-model.md](../focus-model.md) D1, D17), and the facade only gives it a camera it lacked. A separately named rp operation would add a tool during `auto_focus`'s retirement that the provider would want back. C7 is that plan's S10 and does not wait for its S7. |
 | 20 | **The caller takes rp's train lease through two tools, under an id it names, and an idle timeout and a maximum life bound a lease its caller forgot** (D12, "Settled in C7") — 2026-10-13 | rp cannot take the lease around a proxied focus call on its own: it would have to read the provider's arguments to tell a training run from the in-session `shared: true` walk. That walk runs while PHD2 guides, so a facade lease rp tried to take around it would be refused, and rp would fail the walk before it moved anything. The provider knows which call it is making. The idle timeout and the maximum life, not the proxied call, bound a lease whose holder died, so the tools stay usable by any client. The caller names the id so that a caller that gave up on its acquire can still release it. |
 
 Nothing blocks a phase.
@@ -2972,7 +3003,7 @@ on 2026-10-13 (D12, "Settled in C7"; decision 19). The operator
 question C7 raised, whether `pier1`'s Scops OAG sits behind its Falcon
 rotator, was answered on 2026-10-14: it sits in front, so the Falcon
 turns the main camera only and the guiding train rightly lists no
-rotator ([focus-model.md](focus-model.md) O4, rule 1). C6's completion
+rotator ([focus-model.md](../focus-model.md) O4, rule 1). C6's completion
 watermark, which held C6's design, was
 answered on 2026-10-13 (D9, "Settled in C6"). The macOS check, which held C5's no-list flip, no longer
 does: its report half was answered on 2026-10-12, and on 2026-10-13 the
@@ -3004,7 +3035,7 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   `SPUSBDataType` with an empty list, where macOS 15.7.9 lists only
   `SPUSBDataType` and answers the other empty — so the collector read
   an empty bus on macOS 26, and now reads the report the host lists
-  ([doctor.md](../services/doctor.md), "USB inventory"). Both runners
+  ([doctor.md](../../services/doctor.md), "USB inventory"). Both runners
   gave their two virtual devices the same location ids, so a port
   written on macOS 15 names the same socket on macOS 26. A runner has no
   camera to move, so what C1 did not measure on macOS still needs a
@@ -3018,7 +3049,7 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
 - **C5 — QHY's serial-less identity policy** — settled in C5 (decision
   18): QHY keeps its raw id, since the join refuses every pair of
   cameras that could share one (the QHY note after D4.8).
-- **C7 — its relationship to [`focus-model.md`](focus-model.md) S7/D17**,
+- **C7 — its relationship to [`focus-model.md`](../focus-model.md) S7/D17**,
   which retires rp's capture-based `auto_focus` — settled by the owner on
   2026-10-13: the guide-train capture sweep is a training run of
   `focus_train`, and C7 is that plan's S10 (D12, "Settled in C7";

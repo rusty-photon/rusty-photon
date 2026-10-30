@@ -1192,7 +1192,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 ### Device claims (`usb_devices`)
 
 The rules for an operator's `usb_devices` list (see "Configuration"),
-following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
+following the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
 Part A, of which this driver is phase C4. U1-U10 are the list's rules. U11 is
 the no-list default's, which runs the same scan and join and then the CFW
 probe (plan C5), and U12 is what `qhy-camera doctor` reports about both.

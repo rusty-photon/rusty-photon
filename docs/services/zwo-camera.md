@@ -1007,7 +1007,7 @@ EAF; those belong to the other zwo services.)
 ### Device claims (`usb_devices`)
 
 The rules for an operator's `usb_devices` list (see "Configuration"),
-following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
+following the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
 Part A, of which this driver is phase C3. U1-U9 are the list's rules. U10 is
 the no-list default's, which runs the same scan, join and identity opens
 (plan C5), and U11 is what `zwo-camera doctor` reports about both.

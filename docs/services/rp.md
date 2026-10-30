@@ -3513,7 +3513,7 @@ a QHY600M (imaging) and a QHY5III678M (guiding); after a power cycle the
 two swapped numbers, and `rp` bound the guide camera as the imaging
 camera without complaint (issue #1184). The lasting fix is that drivers
 pin numbers to USB ports
-([device-claims plan](../plans/device-claims-and-phd2-camera.md),
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md),
 Part A). The pin below is the cheap guard `rp` adds in the meantime.
 
 **Every equipment entry, of every kind, takes an optional
@@ -3735,7 +3735,7 @@ devices:
 - **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
-  ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  ASCOM error `0x540` ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
   D4.5, [svbony-camera.md](svbony-camera.md) U4,
   [zwo-camera.md](zwo-camera.md) U4). Retrying it cannot
   help — a placeholder becomes a device only when its driver reloads —
@@ -3996,7 +3996,7 @@ Consumers land phase by phase per the plan:
 | AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in an imaging train (T itself for T's own terminal focuser when T images, else the first imaging train where the focuser is terminal, else T when T images, else the first imaging train holding it), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, `refocus_train` runs it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (measured on imaging trains today — the provider does not yet refuse a guiding train, which that plan's O4 rule 7 records as S10's first change; a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5 — entered by hand through `set_focus_offsets` today and invalidated by this row like any other, while *measuring* it with `determine_filter_offsets` waits on S10's capture transport, rule 7, so any guiding train `rp` can address can hold hand-entered offsets today, but only one whose camera is the PHD2 facade of device-claims-and-phd2-camera.md — the vendor driver being excluded from the guide camera by that plan's Part A — measures them, once S10, that plan's C7, lands; a guide camera in no `rp` train has no offset path of either kind) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only on one whose camera is the PHD2 facade, under the [Train Lease](#train-lease) — the vendor driver being excluded from the guide camera by the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)'s Part A — and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
 | What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
 | What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names and wavelengths, the calibrator, the focusers, the sole rotator |
 | What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm` and `aperture_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio and pixel scale — see [Train optics](#train-optics) |
@@ -4255,7 +4255,7 @@ or dither between samples. The motion gate and the capture slots each
 cover one call. A **train lease** holds all three off for the whole run.
 The caller takes it before the first move, passes its id on every call
 of the run, and releases it after the put-back
-([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
+([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D12,
 "Settled in C7", and its decision 20). rp takes no lease on its own: it
 cannot tell a training run from the in-session walk a focus provider
 also makes through it, and that walk runs while PHD2 guides.

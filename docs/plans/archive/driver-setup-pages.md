@@ -1007,4 +1007,4 @@ noted.
   auth: [ADR-003](../../decisions/003-authentication-for-device-access.md);
   TLS: [ADR-002](../../decisions/002-tls-for-inter-service-communication.md)
 - The `usb_devices` editor's origin: the device-claims plan's C8,
-  [device-claims-and-phd2-camera.md](../device-claims-and-phd2-camera.md)
+  [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)
