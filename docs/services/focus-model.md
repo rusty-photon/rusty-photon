@@ -63,10 +63,11 @@ anything except through `rp`'s tools. The decision record is the
    is no sweep to record. Only a confirmed run teaches the model where
    focus is; a failed run is the one an operator reads the morning
    after.
-6. **Stale means unknown.** A record whose focuser, camera or filter
-   set no longer matches the train predicts nothing, is reported stale
-   naming the field, and is replaced by the next write. Age alone is
-   not a criterion.
+6. **Stale means unknown.** A record whose focuser, camera, filter
+   set or optics no longer match the train predicts nothing, is
+   reported stale naming the field, and is replaced by the next write.
+   A fact the train does not report is not a change. Age alone is not
+   a criterion.
 7. **No actuation at startup.** The provider answers `tools/list` with
    no `rp` in sight and connects to `rp` lazily, per tool call. Nothing
    moves until a client asks for focus.
@@ -591,8 +592,8 @@ sweep, naming the missing fact; a `filter` not on the wheel.
 
 The model, judged against the live train: `model` (`fresh`, `stale:
 …` or `empty`), `stale` (every changed field), the identity
-(`focuser_id`, `camera_id`, `filters`), `reference_filter`, `offsets`,
-`temperature_coefficient` with `coefficient_runs`,
+(`focuser_id`, `camera_id`, `filters`, `optics`), `reference_filter`,
+`offsets`, `temperature_coefficient` with `coefficient_runs`,
 `coefficient_span_c` and `coefficient_offsets`, `last_good` (one entry
 per filter), the run
 count as `runs_recorded`, and `last_run` — never the history. The
@@ -868,10 +869,12 @@ filter's wavelength before any frame is taken:
 
 ```
 N          = focal_length_mm / aperture_mm                 focal ratio
+ε          = obstruction_ratio                             obstruction_mm / aperture_mm, 0 when unobstructed
+c          = 0.5 × sqrt((1 + ε²) / 2)                      half-flux radius of the annular blur
 λ_um       = wavelength_nm / 1000                          the filter's wavelength, 550 nm when unknown
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
-slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step, c = 0.35 as shipped (pre-S8, below)
+slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step
 hfr_focus  = last_good.hfr for the filter, else 0.5 × seeing_fwhm_arcsec / pixel_scale_arcsec_per_pixel
 half_width = ceil(hfr_focus × sqrt(end_ratio² − 1) / slope)
 step_size  = max(ceil(2 × half_width / (points − 1)), ceil(cfz_steps / 2))
@@ -881,10 +884,19 @@ The half width places the sweep ends at `sweep.end_ratio` times the
 focused HFR (default 4.0, the middle of the 3–5× band the mainstream
 packages size to), using the geometric growth of a defocused star: a
 defocus of Δ microns along the axis is a blur circle of Δ/N across, and
-the half-flux radius of that disc is `c` times Δ/N, with `c` = 0.35 for
-an unobstructed aperture as shipped; plan S8 replaces that rounded
-constant with the obstruction-derived `c` = 0.5·√((1+ε²)/2), 0.3536
-unobstructed (plan O1; § Future Considerations below). The step is the width that gives
+the half-flux radius of that disc is `c` times Δ/N. `c` follows from
+the central obstruction and nothing else: half the flux of an annulus
+of outer radius R and obstruction ratio ε falls inside R·√((1+ε²)/2),
+so `c` = 0.5·√((1+ε²)/2) — 0.3536 unobstructed, 0.3734 for an SCT at
+ε = 0.34, and 0.5 in the limit. The obstruction pushes the light to
+the rim, so an obstructed train's stars grow faster with defocus and
+its sweep is narrower. A train whose `rp` config sets no
+`obstruction_mm` reports a ratio of 0 and is sized as unobstructed; a
+ratio `rp` cannot report, on a train without an aperture, leaves no
+focal ratio to size from either. Before S8 the provider used `c` =
+0.35, the unobstructed value rounded, so an unobstructed train's
+derived half width shrinks by about 1% and can lose a step (plan D9).
+The step is the width that gives
 `sweep.points` samples (default 9) across the sweep, floored at half a
 critical focus zone because samples closer together than that measure
 the same focus. `sweep.seeing_fwhm_arcsec` (default 2.5) stands in for
@@ -893,14 +905,20 @@ the block is a field of `get_train_info.optics`; a train's
 `step_size` and `half_width` in the config override the derived values
 one by one, and a train whose optics are incomplete needs both.
 
-Worked example, the reference rig of the BDD suite: a 500 mm f/5 train
-with a 5.6 µm camera and a 2.5 µm/step focuser at 550 nm has a critical
-focus zone of 67.1 µm (26.84 steps), a predicted slope of 3.125 px per
-100 steps and a focused HFR of 0.54 px from 2.5″ seeing at 2.31″/px:
-`half_width` 68, `step_size` 17, 9 points. The measured wing slope of
-each run is the check on all of this: a slope far from the predicted
-one means a wrong `microns_per_step` or aperture, and `get_sweep_plan`
-reports both side by side.
+Worked example, the reference rig of the BDD suite: an unobstructed
+500 mm f/5 train with a 5.6 µm camera and a 2.5 µm/step focuser at
+550 nm has a critical focus zone of 67.1 µm (26.84 steps), a predicted
+slope of 3.157 px per 100 steps and a focused HFR of 0.54 px from 2.5″
+seeing at 2.31″/px: `half_width` 67, `step_size` 17, 8 points (the
+spread of 134 steps holds seven steps of 17, so the grid stops one
+short of the nine `sweep.points` allows). With a 50 mm obstruction on
+its 100 mm aperture, ε = 0.5 and `c` = 0.3953: the predicted slope is
+3.529 px per 100 steps, `half_width` 60, `step_size` 15, 9 points.
+The measured wing slope of each run is the check on all of this: a
+slope far from the predicted one means a wrong value for an input of
+the `slope` line — `microns_per_step`, the focal length or aperture
+behind `N`, the pixel size, or the obstruction behind `c` — and
+`get_sweep_plan` reports both side by side.
 
 ## The predicted start
 
@@ -1088,7 +1106,12 @@ file written by a newer build.
   model describe one optical train together and go stale together.
 - **Record.** `train_id`; the identity — `focuser_id` (the terminal
   focuser), `camera_id`, `filters` (the wheel's names at write time, or
-  null); `reference_filter` (or null); `offsets` (filter name → steps
+  null) and `optics`, every optical fact the sizing reads as the train
+  reported it: `{focal_length_mm, aperture_mm, obstruction_mm,
+  microns_per_step, pixel_size_um, filter_wavelengths_nm}`, the last a
+  filter name → nanometres-or-null map — the whole block null on a
+  record written before the store kept it; `reference_filter` (or
+  null); `offsets` (filter name → steps
   relative to the reference, the reference at 0);
   `temperature_coefficient` (steps per °C, or null) with
   `coefficient_runs`, `coefficient_span_c` and `coefficient_offsets`
@@ -1121,12 +1144,32 @@ file written by a newer build.
   cap of 100 000 samples across the history for the coarse grids and
   repeated attempts that would otherwise multiply past it; the oldest
   runs go first under either, and the newest run is kept whole.
-- **Staleness.** A record is stale when `focuser_id`, `camera_id` or
-  the filter-name set differs from what `get_train_info` reports now.
-  The filters are a set: the same names in another wheel order are the
-  same optics, and every offset and last good focus is keyed by name,
-  not by position. Each changed field is named as `<field> changed
-  from <recorded> to <current>`, in the order each side reported. A
+- **Staleness.** A record is stale when `focuser_id`, `camera_id`, the
+  filter-name set or one of its optical facts differs from what
+  `get_train_info` reports now. The filters are a set: the same names
+  in another wheel order are the same optics, and every offset and
+  last good focus is keyed by name, not by position. The optical
+  facts follow two rules (plan O8):
+  - *An unknown is not a change.* `focal_length_mm`, `aperture_mm`,
+    `microns_per_step` and `pixel_size_um` are compared only when the
+    record and the train both know them. A camera that has not
+    reported its pixel size, a driver without `StepSize`, a config
+    that dropped the aperture, and a record that holds no `optics` at
+    all, written before the store kept them, are each compared on
+    nothing. A read that failed once must not reset a season of runs.
+  - *An omission the sizing reads as a value is one.* No
+    `obstruction_mm` is an unobstructed train, and a filter without a
+    wavelength is sized at 550 nm, so `obstruction_mm` is compared
+    as configured, null included, and so is each wavelength of a
+    filter both sides hold (a filter only one side holds is the
+    filter set's change).
+
+  Each changed field is named as `<field> changed from <recorded> to
+  <current>`, in the order each side reported, a missing value written
+  `none`: `aperture_mm changed from 90 to 100`, `obstruction_mm changed
+  from none to 68`. The wavelengths are one field naming only the
+  filters whose wavelength moved, each as `<filter> <nm>`:
+  `filter_wavelengths_nm changed from Ha 656 to Ha 656.3`. A
   stale record predicts nothing and is replaced by the next write:
   `focus_train` writes a fresh record holding that run
   alone and reports `model: "reset: …"`; `set_focus_offsets` writes a
@@ -1135,7 +1178,13 @@ file written by a newer build.
 - **Writes.** Every write is a read-modify-write under one lock, and
   reads the record as it stands at write time rather than the copy the
   call loaded before its sweep: a run that took ten minutes must not
-  overwrite what was written while it walked. `focus_train` appends a
+  overwrite what was written while it walked. A run, or an offsets
+  write by hand or by the procedure, into a record that is not stale
+  also brings its `optics` up to date: a fact the
+  record did not know and the train now reports is taken on, and one
+  the train no longer reports is kept, so the identity only ever
+  fills in. A fresh record, and the one `reset_focus_model` adopts,
+  take the train's optics as they stand. `focus_train` appends a
   run and, on a confirmed result, the filter's `last_good` entry; `set_focus_offsets` writes the
   reference and offsets; `reset_focus_model` drops the runs,
   `last_good` and the coefficient. `determine_filter_offsets` appends each sweep's run and last good
@@ -1298,7 +1347,8 @@ train's block pins a detection threshold no simulator frame can clear
 (`docs/skills/testing.md` §5.13), so every sweep ends in
 `not_enough_stars`; the scenarios assert what that path exercises: the
 tools appear in the catalog ungated; `get_sweep_plan` derives the
-worked example's numbers from the optics, takes the focuser's `StepSize`
+worked example's numbers from the optics, the obstructed train's
+narrower sweep among them, takes the focuser's `StepSize`
 when the config sets none, reports `mixed` and `configured` for
 overrides, and names the missing fact; `focus_train` walks the grid,
 persists a frame per point, retries once on the same grid — a starless
@@ -1308,7 +1358,9 @@ log naming why each attempt failed and what came next, and is
 bracketed by `focus_started` and `focus_failed`; a filter argument
 moves the wheel and an unknown one is refused; a seeded record predicts
 the start and a stale one is reported, predicts nothing and is reset by
-the run; `set_focus_offsets` validates and writes, `reset_focus_model`
+the run, whether its camera or its aperture moved on, while a record
+that holds no optics stays fresh and takes the train's on its next
+run; `set_focus_offsets` validates and writes, `reset_focus_model`
 drops the history and keeps the offsets, `get_focus_runs` pages newest
 first; a cancelled sweep restores the start; a guide-coupled train
 pauses and resumes guiding around the sweep, on the failure path too;
@@ -1352,8 +1404,12 @@ credential — and that `tools/list` answers with no `rp` running.
   bound named on a bad value, unknown keys rejected, the default store
   path per platform.
 - Store: round trip, the cap, newest-first reads, the per-filter last
-  good, reopen, a newer schema refused, staleness per field, reset.
-- Sizing: the worked example, the CFZ floor on the step, the wavelength
+  good, reopen, a newer schema refused, staleness per field — an
+  optical fact unknown on either side compared on nothing, an omitted
+  obstruction or wavelength compared as a value — the identity filling
+  in on a write, reset.
+- Sizing: the worked example, the blur constant from the obstruction
+  ratio, the CFZ floor on the step, the wavelength
   fallback, the override sources, the missing-fact error.
 - Prediction: each term present and absent, the same-filter fallback,
   the half-CFZ and bounds skips, rounding.
@@ -1403,10 +1459,6 @@ credential — and that `tools/list` answers with no `rp` running.
   floors — the model is the analytic defocus curve, so what it must
   hold for is every train, not one rig — with the recorded curve
   points kept as regression cases.
-- **The blur constant** (plan O1, settled): `c` is derived from the
-  train's central obstruction, `c` = 0.5·√((1+ε²)/2), not calibrated
-  from the wing slopes — those stay the check on the derivation, which
-  `get_sweep_plan` reports beside the prediction.
 - **The guiding train** (plan O4, settled): when it is swept, in what
   order, whether it has offsets of its own, and which transport a
   training run uses are the eight rules of that plan's O4 table, which

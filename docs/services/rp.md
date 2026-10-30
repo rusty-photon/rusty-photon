@@ -570,10 +570,18 @@ solve. Built at capture time from these sources:
    (`optical_trains[].aperture_mm`). With `focal_length_mm` it gives the
    frame's focal ratio, `focal_length_mm / aperture_mm`, which needs no
    field of its own.
-3. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
+3. `obstruction_mm` is the same train's central obstruction, a
+   diameter (`optical_trains[].obstruction_mm`), recorded when the
+   train configures one — `0` included, which says outright that the
+   path is unobstructed. With `aperture_mm` it gives the frame's
+   obstruction ratio, `obstruction_mm / aperture_mm`, which needs no
+   field of its own either. A frame without it went through a train
+   that configured none, which a focus provider sizes as unobstructed
+   ([Train optics](#train-optics)).
+4. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
    `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns),
    cached on `CameraEntry` at connect time.
-4. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
+5. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
    `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`),
    cached on `CameraEntry` at connect time. That is the frame a driver will
    deliver, which need not be every row the sensor has: the example above
@@ -582,7 +590,7 @@ solve. Built at capture time from these sources:
    bin is one the sensor delivers whole
    ([qhy-camera.md](qhy-camera.md) R4). The FOV is of the frames `rp`
    actually takes, so the reported size is the right one to derive it from.
-5. `microns_per_step` is the image-plane travel of one step of the
+6. `microns_per_step` is the image-plane travel of one step of the
    train's terminal focuser, the value `get_train_info.optics` reports
    ([Train optics](#train-optics)): the focuser's configured
    `microns_per_step`, else the driver's `StepSize` read when its
@@ -598,10 +606,11 @@ fov_deg                       = pixel_scale_arcsec_per_pixel × sensor_size_px /
 ```
 
 Each input is recorded on its own whenever it is known and usable: a
-positive, finite number, or a pixel count above zero. One that is not
+positive, finite number (an obstruction may also be 0), or a pixel
+count above zero. One that is not
 is left out (absent, not `null`) without taking the others with it.
 That happens when the camera terminates no optical train (no focal
-length, aperture or step size), its train omits the fact or has no
+length, aperture, obstruction or step size), its train omits the fact or has no
 focuser, a connect-time read failed, or a driver reports an unusable
 value: a pixel size of 0 drops that pixel size, not the focal length
 beside it. A derived value is recorded only when all its inputs are,
@@ -1714,7 +1723,7 @@ Operators can move any tool across the line with `safety.gate`
 | `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open) |
 | `calibrator_on` | Ungated | calibrator_id *or* train_id (exactly one), brightness (optional) | calibrator_id, trains, status, brightness | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
-| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, terminal_focuser_shared_with, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), `terminal_focuser_shared_with`, the ids of the other trains that terminal focuser is a member of, in config order (empty when no other train has it, or the train has no focuser; a focus provider refuses a guiding train's training run on a focuser an imaging train has), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
+| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, terminal_focuser_shared_with, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), `terminal_focuser_shared_with`, the ids of the other trains that terminal focuser is a member of, in config order (empty when no other train has it, or the train has no focuser; a focus provider refuses a guiding train's training run on a focuser an imaging train has), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, obstruction_mm, obstruction_ratio, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown, `obstruction_ratio` being `0.0` on a train with an aperture and no obstruction (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
 | `get_refocus_plan` | Ungated | train_id | train_id, guide_coupled, steps | The dependency-ordered refocus sequence of a train, as a read: `steps` lists `{focuser_id, run_train_id, camera_id, metric}` in run order — the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser, a guiding-train step last with `metric` `"guide"` and a `null` `camera_id`; `guide_coupled` says whether a capture step moves a focuser the guiding train shares. Nothing moves. An unknown train, or one without focusers, is an error naming it. See the [`get_refocus_plan` Contract](#get_refocus_plan-contract) |
 | `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, facade_lease, ends_by | Take a train lease for a training run, under an id the caller names: the train's camera slots, the slots of the devices the run moves or holds still, the PHD2 camera facade's sweep lease for a guiding train, and the mount motion gate shared, held until `release_train_lease`, 60 s idle, `ends_by`, the safety transition or shutdown. An overlapping lease or `auto_focus` sweep is refused at once. See [Train Lease](#train-lease) |
 | `release_train_lease` | Ungated | lease_id | released | End a train lease, or the acquire still waiting for it. Never an error: `released` is `false` for an id that holds nothing, and an id rp has not seen is recorded so a later acquire under it is refused. See [Train Lease](#train-lease) |
@@ -3992,7 +4001,8 @@ decisions recorded there are fixed.
 "optical_trains": [
   { "id": "main",  "purpose": "imaging", "telescope": "Celestron EdgeHD 8",
     "focal_length_mm": 1000.0,
-    "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
+    "aperture_mm": 200.0, "obstruction_mm": 68.0,
+    "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
                     "min_area": 4, "max_area": 500, "binning": "2x2" } },
@@ -4052,6 +4062,19 @@ Semantics:
   is `null`. Frames through the train record it as `optics.aperture_mm`
   and export it, with the focal ratio, as the FITS `APTDIA` and
   `FOCRATIO` cards ([FITS header](#fits-header)).
+- `obstruction_mm` is the central obstruction of that light path in
+  millimetres — the secondary mirror or its baffle — given as a
+  **diameter**, the same basis as `aperture_mm`, since the two are
+  divided ([Train optics](#train-optics)). Optional; omitted, the path
+  is unobstructed, which a refractor's is. A finite number, not
+  negative, rejected at parse otherwise; and, when the train configures
+  `aperture_mm`, smaller than it, rejected at load and on a setup-page
+  save naming `equipment.optical_trains.<index>.obstruction_mm` — an
+  obstruction as wide as the aperture leaves no light path. On a train
+  without an aperture a valid obstruction is accepted and inert, since
+  that train has no focal ratio to size a sweep from. Frames through
+  the train record it as `optics.obstruction_mm`; no FITS card exports
+  it.
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
@@ -4158,7 +4181,7 @@ Consumers land phase by phase per the plan:
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only on one whose camera is the PHD2 facade, under the [Train Lease](#train-lease) — the vendor driver being excluded from the guide camera by the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)'s Part A — and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
 | What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
 | What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names and wavelengths, the calibrator, the focusers, the sole rotator |
-| What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm` and `aperture_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio and pixel scale — see [Train optics](#train-optics) |
+| What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm`, `aperture_mm` and `obstruction_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio, obstruction ratio and pixel scale — see [Train optics](#train-optics) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount — serialized against imaging-train exposures by the [mount motion gate](#mount-motion-gate) |
 | Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
 
@@ -4167,8 +4190,8 @@ Consumers of the derived model:
 - The exposure document ([Core Fields](#core-fields-owned-by-rp)):
   capture resolves the captured camera's train and copies its
   `telescope` and `devices`, and into the `optics` block its
-  `focal_length_mm`, `aperture_mm` and terminal focuser's
-  `microns_per_step`.
+  `focal_length_mm`, `aperture_mm`, `obstruction_mm` and terminal
+  focuser's `microns_per_step`.
 - `auto_focus` accepts `train_id` as an alternative to the explicit
   `camera_id` + `focuser_id` pair, resolving the train's camera and
   terminal focuser and falling back to the train's `auto_focus`
@@ -4244,11 +4267,15 @@ contract, the rotate-while-guiding ladder under
 
 #### Train optics
 
-Three configured facts and two connect-time reads make up a train's
+Four configured facts and two connect-time reads make up a train's
 optics — the numbers a focus provider sizes a sweep from
 ([focus-model plan](../plans/focus-model.md), D9 and D14):
 
 - `optical_trains[].aperture_mm` — the clear aperture (above).
+- `optical_trains[].obstruction_mm` — the central obstruction, a
+  diameter (above). It sets how a defocused star's light spreads
+  across its blur disc, so the provider derives the HFR growth per
+  step from it.
 - `filter_wheels[].filters[]` — each entry is a name, or
   `{"name", "wavelength_nm"}` for a filter whose wavelength is known
   (a positive finite number, rejected at load otherwise; the two
@@ -4276,6 +4303,8 @@ derivations, each field `null` when an input is unknown:
 "optics": {
   "focal_length_mm": 1000.0,
   "aperture_mm": 200.0,
+  "obstruction_mm": 68.0,
+  "obstruction_ratio": 0.34,
   "focal_ratio": 5.0,
   "pixel_size_um": 3.76,
   "pixel_scale_arcsec_per_pixel": 0.7756,
@@ -4285,19 +4314,25 @@ derivations, each field `null` when an input is unknown:
 
 ```
 focal_ratio                  = focal_length_mm / aperture_mm
+obstruction_ratio            = obstruction_mm / aperture_mm, 0 when no obstruction is configured
 pixel_scale_arcsec_per_pixel = 206.265 × pixel_size_um / focal_length_mm
 ```
 
 A train whose camera never connected has a `null` `pixel_size_um`; a
-train without a focuser a `null` `microns_per_step`. The block is
+train without a focuser a `null` `microns_per_step`. A train that
+configures no obstruction reports `obstruction_mm` `null` and, when it
+has an aperture, `obstruction_ratio` `0.0`, not `null`: unobstructed
+is a fact, not an unknown. Without an aperture the ratio is `null`
+whatever the obstruction, as the focal ratio is. The block is
 always present, so a provider that finds a `null` it needs errors
 naming the fact and the operator learns which line of the config to
 fill in.
 
 These are the train's facts now. A capture copies the ones in force
 into the frame's sidecar ([Core Fields](#core-fields-owned-by-rp)):
-the focal length, aperture, pixel size and `microns_per_step` into
-`optics`, the filter's wavelength into `filter_wavelength_nm`. So a
+the focal length, aperture, obstruction, pixel size and
+`microns_per_step` into `optics`, the filter's wavelength into
+`filter_wavelength_nm`. So a
 past frame keeps its own values after the config is edited, and a
 consumer reads them from the frame, not from `get_train_info`.
 
