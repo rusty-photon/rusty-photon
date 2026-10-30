@@ -1157,11 +1157,13 @@ file written by a newer build.
     that dropped the aperture, and a record that holds no `optics` at
     all, written before the store kept them, are each compared on
     nothing. A read that failed once must not reset a season of runs.
-  - *An omission the sizing reads as a value is one.* No
-    `obstruction_mm` is an unobstructed train, and a filter without a
-    wavelength is sized at 550 nm, so `obstruction_mm` is compared
-    as configured, null included, and so is each wavelength of a
-    filter both sides hold (a filter only one side holds is the
+  - *An omission stands for the value the sizing reads.* No
+    `obstruction_mm` is an obstruction of 0, and a filter without a
+    wavelength is sized at 550 nm, so each is compared as that value:
+    configuring an obstruction, or a wavelength other than 550 nm, is
+    a change, and writing down the 0 or the 550 nm the sizing already
+    assumed is none. The wavelengths compared are those of the
+    filters both sides hold (a filter only one side holds is the
     filter set's change).
 
   Each changed field is named as `<field> changed from <recorded> to

@@ -2021,7 +2021,11 @@ pub async fn reset_focus_model(
             record.focuser_id = Some(ctx.focuser_id.clone());
             record.camera_id = Some(ctx.camera_id.clone());
             record.filters.clone_from(&ctx.filters);
-            record.fill_in_optics(&ctx.optics_identity());
+            // As they stand, not filled in: a value the old record knew
+            // and the train does not report yet (a swapped camera that
+            // has not connected) described the old rig, and kept it would
+            // go stale against the new one and take the offsets with it.
+            record.optics = Some(ctx.optics_identity());
             Ok::<_, FocusModelError>((record, adopted))
         })
         .await?;
@@ -3593,6 +3597,35 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A camera swapped and not yet connected reports no pixel size;
+    /// the reset must not carry the old camera's into the new record,
+    /// where it would go stale once the new one reports its own.
+    #[tokio::test]
+    async fn a_reset_takes_the_trains_optics_as_they_stand() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("old-cam"),
+            Some(wheel_filters()),
+        );
+        record.optics = Some(OpticsIdentity {
+            pixel_size_um: Some(5.6),
+            ..OpticsIdentity::default()
+        });
+        store.put(record).await.unwrap();
+
+        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        let optics = view.model.optics.expect("the reset records the optics");
+        assert_eq!(
+            optics.pixel_size_um, None,
+            "the old camera's pixel size goes"
+        );
+        assert_eq!(optics.filter_wavelengths_nm.get("Ha"), Some(&Some(656.0)));
     }
 
     /// A store that cannot take a run does not turn a focused train

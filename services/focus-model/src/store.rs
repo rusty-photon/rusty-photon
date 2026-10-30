@@ -19,7 +19,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::prediction::Prediction;
-use crate::sizing::SweepSource;
+use crate::sizing::{SweepSource, DEFAULT_WAVELENGTH_NM};
 use crate::sweep::{CurvePoint, FailedAttempt, SweepOutcome};
 
 /// The schema version this build writes for a fresh store.
@@ -257,9 +257,9 @@ impl FocusRun {
 ///
 /// Two kinds of `None` live here. For the focal length, the aperture,
 /// `microns_per_step` and the pixel size it is an unknown, which is
-/// never a change; for the obstruction and a filter's wavelength it is
-/// the value the sizing reads — unobstructed, 550 nm — and is compared
-/// like any other.
+/// never a change; for the obstruction and a filter's wavelength it
+/// stands for the value the sizing reads — no obstruction, 550 nm — and
+/// is compared as that value, so stating it outright is no change.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OpticsIdentity {
     #[serde(default)]
@@ -309,7 +309,10 @@ impl OpticsIdentity {
         ] {
             push_known_change(&mut stale, field, recorded, now);
         }
-        if self.obstruction_mm != current.obstruction_mm {
+        if !same_value(
+            self.obstruction_mm.unwrap_or(0.0),
+            current.obstruction_mm.unwrap_or(0.0),
+        ) {
             stale.push(StaleField {
                 field: "obstruction_mm",
                 recorded: fmt_number(self.obstruction_mm),
@@ -327,13 +330,17 @@ impl OpticsIdentity {
             push_known_change(&mut stale, field, recorded, now);
         }
         // Only the filters both sides hold: one that only one side holds
-        // is the filter set's change, named there.
+        // is the filter set's change, named there. A filter without a
+        // wavelength is sized at the default, so that is what it is
+        // compared as.
+        let sized_at = |nm: Option<f64>| nm.unwrap_or(DEFAULT_WAVELENGTH_NM);
         let moved: Vec<(&String, Option<f64>, Option<f64>)> = self
             .filter_wavelengths_nm
             .iter()
             .filter_map(|(filter, recorded)| {
                 let now = current.filter_wavelengths_nm.get(filter)?;
-                (recorded != now).then_some((filter, *recorded, *now))
+                (!same_value(sized_at(*recorded), sized_at(*now)))
+                    .then_some((filter, *recorded, *now))
             })
             .collect();
         if !moved.is_empty() {
@@ -363,13 +370,22 @@ fn push_known_change(
     recorded: Option<f64>,
     current: Option<f64>,
 ) {
-    if recorded.is_some() && current.is_some() && recorded != current {
-        stale.push(StaleField {
-            field,
-            recorded: fmt_number(recorded),
-            current: fmt_number(current),
-        });
+    if let (Some(recorded), Some(current)) = (recorded, current) {
+        if !same_value(recorded, current) {
+            stale.push(StaleField {
+                field,
+                recorded: recorded.to_string(),
+                current: current.to_string(),
+            });
+        }
     }
+}
+
+/// Whether two readings are the same value, exactly: an identity is
+/// the number `rp` reported, and the stored copy reads back from its
+/// JSON as the value it was written from.
+fn same_value(a: f64, b: f64) -> bool {
+    a.total_cmp(&b).is_eq()
 }
 
 fn fmt_number(value: Option<f64>) -> String {
@@ -507,8 +523,8 @@ impl FocusRecord {
 
     /// Bring the record's optics up to date with `current`: a fact it
     /// did not know is taken on, one `current` does not report is
-    /// kept. Only for a record that is not stale against `current`, or
-    /// one that is adopting the train as it stands.
+    /// kept. Only for a record that is not stale against `current`; a
+    /// record adopting the train takes its optics as they stand.
     pub fn fill_in_optics(&mut self, current: &OpticsIdentity) {
         let held = self.optics.take().unwrap_or_default();
         self.optics = Some(held.filled_in_from(current));
@@ -1242,9 +1258,10 @@ mod tests {
     }
 
     /// No obstruction is an unobstructed train and no wavelength is
-    /// 550 nm, so configuring either is a change like any other.
+    /// 550 nm: configuring an obstruction or a wavelength the sizing did
+    /// not already assume is a change like any other.
     #[test]
-    fn an_omitted_obstruction_or_wavelength_is_compared_as_a_value() {
+    fn an_omitted_obstruction_or_wavelength_is_compared_as_the_value_it_stands_for() {
         let mut obstructed = facts();
         obstructed.optics.obstruction_mm = Some(68.0);
         assert_eq!(
@@ -1256,15 +1273,26 @@ mod tests {
         tuned
             .optics
             .filter_wavelengths_nm
-            .insert("L".to_owned(), Some(550.0));
-        tuned
-            .optics
-            .filter_wavelengths_nm
             .insert("Ha".to_owned(), Some(656.3));
         assert_eq!(
             record_at(optics()).stale_fields(&tuned)[0].to_string(),
-            "filter_wavelengths_nm changed from Ha 656, L none to Ha 656.3, L 550"
+            "filter_wavelengths_nm changed from Ha 656 to Ha 656.3"
         );
+    }
+
+    /// An obstruction of 0 and a wavelength of 550 nm are what the
+    /// sizing assumed without them, so writing either down changes no
+    /// number the sweep is sized from and resets nothing.
+    #[test]
+    fn stating_the_value_the_sizing_assumed_is_no_change() {
+        let mut stated = facts();
+        stated.optics.obstruction_mm = Some(0.0);
+        stated
+            .optics
+            .filter_wavelengths_nm
+            .insert("L".to_owned(), Some(550.0));
+        let stale = record_at(optics()).stale_fields(&stated);
+        assert!(stale.is_empty(), "{stale:?}");
     }
 
     /// A filter only one side holds is the filter set's change, and the
