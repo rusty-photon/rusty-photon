@@ -1,0 +1,49 @@
+    Finished `release` profile [optimized] target(s) in 0.30s
+     Running `target/release/phd2-guider --config <home>/fz-record/phd2-guider.json serve`
+2026-10-30T05:57:31.731369Z DEBUG phd2_guider: Parsed command line arguments: host=None, port=None, log_level=Level(Info)
+2026-10-30T05:57:31.731717Z DEBUG phd2_guider: Loading configuration from "<home>/fz-record/phd2-guider.json"
+2026-10-30T05:57:31.740080Z DEBUG phd2_guider: minted the camera facade's UniqueID path="<home>/fz-record/phd2-guider.json" wrote=true filled=["/camera/unique_id"]
+2026-10-30T05:57:31.740389Z DEBUG phd2_guider::client: Connecting to PHD2 at 127.0.0.1:4400
+2026-10-30T05:57:31.740400Z DEBUG phd2_guider::io: Connecting to 127.0.0.1:4400 with timeout 10s
+bound_addr=127.0.0.1:11230
+2026-10-30T05:57:31.740444Z  INFO phd2_guider: guider service listening on 127.0.0.1:11230
+2026-10-30T05:57:31.740449Z  INFO phd2_guider: camera facade listening on 127.0.0.1:11228
+2026-10-30T05:57:31.740508Z DEBUG phd2_guider::io: TCP connection established to 127.0.0.1:4400
+2026-10-30T05:57:31.740517Z DEBUG phd2_guider::client: Connection established to PHD2
+2026-10-30T05:57:31.740528Z DEBUG phd2_guider::client: PHD2 client connected and reader task started
+2026-10-30T05:57:31.740532Z  INFO phd2_guider::service::guider: connected to PHD2
+2026-10-30T05:57:31.740735Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"Version","Timestamp":1793339851.740,"Host":"<rig-host>","Inst":1,"PHDVersion":"2.6.14","PHDSubver":"","OverlapSupport":true,"MsgVersion":1}
+2026-10-30T05:57:31.740757Z DEBUG phd2_guider::connection: PHD2 version: 2.6.14
+2026-10-30T05:57:31.740773Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"AppState","Timestamp":1793339851.740,"Host":"<rig-host>","Inst":1,"State":"Stopped"}
+2026-10-30T05:57:31.740782Z DEBUG phd2_guider::connection: PHD2 app state: Stopped
+2026-10-30T05:57:37.957927Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Getting camera frame size
+2026-10-30T05:57:37.957952Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":1}
+2026-10-30T05:57:37.958237Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[0,0],"id":1}
+2026-10-30T05:57:37.958277Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Getting current equipment configuration
+2026-10-30T05:57:37.958286Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":2}
+2026-10-30T05:57:37.958595Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":2}
+2026-10-30T05:57:37.958621Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::camera: PHD2 does not know its camera's frame size yet; taking a 1 ms frame camera=Simulator
+2026-10-30T05:57:37.958630Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":3}
+2026-10-30T05:57:37.958844Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":3}
+2026-10-30T05:57:37.958974Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::guider: capture slot claimed path=<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits recovered=false
+2026-10-30T05:57:37.958986Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Capturing single frame, exposure=1ms, saved to <home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits
+2026-10-30T05:57:37.958995Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"capture_single_frame","params":{"exposure":1,"path":"<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits","save":true},"id":4}
+2026-10-30T05:57:37.960198Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"ConfigurationChange","Timestamp":1793339857.960,"Host":"<rig-host>","Inst":1}
+2026-10-30T05:57:38.002988Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":0,"id":4}
+2026-10-30T05:57:38.003037Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::capture: PHD2 accepted the facade's frame path=<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits exposure_ms=1
+2026-10-30T05:57:38.028208Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"SingleFrameComplete","Timestamp":1793339858.028,"Host":"<rig-host>","Inst":1,"Success":true,"Path":"<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits"}
+2026-10-30T05:57:38.028327Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"LoopingExposuresStopped","Timestamp":1793339858.028,"Host":"<rig-host>","Inst":1}
+2026-10-30T05:57:38.028408Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::guider: capture slot released path=<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits
+2026-10-30T05:57:38.028504Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::capture: deleted the facade's frame file path=<home>/fz-record/images/phd2-guider-77bdc2eb22434132928073ce889cbe51.fits
+2026-10-30T05:57:38.028510Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Getting camera frame size
+2026-10-30T05:57:38.028516Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":5}
+2026-10-30T05:57:38.042234Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":5}
+2026-10-30T05:57:38.042282Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=2 server_transaction_id=2}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-30T05:57:38.045341Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=8 server_transaction_id=8}: phd2_guider::client: Getting camera frame size
+2026-10-30T05:57:38.045362Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=8 server_transaction_id=8}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":6}
+2026-10-30T05:57:38.045572Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":6}
+2026-10-30T05:57:38.045595Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=8 server_transaction_id=8}: phd2_guider::client: Getting current equipment configuration
+2026-10-30T05:57:38.045602Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=8 server_transaction_id=8}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":7}
+2026-10-30T05:57:38.045852Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":7}
+2026-10-30T05:57:38.045875Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=8 server_transaction_id=8}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-30T05:57:47.665731Z  INFO rusty_photon_service_lifecycle::runner: phd2-guider: shutdown signal received, terminating
