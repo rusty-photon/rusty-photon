@@ -157,6 +157,9 @@ pub struct RpWorld {
     /// `{name, wavelength_nm}` entries for the wheel the shared
     /// `add_filter_wheel` helper adds; same ordering rule.
     pub filter_wavelengths_nm: Vec<(String, f64)>,
+    /// `optical_trains[].obstruction_mm` for the train the optics
+    /// fixture adds; same ordering rule.
+    pub train_obstruction_mm: Option<f64>,
 
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver

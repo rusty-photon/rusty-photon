@@ -62,6 +62,9 @@ pub struct Train {
     /// The train's clear aperture in millimetres (rp.md § Train
     /// optics); with the focal length, its focal ratio.
     pub aperture_mm: Option<f64>,
+    /// The train's central obstruction, a diameter in millimetres
+    /// (rp.md § Train optics); `None` is an unobstructed path.
+    pub obstruction_mm: Option<f64>,
     /// The train's default framing angle, degrees east of north —
     /// layer two of the effective position angle `get_next_target`
     /// resolves (rp.md § Target Store → Position angle).
@@ -82,6 +85,16 @@ impl Train {
             (Some(focal_length), Some(aperture)) => Some(focal_length / aperture),
             _ => None,
         }
+    }
+
+    /// The obstruction ratio, `obstruction_mm / aperture_mm` (rp.md §
+    /// Train optics): 0 for a train that configures no obstruction,
+    /// since unobstructed is a fact, and `None` without an aperture to
+    /// divide by.
+    #[must_use]
+    pub fn obstruction_ratio(&self) -> Option<f64> {
+        self.aperture_mm
+            .map(|aperture| self.obstruction_mm.unwrap_or(0.0) / aperture)
     }
 
     /// The camera this train terminates in. Always `Some` for a
@@ -520,6 +533,9 @@ impl TrainModel {
                     aperture_mm: train
                         .aperture_mm
                         .map(super::super::config::optical_train::ApertureMm::value),
+                    obstruction_mm: train
+                        .obstruction_mm
+                        .map(super::super::config::optical_train::ObstructionMm::value),
                     default_position_angle_degrees: train
                         .default_position_angle_degrees
                         .map(super::super::config::optical_train::PositionAngleDegrees::value),
@@ -1148,6 +1164,42 @@ mod tests {
         .unwrap();
         assert_eq!(model.train("main").unwrap().aperture_mm, Some(200.0));
         assert_eq!(model.train("main").unwrap().focal_length_mm, Some(1000.0));
+    }
+
+    #[test]
+    fn obstruction_is_carried_onto_the_validated_train_with_its_ratio() {
+        let model = TrainModel::try_from_equipment(&equipment(serde_json::json!({
+            "cameras": [{"id": "main-cam", "alpaca_url": "http://localhost:1"}],
+            "optical_trains": [
+                {"id": "main", "aperture_mm": 200.0, "obstruction_mm": 68.0,
+                 "devices": ["main-cam"]}
+            ]
+        })))
+        .unwrap();
+        let train = model.train("main").unwrap();
+        assert_eq!(train.obstruction_mm, Some(68.0));
+        assert_eq!(train.obstruction_ratio(), Some(0.34));
+    }
+
+    #[test]
+    fn an_unobstructed_train_has_a_ratio_of_zero_and_one_without_an_aperture_none() {
+        let model = TrainModel::try_from_equipment(&equipment(serde_json::json!({
+            "cameras": [
+                {"id": "main-cam", "alpaca_url": "http://localhost:1"},
+                {"id": "other-cam", "alpaca_url": "http://localhost:1"}
+            ],
+            "optical_trains": [
+                {"id": "main", "aperture_mm": 200.0, "devices": ["main-cam"]},
+                {"id": "other", "obstruction_mm": 50.0, "devices": ["other-cam"]}
+            ]
+        })))
+        .unwrap();
+        let unobstructed = model.train("main").unwrap();
+        assert_eq!(unobstructed.obstruction_mm, None);
+        assert_eq!(unobstructed.obstruction_ratio(), Some(0.0));
+        let no_aperture = model.train("other").unwrap();
+        assert_eq!(no_aperture.obstruction_mm, Some(50.0));
+        assert_eq!(no_aperture.obstruction_ratio(), None);
     }
 
     /// The OAG-behind-rotator variant differs by one id in one list and

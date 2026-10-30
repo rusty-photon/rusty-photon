@@ -58,6 +58,7 @@ fn push_imaging_train_with_attempts(
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: id.to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -74,6 +75,7 @@ fn push_guiding_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: id.to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
@@ -118,6 +120,7 @@ async fn rp_with_train_and_block_binning(world: &mut RpWorld, train_id: String, 
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: train_id,
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,

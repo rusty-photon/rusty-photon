@@ -490,6 +490,7 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(500.0),

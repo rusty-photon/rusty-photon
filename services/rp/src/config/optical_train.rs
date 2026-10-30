@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use rusty_photon_config::driver::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -91,6 +92,48 @@ impl ApertureMm {
 }
 
 impl TryFrom<f64> for ApertureMm {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+/// Central obstruction of a light path, a diameter in millimetres
+/// (`optical_trains[].obstruction_mm`, rp.md § Train optics).
+///
+/// Validated at load like [`ApertureMm`], except that 0 is allowed: it
+/// states an unobstructed path outright. That it is smaller than the
+/// train's aperture is a rule across two fields, checked by
+/// [`OpticalTrainConfig::field_errors`]. Serializes as the inner `f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct ObstructionMm(f64);
+
+impl ObstructionMm {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// negative.
+    pub fn try_new(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || value < 0.0 {
+            return Err(format!(
+                "obstruction_mm must be a finite number, not negative, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The obstruction's diameter in millimetres.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for ObstructionMm {
     type Error = String;
 
     fn try_from(value: f64) -> Result<Self, Self::Error> {
@@ -531,6 +574,12 @@ pub struct OpticalTrainConfig {
     /// Train optics). Omitted → `focal_ratio` is null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aperture_mm: Option<ApertureMm>,
+    /// Central obstruction of this light path, a diameter like
+    /// `aperture_mm` and smaller than it. Omitted → unobstructed, an
+    /// `obstruction_ratio` of 0 on `get_train_info.optics` (rp.md §
+    /// Train optics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obstruction_mm: Option<ObstructionMm>,
     /// Default framing angle for targets that don't carry their own —
     /// layer two of the effective position angle (rp.md § Target
     /// Store → Position angle). For a rotator-less train this
@@ -547,6 +596,38 @@ pub struct OpticalTrainConfig {
     /// parameter per call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_focus: Option<TrainAutoFocusConfig>,
+}
+
+impl OpticalTrainConfig {
+    /// This entry's rules across its own fields, for
+    /// [`super::validate_config`], which startup and the setup page's
+    /// save share. `index` is the entry's position in
+    /// `equipment.optical_trains`, for the dotted path.
+    ///
+    /// An obstruction must be smaller than the aperture: one as wide
+    /// leaves no light path, and the ratio a focus provider sizes a
+    /// sweep from would be meaningless. A train without an aperture
+    /// has nothing to compare against and no focal ratio to size from,
+    /// so its obstruction is accepted and inert.
+    #[must_use]
+    pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
+        let mut errors = Vec::new();
+        if let (Some(obstruction), Some(aperture)) = (self.obstruction_mm, self.aperture_mm) {
+            if obstruction.value() >= aperture.value() {
+                errors.push(FieldError {
+                    path: format!("equipment.optical_trains.{index}.obstruction_mm"),
+                    msg: format!(
+                        "must be smaller than aperture_mm ({}), since an obstruction as wide as \
+                         the aperture leaves no light path; got {} (train '{}')",
+                        aperture.value(),
+                        obstruction.value(),
+                        self.id
+                    ),
+                });
+            }
+        }
+        errors
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +666,82 @@ mod tests {
         assert_eq!(train.purpose, TrainPurpose::Imaging);
         assert!(train.focal_length_mm.is_none());
         assert_eq!(train.devices, vec!["main-cam"]);
+    }
+
+    #[test]
+    fn obstruction_mm_accepts_zero_and_a_positive_diameter() {
+        assert_eq!(ObstructionMm::try_new(0.0).unwrap().value(), 0.0);
+        assert_eq!(ObstructionMm::try_new(68.0).unwrap().value(), 68.0);
+    }
+
+    #[test]
+    fn obstruction_mm_rejects_a_negative_or_non_finite_value() {
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let err = ObstructionMm::try_new(bad).unwrap_err();
+            assert!(
+                err.contains("obstruction_mm must be a finite number, not negative"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    fn train(json: serde_json::Value) -> OpticalTrainConfig {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_obstruction_as_wide_as_the_aperture_is_a_field_error_naming_the_path() {
+        let errors = train(serde_json::json!({
+            "id": "main", "aperture_mm": 200.0, "obstruction_mm": 200.0,
+            "devices": ["main-cam"]
+        }))
+        .field_errors(2);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "equipment.optical_trains.2.obstruction_mm");
+        assert!(
+            errors[0]
+                .msg
+                .contains("must be smaller than aperture_mm (200)"),
+            "{}",
+            errors[0].msg
+        );
+        assert!(errors[0].msg.contains("train 'main'"), "{}", errors[0].msg);
+    }
+
+    #[test]
+    fn an_obstruction_inside_the_aperture_or_without_one_is_accepted() {
+        for json in [
+            serde_json::json!({"id": "main", "aperture_mm": 200.0, "obstruction_mm": 68.0,
+                               "devices": ["main-cam"]}),
+            serde_json::json!({"id": "main", "obstruction_mm": 68.0, "devices": ["main-cam"]}),
+            serde_json::json!({"id": "main", "aperture_mm": 200.0, "devices": ["main-cam"]}),
+        ] {
+            assert_eq!(train(json.clone()).field_errors(0), Vec::new(), "{json}");
+        }
+    }
+
+    #[test]
+    fn load_config_refuses_an_obstruction_as_wide_as_the_aperture() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                    ],
+                    "optical_trains": [
+                        {"id": "main", "aperture_mm": 100.0, "obstruction_mm": 120.0,
+                         "devices": ["main-cam"]}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("equipment.optical_trains.0.obstruction_mm"),
+            "{err}"
+        );
     }
 
     #[test]

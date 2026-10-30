@@ -20,7 +20,7 @@ use bdd_infra::rp_harness::{
 use bdd_infra::ServiceHandle;
 use cucumber::{given, then, when};
 use focus_model::sizing::SweepSource;
-use focus_model::store::{FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome};
+use focus_model::store::{FocusRecord, FocusRun, FocusStore, LastGood, OpticsIdentity, RunOutcome};
 use serde_json::Value;
 
 use crate::world::{build_focus_model_config, FocusModelWorld};
@@ -87,6 +87,11 @@ fn pin_data_directory(world: &mut FocusModelWorld) {
 #[given(expr = "the focuser is configured with microns_per_step {float}")]
 const fn focuser_microns_per_step(world: &mut FocusModelWorld, microns: f64) {
     world.focuser_microns_per_step = Some(microns);
+}
+
+#[given(expr = "the train is configured with an obstruction of {float} mm")]
+const fn train_obstruction(world: &mut FocusModelWorld, obstruction_mm: f64) {
+    world.obstruction_mm_for_train = Some(obstruction_mm);
 }
 
 #[given(expr = "the filter wheel's {string} filter is configured at {int} nm")]
@@ -204,6 +209,30 @@ async fn stored_model_with_runs(world: &mut FocusModelWorld, train_id: String, r
         run.hfr = Some(1.2);
         record.push_run(run, 500);
     }
+    seed(world, record).await;
+}
+
+/// Seed a record measured at another aperture: every other optical
+/// fact it holds unknown, so the aperture is the only one compared.
+#[given(expr = "a stored focus model for train {string} trained at an aperture of {float} mm")]
+async fn stored_model_at_aperture(world: &mut FocusModelWorld, train_id: String, aperture_mm: f64) {
+    let mut record = FocusRecord::new(
+        &train_id,
+        Some("main-focuser"),
+        Some("main-cam"),
+        Some(wheel_filters()),
+    );
+    record.optics = Some(OpticsIdentity {
+        aperture_mm: Some(aperture_mm),
+        ..OpticsIdentity::default()
+    });
+    record.set_last_good(LastGood {
+        filter: Some("Luminance".to_string()),
+        position: 24_000,
+        temperature_c: None,
+        hfr: 1.5,
+        at: "2026-09-10T20:00:00Z".to_string(),
+    });
     seed(world, record).await;
 }
 
@@ -342,6 +371,7 @@ fn push_offline_guiding_train(world: &mut FocusModelWorld, devices: Vec<String>)
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
@@ -705,6 +735,7 @@ fn push_train(world: &mut FocusModelWorld, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: world.aperture_mm_for_train,
+        obstruction_mm: world.obstruction_mm_for_train,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(FOCAL_LENGTH_MM),

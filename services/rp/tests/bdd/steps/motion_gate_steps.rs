@@ -85,6 +85,7 @@ async fn rp_with_guiding_train_and_slow_guider(
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,

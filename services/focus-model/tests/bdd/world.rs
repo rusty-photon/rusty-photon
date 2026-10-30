@@ -96,6 +96,9 @@ pub struct FocusModelWorld {
     pub filter_wavelengths_nm: Vec<(String, f64)>,
     /// `optical_trains[].aperture_mm` for the train the scenario adds.
     pub aperture_mm_for_train: Option<f64>,
+    /// `optical_trains[].obstruction_mm` for the train the scenario
+    /// adds, when the scenario configures one.
+    pub obstruction_mm_for_train: Option<f64>,
     /// rp's `data_directory`, when the scenario pins a fresh one.
     pub data_dir: Option<tempfile::TempDir>,
     /// rp's port, picked before the provider starts: the provider's
@@ -149,6 +152,7 @@ impl Default for FocusModelWorld {
             focuser_microns_per_step: None,
             filter_wavelengths_nm: Vec::new(),
             aperture_mm_for_train: None,
+            obstruction_mm_for_train: None,
             data_dir: None,
             rp_port: None,
             provider_overrides: Map::new(),

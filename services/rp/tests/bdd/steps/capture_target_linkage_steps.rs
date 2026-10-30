@@ -32,6 +32,7 @@ async fn rp_running_with_capture_rig(world: &mut RpWorld) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: None,
         focal_length_mm: None,
@@ -59,6 +60,7 @@ pub async fn capture_rig_without_templates(world: &mut RpWorld) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: None,
         focal_length_mm: None,

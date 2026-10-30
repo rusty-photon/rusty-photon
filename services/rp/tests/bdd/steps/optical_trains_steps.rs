@@ -108,6 +108,7 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(focal_length_mm),
@@ -126,6 +127,7 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -149,6 +151,7 @@ async fn rp_with_calibrator_wheel_and_camera_in_train(world: &mut RpWorld) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -180,6 +183,13 @@ fn filter_configured_at_wavelength(world: &mut RpWorld, name: String, nm: f64) {
     world.filter_wavelengths_nm.push((name, nm));
 }
 
+/// `optical_trains[].obstruction_mm` for the train the running-rp Given
+/// below adds; precedes it in the scenario.
+#[given(expr = "the train is configured with an obstruction of {float} mm")]
+const fn train_configured_with_obstruction(world: &mut RpWorld, obstruction_mm: f64) {
+    world.train_obstruction_mm = Some(obstruction_mm);
+}
+
 /// `main` = [main-focuser, main-fw, main-cam] on the simulator with
 /// the two configured optics facts — the `get_train_info.optics`
 /// fixture.
@@ -201,6 +211,7 @@ async fn rp_with_optics_train(
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: Some(aperture_mm),
+        obstruction_mm: world.train_obstruction_mm,
         focal_length_mm: Some(focal_length_mm),
         default_position_angle_degrees: None,
         devices: vec![
@@ -225,6 +236,7 @@ async fn camera_and_focuser_in_train(world: &mut RpWorld, train_id: String) {
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: None,
+        obstruction_mm: None,
         focal_length_mm: Some(1000.0),
         default_position_angle_degrees: None,
         devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
@@ -257,6 +269,7 @@ async fn rp_with_stub_focuser_train(world: &mut RpWorld, train_id: String) {
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: None,
+        obstruction_mm: None,
         focal_length_mm: Some(1000.0),
         default_position_angle_degrees: None,
         devices: vec![focuser_id, "main-cam".to_string()],

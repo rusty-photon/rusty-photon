@@ -607,6 +607,7 @@ mod tests {
             telescope: None,
             focal_length_mm: None,
             aperture_mm: None,
+            obstruction_mm: None,
             default_position_angle_degrees,
             devices: Vec::new(),
             auto_focus: None,

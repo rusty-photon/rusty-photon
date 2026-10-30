@@ -297,6 +297,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
@@ -536,6 +537,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
