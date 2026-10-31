@@ -1026,6 +1026,11 @@ struct MockTelescope {
     /// `side_of_pier()`'s answer; `None` (the default) answers
     /// `NOT_IMPLEMENTED`.
     side_of_pier_value: Option<ascom_alpaca::api::telescope::PierSide>,
+    /// First N `right_ascension()` calls fail before it answers —
+    /// drives `read_mount`'s retry of a failed position read. Counter
+    /// is `right_ascension_calls`.
+    right_ascension_transient_errors: u32,
+    right_ascension_calls: std::sync::atomic::AtomicU32,
 }
 
 impl Default for MockTelescope {
@@ -1063,6 +1068,8 @@ impl Default for MockTelescope {
             ra_value: 0.0,
             dec_value: 0.0,
             side_of_pier_value: None,
+            right_ascension_transient_errors: 0,
+            right_ascension_calls: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -1136,7 +1143,10 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn right_ascension(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        if self.fail_right_ascension {
+        let n = self
+            .right_ascension_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_right_ascension || n < self.right_ascension_transient_errors {
             return Err(ASCOMError::invalid_operation("encoder fault"));
         }
         Ok(self.ra_value)
@@ -2863,6 +2873,23 @@ async fn a_mount_read_that_fails_once_is_retried() {
     })
     .await;
     assert_eq!(pointing.unwrap().ra_hours, 5.5);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_read_that_fails_once_is_retried() {
+    let mount = Arc::new(MockTelescope {
+        right_ascension_transient_errors: 1,
+        ra_value: 5.5,
+        ..Default::default()
+    });
+    let reading = super::internals::read_mount(mount.clone()).await;
+    assert_eq!(reading.pointing.unwrap().ra_hours, 5.5);
+    assert_eq!(
+        mount
+            .right_ascension_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
 }
 
 #[tokio::test(start_paused = true)]
