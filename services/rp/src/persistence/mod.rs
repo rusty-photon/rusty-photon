@@ -17,7 +17,7 @@ pub mod document;
 pub mod fits;
 pub mod fits_header;
 
-pub use cache::{CachedImage, CachedPixels, ImageCache};
+pub use cache::{CachedImage, CachedPixels, ImageCache, ResolvedDocument};
 pub use document::{
     ExposureDocument, ExposureFocuser, ExposureGuiding, ExposureObservingConditions,
     ExposureRotator, ExposureSafetyMonitor, ExposureSite, ExposureTarget, ExposureTrainDevice,

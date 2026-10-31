@@ -17,6 +17,7 @@ pub mod detect_stars_steps;
 pub mod device_identity_steps;
 pub mod doctor_steps;
 pub mod document_http_api_steps;
+pub mod document_resolution_steps;
 pub mod ephemeris_steps;
 pub mod equipment_recovery_steps;
 pub mod equipment_steps;

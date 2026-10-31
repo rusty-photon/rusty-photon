@@ -142,6 +142,10 @@ pub struct CachedImage {
     pub pixels: CachedPixels,
     pub width: u32,
     pub height: u32,
+    /// Where the cache wrote or found the frame's FITS file. Section
+    /// updates write the sidecar beside it; the document's own
+    /// `file_path` records where the frame was written at capture
+    /// (rp.md § Document Resolution).
     pub fits_path: PathBuf,
     pub max_adu: u32,
     pub document: RwLock<ExposureDocument>,
@@ -187,6 +191,17 @@ impl CachedImage {
     }
 }
 
+/// A document a lookup found, with the FITS file it was confirmed against.
+///
+/// Consumers work on `fits_path` and the sidecar beside it, never on
+/// `document.file_path`, which records where the frame was written at
+/// capture, not where it is now (rp.md § Document Resolution).
+#[derive(Debug, Clone)]
+pub struct ResolvedDocument {
+    pub document: ExposureDocument,
+    pub fits_path: PathBuf,
+}
+
 /// Process-wide image cache. Cheap to clone — internally `Arc<Mutex<…>>`.
 #[derive(Clone)]
 pub struct ImageCache {
@@ -195,8 +210,8 @@ pub struct ImageCache {
     max_images: usize,
     /// Root directory to scan when an in-memory lookup misses. The
     /// disk-fallback resolver matches by the UUID-8 suffix every frame
-    /// carries and verifies via FITS `DOC_ID`, or the sidecar's `id`
-    /// when the FITS is unreadable or has no `DOC_ID`.
+    /// carries and confirms both files: the FITS `DOC_ID` and the
+    /// sidecar's `id`.
     data_directory: PathBuf,
     /// How many directory levels below `data_directory` that scan
     /// descends — `directory_pattern`'s component count under a naming
@@ -319,15 +334,19 @@ impl ImageCache {
         self.get(document_id)
     }
 
-    /// Resolve `document_id` to its `ExposureDocument`, with on-disk
-    /// rehydration on miss. Same disk-scan algorithm as [`resolve`] but
-    /// returns the document even when the cache cannot hold the pixels
-    /// (e.g. sidecar `max_adu == null`). Callers that need the raw FITS
-    /// path use this to obtain `file_path`.
-    pub async fn resolve_document(&self, document_id: &str) -> Option<ExposureDocument> {
+    /// Resolve `document_id` to its `ExposureDocument` and the FITS file
+    /// it was confirmed against, with on-disk rehydration on miss. Same
+    /// disk-scan algorithm as [`resolve`] but returns the document even
+    /// when the cache cannot hold the pixels (e.g. sidecar
+    /// `max_adu == null`). Callers that need the raw FITS read
+    /// [`ResolvedDocument::fits_path`].
+    pub async fn resolve_document(&self, document_id: &str) -> Option<ResolvedDocument> {
         if let Some(image) = self.get(document_id) {
-            let cloned = image.document.read().await.clone();
-            return Some(cloned);
+            let document = image.document.read().await.clone();
+            return Some(ResolvedDocument {
+                document,
+                fits_path: image.fits_path.clone(),
+            });
         }
         debug!(
             document_id,
@@ -343,42 +362,30 @@ impl ImageCache {
     }
 
     /// Resolve a FITS file path to its `ExposureDocument` by reading
-    /// the sibling `.json` sidecar. Used by the `plate_solve` MCP
-    /// tool's `image_path` mode so the late-solve workflow (rp
-    /// captures frame N → starts capture N+1 → solves frame N) can
-    /// update the original sidecar without needing the document id
-    /// threaded through the call site. Returns `None` when the
-    /// sidecar is missing, unreadable, doesn't parse as an
-    /// `ExposureDocument`, or carries a `file_path` whose basename
-    /// disagrees with the requested FITS — that last guard catches
-    /// the cross-rig-mixed-sidecars case (operator hand-copies a
-    /// sidecar from another rig's data directory; UUID-8 collision
-    /// would otherwise drive `put_section`'s disk-fallback to write
-    /// to the wrong file). Basename-only — full-path equality would
-    /// false-positive when an operator archives a session to NAS.
+    /// the sidecar beside it (`<base>.fits` → `<base>.json`). Used by
+    /// the `plate_solve` MCP tool's `image_path` mode so the late-solve
+    /// workflow (rp captures frame N → starts capture N+1 → solves
+    /// frame N) can update the original sidecar without needing the
+    /// document id threaded through the call site. The file may sit
+    /// anywhere, inside the data directory or not (a session archived
+    /// to a NAS).
     ///
-    /// The path-to-sidecar mapping is `<base>.fits` → `<base>.json`;
-    /// this mirrors how `mcp.rs:capture` writes the pair atomically
-    /// (Phase 7 Step 1).
-    pub async fn resolve_document_by_path(&self, fits_path: &str) -> Option<ExposureDocument> {
-        let sidecar_path = ExposureDocument::sidecar_path_for(fits_path)?;
-        let request_basename = Path::new(fits_path).file_name()?.to_owned();
-        let doc = tokio::task::spawn_blocking(move || {
-            ExposureDocument::read_sidecar_sync(&sidecar_path).ok()
+    /// The pair is confirmed as a lookup by id confirms it: the FITS
+    /// file's `DOC_ID` and the sidecar's `id` must name the same
+    /// document. Returns `None` when the path is not a `.fits` path,
+    /// the `DOC_ID` is missing or unreadable, the sidecar is missing or
+    /// doesn't parse, or the sidecar holds another document's record.
+    pub async fn resolve_document_by_path(&self, fits_path: &str) -> Option<ResolvedDocument> {
+        let fits_path = PathBuf::from(fits_path);
+        let lookup = fits_path.clone();
+        let document = tokio::task::spawn_blocking(move || confirm_pair(&lookup, None))
+            .await
+            .ok()
+            .flatten()?;
+        Some(ResolvedDocument {
+            document,
+            fits_path,
         })
-        .await
-        .ok()
-        .flatten()?;
-        let doc_basename = Path::new(&doc.file_path).file_name();
-        if doc_basename != Some(request_basename.as_os_str()) {
-            debug!(
-                requested = %fits_path,
-                doc_file_path = %doc.file_path,
-                "resolve_document_by_path: sidecar basename mismatch, declining"
-            );
-            return None;
-        }
-        Some(doc)
     }
 
     /// Write `value` into `sections[name]` on the document and persist
@@ -386,30 +393,31 @@ impl ImageCache {
     ///
     /// **Cached entry path (the hot path).** The per-entry write lock
     /// is held across the sidecar write so concurrent updates
-    /// serialize at the entry level. On sidecar-write failure the
+    /// serialize at the entry level. The sidecar is written beside the
+    /// entry's [`CachedImage::fits_path`]. On sidecar-write failure the
     /// in-memory section is rolled back to its prior value, mirroring
     /// the old `DocumentStore::put_section` contract. The cache budget
     /// is updated only after a successful write.
     ///
     /// **Disk-fallback path.** When the cache entry is absent (post-
-    /// eviction or a fresh `rp` restart), `put_section` rehydrates the
-    /// document from its sidecar on disk, applies the section update,
-    /// and writes back atomically. This is what makes the late-solve
-    /// workflow's `image_path`-mode persistence durable across cache
-    /// misses — the rare race between two concurrent fallback writers
-    /// is benign because `write_sidecar_at` uses an atomic rename, so
-    /// last writer wins with no torn state. The cache itself is left
-    /// untouched on this path (no rehydration of pixels, no eviction
-    /// budget shuffle); a subsequent `resolve(doc_id)` will pick up
-    /// the new section the next time the document is hot.
+    /// eviction or a fresh `rp` restart), `put_section` finds the pair
+    /// on disk the way [`resolve_document`](Self::resolve_document)
+    /// does, applies the section update to its sidecar, and writes it
+    /// back atomically beside the FITS file it found. The rare race
+    /// between two concurrent fallback writers is benign because
+    /// `write_sidecar_at` uses an atomic rename, so last writer wins
+    /// with no torn state. The cache itself is left untouched on this
+    /// path (no rehydration of pixels, no eviction budget shuffle); a
+    /// subsequent `resolve(doc_id)` will pick up the new section the
+    /// next time the document is hot.
     ///
     /// # Errors
     ///
     /// Returns the sidecar write's error on either path
-    /// ([`ExposureDocument::write_sidecar`]); on the disk-fallback path
-    /// additionally [`crate::error::RpError::Imaging`] if the document
-    /// cannot be found on disk, its `file_path` is not a `.fits` path,
-    /// or the blocking scan task fails to join.
+    /// ([`ExposureDocument::write_sidecar_at`]); additionally
+    /// [`crate::error::RpError::Imaging`] if the FITS path is not a
+    /// `.fits` path, and on the disk-fallback path if the document
+    /// cannot be found on disk or the blocking scan task fails to join.
     pub async fn put_section(
         &self,
         document_id: &str,
@@ -429,6 +437,51 @@ impl ImageCache {
             .await
     }
 
+    /// Write `value` into `sections[name]` of the sidecar beside
+    /// `resolved`'s FITS file, without looking the document up again,
+    /// so the section lands in the pair the caller worked on and not
+    /// in another copy of the same frame. When the cache holds that
+    /// same file, the entry is updated along with its sidecar, as
+    /// [`put_section`](Self::put_section) does. Otherwise the pair is
+    /// read and confirmed again at write time rather than written from
+    /// `resolved`'s copy of the record, so a section another writer
+    /// added in the meantime survives.
+    ///
+    /// # Errors
+    ///
+    /// As [`put_section`](Self::put_section), and
+    /// [`crate::error::RpError::Imaging`] if the pair no longer confirms
+    /// `resolved`'s document.
+    pub async fn put_section_at(
+        &self,
+        resolved: &ResolvedDocument,
+        name: &str,
+        value: serde_json::Value,
+    ) -> crate::error::Result<()> {
+        let document_id = resolved.document.id.as_str();
+        if let Some(image) = self.get(document_id) {
+            if same_file(&image.fits_path, &resolved.fits_path).await {
+                return self
+                    .put_section_cached(image, document_id, name, value)
+                    .await;
+            }
+        }
+        let fits_path = resolved.fits_path.clone();
+        let id = document_id.to_string();
+        let document = tokio::task::spawn_blocking(move || confirm_pair(&fits_path, Some(&id)))
+            .await
+            .map_err(|e| {
+                crate::error::RpError::Imaging(format!("put_section_at: join error: {e}"))
+            })?
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!(
+                    "{} no longer holds document {document_id}",
+                    resolved.fits_path.display()
+                ))
+            })?;
+        write_section_beside(&resolved.fits_path, document, name, value).await
+    }
+
     async fn put_section_cached(
         &self,
         image: Arc<CachedImage>,
@@ -436,9 +489,10 @@ impl ImageCache {
         name: &str,
         value: serde_json::Value,
     ) -> crate::error::Result<()> {
+        let sidecar_path = sidecar_path_beside(&image.fits_path)?;
         let mut doc = image.document.write().await;
         let prior = doc.sections.insert(name.to_string(), value);
-        match doc.write_sidecar().await {
+        match doc.write_sidecar_at(&sidecar_path).await {
             Ok(()) => {
                 let new_json_bytes = serde_json::to_vec(&*doc).map_or(0, |v| v.len());
                 let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
@@ -479,38 +533,21 @@ impl ImageCache {
         value: serde_json::Value,
     ) -> crate::error::Result<()> {
         // Same disk-scan path resolve_document uses on miss: locate
-        // the sidecar by UUID-8 filename suffix + DOC_ID/sidecar id
-        // verification. Returns the parsed document or None.
+        // the pair by UUID-8 filename suffix and confirm both files.
         let dir = self.data_directory.clone();
         let depth = self.frame_directory_depth;
         let id = document_id.to_string();
-        let doc_opt = tokio::task::spawn_blocking(move || disk_resolve_document(&dir, depth, &id))
+        let resolved = tokio::task::spawn_blocking(move || disk_resolve_document(&dir, depth, &id))
             .await
             .map_err(|e| {
                 crate::error::RpError::Imaging(format!(
                     "disk-fallback put_section: join error: {e}"
                 ))
+            })?
+            .ok_or_else(|| {
+                crate::error::RpError::Imaging(format!("document not found: {document_id}"))
             })?;
-        let mut doc = doc_opt.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {document_id}"))
-        })?;
-        doc.sections.insert(name.to_string(), value);
-        // Reuse the document's own `file_path` to derive the sidecar
-        // path — the same convention `mcp.rs:capture` writes.
-        let sidecar_path = ExposureDocument::sidecar_path_for(&doc.file_path).ok_or_else(|| {
-            crate::error::RpError::Imaging(format!(
-                "disk-fallback put_section: file_path is not a .fits path: {}",
-                doc.file_path
-            ))
-        })?;
-        doc.write_sidecar_at(&sidecar_path).await?;
-        debug!(
-            document_id = %document_id,
-            section = %name,
-            sidecar_path = %sidecar_path.display(),
-            "ImageCache put_section (disk fallback)"
-        );
-        Ok(())
+        write_section_beside(&resolved.fits_path, resolved.document, name, value).await
     }
 
     /// Apply a signed delta to the running cache `bytes` total under the
@@ -642,29 +679,99 @@ fn find_candidates_by_suffix(dir: &Path, depth: usize, full_uuid: &str) -> Vec<P
     out
 }
 
-/// Confirm that `fits_path` and its sidecar resolve to the requested
-/// `full_uuid`. FITS `DOC_ID` goes first, and confirms the pixels.
-/// When it matches, the sidecar found by the FITS file's name is
-/// returned without its `id` being checked. The sidecar's `id` is
-/// checked only when the FITS is unreadable or has no `DOC_ID`, and
-/// then the pixels go unconfirmed where rule 1 would refuse the file.
-/// rp.md §"Ground rules" lists both as a gap. Returns the sidecar path
-/// on match.
-fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
-    if let Ok(Some(doc_id)) = super::fits::read_fits_doc_id(fits_path) {
-        if doc_id == full_uuid {
-            return ExposureDocument::sidecar_path_for(fits_path);
+/// Confirm the pair at `fits_path`: the FITS file's `DOC_ID` confirms
+/// the pixels and the `id` of the sidecar beside it confirms the record,
+/// so both must name the same document, and `wanted` when it is given.
+/// A FITS file whose `DOC_ID` is missing or cannot be read (the file is
+/// unreadable, its header corrupt, the card not a string) is refused:
+/// nothing confirms its pixels (rp.md § Ground rules, rule 1). Returns
+/// the parsed record on a match.
+fn confirm_pair(fits_path: &Path, wanted: Option<&str>) -> Option<ExposureDocument> {
+    let sidecar_path = ExposureDocument::sidecar_path_for(fits_path)?;
+    let doc_id = match super::fits::read_fits_doc_id(fits_path) {
+        Ok(Some(doc_id)) => doc_id,
+        Ok(None) => {
+            debug!(?fits_path, "confirm_pair: FITS has no DOC_ID, refused");
+            return None;
         }
-        // FITS has a DOC_ID but it's a different doc — this candidate is
-        // a confirmed ghost match, skip without trying the sidecar.
+        Err(e) => {
+            debug!(?fits_path, error = %e, "confirm_pair: DOC_ID unreadable, refused");
+            return None;
+        }
+    };
+    if wanted.is_some_and(|wanted| wanted != doc_id) {
+        // Another document's frame sharing the UUID-8 suffix.
+        debug!(
+            ?fits_path,
+            doc_id, "confirm_pair: DOC_ID names another document"
+        );
         return None;
     }
-    // FITS unreadable or missing DOC_ID. Try the sidecar's id field.
-    let sidecar = ExposureDocument::sidecar_path_for(fits_path)?;
-    match ExposureDocument::read_sidecar_sync(&sidecar) {
-        Ok(doc) if doc.id == full_uuid => Some(sidecar),
-        _ => None,
+    let document = match ExposureDocument::read_sidecar_sync(&sidecar_path) {
+        Ok(document) => document,
+        Err(e) => {
+            debug!(?sidecar_path, error = %e, "confirm_pair: sidecar unreadable");
+            return None;
+        }
+    };
+    if document.id != doc_id {
+        debug!(
+            ?sidecar_path,
+            sidecar_id = %document.id,
+            doc_id,
+            "confirm_pair: sidecar holds another document's record"
+        );
+        return None;
     }
+    Some(document)
+}
+
+/// The sidecar path beside `fits_path`, or an error naming the path when
+/// it is not a `.fits` path.
+fn sidecar_path_beside(fits_path: &Path) -> crate::error::Result<PathBuf> {
+    ExposureDocument::sidecar_path_for(fits_path).ok_or_else(|| {
+        crate::error::RpError::Imaging(format!(
+            "cannot derive sidecar path: not a .fits path: {}",
+            fits_path.display()
+        ))
+    })
+}
+
+/// Set `sections[name]` on `document` and write it to the sidecar beside
+/// `fits_path`.
+async fn write_section_beside(
+    fits_path: &Path,
+    mut document: ExposureDocument,
+    name: &str,
+    value: serde_json::Value,
+) -> crate::error::Result<()> {
+    let sidecar_path = sidecar_path_beside(fits_path)?;
+    document.sections.insert(name.to_string(), value);
+    document.write_sidecar_at(&sidecar_path).await?;
+    debug!(
+        document_id = %document.id,
+        section = %name,
+        sidecar_path = %sidecar_path.display(),
+        "ImageCache put_section (on disk)"
+    );
+    Ok(())
+}
+
+/// Whether `a` and `b` name the same file: the same path, or paths that
+/// resolve to the same file.
+async fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let (a, b) = (a.to_path_buf(), b.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Disk-resolve to a full `CachedImage`. Returns `None` when the
@@ -672,15 +779,8 @@ fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
 /// when no candidate matches.
 fn disk_resolve_to_cached_image(dir: &Path, depth: usize, full_uuid: &str) -> Option<CachedImage> {
     for fits_path in find_candidates_by_suffix(dir, depth, full_uuid) {
-        let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
+        let Some(doc) = confirm_pair(&fits_path, Some(full_uuid)) else {
             continue;
-        };
-        let doc = match ExposureDocument::read_sidecar_sync(&sidecar_path) {
-            Ok(d) => d,
-            Err(e) => {
-                debug!(?sidecar_path, error = %e, "disk_resolve: sidecar parse failed");
-                continue;
-            }
         };
         let Some(max_adu) = doc.max_adu else {
             debug!(
@@ -715,23 +815,19 @@ fn disk_resolve_to_cached_image(dir: &Path, depth: usize, full_uuid: &str) -> Op
     None
 }
 
-/// Disk-resolve to just the `ExposureDocument`. Used when callers need
-/// only the document — e.g. routes' `GET /api/documents/{id}`, or to
-/// reach `file_path` for a FITS that the cache can't represent
-/// (`max_adu == null`).
-fn disk_resolve_document(dir: &Path, depth: usize, full_uuid: &str) -> Option<ExposureDocument> {
-    for fits_path in find_candidates_by_suffix(dir, depth, full_uuid) {
-        let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
-            continue;
-        };
-        match ExposureDocument::read_sidecar_sync(&sidecar_path) {
-            Ok(doc) => return Some(doc),
-            Err(e) => {
-                debug!(?sidecar_path, error = %e, "disk_resolve_document: parse failed");
-            }
-        }
-    }
-    None
+/// Disk-resolve to the `ExposureDocument` and the FITS file it was
+/// confirmed against, without reading pixels. Used when callers need
+/// only the document — e.g. routes' `GET /api/documents/{id}` — or the
+/// file, for a FITS that the cache can't represent (`max_adu == null`).
+fn disk_resolve_document(dir: &Path, depth: usize, full_uuid: &str) -> Option<ResolvedDocument> {
+    find_candidates_by_suffix(dir, depth, full_uuid)
+        .into_iter()
+        .find_map(|fits_path| {
+            confirm_pair(&fits_path, Some(full_uuid)).map(|document| ResolvedDocument {
+                document,
+                fits_path,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -951,6 +1047,26 @@ mod tests {
         doc_uuid.to_string()
     }
 
+    /// The flat path `write_disk_pair` puts `doc_uuid`'s FITS file at.
+    fn flat_fits_path(dir: &Path, doc_uuid: &str) -> PathBuf {
+        dir.join(format!("{}.fits", &doc_uuid[..8]))
+    }
+
+    /// Write `doc` as the sidecar beside `fits_path`.
+    fn write_sidecar_beside(fits_path: &Path, doc: &ExposureDocument) {
+        std::fs::write(
+            ExposureDocument::sidecar_path_for(fits_path).unwrap(),
+            serde_json::to_vec(doc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Read back the sidecar beside `fits_path`.
+    fn read_sidecar_beside(fits_path: &Path) -> ExposureDocument {
+        ExposureDocument::read_sidecar_sync(&ExposureDocument::sidecar_path_for(fits_path).unwrap())
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn resolve_hits_disk_after_eviction() {
         // Capture-equivalent: write FITS+sidecar to disk, no in-memory
@@ -1123,59 +1239,143 @@ mod tests {
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
 
         assert!(cache.resolve(doc_uuid).await.is_none());
-        // resolve_document still returns the doc — that's the escape
-        // hatch for callers that need file_path for direct FITS reads.
+        // resolve_document still returns the doc and its file — that's
+        // the escape hatch for callers that read the FITS directly.
         let resolved = cache
             .resolve_document(doc_uuid)
             .await
             .expect("resolve_document despite max_adu=null");
-        assert_eq!(resolved.id, doc_uuid);
-        assert!(resolved.max_adu.is_none());
+        assert_eq!(resolved.document.id, doc_uuid);
+        assert!(resolved.document.max_adu.is_none());
+        assert_eq!(resolved.fits_path, fits_path);
     }
 
-    #[tokio::test]
-    async fn resolve_falls_back_to_sidecar_id_when_fits_corrupt() {
-        // Pre-Phase-7 files lack DOC_ID; the resolver must fall back to
-        // the sidecar's `id` field. Simulate by writing a raw rp_fits
-        // HDU with no extra keywords (no DOC_ID stamping).
+    /// Write a 2×2 frame's sidecar for a document beside the FITS file
+    /// `write_fits` produces, and check that neither lookup by id finds
+    /// it, however well the sidecar matches: nothing confirms the pixels
+    /// (rp.md § Ground rules, rule 1).
+    async fn assert_refused_by_id(write_fits: impl FnOnce(&Path)) {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "33333333-3333-3333-3333-333333333333";
-        let uuid8 = &doc_uuid[..8];
-        let fits_path = dir.path().join(format!("{uuid8}.fits"));
-        let mut file = std::fs::File::create(&fits_path).unwrap();
-        rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &[]).unwrap();
-        drop(file);
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        write_fits(&fits_path);
         let mut doc = dummy_document(doc_uuid);
         doc.file_path = fits_path.to_string_lossy().into_owned();
         doc.width = 2;
         doc.height = 2;
         doc.max_adu = Some(65535);
-        std::fs::write(
-            dir.path().join(format!("{uuid8}.json")),
-            serde_json::to_vec(&doc).unwrap(),
-        )
-        .unwrap();
+        write_sidecar_beside(&fits_path, &doc);
 
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
-        let image = cache
-            .resolve(doc_uuid)
+        assert!(cache.resolve(doc_uuid).await.is_none(), "resolve");
+        assert!(
+            cache.resolve_document(doc_uuid).await.is_none(),
+            "resolve_document"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_refuses_a_fits_without_doc_id() {
+        assert_refused_by_id(|path| {
+            let mut file = std::fs::File::create(path).unwrap();
+            rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &[]).unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn resolve_refuses_a_fits_whose_doc_id_is_not_a_string() {
+        use rp_fits::writer::{Keyword, KeywordValue};
+        assert_refused_by_id(|path| {
+            let mut file = std::fs::File::create(path).unwrap();
+            let kw = [Keyword::new("DOC_ID", KeywordValue::Int(42)).unwrap()];
+            rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &kw).unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn resolve_refuses_a_file_that_is_not_fits() {
+        assert_refused_by_id(|path| std::fs::write(path, b"not a FITS file").unwrap()).await;
+    }
+
+    /// `DOC_ID` confirms the pixels, not the record: a sidecar holding
+    /// another document's record, left beside the file by a rename, is
+    /// refused although the FITS file's `DOC_ID` matches.
+    #[tokio::test]
+    async fn resolve_refuses_a_sidecar_holding_another_documents_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "44444444-4444-4444-4444-444444444444";
+        write_disk_pair(dir.path(), doc_uuid, &[1u16, 2, 3, 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let mut other = read_sidecar_beside(&fits_path);
+        other.id = "99999999-9999-9999-9999-999999999999".to_string();
+        write_sidecar_beside(&fits_path, &other);
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        assert!(cache.resolve(doc_uuid).await.is_none(), "resolve");
+        assert!(
+            cache.resolve_document(doc_uuid).await.is_none(),
+            "resolve_document"
+        );
+    }
+
+    /// A lookup returns the FITS file it found. The sidecar's
+    /// `file_path` records where the frame was written and is never used
+    /// to locate it: here it names a directory that does not exist.
+    #[tokio::test]
+    async fn resolve_document_returns_the_file_it_found_not_the_recorded_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "55555555-5555-5555-5555-555555555555";
+        write_disk_pair(dir.path(), doc_uuid, &[1u16, 2, 3, 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let mut doc = read_sidecar_beside(&fits_path);
+        doc.file_path = "/old/location/55555555.fits".to_string();
+        write_sidecar_beside(&fits_path, &doc);
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        let resolved = cache
+            .resolve_document(doc_uuid)
             .await
-            .expect("resolve via sidecar id fallback");
-        assert_eq!(image.width, 2);
+            .expect("found where it now is");
+        assert_eq!(resolved.fits_path, fits_path);
+        assert_eq!(resolved.document.file_path, "/old/location/55555555.fits");
+    }
+
+    /// From the cache, a lookup returns the file the entry was written
+    /// or found at, not the document's recorded `file_path`.
+    #[tokio::test]
+    async fn resolve_document_from_the_cache_returns_the_entrys_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
+        let entry_path = PathBuf::from("/data/now/frame.fits");
+        cache.insert(
+            "doc-1",
+            CachedImage::new(
+                pixels,
+                2,
+                2,
+                entry_path.clone(),
+                65535,
+                dummy_document("doc-1"),
+            ),
+        );
+
+        let resolved = cache.resolve_document("doc-1").await.expect("cache hit");
+        assert_eq!(resolved.fits_path, entry_path);
     }
 
     // ---------------------------------------------------------------
     // put_section rollback (sidecar-write-failure path)
     // ---------------------------------------------------------------
 
-    /// Force `write_sidecar` to fail by setting `file_path` to live inside
-    /// a regular file. `create_dir_all(parent)` then errors with
-    /// `NotADirectory` before any I/O touches disk, so the failure is
-    /// deterministic and leaves no half-written state to clean up.
-    fn unwriteable_doc(doc_id: &str, blocker: &Path) -> ExposureDocument {
-        let mut doc = dummy_document(doc_id);
-        doc.file_path = blocker.join("x.fits").to_string_lossy().into_owned();
-        doc
+    /// A FITS path inside a regular file, so the sidecar write beside it
+    /// fails: `create_dir_all(parent)` errors with `NotADirectory` before
+    /// any I/O touches disk, so the failure is deterministic and leaves
+    /// no half-written state to clean up.
+    fn unwriteable_fits_path(blocker: &Path) -> PathBuf {
+        blocker.join("x.fits")
     }
 
     #[tokio::test]
@@ -1191,9 +1391,9 @@ mod tests {
             pixels,
             2,
             2,
-            PathBuf::from("/tmp/x.fits"),
+            unwriteable_fits_path(&blocker),
             65535,
-            unwriteable_doc("doc-1", &blocker),
+            dummy_document("doc-1"),
         );
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         cache.insert("doc-1", image);
@@ -1220,11 +1420,11 @@ mod tests {
         std::fs::write(&blocker, b"not a directory").unwrap();
 
         let prior = serde_json::json!({"hfr": 1.0, "marker": "prior"});
-        let mut doc = unwriteable_doc("doc-1", &blocker);
+        let mut doc = dummy_document("doc-1");
         doc.sections
             .insert("image_analysis".to_string(), prior.clone());
         let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
-        let image = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
+        let image = CachedImage::new(pixels, 2, 2, unwriteable_fits_path(&blocker), 65535, doc);
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         cache.insert("doc-1", image);
 
@@ -1280,11 +1480,11 @@ mod tests {
         let fits_path = write_templated_pair(dir.path(), "m33/2026-06-02/Light", doc_uuid).await;
 
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
-        let doc = cache
+        let resolved = cache
             .resolve_document(doc_uuid)
             .await
             .expect("found three levels down");
-        assert_eq!(PathBuf::from(&doc.file_path), fits_path);
+        assert_eq!(resolved.fits_path, fits_path);
 
         let flat_only = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         assert!(
@@ -1377,13 +1577,13 @@ mod tests {
         let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
         write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
-        let fits_path = dir
-            .path()
-            .join(format!("{}.fits", &doc_uuid[..8]))
-            .to_string_lossy()
-            .into_owned();
-        let resolved = cache.resolve_document_by_path(&fits_path).await.unwrap();
-        assert_eq!(resolved.id, doc_uuid);
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let resolved = cache
+            .resolve_document_by_path(&fits_path.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(resolved.document.id, doc_uuid);
+        assert_eq!(resolved.fits_path, fits_path);
     }
 
     #[tokio::test]
@@ -1406,56 +1606,69 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// One frame's FITS file renamed over another's: the file's `DOC_ID`
+    /// names one document, the sidecar beside it another, so the file
+    /// has no record and nothing may be written into that sidecar.
     #[tokio::test]
-    async fn resolve_document_by_path_rejects_sidecar_with_mismatched_basename() {
-        // Cross-rig-mixed-sidecars guard: a sidecar whose `file_path`
-        // basename disagrees with the requested FITS is declined,
-        // even though the sidecar itself parses fine. Catches the
-        // hand-copied-from-another-rig mistake that would otherwise
-        // drive `put_section`'s disk-fallback to the wrong file.
+    async fn resolve_document_by_path_refuses_a_sidecar_holding_another_documents_record() {
         let dir = tempfile::tempdir().unwrap();
-        let sidecar_path = dir.path().join("local.json");
-        let mut foreign_doc = dummy_document("ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb");
-        // Sidecar claims it belongs to a *different* FITS file in
-        // some other directory — exactly the cross-rig case.
-        foreign_doc.file_path = "/data/other-rig/foreign.fits".to_string();
-        std::fs::write(&sidecar_path, serde_json::to_vec(&foreign_doc).unwrap()).unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let mut other = read_sidecar_beside(&fits_path);
+        other.id = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb".to_string();
+        write_sidecar_beside(&fits_path, &other);
 
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
-        let local_fits = dir.path().join("local.fits").to_string_lossy().into_owned();
-        let result = cache.resolve_document_by_path(&local_fits).await;
-        assert!(
-            result.is_none(),
-            "sidecar with mismatched basename must be declined"
-        );
+        assert!(cache
+            .resolve_document_by_path(&fits_path.to_string_lossy())
+            .await
+            .is_none());
     }
 
+    /// A FITS file without `DOC_ID` has no confirmed record, whatever the
+    /// sidecar beside it says.
     #[tokio::test]
-    async fn resolve_document_by_path_accepts_archived_session_directory() {
-        // Archive workflow: operator copies the FITS+sidecar pair to a
-        // new location (e.g. NAS). Basenames stay consistent; only
-        // `doc.file_path` (which records the original capture path)
-        // diverges. The guard accepts this — basename match suffices.
+    async fn resolve_document_by_path_refuses_a_fits_without_doc_id() {
         let dir = tempfile::tempdir().unwrap();
-        let basename = "abcd1234";
-        let sidecar_path = dir.path().join(format!("{basename}.json"));
+        let fits_path = dir.path().join("frame.fits");
+        let mut file = std::fs::File::create(&fits_path).unwrap();
+        rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &[]).unwrap();
+        drop(file);
         let mut doc = dummy_document("550e8400-e29b-41d4-a716-446655440000");
-        // Original capture path was elsewhere; the operator moved
-        // the pair to the archive directory.
-        doc.file_path = format!("/old/location/{basename}.fits");
-        std::fs::write(&sidecar_path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        doc.file_path = fits_path.to_string_lossy().into_owned();
+        write_sidecar_beside(&fits_path, &doc);
 
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
-        let archived_fits = dir
-            .path()
-            .join(format!("{basename}.fits"))
-            .to_string_lossy()
-            .into_owned();
-        let resolved = cache
-            .resolve_document_by_path(&archived_fits)
+        assert!(cache
+            .resolve_document_by_path(&fits_path.to_string_lossy())
             .await
-            .expect("archive workflow must resolve despite path divergence");
-        assert_eq!(resolved.id, "550e8400-e29b-41d4-a716-446655440000");
+            .is_none());
+    }
+
+    /// Archive workflow: the operator copied the pair to a new place
+    /// outside the data directory (e.g. a NAS). The pair still confirms,
+    /// and the lookup returns the file at its new place; `file_path`
+    /// keeps recording where the frame was written.
+    #[tokio::test]
+    async fn resolve_document_by_path_finds_a_pair_outside_the_data_directory() {
+        let data = tempfile::tempdir().unwrap();
+        let archive = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(archive.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let archived = flat_fits_path(archive.path(), doc_uuid);
+        let mut doc = read_sidecar_beside(&archived);
+        doc.file_path = "/old/location/550e8400.fits".to_string();
+        write_sidecar_beside(&archived, &doc);
+
+        let cache = ImageCache::new(64, 4, data.path().to_path_buf(), 0);
+        let resolved = cache
+            .resolve_document_by_path(&archived.to_string_lossy())
+            .await
+            .expect("an archived pair resolves where it now is");
+        assert_eq!(resolved.document.id, doc_uuid);
+        assert_eq!(resolved.fits_path, archived);
+        assert_eq!(resolved.document.file_path, "/old/location/550e8400.fits");
     }
 
     // ---------------------------------------------------------------
@@ -1490,6 +1703,7 @@ mod tests {
             .await
             .expect("document still resolvable from disk");
         let stored = resolved
+            .document
             .sections
             .get("wcs")
             .expect("wcs section must be present after disk-fallback write");
@@ -1509,5 +1723,187 @@ mod tests {
             .await
             .expect_err("unknown document id should error");
         assert!(err.to_string().contains("document not found"), "got: {err}");
+    }
+
+    /// A disk-fallback section update writes the sidecar beside the FITS
+    /// file the lookup found, not beside the recorded `file_path`.
+    #[tokio::test]
+    async fn put_section_disk_fallback_writes_beside_the_file_it_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorded = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let mut doc = read_sidecar_beside(&fits_path);
+        doc.file_path = flat_fits_path(recorded.path(), doc_uuid)
+            .to_string_lossy()
+            .into_owned();
+        write_sidecar_beside(&fits_path, &doc);
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+
+        let payload = serde_json::json!({"solver": "test"});
+        cache
+            .put_section(doc_uuid, "wcs", payload.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(read_sidecar_beside(&fits_path).sections["wcs"], payload);
+        assert!(
+            std::fs::read_dir(recorded.path()).unwrap().next().is_none(),
+            "nothing is written at the recorded path"
+        );
+    }
+
+    /// A cached entry's section update writes the sidecar beside the
+    /// entry's FITS file, not beside the document's recorded `file_path`.
+    #[tokio::test]
+    async fn put_section_writes_beside_the_cached_entrys_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorded = tempfile::tempdir().unwrap();
+        let fits_path = dir.path().join("frame.fits");
+        let mut doc = dummy_document("doc-1");
+        doc.file_path = recorded
+            .path()
+            .join("frame.fits")
+            .to_string_lossy()
+            .into_owned();
+        let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        cache.insert(
+            "doc-1",
+            CachedImage::new(pixels, 2, 2, fits_path.clone(), 65535, doc),
+        );
+
+        let payload = serde_json::json!({"solver": "test"});
+        cache
+            .put_section("doc-1", "wcs", payload.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(read_sidecar_beside(&fits_path).sections["wcs"], payload);
+        assert!(
+            std::fs::read_dir(recorded.path()).unwrap().next().is_none(),
+            "nothing is written at the recorded path"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // put_section_at: the section goes into the pair a lookup found
+    // ---------------------------------------------------------------
+
+    /// When the cache holds the resolved file, the entry is updated
+    /// along with its sidecar, even for a path spelled differently.
+    #[tokio::test]
+    async fn put_section_at_updates_the_cached_entry_for_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        let image = cache.resolve(doc_uuid).await.expect("rehydrated");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let respelled = dir
+            .path()
+            .join("sub")
+            .join("..")
+            .join(fits_path.file_name().unwrap());
+        let resolved = cache
+            .resolve_document_by_path(&respelled.to_string_lossy())
+            .await
+            .unwrap();
+
+        let payload = serde_json::json!({"solver": "test"});
+        cache
+            .put_section_at(&resolved, "wcs", payload.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(image.document.read().await.sections["wcs"], payload);
+        assert_eq!(read_sidecar_beside(&fits_path).sections["wcs"], payload);
+    }
+
+    /// The cache holds the frame as captured; the solve ran on a copy
+    /// archived elsewhere. The section goes into the copy's sidecar, and
+    /// the cached entry and the original sidecar are left alone.
+    #[tokio::test]
+    async fn put_section_at_writes_the_found_pair_when_the_cache_holds_another_copy() {
+        let data = tempfile::tempdir().unwrap();
+        let archive = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(data.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let original = flat_fits_path(data.path(), doc_uuid);
+        let cache = ImageCache::new(64, 4, data.path().to_path_buf(), 0);
+        let image = cache.resolve(doc_uuid).await.expect("rehydrated");
+        let archived = flat_fits_path(archive.path(), doc_uuid);
+        std::fs::copy(&original, &archived).unwrap();
+        write_sidecar_beside(&archived, &read_sidecar_beside(&original));
+        let resolved = cache
+            .resolve_document_by_path(&archived.to_string_lossy())
+            .await
+            .unwrap();
+
+        let payload = serde_json::json!({"solver": "test"});
+        cache
+            .put_section_at(&resolved, "wcs", payload.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(read_sidecar_beside(&archived).sections["wcs"], payload);
+        assert!(!read_sidecar_beside(&original).sections.contains_key("wcs"));
+        assert!(!image.document.read().await.sections.contains_key("wcs"));
+    }
+
+    /// The pair is read again at write time: a section another writer
+    /// added after the lookup survives.
+    #[tokio::test]
+    async fn put_section_at_keeps_a_section_written_after_the_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        let resolved = cache
+            .resolve_document_by_path(&fits_path.to_string_lossy())
+            .await
+            .unwrap();
+        let mut doc = read_sidecar_beside(&fits_path);
+        doc.sections
+            .insert("grading".to_string(), serde_json::json!({"hfr": 2.3}));
+        write_sidecar_beside(&fits_path, &doc);
+
+        let payload = serde_json::json!({"solver": "test"});
+        cache
+            .put_section_at(&resolved, "wcs", payload.clone())
+            .await
+            .unwrap();
+
+        let stored = read_sidecar_beside(&fits_path);
+        assert_eq!(stored.sections["wcs"], payload);
+        assert_eq!(stored.sections["grading"], serde_json::json!({"hfr": 2.3}));
+    }
+
+    /// A pair that stopped confirming the document between the lookup
+    /// and the write is not written.
+    #[tokio::test]
+    async fn put_section_at_refuses_a_pair_that_no_longer_confirms_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
+        let fits_path = flat_fits_path(dir.path(), doc_uuid);
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        let resolved = cache
+            .resolve_document_by_path(&fits_path.to_string_lossy())
+            .await
+            .unwrap();
+        let mut other = read_sidecar_beside(&fits_path);
+        other.id = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb".to_string();
+        write_sidecar_beside(&fits_path, &other);
+
+        let err = cache
+            .put_section_at(&resolved, "wcs", serde_json::json!({}))
+            .await
+            .expect_err("the pair no longer holds the document");
+        assert!(err.to_string().contains("no longer holds"), "got: {err}");
+        assert!(!read_sidecar_beside(&fits_path).sections.contains_key("wcs"));
     }
 }

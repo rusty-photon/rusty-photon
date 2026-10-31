@@ -2520,7 +2520,8 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let doc = cache
         .resolve_document(doc_id)
         .await
-        .expect("expected cache entry to carry the document");
+        .expect("expected cache entry to carry the document")
+        .document;
     assert_eq!(doc.max_adu, Some(1 << 20));
 }
 
@@ -5058,7 +5059,8 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
     let updated = cache
         .resolve_document(&document_id)
         .await
-        .expect("document should resolve from cache after compute_image_stats");
+        .expect("document should resolve from cache after compute_image_stats")
+        .document;
     let section = updated
         .sections
         .get("image_stats")
@@ -11254,7 +11256,8 @@ async fn capture_records_the_binning_the_camera_reports() {
         .image_cache
         .resolve_document(&document_id)
         .await
-        .unwrap();
+        .unwrap()
+        .document;
     assert_eq!(doc.binning, Some(rp_vocabulary::Binning { x: 2, y: 2 }));
 }
 

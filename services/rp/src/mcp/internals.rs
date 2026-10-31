@@ -32,7 +32,9 @@ use crate::equipment::{DeviceSlot, SlotGuard};
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::fits_header;
-use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, MountPointing};
+use crate::persistence::{
+    self, CachedImage, CachedPixels, ExposureDocument, MountPointing, ResolvedDocument,
+};
 use crate::train_lease::{CallKind, LeaseCall};
 
 use super::gate;
@@ -1222,14 +1224,15 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        self.stats_via_path(&doc.file_path).await
+        self.stats_via_path(&resolved.fits_path.to_string_lossy())
+            .await
     }
 
     pub(crate) async fn stats_via_path(
@@ -1263,7 +1266,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
@@ -1272,7 +1275,8 @@ impl McpHandler {
             })?;
         // No camera context here, so we can't reliably know max_adu — pass None
         // (saturation flagging is best-effort; not a correctness issue).
-        self.measure_via_path(&doc.file_path, params).await
+        self.measure_via_path(&resolved.fits_path.to_string_lossy(), params)
+            .await
     }
 
     pub(crate) async fn measure_via_path(
@@ -1302,14 +1306,15 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        self.estimate_via_path(&doc.file_path, params).await
+        self.estimate_via_path(&resolved.fits_path.to_string_lossy(), params)
+            .await
     }
 
     pub(crate) async fn estimate_via_path(
@@ -1341,7 +1346,7 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
@@ -1349,7 +1354,8 @@ impl McpHandler {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         // No camera context here — pass max_adu = None (matches measure_basic).
-        self.detect_via_path(&doc.file_path, params).await
+        self.detect_via_path(&resolved.fits_path.to_string_lossy(), params)
+            .await
     }
 
     pub(crate) async fn detect_via_path(
@@ -1389,14 +1395,15 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        self.measure_stars_via_path(&doc.file_path, params).await
+        self.measure_stars_via_path(&resolved.fits_path.to_string_lossy(), params)
+            .await
     }
 
     pub(crate) async fn measure_stars_via_path(
@@ -1434,14 +1441,15 @@ impl McpHandler {
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
-        let doc = self
+        let resolved = self
             .image_cache
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        self.snr_via_path(&doc.file_path, params).await
+        self.snr_via_path(&resolved.fits_path.to_string_lossy(), params)
+            .await
     }
 
     pub(crate) async fn snr_via_path(
@@ -1937,15 +1945,15 @@ impl McpHandler {
         }
     }
 
-    /// Persist the `wcs` section of a solve to `target_doc_id`: the
-    /// requested document in `document_id` mode, or in `image_path`
-    /// mode the sibling `<base>.json` sidecar [`Self::do_plate_solve`]
-    /// resolved before the solve, so the late-solve workflow's call
-    /// (path-only, no `document_id` known to the caller) still updates
-    /// the matching sidecar.
+    /// Persist the `wcs` section of a solve into the sidecar beside the
+    /// file that was solved: the pair [`Self::do_plate_solve`] resolved
+    /// before the solve, by `document_id` or by `image_path`, so the
+    /// late-solve workflow's call (path-only, no `document_id` known to
+    /// the caller) still updates the matching sidecar, and no second
+    /// lookup can send the section to another copy of the frame.
     async fn persist_wcs_section(
         &self,
-        target_doc_id: Option<&str>,
+        record: Option<&ResolvedDocument>,
         fits_path: &str,
         outcome: &rp_plate_solver::SolveOutcome,
     ) {
@@ -1957,9 +1965,18 @@ impl McpHandler {
             "solver": outcome.solver,
             "wcs_matrix": outcome.wcs_matrix,
         });
-        if let Some(doc_id) = target_doc_id {
-            if let Err(e) = self.image_cache.put_section(doc_id, "wcs", payload).await {
-                debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
+        if let Some(record) = record {
+            if let Err(e) = self
+                .image_cache
+                .put_section_at(record, "wcs", payload)
+                .await
+            {
+                debug!(
+                    error = %e,
+                    document_id = %record.document.id,
+                    fits_path = %fits_path,
+                    "failed to persist wcs section"
+                );
             }
         } else {
             debug!(
@@ -3574,11 +3591,15 @@ impl McpHandler {
             .ok_or_else(|| "plate_solve: plate solver not configured".to_string())?;
 
         // Resolve fits_path and the frame's record: document_id wins when
-        // both are supplied; an image_path's record is the sidecar beside
-        // the file, when there is one.
-        let (fits_path, record, target_doc_id) = if let Some(doc_id) = input.document_id {
+        // both are supplied, and its file is the one the lookup found, not
+        // the path the sidecar recorded; an image_path's record is the
+        // sidecar beside the file, when the pair confirms.
+        let (fits_path, record) = if let Some(doc_id) = input.document_id {
             match self.image_cache.resolve_document(doc_id).await {
-                Some(doc) => (doc.file_path.clone(), Some(doc), Some(doc_id.to_string())),
+                Some(resolved) => (
+                    resolved.fits_path.to_string_lossy().into_owned(),
+                    Some(resolved),
+                ),
                 None => return Err(format!("plate_solve: document not found: {doc_id}")),
             }
         } else {
@@ -3587,13 +3608,12 @@ impl McpHandler {
                     .to_string()
             })?;
             let record = self.image_cache.resolve_document_by_path(path).await;
-            let target_doc_id = record.as_ref().map(|doc| doc.id.clone());
-            (path.to_string(), record, target_doc_id)
+            (path.to_string(), record)
         };
 
         let hints = resolve_solve_hints(
             &input,
-            record.as_ref(),
+            record.as_ref().map(|resolved| &resolved.document),
             self.plate_solver_default_search_radius_deg,
         );
         debug!(fits_path = %fits_path, ?hints, "plate_solve hints resolved");
@@ -3630,7 +3650,7 @@ impl McpHandler {
             }
         };
 
-        self.persist_wcs_section(target_doc_id.as_deref(), &fits_path, &outcome)
+        self.persist_wcs_section(record.as_ref(), &fits_path, &outcome)
             .await;
 
         Ok(DoPlateSolveOutput {

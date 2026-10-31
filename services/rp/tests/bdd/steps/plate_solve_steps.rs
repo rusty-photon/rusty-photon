@@ -613,17 +613,17 @@ async fn stub_received_captured_fits_path(world: &mut RpWorld) {
 // --- Helpers --------------------------------------------------------
 
 #[derive(Default)]
-struct PlateSolveArgs {
-    document_id: Option<String>,
-    image_path: Option<String>,
-    pointing_hint: Option<(f64, f64)>,
-    blind: Option<bool>,
-    fov_hint_deg: Option<f64>,
-    search_radius_deg: Option<f64>,
-    timeout: Option<String>,
+pub struct PlateSolveArgs {
+    pub document_id: Option<String>,
+    pub image_path: Option<String>,
+    pub pointing_hint: Option<(f64, f64)>,
+    pub blind: Option<bool>,
+    pub fov_hint_deg: Option<f64>,
+    pub search_radius_deg: Option<f64>,
+    pub timeout: Option<String>,
 }
 
-async fn call_plate_solve_with_args(world: &mut RpWorld, args: PlateSolveArgs) {
+pub async fn call_plate_solve_with_args(world: &mut RpWorld, args: PlateSolveArgs) {
     ensure_mcp_client(world).await;
 
     let mut params = Map::new();
@@ -681,7 +681,7 @@ const fn last_exposure_document(world: &RpWorld) -> &Value {
         .expect("no exposure document fetched — run the fetch step first")
 }
 
-async fn last_stub_request(world: &RpWorld) -> Value {
+pub async fn last_stub_request(world: &RpWorld) -> Value {
     let stub = world
         .plate_solver_stub
         .as_ref()

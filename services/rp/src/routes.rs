@@ -264,7 +264,7 @@ async fn get_document(
                     ),
                 )
             },
-            |doc| match serde_json::to_value(&doc) {
+            |resolved| match serde_json::to_value(&resolved.document) {
                 Ok(v) => (StatusCode::OK, Json(v)),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -281,7 +281,7 @@ async fn get_image_metadata(
     // `resolve` and `resolve_document` have asymmetric semantics: `resolve`
     // declines when the sidecar's `max_adu` is null because the cache
     // can't pick a `CachedPixels` variant, while `resolve_document` still
-    // returns the document so callers can read the FITS via `file_path`.
+    // returns the document and the FITS file it found.
     // Metadata must be reachable for any document on disk, so try the
     // pixel-bearing path first (gives us `bitpix` and `in_cache=true`) and
     // fall back to a doc-only resolve when the cache cannot rehydrate
@@ -292,10 +292,13 @@ async fn get_image_metadata(
         CachedPixels::U16(_) => 16,
         CachedPixels::I32(_) => 32,
     });
-    let doc = match cached {
-        Some(c) => c.document.read().await.clone(),
+    // `fits_path` is where the lookup found the frame, not the
+    // `file_path` its sidecar recorded at capture (rp.md § Document
+    // Resolution).
+    let (doc, fits_path) = match cached {
+        Some(c) => (c.document.read().await.clone(), c.fits_path.clone()),
         None => match state.image_cache.resolve_document(&document_id).await {
-            Some(d) => d,
+            Some(resolved) => (resolved.document, resolved.fits_path),
             None => {
                 return (
                     StatusCode::NOT_FOUND,
@@ -311,7 +314,7 @@ async fn get_image_metadata(
         "width": doc.width,
         "height": doc.height,
         "bitpix": bitpix,
-        "fits_path": doc.file_path,
+        "fits_path": fits_path.to_string_lossy(),
         "in_cache": in_cache,
         "document_url": format!("/api/documents/{}", document_id),
     });

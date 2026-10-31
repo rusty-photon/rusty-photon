@@ -14,11 +14,11 @@ Feature: Plate solve MCP tool
   fov_hint_deg, else the sidecar's optics.fov_height_deg. The search
   radius is search_radius_deg, else plate_solver.default_search_radius_deg
   from rp config. A call's own timeout is forwarded, and rp's outer
-  plate_solver.timeout never cuts a solve short of it. When called with
-  document_id, results are written into the exposure document as a
-  "wcs" section. With image_path, results are written into the sidecar
-  beside the file when there is one; otherwise the result is returned
-  without persistence.
+  plate_solver.timeout never cuts a solve short of it. A successful
+  solve writes a "wcs" section into the sidecar beside the file that
+  was solved. With image_path, that takes a sidecar whose id matches
+  the file's DOC_ID; otherwise the result is returned without
+  persistence (document_resolution.feature).
 
   Scenario: Tool catalog includes plate_solve
     Given a running Alpaca simulator

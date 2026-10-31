@@ -324,6 +324,18 @@ pub struct RpWorld {
     /// the eviction and cross-restart scenarios that need to reference
     /// a doc captured several steps ago.
     pub remembered_document_ids: std::collections::HashMap<String, String>,
+    /// The FITS path each remembered capture was written to, under the
+    /// same names as `remembered_document_ids`.
+    pub remembered_image_paths: std::collections::HashMap<String, String>,
+
+    // --- Document resolution state (document_resolution.feature) ---
+    /// Where the last captured frame's FITS file was copied or moved to.
+    pub relocated_image_path: Option<String>,
+    /// The data directory a relocation left behind, kept alive so a
+    /// copied frame's original pair can still be read.
+    pub previous_data_dir_holder: Option<tempfile::TempDir>,
+    /// A directory outside the data directory that a frame was copied to.
+    pub archive_dir_holder: Option<tempfile::TempDir>,
 
     // --- Raw MCP probe state (mcp_transport.feature,
     // mcp_host_allowlist.feature) ---
