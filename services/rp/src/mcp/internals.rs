@@ -462,6 +462,10 @@ pub(super) struct MountReading {
     pub(super) tracking: Option<bool>,
 }
 
+/// Attempts the frame's mount read makes while RA, Dec or `Slewing`
+/// fails to read.
+const MOUNT_READ_ATTEMPTS: u32 = 3;
+
 /// The frame's one mount read (rp.md § Core Fields, `pointing`, and
 /// § Rig state): RA, Dec, `SideOfPier`, `Tracking` and `Slewing`
 /// together. Untimed of its own: it runs on its own task while the
@@ -473,7 +477,34 @@ pub(super) struct MountReading {
 /// a mount that cannot slew) counts as still. Otherwise each reading
 /// stands on its own: one that fails, a non-finite position or an
 /// `Unknown` pier side is left out.
+///
+/// A failed RA, Dec or `Slewing` read is retried, up to
+/// [`MOUNT_READ_ATTEMPTS`] in all with a short backoff (100 ms, then
+/// 200 ms): the recorded `pointing` is what `plate_solve` hints with, so
+/// a one-off device hiccup must not cost `center_on_target`'s next
+/// solve its position. The last attempt's reading stands.
 pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> MountReading {
+    let mut reading = MountReading::default();
+    for attempt in 1..=MOUNT_READ_ATTEMPTS {
+        let (found, read_failed) = read_mount_once(mount.as_ref()).await;
+        reading = found;
+        if !read_failed {
+            break;
+        }
+        if attempt < MOUNT_READ_ATTEMPTS {
+            let delay = Duration::from_millis(100u64 << attempt.saturating_sub(1));
+            debug!(attempt, ?delay, "a mount read failed; retrying it");
+            tokio::time::sleep(delay).await;
+        }
+    }
+    reading
+}
+
+/// One attempt at [`read_mount`]: the reading, and whether RA, Dec or
+/// `Slewing` failed to read, which a retry may cure. A mount that says
+/// it is slewing, a non-finite position or a failed pier-side or
+/// tracking read is an answer, not a failure.
+async fn read_mount_once(mount: &dyn ascom_alpaca::api::Telescope) -> (MountReading, bool) {
     let (ra, dec, side_of_pier, tracking, slewing) = tokio::join!(
         mount.right_ascension(),
         mount.declination(),
@@ -484,11 +515,16 @@ pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> 
     match slewing {
         Ok(false) => {}
         Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {}
-        other => {
-            debug!(slewing = ?other, "mount slewing, or unable to say; omitting pointing, pier side and tracking");
-            return MountReading::default();
+        Ok(true) => {
+            debug!("mount slewing; omitting pointing, pier side and tracking");
+            return (MountReading::default(), false);
+        }
+        Err(e) => {
+            debug!(error = %e, "mount unable to say whether it slews; omitting pointing, pier side and tracking");
+            return (MountReading::default(), true);
         }
     }
+    let position_read_failed = ra.is_err() || dec.is_err();
     let pointing = match (ra, dec) {
         (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
             Some(MountPointing {
@@ -516,11 +552,14 @@ pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> 
             None
         }
     };
-    MountReading {
-        pointing,
-        pier_side,
-        tracking,
-    }
+    (
+        MountReading {
+            pointing,
+            pier_side,
+            tracking,
+        },
+        position_read_failed,
+    )
 }
 
 /// A device read spawned on its own task: one a capture starts with its

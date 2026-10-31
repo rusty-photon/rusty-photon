@@ -463,8 +463,12 @@ sidecar is the record ([Ground rules](#ground-rules)).
   second more, alongside the camera's own reads, so a healthy mount
   costs the frame nothing and a wedged one at most that second. A read
   still out then is dropped and aborted, as it is when the exposure
-  fails or the capture is cancelled. Also omitted when no mount is
-  configured or connected, or the read fails. The same read gives the
+  fails or the capture is cancelled. A failed RA, Dec or `Slewing`
+  read is retried within that time, up to three attempts with a
+  100 ms then 200 ms backoff: `plate_solve` hints with the recorded
+  `pointing`, so a one-off device hiccup must not cost a solve its
+  position. Also omitted when no mount is configured or connected, or
+  the read still fails on its last attempt. The same read gives the
   frame's `pier_side` and `tracking` ([Rig state](#rig-state)).
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
@@ -6195,9 +6199,10 @@ exactly one mount.
   timeout (`equipment::alpaca`), so a device that accepts the
   connection but stops answering — an overloaded simulator in CI, a
   stalled mount/USB-serial bridge at night — surfaces as a timeout
-  error instead of wedging the loop forever. The slew's `Slewing`
-  poll additionally rides out a transient read failure before giving
-  up, so a brief device hiccup does not abort the whole tool. (This is
+  error instead of wedging the loop forever. The capture's mount read,
+  whose recorded `pointing` is the solve's hint, and the slew's
+  `Slewing` poll additionally ride out a transient read failure before
+  giving up, so a brief device hiccup does not abort the whole tool. (This is
   the fix for the issue #319 `center_on_target` timeout: a stalled
   mount read had no client-side timeout and hung indefinitely; the
   blocking-op poll deadlines guard loops, not a single in-flight
@@ -8375,14 +8380,13 @@ services/rp/src/
                           frame's one mount read in internals.rs.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
-                          persist_capture_artifact,
-                          read_mount_hints_for_plate_solve,
+                          persist_capture_artifact, do_plate_solve,
                           resolve_mount, the `*_via_document`/`*_via_path`
                           dispatch helpers, and small private types
                           (Resolved*Params, BackgroundOutcome,
                           PollIdleError) plus free fns clip_outcome,
                           detect_outcome, star_to_json,
-                          poll_slewing_until_idle.
+                          poll_slewing_until_idle, resolve_solve_hints.
     tests.rs            Current home for the full mcp test module
                           (~3,400 lines including six mock-device
                           types, six EquipmentRegistry builders, and

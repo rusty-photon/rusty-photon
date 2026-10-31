@@ -37,8 +37,8 @@
 //!    never answers (an overloaded `OmniSim` in CI) blocks the `await`
 //!    indefinitely, and the blocking-op poll deadlines guard *loops*,
 //!    not a single in-flight request. Fixed in `equipment::alpaca` with
-//!    a per-request connect + read timeout; the `Slewing` poll also
-//!    rides out a transient read failure.
+//!    a per-request connect + read timeout; the capture's mount read and
+//!    the `Slewing` poll also ride out a transient read failure.
 //!
 //! CI job `timeout-minutes` and the BDD client's `MCP_CALL_TIMEOUT` are
 //! independent backstops, not the fix.

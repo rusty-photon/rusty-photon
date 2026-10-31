@@ -2844,7 +2844,7 @@ async fn a_slewing_mount_reports_no_pointing() {
     assert_eq!(pointing, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
     let pointing = pointing_of(MockTelescope {
         fail_slewing_poll: true,
@@ -2854,7 +2854,49 @@ async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
     assert_eq!(pointing, None);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_mount_read_that_fails_once_is_retried() {
+    let pointing = pointing_of(MockTelescope {
+        slewing_transient_errors: 1,
+        ra_value: 5.5,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing.unwrap().ra_hours, 5.5);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mount_read_that_keeps_failing_gives_up_after_three_attempts() {
+    let mount = Arc::new(MockTelescope {
+        fail_slewing_poll: true,
+        ..Default::default()
+    });
+    let reading = super::internals::read_mount(mount.clone()).await;
+    assert_eq!(reading, super::internals::MountReading::default());
+    assert_eq!(
+        mount
+            .slewing_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+}
+
 #[tokio::test]
+async fn a_slewing_mount_is_not_read_again() {
+    let mount = Arc::new(MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    });
+    super::internals::read_mount(mount.clone()).await;
+    assert_eq!(
+        mount
+            .slewing_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failed_coordinate_read_reports_no_pointing() {
     let pointing = pointing_of(MockTelescope {
         fail_declination: true,
