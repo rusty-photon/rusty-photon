@@ -45,6 +45,8 @@ rp-vocabulary = { workspace = true, features = ["schema"] }
 rusty-photon-tls = { workspace = true }
 rpassword = { workspace = true }
 rp-fits = { workspace = true }
+# The guide-train sweep's V-curve fit, shared with the focus-model provider.
+rp-focus-curve = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-rolling-stats = { workspace = true }

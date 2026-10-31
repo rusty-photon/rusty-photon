@@ -4,8 +4,11 @@ Feature: Guide-train focus via PHD2 metrics
   camera: addressed with the guiding train's id, auto_focus moves the
   train's terminal focuser and samples PHD2's per-frame HFD from the
   guider service's metrics window — the median of frames_per_step
-  fresh frames per position — then fits the same V-curve as the
-  capture sweep. It requires an active guide loop (PHD2 only emits
+  fresh frames per position — then fits the hyperbolic V-curve, the
+  defocus curve the focus-model provider's capture sweep fits too, where
+  rp's own capture sweep still fits a parabola; it reports the fit's
+  fit_r_squared and enforces no threshold. It requires an active guide
+  loop (PHD2 only emits
   GuideStep while guiding), and corrections stay active for the whole
   sweep. On success the focuser moves to the fitted minimum and one
   more sample set collected there confirms it, with the same

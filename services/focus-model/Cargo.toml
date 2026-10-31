@@ -39,6 +39,8 @@ hostname = { workspace = true }
 if-addrs = { workspace = true }
 rp-auth = { workspace = true }
 rp-mcp-client = { workspace = true }
+# The V-curve fit, shared with rp's guide-train sweep (docs/crates/rp-focus-curve.md).
+rp-focus-curve = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }

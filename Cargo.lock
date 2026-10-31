@@ -1626,6 +1626,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rp-auth",
+ "rp-focus-curve",
  "rp-mcp-client",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
@@ -4457,6 +4458,7 @@ dependencies = [
  "rp-catalog",
  "rp-ephemeris",
  "rp-fits",
+ "rp-focus-curve",
  "rp-guider",
  "rp-mcp-client",
  "rp-plate-solver",
@@ -4539,6 +4541,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "rp-focus-curve"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]

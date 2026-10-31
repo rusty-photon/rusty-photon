@@ -1,0 +1,15 @@
+[package]
+name = "rp-focus-curve"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The hyperbolic V-curve a star traces through focus, and its weighted least-squares fit, shared by the focus-model provider's sweep and rp's guide-train sweep"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

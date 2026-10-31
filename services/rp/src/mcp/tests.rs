@@ -8625,8 +8625,8 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
     assert_eq!(json["confirmation"]["frames_used"], 3);
     assert_eq!(json["confirmation"]["accepted"], true);
     assert_eq!(json["final_hfd"], 2.0);
-    // A V is not a parabola: the fit explains most of the spread,
-    // not all of it.
+    // A V with a sharp point is not a hyperbola, whose bottom is
+    // rounded: the fit explains most of the spread, not all of it.
     assert!(
         json["fit_r_squared"].as_f64().unwrap() > 0.9,
         "fit_r_squared {}",
@@ -8645,6 +8645,34 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
         points.iter().all(|p| p.get("rejected").is_none()),
         "metric sweeps gate nothing"
     );
+}
+
+/// The metric sweep fits the hyperbola, the defocus curve itself: HFD
+/// samples drawn from one, `√(4 + 5·d²)` at `d` grid steps from the
+/// start, are fitted exactly, and `best_hfd` is its minimum, 2.
+#[tokio::test]
+async fn guide_train_auto_focus_fits_the_hyperbola_and_reports_its_minimum() {
+    let foc = guide_sweep_focuser();
+    let start = foc.position_value;
+    let wing = 24.0_f64.sqrt();
+    let mock = scripted_metrics_guider(vec![
+        9.0, wing, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, wing, 9.0, 2.0,
+    ]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    let json = ok_text(result.unwrap());
+    assert_eq!(json["best_position"], start);
+    let best_hfd = json["best_hfd"].as_f64().unwrap();
+    assert!((best_hfd - 2.0).abs() < 1e-9, "best_hfd {best_hfd}");
+    let r_squared = json["fit_r_squared"].as_f64().unwrap();
+    assert!(r_squared > 1.0 - 1e-12, "fit_r_squared {r_squared}");
+    assert_eq!(json["confirmed"], true);
 }
 
 #[tokio::test]
@@ -8939,10 +8967,10 @@ async fn guide_train_auto_focus_rejects_a_clamped_grid_below_min_fit_points() {
 
 #[tokio::test]
 async fn guide_train_auto_focus_rejects_a_minimum_outside_the_sampled_range() {
-    // A convex but one-sided curve: the fitted vertex lies beyond the
-    // right edge of the grid, so the visible curve is monotonic over
-    // the sampled range.
-    let mock = scripted_metrics_guider(vec![9.0, 62.5, 9.0, 40.0, 9.0, 22.5, 9.0, 10.0, 9.0, 2.5]);
+    // One wing of a V whose centre lies a step past the right edge of
+    // the grid: the fit puts its centre there, so the visible curve is
+    // monotonic over the sampled range.
+    let mock = scripted_metrics_guider(vec![9.0, 25.0, 9.0, 20.0, 9.0, 15.0, 9.0, 10.0, 9.0, 5.0]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(
         Arc::new(guide_sweep_focuser()),

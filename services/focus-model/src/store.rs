@@ -52,6 +52,9 @@ pub enum RunOutcome {
     NotEnoughStars,
     /// No minimum inside the sampled range.
     MonotonicCurve,
+    /// A fit below the train's `min_fit_r_squared`; the run carries the
+    /// R² it was refused on.
+    PoorFit,
     /// The caller went away mid-sweep.
     Cancelled,
     /// A primitive failed; `error` carries the text.

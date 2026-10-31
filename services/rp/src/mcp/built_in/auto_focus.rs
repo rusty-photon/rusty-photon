@@ -887,8 +887,10 @@ fn guide_fit_stage(
             min_fit_points
         ));
     }
-    let fit = imaging::tools::auto_focus::fit_parabola(fit_samples).map_err(|e| e.to_string())?;
-    let best_position = fit.vertex_position();
+    // The hyperbola, the defocus curve itself, which the focus-model
+    // provider's capture sweep fits too (docs/crates/rp-focus-curve.md).
+    let fit = rp_focus_curve::fit_hyperbola(fit_samples).map_err(|e| e.to_string())?;
+    let best_position = imaging::tools::auto_focus::nearest_step(fit.curve.centre);
     // The min-fit-points check above guarantees a non-empty grid.
     let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
         return Err("monotonic curve: empty sample grid".to_string());
@@ -906,7 +908,7 @@ fn guide_fit_stage(
     };
     Ok(GuideFitStage {
         best_position,
-        best_hfd: fit.vertex_value(),
+        best_hfd: fit.curve.minimum,
         r_squared: fit.r_squared,
         lowest_position,
         lowest_hfd,

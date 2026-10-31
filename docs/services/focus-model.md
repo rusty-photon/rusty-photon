@@ -997,9 +997,10 @@ sweep retires at the plan's S7, and the rules live here:
    `rp`'s guide-train sweep fits. `best_position` is `x₀` rounded to a
    step, and `best_hfr` is `a`, the fitted HFR there.
    `monotonic_curve` when the accepted samples sit at fewer than three
-   positions, when their squared HFRs do not turn upward (a curve with
-   no minimum to find), or when `x₀` falls outside the positions the
-   accepted samples were measured at, whatever the R²: samples that
+   positions, when their squared HFRs do not turn upward or the fit
+   flattens to a constant (a curve with no minimum to find), or when
+   `x₀` falls outside the positions the accepted samples were measured
+   at, whatever the R²: samples that
    walked one wing fit a hyperbola well with its centre extrapolated
    past their end. The grid has been walked by then; it is the fitted
    position that is never visited.
@@ -1467,8 +1468,9 @@ credential — and that `tools/list` answers with no `rp` running.
   `microns_per_step` values and seeing floors and sized as the
   provider sizes them, the rig's two recorded sweeps of
   [#1187](https://github.com/rusty-photon/rusty-photon/issues/1187),
-  the fine one placed at its focus and the coarse one refused at the
-  defaults, the confirmation
+  the fine one placed within two steps of its lowest sample and the
+  coarse one refused at the defaults and fitted as the nearest V when
+  three samples may fit, the confirmation
   verdict, the retry centre — the shift after a sweep starved on one
   side, and each way the samples can fail to agree on a side — the
   attempts log of a run that shifted, repeated, ran out of attempts or

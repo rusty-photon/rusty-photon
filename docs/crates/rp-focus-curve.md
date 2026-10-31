@@ -31,10 +31,11 @@ next to that bound, so the crate returns it as an `f64`.
 value(x) = a·√(1 + ((x − x₀)/b)²)  =  √(a² + m²·(x − x₀)²),   m = a/b
 ```
 
-- `x₀`, the centre: best focus, in focuser steps.
-- `a ≥ 0`, the value at the centre: the focused HFR (or HFD) that seeing
-  and the optics leave.
-- `m`, the wing slope, in value units per step. Far from focus the curve
+- `x₀` (`Hyperbola::centre`): best focus, in focuser steps.
+- `a ≥ 0` (`Hyperbola::minimum`), the value at the centre: the focused
+  HFR (or HFD) that seeing and the optics leave.
+- `m` (`Hyperbola::slope`), the wing slope, in value units per step.
+  Far from focus the curve
   is the two lines `m·|x − x₀|`. Geometrically this is the cone of a
   defocused star, whose half-flux radius grows by the slope that
   [`focus-model`'s sweep sizing](../services/focus-model.md#sweep-sizing)
@@ -42,8 +43,9 @@ value(x) = a·√(1 + ((x − x₀)/b)²)  =  √(a² + m²·(x − x₀)²),   
 - `b = a/m`, the defocus at which the value has grown by `√2`.
 
 `a = 0` is the limiting V, two straight lines meeting at `x₀`. The family
-reaches it continuously: `b` goes to 0 while `m` stays finite, so the
-crate reports a limiting V with `a` and `b` both 0.
+reaches it continuously: `b` goes to 0 while `m` stays finite, which is
+why the crate carries the slope rather than `b`, and reports a limiting V
+as a `minimum` of 0 beside its slope.
 
 The hyperbola is the right model because it *is* the defocus curve: a
 cone with a seeing floor. The choice rests on physics that holds for
@@ -70,11 +72,14 @@ star count (or valid frame count).
    `y² = A + K·(u − u₀)²` with `A = a²` and `K = m²`, so a weighted
    linear least-squares fit of the squared values gives a starting `u₀`,
    `A` and `K` in closed form.
-   - A singular design is `MonotonicCurve`. This happens when the samples
-     sit at fewer than three positions, and the matrix is tested against
-     a relative scale, never against zero.
-   - `K ≤ 0` is also `MonotonicCurve`: the squared values do not turn
-     upward, so there is no minimum to find.
+   - Samples at fewer than three positions are `MonotonicCurve` before
+     any sum is taken, and so is a design matrix still too close to
+     singular, tested against a relative scale and never against zero.
+   - A curvature `K` at or below `1e-12` of the mean squared value is
+     also `MonotonicCurve`: the squared values do not turn upward, so
+     there is no minimum to find. The scale matters because rounding
+     leaves a flat curve a curvature of `1e-20` or so, not an exact
+     zero.
    - A negative `A`, where the squared curve dips below zero, starts at
      `A = 0`.
 4. **Refinement.** Levenberg–Marquardt on `(u₀, A, K)` starts from there,
@@ -86,8 +91,8 @@ star count (or valid frame count).
    - no damped step improves it;
    - 100 iterations have run.
 
-   A refinement that flattens the curve (`K` reaches 0) is
-   `MonotonicCurve`: a constant has no centre.
+   A refinement that flattens the curve (`K` falls to that same scale)
+   is `MonotonicCurve`: a constant has no centre.
 
 The start alone would weight each residual by roughly the square of its
 value, so the wings would dominate. The wings are where a fragmenting
@@ -125,7 +130,7 @@ goes negative on a fit worse than the mean
 | Variant | Message |
 |---------|---------|
 | `NotEnoughStars { got }` | `not enough stars: only 2 of the 3 samples a fit needs carry any weight` |
-| `MonotonicCurve(why)` | `monotonic curve: the squared values do not turn upward (curvature -1.2e-3)`, or `monotonic curve: design matrix is singular (…)` |
+| `MonotonicCurve(why)` | `monotonic curve: ` and then the reason: `the samples sit at 2 positions, and a curve needs 3`, `design matrix is singular (det=…, scale=…)`, `the squared values do not turn upward (curvature -1.200e-3)`, or `the fitted curve flattened to a constant, which has no centre` |
 
 The provider folds `NotEnoughStars` into its own error of that name, with
 the 3 as the samples needed, so its run records read the same as they
@@ -154,7 +159,8 @@ The crate's unit tests cover:
 - zero weights dropped, and heavy weights pulling the fit;
 - samples on one wing extrapolating the centre past their end, which is
   what the callers' bound exists for;
-- the clamp and the value at a position;
+- the value at a position, and an R² inside `[0, 1]` on every noisy
+  curve;
 - noisy curves on which the refinement ends at the residual a
   brute-force scan finds.
 

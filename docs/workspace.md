@@ -318,7 +318,7 @@ store.rs       — redb store of each train's focus record and run history
 mcp_client.rs  — rp-mcp-client wrapper; cancellable calls; the FocusRig impl
 sizing.rs      — The sweep derived from the train's optics
 prediction.rs  — The predicted start from offsets, temperature and the last good focus
-sweep.rs       — Grid, gate, parabola fit, confirmation, retry — the V-curve
+sweep.rs       — Grid, gate, the hyperbola's bound and threshold, confirmation, retry — the V-curve
 workflow.rs    — FocusRig trait, train resolution, the focus_train body, the guard
 tools.rs       — rmcp ServerHandler: the #[tool]s, progress relay, cancellation
 routes.rs      — Axum router: GET /health, /mcp

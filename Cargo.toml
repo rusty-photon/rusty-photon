@@ -7,6 +7,7 @@ members = [
   "crates/rp-catalog",
   "crates/rp-ephemeris",
   "crates/rp-fits",
+  "crates/rp-focus-curve",
   "crates/rp-guider",
   "crates/rp-mcp-client",
   "crates/rp-plate-solver",
@@ -311,6 +312,7 @@ rp-mcp-client = { path = "crates/rp-mcp-client" }
 rp-catalog = { path = "crates/rp-catalog" }
 rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }
+rp-focus-curve = { path = "crates/rp-focus-curve" }
 rp-guider = { path = "crates/rp-guider" }
 rp-plate-solver = { path = "crates/rp-plate-solver" }
 rp-targets = { path = "crates/rp-targets" }

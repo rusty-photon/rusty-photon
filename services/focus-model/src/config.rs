@@ -118,6 +118,18 @@ bounded!(
     "a finite number in [0, 1)"
 );
 bounded!(
+    /// The fit-quality floor: a fit whose R² falls below it is
+    /// `poor_fit`.
+    ///
+    /// Both ends mean what they say — 0 accepts every fit, 1 only an
+    /// exact one — so the check catches a value outside the range an
+    /// R² can take, not a poor choice inside it.
+    MinFitRSquared(f64 as "f64"),
+    "min_fit_r_squared",
+    |v| v.is_finite() && (0.0..=1.0).contains(&v),
+    "a finite number in [0, 1]"
+);
+bounded!(
     /// How much worse than the lowest sample the confirmation may be.
     ConfirmationTolerance(f64 as "f64"),
     "confirmation_tolerance",
@@ -215,6 +227,10 @@ pub struct TrainConfig {
     pub min_fit_points: MinFitPoints,
     #[serde(default = "default_min_star_fraction")]
     pub min_star_fraction: MinStarFraction,
+    /// The fit-quality floor; `None` reports the R² and enforces
+    /// nothing.
+    #[serde(default)]
+    pub min_fit_r_squared: Option<MinFitRSquared>,
     #[serde(default = "default_confirmation_tolerance")]
     pub confirmation_tolerance: ConfirmationTolerance,
     #[serde(default = "default_max_attempts")]
@@ -237,6 +253,7 @@ impl Default for TrainConfig {
             frames_per_step: default_frames_per_step(),
             min_fit_points: default_min_fit_points(),
             min_star_fraction: default_min_star_fraction(),
+            min_fit_r_squared: None,
             confirmation_tolerance: default_confirmation_tolerance(),
             max_attempts: default_max_attempts(),
             step_size: None,
@@ -525,6 +542,7 @@ mod tests {
         assert_eq!(train.frames_per_step.get(), 1);
         assert_eq!(train.min_fit_points.get(), 5);
         assert_eq!(train.min_star_fraction.get(), 0.1);
+        assert_eq!(train.min_fit_r_squared, None);
         assert_eq!(train.confirmation_tolerance.get(), 0.25);
         assert_eq!(train.max_attempts.get(), 2);
         assert_eq!(train.step_size, None);
@@ -550,6 +568,7 @@ mod tests {
                     "duration": "2s", "min_area": 6, "max_area": 800,
                     "threshold_sigma": 4.0, "frames_per_step": 2,
                     "min_fit_points": 6, "min_star_fraction": 0.2,
+                    "min_fit_r_squared": 0.6,
                     "confirmation_tolerance": 0.5, "max_attempts": 3,
                     "step_size": 25, "half_width": 100
                 }
@@ -578,6 +597,7 @@ mod tests {
         assert_eq!(train.frames_per_step.get(), 2);
         assert_eq!(train.min_fit_points.get(), 6);
         assert_eq!(train.min_star_fraction.get(), 0.2);
+        assert_eq!(train.min_fit_r_squared.map(MinFitRSquared::get), Some(0.6));
         assert_eq!(train.confirmation_tolerance.get(), 0.5);
         assert_eq!(train.max_attempts.get(), 3);
         assert_eq!(train.step_size.map(Steps::get), Some(25));
@@ -596,7 +616,7 @@ mod tests {
     /// the field in the error.
     #[test]
     fn every_bound_is_checked_at_load_naming_the_field() {
-        let cases: [(&str, &str); 13] = [
+        let cases: [(&str, &str); 15] = [
             (r#""sweep": { "end_ratio": 1.0 }"#, "sweep.end_ratio"),
             (r#""sweep": { "points": 2 }"#, "sweep.points"),
             (
@@ -614,6 +634,14 @@ mod tests {
             (
                 r#""trains": { "t": { "min_star_fraction": 1.0 } }"#,
                 "min_star_fraction",
+            ),
+            (
+                r#""trains": { "t": { "min_fit_r_squared": 1.01 } }"#,
+                "min_fit_r_squared",
+            ),
+            (
+                r#""trains": { "t": { "min_fit_r_squared": -0.1 } }"#,
+                "min_fit_r_squared",
             ),
             (
                 r#""trains": { "t": { "confirmation_tolerance": -0.1 } }"#,
@@ -634,6 +662,26 @@ mod tests {
             let err = parse_config(&json, "test").unwrap_err();
             assert!(err.to_string().contains(field), "{fragment}: {err}");
         }
+    }
+
+    /// An R² floor at either end of the range a coefficient of
+    /// determination can take is legal and means what it says: 0
+    /// accepts every fit, 1 only an exact one. Null, the default, is the
+    /// opt-out.
+    #[test]
+    fn a_fit_threshold_takes_either_end_of_its_range_and_null() {
+        for value in ["0", "1", "0.0", "1.0"] {
+            let json = format!(
+                r#"{{ "mcp_server_url": "http://x/mcp",
+                "trains": {{ "t": {{ "min_fit_r_squared": {value} }} }} }}"#
+            );
+            let config = parse_config(&json, "test").unwrap();
+            assert!(config.train("t").min_fit_r_squared.is_some(), "{value}");
+        }
+        let json = r#"{ "mcp_server_url": "http://x/mcp",
+            "trains": { "t": { "min_fit_r_squared": null } } }"#;
+        let config = parse_config(json, "test").unwrap();
+        assert_eq!(config.train("t").min_fit_r_squared, None);
     }
 
     /// The one rule that spans two fields: a detection window no
