@@ -769,6 +769,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_is_active_answers_for_an_unknown_unit_without_panicking() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let state = systemd_unit_is_active("rusty-photon-doctor-test-ghost");
         assert_ne!(state, Some(true), "a nonexistent unit must not be active");
     }
@@ -827,6 +828,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_run_captures_stdout_and_degrades_on_failure() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let out = run(Command::new("echo").arg("systemctl-stand-in")).unwrap();
         assert!(out.contains("systemctl-stand-in"));
         assert!(run(&mut Command::new("false")).is_none(), "non-zero exit");
@@ -841,6 +843,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_run_degrades_on_a_query_that_never_finishes() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
         assert_eq!(run_within(&mut cmd, Duration::from_millis(100)), None);
@@ -853,6 +856,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_gather_reports_host_facts_without_panicking() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let facts = PlatformFacts::gather();
         assert_eq!(facts.platform, Platform::Linux);
         for unit in &facts.units {

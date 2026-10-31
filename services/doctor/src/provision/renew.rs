@@ -850,6 +850,7 @@ mod tests {
 
     #[test]
     fn test_run_hooks_runs_all_and_names_the_failure() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("marker");
         let write_marker = if cfg!(windows) {
@@ -924,6 +925,7 @@ mod tests {
 
     #[test]
     fn test_run_hooks_succeeds_when_all_pass() {
+        let _forks = crate::test_support::blocking_fork_lock();
         run_hooks(&["exit 0".to_string()]).unwrap();
         run_hooks(&[]).unwrap();
     }
@@ -932,6 +934,7 @@ mod tests {
     /// one unreachable machine must not cost every other its certificate.
     #[test]
     fn test_run_hooks_stops_a_wedged_hook_and_runs_the_rest() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("marker");
         let hooks = if cfg!(windows) {

@@ -699,6 +699,11 @@ mod tests {
     /// `ping` or `timeout` for the delay. The stop reaches a grandchild too,
     /// but a fixture that is one process keeps this test about the timeout
     /// arm rather than about the tree.
+    ///
+    /// The caller holds `test_support::fork_lock` from before this call
+    /// until the script has run, as it does for `stage_verbose_binary`: a
+    /// child forked by another test while the script is open for writing
+    /// makes its exec fail with `ETXTBSY`.
     fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {
@@ -754,6 +759,7 @@ mod tests {
     /// A child's verbose stderr does not cost the report on its stdout.
     #[tokio::test]
     async fn test_run_child_doctor_merges_a_report_behind_verbose_stderr() {
+        let _forks = crate::test_support::fork_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let binary = stage_verbose_binary(
             dir.path(),
@@ -775,6 +781,7 @@ mod tests {
     /// its stderr, however much followed it.
     #[tokio::test]
     async fn test_run_child_doctor_names_the_first_stderr_line_of_a_verbose_child() {
+        let _forks = crate::test_support::fork_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let binary = stage_verbose_binary(dir.path(), "doctor: the first line", "not a report");
         let config = dir.path().join("svc.json");
@@ -796,6 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_child_doctor_timeout_warns_with_humantime_bound() {
+        let _forks = crate::test_support::fork_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let binary = stage_hanging_binary(dir.path());
         let config = dir.path().join("svc.json");
