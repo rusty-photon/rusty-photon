@@ -129,7 +129,7 @@ impl ReconnectSupervisor {
             .await;
         }
         for entry in &self.equipment.filter_wheels {
-            supervise(
+            supervise_with_metadata(
                 "filter_wheel",
                 &entry.config,
                 ca,
@@ -189,7 +189,7 @@ impl ReconnectSupervisor {
             .await;
         }
         for entry in &self.equipment.rotators {
-            supervise(
+            supervise_with_metadata(
                 "rotator",
                 &entry.config,
                 ca,

@@ -3,15 +3,18 @@ use std::sync::Arc;
 use ascom_alpaca::api::Focuser;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, EstablishError};
+use super::binding::{establish_listed, reported_name, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
 /// Facts read once when a focuser session is established (rp.md §
-/// Train optics), served from the entry afterwards and replaced on
-/// every re-establish.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Train optics, § Rig state), served from the entry afterwards and
+/// replaced on every re-establish.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FocuserInvariants {
+    /// The driver's ASCOM `Name`, which each frame records for the
+    /// focuser. `None` when the read failed or the name is blank.
+    pub name: Option<String>,
     /// The driver's `StepSize` in microns — the image-plane travel of
     /// one step when `focusers[].microns_per_step` is not configured.
     /// `None` when the driver does not implement it or reports a
@@ -151,13 +154,14 @@ pub(super) async fn establish_focuser(
 ) -> Result<(Arc<dyn Focuser>, FocuserInvariants), EstablishError> {
     let foc = establish_listed(config, ca_cert_path).await?;
 
-    // `StepSize` and `MaxStep` are properties of the mechanism,
-    // invariant for the life of the session: read once here, after
-    // `set_connected` (some drivers reject property reads on a
-    // disconnected device), and served from the entry — the step size to
-    // every `get_train_info`, the ceiling to every move's travel bounds.
+    // The name, `StepSize` and `MaxStep` are invariant for the life of
+    // the session: read once here, after `set_connected` (some drivers
+    // reject property reads on a disconnected device), and served from
+    // the entry — the name to every frame, the step size to every
+    // `get_train_info`, the ceiling to every move's travel bounds.
     // Property reads — nothing moves.
     let invariants = FocuserInvariants {
+        name: reported_name(&config.id, foc.name().await),
         step_size_um: step_size_read(&config.id, foc.step_size().await),
         max_step: max_step_read(&config.id, foc.max_step().await),
     };
@@ -431,13 +435,23 @@ mod tests {
             focuser_router_with_step_size(Some(serde_json::json!(2.5))),
             22_000,
         )
+        .route(
+            "/api/v1/focuser/0/name",
+            get(|| async {
+                Json(serde_json::json!({
+                    "Value": "ZWO EAF",
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        )
     }
 
     /// Server advertises a focuser at index 0 and accepts `set_connected`,
     /// exercising the `Ok(())` arm of `connect_focuser` plus the device
     /// iteration `Some(_)` match arm — the success path that doesn't run
-    /// in any of the failure-branch tests above. The driver's `StepSize`
-    /// and `MaxStep` are read once and cached on the entry.
+    /// in any of the failure-branch tests above. The driver's name,
+    /// `StepSize` and `MaxStep` are read once and cached on the entry.
     #[tokio::test]
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;
@@ -445,6 +459,7 @@ mod tests {
         assert!(entry.is_connected(), "expected entry to be connected");
         assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "main-focuser");
+        assert_eq!(entry.invariants().name.as_deref(), Some("ZWO EAF"));
         assert_eq!(entry.invariants().step_size_um, Some(2.5));
         assert_eq!(entry.invariants().max_step, Some(22_000));
     }

@@ -238,6 +238,7 @@ line with the rules, each tracked by its own issue:
   "filter": "Ha",
   "filter_position": 4,
   "filter_wavelength_nm": 656.3,
+  "filter_wheel_name": "ZWO EFW",
   "gain": 26,
   "offset": 30,
   "readout_mode": 1,
@@ -260,11 +261,20 @@ line with the rules, each tracked by its own issue:
   },
   "pier_side": "West",
   "tracking": true,
+  "altitude_degrees": 62.4,
+  "azimuth_degrees": 141.7,
+  "airmass": 1.128,
   "focusers": [
-    { "id": "main-focuser", "position": 21450, "temperature_c": 3.8 }
+    { "id": "main-focuser", "name": "ZWO EAF", "position": 21450, "temperature_c": 3.8 }
   ],
   "rotators": [
-    { "id": "main-rotator", "angle_degrees": 92.0, "mechanical_angle_degrees": 90.5 }
+    {
+      "id": "main-rotator",
+      "name": "Pegasus Falcon Rotator",
+      "angle_degrees": 92.0,
+      "mechanical_angle_degrees": 90.5,
+      "step_size_degrees": 0.01
+    }
   ],
   "intended_position_angle_degrees": 92.0,
   "guiding": {
@@ -440,6 +450,10 @@ sidecar is the record ([Ground rules](#ground-rules)).
   ([Train optics](#train-optics)), as it stood when the frame was
   taken. Omitted when `filter` is, and when the slot's entry carries no
   wavelength.
+- `filter_wheel_name` — the ASCOM `Name` of the wheel `filter` was read
+  from (e.g. `"ZWO EFW"`), read once per connection, when the wheel's
+  session is established, and taken from the same session as the read.
+  Omitted when `filter` is, and when the wheel did not report a name.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
@@ -469,7 +483,8 @@ sidecar is the record ([Ground rules](#ground-rules)).
   `pointing`, so a one-off device hiccup must not cost a solve its
   position. Also omitted when no mount is configured or connected, or
   the read still fails on its last attempt. The same read gives the
-  frame's `pier_side` and `tracking` ([Rig state](#rig-state)).
+  frame's `pier_side`, `tracking`, `altitude_degrees` and
+  `azimuth_degrees` ([Rig state](#rig-state)).
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 - `site` — the configured observer site's `latitude_degrees` and
@@ -645,8 +660,8 @@ devices and safety monitors. Each is a fact about the frame that is
 lost once the rig moves on. A focus model fits focuser position
 against temperature and filter, flats and mosaics match on rotator
 angle, calibration and plate solving around a meridian flip need the
-pier side, and frame grading can use the guiding error and the
-conditions.
+pier side, and frame grading can use the airmass, the guiding error
+and the conditions.
 
 These follow the acquisition facts' rules. Each is auxiliary: a
 device that is not configured or not connected, a read that fails, a
@@ -659,10 +674,13 @@ is read at both ends of the exposure. Everything else is read once
 the frame is ready, while the capture still holds the camera, beside
 the camera's own reads: all at once, each read bounded at the same
 3 s, so a healthy rig costs the frame milliseconds and a wedged
-device at most those 3 s. The header exports none of them yet
-([FITS header](#fits-header);
-[#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)
-tracks the export).
+device at most those 3 s. The exception is what a device says about
+itself rather than about the frame, its name and a rotator's step
+size: like `camera_name`, those are read once per connection, when
+the device's session is established, and copied into every frame
+from the session the frame's reads went to. The FITS header exports
+most of them under N.I.N.A.'s cards, one device's entry for a list
+([FITS header](#fits-header)); the sidecar stays the record.
 
 - `pier_side` is the mount's ASCOM `SideOfPier`, `"East"` or
   `"West"`, from the frame's one mount read, the one that gives
@@ -671,30 +689,47 @@ tracks the export).
 - `tracking` is the mount's ASCOM `Tracking`, from the same read.
   `false` is recorded too: a frame taken with tracking off is trailed,
   and that is a fact about it.
+- `altitude_degrees` and `azimuth_degrees` are the mount's ASCOM
+  `Altitude` and `Azimuth`, from the same read: how high above the
+  horizon the frame was taken, and in which direction, in degrees,
+  azimuth from north through east.
 
-  Both follow `pointing`'s rule for a mount in motion: a mount that
-  reports `Slewing`, or fails to say, records neither, since a
-  mid-slew read describes nothing the frame saw. Otherwise each read
+  These four follow `pointing`'s rule for a mount in motion: a mount
+  that reports `Slewing`, or fails to say, records none of them, since
+  a mid-slew read describes nothing the frame saw. Otherwise each read
   stands on its own.
+- `airmass` is derived from `altitude_degrees` by Gueymard's 1993
+  formula, the one N.I.N.A. uses: with the zenith distance
+  Z = 90° − `altitude_degrees`, in degrees,
+  `airmass = 1 / (cos Z + 0.00176759 · Z · (94.37515 − Z)^−1.21563)`.
+  It is 1.0 at the zenith and about 37.8 at the horizon. It is omitted
+  without `altitude_degrees`, and for an altitude outside 0° to 90°,
+  where the formula has no meaning.
 - `focusers` has one entry for each focuser in the camera's train, in
-  the train's optical order: `{id, position, temperature_c}`, the
-  driver's ASCOM `Position` in steps and `Temperature` in °C. A
-  focuser that reports `IsMoving`, or fails to say, records no
+  the train's optical order: `{id, name, position, temperature_c}`,
+  the driver's ASCOM `Name`, `Position` in steps and `Temperature` in
+  °C. A focuser that reports `IsMoving`, or fails to say, records no
   position, because the frame was not focused at a point the focuser
   passed through. A relative focuser has no `Position`, and a focuser
   without a probe no `Temperature`. With `filter` and
   `optics.microns_per_step`, this is what a focus model fits against.
 - `rotators` has one entry for each rotator in the camera's train, in
-  the same order: `{id, angle_degrees, mechanical_angle_degrees}`,
-  ASCOM `Position`, the sky angle `move_rotator` moves to, and
-  `MechanicalPosition` ([Rotator Tool Details](#rotator-tool-details)).
-  A rotator that reports `IsMoving`, or fails to say, records neither
-  angle.
+  the same order:
+  `{id, name, angle_degrees, mechanical_angle_degrees, step_size_degrees}`,
+  the driver's ASCOM `Name`, `Position`, the sky angle `move_rotator`
+  moves to, `MechanicalPosition`
+  ([Rotator Tool Details](#rotator-tool-details)) and `StepSize`, the
+  smallest move the rotator makes. A rotator that reports `IsMoving`,
+  or fails to say, records neither angle. A step size that is not
+  positive and finite is not recorded.
 
-  In both lists an entry with no reading is left out, a device whose
+  In both lists an entry with no reading of the frame's is left out (a
+  name or a step size alone does not make one), a device whose
   session is down among them, and the list is omitted when it would
-  be empty and for a camera outside every train. `train_devices`
-  names every device the light passed through, read or not.
+  be empty and for a camera outside every train. A device that
+  reported no name when its session was established records none.
+  `train_devices` names every device the light passed through, read
+  or not.
 - `intended_position_angle_degrees` is the sky position angle the
   frame was meant to be taken at, in degrees east of north, the frame
   of `rotators[].angle_degrees`. For a frame of a target from the
@@ -966,8 +1001,13 @@ promise that every fact in the document reaches the header.
 `cooler_power_pct` is recorded in the sidecar only, because no card for
 it is in common use; so is `electrons_per_adu`, because its ADU need
 not be the file's (below); and a binned frame carries no Bayer pattern.
-The [rig state](#rig-state) is recorded in the sidecar only for now
-([#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)).
+The [rig state](#rig-state) goes out under the cards N.I.N.A. writes
+for it, with N.I.N.A.'s names and units, which is what the programs
+that read these cards expect. A sidecar list goes out as one device's
+entry, by the rules below the table. `tracking`, `guiding`,
+`safety_monitors`, a rotator's sky angle and an observing-conditions
+device's `rain_rate_mm_per_hour` are recorded in the sidecar only:
+N.I.N.A. writes no card for any of them.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -977,11 +1017,17 @@ The [rig state](#rig-state) is recorded in the sidecar only for now
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
+| `OBJCTROT` | real | `intended_position_angle_degrees`, degrees east of north | `intended_position_angle_degrees` present |
 | `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
+| `CENTALT` | real | `altitude_degrees`, degrees | `altitude_degrees` present |
+| `CENTAZ` | real | `azimuth_degrees`, degrees | `azimuth_degrees` present |
+| `AIRMASS` | real | `airmass` | `airmass` present |
+| `PIERSIDE` | string | `pier_side`: `'East'` or `'West'` | `pier_side` present |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
 | `FILTER` | string | `filter` | `filter` present |
+| `FWHEEL` | string | `filter_wheel_name` | `filter_wheel_name` present |
 | `GAIN` | integer | `gain` | `gain` present |
 | `OFFSET` | integer | `offset` | `offset` present |
 | `READOUTM` | string | `readout_mode_name` | `readout_mode_name` present |
@@ -994,6 +1040,25 @@ The [rig state](#rig-state) is recorded in the sidecar only for now
 | `FOCRATIO` | real | `optics.focal_length_mm / optics.aperture_mm`, as `get_train_info` derives it | both present |
 | `BAYERPAT` | string | the mosaic at the file's first pixel, read top-down: `'RGGB'`, `'GRBG'`, `'GBRG'` or `'BGGR'`, from `sensor_type` and the Bayer offsets | `sensor_type` is `RGGB`, both offsets present, and `binning` is 1×1 |
 | `XBAYROFF` / `YBAYROFF` | integer | `0`: `BAYERPAT` already starts at the first pixel | as `BAYERPAT` |
+| `FOCNAME` | string | the terminal focuser's `name` | that focuser's `focusers` entry has a `name` |
+| `FOCPOS` / `FOCUSPOS` | integer | the terminal focuser's `position`, steps | that entry has a `position` |
+| `FOCUSSZ` | real | `optics.microns_per_step`, µm | `optics.microns_per_step` present |
+| `FOCTEMP` / `FOCUSTEM` | real | the terminal focuser's `temperature_c`, °C | that entry has a `temperature_c` |
+| `ROTNAME` | string | the train's one rotator's `name` | the train has one rotator, and its `rotators` entry has a `name` |
+| `ROTATOR` / `ROTATANG` | real | that rotator's `mechanical_angle_degrees`, degrees | that entry has a `mechanical_angle_degrees` |
+| `ROTSTPSZ` | real | that rotator's `step_size_degrees`, degrees | that entry has a `step_size_degrees` |
+| `AMBTEMP` | real | `temperature_c`, °C | an `observing_conditions` entry has the sensor (each weather card: the first in config order that has it) |
+| `HUMIDITY` | real | `humidity_pct`, % | as `AMBTEMP` |
+| `DEWPOINT` | real | `dew_point_c`, °C | as `AMBTEMP` |
+| `PRESSURE` | real | `pressure_hpa`, hPa | as `AMBTEMP` |
+| `CLOUDCVR` | real | `cloud_cover_pct`, % | as `AMBTEMP` |
+| `SKYBRGHT` | real | `sky_brightness_lux`, lux | as `AMBTEMP` |
+| `MPSAS` | real | `sky_quality_mag_per_arcsec2`, magnitudes per square arcsecond | as `AMBTEMP` |
+| `SKYTEMP` | real | `sky_temperature_c`, °C | as `AMBTEMP` |
+| `STARFWHM` | real | `star_fwhm_arcsec`, arcseconds | as `AMBTEMP` |
+| `WINDDIR` | real | `wind_direction_degrees`, degrees | as `AMBTEMP` |
+| `WINDSPD` | real | `wind_speed_m_per_s × 3.6`, km/h | as `AMBTEMP` |
+| `WINDGUST` | real | `wind_gust_m_per_s × 3.6`, km/h | as `AMBTEMP` |
 | `SITELAT` | real | `site.latitude_degrees`, degrees north | `site` present |
 | `SITELONG` | real | `site.longitude_degrees`, degrees east | `site` present |
 | `SWCREATE` | string | `'rusty-photon rp <rp_version>'` | `rp_version` present (every frame this version captures) |
@@ -1054,6 +1119,33 @@ Rules the table does not show:
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
   written for `RA`/`DEC`: they are in the mount's own equatorial
   system, which `rp` does not query or convert.
+- **The focuser cards are the terminal focuser's.** A train can hold
+  several focusers, and the header has room for one. The cards take
+  the train's terminal focuser, the last focuser in `train_devices`:
+  the one the train's `auto_focus` sweeps, whose step size
+  `optics.microns_per_step` records and `FOCUSSZ` carries. They are
+  read from that focuser's `focusers` entry, so when it has no entry,
+  or an entry without the field, the card is left out, and another
+  focuser's value never stands in for it. `FOCPOS` and `FOCUSPOS`
+  carry the same position, and `FOCTEMP` and `FOCUSTEM` the same
+  temperature: N.I.N.A. writes both names of each pair, because
+  readers look for either.
+- **The rotator cards need a train with one rotator.** With two
+  rotators in the train there is no telling which angle a reader
+  wants, so neither goes out, as `get_train_info` names no
+  `rotator_id` for such a train. `ROTATOR` and `ROTATANG` both carry
+  the **mechanical** angle, `mechanical_angle_degrees`, the way
+  N.I.N.A. writes them. That is the camera's orientation in the
+  optical train, which flats are matched on. The sky angle is in the
+  sidecar, and the angle the frame was meant to be taken at goes out
+  as `OBJCTROT`.
+- **Each weather card comes from the first device that reports it.**
+  The cards go through the `observing_conditions` entries in config
+  order, and each takes its value from the first entry that has its
+  sensor. So a cloud sensor and a weather station configured side by
+  side both reach the header, and where both report the same sensor,
+  config order decides. `WINDSPD` and `WINDGUST` are in km/h, the
+  sidecar's m/s times 3.6, as N.I.N.A. writes them.
 - **Untyped captures** (`frame_type` omitted — `auto_focus` and
   `center_on_target` frames among them) carry every keyword except
   `IMAGETYP`, `OBJECT`, `OBJCTRA` and `OBJCTDEC`.
@@ -1062,7 +1154,7 @@ Rules the table does not show:
 - **Absent means unknown, never a placeholder.** A keyword whose source
   is missing is omitted rather than written as `0`, `''` or `'NA'`.
 - **Typographic variants are folded; anything else a card cannot
-  carry is left out.** In a target, filter, telescope or camera name,
+  carry is left out.** In a target, filter, telescope or device name,
   typographic dashes, quotes (curly, low-9 and guillemets) and spaces
   become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
   `„M31“` → `"M31"`) — deliberately one name, since editors substitute
@@ -8411,8 +8503,9 @@ services/rp/src/
                           and safety monitors at frame ready, the
                           guider's running totals at both ends of the
                           exposure, and the intended position angle.
-                          The mount's pier side and tracking ride the
-                          frame's one mount read in internals.rs.
+                          The mount's pier side, tracking, altitude and
+                          azimuth ride the frame's one mount read in
+                          internals.rs.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
                           persist_capture_artifact, do_plate_solve,

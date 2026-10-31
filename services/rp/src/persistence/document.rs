@@ -107,6 +107,11 @@ pub struct ExposureDocument {
     /// with `filter`, and when the slot's entry carries no wavelength.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_wavelength_nm: Option<f64>,
+    /// The ASCOM `Name` of the wheel `filter` was read from, as it
+    /// reported it when its session was established. Omitted with
+    /// `filter`, and when the wheel reported no name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_wheel_name: Option<String>,
     /// The camera's ASCOM `Gain`, read on every capture. Omitted when
     /// the driver does not implement it or the read failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +190,18 @@ pub struct ExposureDocument {
     /// same rule for a mount in motion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracking: Option<bool>,
+    /// The mount's ASCOM `Altitude`, in degrees, from the same read and
+    /// under the same rule for a mount in motion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude_degrees: Option<f64>,
+    /// The mount's ASCOM `Azimuth`, in degrees from north through east,
+    /// from the same read and under the same rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azimuth_degrees: Option<f64>,
+    /// The airmass at `altitude_degrees`, by Gueymard's 1993 formula.
+    /// Omitted without an altitude, and for one outside 0° to 90°.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airmass: Option<f64>,
     /// Each focuser in the camera's train, in optical order, with what
     /// it reported once the frame was ready. A focuser with no reading
     /// is left out; omitted when none has one.
@@ -316,6 +333,10 @@ pub enum PierSide {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExposureFocuser {
     pub id: String,
+    /// ASCOM `Name`, as the focuser reported it when its session was
+    /// established. Omitted when it reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// ASCOM `Position`, in steps. Omitted for a relative focuser, one
     /// that reported `IsMoving` or could not say, and a failed read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,12 +353,22 @@ pub struct ExposureFocuser {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExposureRotator {
     pub id: String,
+    /// ASCOM `Name`, as the rotator reported it when its session was
+    /// established. Omitted when it reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// ASCOM `Position`: the sky angle, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle_degrees: Option<f64>,
     /// ASCOM `MechanicalPosition`, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mechanical_angle_degrees: Option<f64>,
+    /// ASCOM `StepSize`, the smallest move the rotator makes, in
+    /// degrees, as it reported it when its session was established.
+    /// Omitted when it did not, or reported a value that is not
+    /// positive and finite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_size_degrees: Option<f64>,
 }
 
 /// The exposure document's `guiding` field: what the guider did over

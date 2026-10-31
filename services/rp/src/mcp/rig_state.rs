@@ -17,6 +17,7 @@ use tracing::debug;
 use super::handler::McpHandler;
 use super::internals::{bounded_read, finished_spawned_read, SpawnedRead};
 use crate::equipment::trains::{Train, TrainDeviceKind};
+use crate::equipment::RotatorInvariants;
 use crate::persistence::{
     ExposureFocuser, ExposureGuiding, ExposureObservingConditions, ExposureRotator,
     ExposureSafetyMonitor,
@@ -65,6 +66,21 @@ impl Framing {
     }
 }
 
+/// The airmass at the mount's altitude by Gueymard's 1993 formula, the
+/// one N.I.N.A. uses (rp.md § Rig state, `airmass`). `None` for an
+/// altitude outside 0° to 90°, where the formula has no meaning.
+pub(super) fn airmass(altitude_degrees: f64) -> Option<f64> {
+    if !(0.0..=90.0).contains(&altitude_degrees) {
+        return None;
+    }
+    let zenith_distance = 90.0 - altitude_degrees;
+    let denominator = (0.001_767_59 * zenith_distance).mul_add(
+        (94.375_15 - zenith_distance).powf(-1.215_63),
+        zenith_distance.to_radians().cos(),
+    );
+    Some(1.0 / denominator)
+}
+
 impl McpHandler {
     /// Start the frame's first guider read on its own task, so the
     /// exposure never waits on it. `None` when no guider is configured.
@@ -101,7 +117,8 @@ impl McpHandler {
     }
 
     /// One read per focuser in the train, in optical order; a focuser
-    /// whose session is down gets none.
+    /// whose session is down gets none. Its name comes from the session
+    /// the read goes to.
     fn focuser_reads(
         &self,
         train: Option<&Train>,
@@ -114,14 +131,20 @@ impl McpHandler {
             .ids_of_kind(TrainDeviceKind::Focuser)
             .into_iter()
             .filter_map(|id| {
-                let device = self
+                let session = self
                     .equipment
                     .find_focuser(id)
-                    .and_then(crate::equipment::FocuserEntry::device);
-                if device.is_none() {
+                    .and_then(|entry| entry.session.snapshot());
+                if session.is_none() {
                     debug!(focuser_id = id, "focuser not connected; the frame omits it");
                 }
-                Some(read_focuser(id.to_string(), device?, deadline))
+                let (device, invariants) = session?;
+                Some(read_focuser(
+                    id.to_string(),
+                    invariants.name,
+                    device,
+                    deadline,
+                ))
             })
             .collect()
     }
@@ -139,14 +162,15 @@ impl McpHandler {
             .ids_of_kind(TrainDeviceKind::Rotator)
             .into_iter()
             .filter_map(|id| {
-                let device = self
+                let session = self
                     .equipment
                     .find_rotator(id)
-                    .and_then(crate::equipment::RotatorEntry::device);
-                if device.is_none() {
+                    .and_then(|entry| entry.session.snapshot());
+                if session.is_none() {
                     debug!(rotator_id = id, "rotator not connected; the frame omits it");
                 }
-                Some(read_rotator(id.to_string(), device?, deadline))
+                let (device, invariants) = session?;
+                Some(read_rotator(id.to_string(), invariants, device, deadline))
             })
             .collect()
     }
@@ -280,6 +304,7 @@ fn stood_still(device_id: &str, moving: Result<bool, String>) -> bool {
 
 async fn read_focuser(
     id: String,
+    name: Option<String>,
     focuser: Arc<dyn Focuser>,
     deadline: Instant,
 ) -> Option<ExposureFocuser> {
@@ -296,6 +321,7 @@ async fn read_focuser(
     let temperature_c = finite(&id, "temperature", temperature);
     (position.is_some() || temperature_c.is_some()).then_some(ExposureFocuser {
         id,
+        name,
         position,
         temperature_c,
     })
@@ -303,6 +329,7 @@ async fn read_focuser(
 
 async fn read_rotator(
     id: String,
+    invariants: RotatorInvariants,
     rotator: Arc<dyn Rotator>,
     deadline: Instant,
 ) -> Option<ExposureRotator> {
@@ -318,8 +345,10 @@ async fn read_rotator(
     let mechanical_angle_degrees = finite(&id, "mechanical position", mechanical_angle);
     (angle_degrees.is_some() || mechanical_angle_degrees.is_some()).then_some(ExposureRotator {
         id,
+        name: invariants.name,
         angle_degrees,
         mechanical_angle_degrees,
+        step_size_degrees: invariants.step_size_degrees,
     })
 }
 
@@ -598,6 +627,29 @@ mod tests {
             guiding_between(&stats(true, Some(totals(10, 0))), &stats(true, None)),
             None
         );
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn the_airmass_is_one_at_the_zenith_and_grows_toward_the_horizon() {
+        // Gueymard 1993, as N.I.N.A.'s AstroUtil.Airmass computes it.
+        assert_close(airmass(90.0).unwrap(), 1.0);
+        assert_close(airmass(62.4).unwrap(), 1.128_033_036_456_031_8);
+        assert_close(airmass(30.0).unwrap(), 1.994_260_953_512_950_3);
+        assert_close(airmass(0.0).unwrap(), 37.808_218_229_990_786);
+    }
+
+    #[test]
+    fn an_altitude_outside_zero_to_ninety_degrees_has_no_airmass() {
+        for altitude in [-0.1, 90.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(airmass(altitude), None, "{altitude}");
+        }
     }
 
     fn train(default_position_angle_degrees: Option<f64>) -> Train {
