@@ -39,7 +39,7 @@ use super::gate;
 use super::handler::McpHandler;
 use super::inflight::Cancel;
 use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
-use super::rig_state::{Framing, GuidingStartRead, RigState};
+use super::rig_state::{self, Framing, GuidingStartRead, RigState};
 
 /// What a move, rotation or filter change holds while it runs (see
 /// [`McpHandler::device_hold`]); dropping it gives the slot back and
@@ -354,12 +354,14 @@ type FilterRead = std::result::Result<Option<FilterInBeam>, String>;
 /// The filter one wheel read found in the beam: its configured name
 /// (`"Filter <n>"` for an unnamed slot), the slot it sits in, and the
 /// slot's configured wavelength, all from the config in force at the
-/// read.
+/// read, and the wheel's own name, as the session read went to reported
+/// it when established.
 #[derive(Debug, PartialEq)]
 pub(super) struct FilterInBeam {
     pub(super) name: String,
     pub(super) position: u32,
     pub(super) wavelength_nm: Option<f64>,
+    pub(super) wheel_name: Option<String>,
 }
 
 /// How long a capture waits on one of its auxiliary device reads — the
@@ -453,13 +455,16 @@ fn exposure_start(
 }
 
 /// What the frame's one mount read found (rp.md § Core Fields,
-/// `pointing`, and § Rig state): where it pointed, its pier side, and
-/// whether it tracked, each `None` when unknown.
+/// `pointing`, and § Rig state): where it pointed, its pier side,
+/// whether it tracked, and its altitude and azimuth, each `None` when
+/// unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct MountReading {
     pub(super) pointing: Option<MountPointing>,
     pub(super) pier_side: Option<persistence::PierSide>,
     pub(super) tracking: Option<bool>,
+    pub(super) altitude_degrees: Option<f64>,
+    pub(super) azimuth_degrees: Option<f64>,
 }
 
 /// Attempts the frame's mount read makes while RA, Dec or `Slewing`
@@ -467,16 +472,16 @@ pub(super) struct MountReading {
 const MOUNT_READ_ATTEMPTS: u32 = 3;
 
 /// The frame's one mount read (rp.md § Core Fields, `pointing`, and
-/// § Rig state): RA, Dec, `SideOfPier`, `Tracking` and `Slewing`
-/// together. Untimed of its own: it runs on its own task while the
+/// § Rig state): RA, Dec, `SideOfPier`, `Tracking`, `Altitude`,
+/// `Azimuth` and `Slewing` together. Untimed of its own: it runs on its own task while the
 /// camera exposes, and [`finished_spawned_read`] bounds how long a
 /// ready frame waits for it. A mount that is slewing, or cannot say
 /// whether it is, gives nothing: the motion gate only holds the mount
 /// still under an imaging-train exposure, and a mid-slew read names
 /// nowhere the frame saw. A driver without `Slewing` (`NOT_IMPLEMENTED`,
 /// a mount that cannot slew) counts as still. Otherwise each reading
-/// stands on its own: one that fails, a non-finite position or an
-/// `Unknown` pier side is left out.
+/// stands on its own: one that fails, a non-finite position, altitude
+/// or azimuth, or an `Unknown` pier side is left out.
 ///
 /// A failed RA, Dec or `Slewing` read is retried, up to
 /// [`MOUNT_READ_ATTEMPTS`] in all with a short backoff (100 ms, then
@@ -502,25 +507,27 @@ pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> 
 
 /// One attempt at [`read_mount`]: the reading, and whether RA, Dec or
 /// `Slewing` failed to read, which a retry may cure. A mount that says
-/// it is slewing, a non-finite position or a failed pier-side or
-/// tracking read is an answer, not a failure.
+/// it is slewing, a non-finite position or a failed pier-side,
+/// tracking, altitude or azimuth read is an answer, not a failure.
 async fn read_mount_once(mount: &dyn ascom_alpaca::api::Telescope) -> (MountReading, bool) {
-    let (ra, dec, side_of_pier, tracking, slewing) = tokio::join!(
+    let (ra, dec, side_of_pier, tracking, altitude, azimuth, slewing) = tokio::join!(
         mount.right_ascension(),
         mount.declination(),
         mount.side_of_pier(),
         mount.tracking(),
+        mount.altitude(),
+        mount.azimuth(),
         mount.slewing()
     );
     match slewing {
         Ok(false) => {}
         Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {}
         Ok(true) => {
-            debug!("mount slewing; omitting pointing, pier side and tracking");
+            debug!("mount slewing; omitting pointing, pier side, tracking, altitude and azimuth");
             return (MountReading::default(), false);
         }
         Err(e) => {
-            debug!(error = %e, "mount unable to say whether it slews; omitting pointing, pier side and tracking");
+            debug!(error = %e, "mount unable to say whether it slews; omitting pointing, pier side, tracking, altitude and azimuth");
             return (MountReading::default(), true);
         }
     }
@@ -557,9 +564,23 @@ async fn read_mount_once(mount: &dyn ascom_alpaca::api::Telescope) -> (MountRead
             pointing,
             pier_side,
             tracking,
+            altitude_degrees: finite_mount_angle("altitude", altitude),
+            azimuth_degrees: finite_mount_angle("azimuth", azimuth),
         },
         position_read_failed,
     )
+}
+
+/// A mount altitude or azimuth read, or `None`, logged, when it failed
+/// or is not finite.
+fn finite_mount_angle(what: &str, read: ascom_alpaca::ASCOMResult<f64>) -> Option<f64> {
+    match read {
+        Ok(degrees) if degrees.is_finite() => Some(degrees),
+        other => {
+            debug!(reading = what, value = ?other, "mount reading unavailable; omitting it");
+            None
+        }
+    }
 }
 
 /// A device read spawned on its own task: one a capture starts with its
@@ -1751,16 +1772,19 @@ impl McpHandler {
             .and_then(|id| self.equipment.find_focuser(id))
             .and_then(crate::equipment::focuser::FocuserEntry::microns_per_step);
         let optics = derive_optics(frame.camera_id, train, frame.invariants, microns_per_step);
-        let (filter, filter_position, filter_wavelength_nm) = match frame.filter_read {
+        let (filter, filter_position, filter_wavelength_nm, filter_wheel_name) = match frame
+            .filter_read
+        {
             Ok(Some(filter)) => (
                 Some(filter.name),
                 Some(filter.position),
                 filter.wavelength_nm,
+                filter.wheel_name,
             ),
-            Ok(None) => (None, None, None),
+            Ok(None) => (None, None, None, None),
             Err(e) => {
                 debug!(camera_id = frame.camera_id, error = %e, "filter read failed; omitting the document's filter fields");
-                (None, None, None)
+                (None, None, None, None)
             }
         };
         let readout_mode_name = readout_mode_name(
@@ -1786,6 +1810,7 @@ impl McpHandler {
             filter,
             filter_position,
             filter_wavelength_nm,
+            filter_wheel_name,
             gain: frame.conditions.gain,
             offset: frame.conditions.offset,
             readout_mode: frame.conditions.readout_mode,
@@ -1804,6 +1829,9 @@ impl McpHandler {
             pointing: frame.mount.pointing,
             pier_side: frame.mount.pier_side,
             tracking: frame.mount.tracking,
+            altitude_degrees: frame.mount.altitude_degrees,
+            azimuth_degrees: frame.mount.azimuth_degrees,
+            airmass: frame.mount.altitude_degrees.and_then(rig_state::airmass),
             focusers: frame.rig.focusers,
             rotators: frame.rig.rotators,
             intended_position_angle_degrees: frame.framing.intended_position_angle(train),
@@ -2612,7 +2640,7 @@ impl McpHandler {
         let Some(fw_entry) = self.equipment.find_filter_wheel(&fw_id) else {
             return Ok(None);
         };
-        let Some(fw) = fw_entry.device() else {
+        let Some((fw, invariants)) = fw_entry.session.snapshot() else {
             return Ok(None);
         };
         let position = fw
@@ -2630,6 +2658,7 @@ impl McpHandler {
             name,
             position: u32::try_from(position).unwrap_or(u32::MAX),
             wavelength_nm: fw_entry.config.filter_wavelength_at(position),
+            wheel_name: invariants.name,
         }))
     }
 

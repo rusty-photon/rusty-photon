@@ -86,6 +86,7 @@ Feature: FITS header on captured frames
     And the document field "filter" should be "Luminance"
     And the document at "/filter_position" should be the JSON 0
     And the document should have no value at "/filter_wavelength_nm"
+    And the document field "filter_wheel_name" should be "Alpaca Filter Wheel Simulator"
     And the document at "/train_devices" should be the JSON [{"id": "main-fw", "kind": "filter wheel"}, {"id": "main-cam", "kind": "camera"}]
     And the document at "/optics/focal_length_mm" should be the JSON 530.0
     And the document at "/optics/aperture_mm" should be the JSON 106.0
@@ -140,6 +141,7 @@ Feature: FITS header on captured frames
       | keyword |
       | FILTER  |
     And the document body should not contain "filter"
+    And the document body should not contain "filter_wheel_name"
 
   Scenario: A Flat frame records the filter in the beam
     Given rp is running with a fully equipped capture rig on the simulator

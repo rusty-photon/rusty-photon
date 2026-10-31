@@ -187,6 +187,21 @@ fn document_at_is_a_number(world: &mut RpWorld, pointer: String) {
     );
 }
 
+/// A reading the simulator settles to, within the tolerance its own
+/// arithmetic leaves.
+#[then(expr = "the document at {string} should be {float} within {float}")]
+fn document_at_is_within(world: &mut RpWorld, pointer: String, expected: f64, tolerance: f64) {
+    let body = document_body(world);
+    let value = document_value(body, &pointer);
+    let actual = value.as_f64().unwrap_or_else(|| {
+        panic!("expected a number at {pointer}, got {value} (document: {body})")
+    });
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "expected {pointer} to be {expected} within {tolerance}, got {actual}"
+    );
+}
+
 #[then(regex = r#"^the document at "([^"]+)" should hold (\d+) entr(?:y|ies)$"#)]
 fn document_at_holds_entries(world: &mut RpWorld, pointer: String, count: usize) {
     let body = document_body(world);

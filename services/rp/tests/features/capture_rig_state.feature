@@ -2,12 +2,15 @@
 Feature: Rig state on the exposure document
   Every frame's sidecar records what the rest of the rig was doing while
   the frame was exposed, since each of these facts is lost once the rig
-  moves on (rp.md, Core Fields: Rig state): the mount's pier side and
-  tracking, each focuser and rotator in the camera's train, the position
-  angle the frame was meant to be taken at, what the guider did over the
-  exposure, and the readings of the site's observing-conditions devices
-  and safety monitors. They are copied in at capture time. The sidecar is
-  the record, and the FITS header exports none of them.
+  moves on (rp.md, Core Fields: Rig state): the mount's pier side,
+  tracking, altitude and azimuth and the airmass they put the frame at,
+  each focuser and rotator in the camera's train, the position angle the
+  frame was meant to be taken at, what the guider did over the exposure,
+  and the readings of the site's observing-conditions devices and safety
+  monitors. They are copied in at capture time. A device's name, and a
+  rotator's step size, are what it said about itself when its session
+  was established. The sidecar is the record, and the FITS header
+  exports none of them.
 
   A device that is not configured or not connected, or a read that
   fails, leaves its field out rather than writing a placeholder, and no
@@ -17,7 +20,10 @@ Feature: Rig state on the exposure document
   wheel in train "main", a mount, an observing conditions device
   "sim-weather" and a safety monitor "weather-watcher", all on the
   simulator, at a configured site. The simulator's mount starts at its
-  home position, on the east side of the pier. Its observing conditions
+  home position, on the east side of the pier, due south at 90 degrees
+  less the site's latitude, 38.92 degrees above the horizon, where
+  Gueymard's formula gives an airmass of 1.589. Its rotator moves in
+  steps of 0.75 degrees. Its observing conditions
   device reports every ASCOM sensor, and its safety monitor starts safe.
   The simulator lets its focuser's probe and its weather readings drift,
   so where a table says "a number", the frame records whatever was read.
@@ -41,7 +47,16 @@ Feature: Rig state on the exposure document
       | true     |
       | false    |
 
-  Scenario: A frame records the position of each focuser and rotator in its train
+  Scenario: A frame records the mount's altitude and azimuth and the airmass at that altitude
+    Given rp is running with the whole rig on the simulator
+    When the MCP client calls "capture" with camera "main-cam" for 100 ms
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the document at "/altitude_degrees" should be 38.92 within 0.01
+    And the document at "/azimuth_degrees" should be 180.0 within 0.01
+    And the document at "/airmass" should be 1.589 within 0.001
+
+  Scenario: A frame records the name and position of each focuser and rotator in its train
     Given rp is running with the whole rig on the simulator
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25200
     And the MCP client calls "move_rotator" with rotator "main-rotator" to angle 10.0
@@ -49,9 +64,10 @@ Feature: Rig state on the exposure document
     And I fetch the document for the captured document_id
     Then the tool call should succeed
     And the document at "/focusers/0/id" should be the JSON "main-focuser"
+    And the document at "/focusers/0/name" should be the JSON "Alpaca Focuser Simulator"
     And the document at "/focusers/0/position" should be the JSON 25200
     And the document at "/focusers/0/temperature_c" should be a number
-    And the document at "/rotators" should be the JSON [{"id": "main-rotator", "angle_degrees": 10.0, "mechanical_angle_degrees": 10.0}]
+    And the document at "/rotators" should be the JSON [{"id": "main-rotator", "name": "Alpaca Rotator Simulator", "angle_degrees": 10.0, "mechanical_angle_degrees": 10.0, "step_size_degrees": 0.75}]
 
   Scenario: A rotator whose session is down is left out of the frame's rotators
     Given rp is running with the whole rig on the simulator and its rotator offline
@@ -187,6 +203,9 @@ Feature: Rig state on the exposure document
       | path                             |
       | /pier_side                       |
       | /tracking                        |
+      | /altitude_degrees                |
+      | /azimuth_degrees                 |
+      | /airmass                         |
       | /focusers                        |
       | /rotators                        |
       | /intended_position_angle_degrees |

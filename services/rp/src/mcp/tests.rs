@@ -1026,6 +1026,10 @@ struct MockTelescope {
     /// `side_of_pier()`'s answer; `None` (the default) answers
     /// `NOT_IMPLEMENTED`.
     side_of_pier_value: Option<ascom_alpaca::api::telescope::PierSide>,
+    /// `altitude()` and `azimuth()`'s answers; `None` (the default)
+    /// answers `NOT_IMPLEMENTED`.
+    altitude_value: Option<f64>,
+    azimuth_value: Option<f64>,
     /// First N `right_ascension()` calls fail before it answers —
     /// drives `read_mount`'s retry of a failed position read. Counter
     /// is `right_ascension_calls`.
@@ -1068,6 +1072,8 @@ impl Default for MockTelescope {
             ra_value: 0.0,
             dec_value: 0.0,
             side_of_pier_value: None,
+            altitude_value: None,
+            azimuth_value: None,
             right_ascension_transient_errors: 0,
             right_ascension_calls: std::sync::atomic::AtomicU32::new(0),
         }
@@ -1171,6 +1177,14 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
         &self,
     ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::PierSide> {
         self.side_of_pier_value.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn altitude(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.altitude_value.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn azimuth(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        self.azimuth_value.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_tracking(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
@@ -1434,7 +1448,12 @@ fn filter_wheel_registry(
                 filters: vec!["Lum".into(), "Red".into()],
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(fw),
+            session: crate::equipment::DeviceSession::connected_with(
+                fw,
+                crate::equipment::FilterWheelInvariants {
+                    name: Some("ZWO EFW".to_string()),
+                },
+            ),
             slot: crate::equipment::DeviceSlot::default(),
         }],
         cover_calibrators: vec![],
@@ -2738,6 +2757,7 @@ async fn a_templated_capture_waits_a_slow_wheel_out() {
             name: "Lum".to_string(),
             position: 0,
             wavelength_nm: None,
+            wheel_name: Some("ZWO EFW".to_string()),
         })
     );
 }
@@ -2809,14 +2829,43 @@ async fn a_failed_tracking_read_costs_only_tracking() {
 }
 
 #[tokio::test]
-async fn a_slewing_mount_reports_no_pier_side_or_tracking() {
+async fn a_slewing_mount_reports_no_pier_side_tracking_altitude_or_azimuth() {
     let reading = super::internals::read_mount(Arc::new(MockTelescope {
         stuck_slewing: true,
         side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::East),
+        altitude_value: Some(38.9),
+        azimuth_value: Some(180.0),
         ..Default::default()
     }))
     .await;
     assert_eq!(reading, super::internals::MountReading::default());
+}
+
+#[tokio::test]
+async fn a_still_mount_reports_its_altitude_and_azimuth() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        altitude_value: Some(62.4),
+        azimuth_value: Some(141.7),
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading.altitude_degrees, Some(62.4));
+    assert_eq!(reading.azimuth_degrees, Some(141.7));
+}
+
+#[tokio::test]
+async fn an_unreadable_or_non_finite_altitude_or_azimuth_costs_only_itself() {
+    let reading = super::internals::read_mount(Arc::new(MockTelescope {
+        altitude_value: Some(f64::NAN),
+        azimuth_value: None,
+        side_of_pier_value: Some(ascom_alpaca::api::telescope::PierSide::East),
+        ..Default::default()
+    }))
+    .await;
+    assert_eq!(reading.altitude_degrees, None);
+    assert_eq!(reading.azimuth_degrees, None);
+    assert_eq!(reading.pier_side, Some(persistence::PierSide::East));
+    assert!(reading.pointing.is_some());
 }
 
 #[tokio::test]
@@ -4162,9 +4211,10 @@ async fn get_target_context_names_each_filter_once_and_every_trains_default_angl
                 filters: vec!["Red".into(), "Ha".into()],
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(Arc::new(
-                MockFilterWheel::default(),
-            )),
+            session: crate::equipment::DeviceSession::connected_with(
+                Arc::new(MockFilterWheel::default()),
+                crate::equipment::FilterWheelInvariants::default(),
+            ),
             slot: crate::equipment::DeviceSlot::default(),
         });
     let handler = test_handler(registry).with_trains(trains);
@@ -4348,6 +4398,7 @@ fn optics_registry(
             crate::equipment::FocuserInvariants {
                 step_size_um,
                 max_step: None,
+                ..Default::default()
             },
         ),
         slot: crate::equipment::DeviceSlot::default(),
@@ -4375,9 +4426,10 @@ fn optics_registry(
                 ],
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(Arc::new(
-                MockFilterWheel::default(),
-            )),
+            session: crate::equipment::DeviceSession::connected_with(
+                Arc::new(MockFilterWheel::default()),
+                crate::equipment::FilterWheelInvariants::default(),
+            ),
             slot: crate::equipment::DeviceSlot::default(),
         });
     registry
@@ -8539,7 +8591,10 @@ fn rotator_registry(
                 unique_id: None,
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(rot),
+            session: crate::equipment::DeviceSession::connected_with(
+                rot,
+                crate::equipment::RotatorInvariants::default(),
+            ),
             slot: crate::equipment::DeviceSlot::default(),
         }],
         ..Default::default()
@@ -14184,11 +14239,20 @@ fn rig_config<T: serde::de::DeserializeOwned>(id: &str) -> T {
         .unwrap()
 }
 
+/// The name a rig device's session reported when established: its id
+/// in capitals, so a test can tell which device's name a frame copied.
+fn rig_name(id: &str) -> String {
+    id.to_uppercase()
+}
+
 fn rig_focuser(id: &str, focuser: Option<MockFocuser>) -> crate::equipment::FocuserEntry {
     let session = match focuser {
         Some(focuser) => crate::equipment::DeviceSession::connected_with(
             Arc::new(focuser) as Arc<dyn ascom_alpaca::api::Focuser>,
-            crate::equipment::FocuserInvariants::default(),
+            crate::equipment::FocuserInvariants {
+                name: Some(rig_name(id)),
+                ..Default::default()
+            },
         ),
         None => crate::equipment::DeviceSession::disconnected(),
     };
@@ -14204,8 +14268,12 @@ fn rig_rotator(id: &str, rotator: MockRotator) -> crate::equipment::RotatorEntry
     crate::equipment::RotatorEntry {
         id: id.to_string(),
         config: rig_config(id),
-        session: crate::equipment::DeviceSession::connected(
-            Arc::new(rotator) as Arc<dyn ascom_alpaca::api::Rotator>
+        session: crate::equipment::DeviceSession::connected_with(
+            Arc::new(rotator) as Arc<dyn ascom_alpaca::api::Rotator>,
+            crate::equipment::RotatorInvariants {
+                name: Some(rig_name(id)),
+                step_size_degrees: Some(0.5),
+            },
         ),
         slot: crate::equipment::DeviceSlot::default(),
     }
@@ -14298,11 +14366,13 @@ async fn a_ready_frame_records_each_train_focuser_and_rotator_in_optical_order()
         vec![
             persistence::ExposureFocuser {
                 id: "foc-a".to_string(),
+                name: Some("FOC-A".to_string()),
                 position: Some(21450),
                 temperature_c: Some(3.8),
             },
             persistence::ExposureFocuser {
                 id: "foc-b".to_string(),
+                name: Some("FOC-B".to_string()),
                 position: Some(900),
                 temperature_c: None,
             },
@@ -14312,8 +14382,10 @@ async fn a_ready_frame_records_each_train_focuser_and_rotator_in_optical_order()
         rig.rotators.unwrap(),
         vec![persistence::ExposureRotator {
             id: "rot".to_string(),
+            name: Some("ROT".to_string()),
             angle_degrees: Some(92.0),
             mechanical_angle_degrees: Some(92.0),
+            step_size_degrees: Some(0.5),
         }]
     );
 }

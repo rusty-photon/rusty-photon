@@ -238,6 +238,7 @@ line with the rules, each tracked by its own issue:
   "filter": "Ha",
   "filter_position": 4,
   "filter_wavelength_nm": 656.3,
+  "filter_wheel_name": "ZWO EFW",
   "gain": 26,
   "offset": 30,
   "readout_mode": 1,
@@ -260,11 +261,20 @@ line with the rules, each tracked by its own issue:
   },
   "pier_side": "West",
   "tracking": true,
+  "altitude_degrees": 62.4,
+  "azimuth_degrees": 141.7,
+  "airmass": 1.128,
   "focusers": [
-    { "id": "main-focuser", "position": 21450, "temperature_c": 3.8 }
+    { "id": "main-focuser", "name": "ZWO EAF", "position": 21450, "temperature_c": 3.8 }
   ],
   "rotators": [
-    { "id": "main-rotator", "angle_degrees": 92.0, "mechanical_angle_degrees": 90.5 }
+    {
+      "id": "main-rotator",
+      "name": "Pegasus Falcon Rotator",
+      "angle_degrees": 92.0,
+      "mechanical_angle_degrees": 90.5,
+      "step_size_degrees": 0.01
+    }
   ],
   "intended_position_angle_degrees": 92.0,
   "guiding": {
@@ -440,6 +450,10 @@ sidecar is the record ([Ground rules](#ground-rules)).
   ([Train optics](#train-optics)), as it stood when the frame was
   taken. Omitted when `filter` is, and when the slot's entry carries no
   wavelength.
+- `filter_wheel_name` — the ASCOM `Name` of the wheel `filter` was read
+  from (e.g. `"ZWO EFW"`), read once per connection, when the wheel's
+  session is established, and taken from the same session as the read.
+  Omitted when `filter` is, and when the wheel did not report a name.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
@@ -469,7 +483,8 @@ sidecar is the record ([Ground rules](#ground-rules)).
   `pointing`, so a one-off device hiccup must not cost a solve its
   position. Also omitted when no mount is configured or connected, or
   the read still fails on its last attempt. The same read gives the
-  frame's `pier_side` and `tracking` ([Rig state](#rig-state)).
+  frame's `pier_side`, `tracking`, `altitude_degrees` and
+  `azimuth_degrees` ([Rig state](#rig-state)).
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 - `site` — the configured observer site's `latitude_degrees` and
@@ -645,8 +660,8 @@ devices and safety monitors. Each is a fact about the frame that is
 lost once the rig moves on. A focus model fits focuser position
 against temperature and filter, flats and mosaics match on rotator
 angle, calibration and plate solving around a meridian flip need the
-pier side, and frame grading can use the guiding error and the
-conditions.
+pier side, and frame grading can use the airmass, the guiding error
+and the conditions.
 
 These follow the acquisition facts' rules. Each is auxiliary: a
 device that is not configured or not connected, a read that fails, a
@@ -659,7 +674,11 @@ is read at both ends of the exposure. Everything else is read once
 the frame is ready, while the capture still holds the camera, beside
 the camera's own reads: all at once, each read bounded at the same
 3 s, so a healthy rig costs the frame milliseconds and a wedged
-device at most those 3 s. The header exports none of them yet
+device at most those 3 s. The exception is what a device says about
+itself rather than about the frame, its name and a rotator's step
+size: like `camera_name`, those are read once per connection, when
+the device's session is established, and copied into every frame
+from the session the frame's reads went to. The header exports none of them yet
 ([FITS header](#fits-header);
 [#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)
 tracks the export).
@@ -671,30 +690,47 @@ tracks the export).
 - `tracking` is the mount's ASCOM `Tracking`, from the same read.
   `false` is recorded too: a frame taken with tracking off is trailed,
   and that is a fact about it.
+- `altitude_degrees` and `azimuth_degrees` are the mount's ASCOM
+  `Altitude` and `Azimuth`, from the same read: how high above the
+  horizon the frame was taken, and in which direction, in degrees,
+  azimuth from north through east.
 
-  Both follow `pointing`'s rule for a mount in motion: a mount that
-  reports `Slewing`, or fails to say, records neither, since a
-  mid-slew read describes nothing the frame saw. Otherwise each read
+  These four follow `pointing`'s rule for a mount in motion: a mount
+  that reports `Slewing`, or fails to say, records none of them, since
+  a mid-slew read describes nothing the frame saw. Otherwise each read
   stands on its own.
+- `airmass` is derived from `altitude_degrees` by Gueymard's 1993
+  formula, the one N.I.N.A. uses: with the zenith distance
+  Z = 90° − `altitude_degrees`, in degrees,
+  `airmass = 1 / (cos Z + 0.00176759 · Z · (94.37515 − Z)^−1.21563)`.
+  It is 1.0 at the zenith and about 37.8 at the horizon. It is omitted
+  without `altitude_degrees`, and for an altitude outside 0° to 90°,
+  where the formula has no meaning.
 - `focusers` has one entry for each focuser in the camera's train, in
-  the train's optical order: `{id, position, temperature_c}`, the
-  driver's ASCOM `Position` in steps and `Temperature` in °C. A
-  focuser that reports `IsMoving`, or fails to say, records no
+  the train's optical order: `{id, name, position, temperature_c}`,
+  the driver's ASCOM `Name`, `Position` in steps and `Temperature` in
+  °C. A focuser that reports `IsMoving`, or fails to say, records no
   position, because the frame was not focused at a point the focuser
   passed through. A relative focuser has no `Position`, and a focuser
   without a probe no `Temperature`. With `filter` and
   `optics.microns_per_step`, this is what a focus model fits against.
 - `rotators` has one entry for each rotator in the camera's train, in
-  the same order: `{id, angle_degrees, mechanical_angle_degrees}`,
-  ASCOM `Position`, the sky angle `move_rotator` moves to, and
-  `MechanicalPosition` ([Rotator Tool Details](#rotator-tool-details)).
-  A rotator that reports `IsMoving`, or fails to say, records neither
-  angle.
+  the same order:
+  `{id, name, angle_degrees, mechanical_angle_degrees, step_size_degrees}`,
+  the driver's ASCOM `Name`, `Position`, the sky angle `move_rotator`
+  moves to, `MechanicalPosition`
+  ([Rotator Tool Details](#rotator-tool-details)) and `StepSize`, the
+  smallest move the rotator makes. A rotator that reports `IsMoving`,
+  or fails to say, records neither angle. A step size that is not
+  positive and finite is not recorded.
 
-  In both lists an entry with no reading is left out, a device whose
+  In both lists an entry with no reading of the frame's is left out (a
+  name or a step size alone does not make one), a device whose
   session is down among them, and the list is omitted when it would
-  be empty and for a camera outside every train. `train_devices`
-  names every device the light passed through, read or not.
+  be empty and for a camera outside every train. A device that
+  reported no name when its session was established records none.
+  `train_devices` names every device the light passed through, read
+  or not.
 - `intended_position_angle_degrees` is the sky position angle the
   frame was meant to be taken at, in degrees east of north, the frame
   of `rotators[].angle_degrees`. For a frame of a target from the
@@ -8411,8 +8447,9 @@ services/rp/src/
                           and safety monitors at frame ready, the
                           guider's running totals at both ends of the
                           exposure, and the intended position angle.
-                          The mount's pier side and tracking ride the
-                          frame's one mount read in internals.rs.
+                          The mount's pier side, tracking, altitude and
+                          azimuth ride the frame's one mount read in
+                          internals.rs.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
                           persist_capture_artifact, do_plate_solve,

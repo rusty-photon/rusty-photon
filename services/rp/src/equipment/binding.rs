@@ -25,7 +25,7 @@ use ascom_alpaca::api::{
     SafetyMonitor, Switch, Telescope, TypedDevice,
 };
 use rp_auth::config::ClientAuthConfig;
-use tracing::info;
+use tracing::{debug, info};
 
 use ascom_alpaca::Client;
 
@@ -357,6 +357,26 @@ async fn list_of_kind<C: RosterEntry>(
         .collect())
 }
 
+/// A device's ASCOM `Name` read as the session's cached fact: what each
+/// frame records as the device's name (rp.md § Rig state). `None` when
+/// the read failed, and for a blank name, which names nothing.
+pub(super) fn reported_name(id: &str, read: ascom_alpaca::ASCOMResult<String>) -> Option<String> {
+    match read {
+        Ok(name) if !name.trim().is_empty() => Some(name),
+        Ok(_) => {
+            debug!(
+                id,
+                "device reports a blank Name; frames will record no name for it"
+            );
+            None
+        }
+        Err(e) => {
+            debug!(id, error = %e, "Name unavailable at session-establish time; frames will record no name for the device");
+            None
+        }
+    }
+}
+
 /// Locate the roster entry's device on its Alpaca server, hold it to the
 /// entry's identity pin, and switch it on: the shared routine behind
 /// every kind's startup connect and the reconnect supervisor's
@@ -509,6 +529,31 @@ mod tests {
             ("QHY5III678M", "QHY5III678M-guide"),
             ("QHY600M", "QHY600M-imaging"),
         ])
+    }
+
+    // ----- reported_name ----------------------------------------------
+
+    #[test]
+    fn a_reported_name_is_kept_as_the_device_reports_it() {
+        assert_eq!(
+            reported_name("main-focuser", Ok("ZWO EAF".to_string())).unwrap(),
+            "ZWO EAF"
+        );
+    }
+
+    #[test]
+    fn a_blank_or_unreadable_name_is_no_name() {
+        for read in [
+            Ok(String::new()),
+            Ok("  ".to_string()),
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED),
+        ] {
+            assert_eq!(
+                reported_name("main-focuser", read.clone()),
+                None,
+                "{read:?}"
+            );
+        }
     }
 
     // ----- select: the decision, without HTTP ------------------------
