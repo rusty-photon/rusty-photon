@@ -67,6 +67,9 @@ fn remember_captured_document_id(world: &mut RpWorld, name: String) {
         .last_document_id
         .clone()
         .expect("no captured document_id available");
+    if let Some(path) = world.last_image_path.clone() {
+        world.remembered_image_paths.insert(name.clone(), path);
+    }
     world.remembered_document_ids.insert(name, id);
 }
 

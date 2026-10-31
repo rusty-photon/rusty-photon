@@ -182,28 +182,6 @@ beyond the structural cards that describe the pixel array, the
 `DOC_ID` check is the one read rule 1 allows. These are not yet in
 line with the rules, each tracked by its own issue:
 
-- Lookups from disk do not confirm that a FITS file and its sidecar
-  belong together, and then work on the wrong files
-  ([#1491](https://github.com/rusty-photon/rusty-photon/issues/1491)):
-  - A lookup by `document_id` whose `DOC_ID` matches serves the
-    sidecar found beside the FITS file without comparing its `id`. A
-    sidecar from another frame, left there by a rename or by two
-    frames sharing a file stem, is served as this frame's record. A
-    FITS file whose `DOC_ID` is missing or cannot be read is served
-    on the sidecar's `id` alone, not refused.
-  - A lookup by path (`plate_solve`'s `image_path`) reads no
-    `DOC_ID`. It checks only that the sidecar's recorded `file_path`
-    has the requested file's name. The solve's `wcs` is then written
-    by looking the document up again by its `id`, so it can land in
-    another pair's sidecar, and for a file outside `data_directory`
-    it is dropped.
-  - After a lookup, its consumers use the sidecar's recorded
-    `file_path`, not the files found: `plate_solve`, the imaging
-    tools called with a `document_id` when the cache cannot hold the
-    frame, `put_section`'s disk fallback, and the image-info route's
-    `fits_path`. A frame whose pairs were copied to a new directory is
-    solved, measured and written at its old copy; one whose pairs were
-    moved fails, although the lookup found it.
 - [Progress derivation](#progress-derivation) takes a past frame's
   target, frame type, filter, binning and exposure time from its file
   and directory names, parsed through the naming patterns as
@@ -3177,9 +3155,31 @@ A `document_id` (the full UUID) resolves through this order:
    the sidecar's `id`: both must equal the requested full UUID. A
    candidate whose `DOC_ID` is missing or cannot be read, whose
    sidecar is missing or does not parse, or whose sidecar's `id`
-   differs, is refused ([Ground rules](#ground-rules), rule 1). Today's check is weaker; Ground rules lists the gap. On
+   differs, is refused ([Ground rules](#ground-rules), rule 1). On
    match, read both files, populate the cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
+
+A **lookup by path**, `plate_solve`'s `image_path`, confirms the same
+two facts without a scan: the requested file's `DOC_ID` and the `id`
+of the sidecar beside it (`<base>.fits` → `<base>.json`) must name the
+same document. The file may sit anywhere, inside `<data_directory>` or
+not (a frame archived to a NAS). A file with no sidecar, no readable
+`DOC_ID`, or a sidecar whose `id` differs has no record: its pixels
+are still solved, but nothing is read from that sidecar or written
+to it.
+
+**Consumers work on the files the lookup found.** A lookup returns the
+record together with the FITS file it confirmed, and everything after
+it uses that file and the sidecar beside it: `plate_solve` solves the
+file and writes its `wcs` beside it, the imaging tools read its pixels
+when the cache cannot hold the frame, a section update writes that
+sidecar, and `GET /api/images/{document_id}` reports the file as
+`fits_path`. The sidecar's `file_path` records where the frame was
+written at capture. It is history, not a locator: `rp` never opens a
+file by it, and it does not change when the pair is copied or moved.
+The cache remembers where it wrote or found each frame, so a pair
+moved while its frame is cached is still looked for at the old place
+until the entry leaves the cache.
 
 Ghost-match disambiguation runs only when multiple files in the data
 directory share an 8-char suffix. With UUID v4 entropy, the expected
@@ -3193,10 +3193,8 @@ under the old directory become unreachable by id even though their
 files remain on disk. This is intentional — the data directory is a
 contract, not an indexed pool. Operators wanting to bring old captures
 back into reach copy or move the relevant FITS+sidecar pairs into the
-current `<data_directory>`. Until the disk-lookup gap in
-[Ground rules](#ground-rules) is closed, the tools still work on the
-path each sidecar recorded at capture: on the old copy when the pairs
-were copied, and on no file at all when they were moved.
+current `<data_directory>`, and the tools then work on the pairs where
+they now are.
 
 #### Storage Type Selection (u16 vs i32)
 
@@ -3275,7 +3273,7 @@ we use `u16` whenever possible.
 |----------|---------|-------------|
 | `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
 | `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. |
-| `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. |
+| `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. `fits_path` is the file the lookup found, not the sidecar's recorded `file_path` ([Document Resolution](#document-resolution)). |
 | `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes in the Alpaca width-major order (`x` varies slowest: pixel `(x, y)` sits at index `x × height + y`). |
 
 Symmetry: `/pixels` serves the same wire format Alpaca cameras produce
@@ -6126,22 +6124,29 @@ exported from.
   from CDELT/CROTA2 (that would fabricate the image parity the CD
   determinant's sign encodes).
 
-**Persistence**:
-- `document_id` mode: writes a `wcs` section to the exposure
-  document via `ImageCache::put_section`. Section payload mirrors
-  the output verbatim.
-- `image_path` mode: before the solve, derives the sibling sidecar
-  path (`<base>.fits` → `<base>.json`) and resolves it to an
-  `ExposureDocument` via `ImageCache::resolve_document_by_path`; its
-  record supplies the hints above. If the sidecar exists and parses
-  (the **late-solve workflow**: capture frame N → start capture N+1
-  → solve frame N → update the original sidecar), `wcs` is written
-  via `put_section` after a successful solve. If no sidecar is
-  present (external FITS, missing sidecar, non-`.fits` path), the
-  frame is solved blind, the result is returned without persistence,
-  and the miss is `debug!()`-logged. `put_section` itself falls back to a
-  disk-only write when the cache entry is absent (post-eviction or
-  post-`rp` restart) so the sidecar always sees the section update.
+**Persistence**: a successful solve writes a `wcs` section, its
+payload mirroring the output verbatim, into the sidecar beside the
+file that was solved ([Document Resolution](#document-resolution)).
+It never looks the document up a second time, so the `wcs` cannot
+land in another copy of the frame.
+- `document_id` mode: the file is the one the lookup found and
+  confirmed, which is not necessarily the sidecar's recorded
+  `file_path`.
+- `image_path` mode: before the solve, the file is confirmed against
+  the sidecar beside it (`<base>.fits` → `<base>.json`) by
+  `ImageCache::resolve_document_by_path`: the file's `DOC_ID` and the
+  sidecar's `id` must name the same document. That record supplies
+  the hints above and receives the `wcs` (the **late-solve
+  workflow**: capture frame N → start capture N+1 → solve frame N →
+  update the original sidecar), wherever the file sits, inside
+  `<data_directory>` or not. A file without a confirmed record
+  (external FITS, missing sidecar, non-`.fits` path, no readable
+  `DOC_ID`, a sidecar holding another frame's record) is solved on
+  the call's own hints alone, so blind unless the call names a
+  position; the result is returned without persistence, and the miss
+  is `debug!()`-logged.
+- When the cache holds the solved frame, the entry is updated along
+  with its sidecar; otherwise only the sidecar is written.
 - Persistence failure (sidecar write error) is logged at `debug!()`
   and does *not* fail the tool — same shape as the imaging-tool
   convention.
@@ -6171,14 +6176,15 @@ exported from.
 2. Resolve `PlateSolveClient` from `AppState`. Error if absent.
 3. Resolve `fits_path` and the frame's record:
    - `document_id` mode: `ImageCache::resolve_document(doc_id)` →
-     `doc.file_path`, and the document itself.
+     the FITS file it found, and the document itself.
    - `image_path` mode: forward verbatim; the record is
      `ImageCache::resolve_document_by_path`'s, or none.
 4. Resolve the hints per the table above.
 5. Build `SolveRequest`, call `client.solve(req)`. Map `SolveError`
    variants to MCP errors per the policy above.
-6. On success, persist the `wcs` section to the record resolved in
-   step 3; debug-log when there is none.
+6. On success, write the `wcs` section into the sidecar beside the
+   file resolved in step 3 (`ImageCache::put_section_at`);
+   debug-log when there is no record.
 7. Return the solver output as the MCP tool result.
 
 **Compound caller note**: `center_on_target` calls the same handler
