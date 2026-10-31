@@ -45,7 +45,7 @@ tell a clean V from a guess.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
-| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Next — see the decision below | |
+| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | In progress — focus-model plan S9 | `feature/focus-model-s9-hyperbola` |
 | G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473) |
 | G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, aggregation over the N brightest stars — tracked under #1179 | After G2 | |
 
@@ -106,12 +106,22 @@ D13 step 5), and the confirmation frame is
 never reached because no fit is produced. Refusal and restore are the
 safety here, and an R² gate would add nothing: at the defaults no fit
 exists for it to judge, and at `min_fit_points` 3 three samples meet
-three parameters — today's parabola exactly, R² 1, and G2's
-hyperbola either exactly or not at all, since three observations need
-not admit a valid hyperbola. What the solver does at the minimum
-point count — an exact solution, or a fit failure on the ordinary
-path — is S9's to define; neither outcome is a poor fit for a gate to
-catch.
+three parameters — the parabola exactly, R² 1, and G2's hyperbola
+exactly when one passes through them. Three observations need not
+admit a hyperbola, and what the solver does then was S9's to define.
+
+*Settled in S9.* Where no hyperbola passes through three samples, the
+fit is the nearest V: the limit of the family as the focused HFR goes
+to 0, at an R² below 1. That is a fit, not a failure, and a
+configured threshold judges it like any other
+([focus-model.md § The sweep](../services/focus-model.md#the-sweep),
+step 4). Refusing it would refuse exactly the sweep a coarse grid
+makes, whose samples all sit far enough from focus that the floor
+never shows. The #1187 sweep is that case: at `min_fit_points` 3 its
+three accepted samples admit no hyperbola, and the nearest V centres
+at 29770, 4 steps from focus, at R² 0.99 — a fit a gate would pass,
+and a better one than the parabola's 21 steps. At the defaults
+nothing changes: three samples are refused before any fit.
 
 G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to

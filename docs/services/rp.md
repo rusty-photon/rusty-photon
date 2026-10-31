@@ -1808,7 +1808,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). Each sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits — a parabola on the capture sweep, the hyperbola on the guide-train sweep — then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). Each sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
 | `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
@@ -5396,10 +5396,11 @@ without having to know the focus algorithm.
 - `best_hfr` (f64) — fitted HFR at `best_position`, in pixels. A fit
   value, not a measurement — see `final_hfr`.
 - `fit_r_squared` (f64) — weighted coefficient of determination of
-  the parabola over the accepted samples (`1.0` is a perfect fit; a
-  sweep whose wings were sparse fragments scores near `0`).
-  Reported, not enforced — a threshold waits for the hyperbolic
-  model (see Caveats).
+  the fitted curve over the accepted samples, clamped to `[0, 1]`
+  (`1.0` is a perfect fit; a sweep whose wings were sparse fragments
+  scores near `0`): the parabola's on the capture sweep, the
+  hyperbola's on the guide-train sweep. Reported, not enforced, on
+  either sweep (see Caveats).
 - `confirmation` —
   `{document_id: string, hfr: f64 | null, star_count: u32, accepted: bool}`:
   the fresh frame captured at `best_position` after the move, and
@@ -5651,9 +5652,12 @@ and read their `image_analysis` sections.
   [Third-party alternatives](#third-party-alternatives).
   `fit_r_squared` is reported so an orchestrator can judge the fit,
   but not enforced: a parabola scores about `0.7` on a clean,
-  asymmetric fine sweep, so a threshold would reject good runs
-  until the hyperbolic model lands
-  ([plan](../plans/auto-focus-sample-gating.md)).
+  asymmetric fine sweep, so a threshold would reject good runs.
+  The guide-train sweep here fits the hyperbolic model, and so does
+  the focus-model provider's capture sweep, which replaces this one.
+  Its threshold is the provider's `min_fit_r_squared`, unset by default
+  ([plan](../plans/auto-focus-sample-gating.md), G2). This sweep keeps
+  the parabola until the focus-model plan's S7 retires it.
 - The confirmation frame costs one exposure per run and is always
   taken. It catches a fit that landed away from the measured
   minimum; it cannot catch a sweep whose every sample was dense yet
@@ -5760,7 +5764,18 @@ null sample — at deep defocus the star genuinely vanishes, so null
 samples at the sweep edges are the expected bracket shape, exactly
 like starless captures in the capture sweep.
 
-Fit, confirmation, recovery, and result mirror the capture sweep:
+Fit, confirmation, recovery, and result mirror the capture sweep,
+except for the curve. The metric sweep fits the hyperbola
+`hfd = a·√(1 + ((x − x₀)/b)²)`, the defocus curve of a star, with
+[`rp-focus-curve`](../crates/rp-focus-curve.md), the fit the
+focus-model provider's capture sweep uses
+([focus-model.md § The sweep](focus-model.md#the-sweep), step 4,
+which covers what it does with three samples). `best_position` is `x₀`
+rounded to a step and `best_hfd` is `a`. A centre outside the sampled
+grid is `monotonic_curve`, as the parabola's vertex was. `fit_r_squared`
+is reported with no threshold and no `poor_fit`: the threshold is
+the provider's `min_fit_r_squared`, and this sweep has no knob for one
+([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).
 `min_fit_points` valid samples required; samples weighted by their
 valid-frame count — the capture sweep's star-count weighting, one
 metric over; `not_enough_stars` / `monotonic_curve` errors restore

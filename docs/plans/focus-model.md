@@ -70,13 +70,13 @@ once and kept.
 | S5 | `focus-model`: `determine_filter_offsets` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
 | S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
-| S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | In progress | `feature/focus-model-s8-obstruction` ([#1673](https://github.com/rusty-photon/rusty-photon/pull/1673)) |
-| S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
+| S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Merged | [#1673](https://github.com/rusty-photon/rusty-photon/pull/1673) |
+| S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2), the fit shared through the `rp-focus-curve` crate | In progress | `feature/focus-model-s9-hyperbola` |
 | S10 | = [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Merged — the reconciliation with C7 was settled on 2026-10-13: the guide-train sweep is a training run of `focus_train` ([device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) D12, "Settled in C7"), and it does not wait for S7. C7a, the design, C7b, the facade's sweep lease, C7c, rp's train lease and the gate change, and this plan's own part, C7d, the training run on a guiding train ([focus-model.md](../services/focus-model.md) § Training runs on a guiding train), merged; C7e, the shared focuser focused through the imaging camera alone (O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
 | S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
-S1 to S6 and S10 are merged, and S8 is in progress. S7 waits for a
-rig night on S4.
+S1 to S6, S8 and S10 are merged, and S9 is in progress. S7 waits for
+a rig night on S4.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
 ordered by what they unblock: S8 is `rp` reads plus a sizing change;
@@ -326,7 +326,7 @@ unit's `StateDirectory=`).
   train's obstruction. The records validate both; they select
   neither (D5, D9, gating plan G2). A failed run is recorded too, with `outcome` naming the
   sweep's error (`not_enough_stars`, `monotonic_curve`, `poor_fit`
-  once S9 lands the threshold, `cancelled`,
+  for a fit below the train's `min_fit_r_squared` since S9, `cancelled`,
   or `error` with the text in `error`) and null where it measured
   nothing: the run an operator wants to see the morning after is the
   one that failed. `confirmed` and `fallback` are the two successful
@@ -670,11 +670,16 @@ semantics `rp`'s capture sweep has today:
    best count (`rejected: "sparse"`).
 3. Fit the accepted points, weighted by star count; report
    `fit_r_squared`. S4 shipped `rp`'s weighted parabola, ported and
-   proven on the rig's recorded sweeps; S9 replaces it with the
+   proven on the rig's recorded sweeps; S9 replaced it with the
    hyperbola `a·√(1 + ((x − x₀)/b)²)` of the sample-gating plan's G2
    (the centre written `x₀` in both plans so it does not collide with
-   D9's blur constant `c`), here and not in `rp`'s capture
-   sweep, which S7 retires. The vertex bound carries over unchanged:
+   D9's blur constant `c`), here and in `rp`'s guide-metric sweep,
+   which share the fit through the `rp-focus-curve` crate, and not in
+   `rp`'s capture sweep, which S7 retires. Three accepted samples, the
+   fewest a fit takes, are fitted exactly when a hyperbola passes
+   through them and otherwise as the nearest V, a focused HFR of 0, at
+   an R² below 1 — a fit, never a failure (gating plan G2,
+   *Settled in S9*). The vertex bound carries over unchanged:
    an `x₀` outside the range of the accepted samples is
    `monotonic_curve` before the move to the vertex — the grid has
    been walked by then; it is the fitted position that is never
@@ -684,15 +689,19 @@ semantics `rp`'s capture sweep has today:
    centre, and the R² knob is unset by default; S9's fit tests cover
    that case. `min_fit_r_squared` rejects a fit below
    it and defaults to unset: the quality is reported, never enforced,
-   until a train's own numbers justify a threshold. A rejection is a
+   until a train's own numbers justify a threshold. A centre outside
+   the samples is `monotonic_curve` before the threshold is consulted,
+   so a one-wing fit still shifts. A rejection is a
    fit failure like the other two and takes their path exactly —
    outcome `poor_fit` on the run, the measured `fit_r_squared` beside
    it and the samples retained in `curve_points` as for any fit
    failure, retried up to `max_attempts` with the centre
    held (there is nothing to shift toward: the curve has a minimum,
    it is just not V-shaped enough), and D6's put-back on the last
-   attempt. S9 adds it to D3's outcome list; a thresholded failure
-   must be as deterministic for a consumer as `not_enough_stars`.
+   attempt. S9 added it to D3's outcome list; a thresholded failure
+   must be as deterministic for a consumer as `not_enough_stars`, so
+   its error names the R² and the threshold, and the recorded run
+   carries the R² it was refused on.
 4. Move to the vertex and take a confirmation frame; accept it within
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
@@ -1047,10 +1056,10 @@ that is not a fact of the optics: the exposure and the star-detection
 parameters, the gate and confirmation knobs, and the two overrides. A
 train absent from the map uses every default and must have complete
 optics. **The example above is the target schema, not today's**:
-`min_fit_r_squared` and `temperature_sensor` arrive with S9 and S11,
-and `TrainConfig` sets `deny_unknown_fields`, so copying the block
-verbatim into a running provider fails at load until those slices
-land. Both are deliberately null by default and stay that way unless a
+`min_fit_r_squared` arrived with S9 and `temperature_sensor` arrives
+with S11, and `TrainConfig` sets `deny_unknown_fields`, so copying the
+block verbatim into a running provider fails at load until S11
+lands. Both are deliberately null by default and stay that way unless a
 rig earns them: `min_fit_r_squared` enforces a fit-quality
 floor that is only meaningful once a train's own sweeps have been
 seen (S9, O2's sibling argument), and `temperature_sensor` names
