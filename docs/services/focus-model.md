@@ -64,8 +64,9 @@ anything except through `rp`'s tools. The decision record is the
    focus is; a failed run is the one an operator reads the morning
    after.
 6. **Stale means unknown.** A record whose focuser, camera, filter
-   set or optics no longer match the train predicts nothing, is
-   reported stale naming the field, and is replaced by the next write.
+   set, optics or temperature sensor no longer match the train predicts
+   nothing, is reported stale naming the field, and is replaced by the
+   next write.
    A fact the train does not report is not a change. Age alone is not
    a criterion.
 7. **No actuation at startup.** The provider answers `tools/list` with
@@ -166,10 +167,13 @@ Focuses a train: predicts the start, sizes and walks the sweep,
 confirms, records.
 
 1. Resolves the train and its `optics`; reads the focuser's position
-   (with its bounds) and temperature, and the wheel's current filter
+   (with its bounds), the train's temperature ([The temperature
+   source](#the-temperature-source)) and the wheel's current filter
    when the train has a wheel. A temperature read that fails is no
    reading, not a failed call: it is a term of the prediction, and
-   the sweep runs without it. A `filter` argument must name a wheel
+   the sweep runs without it. A `temperature_sensor` on a train whose
+   own focuser reports a temperature is refused here, naming both
+   focusers. A `filter` argument must name a wheel
    filter; on a train without a wheel it is an error. The sweep's
    filter is the argument when given, else the current one, else
    null on a filterless train. A guiding train whose terminal focuser
@@ -592,7 +596,8 @@ sweep, naming the missing fact; a `filter` not on the wheel.
 
 The model, judged against the live train: `model` (`fresh`, `stale:
 …` or `empty`), `stale` (every changed field), the identity
-(`focuser_id`, `camera_id`, `filters`, `optics`), `reference_filter`,
+(`focuser_id`, `camera_id`, `filters`, `optics`,
+`temperature_sensor`), `reference_filter`,
 `offsets`, `temperature_coefficient` with `coefficient_runs`,
 `coefficient_span_c` and `coefficient_offsets`, `last_good` (one entry
 per filter), the run
@@ -630,8 +635,11 @@ being differences between filters. The record also takes on the train
 as it stands, which is the point of the tool after a swap the record
 cannot see; `adopted` names every identity field it took over, so an
 operator reading the result sees that the offsets it kept were
-measured on the old one. Returns `dropped`, `kept`, `adopted` and the
-model. A train with no record is an error naming it, and so is a
+measured on the old one. Naming a `temperature_sensor`, changing it
+or removing it is such a change: the reset takes the new sensor on and
+keeps the offsets, which no temperature entered. Returns `dropped`,
+`kept`, `adopted` and the model. A train with no record is an error
+naming it, and so is a
 reset while a focus run is in flight: the sweep would append its run
 to the record the reset had just emptied.
 
@@ -798,6 +806,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
+| A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, and each sweep of `determine_filter_offsets`) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
@@ -936,8 +945,9 @@ starts where the focuser is. When the anchor is on another filter and
 either offset is missing, the target filter's own `last_good` entry is
 the anchor instead, its offset terms cancelling; without one there is
 no prediction, `missing: ["offset"]`. No coefficient or no temperature
-reading means no temperature term, `missing:
-["temperature_coefficient"]` or `["temperature"]`. The offsets are
+reading ([The temperature source](#the-temperature-source)) means no
+temperature term, `missing: ["temperature_coefficient"]` or
+`["temperature"]`. The offsets are
 whole steps; the temperature term is rounded to the nearest step. The
 coefficient is what `calibrate_temperature` fits over the record's
 confirmed runs.
@@ -951,6 +961,59 @@ focus (`skipped: "within 13 steps of the current position"`); one
 outside the focuser's bounds is not moved to either (`skipped:
 "outside the focuser's bounds [0, 60000]"`). The sweep then runs from
 the current position.
+
+## The temperature source
+
+Every temperature the provider reads or records comes from one probe:
+the train's terminal focuser, or the focuser
+`trains.<id>.temperature_sensor` names when the train's own focuser has
+none. That one reading serves three purposes:
+
+- it is `temperature_now` in the [predicted start](#the-predicted-start);
+- it is the `temperature_c` each run records and each `last_good` entry
+  keeps;
+- through those, it is what `calibrate_temperature` fits.
+
+So a coefficient is never fitted across two sensors. The source is read
+once at the start of each sweep, in `focus_train` and in every sweep
+`determine_filter_offsets` runs, through `rp`'s
+`get_focuser_temperature`, which reports null for a focuser without a
+probe.
+
+- **No `temperature_sensor`.** The reading is the train's terminal
+  focuser's. A focuser without a probe, or a read that fails, gives no
+  reading.
+- **A `temperature_sensor`.** The train's own focuser is read first.
+  - *It reports a temperature.* The call is refused before anything
+    moves, naming both focusers
+    ([Errors](#errors)). A session refocuses when the train's own
+    focuser reports a temperature change: `deep_sky.json` compares
+    each focus result's `temperature_c` with `temperature_changed`
+    events from that focuser. A stand-in on a focuser that has a probe
+    would put the baseline on one sensor and the trigger on another.
+    The refusal comes before the sweep is planned, so no run is
+    recorded.
+  - *It reports none.* The named focuser is read, and its reading is
+    the sweep's. If the named focuser has no probe either, or its read
+    fails, there is no reading.
+  - *Its read fails.* There is no reading at all. The provider cannot
+    tell a focuser without a probe from one whose probe failed for a
+    moment, so it reads neither.
+
+The setting is **prediction-only**. `rp` still emits
+`temperature_changed` per focuser, and the session's refocus rule
+still follows the train's own focuser, so a train without a probe gets
+no automatic refocus on temperature, whatever it names here. There is
+no implicit fallback either: a train that names nothing and has no
+probe keeps reporting `missing: ["temperature"]`. A coefficient fitted
+to a sensor that lags the tube is worse than none, and its source
+would be invisible in the record.
+
+The sensor is part of the record's identity ([Store](#store)). Naming
+a stand-in, changing it or removing it makes the record stale, like a
+camera swap. The record then predicts nothing until the next write
+replaces it, or `reset_focus_model` takes the new sensor on and keeps
+the offsets.
 
 ## The sweep
 
@@ -1148,7 +1211,11 @@ file written by a newer build.
   reported it: `{focal_length_mm, aperture_mm, obstruction_mm,
   microns_per_step, pixel_size_um, filter_wavelengths_nm}`, the last a
   filter name → nanometres-or-null map — the whole block null on a
-  record written before the store kept it; `reference_filter` (or
+  record written before the store kept it; `temperature_sensor`, the
+  focuser `trains.<id>.temperature_sensor` named when the readings were
+  taken, null for the train's own terminal focuser (null on a record
+  written before the store kept it too, whose readings all came from
+  the train's own focuser); `reference_filter` (or
   null); `offsets` (filter name → steps
   relative to the reference, the reference at 0);
   `temperature_coefficient` (steps per °C, or null) with
@@ -1186,7 +1253,9 @@ file written by a newer build.
   runs go first under either, and the newest run is kept whole.
 - **Staleness.** A record is stale when `focuser_id`, `camera_id`, the
   filter-name set or one of its optical facts differs from what
-  `get_train_info` reports now. The filters are a set: the same names
+  `get_train_info` reports now, or its `temperature_sensor` differs
+  from the one the train's config names now ([The temperature
+  source](#the-temperature-source)). The filters are a set: the same names
   in another wheel order are the same optics, and every offset and
   last good focus is keyed by name, not by position. The optical
   facts follow two rules (plan O8):
@@ -1211,7 +1280,9 @@ file written by a newer build.
   `none`: `aperture_mm changed from 90 to 100`, `obstruction_mm changed
   from none to 68`. The wavelengths are one field naming only the
   filters whose wavelength moved, each as `<filter> <nm>`:
-  `filter_wavelengths_nm changed from Ha 656 to Ha 656.3`. A
+  `filter_wavelengths_nm changed from Ha 656 to Ha 656.3`. The sensor
+  is compared as written, null included: `temperature_sensor changed
+  from none to oag-focuser`. A
   stale record predicts nothing and is replaced by the next write:
   `focus_train` writes a fresh record holding that run
   alone and reports `model: "reset: …"`; `set_focus_offsets` writes a
@@ -1226,7 +1297,8 @@ file written by a newer build.
   record did not know and the train now reports is taken on, and one
   the train no longer reports is kept, so the identity only ever
   fills in. A fresh record, and the one `reset_focus_model` adopts,
-  take the train's optics as they stand. `focus_train` appends a
+  take the train's optics and its configured `temperature_sensor` as
+  they stand. `focus_train` appends a
   run and, on a confirmed result, the filter's `last_good` entry; `set_focus_offsets` writes the
   reference and offsets; `reset_focus_model` drops the runs,
   `last_good` and the coefficient. `determine_filter_offsets` appends each sweep's run and last good
@@ -1265,7 +1337,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
       "duration": "3s", "min_area": 4, "max_area": 500,
       "threshold_sigma": null, "frames_per_step": 1,
       "min_fit_points": 5, "min_star_fraction": 0.1,
-      "min_fit_r_squared": null,
+      "min_fit_r_squared": null, "temperature_sensor": null,
       "confirmation_tolerance": 0.25, "max_attempts": 2,
       "step_size": null, "half_width": null
     }
@@ -1294,6 +1366,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |
 | `trains.<id>.min_star_fraction` | float | 0.1 | The sparse gate, in `[0, 1)`; 0 disables it |
 | `trains.<id>.min_fit_r_squared` | float or null | null | The fit-quality floor, in `[0, 1]`: a fit whose R² is below it fails as `poor_fit` ([The sweep](#the-sweep), step 4). Null reports the R² and enforces nothing. The ends are legal and mean what they say: 0 accepts every fit, the same as null but written down, and 1 accepts only an exact one |
+| `trains.<id>.temperature_sensor` | string or null | null | The id of another focuser in `rp` whose temperature probe stands in for the train's own focuser, which has none ([The temperature source](#the-temperature-source)). The operator asserts that the reading represents this train's thermal path. A train whose own focuser reports a temperature refuses every sweep while this is set. Part of the record's identity. Not empty |
 | `trains.<id>.confirmation_tolerance` | float | 0.25 | How much worse than the lowest sample the confirmation frame may measure; at least 0 |
 | `trains.<id>.max_attempts` | int | 2 | Sweeps a run may make; 1 to 5 |
 | `trains.<id>.step_size` / `half_width` | int or null | null | Override the derived sweep; positive |

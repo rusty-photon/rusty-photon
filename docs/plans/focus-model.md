@@ -71,11 +71,11 @@ once and kept.
 | S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Merged | [#1673](https://github.com/rusty-photon/rusty-photon/pull/1673) |
-| S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2), the fit shared through the `rp-focus-curve` crate | In progress | `feature/focus-model-s9-hyperbola` ([#1675](https://github.com/rusty-photon/rusty-photon/pull/1675)) |
+| S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2), the fit shared through the `rp-focus-curve` crate | Merged | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
 | S10 | = [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Merged — the reconciliation with C7 was settled on 2026-10-13: the guide-train sweep is a training run of `focus_train` ([device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) D12, "Settled in C7"), and it does not wait for S7. C7a, the design, C7b, the facade's sweep lease, C7c, rp's train lease and the gate change, and this plan's own part, C7d, the training run on a guiding train ([focus-model.md](../services/focus-model.md) § Training runs on a guiding train), merged; C7e, the shared focuser focused through the imaging camera alone (O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
-| S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
+| S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | In progress | `feature/focus-model-s11-temperature-sensor` |
 
-S1 to S6, S8 and S10 are merged, and S9 is in progress. S7 waits for
+S1 to S6 and S8 to S10 are merged, and S11 is in progress. S7 waits for
 a rig night on S4.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
@@ -1055,11 +1055,8 @@ the coefficient, keeps the reference and offsets, returns `dropped`,
 that is not a fact of the optics: the exposure and the star-detection
 parameters, the gate and confirmation knobs, and the two overrides. A
 train absent from the map uses every default and must have complete
-optics. **The example above is the target schema, not today's**:
-`min_fit_r_squared` arrived with S9 and `temperature_sensor` arrives
-with S11, and `TrainConfig` sets `deny_unknown_fields`, so copying the
-block verbatim into a running provider fails at load until S11
-lands. Both are deliberately null by default and stay that way unless a
+optics. `min_fit_r_squared` arrived with S9 and `temperature_sensor`
+with S11. Both are deliberately null by default and stay that way unless a
 rig earns them: `min_fit_r_squared` enforces a fit-quality
 floor that is only meaningful once a train's own sweeps have been
 seen (S9, O2's sibling argument), and `temperature_sensor` names
