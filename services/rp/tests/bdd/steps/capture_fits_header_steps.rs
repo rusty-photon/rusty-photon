@@ -44,6 +44,7 @@ async fn rp_running_with_fully_equipped_rig(world: &mut RpWorld) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: Some("Takahashi FSQ-106EDX4".to_string()),
         aperture_mm: Some(106.0),
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(530.0),

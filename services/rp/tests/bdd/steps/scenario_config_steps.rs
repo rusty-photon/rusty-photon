@@ -89,3 +89,18 @@ fn config_file_json_string_at(world: &mut RpWorld, pointer: String, expected: St
         "unexpected on-disk value at {pointer}; file was: {on_disk}"
     );
 }
+
+/// Any JSON value on disk, a number included, which the string step
+/// above cannot carry.
+#[then(regex = r#"^the config file at "([^"]+)" should hold the JSON (.+)$"#)]
+fn config_file_json_at(world: &mut RpWorld, pointer: String, expected: String) {
+    let expected: Value = serde_json::from_str(&expected).expect("the expected value must be JSON");
+    let on_disk = scenario_config_value(world);
+    let actual = on_disk
+        .pointer(&pointer)
+        .unwrap_or_else(|| panic!("no value at {pointer}; file was: {on_disk}"));
+    assert!(
+        crate::steps::event_steps::json_values_match(actual, &expected),
+        "expected {pointer} to be {expected}, got {actual}; file was: {on_disk}"
+    );
+}

@@ -190,6 +190,7 @@ fn guiding_rig(world: &mut FocusModelWorld, camera_url: &str, wheel: bool) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: Some(APERTURE_MM),
+        obstruction_mm: None,
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: Some(FOCAL_LENGTH_MM),

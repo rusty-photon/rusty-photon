@@ -110,6 +110,7 @@ fn push_imaging_train(world: &mut RpWorld, default_position_angle_degrees: Optio
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,

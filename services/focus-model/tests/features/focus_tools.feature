@@ -7,11 +7,14 @@ Feature: Focus tools served through rp
   terminal focuser, camera, filter wheel and optical facts through rp's
   own get_train_info; the provider then drives the sweep by calling
   rp's primitive tools as an MCP client. The sweep is sized from the
-  critical focus zone of the optics at the filter's wavelength, its
+  critical focus zone of the optics at the filter's wavelength and the
+  HFR growth the train's central obstruction sets, its
   start is predicted from the remembered focus plus the filter offset
   and temperature terms the record can supply, and every run — the
   ones that fail included — is recorded with its curve points, its
-  prediction and its outcome. A sweep that fails after every attempt
+  prediction and its outcome. A record measured through another
+  camera, focuser, filter set or optics is stale and predicts nothing;
+  an optical fact either side does not know is no change. A sweep that fails after every attempt
   puts the focuser back where the call found it. Because focus_train
   is declared a focus tool in the registration, rp brackets each call
   with the focus event triple it emits around its own sweeps.
@@ -51,11 +54,14 @@ Feature: Focus tools served through rp
     And the safety status should not list "set_focus_offsets" as gated
     And the safety status should not list "reset_focus_model" as gated
 
-  # The reference rig: 500 mm at f/5, a 5.6 µm camera and a 2.5 µm/step
-  # focuser at 550 nm. CFZ = 4.88 × 0.55 × 25 = 67.1 µm = 26.84 steps;
-  # the blur geometry predicts 3.125 px per 100 steps; 2.5" seeing at
-  # 2.31"/px is a 0.54 px focused HFR, so the sweep reaches 4× that at
-  # a half width of 68, and nine samples across it step by 17.
+  # The reference rig: an unobstructed 500 mm at f/5, a 5.6 µm camera
+  # and a 2.5 µm/step focuser at 550 nm. CFZ = 4.88 × 0.55 × 25 =
+  # 67.1 µm = 26.84 steps; the blur constant of an unobstructed aperture
+  # is 0.5 × √(1/2) = 0.3536, so the geometry predicts 3.157 px per 100
+  # steps; 2.5" seeing at 2.31"/px is a 0.54 px focused HFR, so the
+  # sweep reaches 4× that at a half width of 67. Nine samples across it
+  # would step by 16.75, so the step is 17 and the 134-step spread holds
+  # eight of them.
   Scenario: get_sweep_plan derives the sweep from the train's optics
     Given a running Alpaca simulator
     And the focuser is configured with microns_per_step 2.5
@@ -64,13 +70,33 @@ Feature: Focus tools served through rp
     When the MCP client calls "get_sweep_plan" with {"train_id": "main"}
     Then the tool call should succeed
     And the tool result at "/source" should be the JSON "derived"
-    And the tool result at "/half_width" should be the JSON 68
+    And the tool result at "/half_width" should be the JSON 67
     And the tool result at "/step_size" should be the JSON 17
-    And the tool result at "/points" should be the JSON 9
+    And the tool result at "/points" should be the JSON 8
     And the tool result at "/wavelength_nm" should be the JSON 550.0
-    And the tool result at "/predicted_slope" should be the JSON 3.125
+    And the tool result at "/predicted_slope" should be the JSON 3.1567267017
+    And the tool result at "/optics/obstruction_ratio" should be the JSON 0.0
     And the tool result at "/measured_slope" should be the JSON null
     And the tool result at "/configured" should be the JSON null
+
+  # The same rig with a 50 mm obstruction on its 100 mm aperture: ε = 0.5
+  # puts the blur constant at 0.5 × √(1.25/2) = 0.3953, so a defocused
+  # star grows faster, 3.529 px per 100 steps, and the sweep reaches 4×
+  # the focused HFR at a half width of 60, nine samples stepping by 15.
+  Scenario: An obstructed train's steeper wing sizes a narrower sweep
+    Given a running Alpaca simulator
+    And the focuser is configured with microns_per_step 2.5
+    And the train is configured with an obstruction of 50.0 mm
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_sweep_plan" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/optics/obstruction_mm" should be the JSON 50.0
+    And the tool result at "/optics/obstruction_ratio" should be the JSON 0.5
+    And the tool result at "/predicted_slope" should be the JSON 3.5293277457
+    And the tool result at "/half_width" should be the JSON 60
+    And the tool result at "/step_size" should be the JSON 15
+    And the tool result at "/points" should be the JSON 9
 
   # No microns_per_step in the config: the focuser's ASCOM StepSize,
   # 20 µm on the simulator, is the fact instead. The coarser step
@@ -290,6 +316,53 @@ Feature: Focus tools served through rp
     Then the tool call should succeed
     And the tool result at "/model" should be the JSON "fresh"
     And the tool result at "/camera_id" should be the JSON "main-cam"
+
+  # The optics are identity too: a record measured at another aperture
+  # is stale like one measured through another camera, and the next run
+  # replaces it with a record that holds the train's optics.
+  Scenario: A record trained at another aperture is stale and the next run resets it
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And a stored focus model for train "main" trained at an aperture of 90.0 mm
+    And the focus provider is configured for train "main" with max_attempts "1"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "stale: aperture_mm changed from 90 to 100"
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "fresh"
+    And the tool result at "/runs_recorded" should be the JSON 1
+    And the tool result at "/optics/aperture_mm" should be the JSON 100.0
+
+  # A record that holds no optics, as one written before the store kept
+  # them does, is compared on nothing: it stays fresh and still predicts,
+  # and its next run fills the optics in rather than resetting it.
+  Scenario: A record that holds no optics stays fresh and takes the train's on its next run
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And a stored focus model for train "main" with a last good position of 25200
+    And the focus provider is configured for train "main" with max_attempts "1"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "fresh"
+    And the tool result at "/optics" should be the JSON null
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "fresh"
+    And the tool result "/last_good" should have 1 entries
+    And the tool result at "/optics/focal_length_mm" should be the JSON 500.0
+    And the tool result at "/optics/aperture_mm" should be the JSON 100.0
+    And the tool result at "/optics/obstruction_mm" should be the JSON null
+    And the tool result at "/optics/pixel_size_um" should be the JSON 5.6
+    And the tool result at "/optics/filter_wavelengths_nm" should be the JSON {"Luminance": null, "Ha": null}
 
   Scenario: Offsets are entered by hand and validated against the wheel
     Given a running Alpaca simulator

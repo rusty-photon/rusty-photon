@@ -145,6 +145,7 @@ async fn rp_with_guiding_train_and_two_imaging_trains(world: &mut RpWorld) {
         world.optical_trains.push(OpticalTrainConfig {
             telescope: None,
             aperture_mm: None,
+            obstruction_mm: None,
             id: id.to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: Some(500.0),
@@ -497,6 +498,7 @@ fn push_guiding_train_for_camera(world: &mut RpWorld, focal_length_mm: Option<f6
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm,

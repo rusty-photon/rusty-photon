@@ -220,6 +220,9 @@ pub struct OpticalTrainConfig {
     /// Clear aperture of the light path in millimetres (rp.md § Train
     /// optics). `None` ⇒ omit the field.
     pub aperture_mm: Option<f64>,
+    /// Central obstruction of the light path, a diameter in millimetres
+    /// (rp.md § Train optics). `None` ⇒ omit the field (unobstructed).
+    pub obstruction_mm: Option<f64>,
     /// Effective focal length of the light path in millimetres.
     /// `None` ⇒ omit the field (captures through this train's camera
     /// record no focal length or anything derived from one).
@@ -850,6 +853,9 @@ impl RpConfigBuilder {
                 if let Some(a) = t.aperture_mm {
                     set_key(&mut obj, "aperture_mm", serde_json::json!(a));
                 }
+                if let Some(o) = t.obstruction_mm {
+                    set_key(&mut obj, "obstruction_mm", serde_json::json!(o));
+                }
                 if let Some(a) = t.default_position_angle_degrees {
                     set_key(
                         &mut obj,
@@ -1127,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn focuser_microns_per_step_and_train_aperture_are_emitted_only_when_set() {
+    fn focuser_microns_per_step_and_train_optics_are_emitted_only_when_set() {
         let mut b = RpConfigBuilder::new();
         b.add_focuser(FocuserConfig {
             id: "main-focuser".to_string(),
@@ -1143,6 +1149,7 @@ mod tests {
             id: "main".to_string(),
             purpose: None,
             aperture_mm: Some(200.0),
+            obstruction_mm: Some(68.0),
             focal_length_mm: Some(1000.0),
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
@@ -1151,6 +1158,10 @@ mod tests {
         let cfg = b.build();
         assert_eq!(cfg["equipment"]["focusers"][0]["microns_per_step"], 2.5);
         assert_eq!(cfg["equipment"]["optical_trains"][0]["aperture_mm"], 200.0);
+        assert_eq!(
+            cfg["equipment"]["optical_trains"][0]["obstruction_mm"],
+            68.0
+        );
 
         let bare = RpConfigBuilder::new().build();
         let focusers = bare["equipment"]["focusers"].as_array().unwrap();
@@ -1168,6 +1179,7 @@ mod tests {
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
             aperture_mm: None,
+            obstruction_mm: None,
             focal_length_mm: Some(1000.0),
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
@@ -1188,6 +1200,7 @@ mod tests {
             id: "guide".to_string(),
             purpose: None,
             aperture_mm: None,
+            obstruction_mm: None,
             focal_length_mm: None,
             default_position_angle_degrees: None,
             devices: vec!["guide-cam".to_string()],
@@ -1222,6 +1235,10 @@ mod tests {
         assert!(
             trains[1].get("focal_length_mm").is_none(),
             "a None focal length must omit the field (no optics block)"
+        );
+        assert!(
+            trains[1].get("obstruction_mm").is_none(),
+            "a None obstruction must omit the field (unobstructed)"
         );
         assert!(
             trains[1].get("auto_focus").is_none(),

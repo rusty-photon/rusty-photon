@@ -26,12 +26,16 @@ Feature: Optical trains configuration
   calibrator may only be the first device of a train and a train holds
   at most one; the same calibrator may be first in several trains.
   get_train_info describes a train's resolved members without touching
-  a device, with the train's optics — focal_length_mm and aperture_mm
-  from the train, the terminal camera's pixel size, the terminal
-  focuser's microns_per_step (configured, else the driver's StepSize
-  read once when the focuser session is established), the derived
-  focal_ratio and pixel_scale_arcsec_per_pixel, each null when unknown
-  — and the wavelengths of the filters whose entry carries one.
+  a device, with the train's optics — focal_length_mm, aperture_mm and
+  obstruction_mm from the train, the terminal camera's pixel size, the
+  terminal focuser's microns_per_step (configured, else the driver's
+  StepSize read once when the focuser session is established), the
+  derived focal_ratio, obstruction_ratio and
+  pixel_scale_arcsec_per_pixel, each null when unknown, the
+  obstruction ratio being 0.0 on a train with an aperture and no
+  obstruction — and the wavelengths of the filters whose entry carries
+  one. The obstruction is a diameter: not negative, and smaller than
+  the aperture when the train configures one.
   get_refocus_plan returns the AF sequence a refocus of the train runs,
   as a read: shared focusers upstream-first, each run in the train where
   it is terminal, then the train's own focuser, a guiding-train step
@@ -415,6 +419,8 @@ Feature: Optical trains configuration
     When the MCP client calls "get_train_info" with train "main"
     Then the tool result at "/optics/focal_length_mm" should be the JSON 1000.0
     And the tool result at "/optics/aperture_mm" should be the JSON 200.0
+    And the tool result at "/optics/obstruction_mm" should be the JSON null
+    And the tool result at "/optics/obstruction_ratio" should be the JSON 0.0
     And the tool result at "/optics/focal_ratio" should be the JSON 5.0
     And the tool result at "/optics/pixel_size_um" should be the JSON 5.6
     And the tool result optics pixel scale should equal 206.265 times pixel size over focal length
@@ -422,12 +428,23 @@ Feature: Optical trains configuration
     And the tool result at "/filters" should be the JSON ["Luminance", "Red", "Green", "Blue"]
     And the tool result at "/filter_wavelengths_nm" should be the JSON {"Luminance": null, "Red": null, "Green": null, "Blue": 450.0}
 
+  # An SCT's secondary: 68 mm across a 200 mm aperture is a ratio of 0.34.
+  Scenario: get_train_info reports a train's central obstruction and its ratio
+    Given a running Alpaca simulator
+    And the train is configured with an obstruction of 68.0 mm
+    And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool result at "/optics/obstruction_mm" should be the JSON 68.0
+    And the tool result at "/optics/obstruction_ratio" should be the JSON 0.34
+
   # The sidecar copies the train's facts in at capture, so a past frame
   # keeps the values in force when it was taken (rp.md, Core Fields).
   Scenario: A capture records its train's devices and optics and the slot and wavelength of its filter
     Given a running Alpaca simulator
     And the focuser is configured with microns_per_step 2.5
     And the filter wheel's "Blue" filter is configured at 450.0 nm
+    And the train is configured with an obstruction of 68.0 mm
     And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
     And an MCP client connected to rp
     When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Blue"
@@ -440,6 +457,7 @@ Feature: Optical trains configuration
     And the document at "/filter_wavelength_nm" should be the JSON 450.0
     And the document at "/optics/focal_length_mm" should be the JSON 1000.0
     And the document at "/optics/aperture_mm" should be the JSON 200.0
+    And the document at "/optics/obstruction_mm" should be the JSON 68.0
     And the document at "/optics/microns_per_step" should be the JSON 2.5
 
   Scenario: A capture records the driver's StepSize when the config omits microns_per_step
@@ -450,6 +468,7 @@ Feature: Optical trains configuration
     And I fetch the document for the captured document_id
     Then the document response status should be 200
     And the document at "/optics/microns_per_step" should be the JSON 20.0
+    And the document should have no value at "/optics/obstruction_mm"
 
   Scenario: microns_per_step falls back to the driver's StepSize when the config omits it
     Given a running Alpaca simulator
@@ -475,6 +494,8 @@ Feature: Optical trains configuration
     When the MCP client calls "get_train_info" with train "main"
     Then the tool result at "/optics/focal_length_mm" should be the JSON 1000.0
     And the tool result at "/optics/aperture_mm" should be the JSON null
+    And the tool result at "/optics/obstruction_mm" should be the JSON null
+    And the tool result at "/optics/obstruction_ratio" should be the JSON null
     And the tool result at "/optics/focal_ratio" should be the JSON null
     And the tool result at "/optics/pixel_size_um" should be the JSON null
     And the tool result at "/optics/pixel_scale_arcsec_per_pixel" should be the JSON null
@@ -499,7 +520,28 @@ Feature: Optical trains configuration
     Examples:
       | pointer                                 | value | named                                             |
       | /equipment/optical_trains/0/aperture_mm | -1.0  | aperture_mm must be a positive finite number      |
+      | /equipment/optical_trains/0/obstruction_mm | -1.0 | obstruction_mm must be a finite number, not negative |
       | /equipment/focusers/0/microns_per_step  | 0     | microns_per_step must be a positive finite number |
+
+  # The bound against the aperture is a rule across two fields, so it is
+  # checked once both are in the file and named by its path.
+  Scenario: An obstruction as wide as the aperture is refused naming the field
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I save rp's setup page after setting the file's "/equipment/optical_trains/0/aperture_mm" to the JSON 100.0
+    Then the save is accepted
+    When I save rp's setup page after setting the file's "/equipment/optical_trains/0/obstruction_mm" to the JSON 100.0
+    Then the save is refused
+    And the refusal at "equipment.optical_trains.0.obstruction_mm" says "must be smaller than aperture_mm"
+
+  # A train without an aperture has no focal ratio to size a sweep from,
+  # so a valid obstruction there is inert rather than an error.
+  Scenario: An obstruction on a train without an aperture is accepted
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I save rp's setup page after setting the file's "/equipment/optical_trains/0/obstruction_mm" to the JSON 50.0
+    Then the save is accepted
+    And the config file at "/equipment/optical_trains/0/obstruction_mm" should hold the JSON 50.0
 
   Scenario Outline: A filter entry with the wrong shape is rejected at parse naming the field
     Given a temp rp config with the reference optical trains

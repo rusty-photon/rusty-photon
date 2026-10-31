@@ -70,12 +70,13 @@ once and kept.
 | S5 | `focus-model`: `determine_filter_offsets` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
 | S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
-| S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
+| S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | In progress | `feature/focus-model-s8-obstruction` ([#1673](https://github.com/rusty-photon/rusty-photon/pull/1673)) |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
 | S10 | = [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Merged — the reconciliation with C7 was settled on 2026-10-13: the guide-train sweep is a training run of `focus_train` ([device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) D12, "Settled in C7"), and it does not wait for S7. C7a, the design, C7b, the facade's sweep lease, C7c, rp's train lease and the gate change, and this plan's own part, C7d, the training run on a guiding train ([focus-model.md](../services/focus-model.md) § Training runs on a guiding train), merged; C7e, the shared focuser focused through the imaging camera alone (O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
 | S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
-S3 to S6 are merged. S7 waits for a rig night on S4.
+S1 to S6 and S10 are merged, and S8 is in progress. S7 waits for a
+rig night on S4.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
 ordered by what they unblock: S8 is `rp` reads plus a sizing change;
@@ -83,7 +84,8 @@ S9 lands the fit model, and the measurement work behind
 [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
 (gating plan G3) follows it, because the hyperbola's wings are fitted
 to exactly the samples that work makes honest (its hot-pixel part,
-G3a, lands first); S10 reaches furthest,
+G3a, landed first, in
+[#1473](https://github.com/rusty-photon/rusty-photon/pull/1473)); S10 reaches furthest,
 since it is device-claims-and-phd2-camera.md's C7 and rides on that
 plan's facade (C6); S11 is provider-only. Each
 slice follows [development-workflow.md](../skills/development-workflow.md):
@@ -340,7 +342,8 @@ unit's `StateDirectory=`).
   write.** A record whose `focuser_id`, `camera_id` or filter-name set
   no longer matches `get_train_info` is reported stale naming the
   field, as flats names a changed camera field; S8 adds the optical
-  facts D9 reads to that identity (O8) and S11 the temperature sensor
+  facts D9 reads to that identity (O8, which also says why a fact
+  nobody reported is not a change) and S11 the temperature sensor
   (O3). A stale record
   predicts nothing: `focus_train` sweeps from the current position,
   then writes a fresh record holding that run alone and reports
@@ -538,7 +541,10 @@ radius R and obstruction ratio ε falls inside R·√((1+ε²)/2), so
 The 0.35 this plan previously carried as a bare constant was that
 0.3536 rounded, so S8 changes the unobstructed case too: `c` rises by
 1.0%, `slope` with it, and `half_width` falls by the same 1% before
-`ceil`, which can move a sweep end by one step. That is accepted
+`ceil`, which can move a sweep end by one step. On the BDD suite's
+reference rig (500 mm at f/5, 5.6 µm pixels, 2.5 µm a step) it does:
+the half width falls from 68 to 67, and at the same step of 17 the
+grid holds 8 points instead of 9. That is accepted
 deliberately — the derived value is the correct one and the rounded
 one was never measured — not claimed to be a no-op. The wing-slope
 check is what catches it if the 1% matters on a rig:
@@ -791,7 +797,8 @@ the train model lives:
   operator entering a radius would halve ε and size the sweep wrong.
   Omitted means unobstructed, which is what every train is assumed to
   be today (O1, S8). Validated
-  at load and at `config.apply` the way `aperture_mm` already is: a
+  at load and on every save of `rp`'s setup page, the way `aperture_mm`
+  already is: a
   finite number, not negative, and strictly less than `aperture_mm`
   when that is configured — ε ≥ 1 is not an annulus and would make the
   derived `c` meaningless. Rejected with a field error naming the
@@ -800,7 +807,12 @@ the train model lives:
   has nothing to check when the train configures no aperture. Such a
   train has no focal ratio and no derived sweep at all (above), so a
   *valid* obstruction there is inert rather than an error, while
-  `obstruction_mm: -1` is rejected with or without an aperture.
+  `obstruction_mm: -1` is rejected with or without an aperture. A
+  capture records it in the sidecar's `optics` block beside
+  `aperture_mm`, the value configured when the frame was taken
+  (rp.md § Core Fields), because the sidecar is the record of the
+  optics a frame went through; the ratio is derived from the two, as
+  the focal ratio is, and no FITS card exports it.
 - `filter_wheels[].filters[]` accepts a name or `{name, wavelength_nm}`;
   a name-only entry has no wavelength. `get_train_info` keeps
   `filters` as names and adds `filter_wavelengths_nm` (name → nm or
@@ -1393,7 +1405,24 @@ needs, and "we considered it and declined" is not the same answer as
   `wavelength_nm` and the camera's `pixel_size_um` both feed the
   sizing while `filters` and `camera_id` stay identical — so S8 adds
   every optical input D9 reads to the identity, not just the four
-  named above. Review raised the
+  named above. The owner kept that scope on 2026-10-30 rather than
+  narrowing it to the facts that change what a position or a pixel
+  means (the focal length, `microns_per_step`, the pixel size): a
+  corrected aperture, obstruction or wavelength resets a record too.
+
+  Two rules make it safe to hold a record to facts some of which are
+  read from devices. **An unknown is not a change.** A pixel size the
+  camera has not reported, a `microns_per_step` a driver without
+  `StepSize` cannot supply, or a record written before S8 that holds
+  no optics at all is compared on nothing; the record keeps what it
+  holds and fills in what it lacked on its next write, so a read that
+  failed once cannot reset a season of runs. **An omission stands for
+  the value the sizing reads.** No `obstruction_mm` is an obstruction
+  of 0 and a filter without a wavelength is sized at 550 nm, so each is
+  compared as that value: configuring an obstruction, or a wavelength
+  other than 550 nm, is a change like any other, and writing down the
+  0 or the 550 nm the sizing already assumed is none.
+  Review raised the
   gateway race on both the S5 and S6 pull requests; that part needs no
   further work here.
 
@@ -1415,10 +1444,10 @@ derived sweep against the hand-tuned block, a hand-entered offset, a
 `shared: true` walk on the guide-coupled rig, and a temperature delta
 that fires the rule.
 
-S8 is an `rp` change of one config field and two reported numbers,
-the D9 line that reads them, and — provider-side — the record identity
-growing every optical input D9 reads, without which an optical change
-leaves old records fresh and predicting (O8). S9 is provider-side fitting with its
+S8 is an `rp` change of one config field, two reported numbers and
+one sidecar field, the D9 line that reads them, and — provider-side —
+the record identity growing every optical input D9 reads, without
+which an optical change leaves old records fresh and predicting (O8). S9 is provider-side fitting with its
 unit tests over generated curves across a spread of focal ratios,
 `microns_per_step` and seeing floors, the rig's two recorded sweeps as
 regression cases; the guide-metric sweep gets the same model in `rp`.

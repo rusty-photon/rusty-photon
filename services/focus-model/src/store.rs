@@ -19,7 +19,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::prediction::Prediction;
-use crate::sizing::SweepSource;
+use crate::sizing::{SweepSource, DEFAULT_WAVELENGTH_NM};
 use crate::sweep::{CurvePoint, FailedAttempt, SweepOutcome};
 
 /// The schema version this build writes for a fresh store.
@@ -251,15 +251,157 @@ impl FocusRun {
     }
 }
 
+/// Every optical fact the sweep sizing reads, as `rp` reported it
+/// (focus-model.md § Store): the part of a record's identity that says
+/// which optics its measurements were taken through.
+///
+/// Two kinds of `None` live here. For the focal length, the aperture,
+/// `microns_per_step` and the pixel size it is an unknown, which is
+/// never a change; for the obstruction and a filter's wavelength it
+/// stands for the value the sizing reads — no obstruction, 550 nm — and
+/// is compared as that value, so stating it outright is no change.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OpticsIdentity {
+    #[serde(default)]
+    pub focal_length_mm: Option<f64>,
+    #[serde(default)]
+    pub aperture_mm: Option<f64>,
+    /// `None` is a train that configures no obstruction.
+    #[serde(default)]
+    pub obstruction_mm: Option<f64>,
+    #[serde(default)]
+    pub microns_per_step: Option<f64>,
+    #[serde(default)]
+    pub pixel_size_um: Option<f64>,
+    /// Filter name → configured wavelength, `None` for a filter whose
+    /// entry carries none; empty on a train without a sole wheel.
+    #[serde(default)]
+    pub filter_wavelengths_nm: BTreeMap<String, Option<f64>>,
+}
+
+impl OpticsIdentity {
+    /// These facts with what `current` reports taken on: a fact
+    /// `current` does not know keeps the value held here, so the
+    /// identity only ever fills in, and the two facts whose `None` is a
+    /// value follow `current` outright.
+    #[must_use]
+    pub fn filled_in_from(&self, current: &Self) -> Self {
+        Self {
+            focal_length_mm: current.focal_length_mm.or(self.focal_length_mm),
+            aperture_mm: current.aperture_mm.or(self.aperture_mm),
+            obstruction_mm: current.obstruction_mm,
+            microns_per_step: current.microns_per_step.or(self.microns_per_step),
+            pixel_size_um: current.pixel_size_um.or(self.pixel_size_um),
+            filter_wavelengths_nm: current.filter_wavelengths_nm.clone(),
+        }
+    }
+
+    /// Every fact that differs from `current`, in a fixed order.
+    fn stale_fields(&self, current: &Self) -> Vec<StaleField> {
+        let mut stale = Vec::new();
+        for (field, recorded, now) in [
+            (
+                "focal_length_mm",
+                self.focal_length_mm,
+                current.focal_length_mm,
+            ),
+            ("aperture_mm", self.aperture_mm, current.aperture_mm),
+        ] {
+            push_known_change(&mut stale, field, recorded, now);
+        }
+        if !same_value(
+            self.obstruction_mm.unwrap_or(0.0),
+            current.obstruction_mm.unwrap_or(0.0),
+        ) {
+            stale.push(StaleField {
+                field: "obstruction_mm",
+                recorded: fmt_number(self.obstruction_mm),
+                current: fmt_number(current.obstruction_mm),
+            });
+        }
+        for (field, recorded, now) in [
+            (
+                "microns_per_step",
+                self.microns_per_step,
+                current.microns_per_step,
+            ),
+            ("pixel_size_um", self.pixel_size_um, current.pixel_size_um),
+        ] {
+            push_known_change(&mut stale, field, recorded, now);
+        }
+        // Only the filters both sides hold: one that only one side holds
+        // is the filter set's change, named there. A filter without a
+        // wavelength is sized at the default, so that is what it is
+        // compared as.
+        let sized_at = |nm: Option<f64>| nm.unwrap_or(DEFAULT_WAVELENGTH_NM);
+        let moved: Vec<(&String, Option<f64>, Option<f64>)> = self
+            .filter_wavelengths_nm
+            .iter()
+            .filter_map(|(filter, recorded)| {
+                let now = current.filter_wavelengths_nm.get(filter)?;
+                (!same_value(sized_at(*recorded), sized_at(*now)))
+                    .then_some((filter, *recorded, *now))
+            })
+            .collect();
+        if !moved.is_empty() {
+            let recorded = moved
+                .iter()
+                .map(|(filter, recorded, _)| format!("{filter} {}", fmt_number(*recorded)))
+                .collect::<Vec<_>>();
+            let now = moved
+                .iter()
+                .map(|(filter, _, now)| format!("{filter} {}", fmt_number(*now)))
+                .collect::<Vec<_>>();
+            stale.push(StaleField {
+                field: "filter_wavelengths_nm",
+                recorded: recorded.join(", "),
+                current: now.join(", "),
+            });
+        }
+        stale
+    }
+}
+
+/// Push a change of a fact whose `None` is an unknown: compared only
+/// when both sides know it.
+fn push_known_change(
+    stale: &mut Vec<StaleField>,
+    field: &'static str,
+    recorded: Option<f64>,
+    current: Option<f64>,
+) {
+    if let (Some(recorded), Some(current)) = (recorded, current) {
+        if !same_value(recorded, current) {
+            stale.push(StaleField {
+                field,
+                recorded: recorded.to_string(),
+                current: current.to_string(),
+            });
+        }
+    }
+}
+
+/// Whether two readings are the same value, exactly: an identity is
+/// the number `rp` reported, and the stored copy reads back from its
+/// JSON as the value it was written from.
+fn same_value(a: f64, b: f64) -> bool {
+    a.total_cmp(&b).is_eq()
+}
+
+fn fmt_number(value: Option<f64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+}
+
 /// What `rp` reports for a train right now — the facts a record is
 /// judged against.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct TrainFacts {
     pub focuser_id: Option<String>,
     pub camera_id: Option<String>,
     /// The wheel's filter names in position order; `None` without a
     /// sole wheel.
     pub filters: Option<Vec<String>>,
+    pub optics: OpticsIdentity,
 }
 
 /// One train fact a record no longer matches.
@@ -318,6 +460,11 @@ pub struct FocusRecord {
     pub camera_id: Option<String>,
     #[serde(default)]
     pub filters: Option<Vec<String>>,
+    /// The optics the measurements were taken through; `None` on a
+    /// record written before the store kept them, which is compared on
+    /// nothing and fills them in on its next write.
+    #[serde(default)]
+    pub optics: Option<OpticsIdentity>,
     // --- what it learned ---
     #[serde(default)]
     pub reference_filter: Option<String>,
@@ -361,6 +508,7 @@ impl FocusRecord {
             focuser_id: focuser_id.map(str::to_owned),
             camera_id: camera_id.map(str::to_owned),
             filters,
+            optics: None,
             reference_filter: None,
             offsets: BTreeMap::new(),
             temperature_coefficient: None,
@@ -373,14 +521,13 @@ impl FocusRecord {
         }
     }
 
-    /// The identity this record was written at.
-    #[must_use]
-    pub fn facts(&self) -> TrainFacts {
-        TrainFacts {
-            focuser_id: self.focuser_id.clone(),
-            camera_id: self.camera_id.clone(),
-            filters: self.filters.clone(),
-        }
+    /// Bring the record's optics up to date with `current`: a fact it
+    /// did not know is taken on, one `current` does not report is
+    /// kept. Only for a record that is not stale against `current`; a
+    /// record adopting the train takes its optics as they stand.
+    pub fn fill_in_optics(&mut self, current: &OpticsIdentity) {
+        let held = self.optics.take().unwrap_or_default();
+        self.optics = Some(held.filled_in_from(current));
     }
 
     /// Every train fact that differs from `facts`, in a fixed order.
@@ -389,7 +536,9 @@ impl FocusRecord {
     /// The filters are judged as a set: the same names in another
     /// wheel order are the same optics, and each filter's offset and
     /// last good focus are keyed by name, not by position. The message
-    /// keeps the order each side reported.
+    /// keeps the order each side reported. The optics are judged by
+    /// [`OpticsIdentity`]'s two kinds of `None`, and a record that holds
+    /// none is judged on its devices and filters alone.
     #[must_use]
     pub fn stale_fields(&self, facts: &TrainFacts) -> Vec<StaleField> {
         let mut stale = Vec::new();
@@ -420,6 +569,9 @@ impl FocusRecord {
             fmt_filters(self.filters.as_ref()),
             fmt_filters(facts.filters.as_ref()),
         );
+        if let Some(optics) = &self.optics {
+            stale.extend(optics.stale_fields(&facts.optics));
+        }
         stale
     }
 
@@ -816,7 +968,28 @@ mod tests {
             focuser_id: Some("main-focuser".to_owned()),
             camera_id: Some("main-cam".to_owned()),
             filters: Some(vec!["L".to_owned(), "Ha".to_owned()]),
+            optics: optics(),
         }
+    }
+
+    /// The reference rig's optics: 500 mm at 100 mm, unobstructed,
+    /// 2.5 µm a step, 5.6 µm pixels, Ha at 656 nm and L without a
+    /// wavelength.
+    fn optics() -> OpticsIdentity {
+        OpticsIdentity {
+            focal_length_mm: Some(500.0),
+            aperture_mm: Some(100.0),
+            obstruction_mm: None,
+            microns_per_step: Some(2.5),
+            pixel_size_um: Some(5.6),
+            filter_wavelengths_nm: [("L".to_owned(), None), ("Ha".to_owned(), Some(656.0))].into(),
+        }
+    }
+
+    fn record_at(optics: OpticsIdentity) -> FocusRecord {
+        let mut record = record();
+        record.optics = Some(optics);
+        record
     }
 
     fn record() -> FocusRecord {
@@ -1012,6 +1185,158 @@ mod tests {
             record.stale_fields(&gone)[0].to_string(),
             "filters changed from L, Ha to none"
         );
+    }
+
+    #[test]
+    fn a_record_at_the_same_optics_has_no_stale_fields() {
+        let stale = record_at(optics()).stale_fields(&facts());
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+
+    #[test]
+    fn an_optical_fact_both_sides_know_and_disagree_on_is_stale() {
+        let record = record_at(OpticsIdentity {
+            aperture_mm: Some(90.0),
+            ..optics()
+        });
+        let stale = record.stale_fields(&facts());
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert_eq!(stale[0].to_string(), "aperture_mm changed from 90 to 100");
+
+        let record = record_at(OpticsIdentity {
+            focal_length_mm: Some(530.0),
+            microns_per_step: Some(5.0),
+            pixel_size_um: Some(3.76),
+            ..optics()
+        });
+        let stale: Vec<String> = record
+            .stale_fields(&facts())
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            stale,
+            [
+                "focal_length_mm changed from 530 to 500",
+                "microns_per_step changed from 5 to 2.5",
+                "pixel_size_um changed from 3.76 to 5.6",
+            ]
+        );
+    }
+
+    /// A camera that has not reported its pixel size, a driver without
+    /// `StepSize`: a fact either side does not know is no change, so a
+    /// read that failed once cannot reset the record.
+    #[test]
+    fn an_optical_fact_unknown_on_either_side_is_no_change() {
+        let mut unknown_now = facts();
+        unknown_now.optics.pixel_size_um = None;
+        unknown_now.optics.microns_per_step = None;
+        unknown_now.optics.focal_length_mm = None;
+        unknown_now.optics.aperture_mm = None;
+        let stale = record_at(optics()).stale_fields(&unknown_now);
+        assert!(stale.is_empty(), "{stale:?}");
+
+        let unknown_then = record_at(OpticsIdentity {
+            focal_length_mm: None,
+            aperture_mm: None,
+            microns_per_step: None,
+            pixel_size_um: None,
+            ..optics()
+        });
+        let stale = unknown_then.stale_fields(&facts());
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+
+    #[test]
+    fn a_record_that_holds_no_optics_is_judged_on_its_devices_alone() {
+        let mut other_optics = facts();
+        other_optics.optics.aperture_mm = Some(203.0);
+        other_optics.optics.obstruction_mm = Some(68.0);
+        let stale = record().stale_fields(&other_optics);
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+
+    /// No obstruction is an unobstructed train and no wavelength is
+    /// 550 nm: configuring an obstruction or a wavelength the sizing did
+    /// not already assume is a change like any other.
+    #[test]
+    fn an_omitted_obstruction_or_wavelength_is_compared_as_the_value_it_stands_for() {
+        let mut obstructed = facts();
+        obstructed.optics.obstruction_mm = Some(68.0);
+        assert_eq!(
+            record_at(optics()).stale_fields(&obstructed)[0].to_string(),
+            "obstruction_mm changed from none to 68"
+        );
+
+        let mut tuned = facts();
+        tuned
+            .optics
+            .filter_wavelengths_nm
+            .insert("Ha".to_owned(), Some(656.3));
+        assert_eq!(
+            record_at(optics()).stale_fields(&tuned)[0].to_string(),
+            "filter_wavelengths_nm changed from Ha 656 to Ha 656.3"
+        );
+    }
+
+    /// An obstruction of 0 and a wavelength of 550 nm are what the
+    /// sizing assumed without them, so writing either down changes no
+    /// number the sweep is sized from and resets nothing.
+    #[test]
+    fn stating_the_value_the_sizing_assumed_is_no_change() {
+        let mut stated = facts();
+        stated.optics.obstruction_mm = Some(0.0);
+        stated
+            .optics
+            .filter_wavelengths_nm
+            .insert("L".to_owned(), Some(550.0));
+        let stale = record_at(optics()).stale_fields(&stated);
+        assert!(stale.is_empty(), "{stale:?}");
+    }
+
+    /// A filter only one side holds is the filter set's change, and the
+    /// wavelengths do not name it a second time.
+    #[test]
+    fn a_wavelength_only_one_side_holds_is_left_to_the_filter_set() {
+        let mut more = facts();
+        more.filters = Some(vec!["L".to_owned(), "Ha".to_owned(), "OIII".to_owned()]);
+        more.optics
+            .filter_wavelengths_nm
+            .insert("OIII".to_owned(), Some(500.7));
+        let stale: Vec<String> = record_at(optics())
+            .stale_fields(&more)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(stale, ["filters changed from L, Ha to L, Ha, OIII"]);
+    }
+
+    #[test]
+    fn filling_in_takes_on_what_was_unknown_and_keeps_what_is_no_longer_reported() {
+        let mut record = record();
+        record.fill_in_optics(&optics());
+        assert_eq!(record.optics, Some(optics()));
+
+        let mut camera_offline = optics();
+        camera_offline.pixel_size_um = None;
+        camera_offline.obstruction_mm = Some(0.0);
+        record.fill_in_optics(&camera_offline);
+        let held = record.optics.unwrap();
+        assert_eq!(
+            held.pixel_size_um,
+            Some(5.6),
+            "kept: the camera said nothing"
+        );
+        assert_eq!(held.obstruction_mm, Some(0.0), "followed: a value");
+    }
+
+    #[test]
+    fn a_record_with_optics_round_trips_through_its_json() {
+        let record = record_at(optics());
+        let json = serde_json::to_vec(&record).unwrap();
+        let read: FocusRecord = serde_json::from_slice(&json).unwrap();
+        assert_eq!(read, record);
     }
 
     /// The record `update` hands the closure is the one in the store

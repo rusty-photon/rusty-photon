@@ -121,6 +121,7 @@ fn push_guiding_train(world: &mut RpWorld, train_id: &str, camera_id: &str) {
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
+        obstruction_mm: None,
         id: train_id.to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,

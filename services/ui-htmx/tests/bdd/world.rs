@@ -266,6 +266,7 @@ impl UiWorld {
         builder.add_optical_train(bdd_infra::rp_harness::OpticalTrainConfig {
             telescope: None,
             aperture_mm: None,
+            obstruction_mm: None,
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: None,

@@ -517,6 +517,13 @@ pub struct Optics {
     /// frame's focal ratio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aperture_mm: Option<f64>,
+    /// The same train's central obstruction, a diameter in millimetres
+    /// (`optical_trains[].obstruction_mm`), recorded when the train
+    /// configures one, 0 included; with the aperture, the frame's
+    /// obstruction ratio. Absent is a train that configured none, an
+    /// unobstructed path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obstruction_mm: Option<f64>,
     /// Raw Alpaca `PixelSizeX` reading, in microns, read when the camera
     /// session was established and cached for the connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -564,6 +571,7 @@ pub struct Optics {
 pub struct OpticsInputs {
     pub focal_length_mm: Option<f64>,
     pub aperture_mm: Option<f64>,
+    pub obstruction_mm: Option<f64>,
     pub pixel_size_x_um: Option<f64>,
     pub pixel_size_y_um: Option<f64>,
     pub sensor_width_px: Option<u32>,
@@ -577,8 +585,10 @@ const ARCSEC_PER_MM_PER_UM: f64 = 206.265;
 
 impl Optics {
     /// Record each usable input and derive what the usable inputs
-    /// allow. A real is usable when it is finite and positive, a pixel
-    /// count when it is above zero; anything else is left out without
+    /// allow. A real is usable when it is finite and positive (an
+    /// obstruction when it is finite and not negative, since 0 says the
+    /// path is unobstructed), a pixel count when it is above zero;
+    /// anything else is left out without
     /// taking the other fields with it. `None` when nothing is left.
     ///
     /// Derived values are validated too because `serde_json` rejects
@@ -603,6 +613,9 @@ impl Optics {
         let optics = Self {
             focal_length_mm,
             aperture_mm: usable(inputs.aperture_mm),
+            obstruction_mm: inputs
+                .obstruction_mm
+                .filter(|value| value.is_finite() && *value >= 0.0),
             pixel_size_x_um: width.pixel_size_um,
             pixel_size_y_um: height.pixel_size_um,
             sensor_width_px: width.sensor_px,
@@ -1074,12 +1087,14 @@ mod tests {
         );
     }
 
-    /// A complete set of inputs: 1000 mm at 200 mm aperture, 3.76 µm
-    /// pixels on an IMX455-class sensor, a 2.5 µm focuser step.
+    /// A complete set of inputs: 1000 mm at 200 mm aperture behind a
+    /// 68 mm obstruction, 3.76 µm pixels on an IMX455-class sensor, a
+    /// 2.5 µm focuser step.
     const fn inputs() -> OpticsInputs {
         OpticsInputs {
             focal_length_mm: Some(1000.0),
             aperture_mm: Some(200.0),
+            obstruction_mm: Some(68.0),
             pixel_size_x_um: Some(3.76),
             pixel_size_y_um: Some(3.76),
             sensor_width_px: Some(9576),
@@ -1115,6 +1130,7 @@ mod tests {
         assert_eq!(optics.focal_length_mm, Some(1000.0));
         assert_eq!(optics.fov_height_deg, Some(1.3762));
         assert_eq!(optics.aperture_mm, None);
+        assert_eq!(optics.obstruction_mm, None);
         assert_eq!(optics.microns_per_step, None);
     }
 
@@ -1123,6 +1139,7 @@ mod tests {
         let optics = Optics::from_inputs(inputs()).unwrap();
         assert_eq!(optics.focal_length_mm, Some(1000.0));
         assert_eq!(optics.aperture_mm, Some(200.0));
+        assert_eq!(optics.obstruction_mm, Some(68.0));
         assert_eq!(optics.pixel_size_x_um, Some(3.76));
         assert_eq!(optics.pixel_size_y_um, Some(3.76));
         assert_eq!(optics.sensor_width_px, Some(9576));
@@ -1188,6 +1205,7 @@ mod tests {
         let optics = Optics::from_inputs(OpticsInputs {
             focal_length_mm: None,
             aperture_mm: None,
+            obstruction_mm: None,
             microns_per_step: None,
             ..inputs()
         })
@@ -1223,6 +1241,7 @@ mod tests {
             let optics = Optics::from_inputs(OpticsInputs {
                 focal_length_mm: Some(bad),
                 aperture_mm: Some(bad),
+                obstruction_mm: None,
                 pixel_size_x_um: Some(bad),
                 pixel_size_y_um: Some(bad),
                 microns_per_step: Some(bad),
@@ -1238,6 +1257,25 @@ mod tests {
                 },
                 "for {bad}"
             );
+        }
+    }
+
+    #[test]
+    fn an_obstruction_of_zero_is_recorded_and_one_that_is_not_a_diameter_is_left_out() {
+        let unobstructed = Optics::from_inputs(OpticsInputs {
+            obstruction_mm: Some(0.0),
+            ..inputs()
+        })
+        .unwrap();
+        assert_eq!(unobstructed.obstruction_mm, Some(0.0));
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let optics = Optics::from_inputs(OpticsInputs {
+                obstruction_mm: Some(bad),
+                ..inputs()
+            })
+            .unwrap();
+            assert_eq!(optics.obstruction_mm, None, "for {bad}");
+            assert_eq!(optics.aperture_mm, Some(200.0), "for {bad}");
         }
     }
 

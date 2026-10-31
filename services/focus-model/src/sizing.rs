@@ -12,13 +12,19 @@ use serde::{Deserialize, Serialize};
 use crate::config::{SweepConfig, TrainConfig};
 use crate::error::{FocusModelError, Result};
 
-/// The half-flux radius of a uniform blur disc, as a fraction of its
-/// diameter.
+/// The half-flux radius of a defocused star's blur disc, as a
+/// fraction of the disc's diameter, behind a central obstruction of
+/// ratio `obstruction_ratio`.
 ///
-/// Unobstructed aperture; a central obstruction pushes the flux to the
-/// rim and the constant toward 0.5, which the measured wing slope of
-/// each run is the check on.
-pub const BLUR_CONSTANT: f64 = 0.35;
+/// Half the flux of an annulus of outer radius R and obstruction ratio
+/// ε falls inside R·√((1+ε²)/2), so the constant is 0.5·√((1+ε²)/2):
+/// 0.3536 unobstructed, rising toward 0.5 as the obstruction pushes the
+/// light to the rim. The measured wing slope of each run is the check
+/// on it (focus-model.md § Sweep sizing).
+#[must_use]
+pub fn blur_constant(obstruction_ratio: f64) -> f64 {
+    0.5 * (obstruction_ratio.mul_add(obstruction_ratio, 1.0) / 2.0).sqrt()
+}
 
 /// The classical critical-focus-zone coefficient: `CFZ = 4.88 λ N²`.
 pub const CFZ_COEFFICIENT: f64 = 4.88;
@@ -35,6 +41,14 @@ pub struct Optics {
     pub focal_length_mm: Option<f64>,
     #[serde(default)]
     pub aperture_mm: Option<f64>,
+    /// The central obstruction's diameter; null on a train that
+    /// configures none.
+    #[serde(default)]
+    pub obstruction_mm: Option<f64>,
+    /// `obstruction_mm / aperture_mm`, 0 on an unobstructed train and
+    /// null without an aperture.
+    #[serde(default)]
+    pub obstruction_ratio: Option<f64>,
     #[serde(default)]
     pub focal_ratio: Option<f64>,
     #[serde(default)]
@@ -49,6 +63,17 @@ impl Optics {
     /// A fact, when it is a usable positive number.
     fn positive(value: Option<f64>) -> Option<f64> {
         value.filter(|v| v.is_finite() && *v > 0.0)
+    }
+
+    /// The obstruction ratio the blur constant is derived from: the
+    /// reported one when it describes an annulus, else 0. A null ratio
+    /// comes from a train without an aperture, which has no focal ratio
+    /// to size from either, or from an `rp` that predates the field,
+    /// whose trains were all taken as unobstructed.
+    fn obstruction_ratio(&self) -> f64 {
+        self.obstruction_ratio
+            .filter(|ratio| ratio.is_finite() && (0.0..1.0).contains(ratio))
+            .unwrap_or(0.0)
     }
 }
 
@@ -123,10 +148,10 @@ pub fn critical_focus_zone_um(wavelength_nm: f64, n: f64) -> f64 {
 }
 
 /// The HFR growth the blur geometry predicts, in pixels per focuser
-/// step.
+/// step, for blur constant `c` ([`blur_constant`]).
 #[must_use]
-pub fn predicted_slope_per_step(microns_per_step: f64, n: f64, pixel_size_um: f64) -> f64 {
-    BLUR_CONSTANT * microns_per_step / (n * pixel_size_um)
+pub fn predicted_slope_per_step(c: f64, microns_per_step: f64, n: f64, pixel_size_um: f64) -> f64 {
+    c * microns_per_step / (n * pixel_size_um)
 }
 
 /// Derive the sweep for one train.
@@ -174,7 +199,12 @@ pub fn plan_sweep(
     }
     .filter(|steps| steps.is_finite() && *steps > 0.0);
     let slope_per_step = match (n, microns_per_step, pixel_size_um) {
-        (Some(n), Some(microns), Some(pixel)) => Some(predicted_slope_per_step(microns, n, pixel)),
+        (Some(n), Some(microns), Some(pixel)) => Some(predicted_slope_per_step(
+            blur_constant(optics.obstruction_ratio()),
+            microns,
+            n,
+            pixel,
+        )),
         _ => None,
     }
     .filter(|slope| slope.is_finite() && *slope > 0.0);
@@ -264,12 +294,14 @@ mod tests {
     use super::*;
     use crate::config::Steps;
 
-    /// The reference rig of the BDD suite: a 500 mm f/5 train with a
-    /// 5.6 µm camera and a 2.5 µm/step focuser.
+    /// The reference rig of the BDD suite: an unobstructed 500 mm f/5
+    /// train with a 5.6 µm camera and a 2.5 µm/step focuser.
     fn reference_optics() -> Optics {
         Optics {
             focal_length_mm: Some(500.0),
             aperture_mm: Some(100.0),
+            obstruction_mm: None,
+            obstruction_ratio: Some(0.0),
             focal_ratio: Some(5.0),
             pixel_size_um: Some(5.6),
             pixel_scale_arcsec_per_pixel: Some(206.265 * 5.6 / 500.0),
@@ -289,9 +321,9 @@ mod tests {
     fn the_reference_rig_derives_the_documented_sweep() {
         let plan = plan_sweep("main", &reference_optics(), &train(), &sweep(), None, None).unwrap();
         assert_eq!(plan.source, SweepSource::Derived);
-        assert_eq!(plan.half_width, 68);
+        assert_eq!(plan.half_width, 67);
         assert_eq!(plan.step_size, 17);
-        assert_eq!(plan.points, 9, "68 * 2 / 17 + 1");
+        assert_eq!(plan.points, 8, "67 * 2 / 17 + 1");
         assert_eq!(plan.wavelength_nm, 550.0);
         assert!(
             (plan.cfz_steps.unwrap() - 26.84).abs() < 0.01,
@@ -299,10 +331,55 @@ mod tests {
             plan.cfz_steps
         );
         assert!(
-            (plan.predicted_slope.unwrap() - 3.125).abs() < 1e-9,
+            (plan.predicted_slope.unwrap() - 3.156_726_701_7).abs() < 1e-9,
             "{:?}",
             plan.predicted_slope
         );
+    }
+
+    #[test]
+    fn the_blur_constant_follows_the_obstruction_ratio() {
+        assert!((blur_constant(0.0) - 0.353_553_390_6).abs() < 1e-9);
+        assert!((blur_constant(0.34) - 0.373_430_047_0).abs() < 1e-9);
+        assert!((blur_constant(0.5) - 0.395_284_707_5).abs() < 1e-9);
+        assert!(blur_constant(0.999_999) < 0.5);
+    }
+
+    /// A 50 mm obstruction on the reference rig's 100 mm aperture: the
+    /// steeper wing reaches four times the focused HFR sooner.
+    #[test]
+    fn an_obstructed_train_derives_a_narrower_sweep() {
+        let optics = Optics {
+            obstruction_mm: Some(50.0),
+            obstruction_ratio: Some(0.5),
+            ..reference_optics()
+        };
+        let plan = plan_sweep("main", &optics, &train(), &sweep(), None, None).unwrap();
+        assert_eq!(plan.half_width, 60);
+        assert_eq!(plan.step_size, 15);
+        assert_eq!(plan.points, 9);
+        assert!(
+            (plan.predicted_slope.unwrap() - 3.529_327_745_7).abs() < 1e-9,
+            "{:?}",
+            plan.predicted_slope
+        );
+    }
+
+    /// No ratio, or one no annulus has, sizes the train as unobstructed:
+    /// a null ratio is a train without an aperture or an `rp` from
+    /// before the field.
+    #[test]
+    fn a_missing_or_impossible_obstruction_ratio_is_sized_as_unobstructed() {
+        let unobstructed =
+            plan_sweep("main", &reference_optics(), &train(), &sweep(), None, None).unwrap();
+        for ratio in [None, Some(1.0), Some(-0.1), Some(f64::NAN)] {
+            let optics = Optics {
+                obstruction_ratio: ratio,
+                ..reference_optics()
+            };
+            let plan = plan_sweep("main", &optics, &train(), &sweep(), None, None).unwrap();
+            assert_eq!(plan, unobstructed, "for {ratio:?}");
+        }
     }
 
     #[test]
@@ -383,7 +460,7 @@ mod tests {
         .unwrap();
         assert_eq!(plan.hfr_focus, Some(2.0));
         // The half width scales with the focused HFR.
-        assert_eq!(plan.half_width, 248);
+        assert_eq!(plan.half_width, 246);
     }
 
     #[test]

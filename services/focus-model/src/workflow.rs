@@ -25,7 +25,8 @@ use crate::lease;
 use crate::prediction::{predict, Bounds, Prediction};
 use crate::sizing::{plan_sweep, Optics, SweepPlan};
 use crate::store::{
-    now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome, RunSummary, TrainFacts,
+    now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, OpticsIdentity, RunOutcome,
+    RunSummary, TrainFacts,
 };
 use crate::sweep::{
     check_grid, grid_length, run_sweep, Confirmation, CurvePoint, Direction, FailedAttempt,
@@ -335,6 +336,9 @@ pub struct ModelView {
     pub focuser_id: Option<String>,
     pub camera_id: Option<String>,
     pub filters: Option<Vec<String>>,
+    /// The optics the record's measurements were taken through; null
+    /// on a record written before the store kept them.
+    pub optics: Option<OpticsIdentity>,
     pub reference_filter: Option<String>,
     pub offsets: BTreeMap<String, i32>,
     pub temperature_coefficient: Option<f64>,
@@ -401,6 +405,20 @@ impl TrainContext {
             focuser_id: Some(self.focuser_id.clone()),
             camera_id: Some(self.camera_id.clone()),
             filters: self.filters.clone(),
+            optics: self.optics_identity(),
+        }
+    }
+
+    /// Every optical fact the sizing reads, as `rp` reports it now.
+    #[must_use]
+    pub fn optics_identity(&self) -> OpticsIdentity {
+        OpticsIdentity {
+            focal_length_mm: self.optics.focal_length_mm,
+            aperture_mm: self.optics.aperture_mm,
+            obstruction_mm: self.optics.obstruction_mm,
+            microns_per_step: self.optics.microns_per_step,
+            pixel_size_um: self.optics.pixel_size_um,
+            filter_wavelengths_nm: self.wavelengths.clone(),
         }
     }
 
@@ -835,13 +853,14 @@ fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
 }
 
 /// The record a run is written into: the held one, or a fresh record
-/// when the identity moved on.
+/// when the identity moved on. Either way it leaves carrying the
+/// train's optics, the held record's filled in where it lacked them.
 pub(crate) fn record_for_write(
     record: Option<FocusRecord>,
     stale: &[String],
     ctx: &TrainContext,
 ) -> (FocusRecord, bool) {
-    match record {
+    let (mut record, was_reset) = match record {
         Some(record) if stale.is_empty() => (record, false),
         Some(_) | None => (
             FocusRecord::new(
@@ -852,7 +871,9 @@ pub(crate) fn record_for_write(
             ),
             !stale.is_empty(),
         ),
-    }
+    };
+    record.fill_in_optics(&ctx.optics_identity());
+    (record, was_reset)
 }
 
 /// Append `run` to the train's record and report what the store did.
@@ -1831,6 +1852,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
             focuser_id: None,
             camera_id: None,
             filters: None,
+            optics: None,
             reference_filter: None,
             offsets: BTreeMap::new(),
             temperature_coefficient: None,
@@ -1850,6 +1872,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
         focuser_id: record.focuser_id.clone(),
         camera_id: record.camera_id.clone(),
         filters: record.filters.clone(),
+        optics: record.optics.clone(),
         reference_filter: record.reference_filter.clone(),
         offsets: record.offsets.clone(),
         temperature_coefficient: record.temperature_coefficient,
@@ -1998,6 +2021,11 @@ pub async fn reset_focus_model(
             record.focuser_id = Some(ctx.focuser_id.clone());
             record.camera_id = Some(ctx.camera_id.clone());
             record.filters.clone_from(&ctx.filters);
+            // As they stand, not filled in: a value the old record knew
+            // and the train does not report yet (a swapped camera that
+            // has not connected) described the old rig, and kept it would
+            // go stale against the new one and take the offsets with it.
+            record.optics = Some(ctx.optics_identity());
             Ok::<_, FocusModelError>((record, adopted))
         })
         .await?;
@@ -3569,6 +3597,35 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A camera swapped and not yet connected reports no pixel size;
+    /// the reset must not carry the old camera's into the new record,
+    /// where it would go stale once the new one reports its own.
+    #[tokio::test]
+    async fn a_reset_takes_the_trains_optics_as_they_stand() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("old-cam"),
+            Some(wheel_filters()),
+        );
+        record.optics = Some(OpticsIdentity {
+            pixel_size_um: Some(5.6),
+            ..OpticsIdentity::default()
+        });
+        store.put(record).await.unwrap();
+
+        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        let optics = view.model.optics.expect("the reset records the optics");
+        assert_eq!(
+            optics.pixel_size_um, None,
+            "the old camera's pixel size goes"
+        );
+        assert_eq!(optics.filter_wavelengths_nm.get("Ha"), Some(&Some(656.0)));
     }
 
     /// A store that cannot take a run does not turn a focused train

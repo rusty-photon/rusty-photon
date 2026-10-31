@@ -1084,6 +1084,7 @@ fn derive_optics(
     let inputs = persistence::OpticsInputs {
         focal_length_mm: train.and_then(|train| train.focal_length_mm),
         aperture_mm: train.and_then(|train| train.aperture_mm),
+        obstruction_mm: train.and_then(|train| train.obstruction_mm),
         pixel_size_x_um: invariants.pixel_size_x_um,
         pixel_size_y_um: invariants.pixel_size_y_um,
         sensor_width_px: invariants.sensor_width_px,
