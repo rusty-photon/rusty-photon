@@ -51,6 +51,9 @@ pub mod provision;
 pub mod render;
 pub mod report;
 pub mod scan;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod test_support;
 
 use std::path::{Path, PathBuf};
 

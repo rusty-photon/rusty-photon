@@ -1760,7 +1760,7 @@ Hand-written mocks (`MockSerialReader`, `MockSerialWriter`, `MockSerialPortFacto
 
 Tests that touch process-global state cannot run concurrently in the same
 process. Guard each one with a shared static `Mutex<()>` held for the whole
-test body. Two cases occur in this repo:
+test body. Three cases occur in this repo:
 
 **Server tests that bind to ports** conflict with the discovery service:
 
@@ -1805,6 +1805,23 @@ isolates each test in its own process and hides this — but plain
 `cargo test` runs them as threads. That includes the nightly **safety**
 sanitizer workflow and a developer running `cargo test -p qhyccd-rs`, both
 of which abort without the guard. See issue #384 for the original failure.
+
+**Tests that start child processes, when any of them writes an executable
+and runs it.** The process's descriptor table is the shared state. A test
+writes a stand-in script, and while the script is still open for writing,
+another test forks a child. The child inherits the write descriptor and
+keeps it until its own exec closes it (`O_CLOEXEC`). The first test's exec
+of the script inside that window fails with `ETXTBSY` ("Text file busy").
+Any test that starts a child can be the one that forks, so **every** test in
+the binary that starts a child takes the lock, not only the ones that write
+a script. A test whose child is started by the code under test holds the
+lock across that call. Doctor's unit tests take
+`test_support::fork_lock().await` (`blocking_fork_lock()` in a synchronous
+test), and bdd-infra's stand-in ConformU tests take `ONE_AT_A_TIME`. Do not
+retry the spawn on `ETXTBSY`: that tolerates the race instead of removing
+it. Windows has no `ETXTBSY`, so the race is a Unix one. `cargo nextest`
+hides this race too, but Bazel's `rust_test` runs a binary's tests as
+threads, as plain `cargo test` does.
 
 #### 6.7 Mock Strategy: Hand-Written vs mockall vs axum stub
 

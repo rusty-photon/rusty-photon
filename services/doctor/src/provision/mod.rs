@@ -880,6 +880,7 @@ mod tests {
     #[test]
     fn test_align_pki_ownership_chowns_a_group_stray_without_privileges() {
         use std::os::unix::fs::MetadataExt;
+        let _forks = crate::test_support::blocking_fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let pki = pki_dir(dir.path());
         std::fs::create_dir_all(&pki).unwrap();
