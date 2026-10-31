@@ -310,8 +310,9 @@ impl ImageCache {
     /// Resolve `document_id` to a cache entry, with on-disk rehydration
     /// on miss. On cache hit returns immediately. On miss scans
     /// `data_directory` for filenames whose suffix matches the
-    /// document's UUID-8, verifies the candidate via the FITS `DOC_ID`
-    /// header (sidecar `id` as fallback when the FITS is unreadable),
+    /// document's UUID-8, confirms the candidate by both of its files
+    /// (the FITS `DOC_ID` and the sidecar's `id` must both name the
+    /// document; a FITS file without a readable `DOC_ID` is refused),
     /// reads both files, populates the cache as MRU, and returns the
     /// rehydrated entry. `None` when no candidate matches or the
     /// sidecar's `max_adu` is `null` (the cache cannot represent an
