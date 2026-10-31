@@ -26,7 +26,6 @@ use uuid::Uuid;
 use rp_vocabulary::{Binning, FrameType};
 
 use crate::config::naming_template;
-use crate::equipment::alpaca::retry_idempotent_read;
 use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::equipment::{DeviceSlot, SlotGuard};
@@ -463,6 +462,10 @@ pub(super) struct MountReading {
     pub(super) tracking: Option<bool>,
 }
 
+/// Attempts the frame's mount read makes while RA, Dec or `Slewing`
+/// fails to read.
+const MOUNT_READ_ATTEMPTS: u32 = 3;
+
 /// The frame's one mount read (rp.md § Core Fields, `pointing`, and
 /// § Rig state): RA, Dec, `SideOfPier`, `Tracking` and `Slewing`
 /// together. Untimed of its own: it runs on its own task while the
@@ -474,7 +477,34 @@ pub(super) struct MountReading {
 /// a mount that cannot slew) counts as still. Otherwise each reading
 /// stands on its own: one that fails, a non-finite position or an
 /// `Unknown` pier side is left out.
+///
+/// A failed RA, Dec or `Slewing` read is retried, up to
+/// [`MOUNT_READ_ATTEMPTS`] in all with a short backoff (100 ms, then
+/// 200 ms): the recorded `pointing` is what `plate_solve` hints with, so
+/// a one-off device hiccup must not cost `center_on_target`'s next
+/// solve its position. The last attempt's reading stands.
 pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> MountReading {
+    let mut reading = MountReading::default();
+    for attempt in 1..=MOUNT_READ_ATTEMPTS {
+        let (found, read_failed) = read_mount_once(mount.as_ref()).await;
+        reading = found;
+        if !read_failed {
+            break;
+        }
+        if attempt < MOUNT_READ_ATTEMPTS {
+            let delay = Duration::from_millis(100u64 << attempt.saturating_sub(1));
+            debug!(attempt, ?delay, "a mount read failed; retrying it");
+            tokio::time::sleep(delay).await;
+        }
+    }
+    reading
+}
+
+/// One attempt at [`read_mount`]: the reading, and whether RA, Dec or
+/// `Slewing` failed to read, which a retry may cure. A mount that says
+/// it is slewing, a non-finite position or a failed pier-side or
+/// tracking read is an answer, not a failure.
+async fn read_mount_once(mount: &dyn ascom_alpaca::api::Telescope) -> (MountReading, bool) {
     let (ra, dec, side_of_pier, tracking, slewing) = tokio::join!(
         mount.right_ascension(),
         mount.declination(),
@@ -485,11 +515,16 @@ pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> 
     match slewing {
         Ok(false) => {}
         Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {}
-        other => {
-            debug!(slewing = ?other, "mount slewing, or unable to say; omitting pointing, pier side and tracking");
-            return MountReading::default();
+        Ok(true) => {
+            debug!("mount slewing; omitting pointing, pier side and tracking");
+            return (MountReading::default(), false);
+        }
+        Err(e) => {
+            debug!(error = %e, "mount unable to say whether it slews; omitting pointing, pier side and tracking");
+            return (MountReading::default(), true);
         }
     }
+    let position_read_failed = ra.is_err() || dec.is_err();
     let pointing = match (ra, dec) {
         (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
             Some(MountPointing {
@@ -517,11 +552,14 @@ pub(super) async fn read_mount(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> 
             None
         }
     };
-    MountReading {
-        pointing,
-        pier_side,
-        tracking,
-    }
+    (
+        MountReading {
+            pointing,
+            pier_side,
+            tracking,
+        },
+        position_read_failed,
+    )
 }
 
 /// A device read spawned on its own task: one a capture starts with its
@@ -1871,15 +1909,15 @@ impl McpHandler {
         }
     }
 
-    /// Persist the `wcs` section of a solve. `document_id` mode
-    /// targets the resolved document directly; `image_path` mode reads
-    /// the sibling `<base>.json` sidecar via
-    /// `ImageCache::resolve_document_by_path` so the late-solve
-    /// workflow's call (path-only, no `document_id` known to the
-    /// caller) still updates the matching sidecar.
+    /// Persist the `wcs` section of a solve to `target_doc_id`: the
+    /// requested document in `document_id` mode, or in `image_path`
+    /// mode the sibling `<base>.json` sidecar [`Self::do_plate_solve`]
+    /// resolved before the solve, so the late-solve workflow's call
+    /// (path-only, no `document_id` known to the caller) still updates
+    /// the matching sidecar.
     async fn persist_wcs_section(
         &self,
-        target_doc_id: Option<String>,
+        target_doc_id: Option<&str>,
         fits_path: &str,
         outcome: &rp_plate_solver::SolveOutcome,
     ) {
@@ -1891,20 +1929,8 @@ impl McpHandler {
             "solver": outcome.solver,
             "wcs_matrix": outcome.wcs_matrix,
         });
-        let persist_doc_id = match target_doc_id {
-            Some(id) => Some(id),
-            None => self
-                .image_cache
-                .resolve_document_by_path(fits_path)
-                .await
-                .map(|d| d.id),
-        };
-        if let Some(doc_id) = persist_doc_id {
-            if let Err(e) = self
-                .image_cache
-                .put_section(&doc_id, "wcs", payload.clone())
-                .await
-            {
+        if let Some(doc_id) = target_doc_id {
+            if let Err(e) = self.image_cache.put_section(doc_id, "wcs", payload).await {
                 debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
             }
         } else {
@@ -3442,46 +3468,6 @@ impl McpHandler {
             .map_err(|e| format!("failed to sync mount: {e}"))
     }
 
-    /// Read the current mount pointing for `plate_solve`'s
-    /// `use_mount_hints` convenience. Converts Alpaca's decimal
-    /// hours `RightAscension` to the wrapper's degrees-on-the-wire
-    /// contract (`× 15`); `Declination` passes through. Failure
-    /// modes — no mount configured, mount not connected, Alpaca
-    /// read error — surface as a single string the caller appends
-    /// to its diagnostic.
-    ///
-    /// `center_on_target` issues this read every iteration; under heavy
-    /// parallel-OmniSim CI load it was the read that stalled and hung
-    /// the whole loop (issue #319). Both reads are idempotent, so they
-    /// retry a transient failure via [`retry_idempotent_read`] rather
-    /// than aborting the compound tool on a single hiccup; the
-    /// per-request read timeout (see `equipment::alpaca`) bounds each
-    /// attempt.
-    pub(crate) async fn read_mount_hints_for_plate_solve(&self) -> Result<(f64, f64), String> {
-        let (_entry, mount) = self.resolve_mount()?;
-        let ra_hours = retry_idempotent_read("mount right_ascension", || {
-            let mount = mount.clone();
-            async move {
-                mount
-                    .right_ascension()
-                    .await
-                    .map_err(|e| format!("failed to read mount right_ascension: {e}"))
-            }
-        })
-        .await?;
-        let dec_deg = retry_idempotent_read("mount declination", || {
-            let mount = mount.clone();
-            async move {
-                mount
-                    .declination()
-                    .await
-                    .map_err(|e| format!("failed to read mount declination: {e}"))
-            }
-        })
-        .await?;
-        Ok((ra_hours * 15.0, dec_deg))
-    }
-
     /// Shared body of the standalone `plate_solve` MCP tool *and* the
     /// `center_on_target` compound tool's per-iteration solve. Both
     /// callers want the same configured-check, document resolution,
@@ -3493,8 +3479,8 @@ impl McpHandler {
     /// - Standalone `plate_solve` validates "neither `document_id`
     ///   nor `image_path` supplied" itself (so the error message
     ///   shape matches what its BDD pins).
-    /// - `center_on_target` always supplies `document_id` and
-    ///   hardcodes `pointing_hint: None, use_mount_hints: true`.
+    /// - `center_on_target` always supplies only `document_id`, so its
+    ///   fresh frame's recorded pointing is the hint.
     pub(crate) async fn do_plate_solve(
         &self,
         input: DoPlateSolveInput<'_>,
@@ -3508,7 +3494,7 @@ impl McpHandler {
             serde_json::json!({
                 "document_id": input.document_id,
                 "image_path": input.image_path,
-                "use_mount_hints": input.use_mount_hints,
+                "blind": input.blind,
             }),
         ));
         let result = self.do_plate_solve_inner(input).await;
@@ -3542,15 +3528,15 @@ impl McpHandler {
         &self,
         input: DoPlateSolveInput<'_>,
     ) -> Result<DoPlateSolveOutput, String> {
-        // Hint validation: pointing_hint and use_mount_hints=true are
-        // mutually exclusive. center_on_target hardcodes
-        // pointing_hint=None so it never trips this; the standalone
-        // tool may.
-        if input.pointing_hint.is_some() && input.use_mount_hints {
-            return Err(
-                "plate_solve: provide explicit pointing_hint or use_mount_hints, not both"
-                    .to_string(),
-            );
+        // A blind solve has no position, and a search radius bounds a
+        // search around one (rp.md § `plate_solve` Contract).
+        if input.blind {
+            if input.pointing_hint.is_some() {
+                return Err("plate_solve: blind excludes pointing_hint".to_string());
+            }
+            if input.search_radius_deg.is_some() {
+                return Err("plate_solve: blind excludes search_radius_deg".to_string());
+            }
         }
 
         let client = self
@@ -3558,10 +3544,12 @@ impl McpHandler {
             .clone()
             .ok_or_else(|| "plate_solve: plate solver not configured".to_string())?;
 
-        // Resolve fits_path: document_id wins when both supplied.
-        let (fits_path, target_doc_id) = if let Some(doc_id) = input.document_id {
+        // Resolve fits_path and the frame's record: document_id wins when
+        // both are supplied; an image_path's record is the sidecar beside
+        // the file, when there is one.
+        let (fits_path, record, target_doc_id) = if let Some(doc_id) = input.document_id {
             match self.image_cache.resolve_document(doc_id).await {
-                Some(doc) => (doc.file_path, Some(doc_id.to_string())),
+                Some(doc) => (doc.file_path.clone(), Some(doc), Some(doc_id.to_string())),
                 None => return Err(format!("plate_solve: document not found: {doc_id}")),
             }
         } else {
@@ -3569,34 +3557,25 @@ impl McpHandler {
                 "plate_solve: missing required argument: provide either document_id or image_path"
                     .to_string()
             })?;
-            (path.to_string(), None)
+            let record = self.image_cache.resolve_document_by_path(path).await;
+            let target_doc_id = record.as_ref().map(|doc| doc.id.clone());
+            (path.to_string(), record, target_doc_id)
         };
 
-        // Resolve hints. The wrapper takes flat ra_hint/dec_hint in
-        // decimal degrees; the mount-hint helper does the Alpaca-
-        // hours → degrees ×15 conversion.
-        let (ra_hint, dec_hint) = if let Some((ra_deg, dec_deg)) = input.pointing_hint {
-            (Some(ra_deg), Some(dec_deg))
-        } else if input.use_mount_hints {
-            match self.read_mount_hints_for_plate_solve().await {
-                Ok((ra_deg, dec_deg)) => (Some(ra_deg), Some(dec_deg)),
-                Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {e}")),
-            }
-        } else {
-            (None, None)
-        };
-
-        // search_radius_deg: per-call value > config default > absent.
-        let search_radius_deg = input
-            .search_radius_deg
-            .or(self.plate_solver_default_search_radius_deg);
+        let hints = resolve_solve_hints(
+            &input,
+            record.as_ref(),
+            self.plate_solver_default_search_radius_deg,
+        );
+        debug!(fits_path = %fits_path, ?hints, "plate_solve hints resolved");
 
         let request = rp_plate_solver::SolveRequest {
             fits_path: fits_path.clone(),
-            ra_hint,
-            dec_hint,
-            fov_hint_deg: input.fov_hint_deg,
-            search_radius_deg,
+            ra_hint: hints.ra_hint,
+            dec_hint: hints.dec_hint,
+            fov_hint_deg: hints.fov_hint_deg,
+            search_radius_deg: hints.search_radius_deg,
+            blind: hints.blind,
             timeout: input.timeout,
         };
 
@@ -3622,7 +3601,7 @@ impl McpHandler {
             }
         };
 
-        self.persist_wcs_section(target_doc_id, &fits_path, &outcome)
+        self.persist_wcs_section(target_doc_id.as_deref(), &fits_path, &outcome)
             .await;
 
         Ok(DoPlateSolveOutput {
@@ -3642,10 +3621,12 @@ impl McpHandler {
 pub(crate) struct DoPlateSolveInput<'a> {
     pub document_id: Option<&'a str>,
     pub image_path: Option<&'a str>,
-    /// Decimal degrees `(ra, dec)`. Mutually exclusive with
-    /// `use_mount_hints == true`.
+    /// Decimal degrees `(ra, dec)`. Overrides the frame's recorded
+    /// `pointing`; refused with `blind`.
     pub pointing_hint: Option<(f64, f64)>,
-    pub use_mount_hints: bool,
+    /// Solve without a position, ignoring the frame's recorded
+    /// `pointing`; refused with `pointing_hint` or `search_radius_deg`.
+    pub blind: bool,
     pub fov_hint_deg: Option<f64>,
     pub search_radius_deg: Option<f64>,
     pub timeout: Option<Duration>,
@@ -3669,6 +3650,78 @@ pub(crate) struct DoPlateSolveOutput {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+/// What [`McpHandler::do_plate_solve`] sends the wrapper beside the FITS
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SolveHints {
+    pub ra_hint: Option<f64>,
+    pub dec_hint: Option<f64>,
+    pub fov_hint_deg: Option<f64>,
+    pub search_radius_deg: Option<f64>,
+    pub blind: bool,
+}
+
+/// Resolve a solve's hints from the call, else from the frame's record —
+/// never from the live mount or the FITS header (rp.md § `plate_solve`
+/// Contract). A solve with no position is blind and takes no search
+/// radius, not even the call's own. The caller has already refused
+/// `blind` alongside `pointing_hint` or `search_radius_deg`.
+pub(crate) fn resolve_solve_hints(
+    input: &DoPlateSolveInput<'_>,
+    record: Option<&ExposureDocument>,
+    default_search_radius_deg: Option<f64>,
+) -> SolveHints {
+    let fov_hint_deg = input
+        .fov_hint_deg
+        .or_else(|| record?.optics.as_ref()?.fov_height_deg);
+    let position = if input.blind {
+        None
+    } else {
+        input
+            .pointing_hint
+            .or_else(|| record?.pointing.and_then(recorded_position))
+    };
+    if let Some((ra_deg, dec_deg)) = position {
+        return SolveHints {
+            ra_hint: Some(ra_deg),
+            dec_hint: Some(dec_deg),
+            fov_hint_deg,
+            search_radius_deg: input.search_radius_deg.or(default_search_radius_deg),
+            blind: false,
+        };
+    }
+    if let Some(radius) = input.search_radius_deg {
+        debug!(
+            search_radius_deg = radius,
+            "plate_solve: the frame has no position, so the solve is blind and drops the search radius"
+        );
+    }
+    SolveHints {
+        ra_hint: None,
+        dec_hint: None,
+        fov_hint_deg,
+        search_radius_deg: None,
+        blind: true,
+    }
+}
+
+/// A recorded mount pointing as the wrapper's decimal-degree hint pair:
+/// Alpaca's RA hours × 15, folded into `[0, 360)`, and the declination as
+/// recorded. `None` for a value no sky position has.
+fn recorded_position(pointing: MountPointing) -> Option<(f64, f64)> {
+    if !pointing.ra_hours.is_finite() || !(-90.0..=90.0).contains(&pointing.dec_degrees) {
+        debug!(
+            ?pointing,
+            "plate_solve: recorded pointing is not a sky position"
+        );
+        return None;
+    }
+    let ra_deg = (pointing.ra_hours * 15.0).rem_euclid(360.0);
+    // `rem_euclid` of a hair below zero rounds up to 360.0 itself.
+    let ra_deg = if ra_deg >= 360.0 { 0.0 } else { ra_deg };
+    Some((ra_deg, pointing.dec_degrees))
+}
 
 pub(crate) fn stats_outcome<T: imaging::Pixel>(
     view: &ndarray::ArrayView2<T>,

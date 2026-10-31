@@ -14,6 +14,9 @@ use rusty_photon_process::{Bounded, Capture, Outcome, Stop, STDERR_TAIL};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The `-r` a blind request sends: ASTAP's whole-sky search radius.
+const WHOLE_SKY_RADIUS_DEG: f64 = 180.0;
+
 /// Wraps `astap_cli` invocations.
 pub struct AstapCliRunner {
     binary_path: PathBuf,
@@ -65,6 +68,14 @@ impl AstapCliRunner {
         }
         if let Some(r) = req.search_radius_deg {
             cmd.arg("-r").arg(format!("{r:.10}"));
+        }
+        if req.blind {
+            // `-r` is the radius of ASTAP's square search pattern
+            // around its start position; at 180° the pattern covers
+            // the whole sky, so a start ASTAP takes from the header or
+            // its last solve can no longer make it miss. See design doc
+            // §"Hint Mapping".
+            cmd.arg("-r").arg(format!("{WHOLE_SKY_RADIUS_DEG:.10}"));
         }
 
         for (k, v) in &self.extra_env {
@@ -132,6 +143,7 @@ mod tests {
             dec_hint: None,
             fov_hint_deg: None,
             search_radius_deg: None,
+            blind: false,
             timeout: Duration::from_secs(30),
         }
     }
@@ -201,6 +213,39 @@ mod tests {
         let r_idx = argv.iter().position(|a| a == "-r").unwrap();
         let radius: f64 = argv[r_idx + 1].parse().unwrap();
         assert!((radius - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blind_requests_a_whole_sky_search_radius() {
+        let mut r = req();
+        r.blind = true;
+        let cmd = runner().build_command(&r);
+        let argv = argv(&cmd);
+        let r_idx = argv.iter().position(|a| a == "-r").unwrap();
+        let radius: f64 = argv[r_idx + 1].parse().unwrap();
+        assert!((radius - 180.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blind_adds_no_position_flags() {
+        let mut r = req();
+        r.blind = true;
+        let cmd = runner().build_command(&r);
+        let argv = argv(&cmd);
+        assert!(!argv.contains(&"-ra".to_string()), "argv: {argv:?}");
+        assert!(!argv.contains(&"-spd".to_string()), "argv: {argv:?}");
+    }
+
+    #[test]
+    fn blind_keeps_the_fov_hint() {
+        let mut r = req();
+        r.blind = true;
+        r.fov_hint_deg = Some(1.5);
+        let cmd = runner().build_command(&r);
+        let argv = argv(&cmd);
+        let fov_idx = argv.iter().position(|a| a == "-fov").unwrap();
+        let fov: f64 = argv[fov_idx + 1].parse().unwrap();
+        assert!((fov - 1.5).abs() < 1e-9);
     }
 
     #[test]

@@ -25,6 +25,9 @@ pub struct SolveRequest {
     pub dec_hint: Option<f64>,
     pub fov_hint_deg: Option<f64>,
     pub search_radius_deg: Option<f64>,
+    /// Whole-sky search. The HTTP layer refuses it alongside `ra_hint`,
+    /// `dec_hint` or `search_radius_deg`, so the runner never sees both.
+    pub blind: bool,
     pub timeout: Duration,
 }
 

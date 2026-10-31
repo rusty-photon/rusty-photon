@@ -205,9 +205,11 @@ Defense in depth around it:
   wrapper's per-request deadline; the wrapper itself doesn't hang on
   a wedged solve.
 - `rp`'s HTTP client to the wrapper has its own outer timeout
-  (`plate_solver.timeout_secs` in rp config) — even if the wrapper's
+  (`plate_solver.timeout` in rp config) — even if the wrapper's
   internal deadline regresses, rp does not hang on a `plate_solve`
-  call.
+  call. A request that carries its own `timeout` waits at least that
+  long plus 10 s, so the backstop never cuts a solve short of its own
+  deadline.
 
 ## Coordinates and units
 
@@ -217,6 +219,10 @@ Defense in depth around it:
 - `dec_hint` and `dec_center`: **decimal degrees, −90 to +90**. The
   wrapper converts `dec_hint` to ASTAP's south-pole-distance
   (`90 + dec`) before spawning.
+- `blind: true`: a whole-sky search (ASTAP's `-r 180`), so a position
+  ASTAP would take from the FITS header or its previous solve cannot
+  make it miss. Refused alongside `ra_hint`, `dec_hint` or
+  `search_radius_deg`; `fov_hint_deg` may accompany it.
 - `pixel_scale_arcsec`: arcseconds per pixel.
 - `rotation_deg`: degrees.
 - `wcs_matrix`: nested object with `crpix1`/`crpix2` (FITS 1-based

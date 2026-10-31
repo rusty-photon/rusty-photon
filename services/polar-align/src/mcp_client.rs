@@ -176,11 +176,11 @@ impl McpClient {
     }
 
     /// Solve a captured image. `hint` is the expected pointing in
-    /// decimal degrees; `None` solves blind (and pins
-    /// `use_mount_hints` off — a manual-rotation rig may have no
-    /// mount for rp to hint from, and a wrong hint is worse than
-    /// none). A blind solve sends no `search_radius_deg` either: the
-    /// radius bounds the search around a hint, and there is none.
+    /// decimal degrees; `None` solves blind — rp then ignores the
+    /// frame's recorded pointing, which on a hand-turned mount is where
+    /// the axis stood before the turn, and a wrong hint is worse than
+    /// none. A blind solve sends no `search_radius_deg` either: rp
+    /// refuses one, as the radius bounds a search around a hint.
     ///
     /// # Errors
     ///
@@ -211,7 +211,7 @@ impl McpClient {
                 args.insert("search_radius_deg".to_string(), search_radius_deg.into());
             }
             None => {
-                args.insert("use_mount_hints".to_string(), false.into());
+                args.insert("blind".to_string(), true.into());
             }
         }
         self.call_tool("plate_solve", Value::Object(args)).await

@@ -27,7 +27,7 @@
 //! Cross-category helper methods on `McpHandler`
 //! (`do_capture`, `do_move_focuser_blocking`, `*_via_document` /
 //! `*_via_path` dispatch helpers, `persist_capture_artifact`,
-//! `resolve_mount`, `read_mount_hints_for_plate_solve`,
+//! `resolve_mount`, `do_plate_solve`,
 //! `do_slew_blocking`, `do_park_blocking`) live in [`internals`]
 //! together with their supporting private types (`ResolvedParams`,
 //! `BackgroundOutcome`, `DetectStarsOutcome`,

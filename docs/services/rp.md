@@ -204,16 +204,6 @@ line with the rules, each tracked by its own issue:
     `fits_path`. A frame whose pairs were copied to a new directory is
     solved, measured and written at its old copy; one whose pairs were
     moved fails, although the lookup found it.
-- `rp`'s own plate solves lean on the header and on live state.
-  `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
-  pass ASTAP no scale, and plate solvers derive a frame's scale from
-  `FOCALLEN` and `XPIXSZ` ([FITS header](#fits-header)). Given no
-  position, ASTAP takes one from the header
-  ([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)).
-  And `use_mount_hints` reads where the mount points now, even for a
-  past frame whose sidecar records its `pointing`. Both hints should
-  come from the sidecar: `optics.fov_height_deg` and `pointing`
-  ([#1497](https://github.com/rusty-photon/rusty-photon/issues/1497)).
 - [Progress derivation](#progress-derivation) takes a past frame's
   target, frame type, filter, binning and exposure time from its file
   and directory names, parsed through the naming patterns as
@@ -473,8 +463,12 @@ sidecar is the record ([Ground rules](#ground-rules)).
   second more, alongside the camera's own reads, so a healthy mount
   costs the frame nothing and a wedged one at most that second. A read
   still out then is dropped and aborted, as it is when the exposure
-  fails or the capture is cancelled. Also omitted when no mount is
-  configured or connected, or the read fails. The same read gives the
+  fails or the capture is cancelled. A failed RA, Dec or `Slewing`
+  read is retried within that time, up to three attempts with a
+  100 ms then 200 ms backoff: `plate_solve` hints with the recorded
+  `pointing`, so a one-off device hiccup must not cost a solve its
+  position. Also omitted when no mount is configured or connected, or
+  the read still fails on its last attempt. The same read gives the
   frame's `pier_side` and `tracking` ([Rig state](#rig-state)).
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
@@ -636,13 +630,11 @@ variation the operator makes mid-session (a focal reducer screwed in)
 is still out of scope: the block reflects the operator-declared static
 optical train.
 
-The `plate_solve` built-in tool (Phase 6c-2 in
-`docs/plans/archive/image-evaluation-tools.md`) accepts an explicit
-`fov_hint_deg` parameter that callers can populate from
-`optics.fov_height_deg` on the document — `fov_height_deg` matches
-ASTAP's `-fov` semantics ("image height in degrees"). Where a solve
-called without it gets its scale is covered in
-[Ground rules](#ground-rules).
+The `plate_solve` built-in tool sends the document's
+`optics.fov_height_deg` as the wrapper's `fov_hint_deg` when the call
+passes none — `fov_height_deg` matches ASTAP's `-fov` semantics
+("image height in degrees"). See
+[`plate_solve` Contract](#plate_solve-contract).
 
 #### Rig state
 
@@ -1138,7 +1130,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder engaged for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
 | `move_rotator_failed` | error | Rotator move failed or timed out (guiding re-selected/resumed best-effort when the ladder was engaged) |
-| `plate_solve_started` | document_id, image_path, use_mount_hints | Plate solve begins |
+| `plate_solve_started` | document_id, image_path, blind | Plate solve begins; `blind` is the call's own flag, not whether the solve resolved to one |
 | `plate_solve_complete` | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Plate solve succeeded |
 | `plate_solve_failed` | error | Plate solve failed |
 | `centering_started` | camera_id, ra, dec, tolerance_arcsec, max_attempts | Plate-solve + correct loop begins |
@@ -1798,7 +1790,7 @@ accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver, wcs_matrix | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
+| `plate_solve` | document_id or image_path; optional pointing_hint, blind, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver, wcs_matrix | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
 
 **Compound (built-in)**
 
@@ -5947,37 +5939,64 @@ own contract.
   `RightAscension` in **hours**, but the wrapper takes degrees).
   Both inner fields are required when the object is present; the
   nested-object shape makes the both-or-neither contract structural
-  rather than runtime-validated.
-- `use_mount_hints` — optional `bool`, default `false`. When
-  `true`, rp reads the current mount position
-  (`right_ascension()` × 15 → degrees, `declination()` pass-through)
-  and forwards as the wrapper's `ra_hint` / `dec_hint`.
-  - Mutually exclusive with `pointing_hint`. Both supplied ⇒ error
-    `provide explicit pointing_hint or use_mount_hints, not both`.
-  - Requires a configured and connected mount. Mount absent / not
-    connected / Alpaca read failure ⇒ error to caller (the caller
-    explicitly opted in, so failures are surfaced rather than
-    silently dropping the hint).
-- `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
-  wrapper's `fov_hint_deg`; absent ⇒ omitted from the wrapper
-  request. [Ground rules](#ground-rules) names the document's
-  `optics.fov_height_deg` as its source.
+  rather than runtime-validated. Overrides the frame's recorded
+  `pointing`.
+- `blind` — optional `bool`, default `false`. When `true`, rp solves
+  without a position: it ignores the frame's recorded `pointing` and
+  asks the wrapper for a whole-sky search (the wrapper's `blind`,
+  ASTAP's `-r 180`). It is for a caller that knows the recorded
+  position is wrong, such as polar-align's `manual_rotation`, where
+  the operator turns the RA axis by hand after the mount last
+  reported it. Mutually exclusive with `pointing_hint` and with
+  `search_radius_deg`: either supplied with it ⇒ error.
+- `fov_hint_deg` — optional `f64`. Overrides the frame's recorded
+  `optics.fov_height_deg`.
 - `search_radius_deg` — optional `f64`. Per-call value overrides
   `plate_solver.default_search_radius_deg` from rp config. Both
   absent ⇒ omit from wrapper request ⇒ ASTAP uses its own default.
   The override matters for loaded-from-disk images where the
-  configured rig default may not match.
+  configured rig default may not match. A blind solve sends neither.
 - `timeout` — optional humantime string (e.g. `"30s"`). Forwarded
   to the wrapper's `timeout` field. Omitted ⇒ wrapper applies its
   own `default_solve_timeout`. **Distinct from**
   `plate_solver.timeout` in rp config, which is the rp HTTP-client
-  outer timeout (the connection-side backstop per Tenet 1).
+  outer timeout (the connection-side backstop per Tenet 1). The
+  backstop never cuts a solve short of its own deadline: a request
+  with a `timeout` gets `max(plate_solver.timeout, timeout + 10 s)`,
+  the 10 s covering the wrapper's 2 s kill grace and its reap of up
+  to 5 s after the deadline
+  ([plate-solver.md § Subprocess Supervision](plate-solver.md#subprocess-supervision)).
+  A request without one keeps `plate_solver.timeout`.
 
-When neither `pointing_hint` nor `use_mount_hints` is supplied, no
-position hint is passed;
-[plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping) says
-what ASTAP does then, and [Ground rules](#ground-rules) lists `rp`'s
-reliance on it as a gap.
+**Hints** come from the call, else from the frame's own record, never
+from the live mount and never from the FITS header
+([Ground rules](#ground-rules)):
+
+| Wrapper field | Source, first that applies |
+|---|---|
+| `ra_hint` / `dec_hint` | `pointing_hint`; else the document's `pointing`, its `ra_hours` × 15 folded into `[0, 360)`; else none |
+| `blind` | `true` when the call passes `blind: true` or no position resolves |
+| `fov_hint_deg` | `fov_hint_deg`; else the document's `optics.fov_height_deg`; else none |
+| `search_radius_deg` | `search_radius_deg`; else `plate_solver.default_search_radius_deg`; never with `blind` |
+
+The document is the one `document_id` names, or for `image_path` the
+sidecar found beside the file (see Persistence below). The recorded
+`pointing` is what the mount reported as the exposure started, in its
+own equatorial system; the difference from J2000, under half a degree
+today, sits well inside a search radius of a few degrees. A frame
+with no position, a file another program wrote among them, is solved
+blind rather than left to ASTAP, which would take a position from the
+header or from its previous solve
+([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)). A
+per-call `search_radius_deg` on such a frame is dropped, with a
+`debug!` line: the radius bounds a search around a position, and
+there is none. A frame with no `optics.fov_height_deg` and no
+`fov_hint_deg` sends no scale, and ASTAP takes one from the header
+(`FOCALLEN`, `XPIXSZ`) or from its previous solve. That is by
+decision, rather than sending `-fov 0` to try every field height from
+10° to 0.3°: for a frame `rp` took, the header has those cards only
+when the sidecar has the focal length and pixel size they are
+exported from.
 
 **Output** (matches the wrapper's `SolveResponseBody` field-for-field):
 - `ra_center` (f64) — image-center right ascension in decimal
@@ -6000,15 +6019,16 @@ reliance on it as a gap.
 - `document_id` mode: writes a `wcs` section to the exposure
   document via `ImageCache::put_section`. Section payload mirrors
   the output verbatim.
-- `image_path` mode: after a successful solve, derives the sibling
-  sidecar path (`<base>.fits` → `<base>.json`) and resolves it to
-  an `ExposureDocument` via `ImageCache::resolve_document_by_path`.
-  If the sidecar exists and parses (the **late-solve workflow**:
-  capture frame N → start capture N+1 → solve frame N → update the
-  original sidecar), `wcs` is written via `put_section`. If no
-  sidecar is present (external FITS, missing sidecar, non-`.fits`
-  path), the result is returned without persistence and the cache
-  miss is `debug!()`-logged. `put_section` itself falls back to a
+- `image_path` mode: before the solve, derives the sibling sidecar
+  path (`<base>.fits` → `<base>.json`) and resolves it to an
+  `ExposureDocument` via `ImageCache::resolve_document_by_path`; its
+  record supplies the hints above. If the sidecar exists and parses
+  (the **late-solve workflow**: capture frame N → start capture N+1
+  → solve frame N → update the original sidecar), `wcs` is written
+  via `put_section` after a successful solve. If no sidecar is
+  present (external FITS, missing sidecar, non-`.fits` path), the
+  frame is solved blind, the result is returned without persistence,
+  and the miss is `debug!()`-logged. `put_section` itself falls back to a
   disk-only write when the cache entry is absent (post-eviction or
   post-`rp` restart) so the sidecar always sees the section update.
 - Persistence failure (sidecar write error) is logged at `debug!()`
@@ -6019,11 +6039,10 @@ reliance on it as a gap.
 - Configuration errors before the call:
   - rp `plate_solver` config absent ⇒
     `plate_solve: plate solver not configured`.
-  - Hint mutual-exclusion violated ⇒
-    `plate_solve: provide explicit pointing_hint or use_mount_hints,
-    not both`.
-  - `use_mount_hints: true` with mount issue ⇒
-    `plate_solve: use_mount_hints requested but mount is <reason>`.
+  - `blind: true` with `pointing_hint` ⇒
+    `plate_solve: blind excludes pointing_hint`.
+  - `blind: true` with `search_radius_deg` ⇒
+    `plate_solve: blind excludes search_radius_deg`.
   - Neither `document_id` nor `image_path` ⇒ MCP error mentioning
     `image_path`.
 - HTTP-client failures (DNS, refused, connection timeout) ⇒
@@ -6037,28 +6056,24 @@ reliance on it as a gap.
 
 **Algorithm**:
 1. Validate `document_id` xor `image_path` (at least one). Validate
-   hint shape (mutual exclusion + `use_mount_hints` requires
-   connected mount).
+   `blind` against `pointing_hint` and `search_radius_deg`.
 2. Resolve `PlateSolveClient` from `AppState`. Error if absent.
-3. Resolve `fits_path`:
+3. Resolve `fits_path` and the frame's record:
    - `document_id` mode: `ImageCache::resolve_document(doc_id)` →
-     `doc.file_path`.
-   - `image_path` mode: forward verbatim.
-4. Resolve hints into the wrapper's flat `ra_hint` / `dec_hint`
-   pair. Explicit `pointing_hint` maps directly; `use_mount_hints`
-   reads the mount and applies the ×15 RA conversion.
-5. Resolve `search_radius_deg`: per-call value > config default >
-   absent.
-6. Build `SolveRequest`, call `client.solve(req)`. Map `SolveError`
+     `doc.file_path`, and the document itself.
+   - `image_path` mode: forward verbatim; the record is
+     `ImageCache::resolve_document_by_path`'s, or none.
+4. Resolve the hints per the table above.
+5. Build `SolveRequest`, call `client.solve(req)`. Map `SolveError`
    variants to MCP errors per the policy above.
-7. On success: in `document_id` mode, persist the `wcs` section to
-   that document. In `image_path` mode, attempt UUID-8 reverse-
-   lookup; persist if matched, debug-log if not.
-8. Return the solver output as the MCP tool result.
+6. On success, persist the `wcs` section to the record resolved in
+   step 3; debug-log when there is none.
+7. Return the solver output as the MCP tool result.
 
-**Compound caller note**: `center_on_target` (planned, Phase 6c-3)
-sets `use_mount_hints: true` on its inner `plate_solve` calls
-rather than calling a Rust-side mount-read helper. That keeps the
+**Compound caller note**: `center_on_target` calls the same handler
+with only a `document_id`, so its fresh frame's recorded `pointing`
+— what the mount reported as that exposure started — is the position
+hint, and its `optics.fov_height_deg` the scale. That keeps the
 hours→degrees conversion in one place (this contract) and avoids a
 parallel code path for the same data flow.
 
@@ -6159,10 +6174,10 @@ exactly one mount.
 2. For `iter = 0..max_attempts`:
    1. `capture(camera_id, duration)` → `document_id`. Cache
       populated as a side effect.
-   2. `plate_solve(document_id)` with `use_mount_hints: true` so
-      the wrapper gets the mount's currently-reported pointing as
-      an `ra_hint`/`dec_hint` pair (hours→degrees conversion lives
-      in the `plate_solve` handler — see
+   2. `plate_solve(document_id)`, so the wrapper gets the pointing
+      the frame recorded as its exposure started as an
+      `ra_hint`/`dec_hint` pair (hours→degrees conversion lives in
+      the `plate_solve` handler — see
       [`plate_solve` Contract](#plate_solve-contract)). Yields
       `(solved_ra_deg, solved_dec_deg)` and writes a `wcs` section
       to the document as a side effect.
@@ -6219,11 +6234,10 @@ exactly one mount.
   timeout (`equipment::alpaca`), so a device that accepts the
   connection but stops answering — an overloaded simulator in CI, a
   stalled mount/USB-serial bridge at night — surfaces as a timeout
-  error instead of wedging the loop forever. The idempotent
-  per-iteration mount reads (`plate_solve`'s `use_mount_hints` read;
-  the slew's `Slewing` poll) additionally **retry** a transient
-  failure with short backoff before giving up, so a brief device
-  hiccup is ridden out rather than aborting the whole tool. (This is
+  error instead of wedging the loop forever. The capture's mount read,
+  whose recorded `pointing` is the solve's hint, and the slew's
+  `Slewing` poll additionally ride out a transient read failure before
+  giving up, so a brief device hiccup does not abort the whole tool. (This is
   the fix for the issue #319 `center_on_target` timeout: a stalled
   mount read had no client-side timeout and hung indefinitely; the
   blocking-op poll deadlines guard loops, not a single in-flight
@@ -6313,14 +6327,14 @@ Orchestrator: tools/call center_on_target {
   rp's center_on_target implementation:
     iter 0:
       capture(camera_id="main-cam", duration="5s")   → {document_id: "doc-c01"}
-      plate_solve(document_id="doc-c01", use_mount_hints: true)
+      plate_solve(document_id="doc-c01")
                                                      → {ra_center: 160.230°, dec_center: 41.265°}
       sync_mount(ra=10.6820, dec=41.265)            # 160.230° / 15
       residual_arcsec = haversine(...)               → 45.0    (> tolerance)
       slew(ra=10.6847, dec=41.2689)                  # iter-1 action: "sync"
     iter 1:
       capture → {document_id: "doc-c02"}
-      plate_solve(document_id="doc-c02", use_mount_hints: true)
+      plate_solve(document_id="doc-c02")
                                                      → {ra_center: 160.270°, dec_center: 41.2685°}
       residual_arcsec                                → 2.1     (≤ tolerance)
                                                      # action: "converged"
@@ -8401,14 +8415,13 @@ services/rp/src/
                           frame's one mount read in internals.rs.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
-                          persist_capture_artifact,
-                          read_mount_hints_for_plate_solve,
+                          persist_capture_artifact, do_plate_solve,
                           resolve_mount, the `*_via_document`/`*_via_path`
                           dispatch helpers, and small private types
                           (Resolved*Params, BackgroundOutcome,
                           PollIdleError) plus free fns clip_outcome,
                           detect_outcome, star_to_json,
-                          poll_slewing_until_idle.
+                          poll_slewing_until_idle, resolve_solve_hints.
     tests.rs            Current home for the full mcp test module
                           (~3,400 lines including six mock-device
                           types, six EquipmentRegistry builders, and

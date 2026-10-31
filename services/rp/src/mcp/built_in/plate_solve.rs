@@ -34,19 +34,22 @@ pub struct PlateSolveParams {
     /// `document_id` must be present.
     #[serde(default)]
     pub image_path: Option<String>,
-    /// Explicit pointing hint (decimal degrees). Mutually exclusive with
-    /// `use_mount_hints=true`.
+    /// Explicit pointing hint (decimal degrees). Overrides the pointing
+    /// the frame's sidecar recorded. Refused with `blind`.
     #[serde(default)]
     pub pointing_hint: Option<PointingHint>,
-    /// When `true`, source the pointing hint from the configured mount.
-    /// Mutually exclusive with `pointing_hint`. Requires a connected
-    /// mount.
+    /// When `true`, solve without a position: the frame's recorded
+    /// pointing is ignored and the wrapper searches the whole sky. For a
+    /// caller that knows the recorded position is wrong. Refused with
+    /// `pointing_hint` or `search_radius_deg`.
     #[serde(default)]
-    pub use_mount_hints: Option<bool>,
+    pub blind: Option<bool>,
     /// Image FOV hint in decimal degrees (matches ASTAP's `-fov`).
+    /// Overrides the frame's recorded `optics.fov_height_deg`.
     #[serde(default)]
     pub fov_hint_deg: Option<f64>,
     /// Per-call search radius override. Wins over the rp-config default.
+    /// Dropped when the solve has no position.
     #[serde(default)]
     pub search_radius_deg: Option<f64>,
     /// Per-call solve timeout (humantime string). Forwarded to the
@@ -59,7 +62,7 @@ pub struct PlateSolveParams {
 #[tool_router(router = tool_router_plate_solve, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "Plate-solve a captured frame by proxying to the plate-solver rp-managed service. Accepts document_id or image_path; document_id wins. Hints are explicit (pointing_hint object) or sourced from the mount via use_mount_hints=true. Persists a `wcs` section to the exposure document when one resolves."
+        description = "Plate-solve a captured frame by proxying to the plate-solver rp-managed service. Accepts document_id or image_path; document_id wins. The position hint is pointing_hint, else the pointing the frame's sidecar recorded; the scale is fov_hint_deg, else the sidecar's optics.fov_height_deg. A frame with no position, or a call with blind=true, is solved blind (whole sky). Persists a `wcs` section to the exposure document when one resolves."
     )]
     pub(crate) async fn plate_solve(
         &self,
@@ -82,7 +85,7 @@ impl McpHandler {
             document_id: params.document_id.as_deref(),
             image_path: params.image_path.as_deref(),
             pointing_hint: params.pointing_hint.as_ref().map(|p| (p.ra_deg, p.dec_deg)),
-            use_mount_hints: params.use_mount_hints.unwrap_or(false),
+            blind: params.blind.unwrap_or(false),
             fov_hint_deg: params.fov_hint_deg,
             search_radius_deg: params.search_radius_deg,
             timeout: params.timeout,

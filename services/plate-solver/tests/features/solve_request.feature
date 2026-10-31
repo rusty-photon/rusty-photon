@@ -3,6 +3,10 @@ Feature: POST /api/v1/solve — request handling and error surface
   The solve endpoint accepts a FITS path plus optional pointing/FOV/
   search-radius hints, runs ASTAP under the request's deadline, and
   returns the parsed WCS solution or one of the five frozen error codes.
+  `blind: true` asks for a whole-sky search, ASTAP's `-r 180`, so a
+  position ASTAP would take from the FITS header or its previous solve
+  can no longer limit where it looks. A blind request carries no
+  position and no search radius; it may carry a field-of-view hint.
 
   The complete HTTP contract — request fields, response fields, error
   code table — lives in `docs/plans/archive/plate-solver.md` §"HTTP contract".
@@ -104,3 +108,43 @@ Feature: POST /api/v1/solve — request handling and error surface
       | dec_hint          | 41.2690 | -spd | 131.2690  |
       | fov_hint_deg      | 1.5     | -fov | 1.5       |
       | search_radius_deg | 5.0     | -r   | 5.0       |
+
+  Scenario: A blind request asks ASTAP for a whole-sky search
+    Given mock_astap is configured for "normal" mode
+    And mock_astap is configured to write argv to a side-channel file
+    And a writable FITS path
+    When I POST to /api/v1/solve with that fits_path and blind true
+    Then the response status is 200
+    And the spawned argv value after "-r" is approximately 180.0
+    And the spawned argv does not contain the flag "-ra"
+    And the spawned argv does not contain the flag "-spd"
+
+  Scenario: A blind request keeps its field-of-view hint
+    Given mock_astap is configured for "normal" mode
+    And mock_astap is configured to write argv to a side-channel file
+    And a writable FITS path
+    When I POST to /api/v1/solve with that fits_path, blind true and hint fov_hint_deg set to 1.5
+    Then the response status is 200
+    And the spawned argv value after "-r" is approximately 180.0
+    And the spawned argv value after "-fov" is approximately 1.5
+
+  Scenario: A request that is not blind adds no whole-sky search
+    Given mock_astap is configured for "normal" mode
+    And mock_astap is configured to write argv to a side-channel file
+    And a writable FITS path
+    When I POST to /api/v1/solve with that fits_path and blind false
+    Then the response status is 200
+    And the spawned argv does not contain the flag "-r"
+
+  Scenario Outline: A blind request refuses a position or a search radius
+    Given a writable FITS path
+    When I POST to /api/v1/solve with that fits_path, blind true and hint <field> set to <value>
+    Then the response status is 400
+    And the response field "error" is "invalid_request"
+    And the response field "message" contains "blind excludes <field>"
+
+    Examples:
+      | field             | value   |
+      | ra_hint           | 10.6848 |
+      | dec_hint          | 41.2690 |
+      | search_radius_deg | 5.0     |

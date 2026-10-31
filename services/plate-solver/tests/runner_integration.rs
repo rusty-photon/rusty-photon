@@ -73,6 +73,7 @@ const fn req(fits_path: PathBuf) -> SolveRequest {
         dec_hint: None,
         fov_hint_deg: None,
         search_radius_deg: None,
+        blind: false,
         timeout: Duration::from_secs(5),
     }
 }

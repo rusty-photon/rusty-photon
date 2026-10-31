@@ -276,8 +276,9 @@ fn cot_params_from(
 /// existing [`McpHandler`] helpers.
 ///
 /// `PlateSolveOps` calls back into the in-process `plate_solve`
-/// handler with `use_mount_hints: true`, so the hours→degrees
-/// conversion lives in exactly one place (the `plate_solve` Contract).
+/// handler with only the frame's `document_id`, so its recorded
+/// pointing is the hint and the hours→degrees conversion lives in
+/// exactly one place (the `plate_solve` Contract).
 /// `MountOps::sync_to` calls `do_sync_mount` after dividing the
 /// solved degrees by 15 to match Alpaca's RA-in-hours convention.
 /// `MountOps::slew_to` calls `do_slew_blocking` with the operator-
@@ -340,16 +341,15 @@ impl imaging::tools::center_on_target::PlateSolveOps for CenterOnTargetAdapter<'
         // sourcing, request build, error mapping, `wcs`
         // persistence) — both go through `do_plate_solve` so
         // future changes to defaults / validation / persistence
-        // land in one place. center_on_target hardcodes
-        // `pointing_hint: None, use_mount_hints: true` so the
-        // hours→degrees conversion stays in `do_plate_solve`'s
-        // single mount-read path, matching the `plate_solve`
-        // Contract verbatim.
+        // land in one place. center_on_target passes no hints, so
+        // the fresh frame's recorded pointing — what the mount
+        // reported as the exposure started — is the position hint,
+        // matching the `plate_solve` Contract verbatim.
         let input = DoPlateSolveInput {
             document_id: Some(document_id),
             image_path: None,
             pointing_hint: None,
-            use_mount_hints: true,
+            blind: false,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,

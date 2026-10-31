@@ -93,7 +93,7 @@ Accessibility"); `/status` carries their paths, never pixels.
 | `abort_slew` | Cleanup only: stop an in-flight slew on failure |
 | `capture` | Take the measurement and adjustment exposures |
 | `get_camera_info` | Read the sensor bounds the overlay's `in_frame` flag is computed against (preflight) |
-| `plate_solve` | Solve each capture (hinted with the commanded pointing; no hint in manual-rotation mode) |
+| `plate_solve` | Solve each capture (hinted with the commanded pointing; blind in manual-rotation mode) |
 | `detect_stars` | Locate the brightest stars in each adjustment frame for the target-circle overlay |
 
 `manual_rotation` mode calls **no mount tool at all** — a manual-only
@@ -166,19 +166,17 @@ outcome is `/status` — there is no completion callback.
    publishes `awaiting_point` on `/status` and waits — bounded by
    `measurement.manual_timeout` — for the operator to rotate the RA
    axis (15–45° recommended) and `POST /measure/continue`; a timeout
-   aborts naming the point. Manual-mode solves pass **no hint** (no
-   pointing hint, no mount hints): the plugin has no trustworthy
-   prediction of where the operator left the axis, and a wrong hint
-   is worse than none. They are blind only when the frame's header
-   carries no coordinates, as on a manual-only rig
-   ([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)).
-   When `rp` has a mount connected, `capture` writes the mount's
-   reported position into `RA`/`DEC`, and ASTAP starts from it. On a
-   mount with no encoder, turned by hand, that is where the axis stood
-   before the turn: the wrong hint this mode avoids passing.
-   [rp.md § Ground rules](rp.md#ground-rules) lists that reliance on
-   the header as a gap ([#1497](https://github.com/rusty-photon/rusty-photon/issues/1497)). Budget `solve.timeout` for
-   a blind search. In both
+   aborts naming the point. Manual-mode solves are **blind**
+   (`blind: true`): the plugin has no trustworthy prediction of where
+   the operator left the axis, and a wrong hint is worse than none.
+   `blind` also keeps `rp` from hinting with the frame's recorded
+   `pointing` ([rp.md § `plate_solve` Contract](rp.md#plate_solve-contract)):
+   when `rp` has a mount connected, that is the mount's reported
+   position, and on a mount with no encoder, turned by hand, it is
+   where the axis stood before the turn. A blind solve is a whole-sky
+   search ([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)),
+   much slower than a hinted one; `solve.timeout`'s default of 2
+   minutes budgets for it. In both
    `current_position` and `manual_rotation` modes every measurement
    solve must carry a `wcs_matrix`; a matrix-less solve aborts with
    an error naming the point (these modes' axis needs full camera
@@ -408,8 +406,8 @@ the packaged systemd unit gates on the file with
 | `adjustment.max_duration` | humantime | `"30m"` | Hard ceiling on the adjustment phase |
 | `adjustment.max_solve_failures` | int | 10 | Consecutive failed solves that abort the workflow |
 | `adjustment.star_count` | int | 10 | Brightest stars published with target circles |
-| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` alongside the pointing hint. Not sent with `manual_rotation`'s solves, which pass no hint — the radius bounds the search around a hint |
-| `solve.timeout` | humantime | `"30s"` | Per-solve timeout passed to `plate_solve` |
+| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` alongside the pointing hint. Not sent with `manual_rotation`'s solves, which are blind — the radius bounds the search around a hint |
+| `solve.timeout` | humantime | `"2m"` | Per-solve timeout passed to `plate_solve`, for every mode. Sized for `manual_rotation`'s blind, whole-sky solves; the plate-solver's `max_solve_timeout` (2 minutes by default) caps it |
 | `refraction.enabled` | bool | true | Apply refraction to the pole target and the axis conversion |
 | `refraction.temperature_c` / `pressure_hpa` | float | 10.0 / 1010.0 | Refraction model inputs |
 

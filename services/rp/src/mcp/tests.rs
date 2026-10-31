@@ -1026,6 +1026,11 @@ struct MockTelescope {
     /// `side_of_pier()`'s answer; `None` (the default) answers
     /// `NOT_IMPLEMENTED`.
     side_of_pier_value: Option<ascom_alpaca::api::telescope::PierSide>,
+    /// First N `right_ascension()` calls fail before it answers —
+    /// drives `read_mount`'s retry of a failed position read. Counter
+    /// is `right_ascension_calls`.
+    right_ascension_transient_errors: u32,
+    right_ascension_calls: std::sync::atomic::AtomicU32,
 }
 
 impl Default for MockTelescope {
@@ -1063,6 +1068,8 @@ impl Default for MockTelescope {
             ra_value: 0.0,
             dec_value: 0.0,
             side_of_pier_value: None,
+            right_ascension_transient_errors: 0,
+            right_ascension_calls: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -1136,7 +1143,10 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn right_ascension(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        if self.fail_right_ascension {
+        let n = self
+            .right_ascension_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_right_ascension || n < self.right_ascension_transient_errors {
             return Err(ASCOMError::invalid_operation("encoder fault"));
         }
         Ok(self.ra_value)
@@ -2844,7 +2854,7 @@ async fn a_slewing_mount_reports_no_pointing() {
     assert_eq!(pointing, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
     let pointing = pointing_of(MockTelescope {
         fail_slewing_poll: true,
@@ -2854,7 +2864,66 @@ async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
     assert_eq!(pointing, None);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_mount_read_that_fails_once_is_retried() {
+    let pointing = pointing_of(MockTelescope {
+        slewing_transient_errors: 1,
+        ra_value: 5.5,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing.unwrap().ra_hours, 5.5);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_read_that_fails_once_is_retried() {
+    let mount = Arc::new(MockTelescope {
+        right_ascension_transient_errors: 1,
+        ra_value: 5.5,
+        ..Default::default()
+    });
+    let reading = super::internals::read_mount(mount.clone()).await;
+    assert_eq!(reading.pointing.unwrap().ra_hours, 5.5);
+    assert_eq!(
+        mount
+            .right_ascension_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mount_read_that_keeps_failing_gives_up_after_three_attempts() {
+    let mount = Arc::new(MockTelescope {
+        fail_slewing_poll: true,
+        ..Default::default()
+    });
+    let reading = super::internals::read_mount(mount.clone()).await;
+    assert_eq!(reading, super::internals::MountReading::default());
+    assert_eq!(
+        mount
+            .slewing_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+}
+
 #[tokio::test]
+async fn a_slewing_mount_is_not_read_again() {
+    let mount = Arc::new(MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    });
+    super::internals::read_mount(mount.clone()).await;
+    assert_eq!(
+        mount
+            .slewing_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failed_coordinate_read_reports_no_pointing() {
     let pointing = pointing_of(MockTelescope {
         fail_declination: true,
@@ -7163,7 +7232,7 @@ async fn plate_solve_happy_path_image_path() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7213,7 +7282,7 @@ async fn plate_solve_forwards_populated_wcs_matrix() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7237,7 +7306,7 @@ async fn plate_solve_neither_document_id_nor_image_path_errors() {
             document_id: None,
             image_path: None,
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7256,7 +7325,7 @@ async fn plate_solve_unconfigured_returns_not_configured_error() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7266,7 +7335,7 @@ async fn plate_solve_unconfigured_returns_not_configured_error() {
 }
 
 #[tokio::test]
-async fn plate_solve_pointing_hint_and_use_mount_hints_are_mutually_exclusive() {
+async fn plate_solve_blind_refuses_a_pointing_hint() {
     let handler = handler_with_plate_solver(empty_registry(), |_| {}, None);
     let result = handler
         .plate_solve(Parameters(PlateSolveParams {
@@ -7276,52 +7345,39 @@ async fn plate_solve_pointing_hint_and_use_mount_hints_are_mutually_exclusive() 
                 ra_deg: 1.0,
                 dec_deg: 2.0,
             }),
-            use_mount_hints: Some(true),
+            blind: Some(true),
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
         }))
         .await;
-    assert_tool_error(result, "pointing_hint or use_mount_hints");
+    assert_tool_error(result, "blind excludes pointing_hint");
 }
 
 #[tokio::test]
-async fn plate_solve_use_mount_hints_with_no_mount_errors() {
+async fn plate_solve_blind_refuses_a_search_radius() {
     let handler = handler_with_plate_solver(empty_registry(), |_| {}, None);
     let result = handler
         .plate_solve(Parameters(PlateSolveParams {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: Some(true),
+            blind: Some(true),
             fov_hint_deg: None,
-            search_radius_deg: None,
+            search_radius_deg: Some(2.5),
             timeout: None,
         }))
         .await;
-    assert_tool_error(result, "use_mount_hints");
+    assert_tool_error(result, "blind excludes search_radius_deg");
 }
 
 #[tokio::test]
-async fn plate_solve_use_mount_hints_reads_mount_and_converts_ra_to_degrees() {
-    // Mount at RA=10.6848h, Dec=41.269° — matches the plate-solver.md
-    // M31 example. The handler should send ra_hint=160.272° (10.6848*15)
-    // and dec_hint=41.269° to the wrapper.
-    let mount = MockTelescope {
-        ra_value: 10.6848,
-        dec_value: 41.269,
-        ..Default::default()
-    };
-    let registry = mount_registry(Arc::new(mount), None);
+async fn plate_solve_blind_sends_a_blind_request() {
     let handler = handler_with_plate_solver(
-        registry,
+        empty_registry(),
         |mock| {
             mock.expect_solve()
-                .withf(|req| {
-                    let ra = req.ra_hint.unwrap_or_default();
-                    let dec = req.dec_hint.unwrap_or_default();
-                    (ra - 160.272).abs() < 1e-3 && (dec - 41.269).abs() < 1e-3
-                })
+                .withf(|req| req.blind && req.ra_hint.is_none() && req.dec_hint.is_none())
                 .returning(|_| Ok(ok_outcome()));
         },
         None,
@@ -7331,7 +7387,7 @@ async fn plate_solve_use_mount_hints_reads_mount_and_converts_ra_to_degrees() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: Some(true),
+            blind: Some(true),
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7360,7 +7416,7 @@ async fn plate_solve_explicit_pointing_hint_forwards_verbatim() {
                 ra_deg: 120.5,
                 dec_deg: -30.1,
             }),
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7389,8 +7445,11 @@ async fn plate_solve_optional_fields_forwarded_verbatim() {
         .plate_solve(Parameters(PlateSolveParams {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
-            pointing_hint: None,
-            use_mount_hints: None,
+            pointing_hint: Some(PointingHint {
+                ra_deg: 120.5,
+                dec_deg: -30.1,
+            }),
+            blind: None,
             fov_hint_deg: Some(1.5),
             search_radius_deg: Some(2.0),
             timeout: Some(Duration::from_secs(45)),
@@ -7415,8 +7474,11 @@ async fn plate_solve_config_default_search_radius_applied_when_omitted() {
         .plate_solve(Parameters(PlateSolveParams {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
-            pointing_hint: None,
-            use_mount_hints: None,
+            pointing_hint: Some(PointingHint {
+                ra_deg: 120.5,
+                dec_deg: -30.1,
+            }),
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7441,8 +7503,11 @@ async fn plate_solve_per_call_search_radius_overrides_config_default() {
         .plate_solve(Parameters(PlateSolveParams {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
-            pointing_hint: None,
-            use_mount_hints: None,
+            pointing_hint: Some(PointingHint {
+                ra_deg: 120.5,
+                dec_deg: -30.1,
+            }),
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: Some(2.5),
             timeout: None,
@@ -7453,17 +7518,46 @@ async fn plate_solve_per_call_search_radius_overrides_config_default() {
 }
 
 #[tokio::test]
-async fn plate_solve_no_hints_produces_hintless_request() {
+async fn plate_solve_frame_without_a_record_is_solved_blind() {
+    // No sidecar beside /tmp/x.fits, so no recorded position: the solve
+    // is blind and the configured default radius stays home.
     let handler = handler_with_plate_solver(
         empty_registry(),
         |mock| {
             mock.expect_solve()
                 .withf(|req| {
-                    req.ra_hint.is_none()
+                    req.blind
+                        && req.ra_hint.is_none()
                         && req.dec_hint.is_none()
                         && req.fov_hint_deg.is_none()
                         && req.search_radius_deg.is_none()
                 })
+                .returning(|_| Ok(ok_outcome()));
+        },
+        Some(4.0),
+    );
+    let result = handler
+        .plate_solve(Parameters(PlateSolveParams {
+            document_id: None,
+            image_path: Some("/tmp/x.fits".to_string()),
+            pointing_hint: None,
+            blind: None,
+            fov_hint_deg: None,
+            search_radius_deg: None,
+            timeout: None,
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn plate_solve_drops_a_per_call_radius_when_there_is_no_position() {
+    let handler = handler_with_plate_solver(
+        empty_registry(),
+        |mock| {
+            mock.expect_solve()
+                .withf(|req| req.blind && req.search_radius_deg.is_none())
                 .returning(|_| Ok(ok_outcome()));
         },
         None,
@@ -7473,14 +7567,149 @@ async fn plate_solve_no_hints_produces_hintless_request() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
-            search_radius_deg: None,
+            search_radius_deg: Some(2.5),
             timeout: None,
         }))
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
+}
+
+// --- resolve_solve_hints: the frame's record as the hint source ---------
+
+fn solve_input(
+    pointing_hint: Option<(f64, f64)>,
+    blind: bool,
+    fov_hint_deg: Option<f64>,
+) -> super::internals::DoPlateSolveInput<'static> {
+    super::internals::DoPlateSolveInput {
+        document_id: Some("doc"),
+        image_path: None,
+        pointing_hint,
+        blind,
+        fov_hint_deg,
+        search_radius_deg: None,
+        timeout: None,
+    }
+}
+
+fn recorded_frame(ra_hours: f64, dec_degrees: f64, fov_height_deg: f64) -> ExposureDocument {
+    ExposureDocument {
+        pointing: Some(persistence::MountPointing {
+            ra_hours,
+            dec_degrees,
+        }),
+        optics: Some(persistence::Optics {
+            fov_height_deg: Some(fov_height_deg),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_resolve_solve_hints_takes_the_recorded_pointing_in_degrees() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints =
+        super::internals::resolve_solve_hints(&solve_input(None, false, None), Some(&doc), None);
+    assert!((hints.ra_hint.unwrap() - 160.272).abs() < 1e-9);
+    assert_eq!(hints.dec_hint, Some(41.269));
+    assert!(!hints.blind);
+}
+
+#[test]
+fn test_resolve_solve_hints_folds_a_recorded_24h_ra_to_zero() {
+    let doc = recorded_frame(24.0, 10.0, 1.2);
+    let hints =
+        super::internals::resolve_solve_hints(&solve_input(None, false, None), Some(&doc), None);
+    assert_eq!(hints.ra_hint, Some(0.0));
+}
+
+#[test]
+fn test_resolve_solve_hints_takes_the_recorded_fov() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints =
+        super::internals::resolve_solve_hints(&solve_input(None, false, None), Some(&doc), None);
+    assert_eq!(hints.fov_hint_deg, Some(1.2));
+}
+
+#[test]
+fn test_resolve_solve_hints_explicit_pointing_hint_wins_over_the_record() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints = super::internals::resolve_solve_hints(
+        &solve_input(Some((120.5, -30.1)), false, None),
+        Some(&doc),
+        None,
+    );
+    assert_eq!(hints.ra_hint, Some(120.5));
+    assert_eq!(hints.dec_hint, Some(-30.1));
+}
+
+#[test]
+fn test_resolve_solve_hints_explicit_fov_wins_over_the_record() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints = super::internals::resolve_solve_hints(
+        &solve_input(None, false, Some(0.5)),
+        Some(&doc),
+        None,
+    );
+    assert_eq!(hints.fov_hint_deg, Some(0.5));
+}
+
+#[test]
+fn test_resolve_solve_hints_blind_ignores_the_recorded_pointing() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints = super::internals::resolve_solve_hints(
+        &solve_input(None, true, None),
+        Some(&doc),
+        Some(4.0),
+    );
+    assert!(hints.blind);
+    assert_eq!(hints.ra_hint, None);
+    assert_eq!(hints.dec_hint, None);
+    assert_eq!(hints.search_radius_deg, None);
+}
+
+#[test]
+fn test_resolve_solve_hints_blind_keeps_the_recorded_fov() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints =
+        super::internals::resolve_solve_hints(&solve_input(None, true, None), Some(&doc), None);
+    assert_eq!(hints.fov_hint_deg, Some(1.2));
+}
+
+#[test]
+fn test_resolve_solve_hints_recorded_position_takes_the_config_radius() {
+    let doc = recorded_frame(10.6848, 41.269, 1.2);
+    let hints = super::internals::resolve_solve_hints(
+        &solve_input(None, false, None),
+        Some(&doc),
+        Some(4.0),
+    );
+    assert_eq!(hints.search_radius_deg, Some(4.0));
+}
+
+#[test]
+fn test_resolve_solve_hints_record_without_pointing_is_blind() {
+    let doc = ExposureDocument::default();
+    let hints = super::internals::resolve_solve_hints(
+        &solve_input(None, false, None),
+        Some(&doc),
+        Some(4.0),
+    );
+    assert!(hints.blind);
+    assert_eq!(hints.search_radius_deg, None);
+}
+
+#[test]
+fn test_resolve_solve_hints_declination_past_a_pole_is_no_position() {
+    let doc = recorded_frame(10.6848, 91.0, 1.2);
+    let hints =
+        super::internals::resolve_solve_hints(&solve_input(None, false, None), Some(&doc), None);
+    assert!(hints.blind);
+    assert_eq!(hints.ra_hint, None);
 }
 
 #[tokio::test]
@@ -7503,7 +7732,7 @@ async fn plate_solve_propagates_wrapper_solve_failed() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7532,7 +7761,7 @@ async fn plate_solve_propagates_wrapper_solve_failed_with_details() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7559,7 +7788,7 @@ async fn plate_solve_maps_service_unreachable_to_distinct_error() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,
@@ -7583,7 +7812,7 @@ async fn plate_solve_maps_internal_error_with_internal_prefix() {
             document_id: None,
             image_path: Some("/tmp/x.fits".to_string()),
             pointing_hint: None,
-            use_mount_hints: None,
+            blind: None,
             fov_hint_deg: None,
             search_radius_deg: None,
             timeout: None,

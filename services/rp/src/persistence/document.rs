@@ -228,8 +228,8 @@ pub struct ExposureDocument {
     /// configured facts, the camera's connect-time reads and the
     /// terminal focuser's step size, each recorded on its own when it
     /// is usable, plus the pixel scale and FOV derived from them, so a
-    /// consumer, such as a caller passing `plate_solve`'s
-    /// `fov_hint_deg`, need not re-derive them from the FITS header.
+    /// consumer, such as `plate_solve` sourcing its scale hint, need not
+    /// re-derive them from the FITS header.
     /// Omitted only when nothing in it is known — see
     /// `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -556,8 +556,8 @@ pub struct Optics {
     pub fov_width_deg: Option<f64>,
     /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
     /// Matches ASTAP's `-fov` semantics ("image height in degrees"), so
-    /// it is the source rp.md §"Ground rules" names for `plate_solve`'s
-    /// `fov_hint_deg`.
+    /// `plate_solve` sends it as `fov_hint_deg` when the call passes none
+    /// (rp.md §"`plate_solve` Contract").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov_height_deg: Option<f64>,
 }
