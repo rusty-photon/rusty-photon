@@ -5647,6 +5647,21 @@ async fn test_get_focuser_temperature_sensor_fails() {
     assert_tool_error(result, "failed to read focuser temperature");
 }
 
+/// An id rp does not know names itself in the documented phrase,
+/// which focus-model's stand-in temperature sensor reads as a mistyped
+/// config rather than a missing probe.
+#[tokio::test]
+async fn test_get_focuser_temperature_names_an_unknown_focuser() {
+    let foc = MockFocuser::default();
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let result = handler
+        .get_focuser_temperature(Parameters(FocuserIdParams {
+            focuser_id: "missing".into(),
+        }))
+        .await;
+    assert_tool_error(result, "focuser not found: missing");
+}
+
 // -----------------------------------------------------------------------
 // Mount tool tests — slew / sync_mount / get_mount_position /
 // get_tracking / set_tracking. Singular mount, no mount_id parameter.

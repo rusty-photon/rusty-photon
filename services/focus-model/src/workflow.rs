@@ -339,6 +339,9 @@ pub struct ModelView {
     /// The optics the record's measurements were taken through; null
     /// on a record written before the store kept them.
     pub optics: Option<OpticsIdentity>,
+    /// The focuser the record's temperatures came from; null for the
+    /// train's own terminal focuser.
+    pub temperature_sensor: Option<String>,
     pub reference_filter: Option<String>,
     pub offsets: BTreeMap<String, i32>,
     pub temperature_coefficient: Option<f64>,
@@ -395,6 +398,9 @@ pub struct TrainContext {
     pub guiding: bool,
     /// The other trains the terminal focuser is a member of.
     pub focuser_shared_with: Vec<String>,
+    /// The focuser the train's config names as its temperature sensor;
+    /// `None` reads the train's own terminal focuser.
+    pub temperature_sensor: Option<String>,
 }
 
 impl TrainContext {
@@ -406,6 +412,7 @@ impl TrainContext {
             camera_id: Some(self.camera_id.clone()),
             filters: self.filters.clone(),
             optics: self.optics_identity(),
+            temperature_sensor: self.temperature_sensor.clone(),
         }
     }
 
@@ -484,13 +491,18 @@ impl TrainContext {
     }
 }
 
-/// Resolve `train_id` through `rp`.
+/// Resolve `train_id` through `rp`, with the temperature sensor its
+/// config names.
 ///
 /// # Errors
 ///
 /// Returns [`FocusModelError::Workflow`] if the train has no terminal
 /// focuser or no camera, and the `rp` error for an unknown train.
-pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainContext> {
+pub async fn resolve_train(
+    rig: &dyn FocusRig,
+    config: &Config,
+    train_id: &str,
+) -> Result<TrainContext> {
     let info = rig.get_train_info(train_id).await?;
     let focuser_id = info.terminal_focuser_id.ok_or_else(|| {
         FocusModelError::Workflow(format!("train '{train_id}' has no terminal focuser"))
@@ -508,6 +520,11 @@ pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainCo
         optics: info.optics,
         guiding: info.purpose.as_deref() == Some("guiding"),
         focuser_shared_with: info.terminal_focuser_shared_with,
+        temperature_sensor: config
+            .trains
+            .get(train_id)
+            .and_then(|train| train.temperature_sensor.as_ref())
+            .map(|sensor| sensor.as_str().to_owned()),
     })
 }
 
@@ -765,17 +782,7 @@ struct StartState {
 /// Read the focuser and the wheel before anything moves.
 async fn read_start(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<StartState> {
     let position = rig.get_focuser_position(&ctx.focuser_id).await?;
-    // The temperature is an optional term of the prediction, so a
-    // focuser with no probe — or one whose probe just hiccupped — is
-    // a sweep without a temperature correction, not a failed call.
-    let temperature_c = match rig.get_focuser_temperature(&ctx.focuser_id).await {
-        Ok(reading) => reading,
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            debug!(error = %e, "the focuser reported no temperature; predicting without it");
-            None
-        }
-    };
+    let temperature_c = read_temperature(rig, ctx).await?;
     let filter = match &ctx.filter_wheel_id {
         Some(wheel) => rig.get_filter(wheel).await?,
         None => None,
@@ -785,6 +792,95 @@ async fn read_start(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<StartState
         temperature_c,
         filter,
     })
+}
+
+/// The train's temperature, from the one probe every reading of it
+/// comes from (focus-model.md § The temperature source): the train's
+/// own focuser, or the stand-in its config names where that focuser
+/// has none.
+///
+/// The temperature is an optional term of the prediction, so a probe
+/// that is missing, or that just hiccupped, is a sweep without a
+/// temperature correction, not a failed call. A failed read of the
+/// train's own focuser is no reading at all: it cannot tell a focuser
+/// without a probe from one with a probe, and only the first may stand
+/// a sensor in.
+///
+/// # Errors
+///
+/// A cancellation, and [`FocusModelError::Workflow`] for a stand-in
+/// named on a train whose own focuser reports a temperature: a session
+/// refocuses on that focuser's readings, and a stand-in would put its
+/// baseline on another sensor.
+async fn read_temperature(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<Option<f64>> {
+    let own = match rig.get_focuser_temperature(&ctx.focuser_id).await {
+        Ok(reading) => reading,
+        Err(e) if e.is_cancelled() => return Err(e),
+        Err(e) => {
+            debug!(error = %e, "the focuser reported no temperature; predicting without it");
+            return Ok(None);
+        }
+    };
+    let Some(sensor) = &ctx.temperature_sensor else {
+        return Ok(own);
+    };
+    if let Some(reading) = own {
+        return Err(FocusModelError::Workflow(format!(
+            "train '{train}' names temperature_sensor '{sensor}', but its own focuser \
+             '{focuser}' reports a temperature ({reading:.1} °C): a session refocuses on that \
+             focuser's readings, so a stand-in would put its baseline on another sensor; remove \
+             trains.{train}.temperature_sensor from focus-model.json",
+            train = ctx.train_id,
+            focuser = ctx.focuser_id,
+        )));
+    }
+    match rig.get_focuser_temperature(sensor).await {
+        Ok(reading) => {
+            debug!(
+                temperature_sensor = %sensor,
+                temperature_c = ?reading,
+                "the train's focuser has no probe; read the stand-in"
+            );
+            Ok(reading)
+        }
+        Err(e) if e.is_cancelled() => Err(e),
+        Err(e) if names_unknown_focuser(&e, sensor) => Err(FocusModelError::Workflow(format!(
+            "train '{train}' names temperature_sensor '{sensor}', which rp does not know \
+                 ({message}); name a focuser in rp's config, or remove \
+                 trains.{train}.temperature_sensor from focus-model.json",
+            train = ctx.train_id,
+            message = e.tool_message(),
+        ))),
+        Err(e) => {
+            warn!(
+                error = %e,
+                temperature_sensor = %sensor,
+                "the stand-in reported no temperature; predicting without it"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Refuse a stand-in temperature sensor a sweep would refuse, before a
+/// write takes it into the record's identity: a record that carries
+/// one would read fresh while every sweep refuses, and go stale again
+/// once the config is put right. Reads the probes only when the train
+/// names a stand-in.
+async fn check_temperature_sensor(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<()> {
+    if ctx.temperature_sensor.is_some() {
+        read_temperature(rig, ctx).await?;
+    }
+    Ok(())
+}
+
+/// Whether `rp` refused a call because it knows no focuser `focuser_id`
+/// (rp.md § Built-in Tools names the phrase). A stand-in that names
+/// one is a mistyped config, which would otherwise read as a missing
+/// probe on every sweep.
+fn names_unknown_focuser(error: &FocusModelError, focuser_id: &str) -> bool {
+    matches!(error, FocusModelError::ToolCall(message)
+        if message.contains(&format!("focuser not found: {focuser_id}")))
 }
 
 /// Pause guide corrections when the focuser is guide-coupled and the
@@ -864,12 +960,15 @@ pub(crate) fn record_for_write(
     let (mut record, was_reset) = match record {
         Some(record) if stale.is_empty() => (record, false),
         Some(_) | None => (
-            FocusRecord::new(
-                &ctx.train_id,
-                Some(&ctx.focuser_id),
-                Some(&ctx.camera_id),
-                ctx.filters.clone(),
-            ),
+            FocusRecord {
+                temperature_sensor: ctx.temperature_sensor.clone(),
+                ..FocusRecord::new(
+                    &ctx.train_id,
+                    Some(&ctx.focuser_id),
+                    Some(&ctx.camera_id),
+                    ctx.filters.clone(),
+                )
+            },
             !stale.is_empty(),
         ),
     };
@@ -1443,7 +1542,7 @@ async fn prepare(
     config: &Config,
     params: &FocusTrainParams,
 ) -> Result<Prepared> {
-    let ctx = resolve_train(rig, &params.train_id).await?;
+    let ctx = resolve_train(rig, config, &params.train_id).await?;
     ctx.check_training_run()?;
     let start = read_start(rig, &ctx).await?;
     let filter = sweep_filter(&ctx, params, &start)?;
@@ -1791,7 +1890,7 @@ pub async fn get_sweep_plan(
     train_id: &str,
     filter: Option<&str>,
 ) -> Result<SweepPlanView> {
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
     // The sweep `focus_train` would run: with no argument it sweeps
     // the filter in the path, so the preview reads the wheel too.
     let filter = match filter {
@@ -1856,6 +1955,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
             camera_id: None,
             filters: None,
             optics: None,
+            temperature_sensor: None,
             reference_filter: None,
             offsets: BTreeMap::new(),
             temperature_coefficient: None,
@@ -1876,6 +1976,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
         camera_id: record.camera_id.clone(),
         filters: record.filters.clone(),
         optics: record.optics.clone(),
+        temperature_sensor: record.temperature_sensor.clone(),
         reference_filter: record.reference_filter.clone(),
         offsets: record.offsets.clone(),
         temperature_coefficient: record.temperature_coefficient,
@@ -1897,9 +1998,10 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
 pub async fn get_focus_model(
     rig: &dyn FocusRig,
     store: &FocusStore,
+    config: &Config,
     train_id: &str,
 ) -> Result<ModelView> {
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
     let (record, stale) = load_record(store, &ctx).await?;
     Ok(model_view(train_id, record.as_ref(), stale))
 }
@@ -1913,6 +2015,7 @@ pub async fn get_focus_model(
 pub async fn get_focus_runs(
     rig: &dyn FocusRig,
     store: &FocusStore,
+    config: &Config,
     train_id: &str,
     limit: usize,
     filter: Option<&str>,
@@ -1922,7 +2025,7 @@ pub async fn get_focus_runs(
             "limit must be at least 1".to_owned(),
         ));
     }
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
     let record = store.get(train_id).await?;
     // A filter the wheel no longer holds is still a filter the history
     // has runs for, and reading them back is the point of this tool
@@ -1971,19 +2074,22 @@ fn recorded_filter(record: Option<&FocusRecord>, filter: &str) -> bool {
 /// # Errors
 ///
 /// Returns the resolution errors of [`resolve_train`], the filter
-/// errors of [`TrainContext::check_filter`], and the store's.
+/// errors of [`TrainContext::check_filter`], the refusals of a stand-in
+/// temperature sensor a sweep would refuse, and the store's.
 pub async fn set_focus_offsets(
     rig: &dyn FocusRig,
     store: &FocusStore,
+    config: &Config,
     train_id: &str,
     reference: &str,
     offsets: BTreeMap<String, i32>,
 ) -> Result<ModelView> {
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
     ctx.check_filter(reference)?;
     for name in offsets.keys() {
         ctx.check_filter(name)?;
     }
+    check_temperature_sensor(rig, &ctx).await?;
     let (record, ()) = store
         .update(train_id, move |held| {
             let stale = stale_fields(held.as_ref(), &ctx);
@@ -2005,15 +2111,18 @@ pub async fn set_focus_offsets(
 ///
 /// # Errors
 ///
-/// Returns the resolution errors of [`resolve_train`], a
+/// Returns the resolution errors of [`resolve_train`], the refusals of
+/// a stand-in temperature sensor a sweep would refuse, a
 /// [`FocusModelError::Workflow`] for a train with no record, and the
 /// store's.
 pub async fn reset_focus_model(
     rig: &dyn FocusRig,
     store: &FocusStore,
+    config: &Config,
     train_id: &str,
 ) -> Result<ResetView> {
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
+    check_temperature_sensor(rig, &ctx).await?;
     let (record, adopted) = store
         .update(train_id, move |held| {
             let mut record = held.ok_or_else(|| {
@@ -2029,6 +2138,9 @@ pub async fn reset_focus_model(
             // has not connected) described the old rig, and kept it would
             // go stale against the new one and take the offsets with it.
             record.optics = Some(ctx.optics_identity());
+            record
+                .temperature_sensor
+                .clone_from(&ctx.temperature_sensor);
             Ok::<_, FocusModelError>((record, adopted))
         })
         .await?;
@@ -2248,13 +2360,17 @@ mod tests {
         let mut rig = MockFocusRig::new();
         rig.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(train_info(true, false, true)) }));
-        let err = resolve_train(&rig, "main").await.unwrap_err();
+        let err = resolve_train(&rig, &config(CONFIGURED), "main")
+            .await
+            .unwrap_err();
         assert_eq!(err.tool_message(), "train 'main' has no terminal focuser");
 
         let mut rig = MockFocusRig::new();
         rig.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(train_info(true, true, false)) }));
-        let err = resolve_train(&rig, "main").await.unwrap_err();
+        let err = resolve_train(&rig, &config(CONFIGURED), "main")
+            .await
+            .unwrap_err();
         assert_eq!(err.tool_message(), "train 'main' has no camera");
     }
 
@@ -2262,7 +2378,9 @@ mod tests {
     async fn a_filter_is_checked_against_the_wheel() {
         let position = Position::new(25_000);
         let rig = rig(&position);
-        let ctx = resolve_train(&rig, "main").await.unwrap();
+        let ctx = resolve_train(&rig, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         ctx.check_filter("Ha").unwrap();
         let err = ctx.check_filter("OIII").unwrap_err();
         assert_eq!(
@@ -2273,7 +2391,9 @@ mod tests {
         let mut bare = MockFocusRig::new();
         bare.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(train_info(false, true, true)) }));
-        let ctx = resolve_train(&bare, "main").await.unwrap();
+        let ctx = resolve_train(&bare, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         let err = ctx.check_filter("Ha").unwrap_err();
         assert_eq!(
             err.tool_message(),
@@ -3016,7 +3136,9 @@ mod tests {
         let position = Position::new(25_000);
         let rig = rig(&position);
 
-        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        let view = get_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert_eq!(view.model, "empty");
         assert_eq!(view.runs_recorded, 0);
         assert!(view.last_run.is_none());
@@ -3029,13 +3151,17 @@ mod tests {
         );
         record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
         store.put(record.clone()).await.unwrap();
-        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        let view = get_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert_eq!(view.model, "fresh");
         assert_eq!(view.offsets.get("Ha"), Some(&46));
 
         record.focuser_id = Some("other-focuser".to_owned());
         store.put(record).await.unwrap();
-        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        let view = get_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert_eq!(
             view.model,
             "stale: focuser_id changed from other-focuser to main-focuser"
@@ -3052,6 +3178,7 @@ mod tests {
         let err = set_focus_offsets(
             &rig,
             &store,
+            &config(CONFIGURED),
             "main",
             "Luminance",
             [("OIII".to_owned(), 12)].into(),
@@ -3067,6 +3194,7 @@ mod tests {
         let view = set_focus_offsets(
             &rig,
             &store,
+            &config(CONFIGURED),
             "main",
             "Luminance",
             [("Ha".to_owned(), 46)].into(),
@@ -3105,6 +3233,7 @@ mod tests {
         let view = set_focus_offsets(
             &rig,
             &store,
+            &config(CONFIGURED),
             "main",
             "Luminance",
             [("Ha".to_owned(), 60)].into(),
@@ -3127,7 +3256,9 @@ mod tests {
         let position = Position::new(25_000);
         let rig = rig(&position);
 
-        let err = reset_focus_model(&rig, &store, "main").await.unwrap_err();
+        let err = reset_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap_err();
         assert_eq!(err.tool_message(), "train 'main' has no focus model");
 
         let mut record = FocusRecord::new(
@@ -3147,7 +3278,9 @@ mod tests {
         });
         store.put(record).await.unwrap();
 
-        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        let view = reset_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert_eq!(view.dropped.len(), 3);
         assert_eq!(view.kept, ["reference_filter", "offsets"]);
         let last_good = &view.model.last_good;
@@ -3162,12 +3295,12 @@ mod tests {
         let position = Position::new(25_000);
         let rig = rig(&position);
 
-        let err = get_focus_runs(&rig, &store, "main", 0, None)
+        let err = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 0, None)
             .await
             .unwrap_err();
         assert_eq!(err.tool_message(), "limit must be at least 1");
 
-        let view = get_focus_runs(&rig, &store, "main", 20, None)
+        let view = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(view.total, 0, "a train with no record has no runs");
@@ -3197,12 +3330,14 @@ mod tests {
         }
         store.put(record).await.unwrap();
 
-        let view = get_focus_runs(&rig, &store, "main", 2, None).await.unwrap();
+        let view = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 2, None)
+            .await
+            .unwrap();
         assert_eq!(view.total, 3);
         assert_eq!(view.runs.len(), 2);
         assert_eq!(view.runs[0].position, Some(3));
 
-        let view = get_focus_runs(&rig, &store, "main", 20, Some("Ha"))
+        let view = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 20, Some("Ha"))
             .await
             .unwrap();
         assert_eq!(view.total, 1);
@@ -3338,7 +3473,7 @@ mod tests {
         .unwrap_err();
         assert!(err.tool_message().contains("focuser jammed"), "{err}");
 
-        let runs = get_focus_runs(&active, &store, "main", 20, None)
+        let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.total, 1, "the failed call is in the history");
@@ -3396,7 +3531,7 @@ mod tests {
             "{err}"
         );
 
-        let runs = get_focus_runs(&active, &store, "main", 20, None)
+        let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.total, 1, "the sweep that worked is recorded");
@@ -3667,7 +3802,9 @@ mod tests {
         record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 40)].into());
         store.put(record).await.unwrap();
 
-        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        let view = reset_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert_eq!(
             view.adopted,
             vec!["camera_id changed from old-cam to main-cam".to_owned()]
@@ -3696,7 +3833,9 @@ mod tests {
         });
         store.put(record).await.unwrap();
 
-        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        let view = reset_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         let optics = view.model.optics.expect("the reset records the optics");
         assert_eq!(
             optics.pixel_size_um, None,
@@ -3818,7 +3957,7 @@ mod tests {
         );
         assert_eq!(position.get(), 61_000, "nothing moved");
 
-        let runs = get_focus_runs(&active, &store, "main", 20, None)
+        let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.total, 1, "the refusal is in the history");
@@ -3865,7 +4004,7 @@ mod tests {
         assert!(err.tool_message().contains("cancelled"), "{err}");
         assert_eq!(position.get(), 25_000, "nothing moved");
 
-        let runs = get_focus_runs(&active, &store, "main", 20, None)
+        let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.runs[0].outcome, RunOutcome::Cancelled);
@@ -3911,7 +4050,7 @@ mod tests {
         assert!(err.tool_message().contains("phd2 will not pause"), "{err}");
         assert_eq!(position.get(), 25_000, "nothing moved");
 
-        let runs = get_focus_runs(&active, &store, "main", 20, None)
+        let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.total, 1);
@@ -4011,6 +4150,267 @@ mod tests {
         assert_eq!(outcome.position, 25_010, "the sweep ran anyway");
     }
 
+    /// The configured train, another focuser's probe standing in for
+    /// its own.
+    const STAND_IN: &str = r#"{
+        "mcp_server_url": "http://127.0.0.1:1/mcp",
+        "trains": {
+            "main": {
+                "duration": "10ms", "step_size": 10, "half_width": 40,
+                "min_fit_points": 3, "max_attempts": 1,
+                "temperature_sensor": "oag-focuser"
+            }
+        }
+    }"#;
+
+    /// One focuser's answer to a temperature read.
+    type Probe = fn() -> Result<Option<f64>>;
+
+    /// A rig whose own focuser answers a temperature read with `own`
+    /// and the stand-in with `stand_in`, read at most `stand_in_reads`
+    /// times; it measures a V centred at 25010.
+    fn probed_rig(
+        position: &Position,
+        own: Probe,
+        stand_in: Probe,
+        stand_in_reads: usize,
+    ) -> MockFocusRig {
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_focuser_temperature()
+            .withf(|focuser_id| focuser_id == "main-focuser")
+            .returning(move |_| Box::pin(async move { own() }));
+        rig.expect_get_focuser_temperature()
+            .withf(|focuser_id| focuser_id == "oag-focuser")
+            .times(0..=stand_in_reads)
+            .returning(move |_| Box::pin(async move { stand_in() }));
+        rig.expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        let mut rig = base_rig(rig, position);
+        measures_a_v(&mut rig, position, 25_010);
+        rig
+    }
+
+    async fn focus_with_stand_in(
+        store: &FocusStore,
+        active: &MockFocusRig,
+    ) -> Result<FocusTrainOutcome> {
+        focus_train(
+            Rig {
+                active,
+                cleanup: &MockFocusRig::new(),
+            },
+            store,
+            &config(STAND_IN),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+    }
+
+    /// A train whose focuser has no probe takes the stand-in's reading
+    /// for the prediction and the run, and its record carries the
+    /// sensor the readings came from.
+    #[tokio::test]
+    async fn a_train_whose_focuser_has_no_probe_reads_the_stand_in() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let active = probed_rig(&position, || Ok(None), || Ok(Some(7.5)), 1);
+
+        let outcome = focus_with_stand_in(&store, &active).await.unwrap();
+        assert_eq!(outcome.temperature_c, Some(7.5));
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.temperature_sensor.as_deref(), Some("oag-focuser"));
+        assert_eq!(record.runs[0].temperature_c, Some(7.5));
+        assert_eq!(record.last_good[0].temperature_c, Some(7.5));
+    }
+
+    /// A focuser with a probe is the one a session refocuses on, so a
+    /// stand-in named for its train is refused before anything moves,
+    /// and before the sweep is planned, so nothing is recorded.
+    #[tokio::test]
+    async fn a_stand_in_is_refused_while_the_trains_own_focuser_reports_a_temperature() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let active = probed_rig(&position, || Ok(Some(11.5)), || Ok(Some(7.5)), 0);
+
+        let err = focus_with_stand_in(&store, &active).await.unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "train 'main' names temperature_sensor 'oag-focuser', but its own focuser \
+             'main-focuser' reports a temperature (11.5 °C): a session refocuses on that \
+             focuser's readings, so a stand-in would put its baseline on another sensor; remove \
+             trains.main.temperature_sensor from focus-model.json"
+        );
+        assert_eq!(position.get(), 25_000, "nothing moved");
+        assert!(
+            store.get("main").await.unwrap().is_none(),
+            "nothing recorded"
+        );
+    }
+
+    /// A stand-in without a probe, or whose read fails, is no reading:
+    /// the sweep runs without a temperature term.
+    #[tokio::test]
+    async fn a_stand_in_without_a_reading_is_no_reading() {
+        let answers: [Probe; 2] = [
+            || Ok(None),
+            || {
+                Err(FocusModelError::ToolCall(
+                    "failed to read focuser temperature: timeout".to_owned(),
+                ))
+            },
+        ];
+        for stand_in in answers {
+            let (store, _dir) = temp_store().await;
+            let position = Position::new(25_000);
+            let active = probed_rig(&position, || Ok(None), stand_in, 1);
+
+            let outcome = focus_with_stand_in(&store, &active).await.unwrap();
+            assert_eq!(outcome.temperature_c, None);
+            assert_eq!(outcome.position, 25_010, "the sweep ran anyway");
+        }
+    }
+
+    /// A stand-in `rp` does not know is a mistyped config, refused
+    /// before anything moves rather than read as a missing probe on
+    /// every sweep.
+    #[tokio::test]
+    async fn a_stand_in_rp_does_not_know_is_refused() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let active = probed_rig(
+            &position,
+            || Ok(None),
+            || {
+                Err(FocusModelError::ToolCall(
+                    "focuser not found: oag-focuser".to_owned(),
+                ))
+            },
+            1,
+        );
+
+        let err = focus_with_stand_in(&store, &active).await.unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "train 'main' names temperature_sensor 'oag-focuser', which rp does not know \
+             (focuser not found: oag-focuser); name a focuser in rp's config, or remove \
+             trains.main.temperature_sensor from focus-model.json"
+        );
+        assert_eq!(position.get(), 25_000, "nothing moved");
+        assert!(
+            store.get("main").await.unwrap().is_none(),
+            "nothing recorded"
+        );
+    }
+
+    /// A failed read cannot tell a focuser without a probe from one
+    /// whose probe hiccupped, and only the first may stand a sensor in,
+    /// so the stand-in is not read at all.
+    #[tokio::test]
+    async fn a_failed_read_of_the_trains_own_focuser_reads_no_stand_in() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let active = probed_rig(
+            &position,
+            || Err(FocusModelError::ToolCall("thermistor busy".to_owned())),
+            || Ok(Some(7.5)),
+            0,
+        );
+
+        let outcome = focus_with_stand_in(&store, &active).await.unwrap();
+        assert_eq!(outcome.temperature_c, None);
+    }
+
+    /// Naming a stand-in makes a record read through the train's own
+    /// focuser stale; a reset takes the sensor on and keeps the
+    /// offsets.
+    #[tokio::test]
+    async fn naming_a_stand_in_makes_the_record_stale_until_a_reset_takes_it_on() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = probed_rig(&position, || Ok(None), || Ok(Some(7.5)), 1);
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+        );
+        record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
+        store.put(record).await.unwrap();
+
+        let view = get_focus_model(&rig, &store, &config(STAND_IN), "main")
+            .await
+            .unwrap();
+        assert_eq!(
+            view.model,
+            "stale: temperature_sensor changed from none to oag-focuser"
+        );
+        let reset = reset_focus_model(&rig, &store, &config(STAND_IN), "main")
+            .await
+            .unwrap();
+        assert_eq!(
+            reset.adopted,
+            ["temperature_sensor changed from none to oag-focuser"]
+        );
+        assert_eq!(reset.model.model, "fresh");
+        assert_eq!(
+            reset.model.temperature_sensor.as_deref(),
+            Some("oag-focuser")
+        );
+        assert_eq!(reset.model.offsets.get("Ha"), Some(&46));
+    }
+
+    /// Neither the reset nor a hand-entered offset takes on a sensor
+    /// every sweep would refuse: one rp does not know, or one named on
+    /// a train whose own focuser reports a temperature. The record is
+    /// left as it was.
+    #[tokio::test]
+    async fn a_write_refuses_a_stand_in_a_sweep_would_refuse() {
+        let unknown = || {
+            Err(FocusModelError::ToolCall(
+                "get_focuser_temperature: focuser not found: oag-focuser".to_owned(),
+            ))
+        };
+        let cases: [(Probe, Probe, usize, &str); 2] = [
+            (|| Ok(None), unknown, 2, "which rp does not know"),
+            (
+                || Ok(Some(11.5)),
+                || Ok(Some(7.5)),
+                0,
+                "reports a temperature (11.5 °C)",
+            ),
+        ];
+        for (own, stand_in, stand_in_reads, refusal) in cases {
+            let (store, _dir) = temp_store().await;
+            let position = Position::new(25_000);
+            let rig = probed_rig(&position, own, stand_in, stand_in_reads);
+            let held = FocusRecord::new(
+                "main",
+                Some("main-focuser"),
+                Some("main-cam"),
+                Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+            );
+            let held = store.put(held).await.unwrap();
+
+            let err = reset_focus_model(&rig, &store, &config(STAND_IN), "main")
+                .await
+                .unwrap_err();
+            assert!(err.tool_message().contains(refusal), "{err}");
+            let err = set_focus_offsets(
+                &rig,
+                &store,
+                &config(STAND_IN),
+                "main",
+                "Luminance",
+                [("Ha".to_owned(), 46)].into(),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.tool_message().contains(refusal), "{err}");
+            assert_eq!(store.get("main").await.unwrap(), Some(held));
+        }
+    }
+
     /// After a wheel change the old filter's runs are exactly what an
     /// operator wants to read, so the history takes a name the record
     /// knows even when the wheel no longer does.
@@ -4038,12 +4438,12 @@ mod tests {
         );
         store.put(record).await.unwrap();
 
-        let view = get_focus_runs(&rig, &store, "main", 20, Some("OIII"))
+        let view = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 20, Some("OIII"))
             .await
             .unwrap();
         assert_eq!(view.total, 1, "the wheel has Luminance and Ha now");
 
-        let err = get_focus_runs(&rig, &store, "main", 20, Some("SII"))
+        let err = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 20, Some("SII"))
             .await
             .unwrap_err();
         assert!(
@@ -4167,12 +4567,14 @@ mod tests {
         record.push_run(run, 50);
         store.put(record).await.unwrap();
 
-        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        let view = get_focus_model(&rig, &store, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         let last = view.last_run.unwrap();
         assert_eq!(last.curve_points_recorded, 2);
         assert_eq!(last.outcome, RunOutcome::Confirmed);
 
-        let runs = get_focus_runs(&rig, &store, "main", 20, None)
+        let runs = get_focus_runs(&rig, &store, &config(CONFIGURED), "main", 20, None)
             .await
             .unwrap();
         assert_eq!(runs.runs[0].curve_points.len(), 2, "the samples live here");
@@ -4379,7 +4781,9 @@ mod tests {
         let mut rig = MockFocusRig::new();
         rig.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(guiding_info(&["main", "wide"])) }));
-        let ctx = resolve_train(&rig, "guide").await.unwrap();
+        let ctx = resolve_train(&rig, &config(CONFIGURED), "guide")
+            .await
+            .unwrap();
         assert_eq!(
             ctx.check_training_run().unwrap_err().tool_message(),
             "guiding train 'guide' has no focuser of its own: its terminal focuser \
@@ -4401,7 +4805,9 @@ mod tests {
                 })
             })
         });
-        let ctx = resolve_train(&rig, "main").await.unwrap();
+        let ctx = resolve_train(&rig, &config(CONFIGURED), "main")
+            .await
+            .unwrap();
         assert!(!ctx.guiding);
         ctx.check_training_run().unwrap();
     }

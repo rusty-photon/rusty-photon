@@ -15,8 +15,12 @@ Feature: Focus tools served through rp
   by default) failing a fit below it as poor_fit, and every run — the
   ones that fail included — is recorded with its curve points, its
   prediction and its outcome. A record measured through another
-  camera, focuser, filter set or optics is stale and predicts nothing;
-  an optical fact either side does not know is no change. A sweep that fails after every attempt
+  camera, focuser, filter set, optics or temperature sensor is stale
+  and predicts nothing; an optical fact either side does not know is
+  no change. A train's temperature_sensor names another focuser whose
+  probe stands in where the train's own focuser has none, and every
+  sweep, and every write that would take it into a record, refuses it
+  while the train's own focuser reports a temperature. A sweep that fails after every attempt
   puts the focuser back where the call found it. Because focus_train
   is declared a focus tool in the registration, rp brackets each call
   with the focus event triple it emits around its own sweeps.
@@ -382,6 +386,56 @@ Feature: Focus tools served through rp
     And the tool result at "/optics/obstruction_mm" should be the JSON null
     And the tool result at "/optics/pixel_size_um" should be the JSON 5.6
     And the tool result at "/optics/filter_wavelengths_nm" should be the JSON {"Luminance": null, "Ha": null}
+
+  # The simulator's focuser has a probe, so a stand-in named for its
+  # train is refused by every sweep before anything moves: a session
+  # refocuses on that focuser's readings, and a stand-in would put its
+  # baseline on another sensor. The refusal comes before the sweep is
+  # planned, so nothing is recorded. The stand-in's own reading, on a
+  # focuser without a probe, is the unit tests'.
+  Scenario: A stand-in temperature sensor is refused while the train's own focuser reports a temperature
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And the focus provider is configured for train "main" with temperature_sensor "oag-focuser"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    And the focuser is at position 25000
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature"
+    And the error message should contain "remove trains.main.temperature_sensor"
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature"
+    When the MCP client calls "get_focus_runs" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/total" should be the JSON 0
+    And the focuser should be back at position 25000 within 5 seconds
+
+  # The sensor is part of the record's identity. Naming one makes a
+  # record measured through the train's own focuser stale, like a
+  # camera swap. A reset takes a new sensor on only after the checks a
+  # sweep makes: on the simulator's train, whose focuser has a probe,
+  # it refuses, and the record is left as it was. The reset that takes
+  # a sensor on is the unit tests'.
+  Scenario: Naming a stand-in temperature sensor makes the record stale, and a reset refuses one a sweep would refuse
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And a stored focus model for train "main" with a last good position of 25200
+    And the focus provider is configured for train "main" with temperature_sensor "oag-focuser"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "stale: temperature_sensor changed from none to oag-focuser"
+    And the tool result at "/temperature_sensor" should be the JSON null
+    When the MCP client calls "reset_focus_model" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature"
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/model" should be the JSON "stale: temperature_sensor changed from none to oag-focuser"
+    And the tool result "/last_good" should have 1 entries
 
   Scenario: Offsets are entered by hand and validated against the wheel
     Given a running Alpaca simulator
