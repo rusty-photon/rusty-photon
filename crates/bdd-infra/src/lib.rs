@@ -516,6 +516,7 @@ mod reserved_port_tests {
 
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -620,6 +621,9 @@ pub struct ServiceHandle {
     /// Reads stdout to its end, moving `bound_port` to each announcement.
     stdout_drain: Option<tokio::task::JoinHandle<()>>,
     stderr_forward: Option<tokio::task::JoinHandle<()>>,
+    /// What the service has written to stderr so far (see
+    /// [`stderr_lines`](Self::stderr_lines)).
+    stderr_lines: StderrLines,
     /// Service name (for log/error messages).
     name: String,
 }
@@ -677,7 +681,8 @@ impl ServiceHandle {
             .stderr
             .take()
             .unwrap_or_else(|| panic!("failed to capture {package_name} stderr"));
-        let stderr_forward = spawn_stderr_forwarder(stderr, label);
+        let stderr_lines = StderrLines::default();
+        let stderr_forward = spawn_stderr_forwarder(stderr, label, stderr_lines.clone());
 
         let stdout = child
             .stdout
@@ -692,6 +697,7 @@ impl ServiceHandle {
             bound_port,
             stdout_drain: Some(stdout_drain),
             stderr_forward: Some(stderr_forward),
+            stderr_lines,
             name: package_name.to_string(),
         }
     }
@@ -756,7 +762,8 @@ impl ServiceHandle {
             .stderr
             .take()
             .ok_or_else(|| format!("failed to capture {package_name} stderr"))?;
-        let stderr_forward = spawn_stderr_forwarder(stderr, label);
+        let stderr_lines = StderrLines::default();
+        let stderr_forward = spawn_stderr_forwarder(stderr, label, stderr_lines.clone());
 
         let stdout = child
             .stdout
@@ -769,6 +776,7 @@ impl ServiceHandle {
                 bound_port,
                 stdout_drain: Some(stdout_drain),
                 stderr_forward: Some(stderr_forward),
+                stderr_lines,
                 name: package_name.to_string(),
             }),
             Ok(None) => {
@@ -801,6 +809,18 @@ impl ServiceHandle {
     #[must_use]
     pub fn bound_port(&self) -> BoundPort {
         self.bound_port.clone()
+    }
+
+    /// Every line the service has written to stderr so far, oldest first,
+    /// with terminal styling stripped, so a step can wait on something the
+    /// service logged. Lines arrive through a pipe and a forwarding task, so
+    /// one the service has just written may not be here yet: poll for it.
+    #[must_use]
+    pub fn stderr_lines(&self) -> Vec<String> {
+        self.stderr_lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns `true` if the service process is currently running.
@@ -1326,6 +1346,7 @@ async fn spawn_service(
 fn spawn_stderr_forwarder(
     stderr: tokio::process::ChildStderr,
     label: String,
+    lines: StderrLines,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
@@ -1334,10 +1355,41 @@ fn spawn_stderr_forwarder(
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => eprint!("[{label}] {line}"),
+                Ok(_) => {
+                    eprint!("[{label}] {line}");
+                    lines
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(strip_ansi(line.trim_end()));
+                }
             }
         }
     })
+}
+
+/// The lines a service has written to stderr, shared between its forwarder
+/// and its [`ServiceHandle`].
+type StderrLines = Arc<Mutex<Vec<String>>>;
+
+/// `line` without its ANSI CSI sequences (`ESC [ … final byte`), the ones
+/// `tracing`'s formatter styles levels and field names with, so a step can
+/// match `timeout=100ms` as it reads.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Join a background task, giving it 1s to finish before aborting it.
@@ -1695,7 +1747,7 @@ mod tests {
     async fn test_spawn_stderr_forwarder_terminates_on_eof() {
         let mut child = spawn_piped("sh", &["-c", "echo one >&2; echo two >&2"]).await;
         let stderr = child.stderr.take().unwrap();
-        let handle = spawn_stderr_forwarder(stderr, "test#0".to_string());
+        let handle = spawn_stderr_forwarder(stderr, "test#0".to_string(), StderrLines::default());
 
         // The child's stderr write end closes once it exits; the forwarder
         // must observe EOF and return rather than block forever.
@@ -1703,6 +1755,37 @@ mod tests {
             .await
             .expect("forwarder did not terminate after the child's stderr closed")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_spawn_stderr_forwarder_keeps_each_line_in_order() {
+        let mut child = spawn_piped("sh", &["-c", "echo one >&2; echo two >&2"]).await;
+        let stderr = child.stderr.take().unwrap();
+        let lines = StderrLines::default();
+        let handle = spawn_stderr_forwarder(stderr, "test#0".to_string(), lines.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("forwarder did not terminate after the child's stderr closed")
+            .unwrap();
+        assert_eq!(*lines.lock().unwrap(), ["one", "two"]);
+    }
+
+    #[test]
+    fn test_strip_ansi_removes_tracing_styling() {
+        let styled = "\u{1b}[2m2026-10-31T17:53:14Z\u{1b}[0m \u{1b}[34mDEBUG\u{1b}[0m \
+                      \u{1b}[2mplate_solver::api\u{1b}[0m\u{1b}[2m:\u{1b}[0m starting the solve \
+                      \u{1b}[3mtimeout\u{1b}[0m\u{1b}[2m=\u{1b}[0m100ms";
+        assert_eq!(
+            strip_ansi(styled),
+            "2026-10-31T17:53:14Z DEBUG plate_solver::api: starting the solve timeout=100ms"
+        );
+    }
+
+    #[test]
+    fn test_strip_ansi_keeps_plain_text_and_a_lone_escape() {
+        assert_eq!(strip_ansi("plain [text]"), "plain [text]");
+        assert_eq!(strip_ansi("a\u{1b}b"), "a\u{1b}b");
     }
 
     // -----------------------------------------------------------------------

@@ -51,17 +51,32 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
     And the response field "message" contains "(killed)"
     And the response time is at least 2000 milliseconds
 
-  # @unix-only: serialization is observed via per-child spawn-time files,
-  # but on Windows a hung child's spawn file is intermittently lost when the
-  # wrapper terminates it via CTRL_BREAK_EVENT. Both solves still run (both
-  # return 504), so the capacity-1 semaphore itself is fine — only the
-  # server-side observation is racy. The semaphore is platform-agnostic
-  # tokio code, fully covered on Unix. (This step was already reworked once
-  # for Windows spawn-file write-dropping; the residual race is Windows's.)
-  @unix
+  # The scenario fixes the order of the two solves instead of racing them,
+  # and each step waits on something the wrapper or mock_astap produced, so
+  # none depends on how fast the runner is. mock_astap's "hold" mode keeps the
+  # first solve running until the scenario releases it, which happens only
+  # after the held child has recorded its start. The wrapper logs, at debug,
+  # the start and end of each solve and a request it has to queue:
+  #
+  # - The second request queues: the wrapper logs it waiting only when the
+  #   semaphore refused it, and a second solve starting first fails the step.
+  # - The first solve stays held for 500 ms after the wrapper logged the
+  #   queueing, longer than the second request's 100 ms timeout, so a
+  #   timeout that counted the queue would have run out in it.
+  # - After the release, the second solve starts only once the first has
+  #   finished, with its whole 100 ms timeout. Its child is terminated at
+  #   that deadline, and the answer comes at least 100 ms after the release.
   Scenario: Single-flight semaphore serializes overlapping solves
-    Given mock_astap is configured for "hang" mode
+    Given mock_astap is configured for "hold" mode
     And a writable FITS path
-    When I POST two concurrent solve requests with timeout "100ms" each
-    Then both responses have status 504
-    And the two solves were serialized by the single-flight semaphore
+    When I POST a solve request with timeout "60s" in the background
+    And mock_astap has started that solve
+    And I POST a second solve request with timeout "100ms" in the background
+    Then the wrapper queues the second request behind the first solve
+    When 500 milliseconds pass
+    And mock_astap is released
+    Then the first request is answered with status 200
+    And the second request is answered with status 504
+    And the response field "message" contains "(terminated)"
+    And the second request was answered at least 100 milliseconds after the release
+    And the wrapper started the second solve only after the first finished, with timeout "100ms"

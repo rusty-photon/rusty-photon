@@ -501,21 +501,33 @@ the test sets before spawning the wrapper:
 | `exit_failure` | Write to stderr, exit 1 (no `.wcs`) | `solve_failed` (non-zero exit branch) |
 | `hang` | Sleep indefinitely; respond cleanly to the platform's graceful signal (Unix `SIGTERM`; Windows `CTRL_BREAK_EVENT`) | `solve_timeout` (terminated) |
 | `ignore_sigterm` | Trap and ignore the graceful signal; sleep anyway. Mode name kept for stability — semantics are platform-neutral. | `solve_timeout` (killed via the platform's force-kill) |
+| `hold` | Hold the solve open until the test releases it, then behave as `normal`; a solve started after the release behaves as `hang` | Single-flight queueing |
 | `malformed_wcs` | Write a `.wcs` missing `CRVAL2`, exit 0 | `solve_failed` (parser-detected branch) |
 | `no_wcs` | Exit 0 without writing any `.wcs` | `solve_failed` (sidecar-missing branch) |
 
 Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
-Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records each invocation's
-spawn time (ns since the Unix epoch) as the *name* of its own empty file,
-`<nanos>-<pid>`, in `<dir>`. Creating the file publishes the name in one
-step, so a child killed at any point leaves either no file or a complete
-record, never a half-written one. The single-flight BDD scenario reads the
-file names to assert
-serialization from the children's actual spawn ordering, rather than
-from client-side HTTP-completion timing (which was jitter-prone on
-loaded CI runners). Per-child files avoid a shared handle — cross-process
-appends to one file dropped writes on Windows.
+`hold` mode takes its directory from `MOCK_ASTAP_HOLD_DIR=<dir>`. An
+invocation that starts before the test has created `<dir>/release`
+records its start as its own empty file, `started-<pid>`, in `<dir>`,
+waits for `release` to appear, then writes the canned `.wcs` and exits 0;
+one that starts after the release hangs. A hold that ends without a
+release (the directory is deleted, or 120 s pass) exits 2, so a failed
+scenario leaves no held child behind.
+
+The single-flight BDD scenario uses `hold` to fix the order of two solves
+rather than race them, and reads the wrapper's own account of what it did.
+The solve handler logs at `debug` — `solve request queued behind a running
+solve` when the semaphore refuses a request, `starting the solve` with the
+timeout it hands the runner, and `solve finished` before the permit drops —
+and the BDD world runs the wrapper with `RUST_LOG=info,plate_solver=debug`.
+The scenario releases the first solve only after its child has recorded
+its start and the wrapper has logged the second request queueing, then
+holds it 500 ms more, longer than the second request's 100 ms timeout.
+It then asserts the wrapper's events in order: the second solve starts
+only after the first finished, with its whole 100 ms. Every wait is on
+something the wrapper or the mock produced, so no assertion can fail
+because a runner is slow.
 
 This binary is **not feature-gated** — it builds with every
 `cargo build --all-targets`. BDD and runner integration tests
