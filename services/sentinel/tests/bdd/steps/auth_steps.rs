@@ -12,7 +12,7 @@ fn health_url(world: &SentinelWorld) -> String {
         .as_ref()
         .expect("sentinel not started")
         .port();
-    format!("https://localhost:{port}/health")
+    format!("https://127.0.0.1:{port}/health")
 }
 
 #[given("sentinel is configured with dashboard TLS and auth enabled")]
@@ -178,7 +178,7 @@ fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
     let monitor = serde_json::json!({
         "type": "alpaca_safety_monitor",
         "name": "Auth Monitor",
-        "host": "localhost",
+        "host": "127.0.0.1",
         "port": fm.port(),
         "device_number": 0,
         "polling_interval": "1s",

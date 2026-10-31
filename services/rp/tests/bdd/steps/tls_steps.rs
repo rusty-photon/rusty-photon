@@ -31,19 +31,18 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
     world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
     // Wait for healthy over HTTPS. rp has no auth configured here, so the
-    // credentials the shared readiness probe sends are ignored.
-    let pki = world.pki();
-    let client = pki.https_client();
+    // shared readiness probe carries no credentials.
+    let client = world.pki().https_client();
     let port = world.rp.as_ref().unwrap().port();
-    let url = format!("https://localhost:{port}/health");
-    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
+    let url = format!("https://127.0.0.1:{port}/health");
+    wait_until_ready(&client, &url, "", "").await;
 }
 
 #[then("the health endpoint should respond over HTTPS")]
 async fn health_responds_https(world: &mut RpWorld) {
     let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port();
-    let url = format!("https://localhost:{port}/health");
+    let url = format!("https://127.0.0.1:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);

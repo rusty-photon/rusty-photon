@@ -78,11 +78,11 @@ async fn dashboard_health_https(world: &mut SentinelWorld) {
         .as_ref()
         .expect("sentinel not started")
         .port();
-    let url = format!("https://localhost:{port}/health");
+    let url = format!("https://127.0.0.1:{port}/health");
 
-    // No auth is configured in this scenario, so the credentials the probe
-    // sends are ignored; a 200 proves the dashboard answers over HTTPS.
-    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
+    // No auth is configured in this scenario, so the probe carries no
+    // credentials; a 200 proves the dashboard answers over HTTPS.
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, "", "").await;
 }
 
 // --- Cross-service TLS scenario ---
@@ -117,7 +117,7 @@ fn sentinel_configured_with_ca(world: &mut SentinelWorld) {
     let monitor = serde_json::json!({
         "type": "alpaca_safety_monitor",
         "name": "Roof Monitor",
-        "host": "localhost",
+        "host": "127.0.0.1",
         "port": fm.port(),
         "device_number": 0,
         "polling_interval": "1s",

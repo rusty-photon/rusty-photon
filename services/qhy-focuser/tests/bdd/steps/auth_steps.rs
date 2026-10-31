@@ -17,7 +17,7 @@ fn management_url(world: &QhyFocuserWorld) -> String {
         .as_ref()
         .expect("qhy-focuser not started")
         .port();
-    format!("https://localhost:{port}/management/v1/configureddevices")
+    format!("https://127.0.0.1:{port}/management/v1/configureddevices")
 }
 
 fn mock_config() -> qhy_focuser::Config {

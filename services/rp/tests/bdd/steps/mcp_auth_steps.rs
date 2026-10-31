@@ -19,7 +19,7 @@ use super::tool_steps::{add_camera, ensure_omnisim};
 /// health-endpoint steps do.
 fn mcp_url_https(world: &RpWorld) -> String {
     let port = world.rp.as_ref().expect("rp not started").port();
-    format!("https://localhost:{port}/mcp")
+    format!("https://127.0.0.1:{port}/mcp")
 }
 
 #[given("a camera on the simulator is configured for the next rp start")]
