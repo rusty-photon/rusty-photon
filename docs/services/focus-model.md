@@ -625,7 +625,10 @@ without a wheel is an error. A stale record is replaced. A temperature
 coefficient fitted with offsets these move goes with them; the runs
 stay, so `calibrate_temperature` puts it back in one call. Refused while
 a focus run or an offsets procedure holds the claim, both writing the
-same fields. Returns the model as `get_focus_model` would.
+same fields. On a train that names a `temperature_sensor`, the probes
+are read first and a sensor a sweep would refuse is refused here too
+([The temperature source](#the-temperature-source)). Returns the model
+as `get_focus_model` would.
 
 ### `reset_focus_model {train_id}`
 
@@ -637,7 +640,9 @@ cannot see; `adopted` names every identity field it took over, so an
 operator reading the result sees that the offsets it kept were
 measured on the old one. Naming a `temperature_sensor`, changing it
 or removing it is such a change: the reset takes the new sensor on and
-keeps the offsets, which no temperature entered. Returns `dropped`,
+keeps the offsets, which no temperature entered. It first reads the
+probes as a sweep does, and refuses a sensor a sweep would refuse, so
+a record never reads fresh under a sensor every sweep refuses. Returns `dropped`,
 `kept`, `adopted` and the model. A train with no record is an error
 naming it, and so is a
 reset while a focus run is in flight: the sweep would append its run
@@ -806,8 +811,8 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
-| A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, and each sweep of `determine_filter_offsets`) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
-| A `temperature_sensor` that names a focuser `rp` does not know | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
+| A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, each sweep of `determine_filter_offsets`, and `set_focus_offsets` and `reset_focus_model` before they write) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
+| A `temperature_sensor` that names a focuser `rp` does not know (the same calls) | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
@@ -999,7 +1004,8 @@ probe.
     fails, there is no reading. A named focuser `rp` does not know
     (`focuser not found: <id>`) is refused instead, before anything
     moves: a mistyped id would otherwise read as a missing probe on
-    every sweep, and go into the record's identity.
+    every sweep, and go into the record's identity. A stand-in read
+    that fails for any other reason is logged as a warning.
   - *Its read fails.* There is no reading at all. The provider cannot
     tell a focuser without a probe from one whose probe failed for a
     moment, so it reads neither.
@@ -1017,7 +1023,10 @@ The sensor is part of the record's identity ([Store](#store)). Naming
 a stand-in, changing it or removing it makes the record stale, like a
 camera swap. The record then predicts nothing until the next write
 replaces it, or `reset_focus_model` takes the new sensor on and keeps
-the offsets.
+the offsets. A write that would take a sensor into the record —
+`set_focus_offsets` and `reset_focus_model`, besides the sweeps —
+first makes the checks above, so a record never reads fresh under a
+sensor every sweep refuses.
 
 ## The sweep
 
@@ -1488,7 +1497,8 @@ that holds no optics stays fresh and takes the train's on its next
 run; a `temperature_sensor` on the simulator's train, whose focuser
 has a probe, is refused by `focus_train` and `determine_filter_offsets`
 before anything moves, with nothing recorded, and naming one makes a
-record stale until `reset_focus_model` takes it on; `set_focus_offsets` validates and writes, `reset_focus_model`
+record stale, which `reset_focus_model` then refuses to take on,
+leaving the record as it was; `set_focus_offsets` validates and writes, `reset_focus_model`
 drops the history and keeps the offsets, `get_focus_runs` pages newest
 first; a cancelled sweep restores the start; a guide-coupled train
 pauses and resumes guiding around the sweep, on the failure path too;
@@ -1569,7 +1579,8 @@ credential — and that `tools/list` answers with no `rp` running.
   temperature, and when `rp` does not know the stand-in; no reading
   from a stand-in without a probe or whose read fails, and no stand-in read at all after the train's own read fails;
   the record stale on a named sensor until a reset takes it on, the
-  offsets kept. On a guiding train: the refusal
+  offsets kept; a reset or hand-entered offsets refusing a sensor a
+  sweep would refuse, the record left as it was. On a guiding train: the refusal
   naming every train that has its focuser, and none for an imaging
   train; the one lease taken before the handshake, every move and
   capture under it, the put-back too, and its release last; a refused

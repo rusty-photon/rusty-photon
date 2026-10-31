@@ -471,7 +471,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. A temperature coefficient fitted with offsets these move is dropped with them, the runs it was fitted from staying, so calibrate_temperature puts it back in one call. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
+        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. A temperature coefficient fitted with offsets these move is dropped with them, the runs it was fitted from staying, so calibrate_temperature puts it back in one call. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Moves no device; a train that names a stand-in temperature sensor has its probes read first, and a sensor a sweep would refuse is refused here too. Ungated."
     )]
     async fn set_focus_offsets(
         &self,
@@ -513,7 +513,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Forget what a re-homed or re-seated focuser invalidated: drops a train's run history, its last good focus per filter and its temperature coefficient, and keeps the reference filter and the offsets, which are differences between filters. Returns what was dropped, what was kept and the model. Touches no device. Ungated."
+        description = "Forget what a re-homed or re-seated focuser invalidated: drops a train's run history, its last good focus per filter and its temperature coefficient, and keeps the reference filter and the offsets, which are differences between filters. Returns what was dropped, what was kept and the model. Moves no device; a train that names a stand-in temperature sensor has its probes read first, and a sensor a sweep would refuse is refused here too. Ungated."
     )]
     async fn reset_focus_model(
         &self,

@@ -852,7 +852,7 @@ async fn read_temperature(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<Opti
             message = e.tool_message(),
         ))),
         Err(e) => {
-            debug!(
+            warn!(
                 error = %e,
                 temperature_sensor = %sensor,
                 "the stand-in reported no temperature; predicting without it"
@@ -860,6 +860,18 @@ async fn read_temperature(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<Opti
             Ok(None)
         }
     }
+}
+
+/// Refuse a stand-in temperature sensor a sweep would refuse, before a
+/// write takes it into the record's identity: a record that carries
+/// one would read fresh while every sweep refuses, and go stale again
+/// once the config is put right. Reads the probes only when the train
+/// names a stand-in.
+async fn check_temperature_sensor(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<()> {
+    if ctx.temperature_sensor.is_some() {
+        read_temperature(rig, ctx).await?;
+    }
+    Ok(())
 }
 
 /// Whether `rp` refused a call because it knows no focuser `focuser_id`
@@ -2062,7 +2074,8 @@ fn recorded_filter(record: Option<&FocusRecord>, filter: &str) -> bool {
 /// # Errors
 ///
 /// Returns the resolution errors of [`resolve_train`], the filter
-/// errors of [`TrainContext::check_filter`], and the store's.
+/// errors of [`TrainContext::check_filter`], the refusals of a stand-in
+/// temperature sensor a sweep would refuse, and the store's.
 pub async fn set_focus_offsets(
     rig: &dyn FocusRig,
     store: &FocusStore,
@@ -2076,6 +2089,7 @@ pub async fn set_focus_offsets(
     for name in offsets.keys() {
         ctx.check_filter(name)?;
     }
+    check_temperature_sensor(rig, &ctx).await?;
     let (record, ()) = store
         .update(train_id, move |held| {
             let stale = stale_fields(held.as_ref(), &ctx);
@@ -2097,7 +2111,8 @@ pub async fn set_focus_offsets(
 ///
 /// # Errors
 ///
-/// Returns the resolution errors of [`resolve_train`], a
+/// Returns the resolution errors of [`resolve_train`], the refusals of
+/// a stand-in temperature sensor a sweep would refuse, a
 /// [`FocusModelError::Workflow`] for a train with no record, and the
 /// store's.
 pub async fn reset_focus_model(
@@ -2107,6 +2122,7 @@ pub async fn reset_focus_model(
     train_id: &str,
 ) -> Result<ResetView> {
     let ctx = resolve_train(rig, config, train_id).await?;
+    check_temperature_sensor(rig, &ctx).await?;
     let (record, adopted) = store
         .update(train_id, move |held| {
             let mut record = held.ok_or_else(|| {
@@ -4147,13 +4163,16 @@ mod tests {
         }
     }"#;
 
+    /// One focuser's answer to a temperature read.
+    type Probe = fn() -> Result<Option<f64>>;
+
     /// A rig whose own focuser answers a temperature read with `own`
     /// and the stand-in with `stand_in`, read at most `stand_in_reads`
     /// times; it measures a V centred at 25010.
     fn probed_rig(
         position: &Position,
-        own: fn() -> Result<Option<f64>>,
-        stand_in: fn() -> Result<Option<f64>>,
+        own: Probe,
+        stand_in: Probe,
         stand_in_reads: usize,
     ) -> MockFocusRig {
         let mut rig = MockFocusRig::new();
@@ -4233,7 +4252,7 @@ mod tests {
     /// the sweep runs without a temperature term.
     #[tokio::test]
     async fn a_stand_in_without_a_reading_is_no_reading() {
-        let answers: [fn() -> Result<Option<f64>>; 2] = [
+        let answers: [Probe; 2] = [
             || Ok(None),
             || {
                 Err(FocusModelError::ToolCall(
@@ -4309,7 +4328,7 @@ mod tests {
     async fn naming_a_stand_in_makes_the_record_stale_until_a_reset_takes_it_on() {
         let (store, _dir) = temp_store().await;
         let position = Position::new(25_000);
-        let rig = rig(&position);
+        let rig = probed_rig(&position, || Ok(None), || Ok(Some(7.5)), 1);
         let mut record = FocusRecord::new(
             "main",
             Some("main-focuser"),
@@ -4339,6 +4358,57 @@ mod tests {
             Some("oag-focuser")
         );
         assert_eq!(reset.model.offsets.get("Ha"), Some(&46));
+    }
+
+    /// Neither the reset nor a hand-entered offset takes on a sensor
+    /// every sweep would refuse: one rp does not know, or one named on
+    /// a train whose own focuser reports a temperature. The record is
+    /// left as it was.
+    #[tokio::test]
+    async fn a_write_refuses_a_stand_in_a_sweep_would_refuse() {
+        let unknown = || {
+            Err(FocusModelError::ToolCall(
+                "get_focuser_temperature: focuser not found: oag-focuser".to_owned(),
+            ))
+        };
+        let cases: [(Probe, Probe, usize, &str); 2] = [
+            (|| Ok(None), unknown, 2, "which rp does not know"),
+            (
+                || Ok(Some(11.5)),
+                || Ok(Some(7.5)),
+                0,
+                "reports a temperature (11.5 °C)",
+            ),
+        ];
+        for (own, stand_in, stand_in_reads, refusal) in cases {
+            let (store, _dir) = temp_store().await;
+            let position = Position::new(25_000);
+            let rig = probed_rig(&position, own, stand_in, stand_in_reads);
+            let held = FocusRecord::new(
+                "main",
+                Some("main-focuser"),
+                Some("main-cam"),
+                Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+            );
+            let held = store.put(held).await.unwrap();
+
+            let err = reset_focus_model(&rig, &store, &config(STAND_IN), "main")
+                .await
+                .unwrap_err();
+            assert!(err.tool_message().contains(refusal), "{err}");
+            let err = set_focus_offsets(
+                &rig,
+                &store,
+                &config(STAND_IN),
+                "main",
+                "Luminance",
+                [("Ha".to_owned(), 46)].into(),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.tool_message().contains(refusal), "{err}");
+            assert_eq!(store.get("main").await.unwrap(), Some(held));
+        }
     }
 
     /// After a wheel change the old filter's runs are exactly what an
