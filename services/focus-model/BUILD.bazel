@@ -11,6 +11,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
+    "//crates/rp-focus-curve:rp-focus-curve",
     "//crates/rp-mcp-client:rp-mcp-client",
     "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-config:rusty-photon-config",

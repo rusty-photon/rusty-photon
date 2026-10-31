@@ -502,7 +502,7 @@ written carries `not_recorded`: the difference it measured still
 stands, and the history is what is missing. A sweep that *failed* and
 could not be written says so in `error`, after the failure itself. The run the record holds for the same
 sweep carries the outcome in full (`confirmed`, `fallback`,
-`not_enough_stars`, `monotonic_curve` or `error`) with its curve
+`not_enough_stars`, `monotonic_curve`, `poor_fit` or `error`) with its curve
 points; `get_focus_runs` is where a sweep is read in detail.
 `differences` is what each median was taken over, so an operator can
 see a spread the median hid. `restored` is where the call left the
@@ -777,7 +777,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filter` on a train without a wheel | `train 'x' has no filter wheel; do not pass filter` |
 | Unknown filter name | `filter 'Ha' is not on train 'x' (wheel 'main-fw' has: Luminance, Red, Green, Blue)` |
 | Incomplete optics and no configured sweep | `train 'x' has no derived sweep: aperture_mm is unknown; set trains.x.step_size and half_width in focus-model.json or the fact in rp's config` |
-| The sweep failed after every attempt | `not enough stars: …; attempts: 2; attempts_log: [{…}]; prediction: {…}; curve_points: [{…}]` — `curve_points` is the last field the sweep writes: a put-back, record or guiding note below may follow it after `; `, so a reader takes one JSON array from the start of what follows `curve_points: ` |
+| The sweep failed after every attempt | `not enough stars: …`, `monotonic curve: …` or `poor fit: fit_r_squared 0.412 is below min_fit_r_squared 0.6`, then `; attempts: 2; attempts_log: [{…}]; prediction: {…}; curve_points: [{…}]` — `curve_points` is the last field the sweep writes: a put-back, record or guiding note below may follow it after `; `, so a reader takes one JSON array from the start of what follows `curve_points: ` |
 | The put-back itself failed | the sweep's error, then `; the focuser could not be restored to 29740: …` |
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
@@ -956,7 +956,9 @@ the current position.
 
 The V-curve with the semantics `rp`'s capture sweep has today
 ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)), through
-`rp`'s primitives — except where the retry goes (step 6): `rp`'s sweep
+`rp`'s primitives — except for the curve it fits (step 4), which is the
+hyperbola where `rp`'s capture sweep fits a parabola, and where the
+retry goes (step 6): `rp`'s sweep
 makes no shift after a sweep whose stars ran out on one side, and
 reads the `monotonic_curve` side against the grid's centre. The capture
 sweep retires at the plan's S7, and the rules live here:
@@ -982,13 +984,41 @@ sweep retires at the plan's S7, and the rules live here:
    `min_star_fraction` of the sweep's largest count is
    `rejected: "sparse"`. Fewer than `min_fit_points` accepted points is
    `not_enough_stars`.
-4. The fit: a parabola in HFR against position, weighted by star count,
-   with `fit_r_squared` its weighted coefficient of determination.
-   `monotonic_curve` when the design matrix is singular, the leading
-   coefficient is not positive, or the vertex falls outside the
-   positions the accepted samples were measured at. The hyperbolic model of the
-   [sample-gating plan](../plans/auto-focus-sample-gating.md) (G2)
-   replaces the parabola here when it lands.
+4. The fit: the hyperbola `hfr = a·√(1 + ((x − x₀)/b)²)` in HFR
+   against position, weighted by star count, with `fit_r_squared` its
+   weighted coefficient of determination over the accepted samples,
+   clamped to `[0, 1]`. The hyperbola is the defocus curve itself, not
+   a shape chosen to fit one rig: a defocused star is a cone of
+   light whose half-flux radius grows by `a/b` pixels a step either
+   side of focus — the slope [Sweep sizing](#sweep-sizing) predicts —
+   rounded off near focus at `a`, the HFR that seeing and the optics
+   leave. The fit is
+   [`rp-focus-curve`](../crates/rp-focus-curve.md)'s, the same one
+   `rp`'s guide-train sweep fits. `best_position` is `x₀` rounded to a
+   step, and `best_hfr` is `a`, the fitted HFR there. That is 0 when the
+   fit is the nearest V (below), whose samples never showed the floor;
+   the measured `hfr` is the one to read.
+   `monotonic_curve` when the accepted samples sit at fewer than three
+   positions, when their squared HFRs do not turn upward or the fit
+   flattens to a constant (a curve with no minimum to find), or when
+   `x₀` falls outside the positions the accepted samples were measured
+   at, whatever the R²: samples that
+   walked one wing fit a hyperbola well with its centre extrapolated
+   past their end. The grid has been walked by then; it is the fitted
+   position that is never visited.
+   Three accepted samples, which only a `min_fit_points` of 3 lets
+   through, are fitted exactly when a hyperbola passes through them,
+   at R² 1. When none does, because the wings are steeper than any
+   rounded floor allows, the fit is the nearest V, `a` 0, at an R²
+   below 1. Either is a fit, not a failure.
+   `trains.<id>.min_fit_r_squared`, unset by default, rejects a fit
+   whose R² is below it as `poor_fit`, once `x₀` has passed the bound
+   above. A rejection is a fit failure like the other two: the run
+   records `poor_fit` with the `fit_r_squared` it was refused on and
+   every curve point, and the retry walks the same grid (step 6).
+   Unset, the quality is reported and never enforced, because how clean
+   a real sweep looks is a property of the rig. A train's own runs
+   are what justify a number for that train (the plan's D13).
 5. Confirmation: move to the vertex, one more frame; accepted when it
    has stars, passes the gate, and measures at most
    `(1 + confirmation_tolerance)` times the lowest accepted sample.
@@ -1016,8 +1046,9 @@ sweep retires at the plan's S7, and the rules live here:
      leaving the detector's band, and the frames that would place
      focus are ones the grid already walks. With focus near the lowest
      sample, as a good prediction leaves it, a shift would start the
-     next grid at focus and a parabola through its one wing would fail
-     the same way, where the same grid under a cleared sky fits.
+     next grid at focus and a curve fitted through its one wing would
+     put its centre past the samples again, where the same grid under a
+     cleared sky fits.
    - After `not_enough_stars` the grid is the same one, unless the
      attempt's points — ordered by position, sparse and starless
      points alike counted as not accepted — say focus lies past one
@@ -1040,6 +1071,10 @@ sweep retires at the plan's S7, and the rules live here:
      exposures, and the one that went the wrong way would have spent
      the attempt a same-grid retry could have won (the plan's D13
      records the survey behind it).
+   - After `poor_fit` the grid is the same one. The curve has its
+     minimum among the samples, just not a V-shaped enough one for
+     the threshold, so there is no side to shift toward, and the next
+     walk measures the same focus again under the next frames' sky.
    - The shift is clamped to the focuser's bounds. A shift the bounds
      absorb whole repeats the grid, and a retry whose shifted grid
      would hold fewer than `min_fit_points` positions is not made: the
@@ -1066,8 +1101,11 @@ sweep retires at the plan's S7, and the rules live here:
      "retry": "shift", "next_centre": 29800 }
    ```
 
-   `outcome` is `not_enough_stars` or `monotonic_curve`, and `error`
-   the failure in words. `points` is how many of the run's
+   `outcome` is `not_enough_stars`, `monotonic_curve` or `poor_fit`,
+   and `error` the failure in words — for `poor_fit`, the R² and the
+   threshold it fell below:
+   `poor fit: fit_r_squared 0.412 is below min_fit_r_squared 0.6`.
+   `points` is how many of the run's
    `curve_points` the attempt measured: the run's array holds every
    attempt's in order, so the entries' counts split it. `retry` is what
    the run did next — `same_grid`; `shift`, to `next_centre`;
@@ -1125,8 +1163,10 @@ file written by a newer build.
   best_hfr, fit_r_squared, samples_used, attempts, wing_slope,
   temperature_c, step_size, half_width, sweep_source, prediction,
   attempts_log, curve_points}`. `outcome` is `confirmed`, `fallback`,
-  `not_enough_stars`, `monotonic_curve`, `cancelled` or `error` (the
-  text in `error`); a failed run is null where it measured nothing.
+  `not_enough_stars`, `monotonic_curve`, `poor_fit`, `cancelled` or
+  `error` (the text in `error`); a failed run is null where it
+  measured nothing, and a `poor_fit` run carries the `fit_r_squared`
+  its last attempt was refused on.
   `outcome` and `error` name how the run ended; `attempts_log` names,
   for every attempt that failed to fit, why it failed and what the
   sweep did next ([The sweep](#the-sweep), step 7) — empty for a run
@@ -1225,6 +1265,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
       "duration": "3s", "min_area": 4, "max_area": 500,
       "threshold_sigma": null, "frames_per_step": 1,
       "min_fit_points": 5, "min_star_fraction": 0.1,
+      "min_fit_r_squared": null,
       "confirmation_tolerance": 0.25, "max_attempts": 2,
       "step_size": null, "half_width": null
     }
@@ -1252,6 +1293,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; 1 to 20 |
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |
 | `trains.<id>.min_star_fraction` | float | 0.1 | The sparse gate, in `[0, 1)`; 0 disables it |
+| `trains.<id>.min_fit_r_squared` | float or null | null | The fit-quality floor, in `[0, 1]`: a fit whose R² is below it fails as `poor_fit` ([The sweep](#the-sweep), step 4). Null reports the R² and enforces nothing. The ends are legal and mean what they say: 0 accepts every fit, the same as null but written down, and 1 accepts only an exact one |
 | `trains.<id>.confirmation_tolerance` | float | 0.25 | How much worse than the lowest sample the confirmation frame may measure; at least 0 |
 | `trains.<id>.max_attempts` | int | 2 | Sweeps a run may make; 1 to 5 |
 | `trains.<id>.step_size` / `half_width` | int or null | null | Override the derived sweep; positive |
@@ -1324,7 +1366,8 @@ services/focus-model/src/
   sizing.rs          The sweep derivation from the optics (D9) and the sweep plan
   lease.rs           A training run's train lease: its id, its size, the not-held refusal
   prediction.rs      The predicted start (D4)
-  sweep.rs           Grid, gate, parabola fit, confirmation, retry — the V-curve
+  sweep.rs           Grid, gate, the fit's bound and threshold, confirmation, retry — the V-curve;
+                     the hyperbola itself is rp-focus-curve's
   offsets.rs         The offsets procedure: rounds, differences, medians
   calibration.rs     The temperature fit: the candidate runs, the least squares, the write
   workflow.rs        FocusRig trait; train resolution; the focus_train body, the shared walk,
@@ -1357,7 +1400,10 @@ persists a frame per point, retries once on the same grid — a starless
 sweep says nothing about a side — restores the starting position,
 records the run with its curve points, its prediction and an attempts
 log naming why each attempt failed and what came next, and is
-bracketed by `focus_started` and `focus_failed`; a filter argument
+bracketed by `focus_started` and `focus_failed`; a configured
+`min_fit_r_squared` leaves that sweep failing on its stars, with no R²
+recorded, because a threshold judges a fit and a starless sweep has
+none; a filter argument
 moves the wheel and an unknown one is refused; a seeded record predicts
 the start and a stale one is reported, predicts nothing and is reset by
 the run, whether its camera or its aperture moved on, while a record
@@ -1416,7 +1462,17 @@ credential — and that `tools/list` answers with no `rp` running.
 - Prediction: each term present and absent, the same-filter fallback,
   the half-CFZ and bounds skips, rounding.
 - Sweep, over synthetic and recorded curves: the grid and its clamp,
-  the gate, the fit and its three failure modes, the confirmation
+  the gate, the fit and its failure modes — the centre outside the
+  samples whatever the R², and `poor_fit` below a configured
+  threshold, recorded with its R² and retried on the same grid while
+  an R² at the threshold passes — the hyperbola placing focus on
+  curves generated across a spread of focal ratios,
+  `microns_per_step` values and seeing floors and sized as the
+  provider sizes them, the rig's two recorded sweeps of
+  [#1187](https://github.com/rusty-photon/rusty-photon/issues/1187),
+  the fine one placed within two steps of its lowest sample and the
+  coarse one refused at the defaults and fitted as the nearest V when
+  three samples may fit, the confirmation
   verdict, the retry centre — the shift after a sweep starved on one
   side, and each way the samples can fail to agree on a side — the
   attempts log of a run that shifted, repeated, ran out of attempts or
@@ -1455,12 +1511,6 @@ credential — and that `tools/list` answers with no `rp` running.
 
 ## Future Considerations
 
-- **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
-  parabola in `sweep.rs`. It is validated against curves generated
-  over a spread of focal ratios, `microns_per_step` values and seeing
-  floors — the model is the analytic defocus curve, so what it must
-  hold for is every train, not one rig — with the recorded curve
-  points kept as regression cases.
 - **The guiding train** (plan O4, settled): when it is swept, in what
   order, whether it has offsets of its own, and which transport a
   training run uses are the eight rules of that plan's O4 table, which

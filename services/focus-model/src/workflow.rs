@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::config::{Config, TrainConfig};
+use crate::config::{Config, MinFitRSquared, TrainConfig};
 use crate::error::{FocusModelError, Result};
 use crate::lease;
 use crate::prediction::{predict, Bounds, Prediction};
@@ -830,6 +830,7 @@ fn sweep_params(train: &TrainConfig, plan: &SweepPlan, start: &FocuserPosition) 
         half_width: plan.half_width,
         min_fit_points: train.min_fit_points.get(),
         min_star_fraction: train.min_star_fraction.get(),
+        min_fit_r_squared: train.min_fit_r_squared.map(MinFitRSquared::get),
         confirmation_tolerance: train.confirmation_tolerance.get(),
         max_attempts: train.max_attempts.get(),
         direction: start.direction(),
@@ -1549,7 +1550,9 @@ fn failure_error(
             run.outcome = match error.outcome() {
                 FitOutcome::MonotonicCurve => RunOutcome::MonotonicCurve,
                 FitOutcome::NotEnoughStars => RunOutcome::NotEnoughStars,
+                FitOutcome::PoorFit => RunOutcome::PoorFit,
             };
+            run.fit_r_squared = error.fit_r_squared();
             run.attempts = Some(*attempts);
             run.attempts_log.clone_from(attempts_log);
             run.curve_points.clone_from(curve_points);
@@ -2183,7 +2186,7 @@ mod tests {
         let at = position.clone();
         rig.expect_measure_stars().returning(move |_, _, _, _| {
             let dx = f64::from(at.get() - vertex);
-            let hfr = 1.0 + dx * dx / 400.0;
+            let hfr = (dx / 10.0).hypot(1.0);
             Box::pin(async move {
                 Ok(StarMeasurement {
                     median_hfr: Some(hfr),
@@ -2497,6 +2500,80 @@ mod tests {
         );
     }
 
+    /// A V with every other frame 20 % high: a fit with its centre among
+    /// the samples and an R² short of 1.
+    fn measures_a_ragged_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
+        let at = position.clone();
+        rig.expect_measure_stars().returning(move |_, _, _, _| {
+            let position = at.get();
+            let hfr = (f64::from(position - vertex) / 10.0).hypot(1.0);
+            let hfr = if (position / 10) % 2 == 0 {
+                hfr * 1.2
+            } else {
+                hfr
+            };
+            Box::pin(async move {
+                Ok(StarMeasurement {
+                    median_hfr: Some(hfr),
+                    star_count: 100,
+                })
+            })
+        });
+    }
+
+    /// A fit below the train's `min_fit_r_squared` is recorded as
+    /// `poor_fit` with the R² it was refused on, and the focuser is put
+    /// back.
+    #[tokio::test]
+    async fn a_poor_fit_is_recorded_with_the_r_squared_it_was_refused_on() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_ragged_v(&mut active, &position, 25_000);
+        let cleanup = cleanup_rig(&position, 25_000);
+        let strict = config(&CONFIGURED.replace(
+            r#""max_attempts": 1"#,
+            r#""max_attempts": 1, "min_fit_r_squared": 0.99"#,
+        ));
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &strict,
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        let message = err.tool_message();
+        assert!(
+            message.starts_with("poor fit: fit_r_squared 0.9"),
+            "{message}"
+        );
+        assert!(
+            message.contains("below min_fit_r_squared 0.99"),
+            "{message}"
+        );
+        assert_eq!(position.get(), 25_000, "put back");
+        let run = &store.get("main").await.unwrap().unwrap().runs[0];
+        assert_eq!(run.outcome, RunOutcome::PoorFit);
+        let r_squared = run.fit_r_squared.unwrap();
+        assert!(r_squared < 0.99, "{r_squared}");
+        assert_eq!(run.best_position, None);
+        assert_eq!(
+            run.attempts_log
+                .iter()
+                .map(|attempt| attempt.outcome)
+                .collect::<Vec<_>>(),
+            [FitOutcome::PoorFit]
+        );
+        assert_eq!(run.curve_points.len(), 9);
+    }
+
     /// `CONFIGURED`, allowed a second sweep.
     fn two_attempts() -> Config {
         config(&CONFIGURED.replace(r#""max_attempts": 1"#, r#""max_attempts": 2"#))
@@ -2521,7 +2598,7 @@ mod tests {
                 }
             } else {
                 StarMeasurement {
-                    median_hfr: Some(1.0 + dx * dx / 400.0),
+                    median_hfr: Some((dx / 10.0).hypot(1.0)),
                     star_count: 100,
                 }
             };

@@ -872,7 +872,8 @@ struct GuideFitStage {
 }
 
 /// Fit the metric sweep's samples and validate the vertex against the
-/// grid. Pure: the caller restores the focuser on failure.
+/// positions that produced them. Pure: the caller restores the focuser
+/// on failure.
 fn guide_fit_stage(
     fit_samples: &[(i32, f64, u32)],
     grid: &[i32],
@@ -887,16 +888,23 @@ fn guide_fit_stage(
             min_fit_points
         ));
     }
-    let fit = imaging::tools::auto_focus::fit_parabola(fit_samples).map_err(|e| e.to_string())?;
-    let best_position = fit.vertex_position();
-    // The min-fit-points check above guarantees a non-empty grid.
-    let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
-        return Err("monotonic curve: empty sample grid".to_string());
+    // The hyperbola, the defocus curve itself, which the focus-model
+    // provider's capture sweep fits too (docs/crates/rp-focus-curve.md).
+    let fit = rp_focus_curve::fit_hyperbola(fit_samples).map_err(|e| e.to_string())?;
+    let best_position = imaging::tools::auto_focus::nearest_step(fit.curve.centre);
+    // Bounded by the positions that produced an HFD, not by the grid:
+    // the grid's null edges are where the star was lost, and a centre
+    // there is one wing extrapolated past its samples.
+    let (Some(sampled_min), Some(sampled_max)) = (
+        fit_samples.iter().map(|(position, _, _)| *position).min(),
+        fit_samples.iter().map(|(position, _, _)| *position).max(),
+    ) else {
+        return Err("monotonic curve: no valid sample to bound the minimum with".to_string());
     };
-    if best_position < grid_min || best_position > grid_max {
+    if best_position < sampled_min || best_position > sampled_max {
         return Err(format!(
             "monotonic curve: fitted minimum {best_position} lies outside the sampled \
-             range [{grid_min}, {grid_max}]"
+             range [{sampled_min}, {sampled_max}]"
         ));
     }
     let Some((lowest_position, lowest_hfd, _)) =
@@ -906,7 +914,7 @@ fn guide_fit_stage(
     };
     Ok(GuideFitStage {
         best_position,
-        best_hfd: fit.vertex_value(),
+        best_hfd: fit.curve.minimum,
         r_squared: fit.r_squared,
         lowest_position,
         lowest_hfd,

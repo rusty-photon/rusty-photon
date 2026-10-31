@@ -588,16 +588,23 @@ pub struct ParabolaFit {
     pub r_squared: f64,
 }
 
+/// The focuser step nearest a fitted position: the parabola's vertex
+/// here, the hyperbola's centre on the guide-train sweep.
+#[must_use]
+pub const fn nearest_step(position: f64) -> i32 {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "`f64` to `i32` has no total spelling; `as` saturates at the i32 rails and maps NaN to 0, and the caller's grid-range check rejects rail-hitting vertices (and 0, unless the sampled grid straddles it — no in-tree path produces a NaN fit)"
+    )]
+    let step = position.round() as i32;
+    step
+}
+
 impl ParabolaFit {
     #[must_use]
     pub fn vertex_position(&self) -> i32 {
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            reason = "`f64` to `i32` has no total spelling; `as` saturates at the i32 rails and maps NaN to 0, and the caller's grid-range check rejects rail-hitting vertices (and 0, unless the sampled grid straddles it — no in-tree path produces a NaN fit)"
-        )]
-        let vertex = (-self.b / (2.0 * self.a) + self.offset_x).round() as i32;
-        vertex
+        nearest_step(-self.b / (2.0 * self.a) + self.offset_x)
     }
 
     #[must_use]

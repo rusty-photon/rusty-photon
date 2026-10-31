@@ -1,8 +1,10 @@
 //! The V-curve sweep (docs/services/focus-model.md § The sweep).
 //!
-//! The grid and its clamp, the sparse gate, the weighted parabola, the
-//! confirmation frame and the bounded retry — the semantics `rp`'s
-//! capture sweep has today, run here through `rp`'s primitives. The
+//! The grid and its clamp, the sparse gate, the hyperbolic fit with its
+//! bound and its threshold, the confirmation frame and the bounded
+//! retry — the semantics `rp`'s capture sweep has today, the fit aside,
+//! run here through `rp`'s primitives. The curve itself is
+//! `rp-focus-curve`'s, shared with `rp`'s guide-train sweep. The
 //! measurement side stays `rp`'s: this module talks to it through
 //! [`SweepOps`], which `workflow.rs` implements over the MCP client and
 //! the unit tests implement over recorded curves.
@@ -10,6 +12,7 @@
 use std::cmp::Ordering;
 
 use async_trait::async_trait;
+use rp_focus_curve::{fit_hyperbola, HyperbolaFit};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -90,6 +93,9 @@ pub struct SweepParams {
     pub half_width: i32,
     pub min_fit_points: usize,
     pub min_star_fraction: f64,
+    /// A fit whose R² falls below this is `poor_fit`; `None` enforces
+    /// nothing.
+    pub min_fit_r_squared: Option<f64>,
     pub confirmation_tolerance: f64,
     pub max_attempts: u32,
     pub direction: Direction,
@@ -104,7 +110,7 @@ impl SweepParams {
 }
 
 /// Why a sweep's accepted samples produced no trusted vertex.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FitError {
     #[error(
         "not enough stars: only {got} of {needed} required samples are accepted \
@@ -113,6 +119,10 @@ pub enum FitError {
     NotEnoughStars { got: usize, needed: usize },
     #[error("monotonic curve: {0}")]
     MonotonicCurve(String),
+    /// The fit held its centre among the samples and explained less of
+    /// them than the train's `min_fit_r_squared` asks.
+    #[error("poor fit: fit_r_squared {r_squared:.3} is below min_fit_r_squared {threshold}")]
+    PoorFit { r_squared: f64, threshold: f64 },
 }
 
 impl FitError {
@@ -122,6 +132,17 @@ impl FitError {
         match self {
             Self::NotEnoughStars { .. } => FitOutcome::NotEnoughStars,
             Self::MonotonicCurve(_) => FitOutcome::MonotonicCurve,
+            Self::PoorFit { .. } => FitOutcome::PoorFit,
+        }
+    }
+
+    /// The R² a `poor_fit` was refused on; `None` for the failures that
+    /// produced no fit to judge.
+    #[must_use]
+    pub const fn fit_r_squared(&self) -> Option<f64> {
+        match self {
+            Self::PoorFit { r_squared, .. } => Some(*r_squared),
+            Self::NotEnoughStars { .. } | Self::MonotonicCurve(_) => None,
         }
     }
 }
@@ -134,6 +155,8 @@ pub enum FitOutcome {
     NotEnoughStars,
     /// No minimum inside the sampled range.
     MonotonicCurve,
+    /// A fit below the train's `min_fit_r_squared`.
+    PoorFit,
 }
 
 impl FitOutcome {
@@ -143,6 +166,7 @@ impl FitOutcome {
         match self {
             Self::NotEnoughStars => "not_enough_stars",
             Self::MonotonicCurve => "monotonic_curve",
+            Self::PoorFit => "poor_fit",
         }
     }
 }
@@ -274,7 +298,7 @@ pub trait SweepOps: Send + Sync {
 
 /// A measured HFR the fit may use: `None` for a starless frame and for
 /// a non-finite reading, which would poison the lowest-sample choice,
-/// the parabola and the wing slope.
+/// the fit and the wing slope.
 #[must_use]
 pub fn finite_hfr(hfr: Option<f64>) -> Option<f64> {
     hfr.filter(|value| value.is_finite())
@@ -462,7 +486,8 @@ pub struct RetryPlan {
 /// of its accepted samples — after `monotonic_curve` the end
 /// [`monotonic_side`] finds, after `not_enough_stars` the side
 /// [`one_sided_starvation`] finds — clamped to the focuser's bounds;
-/// the same place otherwise.
+/// the same place otherwise, and always after `poor_fit`, whose centre
+/// lay among the samples.
 ///
 /// Either side is read from the samples alone, never against the
 /// centre: a grid a bound clipped, or one whose frames on one side of
@@ -493,6 +518,7 @@ pub fn retry_centre(
         FitError::NotEnoughStars { .. } => {
             one_sided_starvation(curve_points).unwrap_or(Ordering::Equal)
         }
+        FitError::PoorFit { .. } => Ordering::Equal,
     };
     let shifted = match direction {
         Ordering::Less => centre.saturating_sub(half_width),
@@ -685,153 +711,25 @@ fn sweep_grid(centre: i32, params: SweepParams) -> Result<Vec<i32>, SweepFailure
     Ok(grid)
 }
 
-/// Result of fitting `hfr = a·x'² + b·x' + c` where `x' = x − offset_x`.
-#[derive(Debug, Clone, Copy)]
-pub struct ParabolaFit {
-    pub a: f64,
-    pub b: f64,
-    pub c: f64,
-    pub offset_x: f64,
-    /// Weighted coefficient of determination, clamped to `[0, 1]`.
-    pub r_squared: f64,
+/// The focuser step nearest a fitted position.
+const fn nearest_step(position: f64) -> i32 {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails, and the caller's grid-range check rejects a rail-hitting vertex"
+    )]
+    let step = position.round() as i32;
+    step
 }
 
-impl ParabolaFit {
-    #[must_use]
-    pub fn vertex_position(&self) -> i32 {
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails, and the caller's grid-range check rejects a rail-hitting vertex"
-        )]
-        let vertex = (-self.b / (2.0 * self.a) + self.offset_x).round() as i32;
-        vertex
-    }
-
-    #[must_use]
-    pub fn vertex_value(&self) -> f64 {
-        self.c - (self.b * self.b) / (4.0 * self.a)
-    }
-}
-
-/// Determinant of a 3×3 matrix given by rows: the first-row cofactor
-/// expansion with every multiply-add fused. Fusing leaves a rank-deficient
-/// matrix a rounding-level residual rather than an exact zero, which is why
-/// `fit_parabola` tests singularity against a relative scale, never `== 0`.
-const fn det3(r0: [f64; 3], r1: [f64; 3], r2: [f64; 3]) -> f64 {
-    let minor0 = r1[2].mul_add(-r2[1], r1[1] * r2[2]);
-    let minor1 = r1[2].mul_add(-r2[0], r1[0] * r2[2]);
-    let minor2 = r1[1].mul_add(-r2[0], r1[0] * r2[1]);
-    r0[2].mul_add(minor2, r0[1].mul_add(-minor1, r0[0] * minor0))
-}
-
-/// The weighted normal-equation moments of the recentred samples.
-struct Moments {
-    m4: f64,
-    m3: f64,
-    m2: f64,
-    m1: f64,
-    m0: f64,
-    t2: f64,
-    t1: f64,
-    t0: f64,
-}
-
-fn moments(filtered: &[(f64, f64, f64)], offset_x: f64) -> Moments {
-    let mut m = Moments {
-        m4: 0.0,
-        m3: 0.0,
-        m2: 0.0,
-        m1: 0.0,
-        m0: 0.0,
-        t2: 0.0,
-        t1: 0.0,
-        t0: 0.0,
-    };
-    for (x, y, w) in filtered {
-        let xc = x - offset_x;
-        let xc2 = xc * xc;
-        let xc3 = xc2 * xc;
-        let xc4 = xc3 * xc;
-        m.m4 = w.mul_add(xc4, m.m4);
-        m.m3 = w.mul_add(xc3, m.m3);
-        m.m2 = w.mul_add(xc2, m.m2);
-        m.m1 = w.mul_add(xc, m.m1);
-        m.m0 += w;
-        m.t2 = (w * xc2).mul_add(*y, m.t2);
-        m.t1 = (w * xc).mul_add(*y, m.t1);
-        m.t0 = w.mul_add(*y, m.t0);
-    }
-    m
-}
-
-/// Weighted least-squares fit of a parabola to `(position, hfr, weight)`
-/// samples, the weight being the frame's star count.
-///
-/// The fit runs in a frame recentred on the weighted mean position: at
-/// real focuser scales the fourth moment otherwise overflows f64's
-/// working precision and a perfectly fittable V is rejected as
-/// singular.
-///
-/// # Errors
-///
-/// [`FitError::NotEnoughStars`] with fewer than three weighted samples,
-/// [`FitError::MonotonicCurve`] when the curve has no minimum or the
-/// design matrix is too ill-conditioned to invert.
-pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, FitError> {
-    let filtered: Vec<(f64, f64, f64)> = samples
-        .iter()
-        .filter(|(_, _, w)| *w > 0)
-        .map(|(x, y, w)| (f64::from(*x), *y, f64::from(*w)))
-        .collect();
-    if filtered.len() < 3 {
-        return Err(FitError::NotEnoughStars {
-            got: filtered.len(),
-            needed: 3,
-        });
-    }
-    let total_w: f64 = filtered.iter().map(|(_, _, w)| *w).sum();
-    let offset_x: f64 = filtered.iter().map(|(x, _, w)| w * x).sum::<f64>() / total_w;
-    let m = moments(&filtered, offset_x);
-
-    let det = det3([m.m4, m.m3, m.m2], [m.m3, m.m2, m.m1], [m.m2, m.m1, m.m0]);
-    let det_scale = (m.m4.abs() * m.m2.abs() * m.m0.abs()).max(1.0);
-    if det.abs() < det_scale * 1e-12 {
-        return Err(FitError::MonotonicCurve(format!(
-            "design matrix is singular (det={det:.3e}, scale={det_scale:.3e})"
-        )));
-    }
-    let a = det3([m.t2, m.m3, m.m2], [m.t1, m.m2, m.m1], [m.t0, m.m1, m.m0]) / det;
-    let b = det3([m.m4, m.t2, m.m2], [m.m3, m.t1, m.m1], [m.m2, m.t0, m.m0]) / det;
-    let c = det3([m.m4, m.m3, m.t2], [m.m3, m.m2, m.t1], [m.m2, m.m1, m.t0]) / det;
-    if a <= 0.0 {
-        return Err(FitError::MonotonicCurve(format!(
-            "non-positive leading coefficient (a={a:.3e})"
-        )));
-    }
-
-    let y_mean = m.t0 / m.m0;
-    let mut ss_res = 0.0;
-    let mut ss_tot = 0.0;
-    for (x, y, w) in &filtered {
-        let xc = x - offset_x;
-        let fitted = (a * xc).mul_add(xc, b.mul_add(xc, c));
-        let residual = y - fitted;
-        let spread = y - y_mean;
-        ss_res = (w * residual).mul_add(residual, ss_res);
-        ss_tot = (w * spread).mul_add(spread, ss_tot);
-    }
-    let r_squared = if ss_tot > 0.0 {
-        (1.0 - ss_res / ss_tot).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    Ok(ParabolaFit {
-        a,
-        b,
-        c,
-        offset_x,
-        r_squared,
+/// Fit the hyperbola to the accepted samples, weighted by star count,
+/// the curve's own failures folded into the sweep's.
+fn fit(accepted: &[(i32, f64, u32)]) -> Result<HyperbolaFit, FitError> {
+    fit_hyperbola(accepted).map_err(|error| match error {
+        rp_focus_curve::FitError::NotEnoughStars { got } => {
+            FitError::NotEnoughStars { got, needed: 3 }
+        }
+        rp_focus_curve::FitError::MonotonicCurve(why) => FitError::MonotonicCurve(why),
     })
 }
 
@@ -850,8 +748,10 @@ struct FitStage {
 /// Gate the sweep, fit the accepted samples, and validate the vertex
 /// against the positions those samples were measured at — not the
 /// grid that was asked for, which a focuser settling short of its
-/// targets does not describe. Pure: the caller decides what to do on
-/// failure.
+/// targets does not describe — then hold the fit to the train's
+/// `min_fit_r_squared`. A centre outside the samples is
+/// `monotonic_curve` whatever its R², so a one-wing sweep still shifts.
+/// Pure: the caller decides what to do on failure.
 fn gate_and_fit(
     curve_points: &mut [CurvePoint],
     params: SweepParams,
@@ -874,8 +774,8 @@ fn gate_and_fit(
         });
     }
 
-    let fit = fit_parabola(&accepted)?;
-    let best_position = fit.vertex_position();
+    let fit = fit(&accepted)?;
+    let best_position = nearest_step(fit.curve.centre);
     let (Some(sampled_min), Some(sampled_max)) = (
         accepted.iter().map(|(position, _, _)| *position).min(),
         accepted.iter().map(|(position, _, _)| *position).max(),
@@ -890,6 +790,15 @@ fn gate_and_fit(
              [{sampled_min}, {sampled_max}]"
         )));
     }
+    if let Some(threshold) = params
+        .min_fit_r_squared
+        .filter(|threshold| fit.r_squared < *threshold)
+    {
+        return Err(FitError::PoorFit {
+            r_squared: fit.r_squared,
+            threshold,
+        });
+    }
     let Some((lowest_position, lowest_hfr, _)) = lowest_sample(&accepted) else {
         return Err(FitError::MonotonicCurve(
             "no accepted sample to hold the confirmation against".to_owned(),
@@ -897,7 +806,7 @@ fn gate_and_fit(
     };
     Ok(FitStage {
         best_position,
-        best_hfr: fit.vertex_value(),
+        best_hfr: fit.curve.minimum,
         r_squared: fit.r_squared,
         gate_threshold,
         lowest_position,
@@ -1165,7 +1074,11 @@ fn log_failed_attempt(
 mod tests {
     use std::sync::Mutex;
 
+    use rp_focus_curve::Hyperbola;
+
     use super::*;
+    use crate::config::{SweepConfig, TrainConfig};
+    use crate::sizing::{blur_constant, plan_sweep, predicted_slope_per_step, Optics};
 
     fn params() -> SweepParams {
         SweepParams {
@@ -1173,6 +1086,7 @@ mod tests {
             half_width: 40,
             min_fit_points: 5,
             min_star_fraction: 0.1,
+            min_fit_r_squared: None,
             confirmation_tolerance: 0.25,
             max_attempts: 2,
             direction: Direction::Ascending,
@@ -1206,11 +1120,11 @@ mod tests {
     }
 
     impl ScriptedRig {
-        fn parabola(vertex: i32) -> Self {
+        fn hyperbola(vertex: i32) -> Self {
             Self {
                 curve: Box::new(move |position| {
                     let dx = f64::from(position - vertex);
-                    Some(1.0 + dx * dx / 400.0)
+                    Some((dx / 10.0).hypot(1.0))
                 }),
                 star_count: 100,
                 moves: Mutex::new(Vec::new()),
@@ -1345,56 +1259,6 @@ mod tests {
         let mut points = vec![point(0, Some(4.0), 3), point(10, Some(2.0), 3)];
         apply_sparse_gate(&mut points, 0.5);
         assert!(points.iter().all(|p| p.rejected.is_none()));
-    }
-
-    #[test]
-    fn the_fit_recovers_a_vertex_at_real_focuser_scales() {
-        let samples: Vec<(i32, f64, u32)> = (0..9)
-            .map(|i| {
-                let position = 29_600 + i * 25;
-                let dx = f64::from(position - 29_766);
-                (position, 1.0 + dx * dx / 5_000.0, 100)
-            })
-            .collect();
-        let fit = fit_parabola(&samples).unwrap();
-        assert_eq!(fit.vertex_position(), 29_766);
-        assert!((fit.vertex_value() - 1.0).abs() < 1e-6, "{fit:?}");
-        assert!(fit.r_squared > 0.999, "{fit:?}");
-    }
-
-    #[test]
-    fn a_flat_curve_has_no_vertex() {
-        let samples: Vec<(i32, f64, u32)> = (0..6).map(|i| (29_600 + i * 25, 3.0, 100)).collect();
-        let err = fit_parabola(&samples).unwrap_err();
-        assert!(
-            matches!(&err, FitError::MonotonicCurve(_)),
-            "a curve with no spread has no vertex: {err:?}"
-        );
-    }
-
-    #[test]
-    fn a_concave_down_curve_has_no_minimum() {
-        let samples: Vec<(i32, f64, u32)> = (0..6)
-            .map(|i| {
-                let position = 100 + i * 10;
-                let dx = f64::from(position - 125);
-                (position, 5.0 - dx * dx / 100.0, 50)
-            })
-            .collect();
-        let err = fit_parabola(&samples).unwrap_err();
-        assert!(
-            matches!(&err, FitError::MonotonicCurve(message) if message.contains("leading coefficient")),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn fewer_than_three_weighted_samples_cannot_be_fitted() {
-        let err = fit_parabola(&[(0, 1.0, 10), (10, 2.0, 0), (20, 3.0, 0)]).unwrap_err();
-        assert!(
-            matches!(err, FitError::NotEnoughStars { got: 1, .. }),
-            "{err:?}"
-        );
     }
 
     #[test]
@@ -1911,7 +1775,11 @@ mod tests {
     /// way.
     #[test]
     fn the_logged_names_are_the_recorded_names() {
-        for outcome in [FitOutcome::NotEnoughStars, FitOutcome::MonotonicCurve] {
+        for outcome in [
+            FitOutcome::NotEnoughStars,
+            FitOutcome::MonotonicCurve,
+            FitOutcome::PoorFit,
+        ] {
             assert_eq!(
                 serde_json::to_value(outcome).unwrap(),
                 serde_json::json!(outcome.as_str())
@@ -1956,7 +1824,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_clean_v_confirms_the_vertex_on_the_first_attempt() {
-        let rig = ScriptedRig::parabola(100);
+        let rig = ScriptedRig::hyperbola(100);
         let outcome = run_sweep(&rig, 100, params()).await.unwrap();
         assert_eq!(outcome.attempts, 1);
         assert_eq!(outcome.best_position, 100);
@@ -2063,7 +1931,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancellation_stops_the_walk_where_it_is() {
-        let rig = ScriptedRig::parabola(100);
+        let rig = ScriptedRig::hyperbola(100);
         *rig.cancel_after.lock().unwrap() = Some(3);
         let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Rig {
@@ -2112,7 +1980,7 @@ mod tests {
     /// a fit inside what was actually measured is a fit.
     #[tokio::test]
     async fn the_vertex_is_bounded_by_the_samples_not_the_request() {
-        let rig = ScriptedRig::parabola(58);
+        let rig = ScriptedRig::hyperbola(58);
         // Every move lands two steps short, so the samples run
         // [58, 138] while the requested grid ran [60, 140].
         *rig.short_by.lock().unwrap() = 2;
@@ -2149,7 +2017,7 @@ mod tests {
     /// the failure carries it.
     #[tokio::test]
     async fn a_failed_confirmation_keeps_the_walk_it_fitted() {
-        let rig = ScriptedRig::parabola(100);
+        let rig = ScriptedRig::hyperbola(100);
         // Nine grid moves land; the move to the vertex does not.
         *rig.fail_move_after.lock().unwrap() = Some(9);
         let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
@@ -2168,11 +2036,11 @@ mod tests {
     /// A rig whose stars run out at and above `edge`: the far wing of a
     /// V centred on `vertex` leaving the detector's band.
     fn starless_from(vertex: i32, edge: i32) -> ScriptedRig {
-        let rig = ScriptedRig::parabola(vertex);
+        let rig = ScriptedRig::hyperbola(vertex);
         ScriptedRig {
             curve: Box::new(move |position| {
                 let dx = f64::from(position - vertex);
-                (position < edge).then_some(1.0 + dx * dx / 400.0)
+                (position < edge).then_some((dx / 10.0).hypot(1.0))
             }),
             ..rig
         }
@@ -2229,7 +2097,7 @@ mod tests {
                 let frame = taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 (frame >= frames || !under(position)).then(|| hfr(position))
             }),
-            ..ScriptedRig::parabola(0)
+            ..ScriptedRig::hyperbola(0)
         }
     }
 
@@ -2248,7 +2116,7 @@ mod tests {
         let rig = clouded(
             |position| {
                 let dx = f64::from(position - 115);
-                1.0 + dx * dx / 400.0
+                (dx / 10.0).hypot(1.0)
             },
             |position| position >= 100,
             17,
@@ -2279,51 +2147,74 @@ mod tests {
         );
     }
 
-    /// Focus where the prediction put it, on the centre, and a cloud
-    /// over the frames above it: a parabola through the one wing left
-    /// puts its vertex past the samples, so the attempt fails as a
-    /// monotonic curve. A shift would start the next grid at focus and
-    /// fail the same way; the same grid, under a cleared sky, fits.
-    #[tokio::test]
-    async fn a_monotonic_curve_a_cloud_cut_short_at_focus_fits_on_the_same_grid() {
-        let rig = clouded(roster_v, |position| position >= 30_100, 9);
-        let roster = SweepParams {
+    /// The roster grid: ±400 in steps of 100.
+    fn roster() -> SweepParams {
+        SweepParams {
             step_size: 100,
             half_width: 400,
             ..params()
+        }
+    }
+
+    /// Focus where the prediction put it, on the centre, and a cloud
+    /// over it and the frames above: the fit through the one wing left
+    /// puts its centre past the samples, so the attempt fails as a
+    /// monotonic curve. A shift would start the next grid at focus, and
+    /// the same cloud would leave it the same wing; the same grid, under
+    /// a cleared sky, fits. The four samples the cloud leaves are let
+    /// fit, so the attempt reaches the curve.
+    #[tokio::test]
+    async fn a_monotonic_curve_a_cloud_cut_short_at_focus_fits_on_the_same_grid() {
+        let rig = clouded(roster_v, |position| position >= 30_000, 9);
+        let four = SweepParams {
+            min_fit_points: 4,
+            ..roster()
         };
-        let outcome = run_sweep(&rig, 30_000, roster).await.unwrap();
+        let outcome = run_sweep(&rig, 30_000, four).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 30_000);
         assert!(outcome.confirmed);
         let first = outcome.attempts_log.first().unwrap();
         assert_eq!(
             (first.outcome, first.accepted, first.retry),
-            (FitOutcome::MonotonicCurve, 5, Retry::SameGrid)
+            (FitOutcome::MonotonicCurve, 4, Retry::SameGrid)
         );
     }
 
     /// The same sweep walked downward, as an inward backlash approach
-    /// walks it: the cloud takes the frames below focus, the curve falls
-    /// toward the bottom of what is left, and the same grid fits.
+    /// walks it: the cloud takes focus and the frames below it, the
+    /// curve falls toward the bottom of what is left, and the same grid
+    /// fits.
     #[tokio::test]
     async fn a_descending_monotonic_curve_a_cloud_cut_short_at_focus_fits_on_the_same_grid() {
-        let rig = clouded(roster_v, |position| position <= 29_900, 9);
-        let roster = SweepParams {
-            step_size: 100,
-            half_width: 400,
+        let rig = clouded(roster_v, |position| position <= 30_000, 9);
+        let descending = SweepParams {
+            min_fit_points: 4,
             direction: Direction::Descending,
-            ..params()
+            ..roster()
         };
-        let outcome = run_sweep(&rig, 30_000, roster).await.unwrap();
+        let outcome = run_sweep(&rig, 30_000, descending).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 30_000);
         assert!(outcome.confirmed);
         let first = outcome.attempts_log.first().unwrap();
         assert_eq!(
             (first.outcome, first.accepted, first.retry),
-            (FitOutcome::MonotonicCurve, 5, Retry::SameGrid)
+            (FitOutcome::MonotonicCurve, 4, Retry::SameGrid)
         );
+    }
+
+    /// A cloud over the frames above focus leaves the wing below it,
+    /// focus included: the hyperbola through that wing bottoms out at
+    /// focus, so the first walk places it.
+    #[tokio::test]
+    async fn a_wing_that_reaches_focus_places_it_on_the_first_walk() {
+        let rig = clouded(roster_v, |position| position >= 30_100, 9);
+        let outcome = run_sweep(&rig, 30_000, roster()).await.unwrap();
+        assert_eq!(outcome.attempts, 1);
+        assert_eq!(outcome.best_position, 30_000);
+        assert!(outcome.confirmed);
+        assert_eq!(outcome.samples_used, 5);
     }
 
     /// A shift whose clamped grid holds fewer positions than a fit needs
@@ -2405,7 +2296,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_attempt_that_fits_logs_no_failed_attempt() {
-        let rig = ScriptedRig::parabola(100);
+        let rig = ScriptedRig::hyperbola(100);
         let outcome = run_sweep(&rig, 100, params()).await.unwrap();
         assert!(
             outcome.attempts_log.is_empty(),
@@ -2435,5 +2326,302 @@ mod tests {
         let grid = build_grid(0, 1, i32::MAX, (Some(i32::MAX - 1), None));
         assert!(grid.is_empty(), "every point is below the minimum");
         assert!(planned_points(i32::MAX, 1) > MAX_GRID_POINTS);
+    }
+
+    // --- the hyperbola: its threshold, across trains, on the rig ---
+
+    /// The curve's own refusal keeps the name and the shape the sweep
+    /// records it under.
+    #[test]
+    fn the_curves_failures_keep_the_sweeps_names() {
+        let err = fit(&[(0, 1.0, 10), (10, 2.0, 0), (20, 3.0, 0)]).unwrap_err();
+        assert_eq!(err, FitError::NotEnoughStars { got: 1, needed: 3 });
+        let err = fit(&[(0, 2.0, 10), (10, 2.0, 10), (20, 2.0, 10)]).unwrap_err();
+        assert_eq!(err.outcome(), FitOutcome::MonotonicCurve);
+    }
+
+    /// A V around 100 with every other sample 20 % high: a fit with its
+    /// centre among the samples and an R² short of 1.
+    fn ragged(position: i32) -> f64 {
+        let value = (f64::from(position - 100) / 10.0).hypot(1.0);
+        if (position / 10) % 2 == 0 {
+            value * 1.2
+        } else {
+            value
+        }
+    }
+
+    fn ragged_points() -> Vec<CurvePoint> {
+        (60..=140)
+            .step_by(10)
+            .map(|position| point(position, Some(ragged(position)), 100))
+            .collect()
+    }
+
+    fn with_threshold(threshold: Option<f64>) -> SweepParams {
+        SweepParams {
+            min_fit_r_squared: threshold,
+            ..params()
+        }
+    }
+
+    #[test]
+    fn without_a_threshold_a_ragged_fit_is_reported_not_refused() {
+        let stage = gate_and_fit(&mut ragged_points(), params()).unwrap();
+        assert_eq!(stage.best_position, 100);
+        assert!(stage.r_squared < 0.99, "{stage:?}");
+    }
+
+    /// The threshold holds a fit to what it asks and no further: an R²
+    /// equal to it passes, and 0 accepts every fit.
+    #[test]
+    fn a_fit_at_the_threshold_passes_and_zero_accepts_every_fit() {
+        let r_squared = gate_and_fit(&mut ragged_points(), params())
+            .unwrap()
+            .r_squared;
+        gate_and_fit(&mut ragged_points(), with_threshold(Some(r_squared))).unwrap();
+        gate_and_fit(&mut ragged_points(), with_threshold(Some(0.0))).unwrap();
+    }
+
+    /// Samples on one wing fit well with their centre extrapolated past
+    /// them: that is a monotonic curve, which shifts, whatever the
+    /// threshold would have said.
+    #[test]
+    fn a_centre_outside_the_samples_is_a_monotonic_curve_whatever_the_threshold() {
+        let mut points: Vec<CurvePoint> = (60..=140)
+            .step_by(10)
+            .map(|position| point(position, Some((f64::from(position) / 10.0).hypot(1.0)), 100))
+            .collect();
+        let err = gate_and_fit(&mut points, with_threshold(Some(1.0))).unwrap_err();
+        assert_eq!(err.outcome(), FitOutcome::MonotonicCurve, "{err}");
+    }
+
+    /// A fit below the threshold is `poor_fit`: retried on the same grid,
+    /// since the curve has its minimum among the samples, then the run
+    /// fails naming the R² and the threshold, and carries the R².
+    #[tokio::test]
+    async fn a_fit_below_the_threshold_is_a_poor_fit_retried_on_the_same_grid() {
+        let rig = ScriptedRig {
+            curve: Box::new(|position| Some(ragged(position))),
+            ..ScriptedRig::hyperbola(0)
+        };
+        let failure = run_sweep(&rig, 100, with_threshold(Some(0.99)))
+            .await
+            .unwrap_err();
+        let SweepFailure::Fit {
+            error,
+            attempts,
+            attempts_log,
+            curve_points,
+        } = &failure
+        else {
+            panic!("expected a fit failure, got {failure:?}");
+        };
+        let FitError::PoorFit {
+            r_squared,
+            threshold,
+        } = error
+        else {
+            panic!("expected a poor fit, got {error:?}");
+        };
+        assert!(*r_squared < 0.99, "{error:?}");
+        assert_eq!(*threshold, 0.99);
+        assert_eq!(error.fit_r_squared(), Some(*r_squared));
+        assert!(
+            error.to_string().starts_with("poor fit: fit_r_squared 0.9"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with("is below min_fit_r_squared 0.99"),
+            "{error}"
+        );
+        assert_eq!(*attempts, 2);
+        assert_eq!(curve_points.len(), 18, "both walks are kept");
+        assert_eq!(
+            attempts_log
+                .iter()
+                .map(|attempt| (attempt.outcome, attempt.retry, attempt.next_centre))
+                .collect::<Vec<_>>(),
+            [
+                (FitOutcome::PoorFit, Retry::SameGrid, Some(100)),
+                (FitOutcome::PoorFit, Retry::NoAttemptsLeft, None),
+            ]
+        );
+        assert_eq!(
+            rig.moves().get(9),
+            Some(&60),
+            "the second walk is the first one again"
+        );
+    }
+
+    /// A deterministic xorshift, so the noisy curves are the same on
+    /// every run.
+    struct Noise(u64);
+
+    impl Noise {
+        fn unit(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1_u64 << 53) as f64
+        }
+    }
+
+    /// Curves generated from the optics of a spread of trains — f/3.9 to
+    /// f/10, 0.4 to 10 µm a step, seeing of 1.2" to 4.5", open and
+    /// obstructed, the grid centred up to 0.3 half widths off focus —
+    /// each sized as the provider sizes it, measured with 5 % noise and
+    /// star counts that fall with defocus: the fit places focus within
+    /// half a critical focus zone, the span the prediction treats as the
+    /// same focus. The hyperbola is the defocus curve itself, so it must
+    /// hold for every train, not one rig. A grid the critical focus zone
+    /// leaves too few positions to fit is refused before any motion, so
+    /// it is no case of the fit's.
+    #[test]
+    fn the_hyperbola_places_focus_on_curves_generated_across_trains() {
+        const FOCUS: i32 = 30_000;
+        let mut noise = Noise(0x0005_9000_1187);
+        let mut fitted = 0;
+        let (aperture_mm, pixel_um) = (100.0, 3.76);
+        for focal_ratio in [3.9, 5.0, 7.0, 10.0] {
+            for microns_per_step in [0.4, 1.0, 2.5, 10.0] {
+                for seeing_arcsec in [1.2, 2.5, 4.5] {
+                    for obstruction_mm in [None, Some(34.0)] {
+                        let focal_length_mm = focal_ratio * aperture_mm;
+                        let obstruction_ratio = obstruction_mm.unwrap_or(0.0) / aperture_mm;
+                        let optics = Optics {
+                            focal_length_mm: Some(focal_length_mm),
+                            aperture_mm: Some(aperture_mm),
+                            obstruction_mm,
+                            obstruction_ratio: Some(obstruction_ratio),
+                            focal_ratio: None,
+                            pixel_size_um: Some(pixel_um),
+                            pixel_scale_arcsec_per_pixel: None,
+                            microns_per_step: Some(microns_per_step),
+                        };
+                        let pixel_scale = 206.265 * pixel_um / focal_length_mm;
+                        let truth = Hyperbola {
+                            centre: f64::from(FOCUS),
+                            minimum: 0.5 * seeing_arcsec / pixel_scale,
+                            slope: predicted_slope_per_step(
+                                blur_constant(obstruction_ratio),
+                                microns_per_step,
+                                focal_ratio,
+                                pixel_um,
+                            ),
+                        };
+                        let plan = plan_sweep(
+                            "t",
+                            &optics,
+                            &TrainConfig::default(),
+                            &SweepConfig::default(),
+                            None,
+                            Some(truth.minimum),
+                        )
+                        .unwrap();
+                        let half_cfz = plan.cfz_steps.unwrap() / 2.0;
+                        for offset in [-0.3, 0.0, 0.3] {
+                            let centre =
+                                FOCUS + (offset * f64::from(plan.half_width)).round() as i32;
+                            let grid =
+                                build_grid(centre, plan.step_size, plan.half_width, (None, None));
+                            if grid.len() < params().min_fit_points {
+                                continue;
+                            }
+                            let mut points: Vec<CurvePoint> = grid
+                                .into_iter()
+                                .map(|position| {
+                                    let value = truth.value_at(f64::from(position));
+                                    let measured =
+                                        value * 0.05_f64.mul_add(2.0 * noise.unit() - 1.0, 1.0);
+                                    let stars = ((300.0 * truth.minimum / value) as u32).max(1);
+                                    point(position, Some(measured), stars)
+                                })
+                                .collect();
+                            let stage = gate_and_fit(&mut points, params()).unwrap();
+                            let miss = f64::from(stage.best_position - FOCUS).abs();
+                            assert!(
+                                miss <= half_cfz,
+                                "f/{focal_ratio}, {microns_per_step} µm/step, {seeing_arcsec}\", \
+                                 obstruction {obstruction_mm:?}, offset {offset}: focus placed \
+                                 {miss} steps off, half a CFZ is {half_cfz}; {plan:?} {stage:?}"
+                            );
+                            fitted += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(fitted >= 250, "only {fitted} of 288 cases reached a fit");
+    }
+
+    /// The fine sweep of #1187 on rig2: ±400 by 100 around 29666, its
+    /// lowest sample 1.03 px at 29766. The issue recorded no star
+    /// counts, so every sample weighs the same.
+    const RECORDED_FINE_SWEEP: [(i32, f64); 9] = [
+        (29_266, 16.0),
+        (29_366, 16.9),
+        (29_466, 13.2),
+        (29_566, 8.5),
+        (29_666, 4.0),
+        (29_766, 1.03),
+        (29_866, 3.5),
+        (29_966, 8.1),
+        (30_066, 12.7),
+    ];
+
+    #[test]
+    fn the_recorded_fine_sweep_places_focus_beside_its_lowest_sample() {
+        let mut points: Vec<CurvePoint> = RECORDED_FINE_SWEEP
+            .iter()
+            .map(|(position, hfr)| point(*position, Some(*hfr), 100))
+            .collect();
+        let stage = gate_and_fit(&mut points, params()).unwrap();
+        assert_eq!(stage.best_position, 29_765, "{stage:?}");
+        assert!(stage.r_squared > 0.93, "{stage:?}");
+    }
+
+    /// The coarse sweep of #1187 on rig2: ±1200 by 300 around 29966,
+    /// focus near 29766, fragments of donuts in the wings and three
+    /// dense frames around focus.
+    fn recorded_coarse_sweep() -> Vec<CurvePoint> {
+        [
+            (28_766, None, 0),
+            (29_066, Some(5.29), 12),
+            (29_366, Some(16.66), 41),
+            (29_666, Some(4.01), 370),
+            (29_966, Some(7.95), 159),
+            (30_266, Some(7.59), 33),
+            (30_566, Some(4.09), 7),
+            (30_866, Some(4.45), 5),
+            (31_166, None, 0),
+        ]
+        .into_iter()
+        .map(|(position, hfr, star_count)| point(position, hfr, star_count))
+        .collect()
+    }
+
+    /// At the defaults the gate leaves three dense frames, below
+    /// `min_fit_points`, so no curve is fitted at all.
+    #[test]
+    fn the_recorded_coarse_sweep_is_refused_at_the_defaults() {
+        let err = gate_and_fit(&mut recorded_coarse_sweep(), params()).unwrap_err();
+        assert_eq!(err, FitError::NotEnoughStars { got: 3, needed: 5 });
+    }
+
+    /// Let three samples fit, and those three frames admit no hyperbola:
+    /// the nearest V centres a step from focus.
+    #[test]
+    fn the_recorded_coarse_sweep_fits_the_nearest_v_through_its_dense_frames() {
+        let three = SweepParams {
+            min_fit_points: 3,
+            ..params()
+        };
+        let stage = gate_and_fit(&mut recorded_coarse_sweep(), three).unwrap();
+        assert_eq!(stage.best_position, 29_767, "{stage:?}");
+        assert_eq!(stage.best_hfr, 0.0, "{stage:?}");
+        assert!(stage.r_squared > 0.998, "{stage:?}");
     }
 }

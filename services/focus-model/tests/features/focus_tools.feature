@@ -10,7 +10,9 @@ Feature: Focus tools served through rp
   critical focus zone of the optics at the filter's wavelength and the
   HFR growth the train's central obstruction sets, its
   start is predicted from the remembered focus plus the filter offset
-  and temperature terms the record can supply, and every run — the
+  and temperature terms the record can supply, its samples are fitted
+  with the hyperbolic defocus curve, a train's min_fit_r_squared (unset
+  by default) failing a fit below it as poor_fit, and every run — the
   ones that fail included — is recorded with its curve points, its
   prediction and its outcome. A record measured through another
   camera, focuser, filter set or optics is stale and predicts nothing;
@@ -275,6 +277,23 @@ Feature: Focus tools served through rp
     And the tool result at "/model" should be the JSON "fresh"
     And the tool result at "/runs_recorded" should be the JSON 1
     And the tool result "/last_good" should have 0 entries
+
+  # A fit-quality floor judges a fit. A starless sweep has none, so it
+  # still fails on its stars, and the run records no R².
+  Scenario: A configured fit threshold leaves a starless sweep failing on its stars
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And the focus provider is configured for train "main" with max_attempts "1"
+    And the focus provider is configured for train "main" with min_fit_r_squared "0.9"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "not enough stars"
+    When the MCP client calls "get_focus_runs" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/runs/0/outcome" should be the JSON "not_enough_stars"
+    And the tool result at "/runs/0/fit_r_squared" should be the JSON null
 
   # A seeded last good focus is the anchor: the provider moves there
   # before the sweep and says so in the run it records.
