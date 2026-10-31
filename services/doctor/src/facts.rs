@@ -769,6 +769,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_is_active_answers_for_an_unknown_unit_without_panicking() {
+        let _forks = crate::test_support::blocking_fork_lock();
         let state = systemd_unit_is_active("rusty-photon-doctor-test-ghost");
         assert_ne!(state, Some(true), "a nonexistent unit must not be active");
     }
