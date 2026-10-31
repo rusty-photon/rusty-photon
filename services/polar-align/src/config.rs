@@ -446,8 +446,10 @@ const fn default_search_radius() -> f64 {
     5.0
 }
 
+/// Long enough for `manual_rotation`'s blind, whole-sky solves; the
+/// plate-solver's own `max_solve_timeout` (2 minutes by default) caps it.
 const fn default_solve_timeout() -> Duration {
-    Duration::from_secs(30)
+    Duration::from_mins(2)
 }
 
 const fn default_temperature() -> f64 {
@@ -527,6 +529,7 @@ mod tests {
         assert_eq!(config.adjustment.max_solve_failures, 10);
         assert_eq!(config.adjustment.star_count, 10);
         assert_eq!(config.solve.search_radius_deg, 5.0);
+        assert_eq!(config.solve.timeout, Duration::from_mins(2));
         assert!(config.refraction.enabled);
         assert_eq!(config.refraction.pressure_hpa, 1010.0);
         assert!(config.service_auth.is_none());

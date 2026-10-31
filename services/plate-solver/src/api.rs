@@ -47,6 +47,8 @@ struct SolveRequestBody {
     fov_hint_deg: Option<f64>,
     #[serde(default)]
     search_radius_deg: Option<f64>,
+    #[serde(default)]
+    blind: bool,
     #[serde(default, with = "humantime_serde::option")]
     timeout: Option<Duration>,
 }
@@ -83,6 +85,19 @@ async fn solve(
     // 1. JSON parse / schema validation.
     let body = body.map_err(|e| AppError::InvalidRequest(format!("malformed body: {e}")))?;
     let body = body.0;
+    // A blind request has no position, and a search radius bounds a
+    // search around one (design doc §"Hint Mapping").
+    if body.blind {
+        for (field, present) in [
+            ("ra_hint", body.ra_hint.is_some()),
+            ("dec_hint", body.dec_hint.is_some()),
+            ("search_radius_deg", body.search_radius_deg.is_some()),
+        ] {
+            if present {
+                return Err(AppError::InvalidRequest(format!("blind excludes {field}")));
+            }
+        }
+    }
 
     // 2. fits_path must be absolute.
     if !body.fits_path.is_absolute() {
@@ -136,6 +151,7 @@ async fn solve(
         dec_hint: body.dec_hint,
         fov_hint_deg: body.fov_hint_deg,
         search_radius_deg: body.search_radius_deg,
+        blind: body.blind,
         timeout,
     };
 

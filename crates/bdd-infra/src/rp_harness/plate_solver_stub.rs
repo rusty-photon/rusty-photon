@@ -14,6 +14,7 @@
 //! only) — the duplication is the point.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -60,6 +61,10 @@ pub struct CannedWcsMatrix {
 pub enum StubBehavior {
     /// Return a fixed 200 success body for every call.
     Canned(CannedWcs),
+    /// Return `wcs` like [`Canned`](StubBehavior::Canned), but only after
+    /// holding each call for `delay`: a slow solve, for scenarios about
+    /// rp's outer HTTP timeout.
+    Delayed { delay: Duration, wcs: CannedWcs },
     /// Walk a queue of WCS responses, one per call. After the last
     /// queued entry is consumed, subsequent calls keep returning the
     /// final entry — this lets `center_on_target` tests express
@@ -115,21 +120,35 @@ impl StubBehavior {
     /// unrotated axes, negative determinant = normal parity).
     #[must_use]
     pub fn default_canned_wcs() -> Self {
-        Self::Canned(CannedWcs {
-            ra_center: 10.6848,
-            dec_center: 41.269,
-            pixel_scale_arcsec: 1.05,
-            rotation_deg: 12.3,
-            solver: "stub-astap-1.0".to_string(),
-            wcs_matrix: Some(CannedWcsMatrix {
-                crpix1: 512.0,
-                crpix2: 384.0,
-                cd1_1: -2.9167e-4,
-                cd1_2: 0.0,
-                cd2_1: 0.0,
-                cd2_2: 2.9167e-4,
-            }),
-        })
+        Self::Canned(default_wcs())
+    }
+
+    /// [`default_canned_wcs`](Self::default_canned_wcs)'s body, returned
+    /// after `delay`.
+    #[must_use]
+    pub fn delayed_canned_wcs(delay: Duration) -> Self {
+        Self::Delayed {
+            delay,
+            wcs: default_wcs(),
+        }
+    }
+}
+
+fn default_wcs() -> CannedWcs {
+    CannedWcs {
+        ra_center: 10.6848,
+        dec_center: 41.269,
+        pixel_scale_arcsec: 1.05,
+        rotation_deg: 12.3,
+        solver: "stub-astap-1.0".to_string(),
+        wcs_matrix: Some(CannedWcsMatrix {
+            crpix1: 512.0,
+            crpix2: 384.0,
+            cd1_1: -2.9167e-4,
+            cd1_2: 0.0,
+            cd2_1: 0.0,
+            cd2_2: 2.9167e-4,
+        }),
     }
 }
 
@@ -254,6 +273,10 @@ async fn solve_handler(
 
     match state.behavior {
         StubBehavior::Canned(ref wcs) => canned_response(wcs),
+        StubBehavior::Delayed { delay, ref wcs } => {
+            tokio::time::sleep(delay).await;
+            canned_response(wcs)
+        }
         StubBehavior::Sequence(ref responses) => {
             // Walk the queue, clamping at the final entry. `start`
             // asserts the queue is non-empty, so `last()` always hits.

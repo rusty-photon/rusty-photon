@@ -203,59 +203,6 @@ pub(super) fn build_alpaca_client(
     Ok(Client::new_with_client(url, builder.build()?)?)
 }
 
-/// Attempts an idempotent runtime Alpaca read makes before giving up.
-pub(crate) const READ_RETRY_ATTEMPTS: u32 = 3;
-
-/// Retry an idempotent Alpaca read up to [`READ_RETRY_ATTEMPTS`] times
-/// with short backoff (100 ms, then 200 ms).
-///
-/// The runtime analogue of [`retry_connect_attempt`]: the connect path
-/// already rides out a transient `OmniSim` stall (e.g. a long .NET GC),
-/// but the *runtime* mount reads that `center_on_target` issues every
-/// iteration did not — so a single read failure aborted the whole
-/// compound tool. Now that [`ALPACA_READ_TIMEOUT`] bounds a stalled read
-/// (turning the #319 hang into a fast error), retrying lets a brief
-/// device hiccup recover instead of failing the operation.
-///
-/// **Idempotent reads only** (`right_ascension`, `declination`,
-/// `slewing`) — never a command that mutates device state, where a
-/// duplicate could double-apply.
-pub(crate) async fn retry_idempotent_read<T, F, Fut>(label: &str, op: F) -> Result<T, String>
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<T, String>>,
-{
-    let mut last = String::from("no attempts made");
-    for attempt in 1..=READ_RETRY_ATTEMPTS {
-        match op().await {
-            Ok(value) => {
-                if attempt > 1 {
-                    debug!(label, attempt, "Alpaca read recovered after retry");
-                }
-                return Ok(value);
-            }
-            Err(e) => {
-                last = e;
-                if attempt < READ_RETRY_ATTEMPTS {
-                    // 100 ms, then 200 ms — bounded total backoff well
-                    // under the per-request read timeout above.
-                    let delay = Duration::from_millis(100u64 << attempt.saturating_sub(1));
-                    debug!(
-                        label,
-                        attempt,
-                        max = READ_RETRY_ATTEMPTS,
-                        ?delay,
-                        error = %last,
-                        "transient Alpaca read failure, retrying after backoff"
-                    );
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-    Err(format!("{last} (after {READ_RETRY_ATTEMPTS} attempts)"))
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -435,49 +382,6 @@ mod tests {
         .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    }
-
-    // ----- retry_idempotent_read direct unit tests --------------------
-
-    #[tokio::test(start_paused = true)]
-    async fn retry_idempotent_read_recovers_after_transient_failures() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let calls_for_closure = calls.clone();
-        let result: Result<i32, String> = retry_idempotent_read("test", || {
-            let calls = calls_for_closure.clone();
-            async move {
-                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                if n < READ_RETRY_ATTEMPTS {
-                    Err(format!("transient {n}"))
-                } else {
-                    Ok(42)
-                }
-            }
-        })
-        .await;
-        assert_eq!(result.unwrap(), 42);
-        assert_eq!(calls.load(Ordering::SeqCst), READ_RETRY_ATTEMPTS);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn retry_idempotent_read_gives_up_after_all_attempts() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let calls_for_closure = calls.clone();
-        let result: Result<i32, String> = retry_idempotent_read("test", || {
-            let calls = calls_for_closure.clone();
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err("always fails".to_string())
-            }
-        })
-        .await;
-        let err = result.expect_err("all-failing read must give up with Err");
-        assert!(err.contains("always fails"), "got: {err}");
-        assert!(
-            err.contains(&format!("after {READ_RETRY_ATTEMPTS} attempts")),
-            "error should report attempt count, got: {err}"
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), READ_RETRY_ATTEMPTS);
     }
 
     // ----- per-request timeout (the #319 root-cause regression) -------

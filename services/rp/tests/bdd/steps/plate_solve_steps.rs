@@ -13,6 +13,8 @@
 //! `the {string} section should contain {string}` are reused from
 //! `measure_basic_steps.rs`.
 
+use std::time::Duration;
+
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
 
@@ -45,7 +47,37 @@ async fn stub_plate_solver_error(world: &mut RpWorld, code: String, message: Str
     world.plate_solver_stub = Some(stub);
 }
 
+#[given(expr = "a stub plate solver returning a canned WCS after {int} ms")]
+async fn stub_plate_solver_delayed(world: &mut RpWorld, delay_ms: u64) {
+    let stub = PlateSolverStub::start(StubBehavior::delayed_canned_wcs(Duration::from_millis(
+        delay_ms,
+    )))
+    .await;
+    world.plate_solver = Some(PlateSolverConfig {
+        url: stub.url.clone(),
+        timeout: None,
+        default_search_radius_deg: None,
+    });
+    world.plate_solver_stub = Some(stub);
+}
+
 // --- Given steps: composite "rp running with ..." -------------------
+
+#[given(expr = "rp is running with a camera on the simulator and plate_solver timeout {int} ms")]
+async fn rp_with_camera_and_plate_solver_timeout(world: &mut RpWorld, timeout_ms: u64) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    let url =
+        world.plate_solver.as_ref().map(|ps| ps.url.clone()).expect(
+            "this step expects a prior 'Given a stub plate solver ...' step to set the URL",
+        );
+    world.plate_solver = Some(PlateSolverConfig {
+        url,
+        timeout: Some(Duration::from_millis(timeout_ms)),
+        default_search_radius_deg: None,
+    });
+    start_rp(world).await;
+}
 
 #[given(
     expr = "rp is running with a camera on the simulator and plate_solver default_search_radius_deg {float}"
@@ -188,20 +220,15 @@ async fn mcp_call_plate_solve_with_pointing_hint(world: &mut RpWorld, ra_deg: f6
 }
 
 #[when(
-    expr = "the MCP client calls \"plate_solve\" with the captured document_id and use_mount_hints {word}"
+    expr = "the MCP client calls \"plate_solve\" with the captured document_id and blind {word}"
 )]
-async fn mcp_call_plate_solve_with_use_mount_hints(world: &mut RpWorld, value: String) {
-    let document_id = world
-        .last_document_id
-        .clone()
-        .expect("no captured document_id available");
-    let use_mount_hints = parse_bool(&value);
-
+async fn mcp_call_plate_solve_with_blind(world: &mut RpWorld, blind: String) {
+    let document_id = captured_document_id(world);
     call_plate_solve_with_args(
         world,
         PlateSolveArgs {
             document_id: Some(document_id),
-            use_mount_hints: Some(use_mount_hints),
+            blind: Some(parse_bool(&blind)),
             ..Default::default()
         },
     )
@@ -209,25 +236,80 @@ async fn mcp_call_plate_solve_with_use_mount_hints(world: &mut RpWorld, value: S
 }
 
 #[when(
-    expr = "the MCP client calls \"plate_solve\" with the captured document_id, pointing_hint ra_deg {float} dec_deg {float}, and use_mount_hints {word}"
+    expr = "the MCP client calls \"plate_solve\" with the captured document_id, pointing_hint ra_deg {float} dec_deg {float}, and blind {word}"
 )]
-async fn mcp_call_plate_solve_with_both_hint_modes(
+async fn mcp_call_plate_solve_with_pointing_hint_and_blind(
     world: &mut RpWorld,
     ra_deg: f64,
     dec_deg: f64,
-    use_mount_hints: String,
+    blind: String,
 ) {
-    let document_id = world
-        .last_document_id
-        .clone()
-        .expect("no captured document_id available");
-
+    let document_id = captured_document_id(world);
     call_plate_solve_with_args(
         world,
         PlateSolveArgs {
             document_id: Some(document_id),
             pointing_hint: Some((ra_deg, dec_deg)),
-            use_mount_hints: Some(parse_bool(&use_mount_hints)),
+            blind: Some(parse_bool(&blind)),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"plate_solve\" with the captured document_id, search_radius_deg {float}, and blind {word}"
+)]
+async fn mcp_call_plate_solve_with_search_radius_and_blind(
+    world: &mut RpWorld,
+    search_radius_deg: f64,
+    blind: String,
+) {
+    let document_id = captured_document_id(world);
+    call_plate_solve_with_args(
+        world,
+        PlateSolveArgs {
+            document_id: Some(document_id),
+            search_radius_deg: Some(search_radius_deg),
+            blind: Some(parse_bool(&blind)),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"plate_solve\" with the captured document_id, pointing_hint ra_deg {float} dec_deg {float}, and search_radius_deg {float}"
+)]
+async fn mcp_call_plate_solve_with_pointing_hint_and_search_radius(
+    world: &mut RpWorld,
+    ra_deg: f64,
+    dec_deg: f64,
+    search_radius_deg: f64,
+) {
+    let document_id = captured_document_id(world);
+    call_plate_solve_with_args(
+        world,
+        PlateSolveArgs {
+            document_id: Some(document_id),
+            pointing_hint: Some((ra_deg, dec_deg)),
+            search_radius_deg: Some(search_radius_deg),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"plate_solve\" with the captured document_id and timeout {string}"
+)]
+async fn mcp_call_plate_solve_with_timeout(world: &mut RpWorld, timeout: String) {
+    let document_id = captured_document_id(world);
+    call_plate_solve_with_args(
+        world,
+        PlateSolveArgs {
+            document_id: Some(document_id),
+            timeout: Some(timeout),
             ..Default::default()
         },
     )
@@ -284,46 +366,6 @@ async fn mcp_call_plate_solve_with_search_radius(world: &mut RpWorld, search_rad
 #[when("the MCP client calls \"plate_solve\" with no arguments")]
 async fn mcp_call_plate_solve_no_args(world: &mut RpWorld) {
     call_plate_solve_with_args(world, PlateSolveArgs::default()).await;
-}
-
-/// Record what the mount reports, so the `use_mount_hints` assertion
-/// can pin the forwarded hints against the mount's own value instead
-/// of against the literal the scenario synced to.
-///
-/// Why that matters: `sync_mount` does not land `OmniSim` exactly on
-/// the requested RA. `OmniSim` builds the mount axis from a *cached*
-/// sidereal time (refreshed only on its 100 ms `MoveAxes` tick) and
-/// then re-derives the reported RA from a freshly read one, so the
-/// sync absorbs however stale that cache was; the device restart our
-/// per-scenario hook issues resets the tracking book-keeping that
-/// would otherwise back-fill the difference, making the offset
-/// permanent. Tracking then *holds* the offset position, so this is a
-/// fixed error and not a drift — but its size is whatever wall-clock
-/// gap the runner happened to leave, and on a loaded `windows-latest`
-/// runner it reached 46 arcsec (issue #1252). Reading the mount back
-/// takes the runner's speed out of the assertion entirely.
-///
-/// Deliberately stores into its own world field rather than
-/// `last_tool_result`: the `plate_solve` result must stay inspectable
-/// by any Then step that follows.
-#[when("I record the mount position reported by get_mount_position")]
-async fn record_mount_position(world: &mut RpWorld) {
-    ensure_mcp_client(world).await;
-    let result = world
-        .mcp()
-        .call_tool("get_mount_position", Value::Object(Map::new()))
-        .await
-        .expect("get_mount_position should succeed");
-    let ra_hours = result.get("ra").and_then(Value::as_f64).unwrap_or_else(|| {
-        panic!("expected ra field in get_mount_position result, got: {result:?}")
-    });
-    let dec_deg = result
-        .get("dec")
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| {
-            panic!("expected dec field in get_mount_position result, got: {result:?}")
-        });
-    world.recorded_mount_positions.push((ra_hours, dec_deg));
 }
 
 // --- Then steps: result-shape assertions -----------------------------
@@ -390,32 +432,18 @@ fn plate_solve_wcs_matrix_matches(world: &mut RpWorld, step: &cucumber::gherkin:
 
 // --- Then steps: stub request-log inspection ------------------------
 
-/// Hours-to-degrees factor rp applies to the mount's Alpaca
-/// `RightAscension` before putting it on the wrapper wire. A missed
-/// conversion is the defect the `use_mount_hints` scenario exists to
+/// Hours-to-degrees factor rp applies to a recorded pointing's Alpaca
+/// `ra_hours` before putting it on the wrapper wire. A missed
+/// conversion is the defect the recorded-pointing scenario exists to
 /// catch, so the factor is named here and spelled out in the step
 /// expression rather than folded into a tolerance.
 const RA_HOURS_TO_DEGREES: f64 = 15.0;
 
-/// Agreement budget between an explicit `pointing_hint` and what the
-/// wrapper received. rp forwards `pointing_hint` verbatim (no unit
-/// conversion, no mount involved), so the only spread is JSON f64
-/// round-tripping — exact in practice.
+/// Agreement budget between a hint's source — an explicit
+/// `pointing_hint`, or the frame's recorded `pointing` times 15 — and
+/// what the wrapper received. Neither involves a live read, so the only
+/// spread is JSON f64 round-tripping — exact in practice.
 const HINT_PASSTHROUGH_TOLERANCE_DEG: f64 = 1e-9;
-
-/// Agreement budget between rp's mount read (taken inside
-/// `plate_solve`) and the BDD's own `get_mount_position` read taken
-/// straight after it. Both see a *tracking* mount holding a fixed RA,
-/// so the only spread is `OmniSim`'s per-tick numerical noise —
-/// measured at ~2e-6°. 0.001° (3.6 arcsec) leaves three orders of
-/// magnitude of headroom, and is still ~5 orders tighter than a
-/// missed ×15, which lands RA ~150° out.
-///
-/// Unlike the 0.01° literal bound this replaced, it is *not* a
-/// wall-clock budget: nothing here is charged for how long the
-/// capture or the solve took, which is what made the old assertion
-/// flaky on slow runners (issue #1252).
-const MOUNT_READBACK_TOLERANCE_DEG: f64 = 0.001;
 
 #[then(
     expr = "the stub plate solver should have received a request with ra_hint {float} and dec_hint {float}"
@@ -433,88 +461,57 @@ async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hin
     );
 }
 
-/// Assert the forwarded hints against a *bracket* of mount reads taken
-/// either side of the `plate_solve` call, rather than against one read
-/// taken after it.
-///
-/// rp reads the mount inside the call, so its value necessarily lies
-/// between a read before and a read after — whatever the mount did in
-/// between. That is what makes this independent of runner speed, and a
-/// single sample cannot achieve it: `OmniSim` reports `RightAscension`
-/// frozen between its ~100 ms `MoveAxes` ticks and rebuilds the axis
-/// from a cached sidereal time, so a sync lands offset and the reported
-/// position then moves for several ticks; under enough load the tick
-/// starves and RA slips at roughly the sidereal rate indefinitely. Any
-/// fixed budget between two reads at different instants is therefore a
-/// wager on how fast the runner is.
-///
-/// [`MOUNT_READBACK_TOLERANCE_DEG`] still applies, now as slack on the
-/// bracket for the per-tick numerical noise, which is what it was
-/// always sized for. The bracket widens on its own as drift grows, and
-/// a missed ×15 puts RA ~150° out — five orders of magnitude outside
-/// any bracket this scenario can produce.
+/// The forwarded hints are the frame's recorded `pointing`: its
+/// `ra_hours` times [`RA_HOURS_TO_DEGREES`], folded into `[0, 360)`, and
+/// its `dec_degrees`. Compared against the record itself, so nothing is
+/// charged for how far the mount moved after the exposure started.
 #[then(
-    expr = "the stub plate solver should have received ra_hint and dec_hint bracketed by the recorded mount positions"
+    expr = "the stub plate solver should have received the document's pointing as ra_hint and dec_hint, its ra_hours times 15"
 )]
-async fn stub_hints_bracketed_by_recorded_mount(world: &mut RpWorld) {
-    let recorded = world.recorded_mount_positions.clone();
-    assert!(
-        recorded.len() >= 2,
-        "need a mount read either side of the call to bracket its own read; got {}",
-        recorded.len()
-    );
+async fn stub_received_recorded_pointing(world: &mut RpWorld) {
+    let doc = last_exposure_document(world);
+    let pointing = doc
+        .get("pointing")
+        .unwrap_or_else(|| panic!("the document records no pointing: {doc}"));
+    let ra_hours = pointing["ra_hours"].as_f64().expect("pointing.ra_hours");
+    let dec_degrees = pointing["dec_degrees"]
+        .as_f64()
+        .expect("pointing.dec_degrees");
     let request = last_stub_request(world).await;
     let (actual_ra, actual_dec) = request_hints(&request);
-
-    let ra_bounds: Vec<f64> = recorded
-        .iter()
-        .map(|(ra_hours, _)| ra_hours * RA_HOURS_TO_DEGREES)
-        .collect();
-    let dec_bounds: Vec<f64> = recorded.iter().map(|&(_, dec)| dec).collect();
-    let bracket = |bounds: &[f64]| {
-        bounds
-            .iter()
-            .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
-    };
-    let (ra_lo, ra_hi) = bracket(&ra_bounds);
-    let (dec_lo, dec_hi) = bracket(&dec_bounds);
-
+    let expected_ra = (ra_hours * RA_HOURS_TO_DEGREES).rem_euclid(360.0);
     assert!(
-        actual_ra >= ra_lo - MOUNT_READBACK_TOLERANCE_DEG
-            && actual_ra <= ra_hi + MOUNT_READBACK_TOLERANCE_DEG,
-        "ra_hint should be the mount's RA × {RA_HOURS_TO_DEGREES}, so within \
-         [{ra_lo}, {ra_hi}]° (± {MOUNT_READBACK_TOLERANCE_DEG}) of the reads taken \
-         either side of the call; got {actual_ra}"
+        (actual_ra - expected_ra).abs() < HINT_PASSTHROUGH_TOLERANCE_DEG,
+        "ra_hint should be pointing.ra_hours {ra_hours} x {RA_HOURS_TO_DEGREES} = {expected_ra}, got {actual_ra}"
     );
     assert!(
-        actual_dec >= dec_lo - MOUNT_READBACK_TOLERANCE_DEG
-            && actual_dec <= dec_hi + MOUNT_READBACK_TOLERANCE_DEG,
-        "dec_hint should be the mount's Dec forwarded verbatim, so within \
-         [{dec_lo}, {dec_hi}]° (± {MOUNT_READBACK_TOLERANCE_DEG}); got {actual_dec}"
+        (actual_dec - dec_degrees).abs() < HINT_PASSTHROUGH_TOLERANCE_DEG,
+        "dec_hint should be pointing.dec_degrees {dec_degrees}, got {actual_dec}"
     );
 }
 
-#[then(
-    expr = "the recorded mount position should be within {float} degrees of ra {float} and dec {float}"
-)]
-fn recorded_mount_position_near(
-    world: &mut RpWorld,
-    tolerance_deg: f64,
-    ra_deg: f64,
-    dec_deg: f64,
-) {
-    let &(mount_ra_hours, mount_dec_deg) = world
-        .recorded_mount_positions
-        .last()
-        .expect("no mount position recorded — run the record step before this assertion");
-    let mount_ra_deg = mount_ra_hours * RA_HOURS_TO_DEGREES;
-    assert!(
-        (mount_ra_deg - ra_deg).abs() < tolerance_deg,
-        "mount RA {mount_ra_deg}° ({mount_ra_hours} h) is more than {tolerance_deg}° from the synced {ra_deg}°"
+#[then("the stub plate solver should have received the document's optics fov_height_deg as fov_hint_deg")]
+async fn stub_received_recorded_fov(world: &mut RpWorld) {
+    let doc = last_exposure_document(world);
+    let fov = doc
+        .pointer("/optics/fov_height_deg")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| panic!("the document records no optics.fov_height_deg: {doc}"));
+    let request = last_stub_request(world).await;
+    assert_eq!(
+        request.get("fov_hint_deg").and_then(Value::as_f64),
+        Some(fov),
+        "fov_hint_deg should be optics.fov_height_deg in {request:?}"
     );
+}
+
+#[then("the stub plate solver should have received a request that is not blind")]
+async fn stub_received_hinted_request(world: &mut RpWorld) {
+    let request = last_stub_request(world).await;
+    let blind = request.get("blind");
     assert!(
-        (mount_dec_deg - dec_deg).abs() < tolerance_deg,
-        "mount Dec {mount_dec_deg}° is more than {tolerance_deg}° from the synced {dec_deg}°"
+        blind.is_none() || blind == Some(&Value::Bool(false)),
+        "expected no blind flag, got: {request:?}"
     );
 }
 
@@ -532,14 +529,21 @@ fn request_hints(request: &Value) -> (f64, f64) {
     (ra, dec)
 }
 
-#[then("the stub plate solver should have received a request with no hint fields")]
+#[then(
+    "the stub plate solver should have received a blind request with no position and no search radius"
+)]
 async fn stub_received_blind_request(world: &mut RpWorld) {
     let request = last_stub_request(world).await;
-    for field in ["ra_hint", "dec_hint", "fov_hint_deg", "search_radius_deg"] {
+    assert_eq!(
+        request.get("blind"),
+        Some(&Value::Bool(true)),
+        "expected blind true, got: {request:?}"
+    );
+    for field in ["ra_hint", "dec_hint", "search_radius_deg"] {
         let v = request.get(field);
         assert!(
             v.is_none() || v == Some(&Value::Null),
-            "expected '{field}' to be absent or null on a blind solve, got: {v:?}"
+            "expected '{field}' to be absent on a blind solve, got: {v:?}"
         );
     }
 }
@@ -613,7 +617,7 @@ struct PlateSolveArgs {
     document_id: Option<String>,
     image_path: Option<String>,
     pointing_hint: Option<(f64, f64)>,
-    use_mount_hints: Option<bool>,
+    blind: Option<bool>,
     fov_hint_deg: Option<f64>,
     search_radius_deg: Option<f64>,
     timeout: Option<String>,
@@ -638,8 +642,8 @@ async fn call_plate_solve_with_args(world: &mut RpWorld, args: PlateSolveArgs) {
             }),
         );
     }
-    if let Some(b) = args.use_mount_hints {
-        params.insert("use_mount_hints".to_string(), Value::Bool(b));
+    if let Some(b) = args.blind {
+        params.insert("blind".to_string(), Value::Bool(b));
     }
     if let Some(f) = args.fov_hint_deg {
         params.insert("fov_hint_deg".to_string(), serde_json::json!(f));
@@ -661,6 +665,20 @@ async fn call_plate_solve_with_args(world: &mut RpWorld, args: PlateSolveArgs) {
         Err(_) => world.last_plate_solve_result = None,
     }
     world.last_tool_result = Some(result);
+}
+
+fn captured_document_id(world: &RpWorld) -> String {
+    world
+        .last_document_id
+        .clone()
+        .expect("no captured document_id available")
+}
+
+const fn last_exposure_document(world: &RpWorld) -> &Value {
+    world
+        .last_exposure_document
+        .as_ref()
+        .expect("no exposure document fetched — run the fetch step first")
 }
 
 async fn last_stub_request(world: &RpWorld) -> Value {

@@ -143,6 +143,36 @@ async fn when_post_solve_with_hint(world: &mut PlateSolverWorld, field: String, 
     do_post(world, body).await;
 }
 
+#[when(expr = "I POST to \\/api\\/v1\\/solve with that fits_path and blind {word}")]
+async fn when_post_solve_with_blind(world: &mut PlateSolverWorld, blind: String) {
+    ensure_wrapper(world).await;
+    let body = serde_json::json!({
+        "fits_path": world.fits_path.as_ref().expect("fits_path"),
+        "blind": parse_bool(&blind),
+    });
+    do_post(world, body).await;
+}
+
+#[when(
+    expr = "I POST to \\/api\\/v1\\/solve with that fits_path, blind true and hint {word} set to {word}"
+)]
+async fn when_post_solve_blind_with_hint(
+    world: &mut PlateSolverWorld,
+    field: String,
+    value: String,
+) {
+    ensure_wrapper(world).await;
+    let value_f: f64 = value
+        .parse()
+        .unwrap_or_else(|_| panic!("hint value not f64: {value}"));
+    let mut body = serde_json::json!({
+        "fits_path": world.fits_path.as_ref().expect("fits_path"),
+        "blind": true,
+    });
+    body[field] = serde_json::Value::from(value_f);
+    do_post(world, body).await;
+}
+
 #[when("I POST to /api/v1/solve with that fits_path and these hints:")]
 async fn when_post_solve_with_hint_table(world: &mut PlateSolverWorld, step: &Step) {
     ensure_wrapper(world).await;
@@ -264,6 +294,15 @@ async fn then_argv_contains_flag(world: &mut PlateSolverWorld, flag: String) {
     );
 }
 
+#[then(expr = "the spawned argv does not contain the flag {string}")]
+async fn then_argv_lacks_flag(world: &mut PlateSolverWorld, flag: String) {
+    let argv = read_argv(world);
+    assert!(
+        !argv.iter().any(|a| a == &flag),
+        "argv carries flag {flag:?}: {argv:?}"
+    );
+}
+
 #[then(expr = "the spawned argv value after {string} is approximately {float}")]
 async fn then_argv_value_after_flag(world: &mut PlateSolverWorld, flag: String, expected: f64) {
     let argv = read_argv(world);
@@ -354,6 +393,14 @@ fn json_at<'a>(world: &'a PlateSolverWorld, path: &str) -> Option<&'a serde_json
         cur = cur.get(seg)?;
     }
     Some(cur)
+}
+
+fn parse_bool(word: &str) -> bool {
+    match word {
+        "true" => true,
+        "false" => false,
+        other => panic!("expected true or false, got {other:?}"),
+    }
 }
 
 fn read_argv(world: &PlateSolverWorld) -> Vec<String> {

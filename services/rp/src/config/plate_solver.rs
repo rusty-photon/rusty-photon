@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 /// `timeout` is the connection-side outer timeout (the
 /// belt-and-suspenders backstop per Tenet 1) — *not* the wrapper's
 /// per-solve deadline, which is set by the `plate_solve` MCP tool's
-/// per-call `timeout` parameter.
+/// per-call `timeout` parameter. A call carrying one waits at least
+/// that long plus a 10 s supervision margin.
 ///
 /// `default_search_radius_deg` is the operator-set radius applied
 /// when the per-call MCP parameter is omitted; per-call overrides

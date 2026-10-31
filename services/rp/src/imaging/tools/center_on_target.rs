@@ -37,9 +37,8 @@
 //!    never answers (an overloaded `OmniSim` in CI) blocks the `await`
 //!    indefinitely, and the blocking-op poll deadlines guard *loops*,
 //!    not a single in-flight request. Fixed in `equipment::alpaca` with
-//!    a per-request connect + read timeout, plus a transient-failure
-//!    retry on the idempotent per-iteration reads (the `use_mount_hints`
-//!    read in `plate_solve`, the `Slewing` poll).
+//!    a per-request connect + read timeout; the `Slewing` poll also
+//!    rides out a transient read failure.
 //!
 //! CI job `timeout-minutes` and the BDD client's `MCP_CALL_TIMEOUT` are
 //! independent backstops, not the fix.
@@ -145,10 +144,11 @@ pub enum CenterOnTargetError {
 
 #[async_trait]
 pub trait PlateSolveOps {
-    /// Plate-solve the named `document_id`. The MCP-side adapter sets
-    /// `use_mount_hints: true` so the wrapper hint plumbing stays in
-    /// the existing `plate_solve` Contract. Synthetic adapters
-    /// ignore the `document_id` and return canned outcomes.
+    /// Plate-solve the named `document_id`. The MCP-side adapter passes
+    /// no hints, so the frame's recorded pointing is the hint and the
+    /// wrapper hint plumbing stays in the existing `plate_solve`
+    /// Contract. Synthetic adapters ignore the `document_id` and return
+    /// canned outcomes.
     async fn solve(&self, document_id: &str) -> Result<SolveOutcome, String>;
 }
 

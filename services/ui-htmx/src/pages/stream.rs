@@ -913,7 +913,7 @@ mod tests {
             ),
             case(
                 "plate_solve_started",
-                json!({"document_id": "d1", "image_path": "/data/x.fits", "use_mount_hints": true}),
+                json!({"document_id": "d1", "image_path": "/data/x.fits", "blind": false}),
                 "sev-live",
                 "Plate solve started",
                 Some("/data/x.fits"),

@@ -51,8 +51,9 @@ use thiserror::Error;
 ///
 /// Matches the `SolveRequestBody` struct in
 /// `services/plate-solver/src/api.rs` field-for-field. All hint fields
-/// are optional; omitted fields produce no flag and the wrapper falls
-/// through to ASTAP's blind-solve behavior.
+/// are optional; omitted fields produce no flag, and ASTAP fills them
+/// in from the FITS header or its previous solve. `blind` asks for a
+/// whole-sky search instead.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SolveRequest {
     /// Absolute path to the FITS file. The wrapper rejects relative
@@ -72,6 +73,10 @@ pub struct SolveRequest {
     /// Search-radius hint in decimal degrees. `None` ⇒ omit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_radius_deg: Option<f64>,
+    /// Whole-sky search. The wrapper refuses it alongside `ra_hint`,
+    /// `dec_hint` or `search_radius_deg`. `false` ⇒ omit.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub blind: bool,
     /// Wall-clock deadline applied by the wrapper. `None` ⇒ wrapper
     /// applies its own `default_solve_timeout`.
     #[serde(default, with = "humantime_serde::option")]
@@ -165,18 +170,26 @@ pub trait PlateSolveClient: Send + Sync {
     async fn solve(&self, request: SolveRequest) -> Result<SolveOutcome, SolveError>;
 }
 
+/// How long past a request's own `timeout` the outer timeout waits: the
+/// wrapper's 2 s kill grace plus its reap of up to 5 s, with room to
+/// spare (`docs/services/plate-solver.md` §"Subprocess Supervision").
+pub const SOLVE_SUPERVISION_MARGIN: Duration = Duration::from_secs(10);
+
 /// Concrete reqwest-backed implementation of [`PlateSolveClient`].
 #[derive(Debug, Clone)]
 pub struct PlateSolverClient {
     client: reqwest::Client,
     base_url: String,
+    http_timeout: Duration,
 }
 
 impl PlateSolverClient {
     /// Build a client against the given base URL with an HTTP-client
     /// outer timeout. The outer timeout is the connection-side
     /// backstop for Tenet 1; per-request `SolveRequest::timeout`
-    /// bounds the *solver* side independently.
+    /// bounds the *solver* side, and the backstop never cuts a request
+    /// short of it: such a request waits
+    /// `max(http_timeout, timeout + SOLVE_SUPERVISION_MARGIN)`.
     ///
     /// `auth` sends HTTP Basic Auth credentials on every request, for
     /// an auth-enabled plate-solver service (issue #620).
@@ -214,6 +227,16 @@ impl PlateSolverClient {
         Ok(Self {
             client,
             base_url: trim_trailing_slash(base_url),
+            http_timeout,
+        })
+    }
+
+    /// The outer timeout for one request: the configured backstop, or
+    /// longer when the request's own solve deadline needs it.
+    fn outer_timeout(&self, request: &SolveRequest) -> Duration {
+        request.timeout.map_or(self.http_timeout, |solve| {
+            self.http_timeout
+                .max(solve.saturating_add(SOLVE_SUPERVISION_MARGIN))
         })
     }
 
@@ -239,6 +262,7 @@ impl PlateSolveClient for PlateSolverClient {
         let response = self
             .client
             .post(&url)
+            .timeout(self.outer_timeout(&request))
             .json(&request)
             .send()
             .await
@@ -452,6 +476,7 @@ mod tests {
                 dec_hint: Some(41.269),
                 fov_hint_deg: Some(1.5),
                 search_radius_deg: Some(2.0),
+                blind: false,
                 timeout: Some(Duration::from_secs(45)),
             })
             .await
@@ -486,14 +511,79 @@ mod tests {
             "dec_hint",
             "fov_hint_deg",
             "search_radius_deg",
+            "blind",
             "timeout",
         ] {
             assert!(
                 req.get(field).is_none(),
-                "expected '{field}' to be absent on a blind request, got: {:?}",
+                "expected '{field}' to be absent on a hint-less request, got: {:?}",
                 req.get(field)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn solve_sends_blind_when_set() {
+        let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
+
+        client
+            .solve(SolveRequest {
+                fits_path: "/tmp/x.fits".to_string(),
+                blind: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let req = stub.requests.read().await[0].clone();
+        assert_eq!(req["blind"], true);
+    }
+
+    #[test]
+    fn outer_timeout_is_the_backstop_without_a_request_timeout() {
+        let client = PlateSolverClient::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(60),
+            None,
+            None,
+        )
+        .unwrap();
+        let request = SolveRequest::default();
+        assert_eq!(client.outer_timeout(&request), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn outer_timeout_reaches_past_a_longer_request_timeout() {
+        let client = PlateSolverClient::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(60),
+            None,
+            None,
+        )
+        .unwrap();
+        let request = SolveRequest {
+            timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        };
+        assert_eq!(client.outer_timeout(&request), Duration::from_secs(130));
+    }
+
+    #[test]
+    fn outer_timeout_keeps_the_backstop_over_a_shorter_request_timeout() {
+        let client = PlateSolverClient::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(60),
+            None,
+            None,
+        )
+        .unwrap();
+        let request = SolveRequest {
+            timeout: Some(Duration::from_secs(30)),
+            ..Default::default()
+        };
+        assert_eq!(client.outer_timeout(&request), Duration::from_secs(60));
     }
 
     fn err_envelope(code: &str, message: &str) -> Value {

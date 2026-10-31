@@ -128,7 +128,7 @@ Feature: Plate-solving polar alignment (end-to-end)
     Then the polar-align status should report an azimuth error within 2.0 arcminutes of 30.0
     And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
     And the polar-align status should report an axis cross-check below 1.0 arcseconds
-    And the first solve request should carry no pointing hint
+    And the first solve request should be blind, with no position and no search radius
     And the polar-align run has ended
 
   Scenario: Confirming a rotation while nothing waits is rejected

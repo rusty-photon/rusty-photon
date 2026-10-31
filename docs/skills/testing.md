@@ -1682,10 +1682,11 @@ position back (`get_mount_position`) next to the call under test and
 compare the two reads: they share the sync offset, so the budget is only
 the ~2e-6° noise above and nothing is charged for how long the runner
 took. Keep a separate, coarse bound against the synced literal when the
-scenario wants to know the mount is still pointing where it was put. `plate_solve.feature`'s
-`use_mount_hints` scenario is the worked example: a 0.001° read-to-read
-bound carries the ×15 hours-to-degrees guard, and a 0.5° sanity bound
-carries "still on target".
+scenario wants to know the mount is still pointing where it was put.
+Better still, when `rp` records what the mount reported, compare against
+the record: `plate_solve.feature`'s "A frame's recorded pointing is the
+position hint" checks the forwarded hint against the frame's sidecar
+`pointing`, so the ×15 hours-to-degrees guard needs no tolerance at all.
 
 Widening the tolerance instead is the wrong fix twice over: it is
 unbounded (the offset is however long the runner stalled), and the tight

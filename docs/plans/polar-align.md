@@ -286,7 +286,7 @@ Star Adventurer, sky trackers) where rp has no mount at all.
 - `/measure/continue` returns 202 while a wait is active, 409
   otherwise. The wait signal is re-armed per wait, so a stale or
   double-clicked post cannot skip the next point.
-- **All three solves are blind** (`use_mount_hints: false`, no
+- **All three solves are blind** (`blind: true`, no
   pointing hint): the plugin has no trustworthy prediction of where
   the operator left the axis, and a wrong hint is worse than none.
   Manual rigs should budget `solve.timeout` for blind solves.

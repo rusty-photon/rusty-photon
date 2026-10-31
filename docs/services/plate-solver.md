@@ -45,7 +45,8 @@ ASTAP child via per-request deadlines. See
 
 - **Input:** an absolute filesystem path to a FITS file (rp and the
   service share a filesystem per `docs/services/rp.md` §"File
-  Accessibility"), plus optional pointing and FOV hints.
+  Accessibility"), plus optional pointing and FOV hints, or a request
+  for a whole-sky (blind) search.
 - **Output:** a WCS solution (RA/Dec at image center, pixel scale,
   rotation, and — when the sidecar carries a complete CRPIX + CD
   set — the full WCS linear mapping) parsed from the `.wcs` sidecar
@@ -87,7 +88,9 @@ states the behavior, not the wire format details.
 
 1. Service deserializes the request body. `fits_path` must be an
    absolute path; `timeout` must parse as humantime; hint fields are
-   optional.
+   optional. `blind: true` asks for a whole-sky search and excludes
+   `ra_hint`, `dec_hint` and `search_radius_deg` (see
+   [hint mapping](#hint-mapping)).
 2. Service confirms `fits_path` exists, is a regular file (not a
    directory), and is readable.
 3. Service acquires the single-flight semaphore (default
@@ -129,7 +132,7 @@ the plan. Each error code corresponds to one failure scenario:
 
 | Code | Trigger |
 |------|---------|
-| `invalid_request` | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`. Rejected before any subprocess work. |
+| `invalid_request` | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`, `blind: true` together with `ra_hint`, `dec_hint` or `search_radius_deg`. Rejected before any subprocess work. |
 | `fits_not_found` | `fits_path` does not exist or is not readable. Rejected before any subprocess work. |
 | `solve_failed` | ASTAP exited non-zero, OR exited zero but did not write a `.wcs`, OR wrote a `.wcs` missing required keys. The error message names which sub-condition triggered. |
 | `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced), or 5 s after the force-kill if that had not ended it. Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
@@ -241,8 +244,8 @@ Overlapping requests **queue, not error**. The HTTP request stays
 open while waiting on the semaphore. Each request's `timeout`
 applies to its solve only — time spent waiting in the queue is not
 counted against the deadline. Operators who need to bound queue
-depth do so at rp's HTTP-client layer (`plate_solver.timeout_secs`
-in rp config), not here.
+depth do so at rp's HTTP-client layer (`plate_solver.timeout` in rp
+config, which bounds queue wait and solve together), not here.
 
 ### Hint Mapping
 
@@ -254,15 +257,29 @@ Optional pointing and FOV hints map directly to ASTAP CLI flags:
 | `dec_hint` | `-spd <degrees>` | Wire format is decimal degrees (−90–90); wrapper converts to south-pole-distance (`90 + dec`) before passing to ASTAP. |
 | `fov_hint_deg` | `-fov <degrees>` | Pass-through (image height, per ASTAP CLI documentation). |
 | `search_radius_deg` | `-r <degrees>` | Pass-through. Defaults to ASTAP's own default when omitted. |
+| `blind` | `-r 180` | `true` asks for a whole-sky search. Refused with `invalid_request` alongside `ra_hint`, `dec_hint` or `search_radius_deg`: a radius bounds a search around a position, and a blind solve has none. `fov_hint_deg` may accompany it. `false`, the default, adds no flag. |
 
-Omitted fields produce no flag. A solve without hints is not
-necessarily blind: ASTAP then reads its hints from the FITS header
-where it can (the header's `RA`/`DEC` or `OBJCTRA`/`OBJCTDEC` for
-position, see the timings below) and searches blind only without
-them. `docs/services/rp.md` §"Ground rules" lists `rp`'s reliance on
-the header as a gap.
+Omitted fields produce no flag, and ASTAP fills them in itself. Its
+manual says of `-ra`, `-spd` and `-fov`: "If not specified it will be
+extracted from the FITS header or last successful solve will be used
+(learn mode)", and "Command-line parameters have priority above fits
+header values." So a solve without hints is not necessarily blind:
+ASTAP starts from the header's position (`RA`/`DEC` or
+`OBJCTRA`/`OBJCTDEC`, see the timings below) or from its previous
+solve, and searches `-r`, or its own default radius, around it. A
+header that names the wrong place steers that search wrong, and no
+flag tells ASTAP to ignore the header. `blind` is the way out: `-r`
+is "the radius of the square search pattern around the start
+position", and at 180° that pattern covers the whole sky. A start
+taken from the header or the last solve still decides where the search
+begins, and so how long it takes, but can no longer make it miss. A
+whole-sky search is slow (see the timings below), so a caller budgets
+the request's `timeout` for it.
+
 The wrapper does not synthesize hints; it never invents data the
-caller did not provide.
+caller did not provide. `rp` never leaves a frame's position to the
+header: it sends one, or `blind`
+([Hint sources](#hint-sources-and-search-radius-defaults)).
 
 ### Hint sources and search-radius defaults
 
@@ -271,38 +288,37 @@ neither queries the mount nor maintains a default. Hint sources are
 the caller's concern; for `rp` (the canonical caller), the hint
 chain is:
 
-1. **`ra_hint` / `dec_hint`** come from the caller. `rp`'s
-   `plate_solve` MCP tool is **explicit by default** — it does not
-   silently auto-source from the mount. Two ways to provide them:
-   - Pass an explicit `pointing_hint: { ra_deg, dec_deg }` object
-     on the MCP call. Both values are decimal degrees on the wire
-     (the `_deg` suffix in the field names is intentional — it
-     preempts the Alpaca-hours / wrapper-degrees confusion at the
-     call site). The nested-object shape makes the both-or-neither
-     contract structural.
-   - Pass `use_mount_hints: true` as a convenience opt-in. rp reads
-     the mount's current pointing via ASCOM Alpaca Telescope
-     properties:
-     - `RightAscension` is returned in **decimal hours** per the
-       Alpaca spec — rp multiplies by 15 to convert to the
-       wrapper's degrees-on-the-wire contract.
-     - `Declination` is already in decimal degrees and passes
-       through unchanged.
-     Mount absent / not connected / Alpaca read failure ⇒ error to
-     the caller (the caller explicitly opted in, so failures are
-     surfaced rather than silently dropping the hint).
+1. **`ra_hint` / `dec_hint`, or `blind`**, come from the caller.
+   `rp`'s `plate_solve` MCP tool resolves them per call, in this
+   order:
+   - An explicit `pointing_hint: { ra_deg, dec_deg }` object on the
+     MCP call. Both values are decimal degrees on the wire (the
+     `_deg` suffix in the field names is intentional — it preempts
+     the Alpaca-hours / wrapper-degrees confusion at the call site).
+     The nested-object shape makes the both-or-neither contract
+     structural.
+   - Else the frame's own sidecar `pointing`: what the mount reported
+     as the exposure started, recorded at capture time. Its
+     `ra_hours` is Alpaca's decimal hours, which rp multiplies by 15
+     and folds into `[0, 360)` for the wrapper's degrees-on-the-wire
+     contract; `dec_degrees` passes through unchanged. It is never
+     the live mount, which may have moved since the frame was taken
+     (`docs/services/rp.md` §"Ground rules").
+   - Else, or whenever the call passes `blind: true`, no position:
+     rp sends `blind: true` and no `search_radius_deg`. A frame with
+     no sidecar, such as one another program wrote, has no recorded
+     pointing and is solved blind too.
 
-   The two modes are mutually exclusive — supplying both is a
-   caller error. Neither supplied ⇒ no position hint is passed
-   ([Hint Mapping](#hint-mapping) says what ASTAP does then). (MCP
-   directionality: clients call rp; rp calls the wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
-   for the full input shape and validation rules.
-2. **`fov_hint_deg`** comes from the caller as an MCP parameter.
-   Its right source is the frame's own sidecar:
-   `optics.fov_height_deg`, recorded at capture time. It is never the
-   live camera or train config looked up by the frame's camera, which
-   may have changed since the frame was taken (`docs/services/rp.md`
-   §"Ground rules", whose gap list tracks the default).
+   (MCP directionality: clients call rp; rp calls the wrapper.) See
+   `docs/services/rp.md` §"`plate_solve` Contract" for the full input
+   shape and validation rules.
+2. **`fov_hint_deg`** comes from the caller as an MCP parameter, else
+   from the frame's own sidecar: `optics.fov_height_deg`, recorded at
+   capture time. It is never the live camera or train config looked
+   up by the frame's camera, which may have changed since the frame
+   was taken (`docs/services/rp.md` §"Ground rules"). With neither,
+   rp sends none, and ASTAP takes the scale from the header or its
+   last solve ([Hint Mapping](#hint-mapping)).
 3. **`search_radius_deg`** is the harder field. **The ASCOM Alpaca
    Telescope spec does not standardize a "pointing uncertainty"
    property.** Mount drivers may expose vendor-specific accuracy
@@ -311,7 +327,8 @@ chain is:
    their rp config (`plate_solver.default_search_radius_deg`) for
    fresh captures on the configured rig; per-call MCP
    `search_radius_deg` overrides for loaded-from-disk images where
-   the configured default may not match the originating rig.
+   the configured default may not match the originating rig. A blind
+   solve takes neither.
 
 Recommended `search_radius_deg` defaults — operators tune per their
 rig:
@@ -321,7 +338,7 @@ rig:
 | Synced to a recent solve, GoTo mount with pointing model | 1°–2° |
 | Synced, no model | 2°–5° |
 | Unsynced cold start | 5°–10° |
-| No reliable mount input (manual pointing) | omit hint ([Hint Mapping](#hint-mapping) says what ASTAP does without one) |
+| No reliable mount input (manual pointing) | `blind: true`: no position, no radius ([Hint Mapping](#hint-mapping)) |
 
 Smaller radius means faster solve. ASTAP's documented sweet spot is
 ~3° for typical amateur GoTo setups.
@@ -368,7 +385,7 @@ The committed fixture has its FITS pointing breadcrumbs (`RA`,
 `DEC`, `OBJCTRA`, `OBJCTDEC`, `OBJECT`) stripped — see issue #236 —
 so the "blind" measurement above truly walks ASTAP's search
 spiral. Operator-captured FITS that retain those header keys will
-behave very differently in blind mode: ASTAP reads the cards as a
+behave very differently without hints: ASTAP reads the cards as a
 free hint and finishes in milliseconds, masking any hint-pipeline
 regression. To reproduce the spread above on your own captures,
 either supply the wrong start position via `ra_hint`/`dec_hint`
@@ -552,10 +569,14 @@ executor of Sentinel's restart command; see the
 ### Belt-and-Suspenders Outer Timeout
 
 `rp`'s HTTP client to this service has its own outer timeout
-(`plate_solver.timeout_secs` in rp config). Even if the wrapper's
+(`plate_solver.timeout` in rp config). Even if the wrapper's
 internal timeout regresses, `rp` does not hang on a `plate_solve`
 call. The wrapper's deadline is the primary control; rp's is the
-backstop.
+backstop, and it never cuts a request short of that deadline: a
+request carrying its own `timeout` gets
+`max(plate_solver.timeout, timeout + 10 s)`, the 10 s covering the
+2 s kill grace and the reap of up to 5 s after the deadline
+([Subprocess Supervision](#subprocess-supervision)).
 
 ### What restart recovers from
 

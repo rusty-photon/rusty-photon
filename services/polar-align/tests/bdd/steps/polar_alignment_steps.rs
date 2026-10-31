@@ -523,20 +523,26 @@ async fn first_solve_hint_near_synced_pointing(world: &mut PolarAlignWorld, tole
     );
 }
 
-#[then("the first solve request should carry no pointing hint")]
-async fn first_solve_request_unhinted(world: &mut PolarAlignWorld) {
+#[then("the first solve request should be blind, with no position and no search radius")]
+async fn first_solve_request_blind(world: &mut PolarAlignWorld) {
     let stub = world
         .plate_solver_stub
         .as_ref()
         .expect("plate solver stub not started");
     let requests = stub.requests().await;
     let first = requests.first().expect("no solve requests recorded");
-    // Manual rotation solves blind AND pins rp's mount hints off — a
-    // hint from the (unrelated) simulator mount would defeat the
-    // no-mount contract.
-    assert!(
-        first.get("ra_hint").is_none() && first.get("dec_hint").is_none(),
+    // The simulator mount is connected, so the frame's sidecar records a
+    // pointing; a manual-rotation solve must not let rp hint with it.
+    assert_eq!(
+        first.get("blind"),
+        Some(&serde_json::Value::Bool(true)),
         "first solve request must be blind, got: {first}"
+    );
+    assert!(
+        first.get("ra_hint").is_none()
+            && first.get("dec_hint").is_none()
+            && first.get("search_radius_deg").is_none(),
+        "a blind solve request carries no position or search radius, got: {first}"
     );
 }
 
