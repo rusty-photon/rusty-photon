@@ -619,13 +619,19 @@ fixture behind every service's `auth.feature`:
   `auth.feature` (copy dsd-fp2's). Deep TLS/auth suites (ppba-driver,
   ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
   `wait_until_ready` instead of hand-rolled cert plumbing.
-- `wait_until_ready` — the readiness probe: polls a URL with the credential
-  until it answers 200. Hand it `https://127.0.0.1:<port>`, never
-  `localhost` ([§5.15](#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost)).
-  When it gives up, the panic names the scheme it dialled, how many
-  attempts it made and how long they took, and the last outcome: a status
-  with the peer address that sent it, or the transport error with its
-  causes.
+- `wait_until_ready` — the readiness probe: polls a URL until it answers
+  200. Hand it `https://127.0.0.1:<port>`, never `localhost`
+  ([§5.15](#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost)).
+  It sends the credential it is given. In a scenario that configures no
+  auth, pass an empty username: the probe then sends no `Authorization`
+  header, and its panic does not mention credentials. Attempts start
+  500 ms apart until a 30 s deadline, and each waits at most 10 s for a
+  response, so a peer that accepts and never answers fails the attempt
+  instead of hanging the step. When the probe gives up, the panic names
+  the scheme it dialled, the attempts and the time they took against the
+  deadline, and the last outcome. That is a status with the peer address
+  that sent it, the transport error with its causes, or `no response
+  within 10s`.
 
 **Doctor smoke (always available, no feature)** — the shared fixture behind
 every service's `doctor.feature`

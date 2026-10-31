@@ -129,8 +129,8 @@ async fn responds_without_credentials(world: &mut UiWorld) {
     let client = reqwest::Client::new();
     let port = world.ui.as_ref().expect("BFF not started").port();
     let url = format!("http://127.0.0.1:{port}/health");
-    // No auth is configured, so the server ignores the Authorization header
-    // the shared readiness probe attaches; readiness still proves liveness.
+    // No auth is configured, so the shared readiness probe carries no
+    // credentials; readiness still proves liveness.
     wait_until_ready(&client, &url, "", "").await;
 
     let resp = client.get(&url).send().await.unwrap();
@@ -142,9 +142,9 @@ async fn answers_over_https_without_credentials(world: &mut UiWorld) {
     let pki = pki(world);
     let client = pki.https_client();
     let url = health_url(world, "https");
-    // TLS only, no auth: the fixture credentials the readiness probe sends
-    // are ignored; readiness proves the TLS listener is answering.
-    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
+    // TLS only, no auth: the readiness probe carries no credentials, and
+    // readiness proves the TLS listener is answering.
+    wait_until_ready(&client, &url, "", "").await;
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);

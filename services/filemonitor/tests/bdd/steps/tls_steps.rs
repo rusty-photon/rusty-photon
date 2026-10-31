@@ -43,7 +43,7 @@ async fn alpaca_management_responds_https(world: &mut FilemonitorWorld) {
         .port();
     let url = format!("https://127.0.0.1:{port}/management/v1/configureddevices");
 
-    // No auth is configured in this scenario, so the credentials the probe
-    // sends are ignored; a 200 proves the endpoint answers over HTTPS.
-    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
+    // No auth is configured in this scenario, so the probe carries no
+    // credentials; a 200 proves the endpoint answers over HTTPS.
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, "", "").await;
 }

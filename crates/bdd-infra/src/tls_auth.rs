@@ -337,18 +337,32 @@ pub async fn spawn_service_handle(
     handle
 }
 
-/// How many times [`wait_until_ready`] asks before it gives up.
-const READY_ATTEMPTS: u32 = 60;
+/// How long [`wait_until_ready`] keeps starting attempts. A fast-failing
+/// server gets 60 attempts in it, the count the probe used to make.
+const READY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The pause between two of [`wait_until_ready`]'s attempts.
 const READY_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Poll `url` with valid credentials until the freshly spawned server
-/// answers 200.
+/// How long one attempt waits for a response before it counts as failed.
 ///
-/// Readiness must be probed *with* credentials — before asserting a 401,
-/// the suite has to know the 401 comes from the auth layer of a live
-/// server, not from the socket not being up.
+/// A third of [`READY_DEADLINE`], the same share of their budget the gemini
+/// and upbv2 suites give their 30 s request timeout (of 90 s). Their 30 s
+/// would let one silent attempt use this probe's whole deadline; a third
+/// still leaves a peer that accepts and never answers three attempts. A
+/// stretch in which the shared poll loop goes unpolled (testing.md §5.9
+/// measures about 10 s on the sanitizer leg) costs at most one retried
+/// attempt, since the next one starts as soon as the loop runs again.
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll `url` until the freshly spawned server answers 200.
+///
+/// Readiness must be probed *with* credentials when the service has auth.
+/// Before asserting a 401, the suite has to know the 401 comes from the
+/// auth layer of a live server, not from the socket not being up. A
+/// scenario that configures no auth passes an empty `username`: the probe
+/// then sends no `Authorization` header, and its panic says nothing about
+/// credentials.
 ///
 /// `url` names the address the service bound, `127.0.0.1`, and never
 /// `localhost`. A service under test owns only the IPv4 half of its port,
@@ -358,40 +372,56 @@ const READY_INTERVAL: Duration = Duration::from_millis(500);
 ///
 /// # Panics
 ///
-/// Panics after [`READY_ATTEMPTS`] attempts, [`READY_INTERVAL`] apart,
-/// without a 200. The message names the scheme dialled, the attempts and
-/// the time they took, and the last thing that came back: the status with
-/// the address that sent it, or the transport error with its causes.
+/// Panics when no attempt has answered 200 by [`READY_DEADLINE`]. Attempts
+/// start [`READY_INTERVAL`] apart, and each waits up to [`ATTEMPT_TIMEOUT`]
+/// for a response, so an attempt still in flight at the deadline may hold
+/// the panic up to that long past it. The message names the scheme dialled,
+/// the attempts and the time they took against the deadline, and the last
+/// outcome. That is the status with the address that sent it, the
+/// transport error with its causes, or an attempt that got no response
+/// within [`ATTEMPT_TIMEOUT`].
 pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &str, password: &str) {
+    let credentials = (!username.is_empty()).then_some((username, password));
     let start = tokio::time::Instant::now();
-    let mut last = String::from("no attempt completed");
-    for _ in 0..READY_ATTEMPTS {
-        match probe_once(client, url, username, password).await {
+    let mut attempts = 0_u32;
+    loop {
+        attempts = attempts.saturating_add(1);
+        let last = match probe_once(client, url, credentials).await {
             Ok(()) => return,
-            Err(outcome) => last = outcome,
+            Err(outcome) => outcome,
+        };
+        if start.elapsed().saturating_add(READY_INTERVAL) >= READY_DEADLINE {
+            let with = if credentials.is_some() {
+                " with valid credentials"
+            } else {
+                ""
+            };
+            panic!(
+                "server did not become ready over {}{with}: {url} \
+                 ({attempts} attempts in {:.1?} against a {READY_DEADLINE:?} deadline); \
+                 last outcome: {last}",
+                dialled_scheme(url),
+                start.elapsed()
+            );
         }
         tokio::time::sleep(READY_INTERVAL).await;
     }
-    panic!(
-        "server did not become ready over {} with valid credentials: {url} \
-         ({READY_ATTEMPTS} attempts in {:.1?}); last outcome: {last}",
-        dialled_scheme(url),
-        start.elapsed()
-    );
 }
 
-/// One readiness attempt: `Ok` on a 200, otherwise what came back instead.
+/// One readiness attempt, carrying `credentials` when given: `Ok` on a
+/// 200, otherwise what came back instead.
 async fn probe_once(
     client: &reqwest::Client,
     url: &str,
-    username: &str,
-    password: &str,
+    credentials: Option<(&str, &str)>,
 ) -> Result<(), String> {
-    let response = client
-        .get(url)
-        .basic_auth(username, Some(password))
-        .send()
+    let mut request = client.get(url);
+    if let Some((username, password)) = credentials {
+        request = request.basic_auth(username, Some(password));
+    }
+    let response = tokio::time::timeout(ATTEMPT_TIMEOUT, request.send())
         .await
+        .map_err(|_| format!("no response within {ATTEMPT_TIMEOUT:?}"))?
         .map_err(|e| format!("transport error: {}", error_chain(&e.without_url())))?;
     if response.status() == reqwest::StatusCode::OK {
         return Ok(());
@@ -640,7 +670,7 @@ mod tests {
             canned_server(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
                 .await;
         let url = format!("http://127.0.0.1:{port}/health");
-        probe_once(&reqwest::Client::new(), &url, "user", "pass")
+        probe_once(&reqwest::Client::new(), &url, Some(("user", "pass")))
             .await
             .unwrap();
     }
@@ -649,7 +679,7 @@ mod tests {
     async fn a_probe_answered_another_status_names_it_and_the_address_that_sent_it() {
         let port = canned_server(UNAVAILABLE).await;
         let url = format!("http://127.0.0.1:{port}/health");
-        let outcome = probe_once(&reqwest::Client::new(), &url, "user", "pass")
+        let outcome = probe_once(&reqwest::Client::new(), &url, Some(("user", "pass")))
             .await
             .unwrap_err();
         assert_eq!(
@@ -662,7 +692,7 @@ mod tests {
     async fn a_probe_answered_with_bytes_that_are_not_http_names_the_cause() {
         let port = canned_server(b"SSH-2.0-not-an-http-server\r\n").await;
         let url = format!("http://127.0.0.1:{port}/health");
-        let outcome = probe_once(&reqwest::Client::new(), &url, "user", "pass")
+        let outcome = probe_once(&reqwest::Client::new(), &url, Some(("user", "pass")))
             .await
             .unwrap_err();
         assert!(
@@ -685,16 +715,21 @@ mod tests {
         assert_eq!(dialled_scheme("https://127.0.0.1:1/health"), "HTTPS");
     }
 
+    /// The message `wait_until_ready` panics with for `url`.
+    async fn readiness_panic(url: &str, username: &str, password: &str) -> String {
+        let (url, username, password) = (url.to_owned(), username.to_owned(), password.to_owned());
+        let probe = tokio::spawn(async move {
+            wait_until_ready(&reqwest::Client::new(), &url, &username, &password).await;
+        });
+        let payload = probe.await.unwrap_err().into_panic();
+        crate::panic_text(payload.as_ref()).to_owned()
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_server_never_ready_panics_naming_the_scheme_attempts_and_last_outcome() {
         let port = canned_server(UNAVAILABLE).await;
         let url = format!("http://127.0.0.1:{port}/health");
-        let probe = tokio::spawn({
-            let url = url.clone();
-            async move { wait_until_ready(&reqwest::Client::new(), &url, "user", "pass").await }
-        });
-        let payload = probe.await.unwrap_err().into_panic();
-        let message = crate::panic_text(payload.as_ref());
+        let message = readiness_panic(&url, "user", "pass").await;
         assert!(
             message.contains(&format!(
                 "over HTTP with valid credentials: {url} (60 attempts in"
@@ -705,6 +740,43 @@ mod tests {
             message.ends_with(&format!(
                 "last outcome: 503 Service Unavailable from 127.0.0.1:{port}"
             )),
+            "{message}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_without_credentials_panics_without_mentioning_them() {
+        let port = canned_server(UNAVAILABLE).await;
+        let url = format!("http://127.0.0.1:{port}/health");
+        let message = readiness_panic(&url, "", "").await;
+        assert!(
+            message.starts_with(&format!("server did not become ready over HTTP: {url} (")),
+            "{message}"
+        );
+        assert!(!message.contains("credentials"), "{message}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_accepts_and_never_answers_is_reported_as_a_timed_out_attempt() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                // Hold the connection open and say nothing: closing it would
+                // turn the silence under test into a transport error.
+                tokio::spawn(async move {
+                    let _held = socket;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/health");
+        let message = readiness_panic(&url, "user", "pass").await;
+        assert!(message.contains("against a 30s deadline"), "{message}");
+        assert!(
+            message.ends_with("last outcome: no response within 10s"),
             "{message}"
         );
     }
