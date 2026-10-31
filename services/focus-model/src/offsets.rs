@@ -392,7 +392,7 @@ async fn resolve(
     config: &Config,
     params: &OffsetsParams,
 ) -> Result<Plan> {
-    let ctx = resolve_train(rig, &params.train_id).await?;
+    let ctx = resolve_train(rig, config, &params.train_id).await?;
     ctx.check_training_run()?;
     let Some(wheel) = ctx.filter_wheel_id.clone() else {
         return Err(FocusModelError::Workflow(format!(
@@ -687,7 +687,7 @@ async fn one_sweep(
     // train is read again after each sweep, and a rig that is no
     // longer the same rig ends the procedure rather than having the
     // sweep it was measuring join the median.
-    let now = resolve_train(session.rig.active, &plan.ctx.train_id).await?;
+    let now = resolve_train(session.rig.active, session.config, &plan.ctx.train_id).await?;
     if let Some(changed) = train_changed(&plan.ctx, &now) {
         return Err(FocusModelError::Workflow(format!(
             "train '{}' changed under the procedure: {changed}; what it measured are \

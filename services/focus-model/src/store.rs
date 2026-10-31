@@ -405,6 +405,9 @@ pub struct TrainFacts {
     /// sole wheel.
     pub filters: Option<Vec<String>>,
     pub optics: OpticsIdentity,
+    /// The focuser the train's config names as its temperature
+    /// sensor; `None` for the train's own terminal focuser.
+    pub temperature_sensor: Option<String>,
 }
 
 /// One train fact a record no longer matches.
@@ -468,6 +471,12 @@ pub struct FocusRecord {
     /// nothing and fills them in on its next write.
     #[serde(default)]
     pub optics: Option<OpticsIdentity>,
+    /// The focuser the train's config named as its temperature sensor
+    /// when the readings were taken; `None` for the train's own
+    /// terminal focuser, which is also where every reading of a record
+    /// written before the store kept this came from.
+    #[serde(default)]
+    pub temperature_sensor: Option<String>,
     // --- what it learned ---
     #[serde(default)]
     pub reference_filter: Option<String>,
@@ -512,6 +521,7 @@ impl FocusRecord {
             camera_id: camera_id.map(str::to_owned),
             filters,
             optics: None,
+            temperature_sensor: None,
             reference_filter: None,
             offsets: BTreeMap::new(),
             temperature_coefficient: None,
@@ -541,7 +551,9 @@ impl FocusRecord {
     /// last good focus are keyed by name, not by position. The message
     /// keeps the order each side reported. The optics are judged by
     /// [`OpticsIdentity`]'s two kinds of `None`, and a record that holds
-    /// none is judged on its devices and filters alone.
+    /// none is judged on its devices and filters alone. The temperature
+    /// sensor is compared as written: its `None` is the train's own
+    /// focuser, not an unknown.
     #[must_use]
     pub fn stale_fields(&self, facts: &TrainFacts) -> Vec<StaleField> {
         let mut stale = Vec::new();
@@ -574,6 +586,13 @@ impl FocusRecord {
         );
         if let Some(optics) = &self.optics {
             stale.extend(optics.stale_fields(&facts.optics));
+        }
+        if self.temperature_sensor != facts.temperature_sensor {
+            stale.push(StaleField {
+                field: "temperature_sensor",
+                recorded: fmt_optional(self.temperature_sensor.as_ref()),
+                current: fmt_optional(facts.temperature_sensor.as_ref()),
+            });
         }
         stale
     }
@@ -972,6 +991,7 @@ mod tests {
             camera_id: Some("main-cam".to_owned()),
             filters: Some(vec!["L".to_owned(), "Ha".to_owned()]),
             optics: optics(),
+            temperature_sensor: None,
         }
     }
 
@@ -1188,6 +1208,49 @@ mod tests {
             record.stale_fields(&gone)[0].to_string(),
             "filters changed from L, Ha to none"
         );
+    }
+
+    /// The sensor's `None` is the train's own focuser, so naming a
+    /// stand-in, changing it and removing it are each a change.
+    #[test]
+    fn the_temperature_sensor_is_compared_as_written() {
+        let mut stand_in = facts();
+        stand_in.temperature_sensor = Some("oag-focuser".to_owned());
+        let stale = record().stale_fields(&stand_in);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert_eq!(
+            stale[0].to_string(),
+            "temperature_sensor changed from none to oag-focuser"
+        );
+
+        let mut named = record();
+        named.temperature_sensor = Some("oag-focuser".to_owned());
+        let stale = named.stale_fields(&stand_in);
+        assert!(stale.is_empty(), "{stale:?}");
+
+        let mut other = facts();
+        other.temperature_sensor = Some("guide-focuser".to_owned());
+        assert_eq!(
+            named.stale_fields(&other)[0].to_string(),
+            "temperature_sensor changed from oag-focuser to guide-focuser"
+        );
+        assert_eq!(
+            named.stale_fields(&facts())[0].to_string(),
+            "temperature_sensor changed from oag-focuser to none"
+        );
+    }
+
+    /// Every reading of a record written before the store kept the
+    /// sensor came from the train's own focuser, which is what the
+    /// missing field reads as.
+    #[test]
+    fn a_record_without_a_temperature_sensor_reads_as_the_trains_own_focuser() {
+        let mut json = serde_json::to_value(record()).unwrap();
+        json.as_object_mut().unwrap().remove("temperature_sensor");
+        let old: FocusRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(old.temperature_sensor, None);
+        let stale = old.stale_fields(&facts());
+        assert!(stale.is_empty(), "{stale:?}");
     }
 
     #[test]

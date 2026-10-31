@@ -806,7 +806,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
-| A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, and each sweep of `determine_filter_offsets`) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor` |
+| A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, and each sweep of `determine_filter_offsets`) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
@@ -1481,7 +1481,10 @@ moves the wheel and an unknown one is refused; a seeded record predicts
 the start and a stale one is reported, predicts nothing and is reset by
 the run, whether its camera or its aperture moved on, while a record
 that holds no optics stays fresh and takes the train's on its next
-run; `set_focus_offsets` validates and writes, `reset_focus_model`
+run; a `temperature_sensor` on the simulator's train, whose focuser
+has a probe, is refused by `focus_train` and `determine_filter_offsets`
+before anything moves, with nothing recorded, and naming one makes a
+record stale until `reset_focus_model` takes it on; `set_focus_offsets` validates and writes, `reset_focus_model`
 drops the history and keeps the offsets, `get_focus_runs` pages newest
 first; a cancelled sweep restores the start; a guide-coupled train
 pauses and resumes guiding around the sweep, on the failure path too;
@@ -1522,13 +1525,14 @@ credential — and that `tools/list` answers with no `rp` running.
 ### Unit Tests
 
 - Config: defaults, the `server` block, CLI overrides, every typed
-  bound named on a bad value, unknown keys rejected, the default store
-  path per platform.
+  bound named on a bad value (an empty `temperature_sensor` among
+  them), unknown keys rejected, the default store path per platform.
 - Store: round trip, the cap, newest-first reads, the per-filter last
   good, reopen, a newer schema refused, staleness per field — an
   optical fact unknown on either side compared on nothing, an omitted
-  obstruction or wavelength compared as a value — the identity filling
-  in on a write, reset.
+  obstruction or wavelength compared as a value, the temperature
+  sensor compared as written and read as the train's own focuser on a
+  record that predates it — the identity filling in on a write, reset.
 - Sizing: the worked example, the blur constant from the obstruction
   ratio, the CFZ floor on the step, the wavelength
   fallback, the override sources, the missing-fact error.
@@ -1554,7 +1558,14 @@ credential — and that `tools/list` answers with no `rp` running.
   switch, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the
   shared walk's stop-at-failure, and its refusal of a step whose
-  focuser its run train does not end in. On a guiding train: the refusal
+  focuser its run train does not end in. The temperature source: a
+  stand-in read for a focuser without a probe, its reading in the run,
+  the last good focus and the record's sensor; refused, with nothing
+  moved or recorded, while the train's own focuser reports a
+  temperature; no reading from a stand-in without a probe or whose read
+  fails, and no stand-in read at all after the train's own read fails;
+  the record stale on a named sensor until a reset takes it on, the
+  offsets kept. On a guiding train: the refusal
   naming every train that has its focuser, and none for an imaging
   train; the one lease taken before the handshake, every move and
   capture under it, the put-back too, and its release last; a refused

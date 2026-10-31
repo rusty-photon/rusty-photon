@@ -416,7 +416,7 @@ pub async fn calibrate_temperature(
     config: &Config,
     train_id: &str,
 ) -> Result<CalibrationView> {
-    let ctx = resolve_train(rig, train_id).await?;
+    let ctx = resolve_train(rig, config, train_id).await?;
     let (_, view) = store
         .update(train_id, move |held| {
             let Some(mut record) = held else {

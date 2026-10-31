@@ -434,7 +434,7 @@ impl FocusHandler {
             };
             finish(
                 "get_focus_model",
-                workflow::get_focus_model(&active, &run.store, &args.train_id).await,
+                workflow::get_focus_model(&active, &run.store, &run.config, &args.train_id).await,
             )
         })
         .await
@@ -459,6 +459,7 @@ impl FocusHandler {
                 workflow::get_focus_runs(
                     &active,
                     &run.store,
+                    &run.config,
                     &args.train_id,
                     args.limit.unwrap_or(DEFAULT_RUN_LIMIT),
                     args.filter.as_deref(),
@@ -500,6 +501,7 @@ impl FocusHandler {
                 workflow::set_focus_offsets(
                     &active,
                     &run.store,
+                    &run.config,
                     &args.train_id,
                     &args.reference,
                     args.offsets,
@@ -535,7 +537,7 @@ impl FocusHandler {
             };
             finish(
                 "reset_focus_model",
-                workflow::reset_focus_model(&active, &run.store, &args.train_id).await,
+                workflow::reset_focus_model(&active, &run.store, &run.config, &args.train_id).await,
             )
         })
         .await

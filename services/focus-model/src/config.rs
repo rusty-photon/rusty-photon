@@ -184,6 +184,31 @@ bounded!(
     also: Eq
 );
 
+/// The focuser whose temperature probe stands in for a train's own
+/// focuser, which has none (docs/services/focus-model.md § The
+/// temperature source): an `rp` focuser id, never empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct TemperatureSensor(String);
+
+impl TryFrom<String> for TemperatureSensor {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if value.trim().is_empty() {
+            return Err("temperature_sensor must be a focuser id, not empty".to_owned());
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TemperatureSensor {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The sweep-sizing knobs (docs/services/focus-model.md § Sweep sizing).
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -231,6 +256,10 @@ pub struct TrainConfig {
     /// nothing.
     #[serde(default)]
     pub min_fit_r_squared: Option<MinFitRSquared>,
+    /// Another focuser whose probe stands in for this train's, which
+    /// has none; `None` reads the train's own terminal focuser.
+    #[serde(default)]
+    pub temperature_sensor: Option<TemperatureSensor>,
     #[serde(default = "default_confirmation_tolerance")]
     pub confirmation_tolerance: ConfirmationTolerance,
     #[serde(default = "default_max_attempts")]
@@ -254,6 +283,7 @@ impl Default for TrainConfig {
             min_fit_points: default_min_fit_points(),
             min_star_fraction: default_min_star_fraction(),
             min_fit_r_squared: None,
+            temperature_sensor: None,
             confirmation_tolerance: default_confirmation_tolerance(),
             max_attempts: default_max_attempts(),
             step_size: None,
@@ -543,6 +573,7 @@ mod tests {
         assert_eq!(train.min_fit_points.get(), 5);
         assert_eq!(train.min_star_fraction.get(), 0.1);
         assert_eq!(train.min_fit_r_squared, None);
+        assert_eq!(train.temperature_sensor, None);
         assert_eq!(train.confirmation_tolerance.get(), 0.25);
         assert_eq!(train.max_attempts.get(), 2);
         assert_eq!(train.step_size, None);
@@ -568,7 +599,7 @@ mod tests {
                     "duration": "2s", "min_area": 6, "max_area": 800,
                     "threshold_sigma": 4.0, "frames_per_step": 2,
                     "min_fit_points": 6, "min_star_fraction": 0.2,
-                    "min_fit_r_squared": 0.6,
+                    "min_fit_r_squared": 0.6, "temperature_sensor": "oag-focuser",
                     "confirmation_tolerance": 0.5, "max_attempts": 3,
                     "step_size": 25, "half_width": 100
                 }
@@ -598,6 +629,13 @@ mod tests {
         assert_eq!(train.min_fit_points.get(), 6);
         assert_eq!(train.min_star_fraction.get(), 0.2);
         assert_eq!(train.min_fit_r_squared.map(MinFitRSquared::get), Some(0.6));
+        assert_eq!(
+            train
+                .temperature_sensor
+                .as_ref()
+                .map(TemperatureSensor::as_str),
+            Some("oag-focuser")
+        );
         assert_eq!(train.confirmation_tolerance.get(), 0.5);
         assert_eq!(train.max_attempts.get(), 3);
         assert_eq!(train.step_size.map(Steps::get), Some(25));
@@ -616,7 +654,7 @@ mod tests {
     /// the field in the error.
     #[test]
     fn every_bound_is_checked_at_load_naming_the_field() {
-        let cases: [(&str, &str); 15] = [
+        let cases: [(&str, &str); 17] = [
             (r#""sweep": { "end_ratio": 1.0 }"#, "sweep.end_ratio"),
             (r#""sweep": { "points": 2 }"#, "sweep.points"),
             (
@@ -642,6 +680,14 @@ mod tests {
             (
                 r#""trains": { "t": { "min_fit_r_squared": -0.1 } }"#,
                 "min_fit_r_squared",
+            ),
+            (
+                r#""trains": { "t": { "temperature_sensor": "" } }"#,
+                "temperature_sensor",
+            ),
+            (
+                r#""trains": { "t": { "temperature_sensor": "  " } }"#,
+                "temperature_sensor",
             ),
             (
                 r#""trains": { "t": { "confirmation_tolerance": -0.1 } }"#,
