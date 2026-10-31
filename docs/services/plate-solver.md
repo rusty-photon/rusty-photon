@@ -501,21 +501,24 @@ the test sets before spawning the wrapper:
 | `exit_failure` | Write to stderr, exit 1 (no `.wcs`) | `solve_failed` (non-zero exit branch) |
 | `hang` | Sleep indefinitely; respond cleanly to the platform's graceful signal (Unix `SIGTERM`; Windows `CTRL_BREAK_EVENT`) | `solve_timeout` (terminated) |
 | `ignore_sigterm` | Trap and ignore the graceful signal; sleep anyway. Mode name kept for stability — semantics are platform-neutral. | `solve_timeout` (killed via the platform's force-kill) |
+| `hold` | Hold the solve open until the test releases it, then behave as `normal`; a solve started after the release behaves as `hang` | Single-flight queueing |
 | `malformed_wcs` | Write a `.wcs` missing `CRVAL2`, exit 0 | `solve_failed` (parser-detected branch) |
 | `no_wcs` | Exit 0 without writing any `.wcs` | `solve_failed` (sidecar-missing branch) |
 
 Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
-Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records each invocation's
-spawn time (ns since the Unix epoch) as the *name* of its own empty file,
-`<nanos>-<pid>`, in `<dir>`. Creating the file publishes the name in one
-step, so a child killed at any point leaves either no file or a complete
-record, never a half-written one. The single-flight BDD scenario reads the
-file names to assert
-serialization from the children's actual spawn ordering, rather than
-from client-side HTTP-completion timing (which was jitter-prone on
-loaded CI runners). Per-child files avoid a shared handle — cross-process
-appends to one file dropped writes on Windows.
+`hold` mode takes its directory from `MOCK_ASTAP_HOLD_DIR=<dir>`. An
+invocation that starts before the test has created `<dir>/release`
+records its start as its own empty file, `started-<pid>`, in `<dir>`,
+waits for `release` to appear, then writes the canned `.wcs` and exits 0;
+one that starts after the release hangs. The single-flight BDD scenario
+uses it to fix the order of two solves rather than race them: the first
+is held open while the second request queues behind the semaphore, so
+nothing can answer the second request before the scenario releases the
+first. No assertion in it can fail because a runner is slow: the
+second request is unanswered before the release, and after it, it times
+out on its own deadline (`(terminated)`, at least that deadline after the
+release, which also shows the queue wait was not counted against it).
 
 This binary is **not feature-gated** — it builds with every
 `cargo build --all-targets`. BDD and runner integration tests

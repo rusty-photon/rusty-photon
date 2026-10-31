@@ -9,7 +9,7 @@ use bdd_infra::ServiceHandle;
 use cucumber::World;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
@@ -37,12 +37,13 @@ pub struct PlateSolverWorld {
     /// `MOCK_ASTAP_ARGV_OUT` is set on its env.
     pub argv_out_path: Option<PathBuf>,
 
-    /// Directory in which each `mock_astap` child creates an empty file
-    /// named for its spawn time and PID (`<nanos>-<pid>`) when
-    /// `MOCK_ASTAP_SPAWN_DIR` is set on its env. The
-    /// single-flight scenario reads it to observe server-side spawn
-    /// ordering directly.
-    pub spawn_dir_path: Option<PathBuf>,
+    /// Directory set as `MOCK_ASTAP_HOLD_DIR` on `mock_astap`'s env for
+    /// `hold` mode: a held child records its start there as `started-<pid>`
+    /// and waits for the scenario to create `release` in it.
+    pub hold_dir_path: Option<PathBuf>,
+
+    /// When the scenario created the `release` file in `hold_dir_path`.
+    pub released_at: Option<Instant>,
 
     /// Mode for the next wrapper spawn (passed via `astap_extra_env`).
     pub mock_astap_mode: Option<String>,
@@ -66,8 +67,8 @@ pub struct PlateSolverWorld {
     /// set to Y" When step.
     pub pending_hint: Option<(String, f64)>,
 
-    /// Concurrent-request timings for the supervision feature.
-    pub concurrent_results: Vec<ConcurrentResult>,
+    /// Solve requests sent in the background, in the order they were sent.
+    pub background_requests: Vec<BackgroundRequest>,
 
     /// Configuration JSON being accumulated by `configuration.feature`'s
     /// composing Given steps. Materialized to disk by the starting When
@@ -136,9 +137,60 @@ pub struct HttpResponse {
     pub body: serde_json::Value,
 }
 
+/// A solve request running on its own task, so the scenario can act while
+/// it is outstanding.
+#[derive(Debug)]
+pub struct BackgroundRequest {
+    task: Option<tokio::task::JoinHandle<BackgroundAnswer>>,
+    answer: Option<BackgroundAnswer>,
+}
+
 #[derive(Debug, Clone)]
-pub struct ConcurrentResult {
-    pub status: u16,
+pub struct BackgroundAnswer {
+    pub response: HttpResponse,
+    /// When the answer reached the test, which is never before the wrapper
+    /// sent it.
+    pub answered_at: Instant,
+}
+
+impl BackgroundRequest {
+    /// POST `body` to `url` on a new task.
+    pub fn spawn(url: String, body: serde_json::Value) -> Self {
+        let client = PlateSolverWorld::http_client();
+        let task = tokio::spawn(async move {
+            let resp = client.post(&url).json(&body).send().await.expect("POST");
+            let status = resp.status().as_u16();
+            let bytes = resp.bytes().await.expect("read body");
+            let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            BackgroundAnswer {
+                response: HttpResponse { status, body },
+                answered_at: Instant::now(),
+            }
+        });
+        Self {
+            task: Some(task),
+            answer: None,
+        }
+    }
+
+    /// Whether the answer has arrived, without waiting for it.
+    pub fn is_answered(&self) -> bool {
+        self.answer.is_some()
+            || self
+                .task
+                .as_ref()
+                .is_some_and(tokio::task::JoinHandle::is_finished)
+    }
+
+    /// Wait for the answer.
+    pub async fn answer(&mut self) -> &BackgroundAnswer {
+        if let Some(task) = self.task.take() {
+            self.answer = Some(task.await.expect("background request task"));
+        }
+        self.answer
+            .as_ref()
+            .expect("a background request has a task or an answer")
+    }
 }
 
 impl PlateSolverWorld {
@@ -227,8 +279,8 @@ impl PlateSolverWorld {
         if let Some(p) = self.argv_out_path.clone() {
             extra_env.insert("MOCK_ASTAP_ARGV_OUT".to_string(), p.display().to_string());
         }
-        if let Some(p) = self.spawn_dir_path.clone() {
-            extra_env.insert("MOCK_ASTAP_SPAWN_DIR".to_string(), p.display().to_string());
+        if let Some(p) = self.hold_dir_path.clone() {
+            extra_env.insert("MOCK_ASTAP_HOLD_DIR".to_string(), p.display().to_string());
         }
 
         self.astap_binary_path = Some(mock_path.clone());

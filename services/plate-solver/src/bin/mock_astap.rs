@@ -8,6 +8,7 @@
 //! | `exit_failure` | Print to stderr, exit 1 (no `.wcs`) |
 //! | `hang` | Sleep indefinitely; respond to the platform's graceful signal cleanly |
 //! | `ignore_sigterm` | Trap and ignore the graceful signal; sleep anyway. Force-kill terminates. |
+//! | `hold` | Hold the solve open until the test releases it, then behave as `normal`; once released, behave as `hang` (see below) |
 //! | `malformed_wcs` | Write a `.wcs` missing CRVAL2, exit 0 |
 //! | `no_wcs` | Exit 0 without writing any `.wcs` |
 //!
@@ -15,16 +16,16 @@
 //! file at `<path>`, one arg per line, with a trailing blank line as record
 //! separator. Used for end-to-end argv-flow assertions.
 //!
-//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records this invocation's spawn
-//! time — nanoseconds since the Unix epoch — as the NAME of its own empty
-//! file `<nanos>-<pid>` in `<dir>`: creating the file publishes the name in
-//! one step, so a child killed at any point leaves either no file or a
-//! complete record, never a half-written one. Each child creates its own file
-//! so concurrent invocations never
-//! share a handle (cross-process appends to one file proved lossy on
-//! Windows). The single-flight BDD scenario reads the directory to observe
-//! server-side spawn ordering directly, which is immune to the client-side
-//! HTTP-completion jitter that made the old wall-clock-gap check flaky.
+//! `hold` mode takes its directory from `MOCK_ASTAP_HOLD_DIR=<dir>`. An
+//! invocation that starts before the test has created `<dir>/release`
+//! records its start as its own empty file `started-<pid>` in `<dir>`,
+//! waits for `release` to appear, then writes the canned `.wcs` and exits 0.
+//! An invocation that starts after the release hangs, as `hang` does. A
+//! hold that ends without a release (the directory is deleted, or 120 s
+//! pass) exits 2, so a failed scenario leaves no child behind. The
+//! single-flight BDD scenario uses it to fix the order of two solves: the
+//! first is held open while the second queues, and the second, started only
+//! after the release, ends at its own deadline.
 //!
 //! Pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
 
@@ -123,12 +124,6 @@ fn main() -> std::process::ExitCode {
         let _ = write_argv(&out_path, &args);
     }
 
-    // Record spawn time before dispatching: `hang` mode never returns, so
-    // the timestamp must be written up front.
-    if let Ok(spawn_dir) = std::env::var("MOCK_ASTAP_SPAWN_DIR") {
-        let _ = record_spawn(&spawn_dir);
-    }
-
     let mode = std::env::var("MOCK_ASTAP_MODE").unwrap_or_else(|_| "normal".to_string());
 
     match mode.as_str() {
@@ -136,6 +131,7 @@ fn main() -> std::process::ExitCode {
         "exit_failure" => run_exit_failure(),
         "hang" => run_hang(),
         "ignore_sigterm" => run_ignore_sigterm(),
+        "hold" => run_hold(&args),
         "malformed_wcs" => run_malformed_wcs(&args),
         "no_wcs" => run_no_wcs(),
         other => {
@@ -155,28 +151,6 @@ fn write_argv(path: &str, args: &[String]) -> std::io::Result<()> {
     }
     writeln!(f)?;
     Ok(())
-}
-
-/// Record this invocation's spawn time — nanoseconds since the Unix epoch —
-/// as the name of its own empty file under `dir`. Nothing is written into
-/// it: a second write after the create is a step a killed child can miss,
-/// leaving an empty file a reader of the contents would misparse.
-/// `SystemTime` (wall clock) is
-/// used rather than `Instant` because the timestamps are compared across
-/// separate `mock_astap` processes and `Instant`'s epoch is process-local.
-///
-/// Each child writes its own file rather than appending to a shared one:
-/// cross-process appends to a single file dropped writes on Windows. The
-/// filename combines the timestamp and PID so two children can never collide
-/// on a name — neither via PID reuse (a serialized second child may inherit
-/// the first's freed PID) nor via identical timestamps (parallel spawns).
-fn record_spawn(dir: &str) -> std::io::Result<()> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    std::fs::create_dir_all(dir)?;
-    let path = std::path::Path::new(dir).join(format!("{nanos}-{}", std::process::id()));
-    std::fs::File::create(path).map(drop)
 }
 
 fn fits_path_from_argv(args: &[String]) -> Option<PathBuf> {
@@ -252,6 +226,38 @@ fn run_ignore_sigterm() -> std::process::ExitCode {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
+}
+
+fn run_hold(args: &[String]) -> std::process::ExitCode {
+    let Ok(dir) = std::env::var("MOCK_ASTAP_HOLD_DIR") else {
+        eprintln!("mock_astap: MOCK_ASTAP_HOLD_DIR required in `hold` mode");
+        return std::process::ExitCode::from(2);
+    };
+    let dir = std::path::Path::new(&dir);
+    let release = dir.join("release");
+    if release.exists() {
+        return run_hang();
+    }
+    let started = dir.join(format!("started-{}", std::process::id()));
+    if let Err(e) = std::fs::File::create(&started) {
+        eprintln!("mock_astap: failed to create {}: {e}", started.display());
+        return std::process::ExitCode::from(2);
+    }
+    // A scenario that fails before the release still ends the hold: deleting
+    // its temp dir ends it at once, and the 120 s bound (the default
+    // `max_solve_timeout`) ends one whose wrapper was killed outright.
+    let held_since = std::time::Instant::now();
+    while !release.exists() {
+        if !dir.exists() || held_since.elapsed() > std::time::Duration::from_secs(120) {
+            eprintln!(
+                "mock_astap: the hold in {} ended without a release",
+                dir.display()
+            );
+            return std::process::ExitCode::from(2);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    run_normal(args)
 }
 
 fn run_malformed_wcs(args: &[String]) -> std::process::ExitCode {

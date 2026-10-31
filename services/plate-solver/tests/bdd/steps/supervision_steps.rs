@@ -1,109 +1,144 @@
 //! Step definitions for `subprocess_supervision.feature`.
 
-use crate::world::{ConcurrentResult, PlateSolverWorld};
+use crate::world::{BackgroundAnswer, BackgroundRequest, PlateSolverWorld};
 use cucumber::{then, when};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-#[when(expr = "I POST two concurrent solve requests with timeout {string} each")]
-async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: String) {
-    // Each mock_astap child creates an empty file under this directory, named
-    // for its spawn time, so the Then step can observe serialization
-    // server-side. Must
-    // be set before the wrapper starts so it lands in the wrapper's config.
-    let spawn_dir = world.temp_dir_path().join("spawns");
-    std::fs::create_dir_all(&spawn_dir).expect("create spawn dir");
-    world.spawn_dir_path = Some(spawn_dir);
-
-    // Make sure the wrapper is up before launching parallel requests.
+#[when(expr = "I POST a (second )solve request with timeout {string} in the background")]
+async fn when_post_solve_in_background(world: &mut PlateSolverWorld, timeout: String) {
+    // `hold` mode's children record their start and wait for the release in
+    // this directory. Must be set before the wrapper starts so it lands in
+    // the wrapper's config.
+    if world.hold_dir_path.is_none() {
+        let dir = world.temp_dir_path().join("hold");
+        std::fs::create_dir_all(&dir).expect("create hold dir");
+        world.hold_dir_path = Some(dir);
+    }
     if world.service_handle.is_none() {
         world.start_wrapper_with_mock().await;
     }
     let url = format!("{}/api/v1/solve", world.wrapper_url());
-    let fits = world.fits_path.as_ref().expect("fits_path").clone();
+    let fits = world.fits_path.as_ref().expect("fits_path");
     let body = serde_json::json!({ "fits_path": fits, "timeout": timeout });
-
-    let client = PlateSolverWorld::http_client();
-    let make_request = || {
-        let url = url.clone();
-        let body = body.clone();
-        let client = client.clone();
-        async move {
-            let resp = client.post(&url).json(&body).send().await.expect("POST");
-            ConcurrentResult {
-                status: resp.status().as_u16(),
-            }
-        }
-    };
-
-    let (a, b) = tokio::join!(make_request(), make_request());
-    world.concurrent_results = vec![a, b];
+    world
+        .background_requests
+        .push(BackgroundRequest::spawn(url, body));
 }
 
-#[then("both responses have status 504")]
-async fn then_both_responses_504(world: &mut PlateSolverWorld) {
-    assert_eq!(world.concurrent_results.len(), 2);
-    for r in &world.concurrent_results {
-        assert_eq!(r.status, 504, "expected both 504, got {r:?}");
+// A barrier on something the solve itself produced: once its child has
+// recorded its start, its request holds the permit. The budget bounds a hang.
+#[when("mock_astap has started that solve")]
+async fn when_mock_astap_started_solve(world: &mut PlateSolverWorld) {
+    let dir = hold_dir(world);
+    let budget = Duration::from_secs(30);
+    let started = Instant::now();
+    while held_solves(&dir).is_empty() {
+        assert!(
+            started.elapsed() < budget,
+            "no held mock_astap solve recorded its start in {} within {budget:?}",
+            dir.display()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-#[then("the two solves were serialized by the single-flight semaphore")]
-async fn then_solves_serialized(world: &mut PlateSolverWorld) {
-    // Observe serialization server-side: each `mock_astap` child records its
-    // spawn time (ns since the Unix epoch) as the name of its own file under
-    // `MOCK_ASTAP_SPAWN_DIR`. With a capacity-1 semaphore the second child
-    // cannot spawn until the first releases the permit — which happens only
-    // after the first request's full 100ms deadline elapses. So serialized
-    // spawns are ~one deadline apart, while a parallel pair (if the semaphore
-    // ever failed) would spawn near-simultaneously. The 50ms floor is half
-    // the deadline: wide margin above runner jitter, yet a parallel
-    // regression (gap ≈ 0) still trips it.
-    //
-    // This replaces an earlier check on client-side HTTP completion times
-    // captured under `tokio::join!`. On a loaded Windows CI runner the test
-    // task could be descheduled across both completions, collapsing the
-    // observed gap below the threshold and failing even though serialization
-    // worked. Spawn times are recorded inside the children, so they reflect
-    // true server-side ordering regardless of how the client is scheduled.
-    // Each child creates its own uniquely-named, empty file; a shared append file
-    // dropped writes across processes on Windows.
-    //
-    // The spawn time is the file's NAME (`<nanos>-<pid>`); the file itself is
-    // empty, because a second `write` after the create is a step a child the
-    // wrapper kills could miss. That leaves one assumption, and it is a timing
-    // one: each child reaches `record_spawn` before its 100ms deadline. A
-    // child a loaded runner holds past that is killed with no file, and the
-    // count assertion below fails.
-    let dir = world
-        .spawn_dir_path
-        .as_ref()
-        .expect("spawn_dir_path set by the concurrent-request When step");
-    let mut spawns: Vec<u128> = std::fs::read_dir(dir)
-        .expect("read spawn dir")
-        .map(|entry| {
-            let name = entry.expect("spawn dir entry").file_name();
-            let name = name.to_str().expect("spawn file name is UTF-8");
-            let (nanos, _pid) = name
-                .split_once('-')
-                .expect("spawn file name is <nanos>-<pid>");
-            nanos
-                .parse::<u128>()
-                .expect("spawn file name starts with the spawn time in u128 ns")
-        })
-        .collect();
+#[when(expr = "{int} milliseconds pass")]
+async fn when_milliseconds_pass(_world: &mut PlateSolverWorld, ms: u64) {
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+#[then("the second request has not been answered")]
+async fn then_second_request_unanswered(world: &mut PlateSolverWorld) {
+    let second = request(world, "second");
+    if second.is_answered() {
+        let answer = second.answer().await;
+        panic!(
+            "the second request was answered while the first solve was still held: {:?}",
+            answer.response
+        );
+    }
+}
+
+// The instant is taken before the file exists, so a floor measured from it is
+// never short.
+#[when("mock_astap is released")]
+async fn when_mock_astap_released(world: &mut PlateSolverWorld) {
+    let dir = hold_dir(world);
+    world.released_at = Some(Instant::now());
+    std::fs::File::create(dir.join("release")).expect("create release file");
+}
+
+#[then(expr = "the {word} request is answered with status {int}")]
+async fn then_request_answered_with_status(
+    world: &mut PlateSolverWorld,
+    which: String,
+    status: u16,
+) {
+    let answer: BackgroundAnswer = request(world, &which).answer().await.clone();
     assert_eq!(
-        spawns.len(),
-        2,
-        "expected exactly two mock_astap spawn files in {}, got {spawns:?}",
+        answer.response.status, status,
+        "the {which} request: expected {status}, got {:?}",
+        answer.response
+    );
+    world.last_response = Some(answer.response);
+}
+
+#[then(expr = "the second request was answered at least {int} milliseconds after the release")]
+async fn then_second_answered_after_release(world: &mut PlateSolverWorld, ms: u64) {
+    let released_at = world.released_at.expect("mock_astap was released");
+    let answered_at = request(world, "second").answer().await.answered_at;
+    let after = answered_at.saturating_duration_since(released_at);
+    assert!(
+        after >= Duration::from_millis(ms),
+        "the second request was answered {after:?} after the release, under {ms}ms"
+    );
+}
+
+#[then("mock_astap held only one solve")]
+async fn then_mock_astap_held_one_solve(world: &mut PlateSolverWorld) {
+    let dir = hold_dir(world);
+    let held = held_solves(&dir);
+    assert_eq!(
+        held.len(),
+        1,
+        "expected one held solve in {}, got {held:?}",
         dir.display()
     );
-    spawns.sort_unstable();
-    let gap_ms = (spawns[1] - spawns[0]) / 1_000_000; // ns → ms
-    assert!(
-        gap_ms >= 50,
-        "single-flight failed: child spawns only {gap_ms}ms apart (parallel?); \
-         serialized spawns are ~one 100ms deadline apart (timestamps: {spawns:?})"
-    );
+}
+
+fn hold_dir(world: &PlateSolverWorld) -> PathBuf {
+    world
+        .hold_dir_path
+        .clone()
+        .expect("hold_dir_path set by the background-request When step")
+}
+
+/// The `started-<pid>` files held `mock_astap` children recorded in `dir`.
+fn held_solves(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .expect("read hold dir")
+        .map(|entry| {
+            entry
+                .expect("hold dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.starts_with("started-"))
+        .collect()
+}
+
+fn request<'a>(world: &'a mut PlateSolverWorld, which: &str) -> &'a mut BackgroundRequest {
+    let index = match which {
+        "first" => 0,
+        "second" => 1,
+        other => panic!("no {other:?} background request: expected first or second"),
+    };
+    world
+        .background_requests
+        .get_mut(index)
+        .unwrap_or_else(|| panic!("no {which} background request was sent"))
 }
 
 // A floor on the response time, with no matching ceiling. The asymmetry is
