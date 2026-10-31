@@ -8,7 +8,7 @@
 //! | `exit_failure` | Print to stderr, exit 1 (no `.wcs`) |
 //! | `hang` | Sleep indefinitely; respond to the platform's graceful signal cleanly |
 //! | `ignore_sigterm` | Trap and ignore the graceful signal; sleep anyway. Force-kill terminates. |
-//! | `hold` | Hold the solve open until the test releases it, then behave as `normal`; once released, behave as `hang` (see below) |
+//! | `hold` | Before the test's release: wait for it, then behave as `normal`. After it: behave as `hang` (see below) |
 //! | `malformed_wcs` | Write a `.wcs` missing CRVAL2, exit 0 |
 //! | `no_wcs` | Exit 0 without writing any `.wcs` |
 //!
@@ -18,11 +18,13 @@
 //!
 //! `hold` mode takes its directory from `MOCK_ASTAP_HOLD_DIR=<dir>`. An
 //! invocation that starts before the test has created `<dir>/release`
-//! records its start as its own empty file `started-<pid>` in `<dir>`,
-//! waits for `release` to appear, then writes the canned `.wcs` and exits 0.
-//! An invocation that starts after the release hangs, as `hang` does. A
-//! hold that ends without a release (the directory is deleted, or 120 s
-//! pass) exits 2, so a failed scenario leaves no child behind. The
+//! records that as its own empty file `started-<pid>` in `<dir>`, waits for
+//! `release` to appear, then writes the canned `.wcs` and exits 0. A test
+//! that releases only after seeing `started-` knows the child took the hold,
+//! however slowly it started. An
+//! invocation that starts after the release hangs, as `hang` does. A hold
+//! that ends without a release (the directory is deleted, or 120 s pass)
+//! exits 2, so a failed scenario leaves no held child behind. The
 //! single-flight BDD scenario uses it to fix the order of two solves: the
 //! first is held open while the second queues, and the second, started only
 //! after the release, ends at its own deadline.

@@ -511,14 +511,23 @@ argv to the named file, used for end-to-end argv-flow assertions.
 invocation that starts before the test has created `<dir>/release`
 records its start as its own empty file, `started-<pid>`, in `<dir>`,
 waits for `release` to appear, then writes the canned `.wcs` and exits 0;
-one that starts after the release hangs. The single-flight BDD scenario
-uses it to fix the order of two solves rather than race them: the first
-is held open while the second request queues behind the semaphore, so
-nothing can answer the second request before the scenario releases the
-first. No assertion in it can fail because a runner is slow: the
-second request is unanswered before the release, and after it, it times
-out on its own deadline (`(terminated)`, at least that deadline after the
-release, which also shows the queue wait was not counted against it).
+one that starts after the release hangs. A hold that ends without a
+release (the directory is deleted, or 120 s pass) exits 2, so a failed
+scenario leaves no held child behind.
+
+The single-flight BDD scenario uses `hold` to fix the order of two solves
+rather than race them, and reads the wrapper's own account of what it did.
+The solve handler logs at `debug` — `solve request queued behind a running
+solve` when the semaphore refuses a request, `starting the solve` with the
+timeout it hands the runner, and `solve finished` before the permit drops —
+and the BDD world runs the wrapper with `RUST_LOG=info,plate_solver=debug`.
+The scenario releases the first solve only after its child has recorded
+its start and the wrapper has logged the second request queueing, then
+holds it 500 ms more, longer than the second request's 100 ms timeout.
+It then asserts the wrapper's events in order: the second solve starts
+only after the first finished, with its whole 100 ms. Every wait is on
+something the wrapper or the mock produced, so no assertion can fail
+because a runner is slow.
 
 This binary is **not feature-gated** — it builds with every
 `cargo build --all-targets`. BDD and runner integration tests

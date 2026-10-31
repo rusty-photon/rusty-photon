@@ -5,11 +5,16 @@ use cucumber::{then, when};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The wrapper's debug lines the single-flight scenario reads, in
+/// `services/plate-solver/src/api.rs`.
+const QUEUED: &str = "solve request queued behind a running solve";
+const STARTING: &str = "starting the solve";
+const FINISHED: &str = "solve finished";
+
 #[when(expr = "I POST a (second )solve request with timeout {string} in the background")]
 async fn when_post_solve_in_background(world: &mut PlateSolverWorld, timeout: String) {
-    // `hold` mode's children record their start and wait for the release in
-    // this directory. Must be set before the wrapper starts so it lands in
-    // the wrapper's config.
+    // `hold` mode's children wait for the release in this directory. Must be
+    // set before the wrapper starts so it lands in the wrapper's config.
     if world.hold_dir_path.is_none() {
         let dir = world.temp_dir_path().join("hold");
         std::fs::create_dir_all(&dir).expect("create hold dir");
@@ -26,14 +31,15 @@ async fn when_post_solve_in_background(world: &mut PlateSolverWorld, timeout: St
         .push(BackgroundRequest::spawn(url, body));
 }
 
-// A barrier on something the solve itself produced: once its child has
-// recorded its start, its request holds the permit. The budget bounds a hang.
+// A barrier on the held child itself: it records its start only after
+// finding no release, so a release from here on reaches a child that holds,
+// and its request holds the permit until then.
 #[when("mock_astap has started that solve")]
 async fn when_mock_astap_started_solve(world: &mut PlateSolverWorld) {
     let dir = hold_dir(world);
     let budget = Duration::from_secs(30);
     let started = Instant::now();
-    while held_solves(&dir).is_empty() {
+    while !has_held_solve(&dir) {
         assert!(
             started.elapsed() < budget,
             "no held mock_astap solve recorded its start in {} within {budget:?}",
@@ -43,21 +49,28 @@ async fn when_mock_astap_started_solve(world: &mut PlateSolverWorld) {
     }
 }
 
+// The wrapper logs the queueing only when the semaphore has refused the
+// request, so this waits on the refusal itself. A second solve starting
+// first means the semaphore let the request through.
+#[then("the wrapper queues the second request behind the first solve")]
+async fn then_wrapper_queues_second_request(world: &mut PlateSolverWorld) {
+    wait_for_wrapper_log(world, "the second request queueing", |events| {
+        let starts = events.iter().filter(|e| e.starts_with(STARTING)).count();
+        assert!(
+            starts < 2,
+            "the wrapper started a second solve while the first held the permit: {events:?}"
+        );
+        events.contains(&QUEUED.to_owned()).then_some(())
+    })
+    .await;
+}
+
+// Here a wait that only gets longer under load: it keeps the first solve held,
+// and so the second request queued, for at least this long after the wrapper
+// logged the queueing. Nothing can answer the second request meanwhile.
 #[when(expr = "{int} milliseconds pass")]
 async fn when_milliseconds_pass(_world: &mut PlateSolverWorld, ms: u64) {
     tokio::time::sleep(Duration::from_millis(ms)).await;
-}
-
-#[then("the second request has not been answered")]
-async fn then_second_request_unanswered(world: &mut PlateSolverWorld) {
-    let second = request(world, "second");
-    if second.is_answered() {
-        let answer = second.answer().await;
-        panic!(
-            "the second request was answered while the first solve was still held: {:?}",
-            answer.response
-        );
-    }
 }
 
 // The instant is taken before the file exists, so a floor measured from it is
@@ -95,16 +108,68 @@ async fn then_second_answered_after_release(world: &mut PlateSolverWorld, ms: u6
     );
 }
 
-#[then("mock_astap held only one solve")]
-async fn then_mock_astap_held_one_solve(world: &mut PlateSolverWorld) {
-    let dir = hold_dir(world);
-    let held = held_solves(&dir);
+// The wrapper writes these lines in the order it acts, and the second solve
+// can only start once the first has finished and dropped the permit, so the
+// order holds however slowly the runner runs. Both solves have finished by
+// the time this runs; the wait only lets the forwarder catch up.
+#[then(
+    expr = "the wrapper started the second solve only after the first finished, with timeout {string}"
+)]
+async fn then_second_solve_started_after_first(world: &mut PlateSolverWorld, timeout: String) {
+    let events = wait_for_wrapper_log(world, "both solves finishing", |events| {
+        (events.iter().filter(|e| *e == FINISHED).count() >= 2).then(|| events.to_vec())
+    })
+    .await;
+    let first_start = events
+        .iter()
+        .find(|e| e.starts_with(STARTING))
+        .expect("the first solve's start")
+        .clone();
+    let expected = [
+        first_start,
+        QUEUED.to_owned(),
+        FINISHED.to_owned(),
+        format!("{STARTING} timeout={timeout}"),
+        FINISHED.to_owned(),
+    ];
     assert_eq!(
-        held.len(),
-        1,
-        "expected one held solve in {}, got {held:?}",
-        dir.display()
+        events, expected,
+        "the wrapper's single-flight events are out of order"
     );
+}
+
+/// Poll the wrapper's single-flight events — its [`QUEUED`], [`STARTING`]
+/// and [`FINISHED`] lines, each from the message on, in the order logged —
+/// until `done` returns `Some`. The budget bounds a hang.
+async fn wait_for_wrapper_log<T>(
+    world: &PlateSolverWorld,
+    waiting_for: &str,
+    done: impl Fn(&[String]) -> Option<T>,
+) -> T {
+    let handle = world.service_handle.as_ref().expect("wrapper started");
+    let budget = Duration::from_secs(30);
+    let started = Instant::now();
+    loop {
+        let events: Vec<String> = handle
+            .stderr_lines()
+            .iter()
+            .filter_map(|line| {
+                [QUEUED, STARTING, FINISHED]
+                    .iter()
+                    .find_map(|marker| line.find(marker))
+                    .and_then(|at| line.get(at..))
+                    .map(str::to_owned)
+            })
+            .collect();
+        if let Some(found) = done(&events) {
+            return found;
+        }
+        assert!(
+            started.elapsed() < budget,
+            "the wrapper did not log {waiting_for} within {budget:?}; its events: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn hold_dir(world: &PlateSolverWorld) -> PathBuf {
@@ -114,19 +179,15 @@ fn hold_dir(world: &PlateSolverWorld) -> PathBuf {
         .expect("hold_dir_path set by the background-request When step")
 }
 
-/// The `started-<pid>` files held `mock_astap` children recorded in `dir`.
-fn held_solves(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir)
-        .expect("read hold dir")
-        .map(|entry| {
-            entry
-                .expect("hold dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|name| name.starts_with("started-"))
-        .collect()
+/// Whether a held `mock_astap` child has recorded its start in `dir`.
+fn has_held_solve(dir: &Path) -> bool {
+    std::fs::read_dir(dir).expect("read hold dir").any(|entry| {
+        entry
+            .expect("hold dir entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with("started-")
+    })
 }
 
 fn request<'a>(world: &'a mut PlateSolverWorld, which: &str) -> &'a mut BackgroundRequest {

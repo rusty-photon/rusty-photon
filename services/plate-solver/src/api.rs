@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+use tracing::debug;
 
 /// Shared application state held by axum handlers.
 #[derive(Clone)]
@@ -137,11 +138,16 @@ async fn solve(
 
     // 5. Acquire semaphore. Overlapping requests queue behind this; the
     //    queue wait is not counted against the per-request timeout.
-    let _permit = state
-        .semaphore
-        .acquire()
-        .await
-        .map_err(|e| AppError::Internal(format!("semaphore closed: {e}")))?;
+    let _permit = if let Ok(permit) = state.semaphore.try_acquire() {
+        permit
+    } else {
+        debug!("solve request queued behind a running solve");
+        state
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| AppError::Internal(format!("semaphore closed: {e}")))?
+    };
 
     // 6. Drive the runner. Map RunnerError → AppError per the frozen
     //    error-code table.
@@ -155,7 +161,10 @@ async fn solve(
         timeout,
     };
 
-    match state.runner.solve(request).await {
+    debug!(timeout = ?request.timeout, "starting the solve");
+    let result = state.runner.solve(request).await;
+    debug!("solve finished");
+    match result {
         Ok(outcome) => Ok(Json(SolveResponseBody::from(outcome))),
         Err(RunnerError::ExitStatus {
             status,

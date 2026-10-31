@@ -489,7 +489,11 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 
 - `ServiceHandle` — spawns a service binary, follows the port it announces on
   stdout (`port()` and `base_url()` read the latest), provides `stop()` for
-  graceful SIGTERM shutdown, and drains stdout to prevent pipe deadlocks. On
+  graceful SIGTERM shutdown, and drains stdout to prevent pipe deadlocks. It
+  forwards the service's stderr to the test log, and `stderr_lines()` returns
+  what has arrived so far, styling stripped, for a step that waits on
+  something the service logged (poll for it: a line arrives through a pipe
+  and a task). On
   `Drop`, sends a best-effort SIGTERM. Its async starts spawn on the blocking
   pool, so a step that starts a service never blocks the poll loop
   ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).

@@ -38,8 +38,8 @@ pub struct PlateSolverWorld {
     pub argv_out_path: Option<PathBuf>,
 
     /// Directory set as `MOCK_ASTAP_HOLD_DIR` on `mock_astap`'s env for
-    /// `hold` mode: a held child records its start there as `started-<pid>`
-    /// and waits for the scenario to create `release` in it.
+    /// `hold` mode: a held child records `started-<pid>` there and waits for
+    /// the scenario to create `release` in it.
     pub hold_dir_path: Option<PathBuf>,
 
     /// When the scenario created the `release` file in `hold_dir_path`.
@@ -139,9 +139,13 @@ pub struct HttpResponse {
 
 /// A solve request running on its own task, so the scenario can act while
 /// it is outstanding.
+///
+/// The task returns a failed POST rather than panicking, so a scenario that
+/// fails and stops the wrapper first leaves no stray panic behind, and
+/// dropping the request aborts the task.
 #[derive(Debug)]
 pub struct BackgroundRequest {
-    task: Option<tokio::task::JoinHandle<BackgroundAnswer>>,
+    task: Option<tokio::task::JoinHandle<reqwest::Result<BackgroundAnswer>>>,
     answer: Option<BackgroundAnswer>,
 }
 
@@ -158,14 +162,14 @@ impl BackgroundRequest {
     pub fn spawn(url: String, body: serde_json::Value) -> Self {
         let client = PlateSolverWorld::http_client();
         let task = tokio::spawn(async move {
-            let resp = client.post(&url).json(&body).send().await.expect("POST");
+            let resp = client.post(&url).json(&body).send().await?;
             let status = resp.status().as_u16();
-            let bytes = resp.bytes().await.expect("read body");
+            let bytes = resp.bytes().await?;
             let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-            BackgroundAnswer {
+            Ok(BackgroundAnswer {
                 response: HttpResponse { status, body },
                 answered_at: Instant::now(),
-            }
+            })
         });
         Self {
             task: Some(task),
@@ -173,23 +177,26 @@ impl BackgroundRequest {
         }
     }
 
-    /// Whether the answer has arrived, without waiting for it.
-    pub fn is_answered(&self) -> bool {
-        self.answer.is_some()
-            || self
-                .task
-                .as_ref()
-                .is_some_and(tokio::task::JoinHandle::is_finished)
-    }
-
     /// Wait for the answer.
     pub async fn answer(&mut self) -> &BackgroundAnswer {
         if let Some(task) = self.task.take() {
-            self.answer = Some(task.await.expect("background request task"));
+            let answer = task
+                .await
+                .expect("background request task")
+                .expect("background POST");
+            self.answer = Some(answer);
         }
         self.answer
             .as_ref()
             .expect("a background request has a task or an answer")
+    }
+}
+
+impl Drop for BackgroundRequest {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -288,7 +295,14 @@ impl PlateSolverWorld {
 
         let config_path = write_config(&dir, &mock_path, &db_dir, &extra_env);
         let config_str = config_path.to_string_lossy().into_owned();
-        let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_str).await;
+        // The wrapper's own debug lines are part of what the supervision
+        // scenarios read (`ServiceHandle::stderr_lines`).
+        let handle = ServiceHandle::start_with_env(
+            env!("CARGO_PKG_NAME"),
+            &["--config", &config_str],
+            &[("RUST_LOG", "info,plate_solver=debug")],
+        )
+        .await;
         self.service_handle = Some(handle);
     }
 
