@@ -69,6 +69,12 @@ const MAX_DAMPING: f64 = 1e16;
 /// a rank-deficient matrix, a residual rather than an exact zero.
 const SINGULAR: f64 = 1e-12;
 
+/// The centres the scanned starts try, as intervals across the samples
+/// and a span beyond either end, and how many of the scanned starts are
+/// refined beside the closed-form one.
+const SCANNED_INTERVALS: u32 = 60;
+const SCANNED_REFINED: usize = 2;
+
 type Vec3 = [f64; 3];
 type Mat3 = [Vec3; 3];
 
@@ -153,9 +159,10 @@ impl Params {
 /// Fit the hyperbola to `(position, value, weight)` samples by weighted
 /// least squares in the value.
 ///
-/// A closed-form start from the squared values is refined by
-/// Levenberg–Marquardt (docs/crates/rp-focus-curve.md § The fit). A
-/// sample of weight 0 is left out.
+/// A closed-form start from the squared values, and the best two of a
+/// scan of centres, are each refined by Levenberg–Marquardt, and the fit
+/// with the smallest residual is kept (docs/crates/rp-focus-curve.md
+/// § The fit). A sample of weight 0 is left out.
 ///
 /// Three samples are fitted exactly when a hyperbola passes through them,
 /// and otherwise as the nearest V, at an R² below 1: a fit, not an error.
@@ -216,7 +223,7 @@ pub fn fit_hyperbola(samples: &[(i32, f64, u32)]) -> Result<HyperbolaFit, FitErr
             (weight * value).mul_add(*value, sum)
         })
         / total_weight;
-    let (params, residual) = refine(&points, start(&points, flat)?);
+    let (params, residual) = best_fit(&points, start(&points, flat)?);
     if params.slope_sq <= flat {
         return Err(FitError::MonotonicCurve(
             "the fitted curve flattened to a constant, which has no centre".to_owned(),
@@ -295,6 +302,78 @@ fn start(points: &[Point], flat: f64) -> Result<Params, FitError> {
     })
 }
 
+/// Refine the closed-form start and the best of the scanned ones, and
+/// keep the fit with the smallest residual. A residual can hold more
+/// than one minimum, most of all on samples from one wing, and the
+/// closed-form start can sit nearer the wrong one.
+fn best_fit(points: &[Point], closed_form: Params) -> (Params, f64) {
+    scanned_starts(points)
+        .into_iter()
+        .map(|start| refine(points, start))
+        .fold(refine(points, closed_form), |best, fit| {
+            if fit.1 < best.1 {
+                fit
+            } else {
+                best
+            }
+        })
+}
+
+/// Starts at centres scanned across the samples and a span beyond either
+/// end, each with the minimum and slope [`profile_start`] places for it:
+/// the [`SCANNED_REFINED`] with the smallest residual.
+fn scanned_starts(points: &[Point]) -> Vec<Params> {
+    let (low, high) = points
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+            (low.min(point.u), high.max(point.u))
+        });
+    let width = high - low;
+    let mut starts: Vec<(Params, f64)> = (0..=SCANNED_INTERVALS)
+        .filter_map(|interval| {
+            let fraction = f64::from(interval) / f64::from(SCANNED_INTERVALS);
+            let centre = (3.0 * width).mul_add(fraction, low - width);
+            profile_start(points, centre).map(|start| (start, residual(points, start)))
+        })
+        .collect();
+    starts.sort_by(|a, b| a.1.total_cmp(&b.1));
+    starts
+        .into_iter()
+        .take(SCANNED_REFINED)
+        .map(|(start, _)| start)
+        .collect()
+}
+
+/// For a fixed centre, the minimum and slope a linear fit of the squared
+/// values places, each sample weighted by `w / value²` so it counts
+/// about as its residual in the value does; `None` when that fit does
+/// not turn upward.
+fn profile_start(points: &[Point], centre: f64) -> Option<Params> {
+    let (mut s0, mut s1, mut s2, mut t0, mut t1) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for point in points {
+        let offset = point.u - centre;
+        let offset_sq = offset * offset;
+        let squared = point.value * point.value;
+        let weight = point.weight / squared.max(f64::MIN_POSITIVE);
+        s0 += weight;
+        s1 = weight.mul_add(offset_sq, s1);
+        s2 = (weight * offset_sq).mul_add(offset_sq, s2);
+        t0 = weight.mul_add(squared, t0);
+        t1 = (weight * offset_sq).mul_add(squared, t1);
+    }
+    let det = s0.mul_add(s2, -(s1 * s1));
+    if det.is_nan() || det <= 0.0 {
+        return None;
+    }
+    let minimum_sq = s2.mul_add(t0, -(s1 * t1)) / det;
+    let slope_sq = s0.mul_add(t1, -(s1 * t0)) / det;
+    (slope_sq.is_finite() && slope_sq > 0.0 && minimum_sq.is_finite()).then_some(Params {
+        centre,
+        minimum_sq: minimum_sq.max(0.0),
+        slope_sq,
+    })
+}
+
 /// Levenberg–Marquardt from `start` on the weighted residuals in the
 /// value itself. Only a step that lowers the residual is taken, so the
 /// result is never worse than the start. Answers the parameters and
@@ -346,7 +425,7 @@ fn descend(
         if *damping > MAX_DAMPING {
             return None;
         }
-        if let Some(step) = damped_step(normal, gradient, *damping) {
+        if let Some(step) = damped_step(normal, gradient, *damping, params) {
             let next = params.moved_by(step);
             let next_residual = residual(points, next);
             if next_residual < residual_now {
@@ -388,7 +467,13 @@ fn normal_equations(points: &[Point], params: Params, floor: f64) -> (Mat3, Vec3
 /// Solve the damped normal equations. The damping scales each diagonal
 /// entry by its own size, floored so a parameter the samples barely
 /// constrain is still damped; `None` for a matrix that will not invert.
-fn damped_step(normal: Mat3, gradient: Vec3, damping: f64) -> Option<Vec3> {
+///
+/// A squared parameter that sits at zero, where the step would take it
+/// below, is held there and the others are solved without it. A step
+/// solved as if it could go negative and then clamped is no step along
+/// the bound, and the refinement would stall short of the best limiting
+/// V.
+fn damped_step(normal: Mat3, gradient: Vec3, damping: f64, params: Params) -> Option<Vec3> {
     let [[n00, n01, n02], [n10, n11, n12], [n20, n21, n22]] = normal;
     let floor = n00.max(n11).max(n22) * SINGULAR;
     let damped = [
@@ -396,12 +481,49 @@ fn damped_step(normal: Mat3, gradient: Vec3, damping: f64) -> Option<Vec3> {
         [n10, damping.mul_add(n11.max(floor), n11), n12],
         [n20, n21, damping.mul_add(n22.max(floor), n22)],
     ];
-    let det = det3(damped);
-    if !det.is_normal() {
-        return None;
+    let mut held = [false; 3];
+    loop {
+        let (matrix, rhs) = hold(damped, gradient, held);
+        let det = det3(matrix);
+        if !det.is_normal() {
+            return None;
+        }
+        let step = cramer(matrix, rhs, det);
+        if !step.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        let [_, minimum_step, slope_step] = step;
+        let pushed = [
+            false,
+            held[1] || (params.minimum_sq <= 0.0 && minimum_step < 0.0),
+            held[2] || (params.slope_sq <= 0.0 && slope_step < 0.0),
+        ];
+        if pushed == held {
+            return Some(step);
+        }
+        held = pushed;
     }
-    let step = cramer(damped, gradient, det);
-    step.iter().all(|value| value.is_finite()).then_some(step)
+}
+
+/// The system with each held parameter's row and column replaced by the
+/// identity and its right-hand side by zero, so the solve leaves it
+/// where it is and solves the others without it.
+fn hold(matrix: Mat3, rhs: Vec3, held: [bool; 3]) -> (Mat3, Vec3) {
+    let mut matrix = matrix;
+    let mut rhs = rhs;
+    for (row_index, ((row, row_held), value)) in
+        matrix.iter_mut().zip(held).zip(rhs.iter_mut()).enumerate()
+    {
+        for (column_index, (cell, column_held)) in row.iter_mut().zip(held).enumerate() {
+            if row_held || column_held {
+                *cell = if row_index == column_index { 1.0 } else { 0.0 };
+            }
+        }
+        if row_held {
+            *value = 0.0;
+        }
+    }
+    (matrix, rhs)
 }
 
 /// The weighted residual `Σ w·(value − curve)²`.
@@ -519,8 +641,9 @@ mod tests {
         ];
         let fit = fit_hyperbola(&samples).unwrap();
         assert_eq!(fit.curve.minimum, 0.0, "{fit:?}");
-        assert!((fit.curve.centre - 29_770.0).abs() < 1.0, "{fit:?}");
-        assert!(fit.r_squared > 0.99 && fit.r_squared < 1.0, "{fit:?}");
+        assert!((fit.curve.centre - 29_767.19).abs() < 0.01, "{fit:?}");
+        assert!(fit.r_squared > 0.998 && fit.r_squared < 1.0, "{fit:?}");
+        assert!(at_a_minimum(&samples, fit), "{fit:?}");
     }
 
     #[test]
@@ -704,5 +827,162 @@ mod tests {
             );
             assert!((0.0..=1.0).contains(&fit.r_squared), "{fit:?}");
         }
+    }
+
+    fn fit_residual(samples: &[(i32, f64, u32)], fit: HyperbolaFit) -> f64 {
+        weighted_residual(samples, fit.curve)
+    }
+
+    /// The residual a compass search reaches from `from`: each of the
+    /// centre, the minimum and the slope tried a step either way, the
+    /// steps halved once none of the six lowers the residual. The curve
+    /// depends on the minimum and the slope only through their squares,
+    /// so the search needs no bound. Never above the residual at `from`.
+    fn polished(samples: &[(i32, f64, u32)], from: Hyperbola) -> f64 {
+        let low = f64::from(samples.iter().map(|sample| sample.0).min().unwrap());
+        let high = f64::from(samples.iter().map(|sample| sample.0).max().unwrap());
+        let curve = |[centre, minimum, slope]: [f64; 3]| Hyperbola {
+            centre,
+            minimum,
+            slope,
+        };
+        let mut at = [from.centre, from.minimum, from.slope];
+        let mut residual = weighted_residual(samples, from);
+        let mut steps = [
+            (high - low) / 20.0,
+            from.minimum.max(0.1) / 20.0,
+            from.slope / 20.0,
+        ];
+        for _ in 0..60 {
+            let mut moved = true;
+            while moved {
+                moved = false;
+                for axis in 0..3 {
+                    for sign in [-1.0, 1.0] {
+                        let mut next = at;
+                        next[axis] += sign * steps[axis];
+                        let next_residual = weighted_residual(samples, curve(next));
+                        if next_residual < residual {
+                            at = next;
+                            residual = next_residual;
+                            moved = true;
+                        }
+                    }
+                }
+            }
+            steps = steps.map(|step| step / 2.0);
+        }
+        residual
+    }
+
+    /// Whether the fit sits at a minimum of its residual: a local search
+    /// from it finds nothing lower beyond the refinement's own
+    /// tolerance.
+    fn at_a_minimum(samples: &[(i32, f64, u32)], fit: HyperbolaFit) -> bool {
+        let fitted = fit_residual(samples, fit);
+        polished(samples, fit.curve) >= fitted * (1.0 - 1e-6) - 1e-12
+    }
+
+    /// Curves whose floor is near zero or absent, sampled across focus
+    /// with 15 % noise: fits that end at or beside the limiting V, where
+    /// the minimum is held at zero, and the refinement still reaches a
+    /// minimum of the residual rather than stopping against the bound.
+    #[test]
+    fn the_refinement_reaches_a_minimum_beside_the_limiting_v() {
+        let mut noise = Noise(0x1675_0003);
+        let mut limiting = 0;
+        for _ in 0..60 {
+            let truth = Hyperbola {
+                centre: 30_000.0,
+                minimum: noise.between(0.0, 0.3),
+                slope: noise.between(0.01, 0.2),
+            };
+            let points = [5, 7, 9][(noise.unit() * 3.0) as usize];
+            let step = (noise.between(0.5, 2.0) / truth.slope).round().max(1.0) as i32;
+            let first =
+                30_000 - (points / 2) * step + (noise.between(-1.0, 1.0) * f64::from(step)) as i32;
+            let samples: Vec<(i32, f64, u32)> = (0..points)
+                .map(|index| {
+                    let position = first + index * step;
+                    let value = truth.value_at(f64::from(position));
+                    let measured = (value * (1.0 + 0.15 * (2.0 * noise.unit() - 1.0))).max(0.05);
+                    (position, measured, (300.0 / (1.0 + value)) as u32)
+                })
+                .collect();
+            let fit = fit_hyperbola(&samples).unwrap();
+            if fit.curve.minimum == 0.0 {
+                limiting += 1;
+            }
+            assert!(
+                at_a_minimum(&samples, fit),
+                "fit {fit:?} left {}, a local search from it found {}, samples {samples:?}",
+                fit_residual(&samples, fit),
+                polished(&samples, fit.curve)
+            );
+        }
+        assert!(
+            limiting >= 10,
+            "only {limiting} of 60 fits were the limiting V"
+        );
+    }
+
+    /// Five samples starting one to eight steps before focus, so most
+    /// walk down one wing and stop short of it: the refinement reaches a
+    /// minimum of the residual from wherever its starts leave it.
+    #[test]
+    fn the_refinement_reaches_a_minimum_on_one_wing() {
+        let mut noise = Noise(0x1675_0001);
+        let mut fitted = 0;
+        for _ in 0..60 {
+            let truth = Hyperbola {
+                centre: 30_000.0,
+                minimum: noise.between(0.5, 4.0),
+                slope: noise.between(0.005, 0.3),
+            };
+            let step = (noise.between(0.3, 1.5) * truth.minimum / truth.slope)
+                .round()
+                .max(1.0) as i32;
+            let first = 30_000
+                - (noise.between(1.0, 9.0) as i32) * step
+                - (noise.unit() * f64::from(step)) as i32;
+            let samples: Vec<(i32, f64, u32)> = (0..5)
+                .map(|index| {
+                    let position = first + index * step;
+                    let value = truth.value_at(f64::from(position));
+                    let measured = value * (1.0 + 0.08 * (2.0 * noise.unit() - 1.0));
+                    let stars = (300.0 * truth.minimum / value) as u32;
+                    (position, measured, stars.max(1))
+                })
+                .collect();
+            let Ok(fit) = fit_hyperbola(&samples) else {
+                continue;
+            };
+            fitted += 1;
+            assert!(
+                at_a_minimum(&samples, fit),
+                "fit {fit:?} left {}, a local search from it found {}, samples {samples:?}",
+                fit_residual(&samples, fit),
+                polished(&samples, fit.curve)
+            );
+        }
+        assert!(fitted >= 50, "only {fitted} of 60 one-wing sweeps fitted");
+    }
+
+    /// One wing whose squared values place the closed-form start in the
+    /// basin of a curve flattening to a constant; a scanned start finds
+    /// the V that the samples walk down, centred past their end.
+    #[test]
+    fn a_scanned_start_finds_the_minimum_the_closed_form_start_misses() {
+        let samples = [
+            (29_981, 5.135, 68),
+            (29_985, 5.204, 85),
+            (29_989, 3.464, 112),
+            (29_993, 2.766, 161),
+            (29_997, 1.595, 248),
+        ];
+        let fit = fit_hyperbola(&samples).unwrap();
+        assert!((fit.curve.centre - 30_003.74).abs() < 0.01, "{fit:?}");
+        assert!(fit_residual(&samples, fit) < 51.0, "{fit:?}");
+        assert!(at_a_minimum(&samples, fit), "{fit:?}");
     }
 }

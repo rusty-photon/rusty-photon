@@ -82,26 +82,44 @@ star count (or valid frame count).
      zero.
    - A negative `A`, where the squared curve dips below zero, starts at
      `A = 0`.
-4. **Refinement.** Levenberg–Marquardt on `(u₀, A, K)` starts from there,
-   holding `A` and `K` at zero or above. A step is taken only if it lowers
-   the weighted residual, so the result is never worse than the start.
-   The refinement stops at the first of four conditions:
+4. **Scanned starts.** The residual can hold more than one minimum,
+   most of all on samples from one wing, and the closed-form start can
+   sit nearer the wrong one. So 61 centres are also tried, evenly spaced
+   from one span below the lowest sample to one span above the highest.
+   At each, a linear fit of the squared values places `A` and `K`, with
+   each sample weighted by `w / y²` so that it counts about as its
+   residual in the value does. The two of those starts with the smallest
+   residual are refined beside the closed-form one.
+5. **Refinement.** Levenberg–Marquardt on `(u₀, A, K)` starts from each
+   start, holding `A` and `K` at zero or above. Where one of them sits at
+   zero and the step would take it below, it is held there and the
+   other two are solved without it. A step solved as if the parameter
+   could go negative and then clamped would not move along the bound,
+   and the refinement would stall short of the best limiting V. A step
+   is taken only if it lowers the weighted residual, so the result is
+   never worse than its start. Each refinement stops at the first of
+   four conditions:
    - a step improves the residual by less than a relative `1e-12`;
    - the residual reaches 0;
    - no damped step improves it;
    - 100 iterations have run.
 
-   A refinement that flattens the curve (`K` falls to that same scale)
-   is `MonotonicCurve`: a constant has no centre.
+   The refinement with the smallest residual is the fit. A fit that
+   flattens the curve (`K` falls to that same scale) is
+   `MonotonicCurve`: a constant has no centre.
 
-The start alone would weight each residual by roughly the square of its
-value, so the wings would dominate. The wings are where a fragmenting
-detector puts its worst samples
+The closed-form start alone would weight each residual by roughly the
+square of its value, so the wings would dominate. The wings are where a
+fragmenting detector puts its worst samples
 ([#1187](https://github.com/rusty-photon/rusty-photon/issues/1187)), so
-the refinement in the value itself is the fit; the start is only where
-it begins. On every noisy generated curve of the crate's tests, the
-refinement ends at the residual a brute-force scan of the parameters
-finds.
+the refinement in the value itself is the fit; the starts are only
+where it begins. The crate's tests check this on noisy generated
+curves:
+
+- On curves with a floor, the refinement ends at the residual a
+  brute-force scan of the parameters finds.
+- On curves with little or no floor, and on samples down one wing, no
+  local search from the fit finds a lower residual.
 
 ### Three samples
 
@@ -112,7 +130,7 @@ wings are steeper than any rounded floor allows. It is a fit and not an
 error, because it is exactly what a coarse grid measures: every sample
 sits far enough from focus that the floor never shows. The #1187 coarse
 sweep's three dense samples admit no hyperbola, and their nearest V
-centres 4 steps from focus.
+centres a step from focus.
 
 ## R²
 
@@ -162,7 +180,11 @@ The crate's unit tests cover:
 - the value at a position, and an R² inside `[0, 1]` on every noisy
   curve;
 - noisy curves on which the refinement ends at the residual a
-  brute-force scan finds.
+  brute-force scan finds;
+- noisy curves at or beside the limiting V, and noisy one-wing samples,
+  from which a local search finds no lower residual;
+- a one-wing sample set on which only a scanned start finds the
+  minimum (the closed-form start flattens to a constant).
 
 The sweeps' own tests carry the curves generated from optics and the
 rig's recorded sweeps. They live in focus-model's `sweep.rs`, which

@@ -2612,7 +2612,7 @@ mod tests {
     }
 
     /// Let three samples fit, and those three frames admit no hyperbola:
-    /// the nearest V centres 4 steps from focus.
+    /// the nearest V centres a step from focus.
     #[test]
     fn the_recorded_coarse_sweep_fits_the_nearest_v_through_its_dense_frames() {
         let three = SweepParams {
@@ -2620,8 +2620,8 @@ mod tests {
             ..params()
         };
         let stage = gate_and_fit(&mut recorded_coarse_sweep(), three).unwrap();
-        assert_eq!(stage.best_position, 29_770, "{stage:?}");
+        assert_eq!(stage.best_position, 29_767, "{stage:?}");
         assert_eq!(stage.best_hfr, 0.0, "{stage:?}");
-        assert!(stage.r_squared > 0.99, "{stage:?}");
+        assert!(stage.r_squared > 0.998, "{stage:?}");
     }
 }

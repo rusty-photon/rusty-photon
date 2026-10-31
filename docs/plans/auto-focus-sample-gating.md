@@ -119,7 +119,7 @@ step 4). Refusing it would refuse exactly the sweep a coarse grid
 makes, whose samples all sit far enough from focus that the floor
 never shows. The #1187 sweep is that case: at `min_fit_points` 3 its
 three accepted samples admit no hyperbola, and the nearest V centres
-at 29770, 4 steps from focus, at R² 0.99 — a fit a gate would pass,
+at 29767, a step from focus, at R² 0.998 — a fit a gate would pass,
 and a better one than the parabola's 21 steps. At the defaults
 nothing changes: three samples are refused before any fit.
 
