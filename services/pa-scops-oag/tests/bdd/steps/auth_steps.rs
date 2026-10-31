@@ -77,7 +77,7 @@ fn management_url(world: &ScopsWorld) -> String {
         .as_ref()
         .expect("pa-scops-oag not started")
         .port();
-    format!("https://localhost:{port}/management/v1/configureddevices")
+    format!("https://127.0.0.1:{port}/management/v1/configureddevices")
 }
 
 #[then("the Alpaca management endpoint should respond with valid credentials")]

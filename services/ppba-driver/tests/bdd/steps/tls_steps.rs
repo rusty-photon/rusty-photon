@@ -46,29 +46,18 @@ async fn ppba_started_with_tls(world: &mut PpbaWorld) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port()));
+    world.base_url = Some(format!("https://127.0.0.1:{}", handle.port()));
     world.ppba = Some(handle);
 }
 
 #[then("the Alpaca management endpoint should respond over HTTPS")]
 async fn alpaca_management_responds_https(world: &mut PpbaWorld) {
-    let client = world
-        .pki
-        .as_ref()
-        .expect("TLS certs not generated")
-        .https_client();
+    let pki = world.pki.as_ref().expect("TLS certs not generated");
+    let client = pki.https_client();
     let port = world.ppba.as_ref().expect("ppba-driver not started").port();
-    let url = format!("https://localhost:{port}/management/v1/configureddevices");
+    let url = format!("https://127.0.0.1:{port}/management/v1/configureddevices");
 
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ok, "Alpaca management endpoint did not respond over HTTPS");
+    // No auth is configured in this scenario, so the credentials the probe
+    // sends are ignored; a 200 proves the endpoint answers over HTTPS.
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }

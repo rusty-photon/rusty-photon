@@ -132,7 +132,7 @@ pub fn adopt_plain(state: &mut SetupPagesState, port: BoundPort, config_path: Pa
 /// `config_path`.
 pub fn adopt_tls_auth(state: &mut SetupPagesState, tls: &TlsAuthState, config_path: PathBuf) {
     let pki = tls.pki();
-    state.host = Some("https://localhost");
+    state.host = Some("https://127.0.0.1");
     state.port = Some(tls.bound_port());
     state.client = Some(pki.https_client());
     state.credential = Some((pki.username().to_string(), pki.password().to_string()));

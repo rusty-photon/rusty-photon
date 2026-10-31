@@ -35,7 +35,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
     let port = world.rp.as_ref().unwrap().port();
-    let url = format!("https://localhost:{port}/health");
+    let url = format!("https://127.0.0.1:{port}/health");
     wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
 
@@ -43,7 +43,7 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
 async fn health_responds_https(world: &mut RpWorld) {
     let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port();
-    let url = format!("https://localhost:{port}/health");
+    let url = format!("https://127.0.0.1:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);

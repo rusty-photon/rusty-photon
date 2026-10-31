@@ -16,13 +16,13 @@ bdd_infra::tls_auth_smoke_steps!(CalibratorFlatsWorld);
 
 /// The MCP URL of the TLS-and-auth service the smoke started.
 fn mcp_url(world: &mut CalibratorFlatsWorld) -> String {
-    format!("https://localhost:{}/mcp", world.tls_auth().port())
+    format!("https://127.0.0.1:{}/mcp", world.tls_auth().port())
 }
 
 #[then("the MCP endpoint rejects an unauthenticated client")]
 async fn mcp_rejects_unauthenticated(world: &mut CalibratorFlatsWorld) {
     let url = mcp_url(world);
-    let health = format!("https://localhost:{}/health", world.tls_auth().port());
+    let health = format!("https://127.0.0.1:{}/health", world.tls_auth().port());
     let pki = world.tls_auth().pki();
     // Readiness is probed with credentials on /health first, so the
     // refused discovery below is the auth layer, not the socket: the

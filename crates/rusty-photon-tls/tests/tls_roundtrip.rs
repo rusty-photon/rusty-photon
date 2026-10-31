@@ -45,6 +45,25 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// shutdown, turning a working implementation into a false "Elapsed".
 const HANG_GUARD: Duration = Duration::from_mins(5);
 
+/// A client trusting `ca_path` (the platform roots when `None`) that
+/// resolves `localhost` to `127.0.0.1` alone.
+///
+/// Every server here binds `127.0.0.1`, which owns only the IPv4 half of
+/// its port. `localhost` resolves to `::1` first, and another process in
+/// the run may hold `[::1]` at the same port number and answer instead. The
+/// requests keep the name, so the certificate is still checked against its
+/// `localhost` SAN, but connect to the address the server bound.
+fn loopback_client(ca_path: Option<&std::path::Path>) -> reqwest::Client {
+    rusty_photon_tls::client::client_builder(ca_path)
+        .unwrap()
+        .resolve(
+            "localhost",
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+        )
+        .build()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn https_roundtrip_with_generated_certs() {
     // Generate CA + service cert
@@ -95,9 +114,7 @@ async fn https_roundtrip_with_generated_certs() {
     });
 
     // Build client with CA trust
-    let client =
-        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
-            .unwrap();
+    let client = loopback_client(Some(&pki_dir.path().join("ca.pem")));
 
     // Make HTTPS request
     let url = format!("https://localhost:{}/health", bound_addr.port());
@@ -159,7 +176,7 @@ async fn client_without_ca_rejects_self_signed() {
     });
 
     // Build client WITHOUT CA trust — should reject the self-signed cert
-    let client = rusty_photon_tls::client::build_reqwest_client(None).unwrap();
+    let client = loopback_client(None);
 
     let url = format!("https://localhost:{}/health", bound_addr.port());
     let result = client.get(&url).send().await;
@@ -255,7 +272,7 @@ async fn swapped_pair_is_served_without_rebinding() {
     assert_ne!(before, after, "the new pair should be served in-process");
 
     // The swapped pair still serves real requests on the same listener.
-    let client = rusty_photon_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let client = loopback_client(Some(&ca_path));
     let url = format!("https://localhost:{}/health", bound_addr.port());
     let response = client.get(&url).send().await.unwrap();
     assert_eq!(response.status(), 200);
@@ -408,9 +425,7 @@ async fn shutdown_waits_for_an_in_flight_tls_request() {
     );
     let (pki_dir, bound_addr, shutdown_tx, mut server_handle) = start_tls_server(router).await;
 
-    let client =
-        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
-            .unwrap();
+    let client = loopback_client(Some(&pki_dir.path().join("ca.pem")));
     let url = format!("https://localhost:{}/slow", bound_addr.port());
     let request = tokio::spawn(async move {
         let response = client.get(&url).send().await.unwrap();
@@ -917,9 +932,7 @@ async fn a_tls_server_on_a_kept_listener_stops_accepting_while_its_request_finis
     let started = std::sync::Arc::new(tokio::sync::Notify::new());
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
 
-    let client =
-        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
-            .unwrap();
+    let client = loopback_client(Some(&pki_dir.path().join("ca.pem")));
     let slow = tokio::spawn({
         let client = client.clone();
         async move {

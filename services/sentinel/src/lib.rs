@@ -654,7 +654,7 @@ mod tests {
         });
         (
             dir.join("ca.pem"),
-            format!("https://localhost:{port}/health"),
+            format!("https://127.0.0.1:{port}/health"),
             stop,
         )
     }

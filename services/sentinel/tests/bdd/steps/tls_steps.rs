@@ -78,7 +78,7 @@ async fn dashboard_health_https(world: &mut SentinelWorld) {
         .as_ref()
         .expect("sentinel not started")
         .port();
-    let url = format!("https://localhost:{port}/health");
+    let url = format!("https://127.0.0.1:{port}/health");
 
     // No auth is configured in this scenario, so the credentials the probe
     // sends are ignored; a 200 proves the dashboard answers over HTTPS.
@@ -117,7 +117,7 @@ fn sentinel_configured_with_ca(world: &mut SentinelWorld) {
     let monitor = serde_json::json!({
         "type": "alpaca_safety_monitor",
         "name": "Roof Monitor",
-        "host": "localhost",
+        "host": "127.0.0.1",
         "port": fm.port(),
         "device_number": 0,
         "polling_interval": "1s",

@@ -619,6 +619,13 @@ fixture behind every service's `auth.feature`:
   `auth.feature` (copy dsd-fp2's). Deep TLS/auth suites (ppba-driver,
   ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
   `wait_until_ready` instead of hand-rolled cert plumbing.
+- `wait_until_ready` — the readiness probe: polls a URL with the credential
+  until it answers 200. Hand it `https://127.0.0.1:<port>`, never
+  `localhost` ([§5.15](#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost)).
+  When it gives up, the panic names the scheme it dialled, how many
+  attempts it made and how long they took, and the last outcome: a status
+  with the peer address that sent it, or the transport error with its
+  causes.
 
 **Doctor smoke (always available, no feature)** — the shared fixture behind
 every service's `doctor.feature`
@@ -1554,7 +1561,9 @@ A client that dials a bound `SocketAddr` rather than a name is not
 exposed — there is only one address to reach, and it is the stub's. The
 hot-reload server in doctor's `tls_renew_steps.rs` stays as it is for
 that reason, and `pebble.rs` dials Pebble at `127.0.0.1` with a comment
-saying so.
+saying so. The mirror case, where the *service under test* owns one
+family and the test's client dials it, is
+[§5.15](#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost).
 
 This is the third variant of one family. [#745](https://github.com/rusty-photon/rusty-photon/issues/745)
 and [#852](https://github.com/rusty-photon/rusty-photon/issues/852) were
@@ -1692,6 +1701,57 @@ Widening the tolerance instead is the wrong fix twice over: it is
 unbounded (the offset is however long the runner stalled), and the tight
 bound is what catches the unit-conversion defect the assertion exists
 for.
+
+#### 5.15 A test dials the service under test at the address it bound, not `localhost`
+
+This is [§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)
+seen from the other side. Every service a suite spawns binds one address
+family: `0.0.0.0`, the shared `server` block's default, or `127.0.0.1`.
+A client that dials it as `localhost:<port>` gets `::1` first from the
+resolver on every host the suites run on, and the connect lands on
+whatever holds `[::1]:<port>`. Under `bazel test` and `bazel coverage`
+that is any other suite's listener, running beside this one with no
+sandbox between them. The connect succeeds, so nothing falls back to
+IPv4. The stranger answers every poll for as long as it holds the port,
+and the readiness probe gives up while the service it waited for sits
+healthy and idle. Issue
+[#1488](https://github.com/rusty-photon/rusty-photon/issues/1488) was
+this in session-runner and ui-htmx: 60 fast failures against a service
+that had logged its bind.
+
+The rule:
+
+1. **Dial `127.0.0.1`, over HTTP and HTTPS alike.**
+   `ServiceHandle::base_url()` already does this for HTTP; spell HTTPS the
+   same way, `https://127.0.0.1:<port>`. The certificates `PkiFixture`
+   mints (through `rusty_photon_tls::test_cert`) carry `127.0.0.1` and
+   `::1` as IP SANs beside `localhost`, so the handshake validates against
+   the address. The shared steps (`tls_auth_smoke_steps!`,
+   `setup_pages::adopt_tls_auth`) dial it this way.
+2. **The same goes for a URL a test hands a service to call.**
+   session-runner's `mcp_server_url`, a sentinel monitor's `host`, the
+   probe URL a unit test passes to the code under test: the service's own
+   client dials these, and nothing done to the test's client reaches them.
+3. **A test whose subject is name validation keeps the name and pins it.**
+   Where checking the certificate against its `localhost` SAN is the
+   point, as in `rusty-photon-tls`'s `tls_roundtrip.rs`, build the client
+   with reqwest's `ClientBuilder::resolve("localhost", 127.0.0.1:0)`. The
+   request keeps the name for the handshake and connects to the address
+   the server bound; the port in the override is ignored in favour of the
+   URL's. This only works for a client the test builds itself.
+4. **A longer wait is not a fix.** The stranger answers for as long as it
+   holds the port, so more polls only fail more slowly.
+
+When `wait_until_ready` gives up it says what answered: the scheme it
+dialled, the attempts and the time they took, and the last outcome. A
+status comes with the peer address that sent it (`404 Not Found from
+[::1]:36447` names a stranger outright), and a transport error with its
+causes (`invalid HTTP version parsed` is a stranger that does not speak
+HTTP, `Connection refused` is nobody there at all).
+
+Doctor's suite is the exception: doctor's own probe dials its stubs by
+name on purpose, so those stubs own both families (§5.12), and the steps
+that check them over HTTPS dial `localhost` too.
 
 ---
 

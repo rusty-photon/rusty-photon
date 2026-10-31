@@ -16,7 +16,7 @@ fn management_url(world: &Upbv2World) -> String {
         .as_ref()
         .expect("upbv2-driver not started")
         .port();
-    format!("https://localhost:{port}/management/v1/configureddevices")
+    format!("https://127.0.0.1:{port}/management/v1/configureddevices")
 }
 
 #[given("upbv2-driver is configured with TLS and auth enabled and mock serial")]
@@ -62,7 +62,7 @@ async fn upbv2_started_with_tls_and_auth(world: &mut Upbv2World) {
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
 
-    world.base_url = Some(format!("https://localhost:{}", handle.port()));
+    world.base_url = Some(format!("https://127.0.0.1:{}", handle.port()));
     world.upbv2 = Some(handle);
 }
 

@@ -119,7 +119,7 @@ async fn rp_started_behind_tls_and_auth(world: &mut RpWorld) {
         .pki
         .clone()
         .expect("no PKI — add 'Given generated TLS certificates'");
-    let url = format!("https://localhost:{}/health", handle.port());
+    let url = format!("https://127.0.0.1:{}/health", handle.port());
     bdd_infra::tls_auth::wait_until_ready(
         &pki.https_client(),
         &url,
@@ -128,7 +128,7 @@ async fn rp_started_behind_tls_and_auth(world: &mut RpWorld) {
     )
     .await;
     let state = &mut world.setup_pages;
-    state.host = Some("https://localhost");
+    state.host = Some("https://127.0.0.1");
     state.port = Some(handle.bound_port());
     state.client = Some(pki.https_client());
     state.credential = Some((pki.username().to_string(), pki.password().to_string()));

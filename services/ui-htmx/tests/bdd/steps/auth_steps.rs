@@ -60,7 +60,7 @@ async fn started_plain(world: &mut UiWorld) {
 
 fn health_url(world: &UiWorld, scheme: &str) -> String {
     let port = world.ui.as_ref().expect("BFF not started").port();
-    format!("{scheme}://localhost:{port}/health")
+    format!("{scheme}://127.0.0.1:{port}/health")
 }
 
 #[then("the health endpoint should respond with valid credentials")]

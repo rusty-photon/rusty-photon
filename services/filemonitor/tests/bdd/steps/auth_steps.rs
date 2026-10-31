@@ -13,7 +13,7 @@ fn management_url(world: &FilemonitorWorld) -> String {
         .as_ref()
         .expect("filemonitor not started")
         .port();
-    format!("https://localhost:{port}/management/v1/configureddevices")
+    format!("https://127.0.0.1:{port}/management/v1/configureddevices")
 }
 
 #[given(expr = "a monitored file containing {string}")]

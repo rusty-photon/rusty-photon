@@ -46,7 +46,7 @@ async fn rp_started_tls_auth(world: &mut SessionRunnerWorld) {
 
     let fixture = pki(world);
     let client = fixture.https_client();
-    let url = format!("https://localhost:{}/health", rp_port(world));
+    let url = format!("https://127.0.0.1:{}/health", rp_port(world));
     wait_until_ready(&client, &url, fixture.username(), fixture.password()).await;
 }
 
@@ -58,13 +58,13 @@ async fn rp_started_plain_auth(world: &mut SessionRunnerWorld) {
 
     let fixture = pki(world);
     let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}/health", rp_port(world));
+    let url = format!("http://127.0.0.1:{}/health", rp_port(world));
     wait_until_ready(&client, &url, fixture.username(), fixture.password()).await;
 }
 
 #[given("session-runner is configured with service_auth and ca_cert for rp")]
 async fn session_runner_configured_authed(world: &mut SessionRunnerWorld) {
-    let mcp_url = format!("https://localhost:{}/mcp", rp_port(world));
+    let mcp_url = format!("https://127.0.0.1:{}/mcp", rp_port(world));
     let fixture = pki(world);
     let extra = json!({
         "mcp_server_url": mcp_url,
@@ -76,7 +76,7 @@ async fn session_runner_configured_authed(world: &mut SessionRunnerWorld) {
 
 #[given("session-runner is configured with service_auth for rp but no ca_cert")]
 async fn session_runner_configured_auth_no_ca(world: &mut SessionRunnerWorld) {
-    let mcp_url = format!("http://localhost:{}/mcp", rp_port(world));
+    let mcp_url = format!("http://127.0.0.1:{}/mcp", rp_port(world));
     let fixture = pki(world);
     let extra = json!({
         "mcp_server_url": mcp_url,

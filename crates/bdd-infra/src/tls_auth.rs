@@ -37,9 +37,11 @@ pub struct PkiFixture {
 }
 
 impl PkiFixture {
-    /// Generate a CA and a certificate for `service_name` (the TLS server
-    /// name — probes connect to `https://localhost`, which
-    /// `generate_service_cert` always includes as a SAN).
+    /// Generate a CA and a certificate for `service_name` (the certificate's
+    /// common name). `generate_service_cert` always includes `localhost` and
+    /// the loopback addresses as SANs, so a probe dialling
+    /// `https://127.0.0.1` — the address every service under test binds —
+    /// validates against it.
     ///
     /// # Panics
     ///
@@ -335,6 +337,12 @@ pub async fn spawn_service_handle(
     handle
 }
 
+/// How many times [`wait_until_ready`] asks before it gives up.
+const READY_ATTEMPTS: u32 = 60;
+
+/// The pause between two of [`wait_until_ready`]'s attempts.
+const READY_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Poll `url` with valid credentials until the freshly spawned server
 /// answers 200.
 ///
@@ -342,24 +350,77 @@ pub async fn spawn_service_handle(
 /// the suite has to know the 401 comes from the auth layer of a live
 /// server, not from the socket not being up.
 ///
+/// `url` names the address the service bound, `127.0.0.1`, and never
+/// `localhost`. A service under test owns only the IPv4 half of its port,
+/// and `localhost` resolves to `::1` first, where any other process in the
+/// run may hold the same port number and answer instead
+/// (`docs/skills/testing.md` §5.15).
+///
 /// # Panics
 ///
-/// Panics after ~30 s (60 polls, 500 ms apart) without a 200.
+/// Panics after [`READY_ATTEMPTS`] attempts, [`READY_INTERVAL`] apart,
+/// without a 200. The message names the scheme dialled, the attempts and
+/// the time they took, and the last thing that came back: the status with
+/// the address that sent it, or the transport error with its causes.
 pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &str, password: &str) {
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(url)
-            .basic_auth(username, Some(password))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                return;
-            }
+    let start = tokio::time::Instant::now();
+    let mut last = String::from("no attempt completed");
+    for _ in 0..READY_ATTEMPTS {
+        match probe_once(client, url, username, password).await {
+            Ok(()) => return,
+            Err(outcome) => last = outcome,
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(READY_INTERVAL).await;
     }
-    panic!("server did not become ready over HTTPS with valid credentials: {url}");
+    panic!(
+        "server did not become ready over {} with valid credentials: {url} \
+         ({READY_ATTEMPTS} attempts in {:.1?}); last outcome: {last}",
+        dialled_scheme(url),
+        start.elapsed()
+    );
+}
+
+/// One readiness attempt: `Ok` on a 200, otherwise what came back instead.
+async fn probe_once(
+    client: &reqwest::Client,
+    url: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    let response = client
+        .get(url)
+        .basic_auth(username, Some(password))
+        .send()
+        .await
+        .map_err(|e| format!("transport error: {}", error_chain(&e.without_url())))?;
+    if response.status() == reqwest::StatusCode::OK {
+        return Ok(());
+    }
+    let peer = response
+        .remote_addr()
+        .map_or_else(|| "an unknown peer".to_string(), |addr| addr.to_string());
+    Err(format!("{} from {peer}", response.status()))
+}
+
+/// `error` and each of its causes, outermost first. reqwest's own message
+/// says only that sending failed; the reason (refused, reset, a TLS
+/// rejection, bytes that were not HTTP) is in the causes.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
+/// The scheme `url` names, as the panic spells it (`HTTP`, `HTTPS`).
+fn dialled_scheme(url: &str) -> String {
+    url.split_once("://")
+        .map_or("an unparseable scheme", |(scheme, _)| scheme)
+        .to_ascii_uppercase()
 }
 
 /// Expands the shared TLS + auth smoke step definitions against `$world`,
@@ -425,7 +486,7 @@ macro_rules! tls_auth_smoke_steps {
             use $crate::tls_auth::TlsAuthSmokeWorld as _;
             let path = <$world as $crate::tls_auth::TlsAuthSmokeWorld>::PROBE_PATH;
             let state = world.tls_auth();
-            let url = format!("https://localhost:{}{path}", state.port());
+            let url = format!("https://127.0.0.1:{}{path}", state.port());
             let pki = state.pki();
             let client = pki.https_client();
             $crate::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
@@ -439,7 +500,7 @@ macro_rules! tls_auth_smoke_steps {
             use $crate::tls_auth::TlsAuthSmokeWorld as _;
             let path = <$world as $crate::tls_auth::TlsAuthSmokeWorld>::PROBE_PATH;
             let state = world.tls_auth();
-            let url = format!("https://localhost:{}{path}", state.port());
+            let url = format!("https://127.0.0.1:{}{path}", state.port());
             let pki = state.pki();
             let client = pki.https_client();
             $crate::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
@@ -544,5 +605,107 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written, config);
+    }
+
+    /// A listener on `127.0.0.1` that answers every connection with
+    /// `reply` and closes it. Returns its port.
+    async fn canned_server(reply: &'static [u8]) -> u16 {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    // Take the request in before replying, so closing the
+                    // socket afterwards does not reset it under the reply.
+                    let mut request = [0_u8; 4096];
+                    let _ = socket.read(&mut request).await;
+                    let _ = socket.write_all(reply).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    const UNAVAILABLE: &[u8] =
+        b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn a_probe_answered_200_is_ready() {
+        let port =
+            canned_server(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await;
+        let url = format!("http://127.0.0.1:{port}/health");
+        probe_once(&reqwest::Client::new(), &url, "user", "pass")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_probe_answered_another_status_names_it_and_the_address_that_sent_it() {
+        let port = canned_server(UNAVAILABLE).await;
+        let url = format!("http://127.0.0.1:{port}/health");
+        let outcome = probe_once(&reqwest::Client::new(), &url, "user", "pass")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            outcome,
+            format!("503 Service Unavailable from 127.0.0.1:{port}")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_answered_with_bytes_that_are_not_http_names_the_cause() {
+        let port = canned_server(b"SSH-2.0-not-an-http-server\r\n").await;
+        let url = format!("http://127.0.0.1:{port}/health");
+        let outcome = probe_once(&reqwest::Client::new(), &url, "user", "pass")
+            .await
+            .unwrap_err();
+        assert!(
+            outcome.starts_with("transport error: error sending request"),
+            "{outcome}"
+        );
+        assert!(
+            outcome.contains("invalid HTTP version parsed"),
+            "the cause is missing from: {outcome}"
+        );
+    }
+
+    #[test]
+    fn the_scheme_named_for_an_http_url_is_http() {
+        assert_eq!(dialled_scheme("http://127.0.0.1:1/health"), "HTTP");
+    }
+
+    #[test]
+    fn the_scheme_named_for_an_https_url_is_https() {
+        assert_eq!(dialled_scheme("https://127.0.0.1:1/health"), "HTTPS");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_never_ready_panics_naming_the_scheme_attempts_and_last_outcome() {
+        let port = canned_server(UNAVAILABLE).await;
+        let url = format!("http://127.0.0.1:{port}/health");
+        let probe = tokio::spawn({
+            let url = url.clone();
+            async move { wait_until_ready(&reqwest::Client::new(), &url, "user", "pass").await }
+        });
+        let payload = probe.await.unwrap_err().into_panic();
+        let message = crate::panic_text(payload.as_ref());
+        assert!(
+            message.contains(&format!(
+                "over HTTP with valid credentials: {url} (60 attempts in"
+            )),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(&format!(
+                "last outcome: 503 Service Unavailable from 127.0.0.1:{port}"
+            )),
+            "{message}"
+        );
     }
 }
