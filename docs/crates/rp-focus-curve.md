@@ -19,9 +19,9 @@ nothing else.
 
 Out of scope: everything a sweep decides around the fit. That covers the
 sparse gate, the bound on the centre, a threshold on the R², the
-confirmation frame and the retry. The two sweeps decide these differently:
-the provider bounds the centre by the accepted samples and may enforce
-`min_fit_r_squared`, while `rp` bounds it by the grid and enforces nothing.
+confirmation frame and the retry. Both sweeps bound the centre by the
+samples they fitted. The provider may also enforce `min_fit_r_squared`,
+while `rp` enforces no threshold.
 Rounding the centre to a whole focuser step also belongs to the caller,
 next to that bound, so the crate returns it as an `f64`.
 
@@ -142,8 +142,8 @@ did with the parabola. `rp` relays the message as it stands.
   accepted samples as `monotonic_curve`, then applies
   `trains.<id>.min_fit_r_squared` as `poor_fit`.
 - `rp` (the guide-train branch of `auto_focus`): fits, refuses a centre
-  outside the grid as `monotonic_curve`, and reports the R² with no
-  threshold.
+  outside the positions that produced an HFD as `monotonic_curve`, and
+  reports the R² with no threshold.
 
 `rp`'s capture sweep keeps its own parabola until the focus-model plan's
 S7 retires it.

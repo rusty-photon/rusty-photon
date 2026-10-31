@@ -8985,6 +8985,67 @@ async fn guide_train_auto_focus_rejects_a_minimum_outside_the_sampled_range() {
     assert_tool_error(result, "outside the sampled range");
 }
 
+/// The star is lost at the grid's two top positions, and the three
+/// below them are one wing of a V centred between those two. The
+/// centre is inside the grid but past every position that produced an
+/// HFD, so it is a monotonic curve: the bound is the samples', not the
+/// grid's.
+#[tokio::test]
+async fn guide_train_auto_focus_bounds_the_minimum_by_the_positions_that_produced_an_hfd() {
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let call = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let n = call.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Odd calls collect a position's frames: 1, 3, 5 the wing,
+        // 7 and 9 the two top positions, star lost.
+        let hfd = match n {
+            1 => Some(7.0),
+            3 => Some(5.0),
+            5 => Some(3.0),
+            7 | 9 => None,
+            _ => Some(9.0),
+        };
+        let frames = (n * 3 + 1..=n * 3 + 3)
+            .map(|frame| rp_guider::FrameMetrics {
+                frame,
+                hfd,
+                snr: Some(20.0),
+                star_mass: None,
+                star_lost: hfd.is_none(),
+            })
+            .collect();
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames,
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let foc = guide_sweep_focuser();
+    let start = foc.position_value;
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+    let params = AutoFocusToolParams {
+        min_fit_points: Some(3),
+        ..af_params_with_train("guide")
+    };
+
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        &format!(
+            "fitted minimum {} lies outside the sampled range [{}, {}]",
+            start + 75,
+            start - 100,
+            start
+        ),
+    );
+}
+
 #[tokio::test]
 async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     // The stats precondition passes, but the first metrics poll after

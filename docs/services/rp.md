@@ -5771,8 +5771,12 @@ except for the curve. The metric sweep fits the hyperbola
 focus-model provider's capture sweep uses
 ([focus-model.md § The sweep](focus-model.md#the-sweep), step 4,
 which covers what it does with three samples). `best_position` is `x₀`
-rounded to a step and `best_hfd` is `a`. A centre outside the sampled
-grid is `monotonic_curve`, as the parabola's vertex was. `fit_r_squared`
+rounded to a step and `best_hfd` is `a`, which is 0 when the fit is the
+nearest V: the samples never reached the floor near focus, and
+`final_hfd` is the measured value to read. A centre past the positions
+that produced an HFD is `monotonic_curve`. The samples bound it, as they
+do in the provider's sweep, rather than the grid, whose null edges are
+where the star was lost. `fit_r_squared`
 is reported with no threshold and no `poor_fit`: the threshold is
 the provider's `min_fit_r_squared`, and this sweep has no knob for one
 ([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).

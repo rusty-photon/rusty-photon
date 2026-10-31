@@ -995,7 +995,9 @@ sweep retires at the plan's S7, and the rules live here:
    leave. The fit is
    [`rp-focus-curve`](../crates/rp-focus-curve.md)'s, the same one
    `rp`'s guide-train sweep fits. `best_position` is `x₀` rounded to a
-   step, and `best_hfr` is `a`, the fitted HFR there.
+   step, and `best_hfr` is `a`, the fitted HFR there. That is 0 when the
+   fit is the nearest V (below), whose samples never showed the floor;
+   the measured `hfr` is the one to read.
    `monotonic_curve` when the accepted samples sit at fewer than three
    positions, when their squared HFRs do not turn upward or the fit
    flattens to a constant (a curve with no minimum to find), or when
