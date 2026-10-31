@@ -30,6 +30,16 @@ Feature: FITS header on captured frames
   while its cooler is off. Every frame says its rows run top-down: ROWORDER
   is TOP-DOWN.
 
+  The rig state goes out under the cards N.I.N.A. writes for it, in its
+  units: the mount's altitude, azimuth, airmass and pier side, the filter
+  wheel's name, the train's terminal focuser, the train's one rotator by
+  its mechanical angle, the position angle the frame was meant to be
+  taken at, and each weather sensor from the first device that reports
+  it, wind in km/h. Tracking, guiding, the safety monitors and the rain
+  rate stay in the sidecar. The whole rig is the one the rig-state feature
+  describes; the simulator lets its focuser's probe and its weather drift,
+  so those cards are checked against the sidecar fields they copy.
+
   In the tables, `{version}` stands for rp's own version and
   `{document_id}` for the capture's document id.
 
@@ -45,9 +55,12 @@ Feature: FITS header on captured frames
       | OBJECT   | string  | M31                       |
       | OBJCTRA  | string  | 00 42 44.28               |
       | OBJCTDEC | string  | +41 16 08.0               |
+      | OBJCTROT | real    | 0                         |
+      | PIERSIDE | string  | East                      |
       | INSTRUME | string  | Alpaca Camera Simulator   |
       | TELESCOP | string  | Takahashi FSQ-106EDX4     |
       | FILTER   | string  | Luminance                 |
+      | FWHEEL   | string  | Alpaca Filter Wheel Simulator |
       | READOUTM | string  | Default                   |
       | CCD-TEMP | real    | 10                        |
       | XBINNING | integer | 1                         |
@@ -100,6 +113,48 @@ Feature: FITS header on captured frames
     And the document's exposure_started_at should not be later than its captured_at
     And the captured FITS header RA and DEC should be the document's pointing in degrees
 
+  Scenario: A frame on the whole rig carries the rig-state keywords
+    Given rp is running with the whole rig on the simulator and default position angle 254.0
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25200
+    And the MCP client calls "move_rotator" with rotator "main-rotator" to angle 10.0
+    And the MCP client calls "capture" with camera "main-cam" for 100 ms
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the captured FITS header should carry these keywords:
+      | keyword  | type    | value                         |
+      | OBJCTROT | real    | 254                           |
+      | PIERSIDE | string  | East                          |
+      | FWHEEL   | string  | Alpaca Filter Wheel Simulator |
+      | FOCNAME  | string  | Alpaca Focuser Simulator      |
+      | FOCPOS   | integer | 25200                         |
+      | FOCUSPOS | integer | 25200                         |
+      | FOCUSSZ  | real    | 20                            |
+      | ROTNAME  | string  | Alpaca Rotator Simulator      |
+      | ROTATOR  | real    | 10                            |
+      | ROTATANG | real    | 10                            |
+      | ROTSTPSZ | real    | 0.75                          |
+    And the captured FITS header should carry each of these keywords as the document field it copies:
+      | keyword  | field                                               |
+      | CENTALT  | /altitude_degrees                                   |
+      | CENTAZ   | /azimuth_degrees                                    |
+      | AIRMASS  | /airmass                                            |
+      | FOCTEMP  | /focusers/0/temperature_c                           |
+      | FOCUSTEM | /focusers/0/temperature_c                           |
+      | AMBTEMP  | /observing_conditions/0/temperature_c               |
+      | HUMIDITY | /observing_conditions/0/humidity_pct                |
+      | DEWPOINT | /observing_conditions/0/dew_point_c                 |
+      | PRESSURE | /observing_conditions/0/pressure_hpa                |
+      | CLOUDCVR | /observing_conditions/0/cloud_cover_pct             |
+      | SKYBRGHT | /observing_conditions/0/sky_brightness_lux          |
+      | MPSAS    | /observing_conditions/0/sky_quality_mag_per_arcsec2 |
+      | SKYTEMP  | /observing_conditions/0/sky_temperature_c           |
+      | STARFWHM | /observing_conditions/0/star_fwhm_arcsec            |
+      | WINDDIR  | /observing_conditions/0/wind_direction_degrees      |
+    And the captured FITS header should carry each of these keywords in km/h as the document field in m/s it copies:
+      | keyword  | field                                   |
+      | WINDSPD  | /observing_conditions/0/wind_speed_m_per_s |
+      | WINDGUST | /observing_conditions/0/wind_gust_m_per_s  |
+
   Scenario: The sidecar records what the camera reports about its sensor and readout
     Given rp is running with a fully equipped capture rig on the simulator
     When the MCP client calls "capture" with camera "main-cam" for 100 ms
@@ -140,6 +195,7 @@ Feature: FITS header on captured frames
     And the captured FITS header should not carry these keywords:
       | keyword |
       | FILTER  |
+      | FWHEEL  |
     And the document body should not contain "filter"
     And the document body should not contain "filter_wheel_name"
 
@@ -200,8 +256,23 @@ Feature: FITS header on captured frames
       | APTDIA   |
       | FOCRATIO |
       | FILTER   |
+      | FWHEEL   |
       | RA       |
       | DEC      |
+      | CENTALT  |
+      | CENTAZ   |
+      | AIRMASS  |
+      | PIERSIDE |
+      | OBJCTROT |
+      | FOCNAME  |
+      | FOCPOS   |
+      | FOCUSSZ  |
+      | FOCTEMP  |
+      | ROTNAME  |
+      | ROTATOR  |
+      | ROTATANG |
+      | AMBTEMP  |
+      | WINDSPD  |
       | SITELAT  |
       | SITELONG |
     And the captured FITS header "DATE-OBS" should be a UTC timestamp of the form "YYYY-MM-DDThh:mm:ss.sss"

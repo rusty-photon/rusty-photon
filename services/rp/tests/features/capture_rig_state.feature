@@ -9,8 +9,8 @@ Feature: Rig state on the exposure document
   and the readings of the site's observing-conditions devices and safety
   monitors. They are copied in at capture time. A device's name, and a
   rotator's step size, are what it said about itself when its session
-  was established. The sidecar is the record, and the FITS header
-  exports none of them.
+  was established. The sidecar is the record; the FITS header exports
+  most of these facts under the cards capture_fits_header.feature pins.
 
   A device that is not configured or not connected, or a read that
   fails, leaves its field out rather than writing a placeholder, and no

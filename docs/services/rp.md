@@ -678,10 +678,9 @@ device at most those 3 s. The exception is what a device says about
 itself rather than about the frame, its name and a rotator's step
 size: like `camera_name`, those are read once per connection, when
 the device's session is established, and copied into every frame
-from the session the frame's reads went to. The header exports none of them yet
-([FITS header](#fits-header);
-[#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)
-tracks the export).
+from the session the frame's reads went to. The FITS header exports
+most of them under N.I.N.A.'s cards, one device's entry for a list
+([FITS header](#fits-header)); the sidecar stays the record.
 
 - `pier_side` is the mount's ASCOM `SideOfPier`, `"East"` or
   `"West"`, from the frame's one mount read, the one that gives
@@ -1002,8 +1001,13 @@ promise that every fact in the document reaches the header.
 `cooler_power_pct` is recorded in the sidecar only, because no card for
 it is in common use; so is `electrons_per_adu`, because its ADU need
 not be the file's (below); and a binned frame carries no Bayer pattern.
-The [rig state](#rig-state) is recorded in the sidecar only for now
-([#1671](https://github.com/rusty-photon/rusty-photon/issues/1671)).
+The [rig state](#rig-state) goes out under the cards N.I.N.A. writes
+for it, with N.I.N.A.'s names and units, which is what the programs
+that read these cards expect. A sidecar list goes out as one device's
+entry, by the rules below the table. `tracking`, `guiding`,
+`safety_monitors`, a rotator's sky angle and an observing-conditions
+device's `rain_rate_mm_per_hour` are recorded in the sidecar only:
+N.I.N.A. writes no card for any of them.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
@@ -1013,11 +1017,17 @@ The [rig state](#rig-state) is recorded in the sidecar only for now
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
+| `OBJCTROT` | real | `intended_position_angle_degrees`, degrees east of north | `intended_position_angle_degrees` present |
 | `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
+| `CENTALT` | real | `altitude_degrees`, degrees | `altitude_degrees` present |
+| `CENTAZ` | real | `azimuth_degrees`, degrees | `azimuth_degrees` present |
+| `AIRMASS` | real | `airmass` | `airmass` present |
+| `PIERSIDE` | string | `pier_side`: `'East'` or `'West'` | `pier_side` present |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
 | `FILTER` | string | `filter` | `filter` present |
+| `FWHEEL` | string | `filter_wheel_name` | `filter_wheel_name` present |
 | `GAIN` | integer | `gain` | `gain` present |
 | `OFFSET` | integer | `offset` | `offset` present |
 | `READOUTM` | string | `readout_mode_name` | `readout_mode_name` present |
@@ -1030,6 +1040,25 @@ The [rig state](#rig-state) is recorded in the sidecar only for now
 | `FOCRATIO` | real | `optics.focal_length_mm / optics.aperture_mm`, as `get_train_info` derives it | both present |
 | `BAYERPAT` | string | the mosaic at the file's first pixel, read top-down: `'RGGB'`, `'GRBG'`, `'GBRG'` or `'BGGR'`, from `sensor_type` and the Bayer offsets | `sensor_type` is `RGGB`, both offsets present, and `binning` is 1×1 |
 | `XBAYROFF` / `YBAYROFF` | integer | `0`: `BAYERPAT` already starts at the first pixel | as `BAYERPAT` |
+| `FOCNAME` | string | the terminal focuser's `name` | that focuser's `focusers` entry has a `name` |
+| `FOCPOS` / `FOCUSPOS` | integer | the terminal focuser's `position`, steps | that entry has a `position` |
+| `FOCUSSZ` | real | `optics.microns_per_step`, µm | `optics.microns_per_step` present |
+| `FOCTEMP` / `FOCUSTEM` | real | the terminal focuser's `temperature_c`, °C | that entry has a `temperature_c` |
+| `ROTNAME` | string | the train's one rotator's `name` | the train has one rotator, and its `rotators` entry has a `name` |
+| `ROTATOR` / `ROTATANG` | real | that rotator's `mechanical_angle_degrees`, degrees | that entry has a `mechanical_angle_degrees` |
+| `ROTSTPSZ` | real | that rotator's `step_size_degrees`, degrees | that entry has a `step_size_degrees` |
+| `AMBTEMP` | real | `temperature_c`, °C | an `observing_conditions` entry has the sensor (each weather card: the first in config order that has it) |
+| `HUMIDITY` | real | `humidity_pct`, % | as `AMBTEMP` |
+| `DEWPOINT` | real | `dew_point_c`, °C | as `AMBTEMP` |
+| `PRESSURE` | real | `pressure_hpa`, hPa | as `AMBTEMP` |
+| `CLOUDCVR` | real | `cloud_cover_pct`, % | as `AMBTEMP` |
+| `SKYBRGHT` | real | `sky_brightness_lux`, lux | as `AMBTEMP` |
+| `MPSAS` | real | `sky_quality_mag_per_arcsec2`, magnitudes per square arcsecond | as `AMBTEMP` |
+| `SKYTEMP` | real | `sky_temperature_c`, °C | as `AMBTEMP` |
+| `STARFWHM` | real | `star_fwhm_arcsec`, arcseconds | as `AMBTEMP` |
+| `WINDDIR` | real | `wind_direction_degrees`, degrees | as `AMBTEMP` |
+| `WINDSPD` | real | `wind_speed_m_per_s × 3.6`, km/h | as `AMBTEMP` |
+| `WINDGUST` | real | `wind_gust_m_per_s × 3.6`, km/h | as `AMBTEMP` |
 | `SITELAT` | real | `site.latitude_degrees`, degrees north | `site` present |
 | `SITELONG` | real | `site.longitude_degrees`, degrees east | `site` present |
 | `SWCREATE` | string | `'rusty-photon rp <rp_version>'` | `rp_version` present (every frame this version captures) |
@@ -1090,6 +1119,33 @@ Rules the table does not show:
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
   written for `RA`/`DEC`: they are in the mount's own equatorial
   system, which `rp` does not query or convert.
+- **The focuser cards are the terminal focuser's.** A train can hold
+  several focusers, and the header has room for one. The cards take
+  the train's terminal focuser, the last focuser in `train_devices`:
+  the one the train's `auto_focus` sweeps, whose step size
+  `optics.microns_per_step` records and `FOCUSSZ` carries. They are
+  read from that focuser's `focusers` entry, so when it has no entry,
+  or an entry without the field, the card is left out, and another
+  focuser's value never stands in for it. `FOCPOS` and `FOCUSPOS`
+  carry the same position, and `FOCTEMP` and `FOCUSTEM` the same
+  temperature: N.I.N.A. writes both names of each pair, because
+  readers look for either.
+- **The rotator cards need a train with one rotator.** With two
+  rotators in the train there is no telling which angle a reader
+  wants, so neither goes out, as `get_train_info` names no
+  `rotator_id` for such a train. `ROTATOR` and `ROTATANG` both carry
+  the **mechanical** angle, `mechanical_angle_degrees`, the way
+  N.I.N.A. writes them. That is the camera's orientation in the
+  optical train, which flats are matched on. The sky angle is in the
+  sidecar, and the angle the frame was meant to be taken at goes out
+  as `OBJCTROT`.
+- **Each weather card comes from the first device that reports it.**
+  The cards go through the `observing_conditions` entries in config
+  order, and each takes its value from the first entry that has its
+  sensor. So a cloud sensor and a weather station configured side by
+  side both reach the header, and where both report the same sensor,
+  config order decides. `WINDSPD` and `WINDGUST` are in km/h, the
+  sidecar's m/s times 3.6, as N.I.N.A. writes them.
 - **Untyped captures** (`frame_type` omitted — `auto_focus` and
   `center_on_target` frames among them) carry every keyword except
   `IMAGETYP`, `OBJECT`, `OBJCTRA` and `OBJCTDEC`.
@@ -1098,7 +1154,7 @@ Rules the table does not show:
 - **Absent means unknown, never a placeholder.** A keyword whose source
   is missing is omitted rather than written as `0`, `''` or `'NA'`.
 - **Typographic variants are folded; anything else a card cannot
-  carry is left out.** In a target, filter, telescope or camera name,
+  carry is left out.** In a target, filter, telescope or device name,
   typographic dashes, quotes (curly, low-9 and guillemets) and spaces
   become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
   `„M31“` → `"M31"`) — deliberately one name, since editors substitute

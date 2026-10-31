@@ -176,6 +176,42 @@ fn header_carries_keywords(world: &mut RpWorld, step: &Step) {
     }
 }
 
+/// Each row's real keyword holds the number at the row's document
+/// field, times `factor`: a reading the simulator lets drift is checked
+/// against what the sidecar recorded, which is what the header copies.
+fn header_copies_document_fields(world: &RpWorld, step: &Step, factor: f64) {
+    let doc = last_document(world);
+    for row in table_rows(step) {
+        let [key, field] = row.as_slice() else {
+            panic!("expected | keyword | field |, got {row:?}");
+        };
+        let want = doc
+            .pointer(field)
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("document has no number at {field}: {doc}"))
+            * factor;
+        let actual = header_real(world, key);
+        assert!(
+            (actual - want).abs() <= 1e-9 * want.abs().max(1.0),
+            "{key} is {actual}, expected {want} from {field}"
+        );
+    }
+}
+
+#[then(
+    "the captured FITS header should carry each of these keywords as the document field it copies:"
+)]
+fn header_copies_fields(world: &mut RpWorld, step: &Step) {
+    header_copies_document_fields(world, step, 1.0);
+}
+
+#[then(
+    "the captured FITS header should carry each of these keywords in km/h as the document field in m/s it copies:"
+)]
+fn header_copies_fields_in_kmh(world: &mut RpWorld, step: &Step) {
+    header_copies_document_fields(world, step, 3.6);
+}
+
 #[then("the captured FITS header should not carry these keywords:")]
 fn header_lacks_keywords(world: &mut RpWorld, step: &Step) {
     for row in table_rows(step) {
