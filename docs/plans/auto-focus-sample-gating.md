@@ -21,8 +21,9 @@ The mechanism has three layers, and the fix has one layer per phase:
    filter is arcs of the ring and hot-pixel clusters, and they read 4–5
    px whatever the star's true size (26–30 px on that sweep). The wing
    samples are systematically wrong, not noisy, and the collapse in
-   `star_count` is the only visible tell. This is the true root and it
-   belongs with [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179).
+   `star_count` is the only visible tell. This is the true root. Its
+   hot-pixel part was [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179); the rest is
+   [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684).
 2. **Fit.** Linear star-count weighting cannot neutralise two low points
    on the wrong side of the V (5–12 stars against 370 is not enough),
    and a parabola is the wrong shape over ±1200 steps anyway. Replaying
@@ -46,8 +47,8 @@ tell a clean V from a guess.
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
-| G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473) |
-| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, aggregation over the N brightest stars — tracked under #1179 | After G2 | |
+| G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
+| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, aggregation over the N brightest stars, and whether a confirmation frame below the sparse gate rejects the fit or is inconclusive — tracked under [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Not started; G2 has merged, so nothing blocks it | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -125,7 +126,7 @@ nothing changes: three samples are refused before any fit.
 
 G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to
-exactly the samples #1179 would make honest. Its frame corpus is the
+exactly the samples [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) would make honest. Its frame corpus is the
 one hardware dependency left in this plan.
 
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
