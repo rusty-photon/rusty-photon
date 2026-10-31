@@ -844,6 +844,13 @@ async fn read_temperature(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<Opti
             Ok(reading)
         }
         Err(e) if e.is_cancelled() => Err(e),
+        Err(e) if names_unknown_focuser(&e, sensor) => Err(FocusModelError::Workflow(format!(
+            "train '{train}' names temperature_sensor '{sensor}', which rp does not know \
+                 ({message}); name a focuser in rp's config, or remove \
+                 trains.{train}.temperature_sensor from focus-model.json",
+            train = ctx.train_id,
+            message = e.tool_message(),
+        ))),
         Err(e) => {
             debug!(
                 error = %e,
@@ -853,6 +860,15 @@ async fn read_temperature(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<Opti
             Ok(None)
         }
     }
+}
+
+/// Whether `rp` refused a call because it knows no focuser `focuser_id`
+/// (rp.md § Built-in Tools names the phrase). A stand-in that names
+/// one is a mistyped config, which would otherwise read as a missing
+/// probe on every sweep.
+fn names_unknown_focuser(error: &FocusModelError, focuser_id: &str) -> bool {
+    matches!(error, FocusModelError::ToolCall(message)
+        if message.contains(&format!("focuser not found: {focuser_id}")))
 }
 
 /// Pause guide corrections when the focuser is guide-coupled and the
@@ -4219,7 +4235,11 @@ mod tests {
     async fn a_stand_in_without_a_reading_is_no_reading() {
         let answers: [fn() -> Result<Option<f64>>; 2] = [
             || Ok(None),
-            || Err(FocusModelError::ToolCall("unknown focuser".to_owned())),
+            || {
+                Err(FocusModelError::ToolCall(
+                    "failed to read focuser temperature: timeout".to_owned(),
+                ))
+            },
         ];
         for stand_in in answers {
             let (store, _dir) = temp_store().await;
@@ -4230,6 +4250,38 @@ mod tests {
             assert_eq!(outcome.temperature_c, None);
             assert_eq!(outcome.position, 25_010, "the sweep ran anyway");
         }
+    }
+
+    /// A stand-in `rp` does not know is a mistyped config, refused
+    /// before anything moves rather than read as a missing probe on
+    /// every sweep.
+    #[tokio::test]
+    async fn a_stand_in_rp_does_not_know_is_refused() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let active = probed_rig(
+            &position,
+            || Ok(None),
+            || {
+                Err(FocusModelError::ToolCall(
+                    "focuser not found: oag-focuser".to_owned(),
+                ))
+            },
+            1,
+        );
+
+        let err = focus_with_stand_in(&store, &active).await.unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "train 'main' names temperature_sensor 'oag-focuser', which rp does not know \
+             (focuser not found: oag-focuser); name a focuser in rp's config, or remove \
+             trains.main.temperature_sensor from focus-model.json"
+        );
+        assert_eq!(position.get(), 25_000, "nothing moved");
+        assert!(
+            store.get("main").await.unwrap().is_none(),
+            "nothing recorded"
+        );
     }
 
     /// A failed read cannot tell a focuser without a probe from one

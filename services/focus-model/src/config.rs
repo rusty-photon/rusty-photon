@@ -186,7 +186,10 @@ bounded!(
 
 /// The focuser whose temperature probe stands in for a train's own
 /// focuser, which has none (docs/services/focus-model.md § The
-/// temperature source): an `rp` focuser id, never empty.
+/// temperature source).
+///
+/// An `rp` focuser id, never empty and never padded with spaces, which
+/// no id in `rp`'s config carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct TemperatureSensor(String);
@@ -195,8 +198,10 @@ impl TryFrom<String> for TemperatureSensor {
     type Error = String;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
-        if value.trim().is_empty() {
-            return Err("temperature_sensor must be a focuser id, not empty".to_owned());
+        if value.is_empty() || value.trim() != value {
+            return Err(format!(
+                "temperature_sensor must be a focuser id, not empty or padded with spaces (got {value:?})"
+            ));
         }
         Ok(Self(value))
     }
@@ -654,7 +659,7 @@ mod tests {
     /// the field in the error.
     #[test]
     fn every_bound_is_checked_at_load_naming_the_field() {
-        let cases: [(&str, &str); 17] = [
+        let cases: [(&str, &str); 18] = [
             (r#""sweep": { "end_ratio": 1.0 }"#, "sweep.end_ratio"),
             (r#""sweep": { "points": 2 }"#, "sweep.points"),
             (
@@ -687,6 +692,10 @@ mod tests {
             ),
             (
                 r#""trains": { "t": { "temperature_sensor": "  " } }"#,
+                "temperature_sensor",
+            ),
+            (
+                r#""trains": { "t": { "temperature_sensor": " oag-focuser" } }"#,
                 "temperature_sensor",
             ),
             (

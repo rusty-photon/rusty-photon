@@ -807,6 +807,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
 | A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, and each sweep of `determine_filter_offsets`) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
+| A `temperature_sensor` that names a focuser `rp` does not know | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
@@ -995,7 +996,10 @@ probe.
     recorded.
   - *It reports none.* The named focuser is read, and its reading is
     the sweep's. If the named focuser has no probe either, or its read
-    fails, there is no reading.
+    fails, there is no reading. A named focuser `rp` does not know
+    (`focuser not found: <id>`) is refused instead, before anything
+    moves: a mistyped id would otherwise read as a missing probe on
+    every sweep, and go into the record's identity.
   - *Its read fails.* There is no reading at all. The provider cannot
     tell a focuser without a probe from one whose probe failed for a
     moment, so it reads neither.
@@ -1366,7 +1370,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |
 | `trains.<id>.min_star_fraction` | float | 0.1 | The sparse gate, in `[0, 1)`; 0 disables it |
 | `trains.<id>.min_fit_r_squared` | float or null | null | The fit-quality floor, in `[0, 1]`: a fit whose R² is below it fails as `poor_fit` ([The sweep](#the-sweep), step 4). Null reports the R² and enforces nothing. The ends are legal and mean what they say: 0 accepts every fit, the same as null but written down, and 1 accepts only an exact one |
-| `trains.<id>.temperature_sensor` | string or null | null | The id of another focuser in `rp` whose temperature probe stands in for the train's own focuser, which has none ([The temperature source](#the-temperature-source)). The operator asserts that the reading represents this train's thermal path. A train whose own focuser reports a temperature refuses every sweep while this is set. Part of the record's identity. Not empty |
+| `trains.<id>.temperature_sensor` | string or null | null | The id of another focuser in `rp` whose temperature probe stands in for the train's own focuser, which has none ([The temperature source](#the-temperature-source)). The operator asserts that the reading represents this train's thermal path. A train whose own focuser reports a temperature refuses every sweep while this is set, and so does an id `rp` does not know. Part of the record's identity. Not empty, and not padded with spaces |
 | `trains.<id>.confirmation_tolerance` | float | 0.25 | How much worse than the lowest sample the confirmation frame may measure; at least 0 |
 | `trains.<id>.max_attempts` | int | 2 | Sweeps a run may make; 1 to 5 |
 | `trains.<id>.step_size` / `half_width` | int or null | null | Override the derived sweep; positive |
@@ -1525,8 +1529,8 @@ credential — and that `tools/list` answers with no `rp` running.
 ### Unit Tests
 
 - Config: defaults, the `server` block, CLI overrides, every typed
-  bound named on a bad value (an empty `temperature_sensor` among
-  them), unknown keys rejected, the default store path per platform.
+  bound named on a bad value (an empty or padded `temperature_sensor`
+  among them), unknown keys rejected, the default store path per platform.
 - Store: round trip, the cap, newest-first reads, the per-filter last
   good, reopen, a newer schema refused, staleness per field — an
   optical fact unknown on either side compared on nothing, an omitted
@@ -1562,8 +1566,8 @@ credential — and that `tools/list` answers with no `rp` running.
   stand-in read for a focuser without a probe, its reading in the run,
   the last good focus and the record's sensor; refused, with nothing
   moved or recorded, while the train's own focuser reports a
-  temperature; no reading from a stand-in without a probe or whose read
-  fails, and no stand-in read at all after the train's own read fails;
+  temperature, and when `rp` does not know the stand-in; no reading
+  from a stand-in without a probe or whose read fails, and no stand-in read at all after the train's own read fails;
   the record stale on a named sensor until a reset takes it on, the
   offsets kept. On a guiding train: the refusal
   naming every train that has its focuser, and none for an imaging
