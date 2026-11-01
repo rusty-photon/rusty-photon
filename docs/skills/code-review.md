@@ -150,16 +150,18 @@ record shows), most productive first:
   degenerate fixtures, scenarios no step exercises.
 - **CI and packaging** — swallowed failures, publish ordering, wiring
   that misses a platform or a workflow.
-- **Docs** — only text that would make a reader take a wrong action,
-  design docs a behaviour change left stale (AGENTS.md rule 2), and
-  text the PR adds that narrates history or names an issue or pull
-  request in place of stating the behaviour (AGENTS.md rule 16).
+- **Docs** — text that would make a reader take a wrong action, design
+  docs a behaviour change left stale (AGENTS.md rule 2), and text the PR
+  adds that narrates history or names an issue or pull request in place
+  of stating the behaviour (AGENTS.md rule 16); nothing else about
+  wording.
 
 Not findings:
 
 - predicted build, lint or format failures — CI runs Bazel, both clippy
   passes and `cargo fmt`, and such claims were 84 % harmful here;
-- style, naming and phrasing;
+- style, naming and phrasing — a rule 16 breach is none of these: it
+  withholds what the sentence should say;
 - claims about external behaviour (udev, systemd, GitHub Actions, shell,
   a crate's semantics) that don't quote the manual or the source;
 - a sleep, retry or readiness loop to make code tolerate a race — this
@@ -192,7 +194,10 @@ outside API consumers to protect.
 - **Docs, plans, validation records and skills** — a real problem is
   text that would make a reader take a wrong action, build the wrong
   thing, or believe a false claim about hardware evidence. Wording,
-  completeness and "could say more" are not.
+  completeness and "could say more" are not. Text the PR adds that
+  breaches AGENTS.md rule 16 — a bare issue or pull request number, or
+  narration of how the code came to be — is a real problem: every
+  reader of the line pays to fetch what it withholds.
 
 ### Realism
 
@@ -242,6 +247,13 @@ project tenet 3, no actuation on connect (AGENTS.md rule 13) — rates
 every path, not only the likely ones. Stop-class commands and `rp`'s
 safety response to an unsafe or unreadable monitor, park included, are
 no such path: the tenet permits them at any time.
+
+Text the PR adds that breaches AGENTS.md rule 16 — a bare issue or pull
+request number, or narration of how the code came to be — rates
+**likely · medium · fix**: every reader of the line pays to fetch what
+it withholds, and the fix is the sentence itself. It is not the polish
+or rule-citing that realism *none* covers; those are about code shape
+and about text that already says what is true.
 
 A finding that repeats one an earlier round declined is declined with a
 link to that round, unless the code it points at has changed since.

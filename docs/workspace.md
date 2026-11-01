@@ -91,10 +91,15 @@ the project's history can take every sentence at face value.
 **Records** describe a moment: what was decided, observed or changed,
 and when. Commits, pull requests, issues, the ADRs, the validation
 records and the archived plans are records, and they are not rewritten.
-A plan in `docs/plans/` is a record in the making — its status table and
-dated decisions are history by construction — and is archived whole when
-it completes ([archiving-plans.md](skills/archiving-plans.md)), not
-pruned while it is live.
+A decision that changes is a new ADR, which names the one it supersedes;
+the superseded ADR's Status gains one line naming its successor — the
+only edit a record takes — and the file moves to
+`docs/decisions/archive/`, every link to it updated, as a completed plan
+moves to `docs/plans/archive/`. A plan in `docs/plans/` is a record in
+the making — its status table and dated decisions are history by
+construction — and is archived whole when it completes
+([archiving-plans.md](skills/archiving-plans.md)), not pruned while it
+is live.
 
 History belongs in a record. A change's commit message and pull request
 carry what changed and what was wrong before; the living document
@@ -175,8 +180,8 @@ bare `#1234`. Everything else a record holds is reached through
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera Alpaca driver ([`zwo-camera`](services/zwo-camera.md), port 11122) over the now-vendored `zwo-rs`/`libzwo-sys` FFI ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md)). Implemented through Phase G — full ASCOM Camera, ConformU in CI, real-hardware validated; Phase H shipped [`zwo-focuser`](services/zwo-focuser.md) (port 11124, EAF-validated 2026-07-14). **Remaining: Phase F** — the EFW filter wheel as its own `zwo-filterwheel` service per [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) — plus Phase G's tail, the `rp` `CameraConfig` consumer |
 | [zwo-real-hardware-validation.md](plans/zwo-real-hardware-validation.md) | Arrival-day checklist for putting a real ZWO camera + EAF on the Pi field rig: SuperSpeed enumeration, udev/permissions, ConformU against both services, capture + cooler, and roster integration across `sentinel`/`rp`. Both drivers now have real-hardware ConformU passes recorded in [docs/validation/](validation/README.md), but from dev boxes — the rig-side items are still open |
 
-Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer
-listed here.
+Completed plans move to [`docs/plans/archive/`](plans/archive/) and
+superseded ADRs to `docs/decisions/archive/`; neither is listed here.
 
 ## Shared Crates
 
@@ -614,10 +619,10 @@ opened the issue tracker.
   the same way, with the behaviour stated beside the link: "the SSE
   stream never closes on the shutdown signal
   (https://github.com/tokio-rs/axum/issues/2673)".
-- **Doc links are not history.** A comment pointing at
-  `docs/services/<svc>.md §…` or an ADR for the reasoning is what
-  AGENTS.md rule 11 asks for. Keep those; drop the issue numbers inside
-  them.
+- **A link to a living document is not a link to a record.** A comment
+  pointing at `docs/services/<svc>.md §…` for the reasoning is what
+  AGENTS.md rule 11 asks for: keep it, and drop any issue number inside
+  it. An ADR is a record; a link to one follows the exception above.
 
 What changed, and what was wrong before, goes in the commit message and
 the pull request description.
