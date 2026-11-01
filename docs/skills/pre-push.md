@@ -227,11 +227,11 @@ bazel build //... && bazel test //...
 ```
 
 There is no separate narrowing step to run, and no per-PR dep-hygiene
-check (workspace feature unification, unused-dep / dead-feature pruning,
-MSRV preview): the nightly Cargo safety net always runs the full
-`--workspace`, feature-unification breakage surfaces in its
-`--workspace --all-features` build and the off-PR
-`cargo hack --feature-powerset` job, and MSRV in the `msrv` job.
+check: the nightly Cargo safety net always runs the full `--workspace`,
+feature-unification breakage surfaces in its `--workspace --all-features`
+build and the off-PR `cargo hack --feature-powerset` job, and MSRV in the
+`msrv` job. Nothing checks for unused dependencies or dead features; that
+gap is accepted.
 
 ---
 
@@ -389,18 +389,17 @@ each variant its own target and repeat `crate_features` on it, because
 
 **A RUNNABLE doctest on Windows hits `MAX_PATH` without the vendored rustdoc
 patch.** `no_run` examples are emitted as metadata and never linked (rustdoc
-reports them `- compile ... ok`), but one that actually runs invokes `link.exe`.
-Before the fix that died on `LNK1181: cannot open input file
-…libpanic_unwind-….rlib`: the file was present and readable, but its path was
-261 characters — one over the limit — because `rust_doc_test` spells sysroot
-inputs relative to the runfiles tree, whose prefix alone
-(`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123. The tell was a
-pass/fail split between files in the *same directory*: `libstd-….rlib` at 252
-resolved, `libpanic_unwind-….rlib` at 261 did not.
+reports them `- compile ... ok`), but one that actually runs invokes `link.exe`,
+and `rust_doc_test` spells sysroot inputs relative to the runfiles tree, whose
+prefix alone (`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123 of the
+260 characters: `libpanic_unwind-….rlib` lands at 261, present and readable,
+and `link.exe` fails with `LNK1181: cannot open input file`, while
+`libstd-….rlib` in the *same directory* at 252 resolves — that pass/fail split
+between siblings is the tell.
 
-`third_party/patches/rustdoc_test_windows_external_repo_path.patch` now resolves
+`third_party/patches/rustdoc_test_windows_external_repo_path.patch` resolves
 `--sysroot=` through the runfiles manifest to its execroot target, dropping that
-path to 193. If you add a doctest target and see `LNK1181` again, the budget has
+path to 193. If you add a doctest target and see `LNK1181`, the budget has
 run out somewhere else — measure the path before theorising.
 
 **A doctest target with `crate_features` needs the same patch on Windows.**

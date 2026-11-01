@@ -16,8 +16,8 @@
 
 ## Procedure
 
-This project follows a **design-first, test-first** workflow. The rp service
-pioneered this approach and it is now the standard for all development work.
+This project follows a **design-first, test-first** workflow for all
+development work.
 
 The workflow has three phases, executed in strict order:
 
@@ -57,9 +57,9 @@ defines what the system does, not how it is built.
   configuration snippets. These translate directly into BDD scenarios.
 - **Define error cases.** Every operation that can fail should have its failure
   behavior specified. These become BDD error scenarios.
-- **Iterate the design before moving on.** The rp design doc went through 10
-  commits before any tests were written. Refining the design on paper is far
-  cheaper than refining it in code.
+- **Iterate the design before moving on.** A design doc that goes through
+  several revisions before any test is written is the norm. Refining the
+  design on paper is far cheaper than refining it in code.
 
 #### MVP scope definition
 
