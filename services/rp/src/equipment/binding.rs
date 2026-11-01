@@ -980,6 +980,49 @@ mod tests {
         assert_eq!(connects.load(Ordering::SeqCst), 1);
     }
 
+    /// A third-party server may list the kind in the lower-case path
+    /// spelling (`"camera"`) rather than the `PascalCase` our servers and
+    /// `OmniSim` write; the entry is of the kind all the same, and binds.
+    #[tokio::test]
+    async fn a_camera_listed_in_lower_case_binds() {
+        let connects = Arc::new(AtomicU32::new(0));
+        let connect0 = Arc::clone(&connects);
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [
+                            {"DeviceName": "QHY600M", "DeviceType": "camera",
+                             "DeviceNumber": 0, "UniqueID": "listed-in-lower-case"}
+                        ],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(move || {
+                    let connects = Arc::clone(&connect0);
+                    async move {
+                        connects.fetch_add(1, Ordering::SeqCst);
+                        ok_envelope()
+                    }
+                }),
+            );
+        let stub = spawn_stub(app).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("listed-in-lower-case"));
+
+        let camera = establish_listed(&config, None).await.unwrap();
+
+        assert_eq!(
+            ListedIdentity::of(camera.as_ref()).unique_id,
+            "listed-in-lower-case"
+        );
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+    }
+
     /// The equipment status names the device each live entry is bound
     /// to, and nothing for an entry that is not — here one refused by
     /// its pin.

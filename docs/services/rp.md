@@ -3984,7 +3984,10 @@ supervisor's re-establish (§ [Device Session
 Recovery](#device-session-recovery)):
 
 1. `rp` reads the server's `configureddevices` list and takes the entry
-   at `device_number` among the entries of the kind. That is the read
+   at `device_number` among the entries of the kind. The kind is matched
+   against the listed `DeviceType` without regard to case: the
+   specification's examples are PascalCase, and a third-party server may
+   list the lower-case path spelling (`"rotator"`). That is the read
    that locates the device anyway, so the pin adds no request, and the
    identity checked is the one listed for the very entry whose device
    URL `rp` binds.
