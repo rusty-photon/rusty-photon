@@ -564,7 +564,7 @@ install a custom hook script kept in the repo at
 # machines skip it:
 python3 tools/ci/check_bazel_lock.py
 cargo clippy --all --all-targets --all-features -- -D warnings
-cargo clippy --all --lib --bins -- -D warnings   # default-features pass (#988)
+cargo clippy --all --lib --bins -- -D warnings   # default-features pass
 cargo fmt --all -- --check
 # Buildifier (BUILD / *.bzl / MODULE.bazel formatting + lint) — the same gate CI
 # runs. Guarded on bazel being installed, so Cargo-only devs aren't blocked:
@@ -684,7 +684,7 @@ records the ladder that widened this set.
 deliberately different policies: `stable / clippy` is the required PR gate at
 `-D warnings` — two passes, `--all-features --all-targets` plus a
 default-features `--lib --bins` pass, because each compiles feature-gated code
-the other cfgs out (#988; the second is `--lib --bins` so dev-dependency edges
+the other cfgs out (the second is `--lib --bins` so dev-dependency edges
 cannot force `simulation`/`mock` back on via feature unification) — while
 the nightly `beta / clippy` job passes `--cap-lints warn`
 so it can never fail on a lint — not even one added upstream to a group this

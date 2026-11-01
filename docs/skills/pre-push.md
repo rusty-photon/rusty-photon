@@ -76,7 +76,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / clippy`, first step
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
-> cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement (#988)
+> cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement
 > ```
 >
 > `bazel coverage` produces a report, not a verdict. To find out whether the
@@ -256,7 +256,7 @@ cucumber defaults under which a suite can exit 0 having proved nothing.
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** (the first step of `stable / clippy`) | `cargo fmt --check` | stable rustfmt | **PR gate** |
-| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` (#988) | stable clippy | **PR gate** |
+| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` | stable clippy | **PR gate** |
 | **clippy-os (windows / macos)** | same two passes, on that host OS | stable clippy | Off-PR |
 | **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
@@ -304,7 +304,7 @@ equivalent) so the ubuntu `--all-targets` pass compiles and lints it on every
 PR. `rusty-photon-doctor-checks`'s USB collectors do this for their parsers
 and their bounded-subprocess helper.
 
-**Every clippy job runs two passes** (#988): `--all-features` turns `mock` /
+**Every clippy job runs two passes**: `--all-features` turns `mock` /
 `simulation` ON and thereby cfgs OUT the real-hardware production slices behind
 `not(feature = "mock")` / `not(feature = "simulation")`. The second pass —
 `cargo clippy --workspace --lib --bins -- -D warnings` — compiles each crate's
@@ -689,7 +689,7 @@ bazel build //... && bazel test //...                     # bazel / <os> (build 
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / clippy, first step
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
-cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2 (#988)
+cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2
 ```
 
 ## Bazel

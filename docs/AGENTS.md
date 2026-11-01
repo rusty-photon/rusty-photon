@@ -24,12 +24,8 @@
    bazel build //... && bazel test //...                     # build + tests incl. BDD (the per-PR Bazel gate, run locally)
    cargo fmt                                                 # Bazel runs no rustfmt
    cargo clippy --all-targets --all-features -- -D warnings  # Cargo's two clippy shapes: Bazel runs no clippy
-   cargo clippy --workspace --lib --bins -- -D warnings      # default-features pass — lints what --all-features cfgs out (#988)
+   cargo clippy --workspace --lib --bins -- -D warnings      # default-features pass — lints what --all-features cfgs out
    ```
-
-   **cargo-rail is retired** — do **not** run `cargo rail`. Cargo.toml /
-   Cargo.lock remain the single source of truth for dependency versions
-   (see rule 10).
 
    Read [docs/skills/pre-push.md](skills/pre-push.md) before pushing: it
    owns the full pre-push set, which checks are required, what runs
