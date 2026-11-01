@@ -2636,13 +2636,16 @@ The first analysis tool to implement. Behavioral contract:
   no default. The right value depends on the camera+optics pixel scale
   (arcsec/px) and the seeing regime, neither of which the tool can infer
   from the image alone. Callers (workflows, plugins) own that policy.
-- `max_area` — maximum component pixel area to admit. Required; no
-  default. Same rationale as `min_area`. It also bounds the size of a
-  star the aperture measures (step 9): a star whose half-flux disc,
-  `π × HFR²`, is larger than `max_area` has no HFR. Note: at extreme
-  defocus, a star's blur disc can span thousands of pixels —
-  auto-focus callers should set `max_area` accordingly so the V-curve
-  sweep can measure them.
+- `max_area` — the largest star to measure, in pixels of its
+  half-flux disc: a star whose `π × HFR²` is larger has no HFR
+  (step 9). Required; no default. Same rationale as `min_area`. Unlike
+  `detect_stars`' `max_area`, it does not filter components (step 7):
+  a star the threshold keeps whole is one component, up to twice its
+  half-flux disc for a uniform disc, and dropping it would measure the
+  star only when the threshold broke it up. Note: at extreme defocus, a
+  star's blur disc can span thousands of pixels — auto-focus callers
+  should set `max_area` accordingly so the V-curve sweep can measure
+  them.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold above
   background. Unit-free (multiples of the sigma-clipped background
   stddev), so a default is meaningful here.
@@ -2682,8 +2685,10 @@ The first analysis tool to implement. Behavioral contract:
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
-7. Filter components: pixel area in `[min_area, max_area]`; reject
-   components touching the image border. Saturated components are *not*
+7. Filter components: pixel area at least `min_area` (`detect_stars`,
+   which reports components, also rejects one above `max_area`; here
+   `max_area` bounds the star, step 9); reject components touching the
+   image border. Saturated components are *not*
    rejected — they are flagged (see `saturated_star_count`). Saturated
    stars carry real signal: bright in-focus stars routinely clip at
    long-enough exposures, and donut-shaped PSFs at extreme defocus are
@@ -2858,14 +2863,15 @@ them at 0 would add the positive half of every pixel's noise.
 defocused star near the threshold is many of them. At
 `threshold_sigma 8` and `min_area 6`, the 2026-09-08 frame 800 steps
 outside focus (`tests/fixtures/star_detection/qhy600m_defocused_crop.fits`
-is a crop of it) splits each of its three stars into 20 or more
-components. Their apertures settle on their star's centre within
-0.1 px and measure its HFR within 0.01 px. The fragments whose
+is a crop of it) splits three of its stars into 20 or more components
+each. Their apertures settle on their star's centre within 0.1 px and
+measure its HFR within 0.01 px. The fragments whose
 aperture does not grow are spots on the flat disc, where the annulus
 lies on the star itself and the aperture flux is a few hundred ADU;
 they settle inside the star's aperture and are dropped with the
-others. The frame reports 79 detections, at a median component HFR of
-1.32 px, and 3 stars, at 37.6–38.2 px. Counting each star once is also
+others. The frame reports 83 detections, at a median component HFR of
+1.43 px, and 7 stars, at 37.2–38.9 px; the threshold keeps the other
+four whole. Counting each star once is also
 what gives `star_count` its meaning for `auto_focus`'s sparse gate.
 
 **Why the brightest 20.** A sweep compares frames, so its aggregate
@@ -2889,7 +2895,14 @@ at focus, where the stars measure about 1 px. A cap needs a scale, and
 star whose half-flux disc is larger than it is outside that statement.
 A uniform disc of up to twice `max_area` stays under the cap, so a caller
 who sizes `max_area` to the largest blur disc a sweep reaches gets it
-measured.
+measured. The cap is the only size bound: step 7 does not also drop a
+component above `max_area`, because whether a star is one component or
+many depends on the threshold. The defocused fixture's star is one
+component at `threshold_sigma` 4 to 6 and 32 at 8, and measures
+38.10–38.17 px at each; with components above `max_area` dropped, it
+measured nothing below 8. At focus-model's default `max_area` of 500,
+the rig2 frames whose stars measure 8–10 px lost about half their
+stars to that filter and read 4–7% low.
 
 **Measured on rig2's QHY600M, in apertures.** Each 2026-09 sweep that
 brackets focus, fitted with `focus-model`'s hyperbola over the samples
@@ -2917,7 +2930,7 @@ small:
 | Position | 29066 | 29366 | 29666 | 29966 | 30266 | 30566 | 30866 |
 |---|---|---|---|---|---|---|---|
 | Component HFR (detections) | 5.29 (12) | 16.67 (40) | 4.01 (370) | 7.95 (159) | 7.59 (33) | 4.09 (7) | 4.45 (5) |
-| Aperture HFR (stars) | 33.85 (3) | 19.37 (31) | 4.88 (368) | 8.95 (154) | 23.40 (18) | 37.87 (1) | none (0) |
+| Aperture HFR (stars) | 33.84 (6) | 19.33 (32) | 4.96 (369) | 9.03 (155) | 23.40 (19) | 37.77 (4) | none (0) |
 
 In apertures, the samples 400 and 700 steps inside focus lie on the
 line from the fine sweep's vertex at 4.6–4.7 px per 100 steps, the
@@ -2999,8 +3012,8 @@ slope that sweep's own V-curve rises at.
 - Each fragment of a large defocused star grows its own aperture to
   the star's size before step 10 drops it. On a development machine,
   measuring the apertures of rig2's 61-megapixel frame with the most
-  fragments (79 detections, 3 stars at `threshold_sigma 8`) takes
-  1.5 s, against 2.5 s for detection; near focus it takes 0.01–0.13 s.
+  fragments (83 detections, 7 stars at `threshold_sigma 8`) takes
+  1.6 s, against 2.5 s for detection; near focus it takes 0.01–0.13 s.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` provided → MCP error mentioning
@@ -3136,7 +3149,9 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
   (FITS file on disk).
 - `min_area` and `max_area` — required (encode pixel-scale assumptions;
-  same rationale as `measure_basic` and `detect_stars`).
+  same rationale as `measure_basic` and `detect_stars`). As in
+  `measure_basic`, `max_area` bounds a star's half-flux disc, not a
+  component's area.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold.
 - Optional `stamp_half_size` (default `8`) — half-side of the postage
   stamp used for the 2D Gaussian fit. The fit is rejected for any star

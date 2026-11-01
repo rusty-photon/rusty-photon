@@ -48,5 +48,7 @@ format as the crop above.
     `max_area`, and `measure_basic` reports no star: the spots on the disc,
     whose own apertures settle small, lie inside the aperture the disc's
     fragments were growing into.
-  - At `threshold_sigma 5` the disc is one component larger than
-    `max_area 5000`, and nothing is detected.
+  - At `threshold_sigma` 4 to 6 the disc is one component, larger than
+    `max_area 5000`, and `measure_basic` reports the same star, at
+    38.10–38.14 px: its `max_area` bounds the star's half-flux disc, not
+    the component (`detect_stars`, which reports components, drops it).

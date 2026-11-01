@@ -22,8 +22,9 @@ Feature: Basic image measurement tool
   times that radius, whose centre and radius are refined round by round
   against a local background, so a star is measured whole whatever part of
   it the threshold kept. The fragments of a defocused star settle on its
-  centre and count as one star, and a star whose half-flux disc is larger
-  than max_area is not measured. The aggregate HFR is the median over the 20
+  centre and count as one star, a star the threshold keeps whole is measured
+  the same, and a star whose half-flux disc is larger than max_area is not
+  measured. The aggregate HFR is the median over the 20
   brightest stars. The real-frame scenarios run on 512x512 crops of two
   QHY600M frames: one at best focus, whose twelve stars sit among the
   sensor's hot pixels, and one far from focus, whose single star is a blur
@@ -118,6 +119,14 @@ Feature: Basic image measurement tool
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 5000
+    Then the measure_basic result should contain "star_count" with value 1
+    And the measure_basic result should contain "hfr" between 37.5 and 39.0
+
+  Scenario: A defocused star the threshold keeps whole is measured the same
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 5.0, min_area 6 and max_area 5000
     Then the measure_basic result should contain "star_count" with value 1
     And the measure_basic result should contain "hfr" between 37.5 and 39.0
 

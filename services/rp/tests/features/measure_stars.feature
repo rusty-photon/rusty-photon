@@ -115,10 +115,10 @@ Feature: Per-star photometry and PSF metrics
     And the measure_stars result should contain "hfr" between 1.1 and 1.2
     And the measure_stars stars should be listed brightest first
 
-  Scenario: A defocused star that fragments at the threshold is one star
+  Scenario: A defocused star the threshold keeps whole is one star
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "measure_stars" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 5000
+    When the MCP client calls "measure_stars" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 5.0, min_area 6 and max_area 5000
     Then the measure_stars result should contain "star_count" with value 1
     And the measure_stars result should contain "hfr" between 37.5 and 39.0

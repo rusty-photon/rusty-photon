@@ -67,9 +67,10 @@ pub struct MeasureStarsResult {
 
 /// Run the measurement pipeline.
 ///
-/// `max_adu` is for saturation flagging inside `detect_stars`; the
-/// per-star saturation count is not surfaced in the result (callers
-/// wanting it call `detect_stars` directly).
+/// `max_area` bounds a star's half-flux disc, not a component's area, as
+/// in `measure_basic`. `max_adu` flags saturation; the per-star
+/// saturation count is not surfaced in the result (callers wanting it
+/// call `detect_stars` directly).
 ///
 /// # Errors
 ///
@@ -90,7 +91,7 @@ pub fn measure_stars<T: Pixel>(
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
-        max_area,
+        max_area: usize::MAX,
         max_adu,
     };
     let detected = detect(view, &background, &detection);

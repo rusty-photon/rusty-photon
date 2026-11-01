@@ -32,8 +32,12 @@ pub struct MeasureBasicResult {
     pub pixel_count: u64,
 }
 
-/// Run the `measure_basic` pipeline. `max_adu` is for saturation flagging
-/// only; `None` skips the flag (see contract in `docs/services/rp.md`).
+/// Run the `measure_basic` pipeline.
+///
+/// `max_area` bounds a star's half-flux disc, not a component's area: a
+/// star the threshold keeps whole is one component, which may be larger
+/// than its half-flux disc. `max_adu` is for saturation flagging only;
+/// `None` skips the flag (see contract in `docs/services/rp.md`).
 ///
 /// # Errors
 ///
@@ -58,7 +62,7 @@ pub fn measure_basic<T: Pixel>(
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
-        max_area,
+        max_area: usize::MAX,
         max_adu,
     };
     let detection = detect(view, &background, &params);
