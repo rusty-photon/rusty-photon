@@ -1,4 +1,4 @@
-//! Half-flux radius via radial flux accumulation.
+//! A component's own half-flux radius via radial flux accumulation.
 //!
 //! For each star: collect `(distance_from_centroid, background_subtracted_flux)`
 //! pairs from the component pixels, sort by distance ascending, walk the
@@ -6,9 +6,11 @@
 //! half the total flux. Sub-pixel precision via linear interpolation between
 //! the two bracketing samples.
 //!
-//! Works on saturated stars (the cumulative-flux curve is still monotonic) and
-//! on donut-shaped PSFs at extreme defocus (the curve crosses half-max around
-//! the donut radius). See `docs/services/rp.md` (`measure_basic` algorithm step 8).
+//! The component is what the threshold kept, so this radius is capped by
+//! it: detection's 0.25 px floor reads it, and the aperture measurement
+//! starts from it, but a star's reported HFR is the aperture's
+//! ([`super::aperture`]). See `docs/services/rp.md` (`measure_basic`
+//! algorithm steps 8–9).
 
 use ndarray::ArrayView2;
 
@@ -70,38 +72,6 @@ pub fn star_hfr<T: Pixel>(view: &ArrayView2<T>, star: &Star, background_mean: f6
 
     // Should not be reachable since cumulative ends at total_flux >= half.
     samples.last().map(|(d, _)| *d)
-}
-
-/// Median of per-star HFRs. `None` if `stars` is empty or every star
-/// returns no HFR.
-pub fn aggregate_hfr<T: Pixel>(
-    view: &ArrayView2<T>,
-    stars: &[Star],
-    background_mean: f64,
-) -> Option<f64> {
-    let mut hfrs: Vec<f64> = stars
-        .iter()
-        .filter_map(|s| star_hfr(view, s, background_mean))
-        .collect();
-    if hfrs.is_empty() {
-        return None;
-    }
-    let n = hfrs.len();
-    let mid = n / 2;
-    hfrs.select_nth_unstable_by(mid, |a, b| {
-        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let upper = hfrs.get(mid).copied()?;
-    if n % 2 == 1 {
-        Some(upper)
-    } else {
-        let lower = hfrs
-            .get(..mid)?
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        Some(f64::midpoint(lower, upper))
-    }
 }
 
 #[cfg(test)]
@@ -226,37 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_hfr_is_median() {
-        // Three independent stars in a single image, each a different uniform
-        // disc.
-        let mut arr: Array2<u16> = Array2::zeros((30, 30));
-        let mut all_stars: Vec<Star> = Vec::new();
-        let centers = [(5_usize, 5_usize), (15, 15), (25, 25)];
-        let radii = [2_i32, 3_i32, 4_i32];
-        for ((cy, cx), r_disc) in centers.iter().zip(radii.iter()) {
-            let mut pixels = Vec::new();
-            for r in 0..30_i32 {
-                for c in 0..30_i32 {
-                    let d2 =
-                        (r - *cy as i32) * (r - *cy as i32) + (c - *cx as i32) * (c - *cx as i32);
-                    if d2 <= r_disc * r_disc {
-                        arr[[r as usize, c as usize]] = 1000;
-                        pixels.push((r as usize, c as usize));
-                    }
-                }
-            }
-            all_stars.push(star_from_pixels(pixels, *cy as f64, *cx as f64));
-        }
-        let agg = aggregate_hfr(&arr.view(), &all_stars, 0.0).unwrap();
-        // Median of {≈2/√2, ≈3/√2, ≈4/√2} ≈ 2.121.
-        let expected = 3.0 / 2_f64.sqrt();
-        assert!(
-            (agg - expected).abs() < 0.5,
-            "agg = {agg}, expected ≈ {expected}"
-        );
-    }
-
-    #[test]
     fn hfr_constant_disc_in_hdr_i32_matches_geometric_expectation() {
         // Same uniform-disc geometry as the u16 test, but with HDR pixel
         // values (>u16::MAX) on i32 to exercise the I32 monomorphization.
@@ -281,20 +220,5 @@ mod tests {
             (hfr - expected).abs() < 0.5,
             "hfr = {hfr}, expected ≈ {expected}"
         );
-    }
-
-    #[test]
-    fn aggregate_hfr_empty_returns_none() {
-        let arr: Array2<u16> = Array2::zeros((5, 5));
-        assert!(aggregate_hfr(&arr.view(), &[], 0.0).is_none());
-    }
-
-    #[test]
-    fn aggregate_hfr_all_zero_flux_returns_none() {
-        let arr: Array2<u16> = Array2::from_elem((5, 5), 100);
-        let pixels: Vec<(usize, usize)> =
-            (0..5).flat_map(|r| (0..5).map(move |c| (r, c))).collect();
-        let stars = vec![star_from_pixels(pixels, 2.0, 2.0)];
-        assert!(aggregate_hfr(&arr.view(), &stars, 100.0).is_none());
     }
 }

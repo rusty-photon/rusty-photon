@@ -16,8 +16,18 @@ Feature: Basic image measurement tool
   window on every second row and column, which on a raw colour mosaic holds
   one colour only, keeps the pixel with six such pixels.
   After measuring, a component whose half-flux radius is under 0.25 px is
-  rejected. The real-frame scenario runs on a 512x512 crop of a QHY600M
-  best-focus frame, whose twelve stars sit among the sensor's hot pixels.
+  rejected.
+
+  Each detection's half-flux radius is then measured in an aperture of three
+  times that radius, whose centre and radius are refined round by round
+  against a local background, so a star is measured whole whatever part of
+  it the threshold kept. The fragments of a defocused star settle on its
+  centre and count as one star, and a star whose half-flux disc is larger
+  than max_area is not measured. The aggregate HFR is the median over the 20
+  brightest stars. The real-frame scenarios run on 512x512 crops of two
+  QHY600M frames: one at best focus, whose twelve stars sit among the
+  sensor's hot pixels, and one far from focus, whose single star is a blur
+  disc that fragments at the threshold.
 
   Scenario: Tool catalog includes measure_basic
     Given a running Alpaca simulator
@@ -101,4 +111,20 @@ Feature: Basic image measurement tool
     And an MCP client connected to rp
     When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_best_focus_crop.fits" with threshold_sigma 5.0, min_area 4 and max_area 400
     Then the measure_basic result should contain "star_count" with value 12
-    And the measure_basic result should contain "hfr" between 1.0 and 1.1
+    And the measure_basic result should contain "hfr" between 1.1 and 1.2
+
+  Scenario: A defocused star that fragments at the threshold is measured as one star
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 5000
+    Then the measure_basic result should contain "star_count" with value 1
+    And the measure_basic result should contain "hfr" between 37.5 and 39.0
+
+  Scenario: A star whose half-flux disc is larger than max_area is not measured
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 2000
+    Then the measure_basic result should contain "star_count" with value 0
+    And the measure_basic result should contain "hfr" with value null

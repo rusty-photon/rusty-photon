@@ -1052,9 +1052,12 @@ sweep retires at the plan's S7, and the rules live here:
    point's position is the one `move_focuser` reports reaching, which
    is the target unless the focuser settled idle short of it
    ([rp.md § Focuser Tool Details](rp.md#focuser-tool-details)). A point's
-   HFR is the median of its frames' median HFRs over the frames with
-   stars, its `star_count` the median of theirs, its `document_id` the
-   last frame's; a point with no stars, or a non-finite HFR, is
+   HFR is the median of its frames' `hfr` over the frames with stars —
+   the aggregate `measure_stars` reports, the median aperture HFR of a
+   frame's 20 brightest stars
+   ([rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) —
+   its `star_count` the median of theirs, its `document_id` the last
+   frame's; a point with no stars, or a non-finite HFR, is
    recorded with `hfr: null` and enters nothing.
 3. The sparse gate: a point whose `star_count` is below
    `min_star_fraction` of the sweep's largest count is
@@ -1373,7 +1376,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `sweep.points` | int | 9 | Samples the derived step aims for across the sweep; at least 3. The critical-focus-zone floor on the step can leave the grid with fewer, which is what the plan's `points` reports |
 | `sweep.seeing_fwhm_arcsec` | float | 2.5 | The focused HFR's stand-in until a filter has a last good focus; positive |
 | `trains.<id>.duration` | humantime | `"3s"` | Per-frame exposure |
-| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` |
+| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars`; `max_area` also bounds the stars it measures, whose half-flux disc must fit in it (an HFR of at most 12.6 px at 500 — [rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) |
 | `trains.<id>.threshold_sigma` | float or null | null | Detection threshold; null leaves `rp`'s default |
 | `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; 1 to 20 |
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |

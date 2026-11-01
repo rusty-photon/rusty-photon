@@ -48,7 +48,8 @@ tell a clean V from a guess.
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
 | G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
-| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, aggregation over the N brightest stars, and whether a confirmation frame below the sparse gate rejects the fit or is inconclusive — tracked under [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Not started; G2 has merged, so nothing blocks it | |
+| G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-g3b-aperture-hfr` |
+| G3c | Sweep rules, both capture sweeps: the two-star minimum folded into the sparse gate, and the confirmation's rejection reason — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Not started; follows G3b | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -128,6 +129,55 @@ G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to
 exactly the samples [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) would make honest. Its frame corpus is the
 one hardware dependency left in this plan.
+
+**Decided 2026-10-31** (owner, on
+[#1684](https://github.com/rusty-photon/rusty-photon/issues/1684)'s plan). G3 lands
+as G3b, the measurement, then G3c, the sweep rules.
+
+1. **Saturated stars count.** The aggregate keeps them, as
+   `measure_basic`'s policy always has: defocused donuts clip in their
+   bright annulus.
+2. **A confirmation frame below the gate stays a rejection with the
+   fallback to the lowest sample.** A sparse frame at the fitted
+   position is either a fit far from focus, where stars fade and
+   fragment, or a changed sky; either way the measured lowest sample is
+   the safer place to end, and a retake only helps against a cloud
+   shorter than one exposure. G3c adds the reason to the result,
+   `confirmation.rejected: "starless" | "sparse" | "worse" | null`,
+   mirroring `curve_points[].rejected`.
+3. **The two-star minimum folds into the sparse gate**: its threshold
+   becomes `max(2, min_star_fraction × max_stars)` and the reason stays
+   `sparse`, so the confirmation frame and the provider's starvation and
+   retry logic take it with no change of their own. `min_star_fraction`
+   `0` turns off only the relative part.
+4. **G3b is validated on the frames already on rig2**, pulled with the
+   roof closed: the 2026-09-08 coarse and fine sweeps and the
+   2026-09-26 sweeps, 79 frames at known positions.
+
+*Measured in G3b* (the numbers are in
+[rp.md](../services/rp.md), `measure_basic`). In apertures, every
+sweep that brackets focus keeps its vertex within six steps of the
+component HFR's, inside the ~31-step critical focus zone, at an R² of
+0.986–0.997; the wing slope is 4.1–4.7 px per 100 steps at both
+`threshold_sigma` 8 and 10, where over components it moved from 2.85
+to 4.21 with the threshold. The #1187 coarse sweep's wing samples,
+which read 4–5 px, measure 23–38 px and lie on the line the fine
+sweep's V rises along. The issue's "26–30 px across" for those stars
+was wrong: a radial profile puts the disc's edge 45 px from its
+centre.
+
+*Open, for the owner — not part of G3.* The relative gate was built to
+reject wing samples that were wrong, and with honest measurement it
+now rejects some that are right. One star per aperture also lowers
+the wing counts,
+since a fragmented donut now counts once: on the coarse sweep at
+`threshold_sigma 10`, the sample 400 steps inside focus measures 31
+stars at 19.4 px against a gate of 37. And at `threshold_sigma 8` and
+`min_area 6` the frame at focus counts thousands of faint compact
+stars the wings never show — 2,104 on the 2026-09-08 fine sweep — so a
+10% gate leaves three samples. Whether `min_star_fraction`'s default
+should fall, or the gate should count only the stars a sweep's every
+frame could show, is a decision for after G3c, from these frames.
 
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
@@ -211,7 +261,7 @@ update (rp.md, session-runner.md) first, BDD second, code third.
   per-point error bars from the HFR spread across stars. Both need the
   measurement layer (G3) to produce honest spreads first.
 - Aggregating over the N brightest stars instead of the median over
-  every detection. Part of G3.
+  every detection. Part of G3; G3b takes the 20 brightest.
 
 ## What NINA and Hocus Focus do (for reference)
 

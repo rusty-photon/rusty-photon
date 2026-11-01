@@ -6,6 +6,7 @@
 //! [`crate::persistence`]. See `docs/services/rp.md` (Module Structure)
 //! and `docs/plans/archive/image-evaluation-tools.md` for the layout rationale.
 
+pub mod aperture;
 pub mod background;
 pub mod fwhm;
 pub mod hfr;

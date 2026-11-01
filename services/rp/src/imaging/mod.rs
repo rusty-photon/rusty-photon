@@ -31,12 +31,15 @@
 pub mod analysis;
 pub mod tools;
 
-pub use analysis::background::{estimate_background, sigma_clipped_stats, BackgroundStats};
+pub use analysis::aperture::{aggregate_hfr, measure_in_apertures, MeasuredStar};
+pub use analysis::background::{
+    estimate_background, sigma_clipped_stats, sigma_clipped_values, BackgroundStats,
+};
 pub use analysis::fwhm::{fit_2d_gaussian, GaussianFit2D};
-pub use analysis::hfr::{aggregate_hfr, star_hfr};
+pub use analysis::hfr::star_hfr;
 pub use analysis::pixel::Pixel;
 pub use analysis::snr::{compute_snr, per_star_snr, SnrResult};
-pub use analysis::stars::{detect_stars, DetectionParams, Star};
+pub use analysis::stars::{detect, detect_stars, Detection, DetectionParams, Star};
 pub use analysis::stats::{compute_stats, ImageStats};
 pub use tools::center_on_target::haversine_arcsec;
 pub use tools::measure_basic::{measure_basic, MeasureBasicResult};
