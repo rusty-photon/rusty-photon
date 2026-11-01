@@ -63,15 +63,15 @@ these away, the decision is wrong.
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (implemented — `ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | [pa-scops-oag](services/pa-scops-oag.md) | Focuser | 11123 | `docs/services/pa-scops-oag.md` (Pegasus Astro Scops OAG — FTDI serial, Pegasus DMFC/Scops ASCII protocol at 19200 8N1; no temperature sensor) |
-| [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; v0 implemented 2026-07-09 — 25 unit + 26 BDD scenarios green, full quality gate green, ConformU wired; pending real-hardware validation) |
+| [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; hardware-validated — see [docs/validation/](validation/README.md)) |
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
 | [ui-htmx](services/ui-htmx.md) | — (web UI / BFF: the activity stream and the targets inbox; not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
 | [session-runner](services/session-runner.md) | — (generic workflow orchestrator; MCP client of rp) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json` and `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
 | [doctor](services/doctor.md) | — (install diagnosis CLI, not an ASCOM device) | — | `docs/services/doctor.md` (complete — diagnosis: config parsing, port collisions, cross-service name joins, unit/privilege gaps, SDK-free hardware checks, per-service `doctor` aggregation; repair via `--fix`; the TLS + credential lifecycle including `tls renew`; catalog derived from `services/*/pkg/doctor.toml`; ships in sentinel's packages — [ADR-016](decisions/016-service-config-ownership-and-doctor.md)) |
-| [svbony-camera](services/svbony-camera.md) | Camera — SVBony hardware | 11125 | v0 implemented 2026-07-21; **real-hardware validated 2026-07-26 against a physical SV605CC — ConformU (`alpacaprotocol` + full `conformance`) passes with zero errors/issues on the production real-SDK binary**. Validation resolved every open punch-list item (exposure unit = µs confirmed; no stale-frame flush needed; `CanStopExposure` stays `false`; `ElectronsPerADU` permanently `NOT_IMPLEMENTED`) and forced four driver changes: production enumeration registers real cameras (Phase E boundary removed), `MaxADU` = 65535 (SDK rescales 14-bit to full Raw16 scale), R4 aligned-down `CameraXSize`/`CameraYSize` (2976×3000), and a responsive abort (~0.3 s drain via cancel-flag poll slices). 74/80 unit tests + 64/64 BDD scenarios green. Packaging landed Phase G (`rusty-photon-svbony-sdk-install`, RUNPATH); the real `:svbony-camera` Bazel binary stays `manual` (Bazel-side SDK-fetch rule still deferred); dev-machine USB permissions gap filed as issue #710. See `docs/services/svbony-camera.md` + `docs/plans/archive/svbony-camera.md` + ADR-018. |
+| [svbony-camera](services/svbony-camera.md) | Camera — SVBony hardware | 11125 | `docs/services/svbony-camera.md` (SVBony SV605CC, hardware-validated — ConformU `alpacaprotocol` + full `conformance` clean on the real-SDK binary, see [docs/validation/](validation/README.md). Exposure unit µs; no stale-frame flush; `CanStopExposure` `false`; `ElectronsPerADU` `NOT_IMPLEMENTED`; `MaxADU` 65535 — the SDK rescales 14-bit to the full Raw16 scale; `CameraXSize`/`CameraYSize` aligned down to 2976×3000; abort drains in ~0.3 s via cancel-flag poll slices. Packaging: `rusty-photon-svbony-sdk-install` + RUNPATH ([ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md)); the real `:svbony-camera` Bazel binary is `manual`, there being no Bazel-side SDK-fetch rule) |
 | [planetarium-bridge](services/planetarium-bridge.md) | Telescope (virtual) | 11126 | `docs/services/planetarium-bridge.md` (virtual target-entry device, NOT a mount: planetarium Align gestures become paused rp targets via `add_target`; slews are simulated motion, imports spool while rp is down; never touches hardware) |
-| [upbv2-driver](services/upbv2-driver.md) | Switch + ObservingConditions | 11127 | `docs/services/upbv2-driver.md` (Pegasus Astro Ultimate Powerbox v2 — 39 switches: four 12 V outputs, three dew channels, six USB ports, a 3-12 V variable output, and per-channel current/overcurrent telemetry. A separate service from [ppba-driver](services/ppba-driver.md) because the two share a vendor and a serial framing but not a command language (`P3:`/`P4:` are dew heaters on the PPBA and 12 V ports on the UPBv2; `PS` is statistics there and boot state here). Auto-dew is read-only — reported, never written, and it gates `CanWrite` per dew channel. Onboard stepper deferred: no motor in the fleet to validate against. Unblocks the driver half of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 2) |
-| [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver.md) | Switch + ObservingConditions | 11132 | `docs/services/gemini-powerbox-adv3-driver.md` (implemented 2026-10-26 against a mock that streams and validated the same day on the dev box's unit — ConformU clean on both devices in both dew modes, the write path measured on the wire; the absent-sensor frames and a hub power cycle measured on 2026-10-27: an unplugged sensor's fields read `0`, and the hub keeps every output and dew setting across a power cut. Gemini Astro Power & Data Hubs Advanced 3 — 26 switches: four switched 12 V outputs plus the always-on rail, six USB ports, two dew channels each as duty / enabled / mode, voltage / current / power, the two sensors and their attached flags. Gemini's `>X#` serial family over a CH340 at 19200 8N1; the hub streams a status frame every 3 s once asked, so a poll or a write discards buffered input first and every write is confirmed against a fresh frame. A separate service from the Pegasus drivers for the reasons [upbv2-driver](services/upbv2-driver.md) gives; wire facts measured on the dev box's unit, firmware 308) |
+| [upbv2-driver](services/upbv2-driver.md) | Switch + ObservingConditions | 11127 | `docs/services/upbv2-driver.md` (Pegasus Astro Ultimate Powerbox v2 — 39 switches: four 12 V outputs, three dew channels, six USB ports, a 3-12 V variable output, and per-channel current/overcurrent telemetry. A separate service from [ppba-driver](services/ppba-driver.md) because the two share a vendor and a serial framing but not a command language (`P3:`/`P4:` are dew heaters on the PPBA and 12 V ports on the UPBv2; `PS` is statistics there and boot state here). Auto-dew is read-only — reported, never written, and it gates `CanWrite` per dew channel. Onboard stepper deferred: no motor in the fleet to validate against) |
+| [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver.md) | Switch + ObservingConditions | 11132 | `docs/services/gemini-powerbox-adv3-driver.md` (hardware-validated on the dev box's unit — ConformU clean on both devices in both dew modes, the write path measured on the wire; an unplugged sensor's fields read `0`, and the hub keeps every output and dew setting across a power cut. Gemini Astro Power & Data Hubs Advanced 3 — 26 switches: four switched 12 V outputs plus the always-on rail, six USB ports, two dew channels each as duty / enabled / mode, voltage / current / power, the two sensors and their attached flags. Gemini's `>X#` serial family over a CH340 at 19200 8N1; the hub streams a status frame every 3 s once asked, so a poll or a write discards buffered input first and every write is confirmed against a fresh frame. A separate service from the Pegasus drivers for the reasons [upbv2-driver](services/upbv2-driver.md) gives; wire facts measured on the dev box's unit, firmware 308) |
 
 ## Living documents and records
 
@@ -209,7 +209,7 @@ superseded ADRs to `docs/decisions/archive/`; neither is listed here.
 | [rp-guider](../crates/rp-guider/) | `crates/rp-guider` | HTTP client for the guider rp-managed service (`phd2-guider serve`), used by `rp`'s guiding MCP tools and the safety enforcer's stop-guiding-on-unsafe step. |
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel + EAF focuser SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera` and `zwo-focuser`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
-| [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Phase A/B landed 2026-07-21; consumed by `services/svbony-camera` as a direct path dependency (not promoted to `[workspace.dependencies]` — Rule 10's promotion threshold is a second consumer) since Phase C — see [svbony-camera.md](plans/archive/svbony-camera.md). |
+| [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Consumed by `services/svbony-camera` as a direct path dependency, not promoted to `[workspace.dependencies]`: rule 10's promotion threshold is a second consumer. |
 | [rusty-photon-ci](../tools/rusty-photon-ci/) | `tools/rusty-photon-ci` | The workspace's developer tools ([ADR-022](decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md)), one subcommand each, run as `cargo ci <tool>`: `repin-bazel-lock` refreshes and stages `MODULE.bazel.lock` (rule 10). No service links it. See [ci-logic.md](skills/ci-logic.md#the-rust-tools-crate). |
 
 ## Inter-Service Communication: MCP via `rmcp`
@@ -271,8 +271,7 @@ crate that names the old pair fails the nightly rolling job's
 `RUSTFLAGS: -D deprecated` leg the day the new rmcp lands, while one
 that names the new pair fails to build against every rmcp before 3.4,
 which the workspace's `rmcp = "3.0"` requirement still allows. The
-struct names are the one spelling valid across the whole range
-(issue #1266).
+struct names are the one spelling valid across the whole range.
 
 ## Shared Architecture Patterns
 
@@ -385,12 +384,6 @@ sentinel/src/
   dashboard.rs     — Axum routes for JSON API + dashboard HTML
   lib.rs / main.rs — Server bootstrap and entry point
 ```
-
-> A `sentinel-app` Leptos/WASM crate was scaffolded as an alternative
-> dashboard frontend and later abandoned in favour of the hand-rolled UI
-> above (and the `ui-htmx` direction for config UIs). It was removed in
-> 2026-06; see
-> [docs/plans/archive/sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md).
 
 ## MSRV
 
@@ -516,7 +509,7 @@ Open-range consumers also make the lock **churn** while a duplicate persists.
 With more than one `windows-sys` in the graph, Cargo re-picks which version each
 open-range consumer (`tempfile`, `rustls-platform-verifier`, `quinn-udp`, …)
 binds to on *any* `cargo update -p <crate>`, so an unrelated dependabot bump
-can move those edges between versions (#1358). That is invisible on Linux, but
+can move those edges between versions. That is invisible on Linux, but
 on Windows it invalidates the Bazel cache for everything above those crates, so
 `bazel / windows-latest` rebuilds and re-runs every test while
 `bazel / ubuntu-latest` is fully cached. A `windows-sys` entry in
@@ -870,9 +863,9 @@ workspace `Cargo.toml`.
 member takes `derive_more = { workspace = true }` and needs no per-member
 `features`. That is deliberate rather than lax: feature unification means
 a whole-workspace `cargo` or `bazel` build resolves `display` through
-*some* member regardless, so a missing per-member declaration used to
-compile everywhere except `cargo build -p <member>` — which nothing but
-the nightly `cargo hack --feature-powerset` job runs. Declaring it once
+*some* member regardless, so a missing per-member declaration compiles
+everywhere except `cargo build -p <member>`, which nothing but the
+nightly `cargo hack --feature-powerset` job runs. Declaring it once
 closes that green-PR/red-nightly gap at no cost: `display` adds only
 `convert_case` and `unicode-segmentation`, both proc-macro-only.
 
@@ -913,16 +906,13 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
     (308), answers 403 for an unknown device on the setup path and 400 on the
     action route, and has the client fetch the specification's path
     ([driver-setup-pages.md](plans/archive/driver-setup-pages.md) D10). Not offered
-    upstream yet, by the owner's decision of 2026-10-17; when it is, it goes
-    as the two pull requests D10 describes (the paths and statuses; the
-    hooks).
+    upstream yet; when it is, it goes as the two pull requests D10
+    describes (the paths and statuses; the hooks).
 
-  **When both merge upstream, point the pin back at upstream `main`.** The
-  older `ivonnyssen` fork (and its `integration` /
-  `pr/integer-parameter-handling` branches) stays retired — those PRs all
-  merged upstream. Once upstream publishes a crates.io release containing
-  both, switch to a versioned dependency. The pin's own comment in the
-  workspace `Cargo.toml` says the same; keep the two in step.
+  **When both merge upstream, point the pin back at upstream `main`.**
+  Once upstream publishes a crates.io release containing both, switch to
+  a versioned dependency. The pin's own comment in the workspace
+  `Cargo.toml` says the same; keep the two in step.
 - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
   pkg-config for a system AWS-LC and links it dynamically when it finds one —
