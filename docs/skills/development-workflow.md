@@ -213,6 +213,16 @@ area at a time.
 
 ## Conventions
 
+### Comments and documents describe the present
+
+Every comment, design-doc sentence and README line states the system's
+current or future state in the present tense — what it does and why it
+is not otherwise — and names no issue or pull request in place of saying
+what is true (AGENTS.md rule 16). What changed, and why it was wrong
+before, goes in the commit message and the pull request. See
+[workspace.md §Living documents and records](../workspace.md#living-documents-and-records)
+and [§Comments](../workspace.md#comments).
+
 ### Typed physical quantities (newtypes over bare `f64`/`i32`)
 
 When a service does unit- or frame-laden arithmetic (angles, encoder

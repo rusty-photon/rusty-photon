@@ -150,8 +150,10 @@ record shows), most productive first:
   degenerate fixtures, scenarios no step exercises.
 - **CI and packaging** — swallowed failures, publish ordering, wiring
   that misses a platform or a workflow.
-- **Docs** — only text that would make a reader take a wrong action, and
-  design docs a behaviour change left stale (AGENTS.md rule 2).
+- **Docs** — only text that would make a reader take a wrong action,
+  design docs a behaviour change left stale (AGENTS.md rule 2), and
+  text the PR adds that narrates history or names an issue or pull
+  request in place of stating the behaviour (AGENTS.md rule 16).
 
 Not findings:
 

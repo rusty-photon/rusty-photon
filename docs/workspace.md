@@ -42,10 +42,6 @@ these away, the decision is wrong.
    `InitQHYCCD` does to a filter wheel, held to home it and measured not
    to on a QHY178M + CFW3 or a QHY600M) are documented in the owning service's design
    doc rather than silently accepted.
-   Adopted 2026-07-20 after a connect-time park slewed a physically
-   parked mount 90°/90° to a fabricated pose. Amended 2026-10-26: the
-   safety response no longer needs an operator-started session
-   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468)).
 
 ## Services
 
@@ -76,6 +72,41 @@ these away, the decision is wrong.
 | [planetarium-bridge](services/planetarium-bridge.md) | Telescope (virtual) | 11126 | `docs/services/planetarium-bridge.md` (virtual target-entry device, NOT a mount: planetarium Align gestures become paused rp targets via `add_target`; slews are simulated motion, imports spool while rp is down; never touches hardware) |
 | [upbv2-driver](services/upbv2-driver.md) | Switch + ObservingConditions | 11127 | `docs/services/upbv2-driver.md` (Pegasus Astro Ultimate Powerbox v2 — 39 switches: four 12 V outputs, three dew channels, six USB ports, a 3-12 V variable output, and per-channel current/overcurrent telemetry. A separate service from [ppba-driver](services/ppba-driver.md) because the two share a vendor and a serial framing but not a command language (`P3:`/`P4:` are dew heaters on the PPBA and 12 V ports on the UPBv2; `PS` is statistics there and boot state here). Auto-dew is read-only — reported, never written, and it gates `CanWrite` per dew channel. Onboard stepper deferred: no motor in the fleet to validate against. Unblocks the driver half of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 2) |
 | [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver.md) | Switch + ObservingConditions | 11132 | `docs/services/gemini-powerbox-adv3-driver.md` (implemented 2026-10-26 against a mock that streams and validated the same day on the dev box's unit — ConformU clean on both devices in both dew modes, the write path measured on the wire; the absent-sensor frames and a hub power cycle measured on 2026-10-27: an unplugged sensor's fields read `0`, and the hub keeps every output and dew setting across a power cut. Gemini Astro Power & Data Hubs Advanced 3 — 26 switches: four switched 12 V outputs plus the always-on rail, six USB ports, two dew channels each as duty / enabled / mode, voltage / current / power, the two sensors and their attached flags. Gemini's `>X#` serial family over a CH340 at 19200 8N1; the hub streams a status frame every 3 s once asked, so a poll or a write discards buffered input first and every write is confirmed against a fresh frame. A separate service from the Pegasus drivers for the reasons [upbv2-driver](services/upbv2-driver.md) gives; wire facts measured on the dev box's unit, firmware 308) |
+
+## Living documents and records
+
+Every artifact in this repository is one of two kinds, and the two are
+written differently.
+
+**Living documents** describe the system's current or future state:
+what it does, or what its design commits it to doing, and why it is not
+otherwise. Code and its comments, the service and crate design docs,
+READMEs and operator guides, the skills, the references and this file
+are living documents. They are written in the present tense and
+rewritten whenever the system changes (AGENTS.md rule 2). They do not
+narrate how the system got here, and they never name an issue or pull
+request in place of saying what is true: a reader with no knowledge of
+the project's history can take every sentence at face value.
+
+**Records** describe a moment: what was decided, observed or changed,
+and when. Commits, pull requests, issues, the ADRs, the validation
+records and the archived plans are records, and they are not rewritten.
+A plan in `docs/plans/` is a record in the making — its status table and
+dated decisions are history by construction — and is archived whole when
+it completes ([archiving-plans.md](skills/archiving-plans.md)), not
+pruned while it is live.
+
+History belongs in a record. A change's commit message and pull request
+carry what changed and what was wrong before; the living document
+carries the result. Rationale is not history: the reason the code or the
+design is not the more obvious alternative stays, as a present-tense
+fact about the system or the world it runs in, with the conditions of
+the measurement where it is one. A living document links a record only
+where its text would otherwise be disbelieved — the system does
+something that looks wrong at first glance and the record holds the
+evidence — and then by the record's full URL or `docs/` path, never by a
+bare `#1234`. Everything else a record holds is reached through
+`git log` and the pull request.
 
 ## Documentation Index
 
@@ -542,6 +573,54 @@ from the main checkout, and every worktree runs the main checkout's hook; see
 up a change to it.
 
 ## Coding Conventions
+
+### Comments
+
+A comment is a living document ([above](#living-documents-and-records)):
+it says what the code does and why it is not the more obvious thing, in
+the present tense, and nothing about how it came to be. The test for a
+sentence is whether it is true and useful to a reader who has never
+opened the issue tracker.
+
+- **No issue or pull request numbers.** `(issue #595)` after a complete
+  sentence is noise and goes. A pointer that carries the knowledge —
+  "the probe rejects the device on the other end of the wire (issue
+  #254)" — is replaced by the knowledge: what is rejected, on what
+  evidence, and a link to the design-doc section that holds the
+  reasoning. A section banner names the section, not the slice or
+  issue that built it.
+- **No narration.** "Used to", "previously", "before #N", "the old …",
+  "rather than … like before" frame the code against a past the reader
+  does not have. State the constraint and the fact that forces it.
+  "Retired" and "legacy" are fine when they name a thing the code
+  handles today — a retired config key that `doctor` reports — and
+  narration when they explain a change.
+- **Rationale stays.** Why the code is not the obvious alternative is
+  the most valuable sentence in a file. Keep it as a fact about the
+  world, with its conditions where it is a measurement: "as ASI SDK
+  1.41 was measured to on Linux (rusty-photon issue #1411)" becomes "as
+  ASI SDK 1.41 does on Linux
+  (`docs/validation/2026-10-06-zwo-camera-departure-linux/`)" — the
+  measurement and its record, no tracker.
+- **Tests too.** A regression test says what it pins in its name and
+  describes the failure shape — this input, that wrong output — in its
+  comment; the issue number is in the commit that added it. A test
+  named for a review comment on a pull request is named for nothing a
+  reader can see.
+- **A link to a record is the exception.** Keep one only where the code
+  does something that looks wrong at first glance and the record holds
+  the evidence, written as a full URL or a `docs/` path so it reads as a
+  deliberate citation. An upstream bug the code works around is cited
+  the same way, with the behaviour stated beside the link: "the SSE
+  stream never closes on the shutdown signal
+  (https://github.com/tokio-rs/axum/issues/2673)".
+- **Doc links are not history.** A comment pointing at
+  `docs/services/<svc>.md §…` or an ADR for the reasoning is what
+  AGENTS.md rule 11 asks for. Keep those; drop the issue numbers inside
+  them.
+
+What changed, and what was wrong before, goes in the commit message and
+the pull request description.
 
 ### Lints
 
