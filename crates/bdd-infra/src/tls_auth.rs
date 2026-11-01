@@ -382,16 +382,35 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 /// within [`ATTEMPT_TIMEOUT`].
 pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &str, password: &str) {
     let credentials = (!username.is_empty()).then_some((username, password));
+    retry_until_ready(url, credentials.is_some(), || {
+        probe_once(client, url, credentials)
+    })
+    .await;
+}
+
+/// [`wait_until_ready`]'s attempt loop, with `probe` making each attempt
+/// against `url`.
+///
+/// The loop is kept apart from the HTTP so that its deadline can be tested
+/// on paused time against a probe that opens no socket. The paused clock
+/// jumps to the next timer whenever the runtime parks with no I/O ready, so
+/// a real reply the kernel has not reported yet loses to the attempt
+/// timeout (`docs/skills/testing.md` §6.12).
+async fn retry_until_ready<F, Fut>(url: &str, with_credentials: bool, mut probe: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let start = tokio::time::Instant::now();
     let mut attempts = 0_u32;
     loop {
         attempts = attempts.saturating_add(1);
-        let last = match probe_once(client, url, credentials).await {
+        let last = match probe().await {
             Ok(()) => return,
             Err(outcome) => outcome,
         };
         if start.elapsed().saturating_add(READY_INTERVAL) >= READY_DEADLINE {
-            let with = if credentials.is_some() {
+            let with = if with_credentials {
                 " with valid credentials"
             } else {
                 ""
@@ -715,32 +734,46 @@ mod tests {
         assert_eq!(dialled_scheme("https://127.0.0.1:1/health"), "HTTPS");
     }
 
+    /// The message `future` panics with.
+    async fn panic_message(
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> String {
+        let payload = tokio::spawn(future).await.unwrap_err().into_panic();
+        crate::panic_text(payload.as_ref()).to_owned()
+    }
+
     /// The message `wait_until_ready` panics with for `url`.
     async fn readiness_panic(url: &str, username: &str, password: &str) -> String {
         let (url, username, password) = (url.to_owned(), username.to_owned(), password.to_owned());
-        let probe = tokio::spawn(async move {
+        panic_message(async move {
             wait_until_ready(&reqwest::Client::new(), &url, &username, &password).await;
-        });
-        let payload = probe.await.unwrap_err().into_panic();
-        crate::panic_text(payload.as_ref()).to_owned()
+        })
+        .await
+    }
+
+    /// A probe that never succeeds and opens no socket. Each outcome names
+    /// its attempt, so a test can tell which one the panic reports.
+    fn never_ready() -> impl FnMut() -> std::future::Ready<Result<(), String>> {
+        let mut attempt = 0_u32;
+        move || {
+            attempt = attempt.saturating_add(1);
+            std::future::ready(Err(format!("outcome of attempt {attempt}")))
+        }
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_server_never_ready_panics_naming_the_scheme_attempts_and_last_outcome() {
-        let port = canned_server(UNAVAILABLE).await;
-        let url = format!("http://127.0.0.1:{port}/health");
-        let message = readiness_panic(&url, "user", "pass").await;
-        assert!(
-            message.contains(&format!(
-                "over HTTP with valid credentials: {url} (60 attempts in"
-            )),
-            "{message}"
-        );
-        assert!(
-            message.ends_with(&format!(
-                "last outcome: 503 Service Unavailable from 127.0.0.1:{port}"
-            )),
-            "{message}"
+        let message = panic_message(retry_until_ready(
+            "http://127.0.0.1:1/health",
+            true,
+            never_ready(),
+        ))
+        .await;
+        assert_eq!(
+            message,
+            "server did not become ready over HTTP with valid credentials: \
+             http://127.0.0.1:1/health (60 attempts in 29.5s against a 30s deadline); \
+             last outcome: outcome of attempt 60"
         );
     }
 
