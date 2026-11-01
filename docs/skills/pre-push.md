@@ -66,8 +66,10 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 > --check` (Bazel runs neither rustfmt nor clippy). Both the Linux leg and
 > `stable / clippy` run on the self-hosted Linux pool for same-repo PRs.
 > `bazel / macos-latest` is **not** a PR check — it runs on
-> push-to-main and nightly, so a macOS-only break is caught on main within
-> minutes of the merge rather than blocking the PR. The Cargo build / test /
+> push-to-main and nightly, so a macOS-only break turns main red within
+> minutes of the merge rather than blocking the PR. A red push tells nobody:
+> a nightly `bazel.yml` or `test.yml` run whose macOS leg fails opens or
+> comments on a `macos-nightly` tracking issue. The Cargo build / test /
 > hack / msrv jobs run nightly and do not gate PRs — none of them collects
 > coverage; `bazel coverage` is the sole source. So the authoritative pre-push is:
 >
@@ -373,7 +375,12 @@ runs `--workspace` (no narrowing job).
 The `macos` job runs with `RUSTFLAGS=-Dwarnings`. Nothing on a PR denies rustc
 warnings for macOS — `bazel / macos-latest` is off the PR gate and no PR clippy
 runs on macOS — so this job is where a macOS-only warning is enforced rather
-than merely printed.
+than merely printed. When the job fails on a scheduled run,
+`notify-macos-failure` opens or comments on a `macos-nightly` labelled
+tracking issue; the ubuntu and windows jobs, and push-to-main runs, notify
+nobody. `bazel.yml` does the same for its `bazel / macos-latest` leg, whose
+notifier reads the run's jobs and files only when that leg failed, not when
+only the ubuntu or windows leg did.
 
 This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
 is the sole coverage source.
