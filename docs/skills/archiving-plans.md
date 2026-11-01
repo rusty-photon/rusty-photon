@@ -51,13 +51,14 @@ not block archiving — record them in the status header instead.
      initiatives only** — **remove** the plan's row entirely. Do *not* relist it
      under the `archive/` path; archived plans live in
      [`docs/plans/archive/`](../plans/archive/) and are not indexed in
-     `workspace.md`. (Rationale / "see the plan" cross-links elsewhere in
-     `workspace.md` — e.g. a workspace-concern section — or in design docs may
-     stay; see the next bullet.)
+     `workspace.md`. (Cross-links elsewhere in `workspace.md` or in design
+     docs follow the next bullet.)
    - Rationale / "see the plan" links in design docs, skill docs, crate docs,
-     and source doc-comments (`//!` / `///`). A completed plan does not *need*
-     inbound references, so a stale pointer may instead simply be dropped —
-     use judgment, but never leave a link dangling at the old path.
+     and source doc-comments (`//!` / `///`). A living document links a
+     record only where its text would otherwise be disbelieved (AGENTS.md
+     rule 16), and a completed plan does not *need* inbound references, so
+     most such pointers are dropped rather than re-pointed; never leave a
+     link dangling at the old path.
 
 6. **Run the pre-push gate** if steps 4–5 touched any Rust source
    (`bazel build //... && bazel test //...`, `cargo fmt`, and `cargo clippy`); a

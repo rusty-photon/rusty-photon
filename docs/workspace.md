@@ -42,10 +42,6 @@ these away, the decision is wrong.
    `InitQHYCCD` does to a filter wheel, held to home it and measured not
    to on a QHY178M + CFW3 or a QHY600M) are documented in the owning service's design
    doc rather than silently accepted.
-   Adopted 2026-07-20 after a connect-time park slewed a physically
-   parked mount 90°/90° to a fabricated pose. Amended 2026-10-26: the
-   safety response no longer needs an operator-started session
-   ([#1468](https://github.com/rusty-photon/rusty-photon/issues/1468)).
 
 ## Services
 
@@ -62,20 +58,63 @@ these away, the decision is wrong.
 | [focus-model](services/focus-model.md) | — (tool provider aggregated by rp; MCP client of rp) | 11173 | `docs/services/focus-model.md` |
 | [polar-align](services/polar-align.md) | — (orchestrator; MCP client of rp) | 11172 | `docs/services/polar-align.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
-| [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
-| [zwo-camera](services/zwo-camera.md) | Camera — ZWO ASI hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, setup pages; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` run under Bazel). The EFW FilterWheel is a future separate `zwo-filterwheel` service (ADR-014); this binary links only the ASI camera SDK (zwo-rs `camera` feature). ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008 + ADR-014. |
-| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (implemented — `ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
+| [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
+| [zwo-camera](services/zwo-camera.md) | Camera — ZWO ASI hardware | 11122 | `docs/services/zwo-camera.md` (full `Device + Camera` over `zwo-rs` — exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding — with serial identity and setup pages; hardware-validated, see [docs/validation/](validation/README.md). Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` run under Bazel); ConformU runs in `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows. The EFW FilterWheel is a separate `zwo-filterwheel` service to come ([ADR-014](decisions/014-zwo-per-device-services-and-link-features.md)); this binary links only the ASI camera SDK (zwo-rs `camera` feature), a native dep gated out of the default build ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md))) |
+| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (`ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | [pa-scops-oag](services/pa-scops-oag.md) | Focuser | 11123 | `docs/services/pa-scops-oag.md` (Pegasus Astro Scops OAG — FTDI serial, Pegasus DMFC/Scops ASCII protocol at 19200 8N1; no temperature sensor) |
-| [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; v0 implemented 2026-07-09 — 25 unit + 26 BDD scenarios green, full quality gate green, ConformU wired; pending real-hardware validation) |
-| [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
+| [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; hardware-validated — see [docs/validation/](validation/README.md)) |
+| [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (serial, over `rusty-photon-shared-transport`) |
 | [ui-htmx](services/ui-htmx.md) | — (web UI / BFF: the activity stream and the targets inbox; not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
-| [session-runner](services/session-runner.md) | — (generic workflow orchestrator; MCP client of rp) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json` and `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
-| [doctor](services/doctor.md) | — (install diagnosis CLI, not an ASCOM device) | — | `docs/services/doctor.md` (complete — diagnosis: config parsing, port collisions, cross-service name joins, unit/privilege gaps, SDK-free hardware checks, per-service `doctor` aggregation; repair via `--fix`; the TLS + credential lifecycle including `tls renew`; catalog derived from `services/*/pkg/doctor.toml`; ships in sentinel's packages — [ADR-016](decisions/016-service-config-ownership-and-doctor.md)) |
-| [svbony-camera](services/svbony-camera.md) | Camera — SVBony hardware | 11125 | v0 implemented 2026-07-21; **real-hardware validated 2026-07-26 against a physical SV605CC — ConformU (`alpacaprotocol` + full `conformance`) passes with zero errors/issues on the production real-SDK binary**. Validation resolved every open punch-list item (exposure unit = µs confirmed; no stale-frame flush needed; `CanStopExposure` stays `false`; `ElectronsPerADU` permanently `NOT_IMPLEMENTED`) and forced four driver changes: production enumeration registers real cameras (Phase E boundary removed), `MaxADU` = 65535 (SDK rescales 14-bit to full Raw16 scale), R4 aligned-down `CameraXSize`/`CameraYSize` (2976×3000), and a responsive abort (~0.3 s drain via cancel-flag poll slices). 74/80 unit tests + 64/64 BDD scenarios green. Packaging landed Phase G (`rusty-photon-svbony-sdk-install`, RUNPATH); the real `:svbony-camera` Bazel binary stays `manual` (Bazel-side SDK-fetch rule still deferred); dev-machine USB permissions gap filed as issue #710. See `docs/services/svbony-camera.md` + `docs/plans/archive/svbony-camera.md` + ADR-018. |
+| [session-runner](services/session-runner.md) | — (generic workflow orchestrator; MCP client of rp) | 11171 | `docs/services/session-runner.md` (executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json` and `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
+| [doctor](services/doctor.md) | — (install diagnosis CLI, not an ASCOM device) | — | `docs/services/doctor.md` (diagnosis: config parsing, port collisions, cross-service name joins, unit/privilege gaps, SDK-free hardware checks, per-service `doctor` aggregation; repair via `--fix`; the TLS + credential lifecycle including `tls renew`; catalog derived from `services/*/pkg/doctor.toml`; ships in sentinel's packages — [ADR-016](decisions/016-service-config-ownership-and-doctor.md)) |
+| [svbony-camera](services/svbony-camera.md) | Camera — SVBony hardware | 11125 | `docs/services/svbony-camera.md` (SVBony SV605CC, hardware-validated — ConformU `alpacaprotocol` + full `conformance` clean on the real-SDK binary, see [docs/validation/](validation/README.md). Exposure unit µs; no stale-frame flush; `CanStopExposure` `false`; `ElectronsPerADU` `NOT_IMPLEMENTED`; `MaxADU` 65535 — the SDK rescales 14-bit to the full Raw16 scale; `CameraXSize`/`CameraYSize` aligned down to 2976×3000; abort drains in ~0.3 s via cancel-flag poll slices. Packaging: `rusty-photon-svbony-sdk-install` + RUNPATH ([ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md)); the real `:svbony-camera` Bazel binary is `manual`, there being no Bazel-side SDK-fetch rule) |
 | [planetarium-bridge](services/planetarium-bridge.md) | Telescope (virtual) | 11126 | `docs/services/planetarium-bridge.md` (virtual target-entry device, NOT a mount: planetarium Align gestures become paused rp targets via `add_target`; slews are simulated motion, imports spool while rp is down; never touches hardware) |
-| [upbv2-driver](services/upbv2-driver.md) | Switch + ObservingConditions | 11127 | `docs/services/upbv2-driver.md` (Pegasus Astro Ultimate Powerbox v2 — 39 switches: four 12 V outputs, three dew channels, six USB ports, a 3-12 V variable output, and per-channel current/overcurrent telemetry. A separate service from [ppba-driver](services/ppba-driver.md) because the two share a vendor and a serial framing but not a command language (`P3:`/`P4:` are dew heaters on the PPBA and 12 V ports on the UPBv2; `PS` is statistics there and boot state here). Auto-dew is read-only — reported, never written, and it gates `CanWrite` per dew channel. Onboard stepper deferred: no motor in the fleet to validate against. Unblocks the driver half of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 2) |
-| [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver.md) | Switch + ObservingConditions | 11132 | `docs/services/gemini-powerbox-adv3-driver.md` (implemented 2026-10-26 against a mock that streams and validated the same day on the dev box's unit — ConformU clean on both devices in both dew modes, the write path measured on the wire; the absent-sensor frames and a hub power cycle measured on 2026-10-27: an unplugged sensor's fields read `0`, and the hub keeps every output and dew setting across a power cut. Gemini Astro Power & Data Hubs Advanced 3 — 26 switches: four switched 12 V outputs plus the always-on rail, six USB ports, two dew channels each as duty / enabled / mode, voltage / current / power, the two sensors and their attached flags. Gemini's `>X#` serial family over a CH340 at 19200 8N1; the hub streams a status frame every 3 s once asked, so a poll or a write discards buffered input first and every write is confirmed against a fresh frame. A separate service from the Pegasus drivers for the reasons [upbv2-driver](services/upbv2-driver.md) gives; wire facts measured on the dev box's unit, firmware 308) |
+| [upbv2-driver](services/upbv2-driver.md) | Switch + ObservingConditions | 11127 | `docs/services/upbv2-driver.md` (Pegasus Astro Ultimate Powerbox v2 — 39 switches: four 12 V outputs, three dew channels, six USB ports, a 3-12 V variable output, and per-channel current/overcurrent telemetry. A separate service from [ppba-driver](services/ppba-driver.md) because the two share a vendor and a serial framing but not a command language (`P3:`/`P4:` are dew heaters on the PPBA and 12 V ports on the UPBv2; `PS` is statistics there and boot state here). Auto-dew is read-only — reported, never written, and it gates `CanWrite` per dew channel. Onboard stepper deferred: no motor in the fleet to validate against) |
+| [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver.md) | Switch + ObservingConditions | 11132 | `docs/services/gemini-powerbox-adv3-driver.md` (hardware-validated on the dev box's unit — ConformU clean on both devices in both dew modes, the write path measured on the wire; an unplugged sensor's fields read `0`, and the hub keeps every output and dew setting across a power cut. Gemini Astro Power & Data Hubs Advanced 3 — 26 switches: four switched 12 V outputs plus the always-on rail, six USB ports, two dew channels each as duty / enabled / mode, voltage / current / power, the two sensors and their attached flags. Gemini's `>X#` serial family over a CH340 at 19200 8N1; the hub streams a status frame every 3 s once asked, so a poll or a write discards buffered input first and every write is confirmed against a fresh frame. A separate service from the Pegasus drivers for the reasons [upbv2-driver](services/upbv2-driver.md) gives; wire facts measured on the dev box's unit, firmware 308) |
+
+## Living documents and records
+
+Every artifact in this repository is one of two kinds, and the two are
+written differently.
+
+**Living documents** describe the system's current or future state:
+what it does, or what its design commits it to doing, and why it is not
+otherwise. Code and its comments, the service and crate design docs,
+READMEs and operator guides, the skills, the references and this file
+are living documents. They are written in the present tense and
+rewritten whenever the system changes (AGENTS.md rule 2). They do not
+narrate how the system got here, and they never name an issue or pull
+request in place of saying what is true: a reader with no knowledge of
+the project's history can take every sentence at face value.
+
+**Records** describe a moment: what was decided, observed or changed,
+and when. Commits, pull requests, issues, the ADRs, the validation
+records and the archived plans are records, and they are not rewritten:
+archiving one leads it with its status line and repairs the links the
+move breaks, in both directions, and changes nothing else. A decision that
+changes is a new ADR, which names the one it supersedes; the superseded
+ADR's Status gains one line naming its successor and the file moves to
+`docs/decisions/archive/`, as a completed plan moves to
+`docs/plans/archive/`. An ADR superseded in part stays where it is, its
+Status saying which part the newer ADR replaces. A plan in `docs/plans/`
+is a record in the making — its status table and dated decisions are
+history by construction — and is archived whole when it completes
+([archiving-plans.md](skills/archiving-plans.md)), not pruned while it
+is live.
+
+History belongs in a record. A change's commit message and pull request
+carry what changed and what was wrong before; the living document
+carries the result. Rationale is not history: the reason the code or the
+design is not the more obvious alternative stays, as a present-tense
+fact about the system or the world it runs in, with the conditions of
+the measurement where it is one. A living document links a record only
+where its text would otherwise be disbelieved — the system does
+something that looks wrong at first glance and the record holds the
+evidence — and then by the record's full URL or `docs/` path, never by a
+bare `#1234`. The Documentation Index lists the records without
+retelling them. Everything else a record holds is reached through
+`git log` and the pull request.
 
 ## Documentation Index
 
@@ -133,19 +172,20 @@ these away, the decision is wrong.
 | [ADR-022](decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md) | CI logic lives in local JavaScript actions (Node built-ins only, tested under Bazel) or one Rust tools crate, not in shell; a one-command step stays YAML; host provisioning, Python and git hooks are out of scope |
 | [ADR-023](decisions/023-services-configure-themselves-on-their-own-setup-pages.md) | Services configure themselves on their own setup pages — the Alpaca specification's `/setup` and per-device pages, served behind the service's own TLS and Basic Auth and generated by `rusty-photon-setup`; custom actions carry device features and runtime protocols only |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
-| [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S6 merged — the `rp` layer, the provider itself, filter offsets and temperature calibration — and S8–S11 from the 2026-09-13 open-items review: obstruction as a train fact, the hyperbolic fit, the guiding train, a stand-in temperature probe. **Remaining: S7** (`session-runner` switches to `focus_train`; the capture-based `auto_focus` / `refocus_train` retire). S10, the guiding train, is done as the device-claims plan's C7, its reconciliation with S7 settled 2026-10-13: its provider half, the training run on a guiding train under `rp`'s train lease, is C7d, merged; C7e, which focuses a focuser an imaging train holds through the imaging camera alone (O4 rules 2, 4 and 8, the owner's rule of 2026-10-15), merged ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
-| [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. The CLI spike already shipped [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) with `ppba-driver` as first consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
-| [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged (#579, #586, #591, #594, #601, #617). **Remaining: T6** — the roster grouped by train, with membership editing; written for `ui-htmx`'s `/equipment`, which retired in driver-setup-pages P4, so it needs re-scoping onto `rp`'s `/setup` |
-| [polar-align.md](plans/polar-align.md) | Plate-solving polar alignment ([`polar-align`](services/polar-align.md), port 11172): three solved RA-axis positions fix the axis, the error is reported in observed alt/az, and an adjustment loop draws target circles while the operator turns the bolts. The service, the axis/attitude math, plate-solver `wcs_matrix`, manual-rotation mode and the PNG preview have landed. **Remaining: Phase 5** (`ui-htmx` polar-alignment page) and **Phase 7** (GTi rig validation + README recipe) |
-| [star-adventurer-gti-move-axis.md](plans/star-adventurer-gti-move-axis.md) | `MoveAxis` on the [`star-adventurer-gti`](services/star-adventurer-gti.md) driver (issue #1340): a rate override on one axis that hands the axis back at rate 0 — RA to sidereal tracking if `Tracking` was on, otherwise rest — and never touches the other axis, which is what N.I.N.A.'s Three Point Polar Alignment automatic mode, its telescope-tab paddle, SharpCap and SkySafari need from the mount. Five phases: M0 a hardware probe for the rate ceiling and the fast regime (the GTi has no encoder and reports a high-speed ratio of 1, so `AxisRates` comes from an operator-referenced measurement, not a formula), M1 design + `@wip` scenarios, M2 the driver together with its override guard (a rate-aware exclusion-zone margin; `CanMoveAxis` never flips without it), M3 a ConformU record plus the clients on the rig, M4 the fast regime only if M0 says it exists. No new config: always on, the ceiling a measured constant clamped by the guard margin. **Decisions settled 2026-10-03; not started** |
-| [ui-design/](plans/ui-design/mocks/README.md) | UX exploration, not a delivery plan: self-contained HTML mocks that locked in the activity-stream direction (`7-stream-fold.html`) now built out in [`ui-htmx`](services/ui-htmx.md). Kept as the reference target for further UI work |
-| [vendor-qhyccd-rs.md](plans/vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into `crates/` ([ADR-009](decisions/009-vendor-qhyccd-rs.md)) — landed and consumed by `qhy-camera`, the `[patch.crates-io]` git override gone. **Remaining is owner-run only**: the first `cargo publish` from the vendored subdirs, then archiving the standalone repo (runbook: [`crates/qhyccd-rs/RELEASING.md`](../crates/qhyccd-rs/RELEASING.md)) |
-| [vendor-zwo-rs.md](plans/vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into `crates/` ([ADR-010](decisions/010-vendor-zwo-rs.md)) — landed, with the real (no-simulation) variant green on Linux/macOS/Windows under both Cargo (`native.yml`) and Bazel's two-variant build. **Remaining is owner-run only**: the first crates.io publish (`libzwo-sys`, then `zwo-rs` 0.1.0) and standalone-repo archival (runbook in ADR-010) |
-| [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera Alpaca driver ([`zwo-camera`](services/zwo-camera.md), port 11122) over the now-vendored `zwo-rs`/`libzwo-sys` FFI ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md)). Implemented through Phase G — full ASCOM Camera, ConformU in CI, real-hardware validated; Phase H shipped [`zwo-focuser`](services/zwo-focuser.md) (port 11124, EAF-validated 2026-07-14). **Remaining: Phase F** — the EFW filter wheel as its own `zwo-filterwheel` service per [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) — plus Phase G's tail, the `rp` `CameraConfig` consumer |
-| [zwo-real-hardware-validation.md](plans/zwo-real-hardware-validation.md) | Arrival-day checklist for putting a real ZWO camera + EAF on the Pi field rig: SuperSpeed enumeration, udev/permissions, ConformU against both services, capture + cooler, and roster integration across `sentinel`/`rp`. Both drivers now have real-hardware ConformU passes recorded in [docs/validation/](validation/README.md), but from dev boxes — the rig-side items are still open |
+| [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S6 merged — the `rp` layer, the provider itself, filter offsets and temperature calibration — and S8–S11 from the open-items review: obstruction as a train fact, the hyperbolic fit, the guiding train, a stand-in temperature probe. **Remaining: S7** (`session-runner` switches to `focus_train`; the capture-based `auto_focus` / `refocus_train` retire). S10, the guiding train, is done as the device-claims plan's C7, its reconciliation with S7 settled: its provider half, the training run on a guiding train under `rp`'s train lease, is C7d, merged; C7e, which focuses a focuser an imaging train holds through the imaging camera alone (O4 rules 2, 4 and 8), merged |
+| [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) exists from the CLI spike, with `ppba-driver` as its consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
+| [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged. **Remaining: T6** — the roster grouped by train, with membership editing; written for a `ui-htmx` `/equipment` page that `ui-htmx` does not serve, so it needs re-scoping onto `rp`'s `/setup` |
+| [polar-align.md](plans/polar-align.md) | Plate-solving polar alignment ([`polar-align`](services/polar-align.md), port 11172): three solved RA-axis positions fix the axis, the error is reported in observed alt/az, and an adjustment loop draws target circles while the operator turns the bolts. The service, the axis/attitude math, plate-solver `wcs_matrix`, manual-rotation mode and the PNG preview are done. **Remaining: Phase 5** (`ui-htmx` polar-alignment page) and **Phase 7** (GTi rig validation + README recipe) |
+| [star-adventurer-gti-move-axis.md](plans/star-adventurer-gti-move-axis.md) | `MoveAxis` on the [`star-adventurer-gti`](services/star-adventurer-gti.md) driver: a rate override on one axis that hands the axis back at rate 0 — RA to sidereal tracking if `Tracking` was on, otherwise rest — and never touches the other axis, which is what N.I.N.A.'s Three Point Polar Alignment automatic mode, its telescope-tab paddle, SharpCap and SkySafari need from the mount. Five phases: M0 a hardware probe for the rate ceiling and the fast regime (the GTi has no encoder and reports a high-speed ratio of 1, so `AxisRates` comes from an operator-referenced measurement, not a formula), M1 design + `@wip` scenarios, M2 the driver together with its override guard (a rate-aware exclusion-zone margin; `CanMoveAxis` never flips without it), M3 a ConformU record plus the clients on the rig, M4 the fast regime only if M0 says it exists. No new config: always on, the ceiling a measured constant clamped by the guard margin. **Decisions settled; not started** |
+| [ui-design/](plans/ui-design/mocks/README.md) | UX exploration, not a delivery plan: self-contained HTML mocks of the activity-stream direction (`7-stream-fold.html`) that [`ui-htmx`](services/ui-htmx.md) builds out. Kept as the reference target for further UI work |
+| [vendor-qhyccd-rs.md](plans/vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into `crates/` ([ADR-009](decisions/009-vendor-qhyccd-rs.md)) — vendored and consumed by `qhy-camera`, with no `[patch.crates-io]` override. **Remaining is owner-run only**: the first `cargo publish` from the vendored subdirs, then archiving the standalone repo (runbook: [`crates/qhyccd-rs/RELEASING.md`](../crates/qhyccd-rs/RELEASING.md)) |
+| [vendor-zwo-rs.md](plans/vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into `crates/` ([ADR-010](decisions/010-vendor-zwo-rs.md)) — vendored, with the real (no-simulation) variant green on Linux/macOS/Windows under both Cargo (`native.yml`) and Bazel's two-variant build. **Remaining is owner-run only**: the first crates.io publish (`libzwo-sys`, then `zwo-rs` 0.1.0) and standalone-repo archival (runbook in ADR-010) |
+| [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera Alpaca driver ([`zwo-camera`](services/zwo-camera.md), port 11122) over the vendored `zwo-rs`/`libzwo-sys` FFI ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md)). Implemented through Phase G — full ASCOM Camera, ConformU in CI, real-hardware validated; Phase H shipped [`zwo-focuser`](services/zwo-focuser.md) (port 11124, EAF-validated). **Remaining: Phase F** — the EFW filter wheel as its own `zwo-filterwheel` service per [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) — plus Phase G's tail, the `rp` `CameraConfig` consumer |
+| [zwo-real-hardware-validation.md](plans/zwo-real-hardware-validation.md) | Arrival-day checklist for putting a real ZWO camera + EAF on the Pi field rig: SuperSpeed enumeration, udev/permissions, ConformU against both services, capture + cooler, and roster integration across `sentinel`/`rp`. Both drivers have real-hardware ConformU passes recorded in [docs/validation/](validation/README.md), from dev boxes — the rig-side items are open |
 
-Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer
-listed here.
+Completed plans move to [`docs/plans/archive/`](plans/archive/) and
+ADRs superseded in full to `docs/decisions/archive/`; neither is listed
+here.
 
 ## Shared Crates
 
@@ -159,7 +199,7 @@ listed here.
 | [skywatcher-motor-protocol](../crates/skywatcher-motor-protocol/) | `crates/skywatcher-motor-protocol` | Pure codec for the Sky-Watcher motor-controller wire protocol (USB + UDP/11880). Transport-agnostic; isolates the 24-bit low-byte-first hex encoding and the `+0x800000` position bias. Used by `star-adventurer-gti`. See [`docs/references/skywatcher-motor-controller-command-set.md`](references/skywatcher-motor-controller-command-set.md). |
 | [rusty-photon-i18n](../crates/rusty-photon-i18n/) | `crates/rusty-photon-i18n` | Fluent loader + locale resolver shared across services. Reads `RP_LOCALE` / `LC_ALL` / `LC_MESSAGES` / `LANG` / OS, negotiates against the locales each consumer embeds, falls back to `en`. Owns `LocalizedParser` trait, `init` lifecycle, and an `ACTIVE_LOADER` thread-local for `value_parser` callbacks. First consumer: `ppba-driver` (CLI help + errors). See [`i18n.md`](plans/i18n.md) and [`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md). |
 | [rusty-photon-i18n-derive](../crates/rusty-photon-i18n-derive/) | `crates/rusty-photon-i18n-derive` | Companion proc-macro crate. `#[derive(LocalizedParser)]` reads `#[localized(about = "key")]` / `#[localized(help = "key")]` attributes alongside `#[derive(Parser)]` and emits a `parse_localized(loader)` impl that mutates the clap `Command` before parse. Re-exported via `rusty_photon_i18n::LocalizedParser`. |
-| [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP): `SharedTransport<Codec>`, the `TransportFactory` trait, and background polling. Also owns `open_serial_port`, the one place a serial port is opened: every driver's factory goes through it for the builder settings, the error mapping, and the bounded retry that rides out a Windows handle still closing. A request can also say when it crossed the host's side of the wire (`request_timed` → `WireTiming`: stamped just before the command frame is handed to the transport, just after it was accepted, and just after the answer was read — all inside the command lock), for a driver that has to date a value the device latched. A codec can have the input discarded right before a command goes out (`Codec::discard_before_send` → `FrameTransport::discard_input`, both defaulted off), for a device that streams frames unasked (first user: `gemini-powerbox-adv3-driver`). An exchange that has the command lock runs to completion even when its caller stops waiting, so a dropped request never leaves its reply for the next one. `reconnect_now` is a `test-util` hook that production builds do not compile. Basis of the shared-transport driver pattern (first adopter: `dsd-fp2`). |
+| [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP): `SharedTransport<Codec>`, the `TransportFactory` trait, and background polling. Also owns `open_serial_port`, the one place a serial port is opened: every driver's factory goes through it for the builder settings, the error mapping, and the bounded retry that rides out a Windows handle still closing. A request can also say when it crossed the host's side of the wire (`request_timed` → `WireTiming`: stamped just before the command frame is handed to the transport, just after it was accepted, and just after the answer was read — all inside the command lock), for a driver that has to date a value the device latched. A codec can have the input discarded right before a command goes out (`Codec::discard_before_send` → `FrameTransport::discard_input`, both defaulted off), for a device that streams frames unasked, as `gemini-powerbox-adv3-driver`'s hub does. An exchange that has the command lock runs to completion even when its caller stops waiting, so a dropped request never leaves its reply for the next one. `reconnect_now` is a `test-util` hook that production builds do not compile. Basis of the shared-transport driver pattern. |
 | [rusty-photon-camera-core](../crates/rusty-photon-camera-core/) | `crates/rusty-photon-camera-core` | The vendor-neutral half of the three ASCOM camera drivers: ROI validation and its rule order (R2/R3), the unbinned ROI and the binned views ASCOM's members are read through (B3), binned-full-frame sensor alignment (R4), `BayerOffsetX/Y` from a canonical mosaic (ST1), the single-plane `ImageArray` unpack, `PercentCompleted`'s cap, and the camera-only rule for a camera that has left the bus: a blank readout (`is_blank_frame`: all zero, or empty) counts as an SDK failure and asks the driver's presence question. (What a `Connected` write then does is not camera-specific, so it lives in `rusty-photon-driver`.) Two tests decide what belongs here, both about the *driver* half rather than about dependencies: nothing there implements ASCOM's `Camera`/`Device` traits or holds device state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the workspace's lingua franca, so the crate speaks it (`ImageArray`, `ASCOMError`) rather than handing each driver a private dialect to translate — which is why each driver still maps its own SDK's Bayer spelling and readout formats onto the shared vocabulary. Used by `qhy-camera`, `zwo-camera`, `svbony-camera`. |
 | [rusty-photon-driver](../crates/rusty-photon-driver/) | `crates/rusty-photon-driver` | Shared ASCOM-driver runtime layer: the common `DriverError` model, its ASCOM error-code mapping, the glue from the pinned crate's setup hooks to `rusty-photon-setup`'s pages, the own part of the pages of a driver whose hardware names its devices (`overrides`: a page per device editing its `devices` override, used by `zwo-focuser` and shared with the camera pages), and `connected_transition`, which maps a `Connected` write onto the session a device holds, so a session lost to a device that left the bus is released by a client's write in either direction (and reopened on `true`) rather than closed by the driver or handed back. Used by every driver; `connected_transition` by `zwo-camera`, `svbony-camera` and `zwo-focuser`. See [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md). |
 | [rusty-photon-process](../crates/rusty-photon-process/) | `crates/rusty-photon-process` | Bounded subprocess execution: `Bounded` runs a command to completion under a deadline, drains each output stream while it runs (whole up to a limit, its head or tail, not at all, or passed through, plus an optional line callback), and on expiry sends the graceful signal, waits a grace period and force-kills the child's whole tree — its own session's process group on Unix, its job object on Windows — then reaps it. Also owns `shell`, the one `sh -c` / `cmd /C` builder. Blocking (`run`) or awaitable (`spawn()?.await`) from one runtime-free implementation, so the synchronous `rusty-photon-doctor-checks` uses it without tokio. Long-lived supervised children (PHD2, `ServiceHandle`, OmniSim) are out of scope. Used by `rusty-photon-doctor-checks`, `doctor`, `plate-solver`, `sentinel`, and `bdd-infra`'s `conformu` feature. See [`docs/crates/rusty-photon-process.md`](crates/rusty-photon-process.md). |
@@ -173,7 +213,7 @@ listed here.
 | [rp-guider](../crates/rp-guider/) | `crates/rp-guider` | HTTP client for the guider rp-managed service (`phd2-guider serve`), used by `rp`'s guiding MCP tools and the safety enforcer's stop-guiding-on-unsafe step. |
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel + EAF focuser SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera` and `zwo-focuser`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
-| [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Phase A/B landed 2026-07-21; consumed by `services/svbony-camera` as a direct path dependency (not promoted to `[workspace.dependencies]` — Rule 10's promotion threshold is a second consumer) since Phase C — see [svbony-camera.md](plans/archive/svbony-camera.md). |
+| [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Consumed by `services/svbony-camera` as a direct path dependency, not promoted to `[workspace.dependencies]`: rule 10's promotion threshold is a second consumer. |
 | [rusty-photon-ci](../tools/rusty-photon-ci/) | `tools/rusty-photon-ci` | The workspace's developer tools ([ADR-022](decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md)), one subcommand each, run as `cargo ci <tool>`: `repin-bazel-lock` refreshes and stages `MODULE.bazel.lock` (rule 10). No service links it. See [ci-logic.md](skills/ci-logic.md#the-rust-tools-crate). |
 
 ## Inter-Service Communication: MCP via `rmcp`
@@ -235,8 +275,7 @@ crate that names the old pair fails the nightly rolling job's
 `RUSTFLAGS: -D deprecated` leg the day the new rmcp lands, while one
 that names the new pair fails to build against every rmcp before 3.4,
 which the workspace's `rmcp = "3.0"` requirement still allows. The
-struct names are the one spelling valid across the whole range
-(issue #1266).
+struct names are the one spelling valid across the whole range.
 
 ## Shared Architecture Patterns
 
@@ -256,9 +295,8 @@ lib.rs            — ServerBuilder (CLI args → server)
 main.rs           — Entry point
 ```
 
-The legacy per-service `io.rs` traits and `serial_manager.rs` are gone — the
-refcounted connection lifecycle and the `TransportFactory` / `Codec` traits now
-live in the
+The refcounted connection lifecycle and the `TransportFactory` / `Codec`
+traits live in the
 [`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/)
 crate; each service keeps only its handshake, poll body, and cached state.
 
@@ -349,12 +387,6 @@ sentinel/src/
   dashboard.rs     — Axum routes for JSON API + dashboard HTML
   lib.rs / main.rs — Server bootstrap and entry point
 ```
-
-> A `sentinel-app` Leptos/WASM crate was scaffolded as an alternative
-> dashboard frontend and later abandoned in favour of the hand-rolled UI
-> above (and the `ui-htmx` direction for config UIs). It was removed in
-> 2026-06; see
-> [docs/plans/archive/sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md).
 
 ## MSRV
 
@@ -480,7 +512,7 @@ Open-range consumers also make the lock **churn** while a duplicate persists.
 With more than one `windows-sys` in the graph, Cargo re-picks which version each
 open-range consumer (`tempfile`, `rustls-platform-verifier`, `quinn-udp`, …)
 binds to on *any* `cargo update -p <crate>`, so an unrelated dependabot bump
-can move those edges between versions (#1358). That is invisible on Linux, but
+can move those edges between versions. That is invisible on Linux, but
 on Windows it invalidates the Bazel cache for everything above those crates, so
 `bazel / windows-latest` rebuilds and re-runs every test while
 `bazel / ubuntu-latest` is fully cached. A `windows-sys` entry in
@@ -528,7 +560,7 @@ install a custom hook script kept in the repo at
 # machines skip it:
 python3 tools/ci/check_bazel_lock.py
 cargo clippy --all --all-targets --all-features -- -D warnings
-cargo clippy --all --lib --bins -- -D warnings   # default-features pass (#988)
+cargo clippy --all --lib --bins -- -D warnings   # default-features pass
 cargo fmt --all -- --check
 # Buildifier (BUILD / *.bzl / MODULE.bazel formatting + lint) — the same gate CI
 # runs. Guarded on bazel being installed, so Cargo-only devs aren't blocked:
@@ -542,6 +574,54 @@ from the main checkout, and every worktree runs the main checkout's hook; see
 up a change to it.
 
 ## Coding Conventions
+
+### Comments
+
+A comment is a living document ([above](#living-documents-and-records)):
+it says what the code does and why it is not the more obvious thing, in
+the present tense, and nothing about how it came to be. The test for a
+sentence is whether it is true and useful to a reader who has never
+opened the issue tracker.
+
+- **No issue or pull request numbers.** `(issue #595)` after a complete
+  sentence is noise and goes. A pointer that carries the knowledge —
+  "the probe rejects the device on the other end of the wire (issue
+  #254)" — is replaced by the knowledge: what is rejected, on what
+  evidence, and a link to the design-doc section that holds the
+  reasoning. A section banner names the section, not the slice or
+  issue that built it.
+- **No narration.** "Used to", "previously", "before #N", "the old …",
+  "rather than … like before" frame the code against a past the reader
+  does not have. State the constraint and the fact that forces it.
+  "Retired" and "legacy" are fine when they name a thing the code
+  handles today — a retired config key that `doctor` reports — and
+  narration when they explain a change.
+- **Rationale stays.** Why the code is not the obvious alternative is
+  the most valuable sentence in a file. Keep it as a fact about the
+  world, with its conditions where it is a measurement: "as ASI SDK
+  1.41 was measured to on Linux (rusty-photon issue #1411)" becomes "as
+  ASI SDK 1.41 does on Linux
+  (`docs/validation/2026-10-06-zwo-camera-departure-linux/`)" — the
+  measurement and its record, no tracker.
+- **Tests too.** A regression test says what it pins in its name and
+  describes the failure shape — this input, that wrong output — in its
+  comment; the issue number is in the commit that added it. A test
+  named for a review comment on a pull request is named for nothing a
+  reader can see.
+- **A link to a record is the exception.** Keep one only where the code
+  does something that looks wrong at first glance and the record holds
+  the evidence, written as a full URL or a `docs/` path so it reads as a
+  deliberate citation. An upstream bug the code works around is cited
+  the same way, with the behaviour stated beside the link: "the SSE
+  stream never closes on the shutdown signal
+  (https://github.com/tokio-rs/axum/issues/2673)".
+- **A link to a living document is not a link to a record.** A comment
+  pointing at `docs/services/<svc>.md §…` for the reasoning is what
+  AGENTS.md rule 11 asks for: keep it, and drop any issue number inside
+  it. An ADR is a record; a link to one follows the exception above.
+
+What changed, and what was wrong before, goes in the commit message and
+the pull request description.
 
 ### Lints
 
@@ -600,7 +680,7 @@ records the ladder that widened this set.
 deliberately different policies: `stable / clippy` is the required PR gate at
 `-D warnings` — two passes, `--all-features --all-targets` plus a
 default-features `--lib --bins` pass, because each compiles feature-gated code
-the other cfgs out (#988; the second is `--lib --bins` so dev-dependency edges
+the other cfgs out (the second is `--lib --bins` so dev-dependency edges
 cannot force `simulation`/`mock` back on via feature unification) — while
 the nightly `beta / clippy` job passes `--cap-lints warn`
 so it can never fail on a lint — not even one added upstream to a group this
@@ -623,7 +703,7 @@ already-elapsed magnitudes).
 
 **Construct with the coarsest constructor that fits.** `Duration::from_mins(2)`
 and `Duration::from_hours(1)`, not `from_secs(120)` and `from_secs(3600)` —
-clippy's `duration_suboptimal_units` enforces this now that `nursery` is denied, and
+clippy's `duration_suboptimal_units` (in the denied `nursery` group) enforces this, and
 the coarse form is the one a reader can check at a glance. Both are stable since
 Rust 1.91, under the declared MSRV.
 
@@ -786,9 +866,9 @@ workspace `Cargo.toml`.
 member takes `derive_more = { workspace = true }` and needs no per-member
 `features`. That is deliberate rather than lax: feature unification means
 a whole-workspace `cargo` or `bazel` build resolves `display` through
-*some* member regardless, so a missing per-member declaration used to
-compile everywhere except `cargo build -p <member>` — which nothing but
-the nightly `cargo hack --feature-powerset` job runs. Declaring it once
+*some* member regardless, so a missing per-member declaration compiles
+everywhere except `cargo build -p <member>`, which nothing but the
+nightly `cargo hack --feature-powerset` job runs. Declaring it once
 closes that green-PR/red-nightly gap at no cost: `display` adds only
 `convert_case` and `unicode-segmentation`, both proc-macro-only.
 
@@ -829,16 +909,13 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
     (308), answers 403 for an unknown device on the setup path and 400 on the
     action route, and has the client fetch the specification's path
     ([driver-setup-pages.md](plans/archive/driver-setup-pages.md) D10). Not offered
-    upstream yet, by the owner's decision of 2026-10-17; when it is, it goes
-    as the two pull requests D10 describes (the paths and statuses; the
-    hooks).
+    upstream yet; when it is, it goes as the two pull requests D10
+    describes (the paths and statuses; the hooks).
 
-  **When both merge upstream, point the pin back at upstream `main`.** The
-  older `ivonnyssen` fork (and its `integration` /
-  `pr/integer-parameter-handling` branches) stays retired — those PRs all
-  merged upstream. Once upstream publishes a crates.io release containing
-  both, switch to a versioned dependency. The pin's own comment in the
-  workspace `Cargo.toml` says the same; keep the two in step.
+  **When both merge upstream, point the pin back at upstream `main`.**
+  Once upstream publishes a crates.io release containing both, switch to
+  a versioned dependency. The pin's own comment in the workspace
+  `Cargo.toml` says the same; keep the two in step.
 - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
   pkg-config for a system AWS-LC and links it dynamically when it finds one —

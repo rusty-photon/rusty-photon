@@ -76,7 +76,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / clippy`, first step
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
-> cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement (#988)
+> cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement
 > ```
 >
 > `bazel coverage` produces a report, not a verdict. To find out whether the
@@ -85,8 +85,8 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 >
 > The first two commands ARE the fast local inner loop: Bazel rebuilds/retests only
 > the targets your change affects, backed by the local `--disk_cache` (see "Change
-> detection" below). cargo-rail is **retired**. The `act` / raw-cargo steps
-> below reproduce the **nightly** Cargo safety net when you need it.
+> detection" below). The `act` / raw-cargo steps below reproduce the
+> **nightly** Cargo safety net when you need it.
 
 ### Step 1: Run the full CI suite via `act`
 
@@ -226,12 +226,12 @@ remote cache in CI. So the local inner loop is simply:
 bazel build //... && bazel test //...
 ```
 
-There is no separate narrowing step to run. The nightly Cargo safety net always runs
-the full `--workspace`. cargo-rail (the former local affected-package narrowing tool)
-is **retired**; we accept losing its dep-hygiene (workspace feature unification,
-unused-dep / dead-feature pruning, MSRV preview) because feature-unification breakage
-still surfaces in the nightly `--workspace --all-features` build and the off-PR
-`cargo hack --feature-powerset` job, and MSRV in the `msrv` job.
+There is no separate narrowing step to run, and no per-PR dep-hygiene
+check: the nightly Cargo safety net always runs the full `--workspace`,
+feature-unification breakage surfaces in its `--workspace --all-features`
+build and the off-PR `cargo hack --feature-powerset` job, and MSRV in the
+`msrv` job. Nothing checks for unused dependencies or dead features; that
+gap is accepted.
 
 ---
 
@@ -256,7 +256,7 @@ cucumber defaults under which a suite can exit 0 having proved nothing.
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** (the first step of `stable / clippy`) | `cargo fmt --check` | stable rustfmt | **PR gate** |
-| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` (#988) | stable clippy | **PR gate** |
+| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` | stable clippy | **PR gate** |
 | **clippy-os (windows / macos)** | same two passes, on that host OS | stable clippy | Off-PR |
 | **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
@@ -265,7 +265,7 @@ cucumber defaults under which a suite can exit 0 having proved nothing.
 **OS-gated code is linted only after a merge.** The required stable gate runs
 on ubuntu, so `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` production
 code is outside it, and no PR job lints it. The `windows / clippy` +
-`macos / clippy` legs run Cargo's two shapes off-PR (#984): a violation lands
+`macos / clippy` legs run Cargo's two shapes off-PR: a violation lands
 on main and surfaces within minutes of the merge (push) or overnight
 (schedule, via the `check-nightly` tracking issue) rather than failing only a
 Windows/macOS contributor's pre-commit hook. A PR's Windows Bazel leg still
@@ -304,7 +304,7 @@ equivalent) so the ubuntu `--all-targets` pass compiles and lints it on every
 PR. `rusty-photon-doctor-checks`'s USB collectors do this for their parsers
 and their bounded-subprocess helper.
 
-**Every clippy job runs two passes** (#988): `--all-features` turns `mock` /
+**Every clippy job runs two passes**: `--all-features` turns `mock` /
 `simulation` ON and thereby cfgs OUT the real-hardware production slices behind
 `not(feature = "mock")` / `not(feature = "simulation")`. The second pass —
 `cargo clippy --workspace --lib --bins -- -D warnings` — compiles each crate's
@@ -389,18 +389,17 @@ each variant its own target and repeat `crate_features` on it, because
 
 **A RUNNABLE doctest on Windows hits `MAX_PATH` without the vendored rustdoc
 patch.** `no_run` examples are emitted as metadata and never linked (rustdoc
-reports them `- compile ... ok`), but one that actually runs invokes `link.exe`.
-Before the fix that died on `LNK1181: cannot open input file
-…libpanic_unwind-….rlib`: the file was present and readable, but its path was
-261 characters — one over the limit — because `rust_doc_test` spells sysroot
-inputs relative to the runfiles tree, whose prefix alone
-(`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123. The tell was a
-pass/fail split between files in the *same directory*: `libstd-….rlib` at 252
-resolved, `libpanic_unwind-….rlib` at 261 did not.
+reports them `- compile ... ok`), but one that actually runs invokes `link.exe`,
+and `rust_doc_test` spells sysroot inputs relative to the runfiles tree, whose
+prefix alone (`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123 of the
+260 characters: `libpanic_unwind-….rlib` lands at 261, present and readable,
+and `link.exe` fails with `LNK1181: cannot open input file`, while
+`libstd-….rlib` in the *same directory* at 252 resolves — that pass/fail split
+between siblings is the tell.
 
-`third_party/patches/rustdoc_test_windows_external_repo_path.patch` now resolves
+`third_party/patches/rustdoc_test_windows_external_repo_path.patch` resolves
 `--sysroot=` through the runfiles manifest to its execroot target, dropping that
-path to 193. If you add a doctest target and see `LNK1181` again, the budget has
+path to 193. If you add a doctest target and see `LNK1181`, the budget has
 run out somewhere else — measure the path before theorising.
 
 **A doctest target with `crate_features` needs the same patch on Windows.**
@@ -419,20 +418,19 @@ together are what let the qhyccd-rs sim doctest target run on Windows.
 
 **The runner also resolves its dependency paths through the runfiles
 manifest.** windows-latest intermittently leaves a runfiles-tree entry as a
-*dangling symlink* (the #587 family-2 flake: `file=false symlink=true len=0`
-with a real parent directory), which no open-retry can outlast. The manifest's
+*dangling symlink* (`file=false symlink=true len=0` with a real parent
+directory), which no open-retry can outlast. The manifest's
 execroot target is a real file — `build:windows --remote_download_outputs=all`
 outranks `build:ci`'s `toplevel` because platform config appends last — so
 RF() substitutes it and sidesteps the tree. That covers the `--arg-file`
 values in both spellings: `external/…/_bs.linksearchpaths` for a crates.io
-build script (#752), and bare workspace-relative
+build script, and bare workspace-relative
 `crates/…/build_script.linksearchpaths` for a first-party path dependency's
-(#781 — the qhyccd-rs real/sim doc-test pair shares that runfile and raced on
-it whenever both executed on the same runner, exactly one failing per
+(the qhyccd-rs real/sim doc-test pair shares that runfile and races on it
+whenever both execute on the same runner, exactly one failing per
 attempt). It also covers the rlibs rustdoc itself opens, which arrive inside a
 flag rather than bare: `--extern=<name>=<rlib>` per direct dependency, and the
-documented crate's own rlib as the `<name>=<path>` value of a bare `--extern`
-(#796).
+documented crate's own rlib as the `<name>=<path>` value of a bare `--extern`.
 
 `-L…=<dir>` search paths are deliberately left alone. A directory has no
 manifest entry of its own, and inferring one from a file beneath it is
@@ -470,8 +468,7 @@ not what was lost:
 | `error[E0786]: found invalid metadata files` | the file is there but truncated or corrupt |
 
 The first two mean the same defect; only the second is easy to misread as a
-missing dependency edge. Both appeared for the same crate across two
-occurrences on 2026-07-31. When one recurs, the job's "Dump doc-test runfiles
+missing dependency edge. When one recurs, the job's "Dump doc-test runfiles
 state (Windows diagnostic)" step reports, per doc test, the `_main\external`
 link and every manifest-named `.rlib` that is unreachable by either spelling —
 read that before theorising.
@@ -689,7 +686,7 @@ bazel build //... && bazel test //...                     # bazel / <os> (build 
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / clippy, first step
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
-cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2 (#988)
+cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2
 ```
 
 ## Bazel
@@ -789,8 +786,7 @@ check.yml section above). What Bazel's own build needs from you:
       released;
   - expect MSRV-gated clippy lints to start firing in that PR. Raising the
     MSRV unlocks lints that suggest newer APIs, and the `beta / clippy` census
-    runs at the old MSRV, so it cannot list them ahead. The raise to 1.99.0
-    unlocked none.
+    runs at the MSRV in force, so it cannot list them ahead.
 
   After it merges, rebuild the pool runner templates
   (docs/skills/proxmox-runner-pool.md): they pre-fetch the pinned toolchains,
@@ -923,7 +919,7 @@ carry a several-hundred-kilobyte changed-line payload. Use
 ### What `bazel test //...` runs, and coverage
 
 BDD cucumber tests build and run under Bazel and are **part of the
-default test filter** (since PR #452): a plain `bazel test //...` runs
+default test filter**: a plain `bazel test //...` runs
 them, and Bazel's result cache re-executes only the suites your change
 affects. The OmniSim-backed suites need `OMNISIM_PATH` or `OMNISIM_DIR`
 set. Doctor's `@pebble` ACME scenarios additionally use `PEBBLE_PATH` +
