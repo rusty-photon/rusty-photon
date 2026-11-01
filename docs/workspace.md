@@ -807,9 +807,10 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
 ## Build Notes
 
 - The `ascom-alpaca` crate is a git dependency on
-  `rusty-photon/ascom-alpaca-rs.git` (branch `feature/spec-setup-pages`,
-  `default-features = false`) — an org fork of `RReverser/ascom-alpaca-rs`
-  carrying **two** server-side fixes, stacked on one branch:
+  `rusty-photon/ascom-alpaca-rs.git` (branch
+  `fix/device-type-case-insensitive`, `default-features = false`) — an org
+  fork of `RReverser/ascom-alpaca-rs` carrying **three** fixes, stacked on
+  one branch (two server-side, one client-side):
   - **`Connecting` counts operations.** Upstream tracks in-flight Platform 7
     `Connect` / `Disconnect` operations in a set keyed by device, so several
     outstanding at once collapse to one entry and the first to finish reports
@@ -832,12 +833,22 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
     upstream yet, by the owner's decision of 2026-10-17; when it is, it goes
     as the two pull requests D10 describes (the paths and statuses; the
     hooks).
+  - **The client matches a listed `DeviceType` without regard to case.**
+    Upstream's client accepts only the PascalCase variant names in
+    `configureddevices`, so a third-party server that lists the lower-case
+    path spelling (`"rotator"`, as the Pegasus Astro Falcon Rotator 2 does)
+    is skipped as an unsupported type, and rp finds no device on it
+    ([#1687](https://github.com/rusty-photon/rusty-photon/issues/1687)). The
+    Management API describes the field only by example ("such as Telescope,
+    Camera, Focuser"); its lower-case rule is for the URL path. The fork
+    compares each listed name with the kind's path name ignoring ASCII case;
+    serialization is unchanged.
 
-  **When both merge upstream, point the pin back at upstream `main`.** The
+  **When all three merge upstream, point the pin back at upstream `main`.** The
   older `ivonnyssen` fork (and its `integration` /
   `pr/integer-parameter-handling` branches) stays retired — those PRs all
   merged upstream. Once upstream publishes a crates.io release containing
-  both, switch to a versioned dependency. The pin's own comment in the
+  all three, switch to a versioned dependency. The pin's own comment in the
   workspace `Cargo.toml` says the same; keep the two in step.
 - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then

@@ -150,7 +150,7 @@ checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 [[package]]
 name = "ascom-alpaca"
 version = "1.0.0-beta.10"
-source = "git+https://github.com/rusty-photon/ascom-alpaca-rs.git?branch=feature%2Fspec-setup-pages#4ece1859ea0f5deb2410cee9f153018e7f35c86a"
+source = "git+https://github.com/rusty-photon/ascom-alpaca-rs.git?branch=fix%2Fdevice-type-case-insensitive#f95606abc7519e5ae66767fdb9ee5bb52065f8f7"
 dependencies = [
  "async-fn-stream",
  "async-trait",
@@ -5865,7 +5865,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

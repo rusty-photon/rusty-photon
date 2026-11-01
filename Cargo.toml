@@ -284,10 +284,14 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 # routes both specification paths for GET and POST through request-taking
 # hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
 # and answers the statuses the specifications give (see
-# `docs/plans/archive/driver-setup-pages.md` D10; not offered upstream yet). Drop
-# the fork and go back to upstream `main` once both are merged there; see
-# `docs/workspace.md` "Build Notes".
-ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
+# `docs/plans/archive/driver-setup-pages.md` D10; not offered upstream yet). The
+# fork's client also matches a listed `DeviceType` without regard to case:
+# upstream's accepts only the PascalCase variant names, so a third-party server
+# that lists the lower-case path spelling (`"rotator"`) is skipped as an
+# unsupported type and rp finds no device on it. Drop the fork and go back to
+# upstream `main` once all three are merged there; see `docs/workspace.md`
+# "Build Notes".
+ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "fix/device-type-case-insensitive", default-features = false }
 # ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
 # `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
 # first-party + dual-homed at crates/zwo-rs (ADR-010 /
