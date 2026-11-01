@@ -14,6 +14,10 @@ use serde_json::Value;
 use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
+/// Area bounds for the simulator's frames, the same sizing as
+/// `detect_stars` / `measure_basic`.
+const SIM_AREAS: (Option<u64>, Option<u64>) = (Some(5), Some(65_536));
+
 // --- When steps ---
 
 #[when("the MCP client calls \"measure_stars\" with the captured image path")]
@@ -23,7 +27,16 @@ async fn mcp_call_with_last_path(world: &mut RpWorld) {
         .clone()
         .expect("no captured image path available");
 
-    call_tool(world, Some(&image_path), None, None, None, true, true).await;
+    call_tool(
+        world,
+        Some(&image_path),
+        None,
+        None,
+        None,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
+    )
+    .await;
 }
 
 #[when("the MCP client calls \"measure_stars\" with the captured document_id")]
@@ -33,7 +46,16 @@ async fn mcp_call_with_last_document_id(world: &mut RpWorld) {
         .clone()
         .expect("no captured document_id available");
 
-    call_tool(world, None, Some(&document_id), None, None, true, true).await;
+    call_tool(
+        world,
+        None,
+        Some(&document_id),
+        None,
+        None,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
+    )
+    .await;
 }
 
 #[when(
@@ -51,8 +73,8 @@ async fn mcp_call_with_threshold(world: &mut RpWorld, threshold_sigma: f64) {
         None,
         Some(threshold_sigma),
         None,
-        true,
-        true,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
     )
     .await;
 }
@@ -72,20 +94,38 @@ async fn mcp_call_with_stamp(world: &mut RpWorld, stamp_half_size: i64) {
         None,
         None,
         Some(stamp_half_size),
-        true,
-        true,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
     )
     .await;
 }
 
 #[when(expr = "the MCP client calls \"measure_stars\" with image path {string}")]
 async fn mcp_call_with_path(world: &mut RpWorld, image_path: String) {
-    call_tool(world, Some(&image_path), None, None, None, true, true).await;
+    call_tool(
+        world,
+        Some(&image_path),
+        None,
+        None,
+        None,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
+    )
+    .await;
 }
 
 #[when(expr = "the MCP client calls \"measure_stars\" with document_id {string}")]
 async fn mcp_call_with_document_id(world: &mut RpWorld, document_id: String) {
-    call_tool(world, None, Some(&document_id), None, None, true, true).await;
+    call_tool(
+        world,
+        None,
+        Some(&document_id),
+        None,
+        None,
+        SIM_AREAS.0,
+        SIM_AREAS.1,
+    )
+    .await;
 }
 
 #[when("the MCP client calls \"measure_stars\" with no arguments")]
@@ -99,6 +139,38 @@ async fn mcp_call_no_args(world: &mut RpWorld) {
     record_result(world, result);
 }
 
+#[when(
+    expr = "the MCP client calls \"measure_stars\" on the fixture {string} with threshold_sigma {float}, min_area {int} and max_area {int}"
+)]
+async fn mcp_call_on_fixture(
+    world: &mut RpWorld,
+    fixture: String,
+    threshold_sigma: f64,
+    min_area: u64,
+    max_area: u64,
+) {
+    // The suite runs from the package directory (cargo's default, and
+    // `BDD_PACKAGE_DIR` under Bazel); rp gets an absolute path because it
+    // runs as its own process.
+    let path = std::env::current_dir()
+        .expect("current directory")
+        .join("tests/fixtures")
+        .join(&fixture);
+    assert!(path.is_file(), "fixture {} not found", path.display());
+    let path = path.to_str().expect("fixture path is UTF-8").to_string();
+
+    call_tool(
+        world,
+        Some(&path),
+        None,
+        Some(threshold_sigma),
+        None,
+        Some(min_area),
+        Some(max_area),
+    )
+    .await;
+}
+
 #[when("the MCP client calls \"measure_stars\" with the captured image path but no min_area")]
 async fn mcp_call_missing_min_area(world: &mut RpWorld) {
     let image_path = world
@@ -106,7 +178,16 @@ async fn mcp_call_missing_min_area(world: &mut RpWorld) {
         .clone()
         .expect("no captured image path available");
 
-    call_tool(world, Some(&image_path), None, None, None, false, true).await;
+    call_tool(
+        world,
+        Some(&image_path),
+        None,
+        None,
+        None,
+        None,
+        SIM_AREAS.1,
+    )
+    .await;
 }
 
 // --- Then steps ---
@@ -213,6 +294,47 @@ fn result_field_equals_int(world: &mut RpWorld, field: String, expected: i64) {
     );
 }
 
+#[then(expr = "the measure_stars result should contain {string} between {float} and {float}")]
+fn result_field_between(world: &mut RpWorld, field: String, low: f64, high: f64) {
+    let result = result_or_panic(world);
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_stars result, got: {result:?}"));
+
+    let num = value
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
+
+    assert!(
+        (low..=high).contains(&num),
+        "expected '{field}' between {low} and {high}, got: {num}"
+    );
+}
+
+#[then("the measure_stars stars should be listed brightest first")]
+fn stars_listed_brightest_first(world: &mut RpWorld) {
+    let result = result_or_panic(world);
+    let fluxes: Vec<f64> = result["stars"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected 'stars' to be an array, got: {result:?}"))
+        .iter()
+        .map(|star| {
+            star["flux"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("expected a numeric 'flux', got: {star:?}"))
+        })
+        .collect();
+
+    assert!(
+        fluxes.len() > 1,
+        "expected more than one star to order, got: {fluxes:?}"
+    );
+    assert!(
+        fluxes.windows(2).all(|pair| pair[0] >= pair[1]),
+        "expected stars in descending flux order, got: {fluxes:?}"
+    );
+}
+
 // --- Helpers ---
 
 #[allow(clippy::too_many_arguments)]
@@ -222,8 +344,8 @@ async fn call_tool(
     document_id: Option<&str>,
     threshold_sigma: Option<f64>,
     stamp_half_size: Option<i64>,
-    include_min_area: bool,
-    include_max_area: bool,
+    min_area: Option<u64>,
+    max_area: Option<u64>,
 ) {
     ensure_mcp_client(world).await;
 
@@ -240,12 +362,11 @@ async fn call_tool(
     if let Some(stamp) = stamp_half_size {
         args.insert("stamp_half_size".to_string(), serde_json::json!(stamp));
     }
-    // Same fixture sizing as detect_stars / measure_basic.
-    if include_min_area {
-        args.insert("min_area".to_string(), serde_json::json!(5));
+    if let Some(min_area) = min_area {
+        args.insert("min_area".to_string(), serde_json::json!(min_area));
     }
-    if include_max_area {
-        args.insert("max_area".to_string(), serde_json::json!(65_536));
+    if let Some(max_area) = max_area {
+        args.insert("max_area".to_string(), serde_json::json!(max_area));
     }
 
     let result = world

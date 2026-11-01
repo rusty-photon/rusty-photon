@@ -512,8 +512,8 @@ pub struct TrainAutoFocusConfig {
     /// (capture sweeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_area: Option<usize>,
-    /// Maximum component pixel area for the per-frame `measure_basic`
-    /// (capture sweeps).
+    /// The largest star the per-frame `measure_basic` measures, as the
+    /// area in pixels of its half-flux disc (capture sweeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_area: Option<usize>,
     /// Per-frame `measure_basic` threshold in sigma units (capture

@@ -141,8 +141,10 @@ pub struct CaptureResult {
 /// What `measure_stars` reports for one frame.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StarMeasurement {
+    /// The frame's aggregate HFR: the median aperture HFR of its
+    /// brightest stars.
     #[serde(default)]
-    pub median_hfr: Option<f64>,
+    pub hfr: Option<f64>,
     pub star_count: u32,
 }
 
@@ -612,7 +614,7 @@ impl SweepOps for RigSweep<'_> {
                     self.train.threshold_sigma,
                 )
                 .await?;
-            if let Some(hfr) = measured.median_hfr.filter(|hfr| hfr.is_finite()) {
+            if let Some(hfr) = measured.hfr.filter(|hfr| hfr.is_finite()) {
                 hfrs.push(hfr);
             }
             counts.push(measured.star_count);
@@ -2301,7 +2303,7 @@ mod tests {
             let hfr = (dx / 10.0).hypot(1.0);
             Box::pin(async move {
                 Ok(StarMeasurement {
-                    median_hfr: Some(hfr),
+                    hfr: Some(hfr),
                     star_count: 100,
                 })
             })
@@ -2313,7 +2315,7 @@ mod tests {
         rig.expect_measure_stars().returning(|_, _, _, _| {
             Box::pin(async {
                 Ok(StarMeasurement {
-                    median_hfr: None,
+                    hfr: None,
                     star_count: 0,
                 })
             })
@@ -2634,7 +2636,7 @@ mod tests {
             };
             Box::pin(async move {
                 Ok(StarMeasurement {
-                    median_hfr: Some(hfr),
+                    hfr: Some(hfr),
                     star_count: 100,
                 })
             })
@@ -2713,12 +2715,12 @@ mod tests {
             let dx = f64::from(at.get() - vertex);
             let measurement = if frame <= 9 {
                 StarMeasurement {
-                    median_hfr: None,
+                    hfr: None,
                     star_count: 0,
                 }
             } else {
                 StarMeasurement {
-                    median_hfr: Some((dx / 10.0).hypot(1.0)),
+                    hfr: Some((dx / 10.0).hypot(1.0)),
                     star_count: 100,
                 }
             };

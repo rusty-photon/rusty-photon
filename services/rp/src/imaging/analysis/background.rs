@@ -25,16 +25,28 @@ pub struct BackgroundStats {
 ///
 /// Returns `None` if the input view is empty or all pixels are clipped away.
 #[must_use]
-#[expect(
-    clippy::suboptimal_flops,
-    reason = "mean ± k·stddev is the sigma-clip bound in its plain shape; fusing hides it for no observable gain"
-)]
 pub fn sigma_clipped_stats<T: Pixel>(
     view: &ArrayView2<T>,
     k: f64,
     max_iters: usize,
 ) -> Option<BackgroundStats> {
-    let mut values: Vec<f64> = view.iter().map(|p| p.to_f64()).collect();
+    sigma_clipped_values(view.iter().map(|p| p.to_f64()).collect(), k, max_iters)
+}
+
+/// [`sigma_clipped_stats`] over a set of pixel values rather than a
+/// view: the annulus around a star's aperture is not rectangular.
+///
+/// Returns `None` if `values` is empty or all of them are clipped away.
+#[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mean ± k·stddev is the sigma-clip bound in its plain shape; fusing hides it for no observable gain"
+)]
+pub fn sigma_clipped_values(
+    mut values: Vec<f64>,
+    k: f64,
+    max_iters: usize,
+) -> Option<BackgroundStats> {
     if values.is_empty() {
         return None;
     }

@@ -57,9 +57,9 @@ pub struct AutoFocusToolParams {
     /// rig-dependent).
     #[serde(default)]
     pub min_area: Option<usize>,
-    /// Maximum component pixel area for `measure_basic` (no default —
-    /// rig-dependent; donut PSFs at extreme defocus can span many
-    /// hundreds of pixels).
+    /// The largest star `measure_basic` measures, as the area in pixels
+    /// of its half-flux disc (no default — rig-dependent; a star's blur
+    /// disc at extreme defocus can span thousands of pixels).
     #[serde(default)]
     pub max_area: Option<usize>,
     /// Binning for every sweep frame, `"AxB"`. Default `"1x1"`.

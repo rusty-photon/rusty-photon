@@ -108,6 +108,16 @@ pub struct DetectionParams {
     pub max_adu: Option<u32>,
 }
 
+/// What [`detect`] found in a frame.
+#[derive(Debug, Clone, Default)]
+pub struct Detection {
+    /// The admitted stars in row-major scan order.
+    pub stars: Vec<Star>,
+    /// The hot pixels suppression replaced, in row-major order, which
+    /// every measurement of the raw pixels leaves out.
+    pub hot: Vec<(usize, usize)>,
+}
+
 /// Run the detection pipeline over `view` against `background`. Returns the
 /// list of admitted stars in row-major scan order.
 #[must_use]
@@ -116,9 +126,20 @@ pub fn detect_stars<T: Pixel>(
     background: &BackgroundStats,
     params: &DetectionParams,
 ) -> Vec<Star> {
+    detect(view, background, params).stars
+}
+
+/// [`detect_stars`], keeping the hot pixels it found for the
+/// measurements that follow.
+#[must_use]
+pub fn detect<T: Pixel>(
+    view: &ArrayView2<T>,
+    background: &BackgroundStats,
+    params: &DetectionParams,
+) -> Detection {
     let (rows, cols) = view.dim();
     if rows == 0 || cols == 0 {
-        return Vec::new();
+        return Detection::default();
     }
 
     let (threshold, body_level) = detection_levels(background, params.threshold_sigma);
@@ -146,7 +167,7 @@ pub fn detect_stars<T: Pixel>(
         ?rejected,
         "star detection admitted stars and rejected components"
     );
-    stars
+    Detection { stars, hot }
 }
 
 /// How many components [`build_star`] rejected, by reason.

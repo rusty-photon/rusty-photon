@@ -1,5 +1,6 @@
-//! `measure_basic` MVP: compose background estimation, star detection, and
-//! aggregate HFR into a single result the MCP tool returns and persists.
+//! `measure_basic` MVP: compose background estimation, star detection, the
+//! aperture measurement, and the aggregate HFR into a single result the MCP
+//! tool returns and persists.
 //!
 //! Pure logic — no I/O, no MCP types. The MCP wrapper in `mcp.rs` resolves
 //! pixels (cache hit or FITS read) and serializes the result; this module
@@ -9,20 +10,21 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 
 use crate::error::{Result, RpError};
+use crate::imaging::analysis::aperture::{aggregate_hfr, measure_in_apertures};
 use crate::imaging::analysis::background::estimate_background;
-use crate::imaging::analysis::hfr::aggregate_hfr;
 use crate::imaging::analysis::pixel::Pixel;
-use crate::imaging::analysis::stars::{detect_stars, DetectionParams};
+use crate::imaging::analysis::stars::{detect, DetectionParams};
 
 /// Result of the basic image measurement. Field names match the JSON
 /// contract returned by the MCP tool — change only with intent.
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasureBasicResult {
-    /// Median of per-star HFRs in pixels. `None` ⇒ JSON `null` when no
-    /// stars are detected.
+    /// Median aperture HFR of the brightest stars, in pixels. `None` ⇒
+    /// JSON `null` when no stars are measured.
     pub hfr: Option<f64>,
+    /// Stars measured, one per aperture.
     pub star_count: u32,
-    /// Number of detected stars containing at least one saturated pixel.
+    /// Number of those stars whose aperture holds a saturated pixel.
     /// Always `0` when `max_adu` is unknown (e.g. bare `image_path` mode).
     pub saturated_star_count: u32,
     pub background_mean: f64,
@@ -30,8 +32,12 @@ pub struct MeasureBasicResult {
     pub pixel_count: u64,
 }
 
-/// Run the `measure_basic` pipeline. `max_adu` is for saturation flagging
-/// only; `None` skips the flag (see contract in `docs/services/rp.md`).
+/// Run the `measure_basic` pipeline.
+///
+/// `max_area` bounds a star's half-flux disc, not a component's area: a
+/// star the threshold keeps whole is one component, which may be larger
+/// than its half-flux disc. `max_adu` is for saturation flagging only;
+/// `None` skips the flag (see contract in `docs/services/rp.md`).
 ///
 /// # Errors
 ///
@@ -56,16 +62,16 @@ pub fn measure_basic<T: Pixel>(
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
-        max_area,
+        max_area: usize::MAX,
         max_adu,
     };
-    let stars = detect_stars(view, &background, &params);
+    let detection = detect(view, &background, &params);
+    let stars = measure_in_apertures(view, &detection, background.mean, max_area, max_adu);
     let star_count = u32::try_from(stars.len()).unwrap_or(u32::MAX);
     let saturated_star_count =
-        u32::try_from(stars.iter().filter(|s| s.saturated_pixel_count > 0).count())
-            .unwrap_or(u32::MAX);
+        u32::try_from(stars.iter().filter(|s| s.saturated).count()).unwrap_or(u32::MAX);
 
-    let hfr = aggregate_hfr(view, &stars, background.mean);
+    let hfr = aggregate_hfr(&stars);
 
     Ok(MeasureBasicResult {
         hfr,

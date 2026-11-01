@@ -1403,12 +1403,12 @@ mod tests {
                         Some(vertex) => {
                             let dx = f64::from(at - vertex);
                             StarMeasurement {
-                                median_hfr: Some((dx / 10.0).hypot(1.0)),
+                                hfr: Some((dx / 10.0).hypot(1.0)),
                                 star_count: 100,
                             }
                         }
                         None => StarMeasurement {
-                            median_hfr: None,
+                            hfr: None,
                             star_count: 0,
                         },
                     })

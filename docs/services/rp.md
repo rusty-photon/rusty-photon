@@ -1852,7 +1852,7 @@ accepted, `document_id` takes precedence.
 | `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
 | `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
 | `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
-| `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
+| `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
 | `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. Implemented. |
 
@@ -2619,7 +2619,7 @@ the image just written.
 | Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, dilation/erosion). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
 | Star detection | Custom | Threshold + connected components on background-subtracted image, then shape filtering |
 | Centroiding | Custom | Intensity-weighted center of mass on ndarray subframes |
-| HFR / HFD | Custom | Radial flux accumulation (~20 lines of math) |
+| HFR / HFD | Custom | Curve of growth in an aperture that follows the star (centre and radius iterated, local annulus background) |
 | FWHM | Custom + crate | 2D Gaussian fitting via `rmpfit` (chosen over `levenberg-marquardt` for native parameter bounds — σ > 0, amplitude > 0 — and lighter dependency footprint: no `nalgebra`. `rmpfit` is also a Rust port of MPFIT, the de-facto astronomy fitting library) |
 | Eccentricity / elongation | Custom | Second central moments from detected star pixels |
 | Background estimation | Custom | Sigma-clipped mesh statistics on ndarray |
@@ -2636,22 +2636,30 @@ The first analysis tool to implement. Behavioral contract:
   no default. The right value depends on the camera+optics pixel scale
   (arcsec/px) and the seeing regime, neither of which the tool can infer
   from the image alone. Callers (workflows, plugins) own that policy.
-- `max_area` — maximum component pixel area to admit. Required; no
-  default. Same rationale as `min_area`. Note: at extreme defocus,
-  donut-shaped PSFs from the secondary obstruction can span many hundreds
-  of pixels — auto-focus callers should set `max_area` accordingly so
-  the V-curve sweep can measure them.
+- `max_area` — the largest star to measure, in pixels of its
+  half-flux disc: a star whose `π × HFR²` is larger has no HFR
+  (step 9). Required; no default. Same rationale as `min_area`. Unlike
+  `detect_stars`' `max_area`, it does not filter components (step 7):
+  a star the threshold keeps whole is one component, up to twice its
+  half-flux disc for a uniform disc, and dropping it would measure the
+  star only when the threshold broke it up. Note: at extreme defocus, a
+  star's blur disc can span thousands of pixels — auto-focus callers
+  should set `max_area` accordingly so the V-curve sweep can measure
+  them.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold above
   background. Unit-free (multiples of the sigma-clipped background
   stddev), so a default is meaningful here.
 
 **Output**:
-- `hfr` — half-flux radius in pixels, aggregated across detected stars
-  (median of per-star HFRs). `null` if no stars detected.
-- `star_count` — number of valid stars after detection and filtering.
-- `saturated_star_count` — number of detected stars that contain at
-  least one pixel at `max_adu`. `0` when `max_adu` is unknown (e.g. when
-  called via `image_path` outside an exposure context).
+- `hfr` — half-flux radius in pixels: the median of the aperture HFRs
+  of the 20 brightest stars, or of all of them when there are fewer
+  (step 11). `null` if no stars are measured.
+- `star_count` — number of stars measured (steps 9–10): one per
+  aperture, so a defocused star that fragments at the threshold counts
+  once.
+- `saturated_star_count` — number of those stars whose aperture holds
+  at least one pixel at `max_adu`. `0` when `max_adu` is unknown (e.g.
+  when called via `image_path` outside an exposure context).
 - `background_mean` — sigma-clipped background mean (ADU).
 - `background_stddev` — sigma-clipped background standard deviation (ADU).
 - `pixel_count` — total pixels analyzed.
@@ -2670,15 +2678,17 @@ The first analysis tool to implement. Behavioral contract:
    pixel is replaced by the median of the pixels of the grid window
    centred on it that are not hot (the lower of the two middle values
    for an even count), or by `background_mean` when all of them are.
-   Every measurement in steps 7–8 still reads the raw pixels. A hot
+   Every measurement in steps 7–9 still reads the raw pixels. A hot
    pixel that falls inside a component's smoothed footprint counts
    toward the component's area and border verdict, and is left out of
    its measurements.
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
-7. Filter components: pixel area in `[min_area, max_area]`; reject
-   components touching the image border. Saturated components are *not*
+7. Filter components: pixel area at least `min_area` (`detect_stars`,
+   which reports components, also rejects one above `max_area`; here
+   `max_area` bounds the star, step 9); reject components touching the
+   image border. Saturated components are *not*
    rejected — they are flagged (see `saturated_star_count`). Saturated
    stars carry real signal: bright in-focus stars routinely clip at
    long-enough exposures, and donut-shaped PSFs at extreme defocus are
@@ -2687,14 +2697,61 @@ The first analysis tool to implement. Behavioral contract:
    is to measure them and let downstream consumers decide whether to
    weight or warn.
 8. For each surviving component, compute intensity-weighted centroid and
-   per-star HFR (radial flux accumulation to half of total flux).
-   Centroiding uses background-subtracted flux to avoid bbox-center bias.
-   Reject a component with no flux above the background once its hot
-   pixels are left out: it has no centroid to weight and no HFR. Reject
-   one whose HFR is under **0.25 px**: its flux sits in the one pixel
-   under its centroid.
-9. Return aggregate HFR (median of per-star HFRs), star count,
-   saturated-star count, and background.
+   the component's own HFR (radial flux accumulation over its pixels to
+   half of their flux). Centroiding uses background-subtracted flux to
+   avoid bbox-center bias. Reject a component with no flux above the
+   background once its hot pixels are left out: it has no centroid to
+   weight and no HFR. Reject one whose component HFR is under
+   **0.25 px**: its flux sits in the one pixel under its centroid. The
+   components that survive are the detections; their HFR is measured
+   in the next step, not here.
+9. Measure each detection in an aperture that follows it. Start at the
+   component's centroid with the radius `r` the largest of 3 × its
+   component HFR, the distance from the centroid to its furthest pixel
+   plus 1, and 3 px, but no larger than `3 × √(max_area / π)` — a
+   compact star whose component reaches far along a diffraction spike
+   or a bloom trail shrinks to its own aperture from there; then, in
+   rounds:
+   1. The local background is the sigma-clipped mean (3σ, at most five
+      iterations) of the pixels in the annulus from `r + 2` to
+      `r + 2 + max(6, r / 2)` px, hot pixels left out.
+   2. Over the pixels within `r` of the centre, hot pixels left out,
+      take each pixel's value minus the local background. The
+      differences are kept signed. The aperture flux is their sum, and
+      the HFR is the radius at which their running sum, in order of
+      distance from the centre, first reaches half the aperture flux,
+      interpolated linearly between the two pixels either side.
+   3. Move the centre to the centroid of the positive differences and
+      set `r` to the larger of 3 × the HFR and 3 px.
+
+   The rounds end when the centre moves less than 0.05 px and `r`
+   changes by less than 5%. The detection has no HFR, and is not a
+   star, when its aperture flux is not positive, when it has not
+   settled after 40 rounds, when its annulus reaches past the frame's
+   edge, when its HFR is under the 0.25 px floor, or when its HFR is
+   larger than `√(max_area / π)`: its half-flux disc is then larger
+   than `max_area`, a star larger than the caller allows one to be.
+   The size is checked on the settled HFR, and on the way: the rounds
+   stop when `r` grows past `3 × √(max_area / π)`.
+10. One star per aperture. Rank the detections by the flux of the last
+    aperture they were measured in, brightest first; one never
+    measured, or whose last aperture flux is not positive, takes no
+    part. Walk the ranking and keep each detection whose centre does
+    not lie inside the last aperture of one already kept: the
+    fragments of a defocused star all settle on its centre, and a
+    fainter neighbour that close cannot be measured apart from it. A
+    detection without an HFR (too large, at the edge, unsettled, under
+    the floor) is kept in this walk although it is not a star, so the
+    spots on a defocused disc that is too large to measure, or too close
+    to the edge, do not stand in for it. One the size cap or the edge
+    stopped while its aperture grew claims the aperture it was growing
+    into, not the smaller one it was last measured in, which can leave
+    part of its star outside. The stars are the kept detections that
+    have an HFR.
+11. Return the aggregate HFR (the median aperture HFR of the 20
+    brightest stars, or of all of them when there are fewer, the lower
+    and upper middle values averaged for an even count), the star
+    count, the saturated-star count, and background.
 
 **Why hot pixels are removed before smoothing.** Smoothing spreads a
 single hot pixel into a blob of 5–25 pixels that passes any `min_area` a
@@ -2757,18 +2814,130 @@ stars that rate is 0–5%. The floor also catches a cosmic-ray hit.
 
 **Measured on rig2's QHY600M** (uncooled, 530 mm). The nine sweep frames of one
 2026-09-26 `auto_focus` run plus its confirmation frame were measured at
-`threshold_sigma 8`, `min_area 6`, `max_area 2000`. Without step 3 and
-the HFR floor, every frame reported 566–747 detections with a median HFR
-of 0.002–0.003 px. With them, the frames report 36–202 stars, and the
-HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95, 1.00, 1.35, 2.16
-and 2.49 px). The confirmation frame reports 146 stars at 0.87 px,
-against 2 at the settings that run had to use (`threshold_sigma 10`,
-`min_area 40`). At those settings, all ten frames report the same
-result with and without the two steps. Of the detections the detector
+`threshold_sigma 8`, `min_area 6`, `max_area 2000`, over their
+components (steps 1–8). Without step 3 and the HFR floor, every frame
+reported 566–747 detections with a median component HFR of
+0.002–0.003 px. With them, the frames report 36–202 detections, and
+their component HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95,
+1.00, 1.35, 2.16 and 2.49 px). The confirmation frame reports 146
+detections at 0.87 px, against 2 at the settings that run had to use
+(`threshold_sigma 10`, `min_area 40`). At those settings, all ten
+frames report the same result with and without the two steps. Of the
+detections the detector
 without these steps measures at an HFR of 0.6 px or more (its stars,
 and any hot cluster that large), it keeps 86–99% at bin 1 (2026-09-08
 and 2026-09-26 frames), 97–99% at bin 2, 92–98% at bin 3 and 85–95% at
 bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
+
+**Why the HFR is measured in an aperture.** A component's own HFR is
+capped by the component: a uniform blob of area `A` measures at most
+about `0.4 × √A`. Out of focus a star's light is spread over a blur
+disc, the threshold keeps only its brightest parts, and the component
+is a fraction of the star. On rig2's 2026-09-08 coarse sweep, the frame
+700 steps inside focus holds stars whose disc is about 90 px across (a
+radial profile puts its edge at a radius of 45 px); at
+`threshold_sigma 10` and `min_area 40` the threshold cuts them into
+arcs and spots, whose median HFR is 5.29 px. Measured in apertures, the
+same frame reads 33.8 px. The component HFR also depends on the
+threshold: on the 2026-09-26 sizing sweep, the V-curve fitted over
+component HFRs rises at 2.85 px per 100 steps at `threshold_sigma 8`
+and 3.47 at 10; in apertures it rises at 4.12 and 4.14.
+
+**Why the aperture follows the star.** A fixed radius is too small for
+a defocused star or mostly sky for a focused one. Three times the HFR
+holds nearly all of a star's light at any size: for a Gaussian profile
+it is 3.5σ, which holds 99.8% of it, and for a uniform disc it is 2.1
+radii. An aperture that lies inside a uniform disc measures an HFR of
+`r / √2`, so the next round's radius is 2.1 times larger: from a
+fragment, the aperture grows until it holds the whole star, and the
+centroid of what it holds walks to the star's centre. The factor
+hardly matters: from 2.5 to 5, the sizing sweep's fitted vertex stays
+at the same step, its wing slope between 4.07 and 4.14 px per 100
+steps and its R² between 0.989 and 0.992. A larger factor takes in
+more of the seeing halo and reads the focused HFR a few hundredths
+higher. The background comes from an annulus just outside the
+aperture, not the frame's global mean: over an aperture tens of pixels
+across, an error of a fraction of an ADU per pixel adds up to more
+than a faint star's light and pulls its HFR toward the aperture's
+radius. The differences stay signed for the same reason: clipping
+them at 0 would add the positive half of every pixel's noise.
+
+**Why one star per aperture.** The detector reports components, and a
+defocused star near the threshold is many of them. At
+`threshold_sigma 8` and `min_area 6`, the 2026-09-08 frame 800 steps
+outside focus (`tests/fixtures/star_detection/qhy600m_defocused_crop.fits`
+is a crop of it) splits three of its stars into 20 or more components
+each. Their apertures settle on their star's centre within 0.1 px and
+measure its HFR within 0.01 px. The fragments whose
+aperture does not grow are spots on the flat disc, where the annulus
+lies on the star itself and the aperture flux is a few hundred ADU;
+they settle inside the star's aperture and are dropped with the
+others. The frame reports 83 detections, at a median component HFR of
+1.43 px, and 7 stars, at 37.2–38.9 px; the threshold keeps the other
+four whole. Counting each star once is also
+what gives `star_count` its meaning for `auto_focus`'s sparse gate.
+
+**Why the brightest 20.** A sweep compares frames, so its aggregate
+should come from the same stars in each, and the bright stars are the
+ones that stay detectable across a sweep while the faint ones come and
+go with focus. On rig2's frames the median of the brightest 10, 20 or
+50 stars and of all of them agree within a few hundredths of a pixel
+near focus, and the fitted vertices within a few steps. Twenty, not
+fewer, because a bright artefact lands in the brightest list: the
+2026-09-26 frames at focus hold an extended structure beside a bright
+star, nine detections with component HFRs of 4–92 px and aperture
+fluxes in the frame's top ten. The size cap removes them at focus; where one stays
+under it, ten are needed to move a median of twenty. A flux-weighted
+mean was rejected for the same reason: one object 12 times brighter
+than any star in the 2026-09-26 best-focus frame pulls it from 1.08 to
+1.90 px.
+
+**Why the size cap.** Those structures measure 42–55 px in apertures
+at focus, where the stars measure about 1 px. A cap needs a scale, and
+`max_area` is the caller's statement of how large a star may be: a
+star whose half-flux disc is larger than it is outside that statement.
+A uniform disc of up to twice `max_area` stays under the cap, so a caller
+who sizes `max_area` to the largest blur disc a sweep reaches gets it
+measured. The cap is the only size bound: step 7 does not also drop a
+component above `max_area`, because whether a star is one component or
+many depends on the threshold. The defocused fixture's star is one
+component at `threshold_sigma` 4 to 6 and 32 at 8, and measures
+38.10–38.17 px at each; with components above `max_area` dropped, it
+measured nothing below 8. At focus-model's default `max_area` of 500,
+the rig2 frames whose stars measure 8–10 px lost about half their
+stars to that filter and read 4–7% low.
+
+**Measured on rig2's QHY600M, in apertures.** Each 2026-09 sweep that
+brackets focus, fitted with `focus-model`'s hyperbola over the samples
+the default sparse gate (`min_star_fraction 0.1`) accepts, at
+`max_area 5000`:
+
+| Sweep | Settings | Component HFR: vertex, slope, R² | Aperture HFR: vertex, slope, R² |
+|---|---|---|---|
+| 2026-09-08 fine, 100-step grid | σ 10, area 40 | 29773, 4.09, 0.988 | 29775, 4.64, 0.997 |
+| 2026-09-26 wide (second attempt), 100-step | σ 10, area 40 | 29745, 4.21, 0.978 | 29751, 4.65, 0.996 |
+| 2026-09-26 sized (second attempt), 20-step | σ 10, area 40 | 29741, 3.33, 0.995 | 29741, 4.38, 0.991 |
+| the same | σ 8, area 6 | 29740, 2.96, 0.945 | 29740, 4.22, 0.986 |
+| 2026-09-26 sizing, 25-step | σ 10, area 40 | 29744, 3.47, 0.992 | 29742, 4.14, 0.995 |
+| the same | σ 8, area 6 | 29746, 2.85, 0.950 | 29742, 4.12, 0.990 |
+
+Slopes are in px per 100 steps. In apertures the slope no longer
+depends on the threshold, and the vertex moves by at most six steps,
+inside the ~31-step critical focus zone. The sizing sweep's
+confirmation frame measures 144 stars at 0.96 px at
+`threshold_sigma 8` and `min_area 6`; at the settings that run used it
+still holds 2 stars, at 1.66 px. The 2026-09-08 coarse sweep
+(`threshold_sigma 10`, `min_area 40`), whose wing samples read too
+small:
+
+| Position | 29066 | 29366 | 29666 | 29966 | 30266 | 30566 | 30866 |
+|---|---|---|---|---|---|---|---|
+| Component HFR (detections) | 5.29 (12) | 16.67 (40) | 4.01 (370) | 7.95 (159) | 7.59 (33) | 4.09 (7) | 4.45 (5) |
+| Aperture HFR (stars) | 33.82 (7) | 19.33 (32) | 4.96 (369) | 9.03 (155) | 23.40 (19) | 37.77 (4) | none (0) |
+
+In apertures, the samples 400 and 700 steps inside focus lie on the
+line from the fine sweep's vertex at 4.6–4.7 px per 100 steps, the
+slope that sweep's own V-curve rises at.
 
 **Caveats**:
 - A hot pixel next to a star's body, where a window around it holds
@@ -2823,6 +2992,31 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
 - Neither step needs a large `min_area`. A value chosen to exclude hot
   pixels now only excludes faint and compact stars. A `min_area` in the
   single digits admits every star the threshold finds.
+- Two stars whose apertures overlap are one star (step 10): the
+  brighter one keeps the fainter one's light in its aperture, which
+  raises its HFR. On rig2's fields the stars are hundreds of pixels
+  apart; a crowded field (the Milky Way, a cluster) measures high far
+  from focus, where the apertures are large.
+- A star whose annulus reaches past the frame's edge is not measured:
+  near focus that is a margin of about 11 px, at an HFR of 38 px about
+  175 px.
+- A star whose half-flux disc is larger than `max_area` has no HFR.
+  A sweep that reaches far defocus needs a `max_area` sized to its
+  largest blur disc.
+- Saturated stars are measured and counted, as in step 7, and the
+  brightest stars are the likeliest to saturate. A clipped core reads a
+  larger HFR near focus, so a frame whose brightest twenty saturate
+  measures a flatter bottom to the V-curve. In rig2's 4 s frames, none
+  of the 79 has a saturated star among its brightest twenty, at
+  `threshold_sigma` 8 or 10.
+- A detection that has not settled after 40 rounds is not a star. On
+  rig2's frames those are fragments on the flat part of a defocused
+  star, which is measured from its other fragments.
+- Each fragment of a large defocused star grows its own aperture to
+  the star's size before step 10 drops it. On a development machine,
+  measuring the apertures of rig2's 61-megapixel frame with the most
+  fragments (83 detections, 7 stars at `threshold_sigma 8`) takes
+  1.6 s, against 2.5 s for detection; near focus it takes 0.01–0.13 s.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` provided → MCP error mentioning
@@ -2836,7 +3030,8 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   then `max_area` — so the error message tracks the first thing the user
   needs to fix.
 - Background estimation fails (e.g. all pixels saturated) → MCP error.
-- No stars detected → return successfully with `hfr: null`,
+- No stars measured (none detected, or none whose aperture settles) →
+  return successfully with `hfr: null`,
   `star_count: 0`, `saturated_star_count: 0`, populated background fields.
   Not an error — the caller decides whether that's a failure (focus run)
   or fine (cloudy frame still useful for stats).
@@ -2886,9 +3081,12 @@ overwrite each other on the same document.
 
 #### `detect_stars` Contract
 
-Returns the per-star list `measure_basic` produces internally — useful for
-callers that want star coordinates and fluxes without HFR (centering,
-quality screens, custom plate-solver hints). Also persists the list so
+Returns the detections `measure_basic` finds before it measures them
+(its steps 1–8) — useful for callers that want star coordinates and
+fluxes without HFR (centering, quality screens, custom plate-solver
+hints). They are components, not apertures: a defocused star that
+fragments at the threshold is several detections here and one star in
+`measure_basic` and `measure_stars`. Also persists the list so
 follow-up tools (`measure_stars`) can skip re-detection on the same
 exposure.
 
@@ -2918,12 +3116,13 @@ exposure.
   to set the detection threshold; included so callers know what cut was
   effectively applied.
 
-**Algorithm**: same pipeline `measure_basic` runs internally — sigma-
-clipped background → hot-pixel suppression → Gaussian smoothing (σ ≈
-1 px) → threshold at `mean + threshold_sigma × stddev` → 4-connectivity
-BFS → area / border filter → rejection of a component with no flux
-above the background once its hot pixels are left out →
-intensity-weighted centroiding → the 0.25 px HFR floor. Saturated
+**Algorithm**: the detection steps `measure_basic` runs internally
+(steps 1–8) — sigma-clipped background → hot-pixel suppression →
+Gaussian smoothing (σ ≈ 1 px) → threshold at
+`mean + threshold_sigma × stddev` → 4-connectivity BFS → area / border
+filter → rejection of a component with no flux above the background
+once its hot pixels are left out → intensity-weighted centroiding →
+the 0.25 px floor on the component's HFR. Saturated
 components are flagged, not rejected (same
 rationale as `measure_basic`), and the `measure_basic` caveats apply.
 
@@ -2953,37 +3152,46 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
   (FITS file on disk).
 - `min_area` and `max_area` — required (encode pixel-scale assumptions;
-  same rationale as `measure_basic` and `detect_stars`).
+  same rationale as `measure_basic` and `detect_stars`). As in
+  `measure_basic`, `max_area` bounds a star's half-flux disc, not a
+  component's area.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold.
 - Optional `stamp_half_size` (default `8`) — half-side of the postage
   stamp used for the 2D Gaussian fit. The fit is rejected for any star
   whose stamp would cross the image boundary.
 
 **Output**:
-- `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects:
-  - `x` / `y` — flux-weighted centroid in 0-based pixel coordinates:
-    `x` along the image width (FITS `NAXIS1`), `y` along the height
-    (`NAXIS2`).
-  - `hfr` — empirical half-flux radius (pixels). The field is nullable,
-    but the only star without an HFR is one with no positive flux above
-    the background, which `detect_stars` rejects, so it is never `null`.
+- `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects,
+  one per star `measure_basic` measures (its steps 9–10), brightest
+  first:
+  - `x` / `y` — the centre the star's aperture settled on, in 0-based
+    pixel coordinates: `x` along the image width (FITS `NAXIS1`), `y`
+    along the height (`NAXIS2`).
+  - `hfr` — the star's aperture half-flux radius (pixels). The field is
+    nullable, but a detection without an aperture HFR is not a star, so
+    it is never `null`.
   - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
     fit (pixels), or `null` when the fit fails.
   - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or
     `null` when the fit fails.
-  - `flux` — sum of background-subtracted, non-negative flux (ADU).
-- `star_count` — total stars detected (including those whose fit failed).
+  - `flux` — the star's aperture flux: the sum of its signed,
+    background-subtracted pixels (ADU), the brightness the list is
+    ordered by.
+- `star_count` — number of stars (including those whose fit failed).
+- `hfr` — the aggregate HFR `measure_basic` reports: the median
+  aperture HFR of the 20 brightest stars, or of all of them when there
+  are fewer. `null` when there are no stars. This is the number a focus
+  sweep reads.
 - `median_fwhm` — median across stars whose fit succeeded; `null` when
   no fits converged.
-- `median_hfr` — median empirical HFR; `null` when no stars detected.
+- `median_hfr` — median aperture HFR over every star; `null` when there
+  are no stars.
 - `background_mean` / `background_stddev` — sigma-clipped background.
 
 **Algorithm**:
-1. Sigma-clipped background → `detect_stars` (same pipeline as
-   `measure_basic` and `detect_stars`).
-2. For each detected star:
-   - Empirical HFR over the connected-component pixels (same kernel
-     `measure_basic` aggregates).
+1. Sigma-clipped background → the detections and their aperture
+   measurement, one star per aperture (`measure_basic`'s steps 1–10).
+2. For each star:
    - 2D Gaussian fit on a `(2·stamp_half_size+1)²` postage stamp using
      `rmpfit` (Levenberg-Marquardt). Model:
      `I(x, y) = A · exp(−((x−x0)²/(2σx²) + (y−y0)²/(2σy²))) + B`.
@@ -5417,10 +5625,11 @@ without having to know the focus algorithm.
   as the final move (see
   [Focuser Tool Details](#focuser-tool-details)).
 - `min_area` and `max_area` — required, passed through to each
-  per-frame `measure_basic` call. At extreme defocus, donut-shaped
-  PSFs from the secondary obstruction can span many hundreds of
-  pixels — set `max_area` accordingly so the wings of the V-curve
-  remain measurable.
+  per-frame `measure_basic` call. At extreme defocus, a star's blur
+  disc can span thousands of pixels, and `measure_basic` measures a
+  star only while its half-flux disc fits in `max_area` — set
+  `max_area` accordingly so the wings of the V-curve remain
+  measurable.
 - Optional `binning` (default `"1x1"`, overriding the train's
   `auto_focus.binning` when both are present) — the binning every
   sweep frame is captured at, spelled `"AxB"` and applied by the same
@@ -5444,11 +5653,10 @@ without having to know the focus algorithm.
   `min_star_fraction × max(star_count)` over the sweep is rejected
   as `sparse` and excluded from the fit. The gate is relative to the
   sweep's own best frame, so a field that is sparse everywhere is
-  never gated; only a collapse in detections is — the wings of a
-  wide sweep, where fragments of donuts and hot-pixel clusters are
-  all that pass the area filter, and their HFR (measured over the
-  fragment's own pixels) says nothing about the star. `0` disables
-  the gate.
+  never gated; only a collapse in stars is — the wings of a wide
+  sweep, where only the brightest stars stay measurable and a frame
+  that holds a few of them, or a few hot-pixel clusters, measures
+  whatever those few are. `0` disables the gate.
 - Optional `confirmation_tolerance` (default `0.25`; finite, `≥ 0`)
   — how much worse than the lowest accepted sweep sample the
   confirmation frame's HFR may measure before the fitted position is

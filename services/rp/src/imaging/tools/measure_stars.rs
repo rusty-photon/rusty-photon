@@ -1,8 +1,8 @@
 //! `measure_stars`: per-star photometry and PSF metrics.
 //!
-//! Composes background estimation → star detection → empirical HFR → 2D
-//! Gaussian fit (FWHM, eccentricity) into a single result. Pure logic — no
-//! I/O, no MCP types. The MCP wrapper resolves pixels (cache or FITS) and
+//! Composes background estimation → star detection → the aperture
+//! measurement (HFR, flux, one star per aperture) → 2D Gaussian fit (FWHM,
+//! eccentricity) into a single result. Pure logic — no I/O, no MCP types. The MCP wrapper resolves pixels (cache or FITS) and
 //! serializes the result; this module only computes.
 //!
 //! When the Gaussian fit fails (centroid too close to the edge, divergent
@@ -14,11 +14,11 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 
 use crate::error::{Result, RpError};
+use crate::imaging::analysis::aperture::{aggregate_hfr, measure_in_apertures};
 use crate::imaging::analysis::background::estimate_background;
 use crate::imaging::analysis::fwhm::fit_2d_gaussian;
-use crate::imaging::analysis::hfr::star_hfr;
 use crate::imaging::analysis::pixel::Pixel;
-use crate::imaging::analysis::stars::{detect_stars, DetectionParams};
+use crate::imaging::analysis::stars::{detect, DetectionParams};
 
 /// Default postage-stamp half-size (pixels). 8 ⇒ 17×17 stamp, comfortably
 /// captures a PSF with σ ≤ 4 px (FWHM ≤ ~9 px).
@@ -28,11 +28,12 @@ pub const DEFAULT_STAMP_HALF_SIZE: usize = 8;
 /// the MCP tool — change only with intent.
 #[derive(Debug, Clone, Serialize)]
 pub struct StarMeasurement {
+    /// The centre the star's aperture settled on, along the columns.
     pub x: f64,
+    /// The centre the star's aperture settled on, along the rows.
     pub y: f64,
-    /// Empirical half-flux radius (pixels). Never `None`: `detect_stars`
-    /// rejects every component without one, which is one with no
-    /// positive flux above the background.
+    /// Aperture half-flux radius (pixels). Never `None`: a detection
+    /// without one is not a star.
     pub hfr: Option<f64>,
     /// Geometric-mean FWHM (pixels) from the 2D Gaussian fit. `None` when
     /// the fit failed.
@@ -40,20 +41,25 @@ pub struct StarMeasurement {
     /// PSF eccentricity from the 2D Gaussian fit. `None` when the fit
     /// failed.
     pub eccentricity: Option<f64>,
-    /// Sum of background-subtracted, non-negative flux (ADU).
+    /// Aperture flux: the sum of the aperture's signed,
+    /// background-subtracted pixels (ADU).
     pub flux: f64,
 }
 
 /// Aggregate result of the `measure_stars` pipeline.
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasureStarsResult {
+    /// One per star, brightest first.
     pub stars: Vec<StarMeasurement>,
     pub star_count: u32,
+    /// The aggregate HFR `measure_basic` reports: the median aperture HFR
+    /// of the brightest stars. `None` when there are no stars.
+    pub hfr: Option<f64>,
     /// Median FWHM across stars whose fit succeeded. `None` when no fits
     /// converged (or no stars were detected).
     pub median_fwhm: Option<f64>,
-    /// Median empirical HFR across stars with computable HFR. `None` when
-    /// no stars were detected.
+    /// Median aperture HFR across every star. `None` when there are no
+    /// stars.
     pub median_hfr: Option<f64>,
     pub background_mean: f64,
     pub background_stddev: f64,
@@ -61,9 +67,10 @@ pub struct MeasureStarsResult {
 
 /// Run the measurement pipeline.
 ///
-/// `max_adu` is for saturation flagging inside `detect_stars`; the
-/// per-star saturation count is not surfaced in the result (callers
-/// wanting it call `detect_stars` directly).
+/// `max_area` bounds a star's half-flux disc, not a component's area, as
+/// in `measure_basic`. `max_adu` flags saturation; the per-star
+/// saturation count is not surfaced in the result (callers wanting it
+/// call `detect_stars` directly).
 ///
 /// # Errors
 ///
@@ -84,30 +91,35 @@ pub fn measure_stars<T: Pixel>(
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
-        max_area,
+        max_area: usize::MAX,
         max_adu,
     };
-    let stars = detect_stars(view, &background, &detection);
+    let detected = detect(view, &background, &detection);
+    let stars = measure_in_apertures(view, &detected, background.mean, max_area, max_adu);
 
     let mut measurements: Vec<StarMeasurement> = Vec::with_capacity(stars.len());
     for star in &stars {
-        let hfr = star_hfr(view, star, background.mean);
+        // The peak is the detection's own, an initial amplitude for the fit.
+        let peak = detected
+            .stars
+            .get(star.detection)
+            .map_or(background.mean, |d| d.peak);
         let fit = fit_2d_gaussian(
             view,
-            star.centroid_x,
-            star.centroid_y,
-            star.peak,
+            star.x,
+            star.y,
+            peak,
             background.mean,
             1.5,
             stamp_half_size,
         );
         measurements.push(StarMeasurement {
-            x: star.centroid_x,
-            y: star.centroid_y,
-            hfr,
+            x: star.x,
+            y: star.y,
+            hfr: Some(star.hfr),
             fwhm: fit.map(|f| f.fwhm),
             eccentricity: fit.map(|f| f.eccentricity),
-            flux: star.total_flux,
+            flux: star.flux,
         });
     }
 
@@ -118,6 +130,7 @@ pub fn measure_stars<T: Pixel>(
     Ok(MeasureStarsResult {
         stars: measurements,
         star_count,
+        hfr: aggregate_hfr(&stars),
         median_fwhm,
         median_hfr,
         background_mean: background.mean,
@@ -189,17 +202,18 @@ mod tests {
         );
     }
 
-    /// The tool reports image coordinates: a star at column 60, row 10
-    /// of a 40 × 80 frame comes back as `x ≈ 60`, `y ≈ 10`, with the
-    /// PSF fit converging on that same spot.
+    /// The tool reports image coordinates: a star at column 60, row 20
+    /// of a 40 × 80 frame comes back as `x ≈ 60`, `y ≈ 20`, with the
+    /// PSF fit converging on that same spot. Row 20 leaves the star's
+    /// background annulus inside the frame.
     #[test]
     fn star_x_and_y_are_column_and_row() {
-        let arr = make_gaussian_with_dither(40, 80, 60.0, 10.0, 2.0, 20_000.0, 1000.0);
+        let arr = make_gaussian_with_dither(40, 80, 60.0, 20.0, 2.0, 20_000.0, 1000.0);
         let r = measure_stars(&arr.view(), 5.0, 5, 4096, Some(65535), 8).unwrap();
         assert_eq!(r.star_count, 1);
         let s = &r.stars[0];
         assert!((s.x - 60.0).abs() < 0.5, "x = {}", s.x);
-        assert!((s.y - 10.0).abs() < 0.5, "y = {}", s.y);
+        assert!((s.y - 20.0).abs() < 0.5, "y = {}", s.y);
         assert!(s.fwhm.is_some(), "fit should converge inside the frame");
     }
 
@@ -239,8 +253,8 @@ mod tests {
         // check while keeping the component's bbox off the border is
         // brittle (the threshold-cross radius depends on smoothing + noise
         // and easily makes detect_stars reject the component instead).
-        let arr = make_gaussian_with_dither(32, 32, 16.0, 16.0, 2.0, 20_000.0, 1000.0);
-        let r = measure_stars(&arr.view(), 5.0, 5, 1024, Some(65535), 30).unwrap();
+        let arr = make_gaussian_with_dither(64, 64, 32.0, 32.0, 2.0, 20_000.0, 1000.0);
+        let r = measure_stars(&arr.view(), 5.0, 5, 1024, Some(65535), 70).unwrap();
         assert!(
             r.star_count >= 1,
             "test setup must detect at least one star so fit-failure behavior is exercised \
