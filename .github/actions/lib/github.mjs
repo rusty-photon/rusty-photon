@@ -71,14 +71,17 @@ function nextPage(link) {
 
 /**
  * Every item of a list the GitHub API pages, from `url` on, following each
- * answer's Link header. A next page on another origin than `url`'s is
- * refused, since the token goes with each request.
+ * answer's Link header. With `key`, each answer is an object that holds the
+ * page under that name, as a run's jobs come (`{ total_count, jobs }`). A
+ * next page on another origin than `url`'s is refused, since the token goes
+ * with each request.
  */
-export async function everyPage(what, url, { token, ...options }) {
+export async function everyPage(what, url, { token, key, ...options }) {
   const items = [];
   for (let next = url; next; ) {
     const response = await github(what, next, { token, ...options });
-    items.push(...(await response.json()));
+    const answer = await response.json();
+    items.push(...(key === undefined ? answer : answer[key]));
     next = nextPage(response.headers.get('link'));
     if (next && new URL(next).origin !== new URL(url).origin) {
       throw new Error(`${what} failed: the next page is on ${new URL(next).origin}, not the API's origin`);

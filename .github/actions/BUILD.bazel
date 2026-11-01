@@ -443,7 +443,8 @@ node_test(
 )
 
 # tracking-issue: a scheduled workflow's tracking issue, opened or commented on
-# when a scheduled run fails.
+# when a scheduled run fails, or when one job of it failed. The tests answer
+# the run's jobs with a recorded answer.
 node_test(
     name = "tracking_issue_test",
     size = "small",
@@ -453,6 +454,7 @@ node_test(
         "lib/helpers.mjs",
         "lib/testing.mjs",
         "tracking-issue/issue.mjs",
+        "tracking-issue/testdata/jobs.json",
     ],
 )
 

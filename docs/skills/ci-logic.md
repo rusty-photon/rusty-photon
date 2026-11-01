@@ -561,7 +561,8 @@ rate limit's wait as its `retryAfterMs` for `retry`; a POST or PATCH
 sent once; with `json` or `upload`, a body, such as a release asset's
 bytes; with `missing`, a 404 is no error; with `accept`, the answer in
 another media type, such as a pull request's diff), `everyPage` (every
-item of a paged list, a next page on another origin refused),
+item of a paged list, a next page on another origin refused; with `key`,
+of a list each answer wraps in an object, as a run's jobs come),
 `openIssues` (every page of the open issues with a label, pull requests
 left out) and `commentOrOpen` (the open issue with a label and an exact
 title gets a comment, or one is opened; an issue opened without the
