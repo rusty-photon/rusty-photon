@@ -2720,9 +2720,11 @@ The first analysis tool to implement. Behavioral contract:
    changes by less than 5%. The detection has no HFR, and is not a
    star, when its aperture flux is not positive, when it has not
    settled after 40 rounds, when its annulus reaches past the frame's
-   edge, when its HFR is under the 0.25 px floor, or when `r` grows
-   past `3 × √(max_area / π)`: its half-flux disc is then larger than
-   `max_area`, a star larger than the caller allows one to be.
+   edge, when its HFR is under the 0.25 px floor, or when its HFR is
+   larger than `√(max_area / π)`: its half-flux disc is then larger
+   than `max_area`, a star larger than the caller allows one to be.
+   The size is checked on the settled HFR, and on the way: the rounds
+   stop when `r` grows past `3 × √(max_area / π)`.
 10. One star per aperture. Rank the detections by the flux of the last
     aperture they were measured in, brightest first; one never
     measured, or whose last aperture flux is not positive, takes no
@@ -2731,9 +2733,13 @@ The first analysis tool to implement. Behavioral contract:
     fragments of a defocused star all settle on its centre, and a
     fainter neighbour that close cannot be measured apart from it. A
     detection without an HFR (too large, at the edge, unsettled, under
-    the floor) is kept in this walk although it is not a star, so the spots on a
-    defocused disc that is too large to measure do not stand in for
-    it. The stars are the kept detections that have an HFR.
+    the floor) is kept in this walk although it is not a star, so the
+    spots on a defocused disc that is too large to measure, or too close
+    to the edge, do not stand in for it. One the size cap or the edge
+    stopped while its aperture grew claims the aperture it was growing
+    into, not the smaller one it was last measured in, which can leave
+    part of its star outside. The stars are the kept detections that
+    have an HFR.
 11. Return the aggregate HFR (the median aperture HFR of the 20
     brightest stars, or of all of them when there are fewer, the lower
     and upper middle values averaged for an even count), the star

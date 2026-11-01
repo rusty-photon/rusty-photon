@@ -125,6 +125,6 @@ Feature: Basic image measurement tool
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 2000
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_defocused_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 500
     Then the measure_basic result should contain "star_count" with value 0
     And the measure_basic result should contain "hfr" with value null

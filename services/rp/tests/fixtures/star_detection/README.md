@@ -44,5 +44,9 @@ format as the crop above.
     - The detector reports 32 components, with a median component HFR of
       1.51 px.
     - `measure_basic` reports one star, at an aperture HFR of 38.2 px.
+  - At `max_area` below about 4600 the star's half-flux disc is larger than
+    `max_area`, and `measure_basic` reports no star: the spots on the disc,
+    whose own apertures settle small, lie inside the aperture the disc's
+    fragments were growing into.
   - At `threshold_sigma 5` the disc is one component larger than
     `max_area 5000`, and nothing is detected.

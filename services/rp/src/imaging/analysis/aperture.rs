@@ -140,11 +140,11 @@ pub fn measure_in_apertures<T: Pixel>(
     max_area: usize,
     max_adu: Option<u32>,
 ) -> Vec<MeasuredStar> {
-    let max_radius = APERTURE_FACTOR * half_flux_radius_cap(max_area);
+    let max_hfr = half_flux_radius_cap(max_area);
     let mut rejected = Rejections::default();
     let mut measured: Vec<(usize, Aperture, Verdict)> = Vec::new();
     for (index, star) in detection.stars.iter().enumerate() {
-        let (last, verdict) = follow_star(view, star, &detection.hot, background_mean, max_radius);
+        let (last, verdict) = follow_star(view, star, &detection.hot, background_mean, max_hfr);
         rejected.count(verdict);
         if let Some(aperture) = last {
             measured.push((index, aperture, verdict));
@@ -211,15 +211,20 @@ fn half_flux_radius_cap(max_area: usize) -> f64 {
     u32::try_from(max_area).map_or(f64::INFINITY, |area| (f64::from(area) / PI).sqrt())
 }
 
-/// Refine one detection's aperture round by round. Returns the last
-/// aperture it was measured in, if any, and how the rounds ended.
+/// Refine one detection's aperture round by round. Returns how the
+/// rounds ended and the aperture the detection claims, if any: the one it
+/// settled in, the last one it was measured in when it stopped settling,
+/// or — when the size cap or the frame's edge stopped it while it grew —
+/// the larger one it was growing into, with the last measured flux. A
+/// detection never measured claims nothing.
 fn follow_star<T: Pixel>(
     view: &ArrayView2<T>,
     star: &Star,
     hot: &[(usize, usize)],
     background_mean: f64,
-    max_radius: f64,
+    max_hfr: f64,
 ) -> (Option<Aperture>, Verdict) {
+    let max_radius = APERTURE_FACTOR * max_hfr;
     let (mut x, mut y) = (star.centroid_x, star.centroid_y);
     let component_hfr = star_hfr(view, star, background_mean).unwrap_or(0.0);
     let extent = star
@@ -232,11 +237,12 @@ fn follow_star<T: Pixel>(
         .max(MIN_APERTURE_RADIUS);
     let mut last = None;
     for _ in 0..MAX_ROUNDS {
+        let growing_into = |last: Option<Aperture>| last.map(|a| Aperture { x, y, radius, ..a });
         if radius > max_radius {
-            return (last, Verdict::TooLarge);
+            return (growing_into(last), Verdict::TooLarge);
         }
         let Some(background) = annulus_background(view, hot, x, y, radius) else {
-            return (last, Verdict::Edge);
+            return (growing_into(last), Verdict::Edge);
         };
         let Some(round) = measure_round(view, hot, x, y, radius, background) else {
             return (None, Verdict::NoFlux);
@@ -254,6 +260,8 @@ fn follow_star<T: Pixel>(
         if shift < CENTRE_TOLERANCE && (next_radius - radius).abs() < RADIUS_TOLERANCE * radius {
             let verdict = if round.hfr < MIN_STAR_HFR {
                 Verdict::Floor
+            } else if round.hfr > max_hfr {
+                Verdict::TooLarge
             } else {
                 Verdict::Star
             };
