@@ -145,9 +145,9 @@ pub fn measure_in_apertures<T: Pixel>(
     let mut measured: Vec<(usize, Aperture, Verdict)> = Vec::new();
     for (index, star) in detection.stars.iter().enumerate() {
         let (last, verdict) = follow_star(view, star, &detection.hot, background_mean, max_hfr);
-        rejected.count(verdict);
-        if let Some(aperture) = last {
-            measured.push((index, aperture, verdict));
+        match last {
+            Some(aperture) => measured.push((index, aperture, verdict)),
+            None => rejected.count(verdict),
         }
     }
     measured.sort_by(|a, b| b.1.flux.total_cmp(&a.1.flux).then(a.0.cmp(&b.0)));
@@ -160,6 +160,7 @@ pub fn measure_in_apertures<T: Pixel>(
         if inside {
             rejected.inside_brighter = rejected.inside_brighter.saturating_add(1);
         } else {
+            rejected.count(candidate.2);
             kept.push(candidate);
         }
     }
@@ -232,9 +233,14 @@ fn follow_star<T: Pixel>(
         .iter()
         .filter_map(|&cell| distance(cell, x, y))
         .fold(0.0, f64::max);
+    // The start is capped like any later radius, but is not itself a
+    // verdict on size: a compact star whose component reaches far, along
+    // a diffraction spike or a bloom trail, shrinks to its own aperture
+    // from there.
     let mut radius = (APERTURE_FACTOR * component_hfr)
         .max(extent + 1.0)
-        .max(MIN_APERTURE_RADIUS);
+        .max(MIN_APERTURE_RADIUS)
+        .min(max_radius);
     let mut last = None;
     for _ in 0..MAX_ROUNDS {
         let growing_into = |last: Option<Aperture>| last.map(|a| Aperture { x, y, radius, ..a });
@@ -680,6 +686,23 @@ mod tests {
             1
         );
         assert_eq!(measure(&arr, vec![detection_of(&arr, disc)], 200), []);
+    }
+
+    #[test]
+    fn a_compact_star_whose_component_trails_far_is_measured_at_its_own_size() {
+        // A disc of radius 3 (HFR ≈ 2.1) whose component runs on along a
+        // faint trail to 30 px: its starting radius, 31 px, is past the
+        // cap of `max_area` 100 (3 × 5.6 ≈ 17 px), but its own aperture
+        // is not.
+        let mut arr = flat(100, 100);
+        add_disc(&mut arr, 50.0, 50.0, 3.0, 500);
+        for c in 54..=80 {
+            arr[(50, c)] += 5;
+        }
+        let component = pixels_near(&arr, 50.0, 50.0, 30.0, |_, _| true);
+        let stars = measure(&arr, vec![detection_of(&arr, component)], 100);
+        assert_eq!(stars.len(), 1, "{stars:?}");
+        assert!((stars[0].hfr - 3.0 / 2_f64.sqrt()).abs() < 0.3, "{stars:?}");
     }
 
     #[test]

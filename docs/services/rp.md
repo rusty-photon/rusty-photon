@@ -2708,7 +2708,10 @@ The first analysis tool to implement. Behavioral contract:
 9. Measure each detection in an aperture that follows it. Start at the
    component's centroid with the radius `r` the largest of 3 × its
    component HFR, the distance from the centroid to its furthest pixel
-   plus 1, and 3 px; then, in rounds:
+   plus 1, and 3 px, but no larger than `3 × √(max_area / π)` — a
+   compact star whose component reaches far along a diffraction spike
+   or a bloom trail shrinks to its own aperture from there; then, in
+   rounds:
    1. The local background is the sigma-clipped mean (3σ, at most five
       iterations) of the pixels in the annulus from `r + 2` to
       `r + 2 + max(6, r / 2)` px, hot pixels left out.
@@ -2930,7 +2933,7 @@ small:
 | Position | 29066 | 29366 | 29666 | 29966 | 30266 | 30566 | 30866 |
 |---|---|---|---|---|---|---|---|
 | Component HFR (detections) | 5.29 (12) | 16.67 (40) | 4.01 (370) | 7.95 (159) | 7.59 (33) | 4.09 (7) | 4.45 (5) |
-| Aperture HFR (stars) | 33.84 (6) | 19.33 (32) | 4.96 (369) | 9.03 (155) | 23.40 (19) | 37.77 (4) | none (0) |
+| Aperture HFR (stars) | 33.82 (7) | 19.33 (32) | 4.96 (369) | 9.03 (155) | 23.40 (19) | 37.77 (4) | none (0) |
 
 In apertures, the samples 400 and 700 steps inside focus lie on the
 line from the fine sweep's vertex at 4.6–4.7 px per 100 steps, the

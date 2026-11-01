@@ -80,7 +80,10 @@ pub struct MeasureBasicParams {
     /// error message is consistent with `image_path`/`document_id` cases.
     #[serde(default)]
     pub min_area: Option<usize>,
-    /// Maximum component pixel area. Same rationale as `min_area`.
+    /// The largest star to measure, as the area in pixels of its
+    /// half-flux disc (`π × HFR²`); a larger star has no HFR. It does not
+    /// filter components, as `detect_stars`' does. Same rationale as
+    /// `min_area`.
     #[serde(default)]
     pub max_area: Option<usize>,
 }
@@ -132,7 +135,8 @@ pub struct MeasureStarsParams {
     /// `measure_basic`.
     #[serde(default)]
     pub min_area: Option<usize>,
-    /// Maximum component pixel area. Same rationale.
+    /// The largest star to measure, as the area in pixels of its
+    /// half-flux disc, as in `measure_basic`. Same rationale.
     #[serde(default)]
     pub max_area: Option<usize>,
     /// Half-side of the postage stamp used for the 2D Gaussian fit.
