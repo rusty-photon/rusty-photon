@@ -86,8 +86,8 @@ before relying on this table: the review's prompt opens with a one-line
 summary of its recipe, visible in the review agent's transcript. A
 `high` review's opens with
 `high effort → 8 inline angles → dedup (no verify) → all findings`
-(`≤10 findings` without `--max-findings all`), and one takes about three
-minutes and 94k tokens. Claude can't launch
+(`≤10 findings` without `--max-findings all`); capped at ten findings, one
+takes about three minutes and 94k tokens. Claude can't launch
 `/code-review ultra`, the cloud review; a person types it. If real
 defects keep reaching merge past `high`, move the default up and record
 why here.
@@ -153,7 +153,8 @@ record), most productive first:
 Not findings:
 
 - predicted build, lint or format failures — CI runs Bazel, both clippy
-  passes and `cargo fmt`, and 84 % of such claims on record were harmful;
+  passes and `cargo fmt`, and 84 % of such claims in the Copilot record
+  were harmful;
 - style, naming and phrasing — a rule 16 breach is none of these: it
   withholds what the sentence should say;
 - claims about external behaviour (udev, systemd, GitHub Actions, shell,
@@ -329,8 +330,8 @@ confident.
   documented fieldless enum as `oneOf[].const`. Dumping the actual
   artefact first costs one command.
 - **A claim that code won't compile, lint or format is settled by the
-  gate, not by argument** — run it. 27 of the 32 such claims on record
-  were factually wrong.
+  gate, not by argument** — run it. 27 of the 32 such claims in the
+  Copilot record were factually wrong.
 - **A finding about a test is proved by the test failing.** Break the
   behaviour the test guards and confirm it fails before calling it
   fixed. Fixing a test double can vacuum the tests built on it, so

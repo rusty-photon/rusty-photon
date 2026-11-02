@@ -426,11 +426,12 @@ RF() substitutes it and sidesteps the tree. That covers the `--arg-file`
 values in both spellings: `external/…/_bs.linksearchpaths` for a crates.io
 build script, and bare workspace-relative
 `crates/…/build_script.linksearchpaths` for a first-party path dependency's
-(the qhyccd-rs real/sim doc-test pair shares that runfile and races on it
-whenever both execute on the same runner, exactly one failing per
-attempt). It also covers the rlibs rustdoc itself opens, which arrive inside a
-flag rather than bare: `--extern=<name>=<rlib>` per direct dependency, and the
-documented crate's own rlib as the `<name>=<path>` value of a bare `--extern`.
+(the qhyccd-rs real/sim doc-test pair shares that runfile, and without the
+manifest resolution the two race on it whenever both run on the same runner,
+exactly one failing per attempt). It also covers the rlibs rustdoc itself
+opens, which arrive inside a flag rather than bare: `--extern=<name>=<rlib>`
+per direct dependency, and the documented crate's own rlib as the
+`<name>=<path>` value of a bare `--extern`.
 
 `-L…=<dir>` search paths are deliberately left alone. A directory has no
 manifest entry of its own, and inferring one from a file beneath it is

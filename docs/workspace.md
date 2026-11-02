@@ -112,7 +112,7 @@ the measurement where it is one. A living document links a record only
 where its text would otherwise be disbelieved — the system does
 something that looks wrong at first glance and the record holds the
 evidence — and then by the record's full URL or `docs/` path, never by a
-bare `#1234`. The Documentation Index lists the records without
+bare `#1234`. The Documentation Index lists the records in force without
 retelling them. Everything else a record holds is reached through
 `git log` and the pull request.
 
@@ -866,10 +866,11 @@ workspace `Cargo.toml`.
 member takes `derive_more = { workspace = true }` and needs no per-member
 `features`. That is deliberate rather than lax: feature unification means
 a whole-workspace `cargo` or `bazel` build resolves `display` through
-*some* member regardless, so a missing per-member declaration compiles
-everywhere except `cargo build -p <member>`, which nothing but the
-nightly `cargo hack --feature-powerset` job runs. Declaring it once
-closes that green-PR/red-nightly gap at no cost: `display` adds only
+*some* member regardless, so without the workspace-level feature a
+missing per-member declaration would compile everywhere except
+`cargo build -p <member>`, which nothing but the nightly
+`cargo hack --feature-powerset` job runs. Declaring it once closes that
+green-PR/red-nightly gap at no cost: `display` adds only
 `convert_case` and `unicode-segmentation`, both proc-macro-only.
 
 ## Feature Flags
