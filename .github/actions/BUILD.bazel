@@ -230,7 +230,7 @@ node_test(
     ],
 )
 
-# install-astap: the ASTAP CLI and its D05 star database from SourceForge, and
+# install-astap: the ASTAP CLI and its D20 star database from SourceForge, and
 # the table of pins refresh-astap rewrites.
 node_test(
     name = "install_astap_test",

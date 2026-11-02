@@ -192,7 +192,7 @@ async function check({ file, cli, database, work, fixtures, run, options }) {
         'ADR-005 has the manual steps. The new CLI is checked against the new database.',
     );
   }
-  const stars = path.join(work, 'd05');
+  const stars = path.join(work, 'd20');
   await unpack(zip, stars);
 
   const problem = await solveFixtures({ binary, database: stars, fixtures, dir: path.join(work, 'solve'), run });

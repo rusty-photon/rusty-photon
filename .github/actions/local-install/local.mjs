@@ -32,7 +32,7 @@ import { hostKey } from '../lib/install.mjs';
  */
 export const TOOLS = {
   astap: {
-    about: "ASTAP's CLI and D05 star database, for plate-solver's @requires-astap scenarios",
+    about: "ASTAP's CLI and D20 star database, for plate-solver's @requires-astap scenarios",
     resolve: astap.resolve,
     installAt: astap.installAt,
   },

@@ -165,7 +165,7 @@ ${rows.join('\n')}
 - Upstream shipped a broken release
 - CLI surface changed (e.g. \`-wcs\` or \`-d\` flags renamed)
 - \`.wcs\` sidecar format changed (CRVAL keys renamed, PLTSOLVD card removed)
-- New binary requires a newer D05 database
+- New binary requires a newer D20 database
 
 Workflow run: ${runUrl}`;
 }

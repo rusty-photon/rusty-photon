@@ -338,15 +338,33 @@ churn the issue.
 
 The action's table,
 [`assets.json`](../../.github/actions/install-astap/assets.json), pins
-a SHA-256 for each downloaded ASTAP CLI archive (on 2026-10-19 the pins
-were for ASTAP CLI-2026.09.01, by the Linux x64 binary's banner; the
+a SHA-256 for each downloaded ASTAP CLI archive (on 2026-11-01 the pins
+were for ASTAP CLI-2026.10.30, by the version each binary carries; the
 workflow below has refreshed them since 2026-05) and a separate SHA-256
-for the optional D05 star database (still pinned against the original
-2026-05-02 snapshot — D05 has not rotated). Every download is verified before extraction; mismatch
+for the optional star database, D20 since 2026-11-01 (below). Every download is verified before extraction; mismatch
 fails the action closed. ASTAP's URLs are unversioned ("latest" filenames), so
 upstream rotates the bytes without bumping the URL — the SHA pin
 turns that rotation into a deliberate, reviewed event rather than a
 silent supply-chain drift.
+
+**Why D20, not D05.** CI's M101 fixture is a 1024×1024 crop, 0.42°
+across, below the 0.6° upstream gives as D05's smallest field. D05
+solved it until ASTAP CLI-2026.10.30. That release made star detection
+more sensitive, and on this frame it also picks up H-alpha nebulosity
+as stars (upstream's own diagnosis), which leaves too few D05
+references to match: the hinted and the blind solve both fail. With
+D20, the next denser database, the release solves it hinted (229 stars,
+4 of 4 quads) and blind (in about 3 s), to the known centre. D20 is the
+smallest database that does: D50 is 900 MB, and D80 is not published as
+a zip at all, only as `.deb`, `.pkg` and `.exe` installers. A rig whose
+frames span a degree or more is unaffected and can stay on D05.
+
+**Windows-ARM64's folder.** Upstream published the CLI-2026.10.30
+Windows-ARM64 archive only under `windows_installer/older versions/`,
+and the usual `windows_installer/` path answers 404. The table points
+at the folder that holds it (the archive carries `2026.10.30,
+multi-threaded`, like the other four); move it back once upstream
+does.
 
 **Refresh procedure for the per-OS ASTAP CLI archives** (when
 ASTAP releases an upstream update and the verify step starts
@@ -396,9 +414,9 @@ events](https://docs.github.com/en/actions/security-guides/automatic-token-authe
 A maintainer can close/reopen the auto-PR to wake the PR's CI for
 a redundant signal. The human step is review-and-merge of the
 auto-PR plus the banner-version note (step 5 below). The manual
-steps below remain the fallback for D05 rotations (the workflow
-doesn't auto-refresh D05 yet) or when the auto-refresh itself is
-broken.
+steps below remain the fallback for star database rotations (the
+workflow doesn't auto-refresh the database yet) or when the
+auto-refresh itself is broken.
 
 1. Download each archive listed in the action's per-OS table from
    SourceForge.
@@ -415,18 +433,18 @@ broken.
 5. Land the PR with a brief note of which ASTAP CLI version the new
    bytes correspond to (read from the binary's `astap_cli` banner).
 
-**Refresh procedure for the D05 star database** (when upstream
-rotates `d05_star_database.zip` and the verify step starts failing
-in `plate-solver-smoke` — `install-astap` does **not** download D05,
-so a D05 refresh has to be smoked through `plate-solver-smoke`,
+**Refresh procedure for the D20 star database** (when upstream
+rotates `d20_star_database.zip` and the verify step starts failing
+in `plate-solver-smoke` — `install-astap` does **not** download D20,
+so a D20 refresh has to be smoked through `plate-solver-smoke`,
 which passes `download-database: "true"`):
 
-1. Download `d05_star_database.zip` from SourceForge.
+1. Download `d20_star_database.zip` from SourceForge.
 2. `sha256sum` it (or `shasum -a 256` on macOS).
 3. Update `database.sha256` in
    `.github/actions/install-astap/assets.json`; the action's cache key
    carries the pin, so it moves with it. The refresh reads the pin from
-   the same table, and only warns when the D05 it downloads no longer
+   the same table, and only warns when the D20 it downloads no longer
    matches it.
 4. Push to a PR branch — `plate-solver-smoke` exercises the
    downloader on `ubuntu-latest` / `macos-latest` / `windows-latest`.
@@ -447,13 +465,13 @@ a bad mirror can fail in any way (a bad certificate, a 404 for a file it
 has not synced, a connection dropped mid-body, a stall, a checksum
 mismatch) and the next attempt likely lands on another: five attempts in
 all.
-Each attempt is cut short by a time limit, 2 minutes for the CLI and 5
+Each attempt is cut short by a time limit, 2 minutes for the CLI and 10
 for the database, so the retry gets a chance at a different mirror; a
 mirror slower than the cap is effectively broken, and re-rolling beats
 waiting on it. A crawling mirror never fails on its own, so the
 database's download also drops an attempt slower than 100,000 bytes/s
 over 30 s, about 190 times below a healthy mirror, and starts no attempt
-after 10 minutes. The dropped connection is the case that mattered
+after 20 minutes. The dropped connection is the case that mattered
 when the action ran `curl`: its bare `--retry` did not count one,
 `curl: (56)`, as transient, and only `--retry-all-errors` did.
 `install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason. The
@@ -462,15 +480,15 @@ crashes the process, past any retry, when a mirror closes the connection
 while the body is paused
 ([nodejs/undici#5360](https://github.com/nodejs/undici/issues/5360)).
 
-**The D05 cache cannot be relied on to hide any of this.** The repo's
+**The D20 cache cannot be relied on to hide any of this.** The repo's
 Actions cache sits at GitHub's 10 GB per-repo ceiling, dominated by
 `Swatinem/rust-cache` entries running to hundreds of MB each. The
-103 MB `install-astap-d05-*` entry is touched by one nightly
+400 MB `install-astap-d20-*` entry is touched by one nightly
 workflow, which makes it reliably the least-recently-used thing in
 the store, so it is evicted on a regular cadence and cold runs are
 routine rather than exceptional. Until that quota pressure is
 addressed, treat every `plate-solver-smoke` run as one that may fetch
-~100 MB per OS leg from upstream.
+~400 MB per OS leg from upstream.
 
 That is also why the action takes `download-stagger-seconds` and
 `plate-solver-smoke` sets a distinct value per matrix leg: a cold
@@ -508,7 +526,7 @@ following it by hand. A developer who wants the `@requires-astap`
 scenarios to fire runs the action's own code instead,
 `bazel run //.github/actions:install -- astap` (ADR-022
 Amendment A), which keeps no second table: it installs the CLI and
-the D05 database CI pins into one directory and prints the
+the D20 database CI pins into one directory and prints the
 `ASTAP_BINARY` and `ASTAP_DB_DIR` to set.
 
 ### Smoke results captured during ADR drafting
