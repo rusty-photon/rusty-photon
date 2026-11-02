@@ -202,6 +202,36 @@ test('without verify, a rotated archive is compared and nothing more', async (t)
   assert.deepEqual(runs, []);
 });
 
+// A SourceForge that serves nothing, as a folder upstream no longer files the
+// archive in answers.
+async function emptySite() {
+  const server = await serve((req, res) => {
+    res.statusCode = 404;
+    res.end();
+  });
+  return { server, table: structuredClone(TABLE) };
+}
+
+test('without verify, an archive that cannot be downloaded is an unavailable result that keeps its pin, and the step goes on', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  const { value, stdout, runs, result } = await detectHere(site, { here: 'Linux-ARM64', verify: false });
+  assert.deepEqual(value, { rotated: false, unavailable: true });
+  assert.deepEqual(
+    { ...result, problem: undefined },
+    { runner: RUNNER, archive: ENTRY.archive, pinned: ENTRY.sha256, banner: CROSS_MIRROR, verified: 'unavailable', problem: undefined },
+  );
+  assert.match(result.problem, /404/);
+  assert.ok(stdout.includes(`::warning::${ENTRY.archive} could not be downloaded, so ${RUNNER}'s pin stays: `), stdout);
+  assert.deepEqual(runs, []);
+});
+
+test('with verify, an archive that cannot be downloaded fails the step, as there is no binary to check', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  await assert.rejects(detectHere(site), /404/);
+});
+
 test("verify on another runner's archive is refused before anything is downloaded", async (t) => {
   const site = await sourceForge(GOOD, { pin: OLD_PIN });
   t.after(site.server.close);

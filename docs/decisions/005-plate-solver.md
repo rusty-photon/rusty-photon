@@ -356,15 +356,19 @@ references to match: the hinted and the blind solve both fail. With
 D20, the next denser database, the release solves it hinted (229 stars,
 4 of 4 quads) and blind (in about 3 s), to the known centre. D20 is the
 smallest database that does: D50 is 900 MB, and D80 is not published as
-a zip at all, only as `.deb`, `.pkg` and `.exe` installers. A rig whose
-frames span a degree or more is unaffected and can stay on D05.
+a zip at all, only as `.deb`, `.pkg` and `.exe` installers. Upstream's
+0.6° floor for D05 stands for a rig's own frames: one whose field is
+0.6° or more can stay on D05.
 
 **Windows-ARM64's folder.** Upstream published the CLI-2026.10.30
 Windows-ARM64 archive only under `windows_installer/older versions/`,
 and the usual `windows_installer/` path answers 404. The table points
 at the folder that holds it (the archive carries `2026.10.30,
 multi-threaded`, like the other four); move it back once upstream
-does.
+does. Should upstream move or drop the file first, the refresh does
+not stall on it: the Windows-ARM64 leg only compares, so an archive it
+cannot download keeps its pin and is listed in the proposal, while the
+four verified runners still refresh.
 
 **Refresh procedure for the per-OS ASTAP CLI archives** (when
 ASTAP releases an upstream update and the verify step starts
@@ -401,7 +405,10 @@ human opening the PR from `chore/auto-refresh-astap-shas` (the
 workflow that requests `pull-requests: write` open PRs; it cannot
 approve past the merge gate, which requires a code-owner review. If verification fails on any platform, it
 files an `astap-refresh-blocked` issue instead — that case means
-upstream shipped something broken and a human needs to look. The label
+upstream shipped something broken and a human needs to look. Only the
+Windows-ARM64 leg, which compares and never verifies, may fail to
+download without stopping the run: its pin stays, the proposal lists
+why, and the other runners still refresh. The label
 must exist in the repository: GitHub opens an issue without a label it
 lacks, and says nothing, so the step fails after opening it, and each
 later failure, not finding it, opens another and fails the same way.

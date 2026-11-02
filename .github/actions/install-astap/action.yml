@@ -16,7 +16,7 @@ inputs:
   download-database:
     description: |
       Whether to also download and unpack the D20 star database
-      (~100 MB). Default false because most CI jobs only need to verify
+      (~400 MB). Default false because most CI jobs only need to verify
       the binary, not solve real fields.
     required: false
     default: "false"
@@ -39,7 +39,7 @@ inputs:
       unaffected.
 
       Exists for matrix callers: a cold cache has every OS leg pulling
-      the same ~100 MB from the same upstream in the same second.
+      the same ~400 MB from the same upstream in the same second.
       Giving each leg a distinct offset spreads that out. It does not
       reduce the bytes fetched, only their overlap.
 
