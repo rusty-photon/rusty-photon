@@ -286,6 +286,8 @@ filegroup(
             "**/*.rs",
             "**/*.feature",
             "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
         ],
         allow_empty = True,
     ),

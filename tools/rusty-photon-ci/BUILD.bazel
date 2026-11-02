@@ -128,7 +128,8 @@ _MEMBERS = [
 # toolchain_pins.rs MODULE.bazel and the root Cargo.toml, and pkg_assets.rs the
 # packaging files, among them doctor's Cargo.toml: doctor has no package of its
 # own, it ships in sentinel's. bare_refs.rs reads every member's sources, the
-# root's own files, the workflows and the local actions'. Cargo sets
+# root's own files (this BUILD file among them), the workflows and the local
+# actions'. Cargo sets
 # CARGO_MANIFEST_DIR when it runs a test; here it is relative to the runfiles
 # root the test starts in. rust_toolchain_sha256s.rs's tests `include_str!` the
 # saved channel manifests in testdata/.
@@ -144,6 +145,7 @@ rust_test(
     data = [
         "//:.bazelrc",
         "//:.github/actionlint.yaml",
+        "//:BUILD.bazel",
         "//:Cargo.toml",
         "//:MODULE.bazel",
         "//.github/actions:install-svbony-sdk/svbony-sdk.mjs",
@@ -179,6 +181,8 @@ filegroup(
             "**/*.rs",
             "**/*.feature",
             "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
         ],
         allow_empty = True,
     ),

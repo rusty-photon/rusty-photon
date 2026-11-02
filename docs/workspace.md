@@ -625,11 +625,13 @@ the pull request description.
 
 The tools crate's bare-reference guard
 (`tools/rusty-photon-ci/src/bare_refs.rs`) holds the code to the first
-rule: `bazel test //...` fails on a `#` number in a Rust, JavaScript,
-TOML, Starlark or workflow comment, or anywhere in a feature file,
-outside the units its `PENDING` table lists with the count each still
-holds. A cleanup that lowers a count lowers the entry, and removes it
-at zero; a new number is reworded, never counted.
+rule: `bazel test //...` fails on a `#` number in a comment of a
+workspace member's Rust, TOML or Starlark file, of the root
+`Cargo.toml`, `MODULE.bazel`, `BUILD.bazel` and `.bazelrc`, of a
+workflow, or of the local actions' JavaScript, YAML and Starlark, and
+anywhere in a feature file — unless a row of its `PENDING` table holds
+the file, the number and how often. A cleanup that clears a number
+deletes its row; a new number is reworded, never added.
 
 ### Lints
 

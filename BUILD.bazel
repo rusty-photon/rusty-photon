@@ -38,7 +38,10 @@ exports_files(
 # agree with each other and with the MSRV
 # (tools/rusty-photon-ci/src/toolchain_pins.rs).
 exports_files(
-    ["MODULE.bazel"],
+    [
+        "BUILD.bazel",
+        "MODULE.bazel",
+    ],
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 

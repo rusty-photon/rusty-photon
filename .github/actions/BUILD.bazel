@@ -17,6 +17,8 @@ filegroup(
             "**/*.mjs",
             "**/*.yml",
             "**/*.yaml",
+            "**/*.bzl",
+            "**/*.bazel",
         ],
         allow_empty = True,
     ),
