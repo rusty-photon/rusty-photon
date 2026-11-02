@@ -8,6 +8,21 @@
 
 load(":node_test.bzl", "node_binary", "node_link_test", "node_test")
 
+# Every JavaScript file and action.yml here, which the tools crate's
+# bare-reference guard reads (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.mjs",
+            "**/*.yml",
+            "**/*.yaml",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
 # The helper module every action imports.
 node_test(
     name = "helpers_test",

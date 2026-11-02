@@ -56,3 +56,18 @@ rust_test(
 # link.exe is handed a tree-relative libstd path it cannot open (LNK1181). The
 # one runnable example, `connected_transition`'s, runs in the nightly
 # `cargo test --doc`, and the unit tests pin every row of its table.
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

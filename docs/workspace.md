@@ -623,6 +623,14 @@ opened the issue tracker.
 What changed, and what was wrong before, goes in the commit message and
 the pull request description.
 
+The tools crate's bare-reference guard
+(`tools/rusty-photon-ci/src/bare_refs.rs`) holds the code to the first
+rule: `bazel test //...` fails on a `#` number in a Rust, JavaScript,
+TOML, Starlark or workflow comment, or anywhere in a feature file,
+outside the units its `PENDING` table lists with the count each still
+holds. A cleanup that lowers a count lowers the entry, and removes it
+at zero; a new number is reworded, never counted.
+
 ### Lints
 
 `[workspace.lints.clippy]` in the root `Cargo.toml` denies the routes by which

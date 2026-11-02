@@ -68,7 +68,10 @@ exports_files(
 # remote-cache action's tests check it agrees with.
 exports_files(
     [".bazelrc"],
-    visibility = ["//.github/actions:__pkg__"],
+    visibility = [
+        "//.github/actions:__pkg__",
+        "//tools/rusty-photon-ci:__pkg__",
+    ],
 )
 
 # The coverage job's check poster and the module it imports, which the

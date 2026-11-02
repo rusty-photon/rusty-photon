@@ -186,3 +186,18 @@ filegroup(
     srcs = glob(["pkg/**"]),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
