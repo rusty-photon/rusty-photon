@@ -39,8 +39,8 @@ const BINARY = TABLE.cli[RUNNER].binary;
 // top, the database's its files.
 const CLI_ZIP = zip([{ path: BINARY, data: 'the solver', mode: 0o644 }]);
 const DATABASE_ZIP = zip([
-  { path: 'd05_0101.1476', data: 'tile 1' },
-  { path: 'd05_0201.1476', data: 'tile 2' },
+  { path: 'd20_0101.1476', data: 'tile 1' },
+  { path: 'd20_0201.1476', data: 'tile 2' },
 ]);
 
 // A SourceForge stand-in serving `archives` (file name to bytes) at the paths
@@ -86,7 +86,7 @@ const fast = { delayMs: 1 };
 
 test('the table pins a CLI for each runner ADR-005 names, and the database', () => {
   assert.deepEqual(Object.keys(TABLE.cli).sort(), ['Linux-ARM64', 'Linux-X64', 'Windows-ARM64', 'Windows-X64', 'macOS-ARM64']);
-  assert.equal(TABLE.database.archive, 'd05_star_database.zip');
+  assert.equal(TABLE.database.archive, 'd20_star_database.zip');
   for (const [runner, { binary }] of Object.entries(TABLE.cli)) {
     assert.equal(binary, runner.startsWith('Windows-') ? 'astap_cli.exe' : 'astap_cli', runner);
   }
@@ -119,13 +119,15 @@ test('readTable refuses a table missing what an install needs', () => {
 // --- Choosing the assets ----------------------------------------------------------
 
 test('resolve gives each runner its archive on SourceForge, with its pin and binary', () => {
-  // The URLs the shell built, folder and all.
+  // The URLs the shell built, folder and all, but for Windows-ARM64's: its
+  // folder is where upstream filed CLI-2026.10.30 (ADR-005), and each part
+  // of that path is encoded on its own, so the slash between them stays one.
   const urls = {
     'Linux-X64': 'linux_installer/astap_command-line_version_Linux_amd64.zip',
     'Linux-ARM64': 'linux_installer/astap_command-line_version_Linux_aarch64.zip',
     'macOS-ARM64': 'macOS%20installer/astap_command-line_version_macOS_M1.zip',
     'Windows-X64': 'windows_installer/astap_command-line_version_win64.zip',
-    'Windows-ARM64': 'windows_installer/astap_command-line_version_win11_aarch64.zip',
+    'Windows-ARM64': 'windows_installer/older%20versions/astap_command-line_version_win11_aarch64.zip',
   };
   for (const [runner, at] of Object.entries(urls)) {
     const { cli } = resolve({ runner });
@@ -146,8 +148,8 @@ test('resolve gives each runner its archive on SourceForge, with its pin and bin
 test('resolve gives every runner the same database', () => {
   const { database } = resolve({ runner: 'Linux-ARM64' });
   assert.deepEqual(database, {
-    name: 'd05_star_database.zip',
-    url: `${SERVER}/star_databases/d05_star_database.zip/download`,
+    name: 'd20_star_database.zip',
+    url: `${SERVER}/star_databases/d20_star_database.zip/download`,
     pin: { sha256: TABLE.database.sha256 },
   });
   assert.deepEqual(resolve({ runner: 'Windows-X64' }).database, database);
@@ -157,7 +159,7 @@ test('resolve keys each cache on its archive and pin, so moving a pin misses the
   const { keys } = resolve({ runner: 'Linux-X64' });
   assert.deepEqual(keys, {
     cli: `install-astap-cli-astap_command-line_version_Linux_amd64.zip-${TABLE.cli['Linux-X64'].sha256}`,
-    database: `install-astap-d05-d05_star_database.zip-${TABLE.database.sha256}`,
+    database: `install-astap-d20-d20_star_database.zip-${TABLE.database.sha256}`,
   });
   const moved = structuredClone(TABLE);
   moved.database.sha256 = '0'.repeat(64);
@@ -167,15 +169,16 @@ test('resolve keys each cache on its archive and pin, so moving a pin misses the
 // --- Downloading -------------------------------------------------------------------
 
 test('the database download re-rolls a crawling mirror the way the curl flags did', () => {
-  // --retry 4 --retry-all-errors, --retry-delay 5, --max-time 300,
-  // --retry-max-time 600, --speed-limit 100000 --speed-time 30.
+  // --retry 4 --retry-all-errors, --retry-delay 5, --speed-limit 100000
+  // --speed-time 30. The time limits are twice curl's --max-time 300 and
+  // --retry-max-time 600, for D20's 400 MB where curl fetched D05's 100 MB.
   assert.deepEqual(DATABASE_DOWNLOAD, {
     attempts: 5,
     delayMs: 5_000,
     stallMs: 30_000,
     minBytesPerSecond: 100_000,
-    timeoutMs: 300_000,
-    retryForMs: 600_000,
+    timeoutMs: 600_000,
+    retryForMs: 1_200_000,
     retryAll: true,
   });
   // --retry 4 --retry-all-errors, --retry-delay 5, --connect-timeout 20,
@@ -223,7 +226,7 @@ test('install puts the database in <workspace>/astap-db, its files at the top, a
   try {
     const step = await inStep(() => install({ workspace, cli, database, download: fast }));
     const dir = join(workspace, 'astap-db');
-    assert.deepEqual(readdirSync(dir).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.deepEqual(readdirSync(dir).sort(), ['d20_0101.1476', 'd20_0201.1476']);
     assert.equal(value(step.env, 'ASTAP_DB_DIR'), `${workspace}/astap-db`);
     assert.equal(value(step.output, 'astap-db-dir'), `${workspace}/astap-db`);
     assert.deepEqual(readdirSync(workspace).sort(), ['astap', 'astap-db']);
@@ -238,7 +241,7 @@ test('install takes what the caches restored, and downloads nothing', async () =
   mkdirSync(join(workspace, 'astap'));
   writeFileSync(join(workspace, 'astap', BINARY), 'cached solver');
   mkdirSync(join(workspace, 'astap-db'));
-  writeFileSync(join(workspace, 'astap-db', 'd05_0101.1476'), 'cached tile');
+  writeFileSync(join(workspace, 'astap-db', 'd20_0101.1476'), 'cached tile');
   const waits = [];
   try {
     const step = await inStep(() =>
@@ -257,7 +260,7 @@ test('install takes what the caches restored, and downloads nothing', async () =
     assert.deepEqual(waits, []);
     assert.equal(readFileSync(join(workspace, 'astap', BINARY), 'utf8'), 'cached solver');
     assert.match(step.stdout, /The ASTAP CLI restored from the cache/);
-    assert.match(step.stdout, /The D05 star database restored from the cache/);
+    assert.match(step.stdout, /The D20 star database restored from the cache/);
     assert.equal(value(step.env, 'ASTAP_DB_DIR'), `${workspace}/astap-db`);
   } finally {
     await server.close();
@@ -274,7 +277,7 @@ test('install downloads again what a cache hit left out, with a warning', async 
     assert.equal(server.requests.length, 2);
     assert.match(step.stdout, new RegExp(`::warning::The cache restored .* without ${BINARY.replace('.', '\\.')}`));
     assert.match(step.stdout, /::warning::The cache restored .* without its files/);
-    assert.deepEqual(readdirSync(join(workspace, 'astap-db')).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.deepEqual(readdirSync(join(workspace, 'astap-db')).sort(), ['d20_0101.1476', 'd20_0201.1476']);
   } finally {
     await server.close();
   }
@@ -287,7 +290,7 @@ test('install staggers only a database download, by the seconds it is given', as
   try {
     const step = await inStep(() => install({ workspace: tempDir(), cli, database, stagger: 45, sleep, download: fast }));
     assert.deepEqual(waits, [45_000]);
-    assert.match(step.stdout, /Waiting 45s before the D05 download/);
+    assert.match(step.stdout, /Waiting 45s before the D20 download/);
     // No database, or no stagger: no wait.
     await inStep(() => install({ workspace: tempDir(), cli, stagger: 45, sleep, download: fast }));
     await inStep(() => install({ workspace: tempDir(), cli, database, stagger: 0, sleep, download: fast }));
@@ -348,12 +351,12 @@ test('install refuses a CLI archive without its binary at the top', async () => 
 test('install refuses a database archive with no files at the top', async () => {
   const archives = {
     [TABLE.cli[RUNNER].archive]: CLI_ZIP,
-    [TABLE.database.archive]: zip([{ path: 'd05/' }, { path: 'd05/d05_0101.1476', data: 'tile' }]),
+    [TABLE.database.archive]: zip([{ path: 'd20/' }, { path: 'd20/d20_0101.1476', data: 'tile' }]),
   };
   const { server, cli, database } = await sourceForge(archives);
   const workspace = tempDir();
   try {
-    await inStep(() => assert.rejects(install({ workspace, cli, database, download: fast }), /d05_star_database.zip holds no files at its top/));
+    await inStep(() => assert.rejects(install({ workspace, cli, database, download: fast }), /d20_star_database.zip holds no files at its top/));
     assert.deepEqual(readdirSync(workspace), ['astap']);
   } finally {
     await server.close();
@@ -374,7 +377,7 @@ test('installAt installs the CLI and the database into a new directory and gives
     assert.deepEqual(readdirSync(dir).sort(), [INSTALLED, BINARY, DATABASE_DIR].sort());
     assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the solver');
     if (process.platform !== 'win32') assert.equal(statSync(join(dir, BINARY)).mode & 0o777, 0o755);
-    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d20_0101.1476', 'd20_0201.1476']);
     assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), `ASTAP, ${cli.name} and ${database.name}\n`);
     assert.deepEqual(readdirSync(join(parent, 'opt')), ['astap']);
     assert.deepEqual([step.env, step.path, step.output], ['', '', '']);
@@ -389,12 +392,12 @@ test('installAt replaces an earlier install, which it marked, database and all',
   const dir = tempDir();
   writeFileSync(join(dir, BINARY), 'older');
   mkdirSync(join(dir, DATABASE_DIR));
-  writeFileSync(join(dir, DATABASE_DIR, 'd05_9999.1476'), 'stale tile');
+  writeFileSync(join(dir, DATABASE_DIR, 'd20_9999.1476'), 'stale tile');
   writeFileSync(join(dir, INSTALLED), 'ASTAP, older\n');
   try {
     await inStep(() => installAt(dir, { cli, database }, { download: fast }));
     assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the solver');
-    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d20_0101.1476', 'd20_0201.1476']);
   } finally {
     await server.close();
   }
@@ -426,9 +429,9 @@ for (const [what, archives, refusal] of [
     'the database',
     {
       [TABLE.cli[RUNNER].archive]: CLI_ZIP,
-      [TABLE.database.archive]: zip([{ path: 'd05/' }, { path: 'd05/d05_0101.1476', data: 'tile' }]),
+      [TABLE.database.archive]: zip([{ path: 'd20/' }, { path: 'd20/d20_0101.1476', data: 'tile' }]),
     },
-    /d05_star_database\.zip holds no files at its top/,
+    /d20_star_database\.zip holds no files at its top/,
   ],
 ]) {
   test(`installAt keeps an earlier install when ${what} fails its check, and leaves nothing beside it`, async () => {
@@ -468,7 +471,7 @@ test('installAt downloads each archive as install does, trying another mirror af
   try {
     await inStep(() => installAt(dir, { cli, database }, { download: fast }));
     assert.equal(server.requests.length, 4);
-    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+    assert.deepEqual(readdirSync(join(dir, DATABASE_DIR)).sort(), ['d20_0101.1476', 'd20_0201.1476']);
   } finally {
     await server.close();
   }

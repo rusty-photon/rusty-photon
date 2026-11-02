@@ -1,5 +1,5 @@
 // ASTAP, the plate solver plate-solver runs (ADR-005): which CLI archive each
-// runner takes, and its install, with the D05 star database when a job asks
+// runner takes, and its install, with the D20 star database when a job asks
 // for it, into <workspace>/astap and <workspace>/astap-db on a runner, or
 // both into a directory a developer names.
 //
@@ -69,7 +69,7 @@ function checkTable(table, where) {
 /**
  * The table `text` holds, which `where` names: `cli`, each runner's CLI
  * archive ({ folder, archive, binary, sha256 }), keyed
- * `${RUNNER_OS}-${RUNNER_ARCH}`, and `database`, the D05 archive ({ folder,
+ * `${RUNNER_OS}-${RUNNER_ARCH}`, and `database`, the D20 archive ({ folder,
  * archive, sha256 }). Throws when an entry lacks one.
  */
 export function parseTable(text, where) {
@@ -93,8 +93,11 @@ export const TABLE = readTable();
 
 // --- Choosing the assets ----------------------------------------------------------
 
+// A folder may be a path (`windows_installer/older versions`): each part is
+// encoded on its own, so the slashes between them stay path separators.
 function url(server, { folder, archive }) {
-  return `${server}/${encodeURIComponent(folder)}/${encodeURIComponent(archive)}/download`;
+  const encoded = folder.split('/').map(encodeURIComponent).join('/');
+  return `${server}/${encoded}/${encodeURIComponent(archive)}/download`;
 }
 
 /**
@@ -108,7 +111,7 @@ export function resolve({ runner, table = TABLE, server = SERVER }) {
   return {
     cli,
     database,
-    keys: { cli: cacheKey('astap-cli', [cli]), database: cacheKey('astap-d05', [database]) },
+    keys: { cli: cacheKey('astap-cli', [cli]), database: cacheKey('astap-d20', [database]) },
   };
 }
 
@@ -129,28 +132,29 @@ export function resolve({ runner, table = TABLE, server = SERVER }) {
 export const CLI_DOWNLOAD = { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000, retryAll: true };
 
 /**
- * The database, about 100 MB. A healthy mirror serves it in about 5 s
+ * The database, about 400 MB. A healthy mirror serves it in about 20 s
  * (~19 MB/s), so a floor of 100,000 bytes/s over 30 s sits about 190 times
  * below one and cannot fire on a merely unlucky transfer; a mirror under it
- * is broken, and a new attempt in 30 s beats waiting out the 300 s limit.
- * Without the floor, each attempt on a crawling mirror would take the full
- * 300 s, and two of them would use up the time the attempts have in all. No
- * attempt starts after 10 minutes, so a run of bad mirrors cannot stretch the
- * job unboundedly.
+ * is broken, and a new attempt in 30 s beats waiting out the 600 s limit.
+ * That limit still lets a mirror at about a thirtieth of the healthy rate
+ * finish. Without the floor, each attempt on a crawling mirror would take the
+ * full 600 s, and two of them would use up the time the attempts have in
+ * all. No attempt starts after 20 minutes, so a run of bad mirrors cannot
+ * stretch the job unboundedly.
  */
 export const DATABASE_DOWNLOAD = {
   attempts: 5,
   delayMs: 5_000,
   stallMs: 30_000,
   minBytesPerSecond: 100_000,
-  timeoutMs: 300_000,
-  retryForMs: 600_000,
+  timeoutMs: 600_000,
+  retryForMs: 1_200_000,
   retryAll: true,
 };
 
 /**
  * The longest download-stagger-seconds may ask for. Spacing the legs of a
- * matrix only has to exceed one healthy database download, well under 30 s,
+ * matrix only has to exceed one healthy database download, about 20 s,
  * so a value near this is a typo: a stray digit turning 45 into 450 would
  * otherwise spend runner minutes on nothing, silently.
  */
@@ -263,12 +267,12 @@ export async function install({
 
   const dbDir = path.join(workspace, 'astap-db');
   if (databaseCached && holdsFiles(dbDir)) {
-    io.stdout(`The D05 star database restored from the cache into ${dbDir}\n`);
+    io.stdout(`The D20 star database restored from the cache into ${dbDir}\n`);
   } else {
-    if (databaseCached) warning(`The cache restored ${dbDir} without its files; downloading the D05 star database again`);
+    if (databaseCached) warning(`The cache restored ${dbDir} without its files; downloading the D20 star database again`);
     // Only before a download: a warm cache waits for nothing.
     if (stagger > 0) {
-      io.stdout(`Waiting ${stagger}s before the D05 download, to offset this leg from its siblings\n`);
+      io.stdout(`Waiting ${stagger}s before the D20 download, to offset this leg from its siblings\n`);
       await sleep(stagger * 1_000);
     }
     await installDatabase(database, dbDir, options);

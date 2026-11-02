@@ -449,9 +449,11 @@ unit stays inert until `plate-solver.json` exists.
    Gaia-derived to a similar depth, at increasing star density (and
    size: D05 ≈ 100 MB up to D80 ≈ 1.25 GB). D05 is plenty for typical
    deg-class refractor fields (the reference rig's 360 mm + IMX178
-   ≈ 1.2° × 0.8° solves with it; it is also what CI pins). Go denser
-   (D50/D80) only below ~0.6°, and to W08 for very wide fields
-   (> 20°). Either install the database `.deb` from the same site
+   ≈ 1.2° × 0.8° solves with it). Go denser (D20 and up) below ~0.6°,
+   and to W08 for very wide fields (> 20°). Below ~0.6° this matters
+   more from ASTAP CLI-2026.10.30 on: its more sensitive star
+   detection no longer solves CI's 0.42° M101 crop with D05, which is
+   why CI pins D20. Either install the database `.deb` from the same site
    (confirm where it lands with `dpkg -L`) or unzip the database zip
    into a directory of your choice. Whichever way, `astap_db_directory`
    must point at the *specific* directory holding that database's

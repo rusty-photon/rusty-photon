@@ -4,36 +4,36 @@
       "folder": "linux_installer",
       "archive": "astap_command-line_version_Linux_amd64.zip",
       "binary": "astap_cli",
-      "sha256": "5e7dca28e0e52ad98d4186a01056189e403ba2729bfea9b30f12354436641fe7"
+      "sha256": "5e2229e936fc53587dbacc8b0892822552af275b0c2d6f66b38947e0e41aeb47"
     },
     "Linux-ARM64": {
       "folder": "linux_installer",
       "archive": "astap_command-line_version_Linux_aarch64.zip",
       "binary": "astap_cli",
-      "sha256": "139cebec2abb74f8a3b13f26ac6aec2a1058cab5f83608f2cbaab7eb60bcc622"
+      "sha256": "2e56d79a626c895298d49c9d841d4a449154f5764e2f39eee8bba669fdc6fa35"
     },
     "macOS-ARM64": {
       "folder": "macOS installer",
       "archive": "astap_command-line_version_macOS_M1.zip",
       "binary": "astap_cli",
-      "sha256": "6a59b61c3b9fac987ab5b8241cbd4bffacc05816f58097f52ad1e6bd733cbc45"
+      "sha256": "9c64e6bd5087ce910ff43d56e860a4dcea6abacfd556aca80dcf9eae129096e7"
     },
     "Windows-X64": {
       "folder": "windows_installer",
       "archive": "astap_command-line_version_win64.zip",
       "binary": "astap_cli.exe",
-      "sha256": "e9b94a44bd0f7b60e6e1beeb75951d955815445b965d04c4a61fc6f4c398a3ca"
+      "sha256": "19918dcc91db608b14153b9233e5776e7ca8d5c839cba52a117d559174c01b0c"
     },
     "Windows-ARM64": {
-      "folder": "windows_installer",
+      "folder": "windows_installer/older versions",
       "archive": "astap_command-line_version_win11_aarch64.zip",
       "binary": "astap_cli.exe",
-      "sha256": "c2e1b21b23b85b9a903a930d7273425829f044873eb682aaab4fd5d0bdd3ec59"
+      "sha256": "f3721612830bf0a8d579abff84bbe14e7d68e06c84265ae6393e2487a136ed23"
     }
   },
   "database": {
     "folder": "star_databases",
-    "archive": "d05_star_database.zip",
-    "sha256": "39d59b73cb960fa0956c35162e70b09a8af10ef20a1e8f5cae7b77d48be5ce31"
+    "archive": "d20_star_database.zip",
+    "sha256": "c1cb092cb47563ebf095988358746e0c905a16f6a9b860152bc1caf10b788252"
   }
 }

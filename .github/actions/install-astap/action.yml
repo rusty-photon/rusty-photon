@@ -15,8 +15,8 @@ description: |
 inputs:
   download-database:
     description: |
-      Whether to also download and unpack the D05 star database
-      (~100 MB). Default false because most CI jobs only need to verify
+      Whether to also download and unpack the D20 star database
+      (~400 MB). Default false because most CI jobs only need to verify
       the binary, not solve real fields.
     required: false
     default: "false"
@@ -33,13 +33,13 @@ inputs:
     default: "true"
   download-stagger-seconds:
     description: |
-      Seconds to wait before fetching the D05 star database, and only
+      Seconds to wait before fetching the D20 star database, and only
       when that fetch is actually about to happen (cache miss). Zero —
       the default — means no wait at all, so single-job callers are
       unaffected.
 
       Exists for matrix callers: a cold cache has every OS leg pulling
-      the same ~100 MB from the same upstream in the same second.
+      the same ~400 MB from the same upstream in the same second.
       Giving each leg a distinct offset spreads that out. It does not
       reduce the bytes fetched, only their overlap.
 
@@ -74,7 +74,7 @@ runs:
         path: astap
         key: ${{ steps.resolve.outputs.cli-key }}
 
-    - name: Cache D05 star database
+    - name: Cache D20 star database
       if: inputs.download-database == 'true' && inputs.use-cache != 'false'
       id: database-cache
       uses: actions/cache@v5

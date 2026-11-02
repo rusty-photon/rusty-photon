@@ -347,7 +347,7 @@ above.
   that crawls rather than fails, such as a SourceForge mirror, a caller
   can also set a floor on the rate (`minBytesPerSecond`, measured over the
   stall time) and a time after which no attempt starts (`retryForMs`), as
-  `install-astap` does for its 100 MB database. A failure a later attempt
+  `install-astap` does for its 400 MB database. A failure a later attempt
   would meet again (a 404, a bad certificate) is final, unless the caller
   sets `retryAll` for a pool of mirrors, where the next attempt likely
   reaches another; `install-astap` does, as SourceForge's are one.
