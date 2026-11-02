@@ -56,6 +56,7 @@ tools/rusty-photon-ci/
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
   src/pkg_assets.rs        a guard over the packaging files, likewise
+  src/bare_refs.rs         a guard over the comments in the code, likewise
   testdata/                files the tests include_str!: saved channel
                            manifests, the formulas the shell rendered
 ```
@@ -89,7 +90,10 @@ tools/rusty-photon-ci/
   Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
   relative to the runfiles root. It reads a YAML file with the parser
   (`saphyr`), never line by line: R6's guard started line by line, and
-  each review of it found YAML it misread. No parser in the workspace
+  each review of it found YAML it misread. A guard over comments is the
+  exception, since a parser drops them: `bare_refs.rs` takes a `#`
+  outside quotes that starts the line or follows a space, YAML's own
+  rule, and reads nothing else of the file. No parser in the workspace
   reads Starlark, so the guard over `MODULE.bazel` reads its
   `rust.toolchain` call line by line, in the shape `rust-toolchain-sha256s`
   prints, and fails on any other line inside `versions` and `sha256s`

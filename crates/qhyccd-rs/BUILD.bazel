@@ -166,3 +166,20 @@ rust_doc_test(
     crate = ":qhyccd-rs_sim",
     crate_features = ["simulation"],
 )
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

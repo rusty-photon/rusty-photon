@@ -6,6 +6,8 @@
 //! The crate's tests also guard the repository's own files, each in a module
 //! of its own that only the tests compile.
 
+#[cfg(test)]
+mod bare_refs;
 pub mod brew_formulas;
 pub mod build_msi;
 pub mod build_packages;

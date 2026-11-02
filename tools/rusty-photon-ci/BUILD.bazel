@@ -60,10 +60,76 @@ _SERVICES = [
     "zwo-focuser",
 ]
 
+# Every workspace member, as the root Cargo.toml lists them, whose `sources`
+# filegroup the bare-reference guard reads (src/bare_refs.rs). The guard takes
+# the members from Cargo.toml, so a member missing here fails it.
+_MEMBERS = [
+    "crates/bdd-infra",
+    "crates/qhyccd-rs",
+    "crates/qhyccd-rs/libqhyccd-sys",
+    "crates/rp-auth",
+    "crates/rp-catalog",
+    "crates/rp-ephemeris",
+    "crates/rp-fits",
+    "crates/rp-focus-curve",
+    "crates/rp-guider",
+    "crates/rp-mcp-client",
+    "crates/rp-plate-solver",
+    "crates/rp-targets",
+    "crates/rp-vocabulary",
+    "crates/rusty-photon-camera-core",
+    "crates/rusty-photon-config",
+    "crates/rusty-photon-doctor-checks",
+    "crates/rusty-photon-driver",
+    "crates/rusty-photon-i18n",
+    "crates/rusty-photon-i18n-derive",
+    "crates/rusty-photon-process",
+    "crates/rusty-photon-rolling-stats",
+    "crates/rusty-photon-server-config",
+    "crates/rusty-photon-service-lifecycle",
+    "crates/rusty-photon-setup",
+    "crates/rusty-photon-shared-transport",
+    "crates/rusty-photon-tls",
+    "crates/skywatcher-motor-protocol",
+    "crates/svbony-rs",
+    "crates/svbony-rs/libsvbony-sys",
+    "crates/zwo-rs",
+    "crates/zwo-rs/libzwo-sys",
+    "services/calibrator-flats",
+    "services/doctor",
+    "services/dsd-fp2",
+    "services/filemonitor",
+    "services/focus-model",
+    "services/gemini-powerbox-adv3-driver",
+    "services/pa-falcon-rotator",
+    "services/pa-scops-oag",
+    "services/phd2-guider",
+    "services/planetarium-bridge",
+    "services/plate-solver",
+    "services/polar-align",
+    "services/ppba-driver",
+    "services/qhy-camera",
+    "services/qhy-focuser",
+    "services/rp",
+    "services/sentinel",
+    "services/session-runner",
+    "services/sky-survey-camera",
+    "services/star-adventurer-gti",
+    "services/svbony-camera",
+    "services/ui-htmx",
+    "services/upbv2-driver",
+    "services/zwo-camera",
+    "services/zwo-focuser",
+    "tests/operation-watchdog-e2e",
+    "tools/rusty-photon-ci",
+]
+
 # pool_routing.rs reads the workflows and actionlint's runner labels,
 # toolchain_pins.rs MODULE.bazel and the root Cargo.toml, and pkg_assets.rs the
 # packaging files, among them doctor's Cargo.toml: doctor has no package of its
-# own, it ships in sentinel's. Cargo sets
+# own, it ships in sentinel's. bare_refs.rs reads every member's sources, the
+# root's own files (this BUILD file among them), the workflows and the local
+# actions'. Cargo sets
 # CARGO_MANIFEST_DIR when it runs a test; here it is relative to the runfiles
 # root the test starts in. rust_toolchain_sha256s.rs's tests `include_str!` the
 # saved channel manifests in testdata/.
@@ -77,11 +143,14 @@ rust_test(
     compile_data = glob(["testdata/**"]),
     crate = ":rusty-photon-ci_lib",
     data = [
+        "//:.bazelrc",
         "//:.github/actionlint.yaml",
+        "//:BUILD.bazel",
         "//:Cargo.toml",
         "//:MODULE.bazel",
         "//.github/actions:install-svbony-sdk/svbony-sdk.mjs",
         "//.github/actions:install-zwo-sdk/zwo-sdk.mjs",
+        "//.github/actions:sources",
         "//:packaging_files",
         "//:workflows",
         "//crates/qhyccd-rs/libqhyccd-sys:build.rs",
@@ -91,7 +160,7 @@ rust_test(
     ] + ["//services/%s:Cargo.toml" % service for service in _SERVICES] + [
         "//services/%s:pkg" % service
         for service in _SERVICES
-    ],
+    ] + ["//%s:sources" % member for member in _MEMBERS],
     env = {"CARGO_MANIFEST_DIR": "tools/rusty-photon-ci"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -101,4 +170,21 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
