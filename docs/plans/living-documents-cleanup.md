@@ -22,10 +22,12 @@ in place of saying what is true.
 
 The outcome of this plan: `PENDING` is empty and stays empty; no living
 Markdown file names an issue or pull request by bare number, except the
-four quoted examples in workspace.md § Comments that show what not to
-write; the code files the guard does not read are clean too; every
-passage of history that lived inside a living document is a record in
-`docs/plans/archive/`, led by its status line; and the knowledge the
+four quoted examples in workspace.md (one in § Living documents and
+records, three in § Comments) that show what not to write; the code
+files the guard does not read are clean too; every passage of history
+that lived inside a living document is a record in
+`docs/plans/archive/`, opening with the line that says what it is and
+where it came from; and the knowledge the
 bare numbers used to stand for is stated where the code and the docs
 need it, with a link to a record only where the text would otherwise be
 disbelieved.
@@ -42,9 +44,9 @@ a heading anchor; the guard's own definition).
 |------|-------|-------|
 | Bare numbers in comments the guard reads (Rust, TOML, Starlark, workflow YAML, the actions' JavaScript) and in feature files | the `PENDING` table | 286 occurrences, 202 rows, 120 files |
 | Bare numbers in code files the guard does not read | `crates/rp-catalog/scripts/*.py` (6 in 4 files), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2), `installer/Package.wxs` (1), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1) | 11 occurrences, 8 files |
-| Bare numbers in living Markdown | 39 files; the heaviest are `docs/services/star-adventurer-gti.md` (72), `docs/services/doctor.md` (55), `docs/services/svbony-camera.md` (29), `docs/skills/testing.md` (25), `docs/services/rp.md` (17) | 286 occurrences, of which 4 are workspace.md's quoted examples |
+| Bare numbers in living Markdown | 39 files; the heaviest are `docs/services/star-adventurer-gti.md` (72), `docs/services/doctor.md` (55), `docs/services/svbony-camera.md` (29), `docs/skills/testing.md` (25), `docs/services/rp.md` (17) | 286 occurrences: 60 of them, in 19 files, are the text of a link to the record (`[#607](url)`, `[PR #1298](url)`), which the guard's definition counts as bare too, and 4 are workspace.md's quoted examples |
 | Bare numbers in records | archived plans, active plans, ADRs, validation records, changelogs | 1136 occurrences, 103 files — **not touched** |
-| Full-URL citations of this repository's issues and pull requests in living documents and comments | 24 files; 20 in `docs/services/doctor.md`, most of them section banners | 68 |
+| Full-URL citations of this repository's issues and pull requests in living documents and comments | 24 files; 20 in `docs/services/doctor.md` — three of them section banners, the rest inline citations and the labels of its MVP-scope list | 68 |
 | Lines whose wording suggests narration ("used to", "previously", "no longer", "the old …", "retired", "legacy", "Copilot", "before this" …) | 261 files; the heaviest are `star-adventurer-gti.md` (41), `rp.md` (34), `qhy-camera.md` (28), `svbony-camera.md` (23), `services/qhy-camera/src/camera.rs` (20) | 857 candidate lines; about one in six is narration, by a sample of 45 Rust comment lines |
 
 The narration count is a ceiling for triage, not a target: "retired" and
@@ -69,13 +71,15 @@ list; the census found:
   landed" banners), § Delivery phasing (a mirror of the archived plan's
   phases) and the dated subsections of § Real-hardware validation, whose
   ConformU runs are already in `docs/validation/`.
-- `docs/services/zwo-camera.md` § Delivery phasing and
-  `docs/services/qhy-camera.md` § Delivery phasing (E→C), both mirrors
-  of their plans; `qhy-camera.md` § Implementation notes (v0 deviations
-  from the original design), three hundred lines of "how" decisions
-  framed against a design that is no longer the one above them — the
-  decisions that still describe the service are folded into the
-  sections they belong to, the framing goes to the record.
+- `docs/services/zwo-camera.md` § Delivery phasing, a mirror of its
+  plan; `docs/services/qhy-camera.md` § Delivery phasing (E→C), which
+  mirrors no plan — the service had none in `docs/plans/`, so this
+  section is the only account of its delivery and moves out whole as a
+  record; `qhy-camera.md` § Implementation notes (v0 deviations from
+  the original design), three hundred lines of "how" decisions framed
+  against a design that is no longer the one above them — the decisions
+  that still describe the service are folded into the sections they
+  belong to, the framing goes to the record.
 - `docs/services/phd2-guider.md` § Implementation Phases, a checkbox
   plan that never lived in `docs/plans/`.
 - `docs/services/planetarium-bridge.md`'s two appendices of dated spike
@@ -116,7 +120,10 @@ applied at scale.
      something that looks wrong and the record holds the evidence. Keep
      it as a full URL or a `docs/` path. The 68 existing full URLs get
      the same test; a section banner never qualifies, because a banner
-     names the section, not the issue that built it.
+     names the section, not the issue that built it. A kept citation's
+     link text is words — `[issue 607](url)`, or the behaviour it
+     evidences — never the number: `[#607](url)` reads as bare to the
+     guard and to the final scan alike.
 
 3. **Narration becomes a fact or a counterfactual.** "Used to",
    "previously", "before #N", "the old …" frame the code against a past
@@ -129,12 +136,15 @@ applied at scale.
    when they explain a change.
 
 4. **A record inside a living document moves out whole.** The passage
-   becomes a new file in `docs/plans/archive/`, led by the status line
-   [archiving-plans.md](../skills/archiving-plans.md) prescribes, with
-   the date it was written and what it records; the convention already
-   holds non-plan records
+   becomes a new file in `docs/plans/archive/` that opens the way the
+   two non-plan records already there do
    ([`code-review-record-2026-10.md`](archive/code-review-record-2026-10.md),
-   [`rp-mvp-timeline.md`](archive/rp-mvp-timeline.md)). The text is
+   [`rp-mvp-timeline.md`](archive/rp-mvp-timeline.md)): one line
+   saying it is a record, what it holds, and the file and date it was
+   moved from — "A record, moved whole from `docs/services/<svc>.md` on
+   <date>: …". The `Status: COMPLETE` line of
+   [archiving-plans.md](../skills/archiving-plans.md) is for plans, and
+   an extracted passage is not one. The text is
    moved, not rewritten, and never appended to an existing archived plan
    — a record is not rewritten, and that includes someone else's. The
    living document keeps one present-tense paragraph of what the passage
@@ -143,10 +153,12 @@ applied at scale.
    `docs/validation/` are linked there, not duplicated.
 
 5. **A copied comment is fixed in every copy, in one batch.** The
-   OmniSim loud-reset comment in five `tests/bdd.rs` files and the
-   `acquire()` comments the serial drivers copied from the shared
-   transport are the known cases; a batch that finds another fixes all
-   of it.
+   OmniSim comments the services' `tests/bdd.rs` files copied — the
+   loud-reset diagnostic in `rp` and `calibrator-flats`, the exit-code
+   rule of testing.md § 2.7 in `pa-falcon-rotator` and `qhy-camera` —
+   and the `acquire()` comments the serial drivers copied from the
+   shared transport are the known cases; a batch that finds another
+   fixes all of it.
 
 6. **Tests are named for what they pin.** A test named for a review
    comment or a pull request — `// Regression test for the Copilot
@@ -184,7 +196,8 @@ applied at scale.
     their place; the review (AGENTS.md rule 14) rates a remaining breach
     in text the batch adds `likely · medium · fix`
     ([code-review.md](../skills/code-review.md)). The batch's row below
-    gets its pull request.
+    gets its pull request, and the plan's row in workspace.md's Plans
+    index its new status.
 
 ## Batches
 
@@ -196,12 +209,12 @@ guard and the scan.
 
 | Batch | Scope | Code | Docs | Knowledge homes and records to extract |
 |-------|-------|-----:|-----:|----------------------------------------|
-| B1 | `services/star-adventurer-gti` (61), `crates/skywatcher-motor-protocol` (4); `docs/services/star-adventurer-gti.md` (72), `docs/references/skywatcher-motor-controller-command-set.md` (1), `docs/skills/hardware-validation.md` (1) | 65 | 74 | § Initialisation sequence holds why `:e1` is first; § Connection Lifecycle the startup gate and the moving-mount refusal; § PulseGuide lifecycle the send instant and the carried-forward sample; § Side-of-pier the selector; § Configuration the retired `dec_limits` and `flip_range_hours`. Records out: § Phase status with its Phase 4 findings; the dated probe log under § Real-hardware validation. The heading "Shared transport (Phase E of issue #257)" names the section |
-| B2 | `services/doctor` (37), `services/ui-htmx` (12, nine of them axum's SSE shutdown bug, cited once by URL and linked from the rest), `installer/Package.wxs` (1); `docs/services/doctor.md` (55 bare + 20 URLs), `docs/services/ui-htmx.md` (2), `docs/packaging-windows.md` (3), `installer/README.md` (1) | 50 | 61 | doctor.md § Client-target joins, § ACME convergence and § TLS and auth hold the join rules; their banners lose their issue links. ui-htmx.md states the drivers map the service creates for itself, which doctor, the installer and packaging-windows.md all describe against its history. Record out: doctor.md § MVP scope as a list of delivered issues; the present-tense scope stays |
+| B1 | `services/star-adventurer-gti` (61), `crates/skywatcher-motor-protocol` (4); `docs/services/star-adventurer-gti.md` (72), `docs/references/skywatcher-motor-controller-command-set.md` (1), `docs/skills/hardware-validation.md` (1) | 65 | 74 | § Initialisation sequence holds why `:e1` is first; § Connection Lifecycle the startup gate and the moving-mount refusal; § PulseGuide lifecycle the send instant and the carried-forward sample; § Side-of-pier the selector; § Configuration the retired `dec_limits` and `flip_range_hours`. Records out: § Phase status with its Phase 4 findings; the dated probe log under § Real-hardware validation. The heading "Shared transport (Phase E of issue #257)" names the section. hardware-validation.md's sentence that the design docs "narrate what was learned" goes with the probe log: the record holds the run, the design doc states what the hardware does, and a first run on a platform is linked under § Real-hardware validation as the skill asks |
+| B2 | `services/doctor` (37), `services/ui-htmx` (12, nine of them axum's SSE shutdown bug, cited once by URL and linked from the rest), `installer/Package.wxs` (1); `docs/services/doctor.md` (55, of which 20 are the link texts of its URL citations), `docs/services/ui-htmx.md` (2), `docs/packaging-windows.md` (3), `installer/README.md` (1) | 50 | 61 | doctor.md § Client-target joins, § ACME convergence and § TLS and auth hold the join rules; their banners lose their issue links. ui-htmx.md states the drivers map the service creates for itself, which doctor, the installer and packaging-windows.md all describe against its history. Record out: doctor.md § MVP scope as a list of delivered issues; the present-tense scope stays |
 | B3 | `services/rp` (21), `crates/rp-guider` (5), `crates/rp-plate-solver` (5); `docs/services/rp.md` (17), `services/rp/tests/fixtures/star_detection/README.md` (1) | 31 | 18 | rp.md § `center_on_target` holds the stalled-read timeout and the progress emission; § Equipment the shared `ca_cert` and the per-client `auth`; § Per-frame acquisition facts their own. The two client crates' `BUILD.bazel` and `lib.rs` comments say what the field is for, not which issue added it. Record out: the OmniSim fork's `467.x` release account under § BDD Tests, whose present-tense half (what the fork adds and why) joins `docs/references/omnisim.md` |
-| B4 | `crates/bdd-infra` (20), the loud-reset comment copied into `tests/bdd.rs` of `rp`, `calibrator-flats`, `pa-falcon-rotator` and `qhy-camera` (5), `.github/actions/install-omnisim/omnisim.mjs` (4), the OmniSim lines of `.bazelrc`, `bazel.yml` and `services/rp/BUILD.bazel` (3); `docs/skills/testing.md` (25), `docs/references/omnisim.md` (9) | 32 | 34 | testing.md § 5 and omnisim.md already hold the knowledge — the loud reset, serialised restarts, one private simulator per test process, `ServiceHandle`'s health read — so the comments link the sections and the sections drop the numbers; the flake families testing.md cites by URL are judged one by one |
+| B4 | `crates/bdd-infra` (20), the OmniSim comments copied into `tests/bdd.rs` of `rp`, `calibrator-flats`, `pa-falcon-rotator` and `qhy-camera` (5: the loud reset, the exit-code rule, the park hang), `.github/actions/install-omnisim/omnisim.mjs` (4), the OmniSim lines of `.bazelrc`, `bazel.yml` and `services/rp/BUILD.bazel` (3); `docs/skills/testing.md` (25), `docs/references/omnisim.md` (9) | 32 | 34 | testing.md § 2.7 and § 5 and omnisim.md already hold the knowledge — the exit-code rule, the loud reset, serialised restarts, one private simulator per test process, `ServiceHandle`'s health read — so the comments link the sections and the sections drop the numbers; the flake families testing.md cites by URL are judged one by one |
 | B5 | `crates/rusty-photon-shared-transport` (17), `services/pa-falcon-rotator` (9), `services/qhy-focuser` (3), `services/dsd-fp2`, `services/pa-scops-oag`, `services/ppba-driver` (1 each); `docs/services/upbv2-driver.md` (4), `docs/services/gemini-powerbox-adv3-driver.md` (4), `docs/services/dsd-fp2.md` (3), `docs/services/ppba-driver.md` (2), `docs/services/falcon-rotator.md`, `docs/services/qhy-focuser.md`, `README.md` (1 each) | 32 | 16 | The shared transport has no design doc: the startup gate, the moving-mount refusal, the command lock's run-to-completion and the reconnect ownership live in `shared.rs` comments that cite issues. B5 writes `docs/crates/rusty-photon-shared-transport.md`, shrinks the Shared Crates row to point at it, and makes the adopters' copied `acquire()` comments link it. The "Relationship to issue #1173" sections in upbv2 and gemini state the open design question as a question |
-| B6 | `crates/zwo-rs` (6), `crates/svbony-rs` (2), `crates/qhyccd-rs` (1, the `Audit #11` internal numbering), `services/zwo-camera`, `services/qhy-camera`, `services/svbony-camera` (1 each), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2); `docs/services/svbony-camera.md` (29), `docs/services/zwo-camera.md` (6), `docs/services/qhy-camera.md` (4), `docs/services/sky-survey-camera.md` (1), `docs/svbony-camera-windows-install.md` (1) | 14 | 41 | zwo-camera.md holds the per-sensor `MaxADU` and the departure measurements (`docs/validation/2026-10-06-zwo-camera-departure-linux/`, `docs/validation/2026-10-07-zwo-camera-departure-windows/`), svbony-camera.md the udev rule and the readout ladder. Records out: svbony-camera.md's banner stack and its dated validation subsections (the runs are in `docs/validation/`), the three § Delivery phasing sections (their plans hold the phases), qhy-camera.md § Implementation notes. The Windows install guide says what the MSI ships today. Dual-homed crates cite by URL |
+| B6 | `crates/zwo-rs` (6), `crates/svbony-rs` (2), `crates/qhyccd-rs` (1, the `Audit #11` internal numbering), `services/zwo-camera`, `services/qhy-camera`, `services/svbony-camera` (1 each), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2); `docs/services/svbony-camera.md` (29), `docs/services/zwo-camera.md` (6), `docs/services/qhy-camera.md` (4), `docs/services/sky-survey-camera.md` (1), `docs/svbony-camera-windows-install.md` (1) | 14 | 41 | zwo-camera.md holds the per-sensor `MaxADU` and the departure measurements (`docs/validation/2026-10-06-zwo-camera-departure-linux/`, `docs/validation/2026-10-07-zwo-camera-departure-windows/`), svbony-camera.md the udev rule and the readout ladder. Records out: svbony-camera.md's banner stack and its dated validation subsections (the runs are in `docs/validation/`); zwo-camera.md's and svbony-camera.md's § Delivery phasing, which their archived plans hold, so one present-tense sentence replaces each; qhy-camera.md's § Delivery phasing and § Implementation notes, which no plan holds, so both move out whole. The Windows install guide says what the MSI ships today. Dual-homed crates cite by URL |
 | B7 | `services/phd2-guider` (7), `services/plate-solver` (6) with `plate-solver-smoke.yml` (2), `services/sentinel` (6), `crates/rusty-photon-tls` (4), `crates/rusty-photon-service-lifecycle` (2), `crates/rusty-photon-driver` (1); `docs/skills/service-lifecycle.md` (5), `docs/crates/rusty-photon-service-lifecycle.md` (4), `docs/services/plate-solver.md` (4), `docs/packaging.md` (2), `docs/crates/rusty-photon-setup.md`, `docs/services/phd2-guider.md`, `docs/services/sentinel.md` (1 each) | 28 | 18 | The lifecycle docs say what one `Shutdown` handle guarantees, in the counterfactual form, not what twelve services did before it. sentinel.md holds the degraded-answer rule, plate-solver.md the smoke test's pinned fixture and its timing guard. Record out: phd2-guider.md § Implementation Phases |
 | B8 | `crates/rp-catalog` (3) with its `scripts/*.py` (6), `services/session-runner` (3), `services/focus-model` (2), `crates/rp-focus-curve` (1); `docs/services/planetarium-bridge.md` (4), `docs/services/session-runner.md` (4), `docs/services/focus-model.md` (3), `docs/crates/rp-focus-curve.md` (2) | 15 | 13 | planetarium-bridge.md and the catalog scripts describe the catalog as it is (Messier, NGC, IC, the star layer, the corrected coordinates), not as what one issue widened it to; session-runner.md states the planner contract its three `rp` issues delivered; the focus docs cite the coarse-sweep measurement by its fixture README. Records out: planetarium-bridge.md's two spike appendices |
 | B9 | `MODULE.bazel` (10), `.bazelrc` (7), `Cargo.toml` (1), `check.yml` (6), `bazel.yml` (1), `ui-browser-nightly.yml` (1), `.github/actions/lib/install.mjs` and its test (2), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1); `docs/skills/raspberry-pi-runner.md` (3), `docs/skills/proxmox-runner-pool.md` (2), `docs/skills/babysitting-prs.md` (1), `tools/bazel-cache-worker/README.md` (1), plus `docs/skills/coverage.md` § History and the archive links in workspace.md's living tables | 30 | 7 | The Windows file-system rationale in `MODULE.bazel` and `.bazelrc` stays as rationale with its upstream URLs; the comments in `check.yml` and the pre-commit hook that explain the two clippy passes link [pre-push.md](../skills/pre-push.md), which already holds the reason. Record out: coverage.md's Codecov era. B9 also closes the plan: the guard's doc comment and workspace.md § Comments say `PENDING` is empty and a new number is reworded |
@@ -263,19 +276,31 @@ For the owner, before the batch that needs them.
 - **O3 — archive links in living tables.** The Shared Crates rows for
   `rp-ephemeris`, `rp-catalog` and `rusty-photon-i18n` link archived
   plans "for the original implementation plan"; nothing in those rows
-  needs the link to be believed. Recommended: drop them in B8 and B9,
-  the Plans index rows keep theirs (decision 5).
+  needs the link to be believed, but for `rp-catalog` it is the row's
+  only pointer to a design — the crate has no `docs/crates/` page.
+  Recommended: drop the `rp-ephemeris` and `rusty-photon-i18n` links in
+  B9 (their rows point at a crate doc and a live plan); B8 gives the
+  catalog a design home — a short `docs/crates/rp-catalog.md`, or the
+  section of planetarium-bridge.md that describes its contents and
+  resolution — and the row points there. The Plans index rows keep
+  theirs (decision 5).
 - **O4 — slice and phase labels.** `D2`–`D6b` in doctor.md, `E10`,
   `C1a`, `GO5` in the camera docs and `Phase 4` in the GTi doc are used
   as names by tests, validation records and the code. Recommended: a
   label that something else uses as a name stays as a name; "Phase E
   of issue #257" and a label nothing else uses go.
-- **O5 — the guard and Markdown.** Once the living Markdown is clean,
-  a reader for it in `bare_refs.rs` — with the records' directories
-  and workspace.md's quoted examples exempt — would keep it clean, as
-  the comments are kept. Recommended: file it as an issue when B9
-  merges; until then the review rating (method step 11) is the guard
-  for docs.
+- **O5 — the guard and Markdown.** A reader for Markdown in
+  `bare_refs.rs` — with the records' directories and workspace.md's
+  quoted examples exempt — would keep the living docs clean as the
+  comments are kept. It can come first, seeded with its own rows from
+  this census, so that a doc a batch has cleaned cannot regress while
+  the other batches run; the cost is a second table of some 230 rows
+  and Bazel `data` for every living Markdown file. Or it can come last,
+  as an issue filed when B9 merges, with the review rating (method step
+  11) the only guard for docs until then and B9's final scan catching
+  what slipped past it. Recommended: last, since the rating already
+  rates a breach in added text a fix; first if the batches are expected
+  to run long.
 
 ## Definition of done
 
@@ -283,12 +308,13 @@ For the owner, before the batch that needs them.
   its doc comment, workspace.md § Comments and ci-logic.md describe the
   guard as holding an empty table.
 - A scan of every living Markdown file for a bare issue or pull request
-  number finds the four quoted examples in workspace.md § Comments and
+  number — a link's text included — finds the four quoted examples in
+  workspace.md (§ Living documents and records and § Comments) and
   nothing else; the eight code files the guard does not read are clean.
 - Every passage listed under *Records inside living documents*, and
-  every one a batch found, is a file in `docs/plans/archive/` with the
-  status-header convention, and the living document it came from holds
-  one present-tense paragraph in its place.
+  every one a batch found, is a file in `docs/plans/archive/` opening
+  with the record line of method step 4, and the living document it
+  came from holds one present-tense paragraph in its place.
 - `docs/crates/rusty-photon-shared-transport.md` exists and the Shared
   Crates row points at it.
 - Every batch row in the status table names its merged pull request(s),
