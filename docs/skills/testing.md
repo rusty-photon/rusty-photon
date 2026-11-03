@@ -2294,15 +2294,16 @@ Put the deadline on tokio's clock and the test on paused time:
   replies.** When the runtime parks, the paused clock polls I/O once
   without waiting. If nothing is ready it jumps to the next timer, so a
   loopback reply the kernel has not reported yet loses to whatever timeout
-  is pending. Linux has usually reported it; the macOS runners often had
-  not. `wait_until_ready`'s deadline test (`crates/bdd-infra/src/tls_auth.rs`)
-  expected 60 attempts against a canned 503 and got between 4 and 22 on
-  macOS, the rest lost to the 10 s attempt timeout in virtual time. A peer
-  that answers 2 ms late from another thread reproduces it on Linux: 3
-  attempts. Split the timed loop from the I/O, test the loop against a
-  probe that opens no socket (`retry_until_ready` there), and test the I/O
-  on real time. A paused-time test whose peer is meant to stay silent is
-  fine: there the jump to the timeout is the behaviour under test.
+  is pending. Linux has usually reported it by then; the macOS runners
+  often have not. Run `wait_until_ready`'s loop on paused time against a
+  canned 503 on loopback, and it makes 60 attempts on Linux but between 4
+  and 22 on macOS, the rest lost to its 10 s attempt timeout in virtual
+  time. A peer that answers 2 ms late from another thread gives the same
+  loss on Linux: 3 attempts. Split the timed loop from the I/O, test the
+  loop against a probe that opens no socket (`retry_until_ready` in
+  `crates/bdd-infra/src/tls_auth.rs`), and test the I/O on real time. A
+  paused-time test whose peer is meant to stay silent is fine: there the
+  jump to the timeout is the behaviour under test.
 
 A CPU hog does not reproduce this class of flake, because the scheduler still
 runs a waking thread promptly: forty busy loops on the test's CPU gave 0
