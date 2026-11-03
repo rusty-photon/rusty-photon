@@ -1,9 +1,9 @@
 //! The V-curve sweep (docs/services/focus-model.md § The sweep).
 //!
-//! The grid and its clamp, the sparse gate, the hyperbolic fit with its
-//! bound and its threshold, the confirmation frame and the bounded
-//! retry — the semantics `rp`'s capture sweep has today, the fit aside,
-//! run here through `rp`'s primitives. The curve itself is
+//! The grid and its clamp, the star list each attempt measures at every
+//! frame, the two-star gate, the hyperbolic fit with its bound and its
+//! threshold, the confirmation frame and the bounded retry, run here
+//! through `rp`'s primitives. The curve itself is
 //! `rp-focus-curve`'s, shared with `rp`'s guide-train sweep. The
 //! measurement side stays `rp`'s: this module talks to it through
 //! [`SweepOps`], which `workflow.rs` implements over the MCP client and
@@ -22,12 +22,66 @@ use crate::error::FocusModelError;
 /// configuration that would tie the rig up for hours.
 pub const MAX_GRID_POINTS: usize = 1000;
 
+/// The fewest listed stars a sample, or the confirmation frame, must
+/// measure: one star's HFR is that star's, not the focus's.
+pub const MIN_SAMPLE_STARS: u32 = 2;
+
+/// The list keeps the reference frame's stars whose HFR lies within this
+/// fraction of the frame's median HFR of it (`CCDciel`'s filter).
+pub const LIST_HFR_BAND: f64 = 0.5;
+
 /// Why a sweep sample was excluded from the fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rejection {
-    /// The sample's star count fell below the sparse gate.
+    /// The sample measured fewer than [`MIN_SAMPLE_STARS`] listed stars.
     Sparse,
+}
+
+/// A star an attempt measures at every frame, where it was last seen.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ListedStar {
+    pub x: f64,
+    pub y: f64,
+    /// The radius of the aperture it was last measured in.
+    pub radius: f64,
+}
+
+/// A star the reference frame measured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReferenceStar {
+    pub x: f64,
+    pub y: f64,
+    pub radius: f64,
+    pub hfr: f64,
+}
+
+/// What an attempt's reference frame detected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceFrame {
+    pub document_id: String,
+    pub stars: Vec<ReferenceStar>,
+}
+
+/// An attempt's reference frame, as the result and the record keep it:
+/// where it was taken and how many stars it listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reference {
+    pub position: i32,
+    pub document_id: String,
+    pub listed: usize,
+}
+
+/// Why the confirmation frame was not accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationRejection {
+    /// No listed star measured.
+    Starless,
+    /// Fewer than [`MIN_SAMPLE_STARS`] listed stars measured.
+    Sparse,
+    /// Worse than the lowest accepted sample by more than the tolerance.
+    Worse,
 }
 
 /// One measured point of the sweep, as the record keeps it.
@@ -72,6 +126,8 @@ pub struct Confirmation {
     pub hfr: Option<f64>,
     pub star_count: u32,
     pub accepted: bool,
+    /// Why it was not accepted; `None` when it was.
+    pub rejected: Option<ConfirmationRejection>,
 }
 
 /// Walk order of the sweep grid: the focuser's backlash approach
@@ -92,7 +148,6 @@ pub struct SweepParams {
     pub step_size: i32,
     pub half_width: i32,
     pub min_fit_points: usize,
-    pub min_star_fraction: f64,
     /// A fit whose R² falls below this is `poor_fit`; `None` enforces
     /// nothing.
     pub min_fit_r_squared: Option<f64>,
@@ -206,8 +261,8 @@ impl Retry {
 }
 
 /// One attempt that failed to fit, as the run records it: why, where
-/// its grid was centred, what the gate left of it, and what the run did
-/// next.
+/// its grid was centred, how many stars its reference frame listed, what
+/// the gate left of it, and what the run did next.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailedAttempt {
     pub attempt: u32,
@@ -215,6 +270,10 @@ pub struct FailedAttempt {
     /// The failure in words.
     pub error: String,
     pub centre: i32,
+    /// The stars the attempt's reference frame listed; 0 made every point
+    /// of the attempt starless.
+    #[serde(default)]
+    pub listed: usize,
     /// How many of the run's curve points this attempt measured: the
     /// run keeps every attempt's, in order, so the counts split them.
     pub points: usize,
@@ -239,6 +298,8 @@ pub enum SweepFailure {
         error: FitError,
         attempts: u32,
         attempts_log: Vec<FailedAttempt>,
+        /// The last attempt's reference frame.
+        reference: Option<Reference>,
         curve_points: Vec<CurvePoint>,
     },
     /// A grid that cannot be walked, before any motion.
@@ -252,6 +313,9 @@ pub enum SweepFailure {
     Rig {
         error: Box<FocusModelError>,
         attempts_log: Vec<FailedAttempt>,
+        /// The reference frame of the attempt that was running, when it
+        /// had taken one.
+        reference: Option<Reference>,
         curve_points: Vec<CurvePoint>,
     },
 }
@@ -273,6 +337,8 @@ pub struct SweepOutcome {
     pub wing_slope: Option<f64>,
     pub confirmed: bool,
     pub confirmation: Confirmation,
+    /// The reference frame of the attempt that produced this outcome.
+    pub reference: Reference,
     pub curve_points: Vec<CurvePoint>,
 }
 
@@ -288,12 +354,20 @@ pub struct SweepOutcome {
 pub trait SweepOps: Send + Sync {
     /// Move the focuser and return the read-back position.
     async fn move_focuser(&self, position: i32) -> Result<i32, FocusModelError>;
-    /// Capture and measure at the current position.
-    async fn measure(&self) -> Result<Measurement, FocusModelError>;
+    /// Capture at the current position and detect its stars: an
+    /// attempt's reference frame.
+    async fn reference(&self) -> Result<ReferenceFrame, FocusModelError>;
+    /// Capture at the current position and measure the listed stars,
+    /// leaving in `list` where each was seen for the next frame. An empty
+    /// list measures nothing, and the frame is still captured.
+    async fn measure(&self, list: &mut Vec<ListedStar>) -> Result<Measurement, FocusModelError>;
     /// The caller's cancellation, checked between primitive calls.
     fn check_cancelled(&self) -> Result<(), FocusModelError>;
     /// One `notifications/progress` tick.
     async fn tick(&self, position: i32, measurement: &Measurement);
+    /// The `notifications/progress` tick of a reference frame, naming the
+    /// stars it listed.
+    async fn tick_reference(&self, position: i32, listed: usize);
 }
 
 /// A measured HFR the fit may use: `None` for a starless frame and for
@@ -304,30 +378,43 @@ pub fn finite_hfr(hfr: Option<f64>) -> Option<f64> {
     hfr.filter(|value| value.is_finite())
 }
 
-/// The sparse gate's threshold for a sweep whose densest frame counted
-/// `max_stars` stars.
+/// The stars of a reference frame an attempt measures at every frame.
+///
+/// Those whose HFR lies within [`LIST_HFR_BAND`] of the frame's median
+/// HFR of it, which leaves out the saturated cores of a frame at focus,
+/// reading large, and hot pixels and artefacts, reading small.
 #[must_use]
-pub fn sparse_threshold(max_stars: u32, min_star_fraction: f64) -> f64 {
-    min_star_fraction * f64::from(max_stars)
+pub fn star_list(stars: &[ReferenceStar]) -> Vec<ListedStar> {
+    let mut hfrs: Vec<f64> = stars.iter().map(|star| star.hfr).collect();
+    hfrs.sort_by(f64::total_cmp);
+    let middle = hfrs.len() / 2;
+    let median = match (
+        hfrs.get(middle),
+        middle.checked_sub(1).and_then(|i| hfrs.get(i)),
+    ) {
+        (Some(&upper), Some(&lower)) if hfrs.len().is_multiple_of(2) => f64::midpoint(lower, upper),
+        (Some(&upper), _) => upper,
+        (None, _) => return Vec::new(),
+    };
+    stars
+        .iter()
+        .filter(|star| (star.hfr - median).abs() < LIST_HFR_BAND * median)
+        .map(|star| ListedStar {
+            x: star.x,
+            y: star.y,
+            radius: star.radius,
+        })
+        .collect()
 }
 
-/// Mark every measurable sample below the gate as [`Rejection::Sparse`]
-/// and return the threshold applied, which the confirmation frame is
-/// held to as well.
-pub fn apply_sparse_gate(points: &mut [CurvePoint], min_star_fraction: f64) -> f64 {
-    let max_stars = points
-        .iter()
-        .filter(|p| p.hfr.is_some())
-        .map(|p| p.star_count)
-        .max()
-        .unwrap_or(0);
-    let threshold = sparse_threshold(max_stars, min_star_fraction);
+/// Mark every measurable sample with fewer than [`MIN_SAMPLE_STARS`]
+/// listed stars measured as [`Rejection::Sparse`].
+pub fn apply_star_floor(points: &mut [CurvePoint]) {
     for point in points.iter_mut().filter(|p| p.hfr.is_some()) {
-        if f64::from(point.star_count) < threshold {
+        if point.star_count < MIN_SAMPLE_STARS {
             point.rejected = Some(Rejection::Sparse);
         }
     }
-    threshold
 }
 
 /// The lowest-HFR sample; ties go to the denser frame.
@@ -340,20 +427,22 @@ pub fn lowest_sample(samples: &[(i32, f64, u32)]) -> Option<(i32, f64, u32)> {
     })
 }
 
-/// The confirmation verdict: the frame has stars, passes the sweep's
-/// gate, and measures no worse than the best accepted sample by more
-/// than `tolerance`.
+/// The confirmation verdict, `None` when accepted: the frame measures
+/// at least [`MIN_SAMPLE_STARS`] listed stars, and no worse than the best
+/// accepted sample by more than `tolerance`.
 #[must_use]
-pub fn confirmation_accepted(
+pub fn confirmation_verdict(
     hfr: Option<f64>,
     star_count: u32,
-    gate_threshold: f64,
     lowest_hfr: f64,
     tolerance: f64,
-) -> bool {
-    hfr.is_some_and(|hfr| {
-        f64::from(star_count) >= gate_threshold && hfr <= lowest_hfr * (1.0 + tolerance)
-    })
+) -> Option<ConfirmationRejection> {
+    match hfr {
+        None => Some(ConfirmationRejection::Starless),
+        Some(_) if star_count < MIN_SAMPLE_STARS => Some(ConfirmationRejection::Sparse),
+        Some(hfr) if hfr > lowest_hfr * (1.0 + tolerance) => Some(ConfirmationRejection::Worse),
+        Some(_) => None,
+    }
 }
 
 /// Ordinary least-squares slope of HFR against position, in pixels per
@@ -739,7 +828,6 @@ struct FitStage {
     best_position: i32,
     best_hfr: f64,
     r_squared: f64,
-    gate_threshold: f64,
     lowest_position: i32,
     lowest_hfr: f64,
     samples_used: usize,
@@ -756,16 +844,15 @@ fn gate_and_fit(
     curve_points: &mut [CurvePoint],
     params: SweepParams,
 ) -> Result<FitStage, FitError> {
-    let gate_threshold = apply_sparse_gate(curve_points, params.min_star_fraction);
+    apply_star_floor(curve_points);
     let accepted: Vec<(i32, f64, u32)> = curve_points
         .iter()
         .filter_map(CurvePoint::accepted_sample)
         .collect();
     debug!(
-        gate_threshold,
         accepted = accepted.len(),
         rejected_sparse = curve_points.iter().filter(|p| p.rejected.is_some()).count(),
-        "sparse gate applied"
+        "star floor applied"
     );
     if accepted.len() < params.min_fit_points {
         return Err(FitError::NotEnoughStars {
@@ -808,19 +895,52 @@ fn gate_and_fit(
         best_position,
         best_hfr: fit.curve.minimum,
         r_squared: fit.r_squared,
-        gate_threshold,
         lowest_position,
         lowest_hfr,
         samples_used: accepted.len(),
     })
 }
 
-/// One walk of `grid`: move, capture, measure at every position,
-/// pushing each measured point into `curve_points` as it is taken so a
-/// failure part-way leaves the caller the samples it already has.
+/// An attempt's reference frame at its centre, and the list it gives:
+/// the first attempt finds the focuser there already, a retry moves to
+/// its own centre first.
+async fn take_reference<O: SweepOps + ?Sized>(
+    ops: &O,
+    centre: i32,
+    first: bool,
+) -> Result<(Reference, Vec<ListedStar>), FocusModelError> {
+    ops.check_cancelled()?;
+    let position = if first {
+        centre
+    } else {
+        ops.move_focuser(centre).await?
+    };
+    ops.check_cancelled()?;
+    let frame = ops.reference().await?;
+    let list = star_list(&frame.stars);
+    ops.tick_reference(position, list.len()).await;
+    debug!(
+        position,
+        detected = frame.stars.len(),
+        listed = list.len(),
+        "reference frame measured"
+    );
+    let reference = Reference {
+        position,
+        document_id: frame.document_id,
+        listed: list.len(),
+    };
+    Ok((reference, list))
+}
+
+/// One walk of `grid`: move, capture, measure the listed stars at every
+/// position, pushing each measured point into `curve_points` as it is
+/// taken so a failure part-way leaves the caller the samples it already
+/// has.
 async fn walk<O: SweepOps + ?Sized>(
     ops: &O,
     grid: &[i32],
+    list: &mut Vec<ListedStar>,
     curve_points: &mut Vec<CurvePoint>,
 ) -> Result<(), FocusModelError> {
     for position in grid {
@@ -831,7 +951,7 @@ async fn walk<O: SweepOps + ?Sized>(
         // taken at.
         let reached = ops.move_focuser(*position).await?;
         ops.check_cancelled()?;
-        let measurement = ops.measure().await?;
+        let measurement = ops.measure(list).await?;
         ops.tick(reached, &measurement).await;
         curve_points.push(CurvePoint {
             position: reached,
@@ -844,33 +964,34 @@ async fn walk<O: SweepOps + ?Sized>(
     Ok(())
 }
 
-/// Move to the fitted vertex, measure the confirmation frame, and
-/// settle on the better of the two measured positions.
+/// Move to the fitted vertex, measure the confirmation frame on the
+/// list, and settle on the better of the two measured positions.
 async fn confirm<O: SweepOps + ?Sized>(
     ops: &O,
     params: SweepParams,
     stage: FitStage,
+    list: &mut Vec<ListedStar>,
 ) -> Result<(Confirmation, i32, f64), FocusModelError> {
     ops.check_cancelled()?;
     let moved_to = ops.move_focuser(stage.best_position).await?;
     ops.check_cancelled()?;
-    let measurement = ops.measure().await?;
+    let measurement = ops.measure(list).await?;
     ops.tick(moved_to, &measurement).await;
     let hfr = finite_hfr(measurement.hfr);
-    let accepted = confirmation_accepted(
+    let rejected = confirmation_verdict(
         hfr,
         measurement.star_count,
-        stage.gate_threshold,
         stage.lowest_hfr,
         params.confirmation_tolerance,
     );
+    let accepted = rejected.is_none();
     debug!(
         best_position = stage.best_position,
         confirmation_hfr = ?hfr,
         confirmation_stars = measurement.star_count,
         lowest_position = stage.lowest_position,
         lowest_hfr = stage.lowest_hfr,
-        accepted,
+        ?rejected,
         "confirmation frame measured"
     );
     let confirmation = Confirmation {
@@ -878,6 +999,7 @@ async fn confirm<O: SweepOps + ?Sized>(
         hfr,
         star_count: measurement.star_count,
         accepted,
+        rejected,
     };
     let (position, final_hfr) = if let (true, Some(hfr)) = (accepted, hfr) {
         (moved_to, hfr)
@@ -895,7 +1017,7 @@ async fn confirm<O: SweepOps + ?Sized>(
             // position at all, which is a failed sweep, not a
             // fallback wearing another position's focus quality.
             ops.check_cancelled()?;
-            let measurement = ops.measure().await?;
+            let measurement = ops.measure(list).await?;
             ops.tick(position, &measurement).await;
             let measured = finite_hfr(measurement.hfr).ok_or_else(|| {
                 FocusModelError::Workflow(format!(
@@ -910,8 +1032,11 @@ async fn confirm<O: SweepOps + ?Sized>(
     Ok((confirmation, position, final_hfr))
 }
 
-/// Run the V-curve around `centre`: walk, gate, fit, confirm, and
-/// retry a failed fit while attempts remain.
+/// Run the V-curve around `centre`, where the focuser is when it starts.
+///
+/// Each attempt takes a reference frame, walks the grid measuring the
+/// stars it listed, gates, fits and confirms; a failed fit is retried
+/// while attempts remain.
 ///
 /// Every point the run measures is kept, attempt by attempt, and rides
 /// out on the outcome or the failure: a run that a device error or a
@@ -947,12 +1072,24 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
             grid_len = grid.len(),
             "sweep starting"
         );
+        let (reference, mut list) = match take_reference(ops, centre, attempts == 1).await {
+            Ok(taken) => taken,
+            Err(error) => {
+                return Err(SweepFailure::Rig {
+                    error: Box::new(error),
+                    attempts_log,
+                    reference: None,
+                    curve_points: measured,
+                })
+            }
+        };
         let mut curve_points = Vec::with_capacity(grid.len());
-        if let Err(error) = walk(ops, &grid, &mut curve_points).await {
+        if let Err(error) = walk(ops, &grid, &mut list, &mut curve_points).await {
             measured.append(&mut curve_points);
             return Err(SweepFailure::Rig {
                 error: Box::new(error),
                 attempts_log,
+                reference: Some(reference),
                 curve_points: measured,
             });
         }
@@ -960,7 +1097,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
         let error = match gate_and_fit(&mut curve_points, params) {
             Ok(stage) => {
                 let wing_slope = wing_slope(&curve_points);
-                let confirmed = confirm(ops, params, stage).await;
+                let confirmed = confirm(ops, params, stage, &mut list).await;
                 measured.append(&mut curve_points);
                 let (confirmation, position, hfr) = match confirmed {
                     Ok(confirmed) => confirmed,
@@ -968,6 +1105,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                         return Err(SweepFailure::Rig {
                             error: Box::new(error),
                             attempts_log,
+                            reference: Some(reference),
                             curve_points: measured,
                         })
                     }
@@ -984,6 +1122,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                     wing_slope,
                     confirmed: confirmation.accepted,
                     confirmation,
+                    reference,
                     curve_points: measured,
                 });
             }
@@ -992,35 +1131,15 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
 
         // The retry reads the attempt that just failed, before its
         // points join the run's.
-        let plan = (attempts < params.max_attempts).then(|| {
-            retry_centre(
-                centre,
-                &error,
-                &curve_points,
-                params.half_width,
-                params.bounds(),
-            )
-        });
-        let (retry, next_centre, next_grid) =
-            match plan.map(|plan| (plan, sweep_grid(plan.centre, params))) {
-                Some((plan, Ok(next_grid))) => (plan.retry, Some(plan.centre), Some(next_grid)),
-                Some((plan, Err(_))) => (Retry::GridTooSmall, Some(plan.centre), None),
-                None => (Retry::NoAttemptsLeft, None, None),
-            };
-        let (accepted, sparse, starless) = gate_counts(&curve_points);
-        let failed = FailedAttempt {
-            attempt: attempts,
-            outcome: error.outcome(),
-            error: error.to_string(),
+        let attempt = Attempt {
+            number: attempts,
             centre,
-            points: curve_points.len(),
-            accepted,
-            sparse,
-            starless,
-            retry,
-            next_centre,
+            grid: &grid,
+            reference: &reference,
+            curve_points: &curve_points,
         };
-        log_failed_attempt(&failed, params.max_attempts, &grid, next_grid.as_deref());
+        let (failed, next_grid) = failed_attempt(&attempt, &error, params);
+        let next_centre = failed.next_centre;
         attempts_log.push(failed);
         measured.append(&mut curve_points);
         if let (Some(next_centre), Some(next_grid)) = (next_centre, next_grid) {
@@ -1032,9 +1151,65 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
             error,
             attempts,
             attempts_log,
+            reference: Some(reference),
             curve_points: measured,
         });
     }
+}
+
+/// One attempt as the run walked it.
+struct Attempt<'a> {
+    number: u32,
+    centre: i32,
+    grid: &'a [i32],
+    reference: &'a Reference,
+    curve_points: &'a [CurvePoint],
+}
+
+/// The account of an attempt that failed to fit, logged, and the grid
+/// the next attempt walks, if any: where the retry goes, or why none is
+/// made.
+fn failed_attempt(
+    attempt: &Attempt<'_>,
+    error: &FitError,
+    params: SweepParams,
+) -> (FailedAttempt, Option<Vec<i32>>) {
+    let plan = (attempt.number < params.max_attempts).then(|| {
+        retry_centre(
+            attempt.centre,
+            error,
+            attempt.curve_points,
+            params.half_width,
+            params.bounds(),
+        )
+    });
+    let (retry, next_centre, next_grid) =
+        match plan.map(|plan| (plan, sweep_grid(plan.centre, params))) {
+            Some((plan, Ok(next_grid))) => (plan.retry, Some(plan.centre), Some(next_grid)),
+            Some((plan, Err(_))) => (Retry::GridTooSmall, Some(plan.centre), None),
+            None => (Retry::NoAttemptsLeft, None, None),
+        };
+    let (accepted, sparse, starless) = gate_counts(attempt.curve_points);
+    let failed = FailedAttempt {
+        attempt: attempt.number,
+        outcome: error.outcome(),
+        error: error.to_string(),
+        centre: attempt.centre,
+        listed: attempt.reference.listed,
+        points: attempt.curve_points.len(),
+        accepted,
+        sparse,
+        starless,
+        retry,
+        next_centre,
+    };
+    log_failed_attempt(
+        &failed,
+        params.max_attempts,
+        attempt.grid,
+        next_grid.as_deref(),
+    );
+    (failed, next_grid)
 }
 
 /// The `warn` line an attempt that failed to fit leaves: why, the grid
@@ -1056,6 +1231,7 @@ fn log_failed_attempt(
         outcome,
         error = %failed.error,
         centre = failed.centre,
+        listed = failed.listed,
         grid_min = ?grid_min,
         grid_max = ?grid_max,
         accepted = failed.accepted,
@@ -1085,7 +1261,6 @@ mod tests {
             step_size: 10,
             half_width: 40,
             min_fit_points: 5,
-            min_star_fraction: 0.1,
             min_fit_r_squared: None,
             confirmation_tolerance: 0.25,
             max_attempts: 2,
@@ -1117,6 +1292,10 @@ mod tests {
         /// Land this many steps short of every target, as a focuser
         /// that settles idle before it arrives does.
         short_by: Mutex<i32>,
+        /// Where the focuser is before the first move: the centre the
+        /// run is started on.
+        start: Mutex<i32>,
+        references: Mutex<Vec<i32>>,
     }
 
     impl ScriptedRig {
@@ -1131,6 +1310,8 @@ mod tests {
                 cancel_after: Mutex::new(None),
                 fail_move_after: Mutex::new(None),
                 short_by: Mutex::new(0),
+                start: Mutex::new(0),
+                references: Mutex::new(Vec::new()),
             }
         }
 
@@ -1142,11 +1323,29 @@ mod tests {
                 cancel_after: Mutex::new(None),
                 fail_move_after: Mutex::new(None),
                 short_by: Mutex::new(0),
+                start: Mutex::new(0),
+                references: Mutex::new(Vec::new()),
             }
         }
 
         fn moves(&self) -> Vec<i32> {
             self.moves.lock().unwrap().clone()
+        }
+
+        /// Where each reference frame was taken.
+        fn references(&self) -> Vec<i32> {
+            self.references.lock().unwrap().clone()
+        }
+
+        /// Where the focuser is: the last move's read-back, or the
+        /// run's starting centre before any move.
+        fn position(&self) -> i32 {
+            self.moves
+                .lock()
+                .unwrap()
+                .last()
+                .copied()
+                .unwrap_or_else(|| *self.start.lock().unwrap())
         }
     }
 
@@ -1167,12 +1366,39 @@ mod tests {
             Ok(reached)
         }
 
-        async fn measure(&self) -> Result<Measurement, FocusModelError> {
-            let position = *self.moves.lock().unwrap().last().unwrap();
-            let hfr = (self.curve)(position);
+        /// Lists `star_count` stars, whatever the scripted sky does at
+        /// the centre: the clouds and edges a scenario scripts act on
+        /// the walk, and a rig of no stars lists none.
+        async fn reference(&self) -> Result<ReferenceFrame, FocusModelError> {
+            let position = self.position();
+            let stars = (0..self.star_count)
+                .map(|i| ReferenceStar {
+                    x: f64::from(i),
+                    y: 0.0,
+                    radius: 3.0,
+                    hfr: 1.0,
+                })
+                .collect();
+            self.references.lock().unwrap().push(position);
+            Ok(ReferenceFrame {
+                document_id: format!("ref-{position}"),
+                stars,
+            })
+        }
+
+        async fn measure(
+            &self,
+            list: &mut Vec<ListedStar>,
+        ) -> Result<Measurement, FocusModelError> {
+            let position = self.position();
+            let hfr = (self.curve)(position).filter(|_| !list.is_empty());
             Ok(Measurement {
                 hfr,
-                star_count: if hfr.is_some() { self.star_count } else { 0 },
+                star_count: if hfr.is_some() {
+                    u32::try_from(list.len()).unwrap()
+                } else {
+                    0
+                },
                 document_id: format!("doc-{position}"),
             })
         }
@@ -1192,6 +1418,18 @@ mod tests {
         }
 
         async fn tick(&self, _position: i32, _measurement: &Measurement) {}
+
+        async fn tick_reference(&self, _position: i32, _listed: usize) {}
+    }
+
+    /// Run the sweep on `rig` from `centre`, where the focuser starts.
+    async fn sweep(
+        rig: &ScriptedRig,
+        centre: i32,
+        params: SweepParams,
+    ) -> Result<SweepOutcome, SweepFailure> {
+        *rig.start.lock().unwrap() = centre;
+        run_sweep(rig, centre, params).await
     }
 
     // --- pure helpers ---
@@ -1239,26 +1477,85 @@ mod tests {
     }
 
     #[test]
-    fn the_sparse_gate_rejects_the_thin_frames_and_leaves_the_starless_ones_alone() {
+    fn a_sample_of_one_listed_star_is_sparse_and_a_starless_one_is_left_alone() {
         let mut points = vec![
-            point(0, Some(4.0), 5),
+            point(0, Some(4.0), 1),
             point(10, Some(2.0), 100),
             point(20, None, 0),
-            point(30, Some(4.2), 90),
+            point(30, Some(4.2), 2),
         ];
-        let threshold = apply_sparse_gate(&mut points, 0.1);
-        assert_eq!(threshold, 10.0);
+        apply_star_floor(&mut points);
         assert_eq!(points[0].rejected, Some(Rejection::Sparse));
         assert_eq!(points[1].rejected, None);
         assert_eq!(points[2].rejected, None, "a starless frame is not gated");
-        assert_eq!(points[3].rejected, None);
+        assert_eq!(points[3].rejected, None, "two stars pass the floor");
     }
 
     #[test]
-    fn a_field_that_is_sparse_everywhere_is_never_gated() {
-        let mut points = vec![point(0, Some(4.0), 3), point(10, Some(2.0), 3)];
-        apply_sparse_gate(&mut points, 0.5);
+    fn the_floor_does_not_depend_on_the_densest_frame() {
+        // A sample of 3 stars beside one of 2,000 is accepted: the gate
+        // is two listed stars, not a fraction of the sweep's best count.
+        let mut points = vec![point(0, Some(9.0), 3), point(10, Some(1.0), 2_000)];
+        apply_star_floor(&mut points);
         assert!(points.iter().all(|p| p.rejected.is_none()));
+    }
+
+    fn reference_star(x: f64, hfr: f64) -> ReferenceStar {
+        ReferenceStar {
+            x,
+            y: 10.0,
+            radius: 3.0 * hfr,
+            hfr,
+        }
+    }
+
+    #[test]
+    fn the_list_keeps_the_stars_within_half_the_median_hfr_of_it() {
+        // Median 1.0: a saturated core at 4.7 and a hot pixel at 0.3 are
+        // left out, 0.6 and 1.4 kept; 0.5 and 1.5 lie on the band's edge
+        // and are left out.
+        let stars = [
+            reference_star(1.0, 1.0),
+            reference_star(2.0, 4.7),
+            reference_star(3.0, 0.3),
+            reference_star(4.0, 0.6),
+            reference_star(5.0, 1.4),
+            reference_star(6.0, 1.0),
+            reference_star(7.0, 0.5),
+            reference_star(8.0, 1.5),
+            reference_star(9.0, 1.0),
+        ];
+        let listed: Vec<f64> = star_list(&stars).iter().map(|star| star.x).collect();
+        assert_eq!(listed, [1.0, 4.0, 5.0, 6.0, 9.0]);
+        let first = star_list(&stars)[0];
+        assert_eq!(
+            first,
+            ListedStar {
+                x: 1.0,
+                y: 10.0,
+                radius: 3.0
+            }
+        );
+    }
+
+    #[test]
+    fn the_list_of_a_frame_with_no_stars_is_empty() {
+        assert_eq!(star_list(&[]), []);
+    }
+
+    #[test]
+    fn the_lists_median_averages_the_two_middle_hfrs_of_an_even_count() {
+        // The median of 1.0, 1.9, 2.1 and 4.0 is 2.0, and the band
+        // (1.0, 3.0) leaves out 1.0, which the lower middle's band
+        // (0.95, 2.85) would keep, and 4.0.
+        let stars = [
+            reference_star(1.0, 1.0),
+            reference_star(2.0, 1.9),
+            reference_star(3.0, 2.1),
+            reference_star(4.0, 4.0),
+        ];
+        let median_stars: Vec<f64> = star_list(&stars).iter().map(|star| star.x).collect();
+        assert_eq!(median_stars, [2.0, 3.0]);
     }
 
     #[test]
@@ -1573,7 +1870,7 @@ mod tests {
             point(30500, None, 0),
             point(30600, None, 0),
         ];
-        apply_sparse_gate(&mut points, 0.1);
+        apply_star_floor(&mut points);
         points
     }
 
@@ -1646,7 +1943,7 @@ mod tests {
             point(30637, None, 0),
             point(30937, None, 0),
         ];
-        apply_sparse_gate(&mut points, 0.1);
+        apply_star_floor(&mut points);
         assert_eq!(one_sided_starvation(&points), None);
         assert_eq!(
             retry_centre(29737, &not_enough_stars(), &points, 1200, (None, None)),
@@ -1710,12 +2007,12 @@ mod tests {
     #[test]
     fn a_rejection_on_the_near_side_names_no_side() {
         let mut points = vec![
-            point(90, Some(1.5), 5),
+            point(90, Some(1.5), 1),
             point(100, Some(2.0), 100),
             point(110, Some(5.0), 100),
             point(120, None, 0),
         ];
-        apply_sparse_gate(&mut points, 0.1);
+        apply_star_floor(&mut points);
         assert_eq!(points.first().unwrap().rejected, Some(Rejection::Sparse));
         assert_eq!(one_sided_starvation(&points), None);
     }
@@ -1768,7 +2065,7 @@ mod tests {
 
     #[test]
     fn the_gate_counts_split_accepted_sparse_and_starless() {
-        assert_eq!(gate_counts(&starved_above()), (3, 4, 2));
+        assert_eq!(gate_counts(&starved_above()), (4, 3, 2));
     }
 
     /// The log line and the record name an outcome and a retry the same
@@ -1800,17 +2097,41 @@ mod tests {
     }
 
     #[test]
-    fn the_confirmation_holds_the_frame_to_the_gate_and_the_tolerance() {
-        assert!(confirmation_accepted(Some(1.1), 100, 10.0, 1.0, 0.25));
-        assert!(
-            !confirmation_accepted(Some(1.1), 5, 10.0, 1.0, 0.25),
-            "a frame below the gate is not a confirmation"
+    fn the_confirmation_holds_the_frame_to_the_floor_and_the_tolerance() {
+        assert_eq!(confirmation_verdict(Some(1.1), 100, 1.0, 0.25), None);
+        assert_eq!(
+            confirmation_verdict(Some(1.1), 2, 1.0, 0.25),
+            None,
+            "two listed stars are enough"
         );
-        assert!(
-            !confirmation_accepted(Some(1.5), 100, 10.0, 1.0, 0.25),
+        assert_eq!(
+            confirmation_verdict(Some(1.1), 1, 1.0, 0.25),
+            Some(ConfirmationRejection::Sparse),
+            "one listed star is not a confirmation"
+        );
+        assert_eq!(
+            confirmation_verdict(Some(1.5), 100, 1.0, 0.25),
+            Some(ConfirmationRejection::Worse),
             "1.5 is more than 25 % worse than 1.0"
         );
-        assert!(!confirmation_accepted(None, 100, 10.0, 1.0, 0.25));
+        assert_eq!(
+            confirmation_verdict(None, 0, 1.0, 0.25),
+            Some(ConfirmationRejection::Starless)
+        );
+    }
+
+    #[test]
+    fn the_confirmations_reason_reads_as_the_contract_names_it() {
+        for (rejected, name) in [
+            (ConfirmationRejection::Starless, "starless"),
+            (ConfirmationRejection::Sparse, "sparse"),
+            (ConfirmationRejection::Worse, "worse"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(rejected).unwrap(),
+                serde_json::json!(name)
+            );
+        }
     }
 
     #[test]
@@ -1825,7 +2146,7 @@ mod tests {
     #[tokio::test]
     async fn a_clean_v_confirms_the_vertex_on_the_first_attempt() {
         let rig = ScriptedRig::hyperbola(100);
-        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
         assert_eq!(outcome.attempts, 1);
         assert_eq!(outcome.best_position, 100);
         assert!(outcome.confirmed);
@@ -1833,8 +2154,20 @@ mod tests {
         assert_eq!(outcome.samples_used, 9);
         assert_eq!(outcome.curve_points.len(), 9);
         assert!(outcome.wing_slope.is_some());
-        // Nine grid moves, then the move to the vertex.
+        // Nine grid moves, then the move to the vertex: the reference
+        // frame is taken where the focuser already is, at the centre.
         assert_eq!(rig.moves().len(), 10);
+        assert_eq!(rig.references(), [100]);
+        assert_eq!(
+            outcome.reference,
+            Reference {
+                position: 100,
+                document_id: "ref-100".to_owned(),
+                listed: 100,
+            }
+        );
+        assert_eq!(outcome.confirmation.rejected, None);
+        assert!(outcome.curve_points.iter().all(|p| p.star_count == 100));
     }
 
     #[tokio::test]
@@ -1855,22 +2188,29 @@ mod tests {
             cancel_after: Mutex::new(None),
             fail_move_after: Mutex::new(None),
             short_by: Mutex::new(0),
+            start: Mutex::new(0),
+            references: Mutex::new(Vec::new()),
         };
-        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
         assert!(!outcome.confirmed);
         assert_eq!(outcome.position, 90, "the lowest accepted sample");
         assert_eq!(outcome.hfr, 1.1);
         assert_eq!(rig.moves().last(), Some(&90));
+        assert_eq!(
+            outcome.confirmation.rejected,
+            Some(ConfirmationRejection::Worse)
+        );
     }
 
     #[tokio::test]
     async fn a_starless_sweep_is_repeated_and_carries_every_attempt() {
         let rig = ScriptedRig::starless();
-        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        let failure = sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Fit {
             error,
             attempts,
             attempts_log,
+            reference,
             curve_points,
         } = failure
         else {
@@ -1880,8 +2220,23 @@ mod tests {
         assert_eq!(error.outcome(), FitOutcome::NotEnoughStars);
         assert_eq!(curve_points.len(), 18, "both attempts, nine points each");
         assert!(curve_points.iter().all(|p| p.hfr.is_none()));
-        // Two full walks, and no move to a vertex that never fitted.
-        assert_eq!(rig.moves().len(), 18);
+        // Two full walks, the move back to the centre for the second
+        // reference frame, and no move to a vertex that never fitted.
+        assert_eq!(rig.moves().len(), 19);
+        assert_eq!(
+            rig.references(),
+            [100, 100],
+            "one reference frame per attempt, at its centre"
+        );
+        assert_eq!(
+            reference,
+            Some(Reference {
+                position: 100,
+                document_id: "ref-100".to_owned(),
+                listed: 0,
+            }),
+            "a reference frame with no stars lists none"
+        );
         assert_eq!(
             attempts_log,
             [
@@ -1890,6 +2245,7 @@ mod tests {
                     outcome: FitOutcome::NotEnoughStars,
                     error: error.to_string(),
                     centre: 100,
+                    listed: 0,
                     points: 9,
                     accepted: 0,
                     sparse: 0,
@@ -1902,6 +2258,7 @@ mod tests {
                     outcome: FitOutcome::NotEnoughStars,
                     error: error.to_string(),
                     centre: 100,
+                    listed: 0,
                     points: 9,
                     accepted: 0,
                     sparse: 0,
@@ -1921,7 +2278,7 @@ mod tests {
             max_attempts: 1,
             ..params()
         };
-        let failure = run_sweep(&rig, 100, single).await.unwrap_err();
+        let failure = sweep(&rig, 100, single).await.unwrap_err();
         assert!(
             matches!(failure, SweepFailure::Fit { attempts: 1, .. }),
             "{failure:?}"
@@ -1932,8 +2289,10 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_stops_the_walk_where_it_is() {
         let rig = ScriptedRig::hyperbola(100);
-        *rig.cancel_after.lock().unwrap() = Some(3);
-        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        // Two checks around the reference frame, two around the first
+        // point, one before the second point's move.
+        *rig.cancel_after.lock().unwrap() = Some(5);
+        let failure = sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Rig {
             error,
             curve_points,
@@ -1962,12 +2321,16 @@ mod tests {
             best_position: 100,
             best_hfr: 1.0,
             r_squared: 0.9,
-            gate_threshold: 0.0,
             lowest_position: 90,
             lowest_hfr: 1.1,
             samples_used: 5,
         };
-        let err = confirm(&rig, params(), stage).await.unwrap_err();
+        let mut list = vec![ListedStar {
+            x: 1.0,
+            y: 1.0,
+            radius: 3.0,
+        }];
+        let err = confirm(&rig, params(), stage, &mut list).await.unwrap_err();
         assert!(err.tool_message().contains("measured no stars"), "{err}");
         assert!(
             err.tool_message().contains("settled at 88 instead of 90"),
@@ -1984,7 +2347,7 @@ mod tests {
         // Every move lands two steps short, so the samples run
         // [58, 138] while the requested grid ran [60, 140].
         *rig.short_by.lock().unwrap() = 2;
-        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
         assert_eq!(
             outcome.best_position, 58,
             "the vertex sits below the requested grid's first point"
@@ -2003,7 +2366,7 @@ mod tests {
             max_attempts: 1,
             ..params()
         };
-        let failure = run_sweep(&rig, 100, single).await.unwrap_err();
+        let failure = sweep(&rig, 100, single).await.unwrap_err();
         let SweepFailure::Fit { curve_points, .. } = &failure else {
             panic!("expected a fit failure, got {failure:?}");
         };
@@ -2020,7 +2383,7 @@ mod tests {
         let rig = ScriptedRig::hyperbola(100);
         // Nine grid moves land; the move to the vertex does not.
         *rig.fail_move_after.lock().unwrap() = Some(9);
-        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        let failure = sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Rig {
             error,
             curve_points,
@@ -2053,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_starved_on_one_side_shifts_and_fits_on_the_retry() {
         let rig = starless_from(40, 100);
-        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 40);
         assert!(outcome.confirmed);
@@ -2064,6 +2427,7 @@ mod tests {
                 outcome: FitOutcome::NotEnoughStars,
                 error: FitError::NotEnoughStars { got: 4, needed: 5 }.to_string(),
                 centre: 100,
+                listed: 100,
                 points: 9,
                 accepted: 4,
                 sparse: 0,
@@ -2079,6 +2443,16 @@ mod tests {
         );
         assert_eq!(
             rig.moves().get(9),
+            Some(&60),
+            "the move to the shifted centre"
+        );
+        assert_eq!(
+            rig.references(),
+            [100, 60],
+            "a reference frame at each attempt's centre"
+        );
+        assert_eq!(
+            rig.moves().get(10),
             Some(&20),
             "the second walk starts half a width lower"
         );
@@ -2125,7 +2499,7 @@ mod tests {
             half_width: 80,
             ..params()
         };
-        let outcome = run_sweep(&rig, 100, wide).await.unwrap();
+        let outcome = sweep(&rig, 100, wide).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 115);
         assert!(outcome.confirmed);
@@ -2142,6 +2516,11 @@ mod tests {
         );
         assert_eq!(
             rig.moves().get(17),
+            Some(&100),
+            "the move to the retry's centre"
+        );
+        assert_eq!(
+            rig.moves().get(18),
             Some(&20),
             "the second walk is the first one again"
         );
@@ -2170,7 +2549,7 @@ mod tests {
             min_fit_points: 4,
             ..roster()
         };
-        let outcome = run_sweep(&rig, 30_000, four).await.unwrap();
+        let outcome = sweep(&rig, 30_000, four).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 30_000);
         assert!(outcome.confirmed);
@@ -2193,7 +2572,7 @@ mod tests {
             direction: Direction::Descending,
             ..roster()
         };
-        let outcome = run_sweep(&rig, 30_000, descending).await.unwrap();
+        let outcome = sweep(&rig, 30_000, descending).await.unwrap();
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.best_position, 30_000);
         assert!(outcome.confirmed);
@@ -2210,7 +2589,7 @@ mod tests {
     #[tokio::test]
     async fn a_wing_that_reaches_focus_places_it_on_the_first_walk() {
         let rig = clouded(roster_v, |position| position >= 30_100, 9);
-        let outcome = run_sweep(&rig, 30_000, roster()).await.unwrap();
+        let outcome = sweep(&rig, 30_000, roster()).await.unwrap();
         assert_eq!(outcome.attempts, 1);
         assert_eq!(outcome.best_position, 30_000);
         assert!(outcome.confirmed);
@@ -2227,7 +2606,7 @@ mod tests {
             min_position: Some(70),
             ..params()
         };
-        let failure = run_sweep(&rig, 100, tight).await.unwrap_err();
+        let failure = sweep(&rig, 100, tight).await.unwrap_err();
         let SweepFailure::Fit {
             attempts,
             attempts_log,
@@ -2255,7 +2634,7 @@ mod tests {
             min_position: Some(100),
             ..params()
         };
-        let failure = run_sweep(&rig, 100, pinned).await.unwrap_err();
+        let failure = sweep(&rig, 100, pinned).await.unwrap_err();
         let SweepFailure::Fit { attempts_log, .. } = &failure else {
             panic!("expected a fit failure, got {failure:?}");
         };
@@ -2270,7 +2649,11 @@ mod tests {
                 (Retry::NoAttemptsLeft, None)
             ]
         );
-        assert_eq!(rig.moves().len(), 10, "two walks of 100..140");
+        assert_eq!(
+            rig.moves().len(),
+            11,
+            "two walks of 100..140, and the move back to the centre for the second reference frame"
+        );
     }
 
     /// A device failure on a later attempt keeps the account of the
@@ -2278,9 +2661,10 @@ mod tests {
     #[tokio::test]
     async fn a_rig_failure_keeps_the_attempts_that_failed_before_it() {
         let rig = ScriptedRig::starless();
-        // The first walk's nine moves and two of the second's land.
-        *rig.fail_move_after.lock().unwrap() = Some(11);
-        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        // The first walk's nine moves, the move to the retry's centre and
+        // two of the second walk's land.
+        *rig.fail_move_after.lock().unwrap() = Some(12);
+        let failure = sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Rig {
             attempts_log,
             curve_points,
@@ -2297,7 +2681,7 @@ mod tests {
     #[tokio::test]
     async fn a_first_attempt_that_fits_logs_no_failed_attempt() {
         let rig = ScriptedRig::hyperbola(100);
-        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
         assert!(
             outcome.attempts_log.is_empty(),
             "{:?}",
@@ -2405,7 +2789,7 @@ mod tests {
             curve: Box::new(|position| Some(ragged(position))),
             ..ScriptedRig::hyperbola(0)
         };
-        let failure = run_sweep(&rig, 100, with_threshold(Some(0.99)))
+        let failure = sweep(&rig, 100, with_threshold(Some(0.99)))
             .await
             .unwrap_err();
         let SweepFailure::Fit {
@@ -2413,6 +2797,7 @@ mod tests {
             attempts,
             attempts_log,
             curve_points,
+            ..
         } = &failure
         else {
             panic!("expected a fit failure, got {failure:?}");
@@ -2450,9 +2835,9 @@ mod tests {
             ]
         );
         assert_eq!(
-            rig.moves().get(9),
+            rig.moves().get(10),
             Some(&60),
-            "the second walk is the first one again"
+            "the second walk is the first one again, after the move to its centre"
         );
     }
 
@@ -2557,71 +2942,127 @@ mod tests {
         assert!(fitted >= 250, "only {fitted} of 288 cases reached a fit");
     }
 
-    /// The fine sweep of #1187 on rig2: ±400 by 100 around 29666, its
-    /// lowest sample 1.03 px at 29766. The issue recorded no star
-    /// counts, so every sample weighs the same.
-    const RECORDED_FINE_SWEEP: [(i32, f64); 9] = [
-        (29_266, 16.0),
-        (29_366, 16.9),
-        (29_466, 13.2),
-        (29_566, 8.5),
-        (29_666, 4.0),
-        (29_766, 1.03),
-        (29_866, 3.5),
-        (29_966, 8.1),
-        (30_066, 12.7),
-    ];
+    /// A sweep of rig2's recorded frames as the star list measures them:
+    /// `(position, hfr, listed stars measured)`, `None` where none was.
+    /// Each was replayed through `rp`'s `measure_stars` with the list its
+    /// centre frame gave, at `threshold_sigma` 10, `min_area` 40 and
+    /// `max_area` 5000 — the settings the rig ran.
+    fn recorded(samples: &[(i32, Option<f64>, u32)]) -> Vec<CurvePoint> {
+        samples
+            .iter()
+            .map(|&(position, hfr, star_count)| point(position, hfr, star_count))
+            .collect()
+    }
+
+    /// The fine sweep of #1187: ±400 by 100 around 29666, 359 stars
+    /// listed.
+    fn recorded_fine_sweep() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_266, Some(20.861), 298),
+            (29_366, Some(19.210), 316),
+            (29_466, Some(14.584), 337),
+            (29_566, Some(9.758), 340),
+            (29_666, Some(4.728), 342),
+            (29_766, Some(0.969), 339),
+            (29_866, Some(4.234), 342),
+            (29_966, Some(9.063), 339),
+            (30_066, Some(13.934), 330),
+        ])
+    }
+
+    /// The coarse sweep of #1187: ±1200 by 300 around 29966, 152 stars
+    /// listed. The two frames 900 and 1200 steps above focus are beyond
+    /// the size cap, and the one 1000 steps below keeps three stars.
+    fn recorded_coarse_sweep() -> Vec<CurvePoint> {
+        recorded(&[
+            (28_766, Some(37.435), 3),
+            (29_066, Some(33.421), 122),
+            (29_366, Some(19.352), 144),
+            (29_666, Some(4.945), 150),
+            (29_966, Some(8.854), 151),
+            (30_266, Some(23.405), 142),
+            (30_566, Some(37.646), 102),
+            (30_866, None, 0),
+            (31_166, None, 0),
+        ])
+    }
+
+    /// The 2026-09-26 sizing sweep: ±100 by 25 around 29737, six stars
+    /// listed, `min_area` 40 leaving the compact ones out.
+    fn recorded_sizing_sweep() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_637, Some(4.887), 6),
+            (29_662, Some(3.792), 6),
+            (29_687, Some(2.787), 6),
+            (29_712, Some(1.668), 6),
+            (29_737, Some(1.027), 6),
+            (29_762, Some(1.153), 6),
+            (29_787, Some(1.822), 6),
+            (29_812, Some(2.902), 6),
+            (29_837, Some(4.051), 6),
+        ])
+    }
+
+    /// The 2026-09-26 sized sweep's second attempt: ±80 by 20 around
+    /// 29780, 35 stars listed.
+    fn recorded_sized_sweep() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_700, Some(1.736), 35),
+            (29_720, Some(1.268), 35),
+            (29_740, Some(0.972), 35),
+            (29_760, Some(1.214), 35),
+            (29_780, Some(1.837), 35),
+            (29_800, Some(2.597), 35),
+            (29_820, Some(3.505), 35),
+            (29_840, Some(4.421), 35),
+            (29_860, Some(5.327), 35),
+        ])
+    }
 
     #[test]
     fn the_recorded_fine_sweep_places_focus_beside_its_lowest_sample() {
-        let mut points: Vec<CurvePoint> = RECORDED_FINE_SWEEP
-            .iter()
-            .map(|(position, hfr)| point(*position, Some(*hfr), 100))
-            .collect();
+        let stage = gate_and_fit(&mut recorded_fine_sweep(), params()).unwrap();
+        assert_eq!(stage.best_position, 29_770, "{stage:?}");
+        assert!(stage.r_squared > 0.98, "{stage:?}");
+    }
+
+    /// Measured on its listed stars, the coarse sweep that failed on
+    /// detected components keeps seven samples, the one of three stars
+    /// among them, and places focus within three steps of the fine
+    /// sweep's vertex.
+    #[test]
+    fn the_recorded_coarse_sweep_places_focus_beside_the_fine_sweeps() {
+        let mut points = recorded_coarse_sweep();
         let stage = gate_and_fit(&mut points, params()).unwrap();
-        assert_eq!(stage.best_position, 29_765, "{stage:?}");
-        assert!(stage.r_squared > 0.93, "{stage:?}");
+        assert_eq!(stage.samples_used, 7, "{stage:?}");
+        assert_eq!(stage.best_position, 29_772, "{stage:?}");
+        assert!(stage.r_squared > 0.99, "{stage:?}");
     }
 
-    /// The coarse sweep of #1187 on rig2: ±1200 by 300 around 29966,
-    /// focus near 29766, fragments of donuts in the wings and three
-    /// dense frames around focus.
-    fn recorded_coarse_sweep() -> Vec<CurvePoint> {
-        [
-            (28_766, None, 0),
-            (29_066, Some(5.29), 12),
-            (29_366, Some(16.66), 41),
-            (29_666, Some(4.01), 370),
-            (29_966, Some(7.95), 159),
-            (30_266, Some(7.59), 33),
-            (30_566, Some(4.09), 7),
-            (30_866, Some(4.45), 5),
-            (31_166, None, 0),
-        ]
-        .into_iter()
-        .map(|(position, hfr, star_count)| point(position, hfr, star_count))
-        .collect()
-    }
-
-    /// At the defaults the gate leaves three dense frames, below
-    /// `min_fit_points`, so no curve is fitted at all.
     #[test]
-    fn the_recorded_coarse_sweep_is_refused_at_the_defaults() {
-        let err = gate_and_fit(&mut recorded_coarse_sweep(), params()).unwrap_err();
-        assert_eq!(err, FitError::NotEnoughStars { got: 3, needed: 5 });
+    fn the_recorded_sized_sweeps_place_focus_where_the_replay_did() {
+        let sizing = gate_and_fit(&mut recorded_sizing_sweep(), params()).unwrap();
+        assert_eq!(sizing.best_position, 29_747, "{sizing:?}");
+        let sized = gate_and_fit(&mut recorded_sized_sweep(), params()).unwrap();
+        assert_eq!(sized.best_position, 29_739, "{sized:?}");
     }
 
-    /// Let three samples fit, and those three frames admit no hyperbola:
-    /// the nearest V centres a step from focus.
+    /// The sizing sweep's confirmation frame at 29744 detects two stars
+    /// at `min_area` 40, 1.66 px between them; its six listed stars
+    /// measure 0.927 px against the lowest sample's 1.027, and it is
+    /// accepted.
     #[test]
-    fn the_recorded_coarse_sweep_fits_the_nearest_v_through_its_dense_frames() {
-        let three = SweepParams {
-            min_fit_points: 3,
-            ..params()
-        };
-        let stage = gate_and_fit(&mut recorded_coarse_sweep(), three).unwrap();
-        assert_eq!(stage.best_position, 29_767, "{stage:?}");
-        assert_eq!(stage.best_hfr, 0.0, "{stage:?}");
-        assert!(stage.r_squared > 0.998, "{stage:?}");
+    fn the_recorded_sizing_confirmation_is_accepted_on_its_listed_stars() {
+        let sizing = gate_and_fit(&mut recorded_sizing_sweep(), params()).unwrap();
+        assert_eq!(sizing.lowest_hfr, 1.027);
+        assert_eq!(
+            confirmation_verdict(Some(0.927), 6, sizing.lowest_hfr, 0.25),
+            None
+        );
+        assert_eq!(
+            confirmation_verdict(Some(1.664), 2, 1.05, 0.25),
+            Some(ConfirmationRejection::Worse),
+            "the two stars detection finds there read worse than the lowest detected sample"
+        );
     }
 }

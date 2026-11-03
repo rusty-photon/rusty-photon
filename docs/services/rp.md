@@ -1852,7 +1852,7 @@ accepted, `document_id` takes precedence.
 | `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
 | `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
 | `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
-| `measure_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional), stamp_half_size (optional) | stars: \[{x, y, hfr, fwhm, eccentricity, flux}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally; the optional `stars` input from the catalog row is deferred. Implemented. |
+| `measure_stars` | document_id or image_path, max_area, min_area (unless `stars`), threshold_sigma (optional), stars (optional: \[{x, y, radius}\]), stamp_half_size (optional) | stars: \[{x, y, radius, hfr, fwhm, eccentricity, flux, snr}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally, or measures the listed `stars` where they were last seen. Implemented. |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
 | `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. Implemented. |
 
@@ -3151,25 +3151,38 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 **Input**:
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
   (FITS file on disk).
-- `min_area` and `max_area` — required (encode pixel-scale assumptions;
-  same rationale as `measure_basic` and `detect_stars`). As in
-  `measure_basic`, `max_area` bounds a star's half-flux disc, not a
-  component's area.
+- `max_area` — required (encodes a pixel-scale assumption; same
+  rationale as `measure_basic` and `detect_stars`). As in
+  `measure_basic`, it bounds a star's half-flux disc, not a component's
+  area.
+- `min_area` — required unless `stars` is given, which detects nothing.
 - Optional `threshold_sigma` (default `5.0`) — detection threshold.
+  With `stars` nothing is detected, and it sets only the level hot
+  pixels are found at (`measure_basic` step 3), so a list measured
+  across a sweep leaves out the hot pixels its reference frame did.
+- Optional `stars` — the stars to measure, instead of the stars
+  detection finds: an array of `{x, y, radius}`, the shape of this
+  tool's own `stars` output, which can be passed back as it came. `x`
+  and `y` are where the star was last seen, and the optional `radius`
+  is the aperture it was last measured in (3 px when absent). A focus
+  sweep passes the stars of a reference frame to every frame of the
+  sweep, so each frame measures the same stars
+  ([focus-model.md § The sweep](focus-model.md#the-sweep)).
 - Optional `stamp_half_size` (default `8`) — half-side of the postage
   stamp used for the 2D Gaussian fit. The fit is rejected for any star
   whose stamp would cross the image boundary.
 
 **Output**:
-- `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects,
-  one per star `measure_basic` measures (its steps 9–10), brightest
-  first:
+- `stars` — array of `{x, y, radius, hfr, fwhm, eccentricity, flux,
+  snr}` objects. Without `stars` in the input, one per star
+  `measure_basic` measures (its steps 9–10), brightest first; with it,
+  one per listed star, in the order given (below):
   - `x` / `y` — the centre the star's aperture settled on, in 0-based
     pixel coordinates: `x` along the image width (FITS `NAXIS1`), `y`
     along the height (`NAXIS2`).
-  - `hfr` — the star's aperture half-flux radius (pixels). The field is
-    nullable, but a detection without an aperture HFR is not a star, so
-    it is never `null`.
+  - `radius` — the radius of the aperture the star settled in (pixels).
+  - `hfr` — the star's aperture half-flux radius (pixels). `null` only
+    for a listed star that was not measured.
   - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
     fit (pixels), or `null` when the fit fails.
   - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or
@@ -3177,20 +3190,59 @@ in addition to the HFR / flux that `measure_basic` aggregates.
   - `flux` — the star's aperture flux: the sum of its signed,
     background-subtracted pixels (ADU), the brightness the list is
     ordered by.
-- `star_count` — number of stars (including those whose fit failed).
+  - `snr` — `flux / √(flux + π·radius²·σ²)`, σ the background stddev:
+    `compute_snr`'s noise model over the aperture, with its caveats
+    (gain taken as 1 ADU/electron, so comparable across frames of one
+    camera only).
+- `star_count` — number of stars (including those whose fit failed);
+  with `stars`, the listed stars measured.
 - `hfr` — the aggregate HFR `measure_basic` reports: the median
   aperture HFR of the 20 brightest stars, or of all of them when there
-  are fewer. `null` when there are no stars. This is the number a focus
-  sweep reads.
+  are fewer. With `stars`, the median over every listed star measured:
+  the list is already the caller's choice of stars. `null` when there
+  are no stars. This is the number a focus sweep reads.
 - `median_fwhm` — median across stars whose fit succeeded; `null` when
   no fits converged.
 - `median_hfr` — median aperture HFR over every star; `null` when there
   are no stars.
 - `background_mean` / `background_stddev` — sigma-clipped background.
 
+**Measuring a list of stars**: with `stars`, a listed star is measured
+when its aperture settles as a star (`measure_basic` step 9: positive
+flux, settled, its annulus inside the frame, an HFR between the 0.25 px
+floor and the size cap), it is not inside the aperture of a brighter
+listed star (step 10, so two listed stars that one defocused disc
+covers count once), and its `snr` exceeds 3, the threshold CCDciel's
+autofocus keeps a star at. A listed star that is not measured keeps its
+entry, with `hfr`, `fwhm`, `eccentricity`, `flux` and `snr` `null` and
+`x`, `y` and `radius` as given, so the array goes back into the next
+call unchanged and the star is looked for again where it was last
+seen. A position outside the frame is a star not measured, not an
+error, and `stars: []` measures nothing (`star_count` 0, `hfr` `null`).
+The SNR threshold is what stands in for the detection threshold: an
+aperture placed where a star is known to be finds it at a surface
+brightness detection would not, so a defocused frame keeps the stars a
+frame at focus showed (on rig2's 2026-09-08 fine sweep at
+`threshold_sigma` 8, 365–497 of the 523 listed stars at every step,
+where detection finds 44–2,104). A frame whose stars are about as large
+as the size cap is measured by the listed stars under it, the smaller
+ones, and its `hfr` reads low; it measures few of them.
+
 **Algorithm**:
 1. Sigma-clipped background → the detections and their aperture
    measurement, one star per aperture (`measure_basic`'s steps 1–10).
+   With `stars`: the background and the hot pixels of step 3 only, at
+   `threshold_sigma`; each listed star's aperture starts at its `x`, `y`
+   with its `radius`, held between 3 px and the size cap like step 9's
+   start, and follows the star as in step 9. An aperture that finds no
+   star there — no positive flux, no settling, or the HFR floor — starts
+   again at twice the radius, up to the size cap: a star that defocused
+   since it was last measured is larger than the aperture it was last
+   measured in, and a small aperture on the dark centre of a defocused
+   star finds no light (on the defocused fixture's star, HFR 38 px, a
+   start of 3, 6 or 12 px at its centre finds nothing and one of 24 px
+   measures it). Then one star per aperture across the list (step 10)
+   and the SNR test.
 2. For each star:
    - 2D Gaussian fit on a `(2·stamp_half_size+1)²` postage stamp using
      `rmpfit` (Levenberg-Marquardt). Model:
@@ -3205,8 +3257,12 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 **Error cases**:
 - Neither `document_id` nor `image_path` → MCP error mentioning
   `image_path`.
-- `min_area` or `max_area` missing → MCP error naming the missing
-  parameter.
+- `max_area` missing, or `min_area` missing without `stars` → MCP error
+  naming the missing parameter.
+- A `stars` entry whose `radius` is present and not positive → MCP
+  error naming the entry's index. An entry without a number for `x` or
+  `y` fails the call's argument parsing, as any malformed argument
+  does.
 - `image_path` provided but file not found → MCP error.
 - `document_id` provided but neither cache nor FITS fallback resolves →
   MCP error.
@@ -3215,12 +3271,8 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 **Persistence**: when called with `document_id`, the JSON payload is
 written to the `measured_stars` section. Distinct from `detected_stars`,
 `image_analysis`, and `background` so all four tools coexist on one
-document.
-
-**Deferred**: the optional `stars` input listed in the tool catalog row
-is not implemented in this MVP. When implemented it will let the caller
-pass back the array from a previous `detect_stars` call to skip
-re-detection; for now, every invocation re-runs detection.
+document. A call with `stars` writes the same section, replacing what
+an earlier call wrote.
 
 #### `compute_snr` Contract
 

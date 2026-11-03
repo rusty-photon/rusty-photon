@@ -24,6 +24,7 @@ use tracing::debug;
 
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
+use crate::sweep::ListedStar;
 use crate::workflow::{
     CaptureResult, FocusRig, FocuserPosition, GuideFocusResult, RefocusPlan, StarMeasurement,
     TrainInfo,
@@ -282,14 +283,20 @@ impl FocusRig for McpClient {
         min_area: usize,
         max_area: usize,
         threshold_sigma: Option<f64>,
+        stars: Option<Vec<ListedStar>>,
     ) -> Result<StarMeasurement> {
         let mut args = serde_json::json!({
             "document_id": document_id,
             "min_area": min_area,
             "max_area": max_area,
         });
-        if let (Some(sigma), Some(map)) = (threshold_sigma, args.as_object_mut()) {
-            map.insert("threshold_sigma".to_owned(), serde_json::json!(sigma));
+        if let Some(map) = args.as_object_mut() {
+            if let Some(sigma) = threshold_sigma {
+                map.insert("threshold_sigma".to_owned(), serde_json::json!(sigma));
+            }
+            if let Some(stars) = stars {
+                map.insert("stars".to_owned(), serde_json::json!(stars));
+            }
         }
         self.call("measure_stars", args).await
     }

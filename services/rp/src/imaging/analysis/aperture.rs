@@ -11,6 +11,10 @@
 //! dropping each one that lies inside a brighter one's aperture leaves
 //! one star per aperture. See `docs/services/rp.md` (`measure_basic`
 //! algorithm steps 9–11).
+//!
+//! A list of stars already known is measured the same way, each aperture
+//! starting where its star was last seen ([`measure_listed`]; the
+//! `measure_stars` contract's `stars` input).
 
 use std::f64::consts::PI;
 use std::ops::Range;
@@ -58,6 +62,21 @@ const CENTRE_TOLERANCE: f64 = 0.05;
 
 /// … and the radius changes by less than this fraction of itself.
 const RADIUS_TOLERANCE: f64 = 0.05;
+
+/// The SNR a listed star must exceed to count as measured: the
+/// threshold `CCDciel`'s autofocus keeps a star at.
+pub const MIN_LISTED_SNR: f64 = 3.0;
+
+/// A star to measure where it was last seen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Listed {
+    /// Where the star was last seen along the columns.
+    pub x: f64,
+    /// Where the star was last seen along the rows.
+    pub y: f64,
+    /// The radius of the aperture it was last measured in (px).
+    pub radius: f64,
+}
 
 /// A star measured in its aperture.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,6 +129,7 @@ struct Rejections {
     too_large: usize,
     floor: usize,
     inside_brighter: usize,
+    faint: usize,
 }
 
 impl Rejections {
@@ -150,20 +170,7 @@ pub fn measure_in_apertures<T: Pixel>(
             None => rejected.count(verdict),
         }
     }
-    measured.sort_by(|a, b| b.1.flux.total_cmp(&a.1.flux).then(a.0.cmp(&b.0)));
-
-    let mut kept: Vec<(usize, Aperture, Verdict)> = Vec::new();
-    for candidate in measured {
-        let inside = kept.iter().any(|(_, brighter, _)| {
-            (candidate.1.x - brighter.x).hypot(candidate.1.y - brighter.y) <= brighter.radius
-        });
-        if inside {
-            rejected.inside_brighter = rejected.inside_brighter.saturating_add(1);
-        } else {
-            rejected.count(candidate.2);
-            kept.push(candidate);
-        }
-    }
+    let kept = one_per_aperture(measured, &mut rejected);
 
     let stars: Vec<MeasuredStar> = kept
         .into_iter()
@@ -185,6 +192,93 @@ pub fn measure_in_apertures<T: Pixel>(
         "detections measured in apertures"
     );
     stars
+}
+
+/// Measure each listed star in an aperture that starts where it was last
+/// seen, and keep one star per aperture.
+///
+/// Each aperture starts at the star's `x` and `y` with its `radius`, held
+/// between [`MIN_APERTURE_RADIUS`] and the size cap, and follows the star
+/// as a detection's does. One that finds no star there starts again at
+/// twice the radius, up to the cap: a star that defocused since it was
+/// last measured is larger than its last aperture, and a small aperture
+/// on the dark centre of a defocused star finds no light. A listed star
+/// is measured when its aperture settles as a star, lies inside no
+/// brighter listed star's aperture, and its SNR exceeds
+/// [`MIN_LISTED_SNR`]. Returns, in the order given, each listed star as
+/// measured, or `None`; `background_stddev` is the frame's, for the SNR.
+#[must_use]
+pub fn measure_listed<T: Pixel>(
+    view: &ArrayView2<T>,
+    listed: &[Listed],
+    hot: &[(usize, usize)],
+    background_stddev: f64,
+    max_area: usize,
+) -> Vec<Option<MeasuredStar>> {
+    let max_hfr = half_flux_radius_cap(max_area);
+    let mut rejected = Rejections::default();
+    let mut measured: Vec<(usize, Aperture, Verdict)> = Vec::new();
+    for (index, star) in listed.iter().enumerate() {
+        let (last, verdict) = follow_listed(view, star, hot, max_hfr);
+        match last {
+            Some(aperture) => measured.push((index, aperture, verdict)),
+            None => rejected.count(verdict),
+        }
+    }
+    let mut stars: Vec<Option<MeasuredStar>> = vec![None; listed.len()];
+    for (index, aperture, verdict) in one_per_aperture(measured, &mut rejected) {
+        if verdict != Verdict::Star {
+            continue;
+        }
+        if aperture_snr(aperture.flux, aperture.radius, background_stddev) <= MIN_LISTED_SNR {
+            rejected.faint = rejected.faint.saturating_add(1);
+            continue;
+        }
+        if let Some(slot) = stars.get_mut(index) {
+            *slot = Some(MeasuredStar {
+                x: aperture.x,
+                y: aperture.y,
+                hfr: aperture.hfr,
+                flux: aperture.flux,
+                radius: aperture.radius,
+                saturated: false,
+                detection: index,
+            });
+        }
+    }
+    debug!(
+        listed = listed.len(),
+        measured = stars.iter().flatten().count(),
+        ?rejected,
+        "listed stars measured in apertures"
+    );
+    stars
+}
+
+/// The signal-to-noise ratio of an aperture's flux: `flux / √(flux +
+/// π·radius²·σ²)`, `compute_snr`'s noise model over the aperture, with the
+/// gain taken as 1 ADU/electron.
+#[must_use]
+pub fn aperture_snr(flux: f64, radius: f64, background_stddev: f64) -> f64 {
+    let sky = PI * radius * radius;
+    flux / sky
+        .mul_add(background_stddev * background_stddev, flux)
+        .sqrt()
+}
+
+/// The brightest raw pixel in `star`'s aperture, hot pixels left out.
+/// `None` when the aperture holds no pixel of the frame.
+#[must_use]
+pub fn peak_in_aperture<T: Pixel>(
+    view: &ArrayView2<T>,
+    star: &MeasuredStar,
+    hot: &[(usize, usize)],
+) -> Option<f64> {
+    let mut peak: Option<f64> = None;
+    for_each_pixel_within(view, hot, star.x, star.y, star.radius, |_, value| {
+        peak = Some(peak.map_or(value, |p| p.max(value)));
+    });
+    peak
 }
 
 /// The median half-flux radius of the [`BRIGHTEST`] stars of `stars`.
@@ -212,12 +306,30 @@ fn half_flux_radius_cap(max_area: usize) -> f64 {
     u32::try_from(max_area).map_or(f64::INFINITY, |area| (f64::from(area) / PI).sqrt())
 }
 
-/// Refine one detection's aperture round by round. Returns how the
-/// rounds ended and the aperture the detection claims, if any: the one it
-/// settled in, the last one it was measured in when it stopped settling,
-/// or — when the size cap or the frame's edge stopped it while it grew —
-/// the larger one it was growing into, with the last measured flux. A
-/// detection never measured claims nothing.
+/// Rank the measured apertures by flux and keep each one that lies inside
+/// no brighter kept one's aperture, counting the rest.
+fn one_per_aperture(
+    mut measured: Vec<(usize, Aperture, Verdict)>,
+    rejected: &mut Rejections,
+) -> Vec<(usize, Aperture, Verdict)> {
+    measured.sort_by(|a, b| b.1.flux.total_cmp(&a.1.flux).then(a.0.cmp(&b.0)));
+    let mut kept: Vec<(usize, Aperture, Verdict)> = Vec::new();
+    for candidate in measured {
+        let inside = kept.iter().any(|(_, brighter, _)| {
+            (candidate.1.x - brighter.x).hypot(candidate.1.y - brighter.y) <= brighter.radius
+        });
+        if inside {
+            rejected.inside_brighter = rejected.inside_brighter.saturating_add(1);
+        } else {
+            rejected.count(candidate.2);
+            kept.push(candidate);
+        }
+    }
+    kept
+}
+
+/// Refine one detection's aperture round by round, from a start sized by
+/// its component ([`follow`] has what it returns).
 fn follow_star<T: Pixel>(
     view: &ArrayView2<T>,
     star: &Star,
@@ -225,8 +337,7 @@ fn follow_star<T: Pixel>(
     background_mean: f64,
     max_hfr: f64,
 ) -> (Option<Aperture>, Verdict) {
-    let max_radius = APERTURE_FACTOR * max_hfr;
-    let (mut x, mut y) = (star.centroid_x, star.centroid_y);
+    let (x, y) = (star.centroid_x, star.centroid_y);
     let component_hfr = star_hfr(view, star, background_mean).unwrap_or(0.0);
     let extent = star
         .pixels
@@ -237,10 +348,52 @@ fn follow_star<T: Pixel>(
     // verdict on size: a compact star whose component reaches far, along
     // a diffraction spike or a bloom trail, shrinks to its own aperture
     // from there.
-    let mut radius = (APERTURE_FACTOR * component_hfr)
+    let radius = (APERTURE_FACTOR * component_hfr)
         .max(extent + 1.0)
         .max(MIN_APERTURE_RADIUS)
-        .min(max_radius);
+        .min(APERTURE_FACTOR * max_hfr);
+    follow(view, hot, x, y, radius, max_hfr)
+}
+
+/// Refine a listed star's aperture from where it was last seen, starting
+/// again at twice the radius while it finds no star, up to the cap.
+fn follow_listed<T: Pixel>(
+    view: &ArrayView2<T>,
+    star: &Listed,
+    hot: &[(usize, usize)],
+    max_hfr: f64,
+) -> (Option<Aperture>, Verdict) {
+    let max_radius = APERTURE_FACTOR * max_hfr;
+    let mut radius = star.radius.max(MIN_APERTURE_RADIUS).min(max_radius);
+    loop {
+        let (last, verdict) = follow(view, hot, star.x, star.y, radius, max_hfr);
+        let found_nothing = matches!(
+            verdict,
+            Verdict::NoFlux | Verdict::Unsettled | Verdict::Floor
+        );
+        if !found_nothing || radius >= max_radius {
+            return (last, verdict);
+        }
+        radius = (2.0 * radius).min(max_radius);
+    }
+}
+
+/// Refine an aperture round by round from `(x, y)` and `radius`. Returns
+/// how the rounds ended and the aperture claimed, if any: the one it
+/// settled in, the last one it was measured in when it stopped settling,
+/// or — when the size cap or the frame's edge stopped it while it grew —
+/// the larger one it was growing into, with the last measured flux. An
+/// aperture never measured claims nothing.
+fn follow<T: Pixel>(
+    view: &ArrayView2<T>,
+    hot: &[(usize, usize)],
+    x: f64,
+    y: f64,
+    radius: f64,
+    max_hfr: f64,
+) -> (Option<Aperture>, Verdict) {
+    let max_radius = APERTURE_FACTOR * max_hfr;
+    let (mut x, mut y, mut radius) = (x, y, radius);
     let mut last = None;
     for _ in 0..MAX_ROUNDS {
         let growing_into = |last: Option<Aperture>| last.map(|a| Aperture { x, y, radius, ..a });
@@ -747,5 +900,152 @@ mod tests {
         assert!(flagged[0].saturated);
         let unknown = measure_in_apertures(&arr.view(), &detection, BACKGROUND, 4096, None);
         assert!(!unknown[0].saturated);
+    }
+
+    /// Raise every pixel between `inner` and `outer` from `(x, y)` by
+    /// `height`: the ring of a defocused star with a central obstruction.
+    fn add_ring(arr: &mut Array2<u16>, x: f64, y: f64, inner: f64, outer: f64, height: u16) {
+        for ((r, c), v) in arr.indexed_iter_mut() {
+            let d = (c as f64 - x).hypot(r as f64 - y);
+            if (inner..=outer).contains(&d) {
+                *v += height;
+            }
+        }
+    }
+
+    fn listed(x: f64, y: f64, radius: f64) -> Listed {
+        Listed { x, y, radius }
+    }
+
+    /// The flat frame's noise is 0; an SNR of a listed star is then its
+    /// flux's square root, far above the threshold for these discs.
+    fn measure_list(
+        arr: &Array2<u16>,
+        stars: &[Listed],
+        max_area: usize,
+    ) -> Vec<Option<MeasuredStar>> {
+        measure_listed(&arr.view(), stars, &[], 0.0, max_area)
+    }
+
+    #[test]
+    fn a_listed_star_is_measured_where_it_was_last_seen() {
+        let mut arr = flat(64, 64);
+        add_disc(&mut arr, 32.0, 32.0, 4.0, 500);
+        let stars = measure_list(&arr, &[listed(31.0, 33.0, 3.0)], 4096);
+        let star = stars[0].expect("measured");
+        assert!((star.hfr - 4.0 / 2_f64.sqrt()).abs() < 0.3, "{star:?}");
+        assert!(
+            (star.x - 32.0).abs() < 0.1 && (star.y - 32.0).abs() < 0.1,
+            "{star:?}"
+        );
+    }
+
+    #[test]
+    fn a_small_aperture_on_a_rings_dark_centre_starts_again_larger() {
+        // A ring from 8 to 20 px: an aperture of 3 px at its centre holds
+        // no light, so it starts again at 6, 12 and 24 px. It settles near
+        // 46 px, its annulus out to about 70.
+        let mut arr = flat(200, 200);
+        add_ring(&mut arr, 100.0, 100.0, 8.0, 20.0, 100);
+        let stars = measure_list(&arr, &[listed(100.0, 100.0, 3.0)], 40_000);
+        let ring = stars[0].expect("measured from a larger start");
+        assert!(
+            (ring.x - 100.0).abs() < 0.3 && (ring.y - 100.0).abs() < 0.3,
+            "{ring:?}"
+        );
+        assert!(ring.hfr > 10.0 && ring.hfr < 17.0, "{ring:?}");
+    }
+
+    #[test]
+    fn a_listed_place_with_no_star_is_not_measured() {
+        let mut arr = flat(64, 64);
+        add_disc(&mut arr, 20.0, 20.0, 3.0, 500);
+        let stars = measure_list(
+            &arr,
+            &[listed(44.0, 44.0, 3.0), listed(-10.0, 30.0, 3.0)],
+            4096,
+        );
+        assert_eq!(stars, [None, None]);
+    }
+
+    #[test]
+    fn listed_stars_come_back_in_the_order_given() {
+        let mut arr = flat(64, 96);
+        add_disc(&mut arr, 24.0, 32.0, 3.0, 200);
+        add_disc(&mut arr, 72.0, 32.0, 3.0, 600);
+        let stars = measure_list(
+            &arr,
+            &[listed(24.0, 32.0, 3.0), listed(72.0, 32.0, 3.0)],
+            4096,
+        );
+        let (faint, bright) = (stars[0].expect("faint"), stars[1].expect("bright"));
+        assert!(
+            (faint.x - 24.0).abs() < 0.1 && faint.flux < bright.flux,
+            "{stars:?}"
+        );
+        assert!((bright.x - 72.0).abs() < 0.1, "{stars:?}");
+    }
+
+    #[test]
+    fn two_listed_stars_on_one_disc_count_once() {
+        let mut arr = flat(100, 100);
+        add_disc(&mut arr, 50.0, 50.0, 12.0, 100);
+        let stars = measure_list(
+            &arr,
+            &[listed(46.0, 50.0, 3.0), listed(55.0, 50.0, 3.0)],
+            4096,
+        );
+        assert_eq!(stars.iter().flatten().count(), 1, "{stars:?}");
+    }
+
+    #[test]
+    fn a_listed_star_at_or_below_the_snr_threshold_is_not_measured() {
+        // A disc of radius 3 and height 10 has a flux of about 280; it
+        // settles in an aperture of about 6 px, so a background noise of
+        // 15 puts its SNR under 3 and one of 1 well over it.
+        let mut arr = flat(64, 64);
+        add_disc(&mut arr, 32.0, 32.0, 3.0, 10);
+        let noisy = measure_listed(&arr.view(), &[listed(32.0, 32.0, 3.0)], &[], 15.0, 4096);
+        assert_eq!(noisy, [None]);
+        let quiet = measure_listed(&arr.view(), &[listed(32.0, 32.0, 3.0)], &[], 1.0, 4096);
+        assert!(quiet[0].is_some(), "{quiet:?}");
+    }
+
+    #[test]
+    fn a_listed_star_larger_than_the_cap_is_not_measured() {
+        let mut arr = flat(100, 100);
+        add_disc(&mut arr, 50.0, 50.0, 12.0, 100);
+        assert!(measure_list(&arr, &[listed(50.0, 50.0, 3.0)], 300)[0].is_some());
+        assert_eq!(measure_list(&arr, &[listed(50.0, 50.0, 3.0)], 200), [None]);
+    }
+
+    #[test]
+    fn aperture_snr_is_the_flux_over_its_shot_and_sky_noise() {
+        // flux 100, radius 1, σ 2: √(100 + 4π) ≈ 10.60.
+        let snr = aperture_snr(100.0, 1.0, 2.0);
+        assert!(
+            (snr - 100.0 / (100.0 + 4.0 * PI).sqrt()).abs() < 1e-12,
+            "{snr}"
+        );
+        // With no sky noise it is the shot noise alone.
+        assert!((aperture_snr(100.0, 5.0, 0.0) - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_peak_in_an_aperture_is_its_brightest_pixel() {
+        let mut arr = flat(64, 64);
+        add_disc(&mut arr, 32.0, 32.0, 4.0, 500);
+        arr[(33, 32)] = 2000;
+        let star = MeasuredStar {
+            x: 32.0,
+            y: 32.0,
+            radius: 6.0,
+            ..star(1.0)
+        };
+        assert_eq!(peak_in_aperture(&arr.view(), &star, &[]), Some(2000.0));
+        assert_eq!(
+            peak_in_aperture(&arr.view(), &star, &[(33, 32)]),
+            Some(1500.0)
+        );
     }
 }

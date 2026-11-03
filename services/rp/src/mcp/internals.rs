@@ -304,11 +304,45 @@ pub(crate) struct DetectStarsOutcome {
 
 /// `MeasureStarsParams` after schema-level optionals are validated by the
 /// tool body.
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedMeasureStarsParams {
     pub(crate) threshold_sigma: f64,
-    pub(crate) min_area: usize,
+    pub(crate) stars: MeasureStarsTarget,
     pub(crate) max_area: usize,
     pub(crate) stamp_half_size: usize,
+}
+
+/// Which stars `measure_stars` measures: the ones detection finds above
+/// `min_area`, or a list already known, where it was last seen.
+#[derive(Debug, Clone)]
+pub(crate) enum MeasureStarsTarget {
+    Detected { min_area: usize },
+    Listed(Vec<imaging::Listed>),
+}
+
+/// `measure_stars` over `view`: detection, or the listed stars.
+fn measure_stars_on<T: imaging::Pixel>(
+    view: &ndarray::ArrayView2<T>,
+    params: &ResolvedMeasureStarsParams,
+    max_adu: Option<u32>,
+) -> crate::error::Result<imaging::MeasureStarsResult> {
+    match &params.stars {
+        MeasureStarsTarget::Detected { min_area } => imaging::measure_stars(
+            view,
+            params.threshold_sigma,
+            *min_area,
+            params.max_area,
+            max_adu,
+            params.stamp_half_size,
+        ),
+        MeasureStarsTarget::Listed(listed) => imaging::measure_listed_stars(
+            view,
+            params.threshold_sigma,
+            params.max_area,
+            listed,
+            params.stamp_half_size,
+        ),
+    }
 }
 
 /// Counts existing `.fits` frames in `dir` whose filename (parsed via
@@ -1384,13 +1418,8 @@ impl McpHandler {
     ) -> crate::error::Result<imaging::MeasureStarsResult> {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
-            return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_stars(
-                &arr,
-                params.threshold_sigma,
-                params.min_area,
-                params.max_area,
-                max_adu,
-                params.stamp_half_size,
+            return crate::dispatch_pixels!(&cached.pixels, |arr| measure_stars_on(
+                &arr, params, max_adu
             ));
         }
 
@@ -1412,13 +1441,10 @@ impl McpHandler {
         params: &ResolvedMeasureStarsParams,
     ) -> crate::error::Result<imaging::MeasureStarsResult> {
         let path_owned = path.to_string();
-        let threshold = params.threshold_sigma;
-        let min_a = params.min_area;
-        let max_a = params.max_area;
-        let stamp = params.stamp_half_size;
+        let params = params.clone();
         tokio::task::spawn_blocking(move || {
             let arr = persistence::read_fits_array(&path_owned)?;
-            imaging::measure_stars(&arr.view(), threshold, min_a, max_a, None, stamp)
+            measure_stars_on(&arr.view(), &params, None)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?

@@ -667,7 +667,10 @@ semantics `rp`'s capture sweep has today:
    `measure_stars` on the document, `frames_per_step` times when
    configured. A point's HFR is the frame's median HFR; its
    `star_count` gates it against `min_star_fraction` of the sweep's
-   best count (`rejected: "sparse"`).
+   best count (`rejected: "sparse"`). The sample-gating plan's G3c
+   replaces that gate: each attempt measures one list of stars, picked
+   on a reference frame at its centre, at every frame, and a point is
+   `sparse` below two of them measured; `min_star_fraction` retires.
 3. Fit the accepted points, weighted by star count; report
    `fit_r_squared`. S4 shipped `rp`'s weighted parabola, ported and
    proven on the rig's recorded sweeps; S9 replaced it with the
@@ -1037,8 +1040,8 @@ the coefficient, keeps the reference and offsets, returns `dropped`,
     "imaging": {
       "duration": "3s", "min_area": 4, "max_area": 500,
       "threshold_sigma": null, "frames_per_step": 1,
-      "min_fit_points": 5, "min_star_fraction": 0.1,
-      "min_fit_r_squared": null, "temperature_sensor": null,
+      "min_fit_points": 5, "min_fit_r_squared": null,
+      "temperature_sensor": null,
       "confirmation_tolerance": 0.25, "max_attempts": 2,
       "step_size": null, "half_width": null
     }

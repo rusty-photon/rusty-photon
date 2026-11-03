@@ -7,8 +7,8 @@ use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::internals::{
-    star_to_json, ResolvedClipParams, ResolvedDetectParams, ResolvedMeasureStarsParams,
-    ResolvedParams,
+    star_to_json, MeasureStarsTarget, ResolvedClipParams, ResolvedDetectParams,
+    ResolvedMeasureStarsParams, ResolvedParams,
 };
 use super::super::{tool_error, tool_success};
 use crate::imaging;
@@ -128,25 +128,69 @@ pub struct MeasureStarsParams {
     #[serde(default)]
     pub image_path: Option<String>,
     /// Detection threshold above background, expressed as multiples of the
-    /// sigma-clipped background stddev. Default `5.0`.
+    /// sigma-clipped background stddev. Default `5.0`. With `stars`, only
+    /// the level hot pixels are found at.
     #[serde(default = "default_threshold_sigma")]
     pub threshold_sigma: f64,
     /// Minimum component pixel area. No default — same rationale as
-    /// `measure_basic`.
+    /// `measure_basic`. Required unless `stars` is given.
     #[serde(default)]
     pub min_area: Option<usize>,
     /// The largest star to measure, as the area in pixels of its
     /// half-flux disc, as in `measure_basic`. Same rationale.
     #[serde(default)]
     pub max_area: Option<usize>,
+    /// The stars to measure where they were last seen, instead of the
+    /// stars detection finds: this tool's own `stars` output can be passed
+    /// back as it came. Each aperture starts at the star's `x`, `y` and
+    /// `radius` (3 px when absent).
+    #[serde(default)]
+    pub stars: Option<Vec<ListedStarParams>>,
     /// Half-side of the postage stamp used for the 2D Gaussian fit.
     /// Default `8` (gives a 17×17 stamp).
     #[serde(default = "default_stamp_half_size")]
     pub stamp_half_size: usize,
 }
 
+/// One star of `measure_stars`' `stars` input.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListedStarParams {
+    /// Where the star was last seen along the image width (pixels).
+    pub x: f64,
+    /// Where the star was last seen along the image height (pixels).
+    pub y: f64,
+    /// The radius of the aperture it was last measured in (pixels); 3
+    /// when absent.
+    #[serde(default)]
+    pub radius: Option<f64>,
+}
+
 const fn default_stamp_half_size() -> usize {
     imaging::DEFAULT_STAMP_HALF_SIZE
+}
+
+/// The `stars` input as places to measure at, a missing radius taken as
+/// the smallest aperture; an entry with a radius that is not positive is
+/// refused, naming it.
+fn listed_stars(listed: &[ListedStarParams]) -> Result<Vec<imaging::Listed>, String> {
+    listed
+        .iter()
+        .enumerate()
+        .map(|(index, star)| {
+            let radius = star.radius.unwrap_or(imaging::MIN_APERTURE_RADIUS);
+            if radius > 0.0 {
+                Ok(imaging::Listed {
+                    x: star.x,
+                    y: star.y,
+                    radius,
+                })
+            } else {
+                Err(format!(
+                    "invalid parameter: stars[{index}].radius must be positive (got {radius})"
+                ))
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -452,8 +496,15 @@ impl McpHandler {
                 Ok(s) => s,
                 Err(msg) => return Ok(tool_error!("{}", msg)),
             };
-        let Some(min_area) = params.min_area else {
-            return Ok(tool_error!("missing required parameter: min_area"));
+        let stars = match params.stars.as_deref() {
+            Some(listed) => match listed_stars(listed) {
+                Ok(listed) => MeasureStarsTarget::Listed(listed),
+                Err(msg) => return Ok(tool_error!("{}", msg)),
+            },
+            None => match params.min_area {
+                Some(min_area) => MeasureStarsTarget::Detected { min_area },
+                None => return Ok(tool_error!("missing required parameter: min_area")),
+            },
         };
         let Some(max_area) = params.max_area else {
             return Ok(tool_error!("missing required parameter: max_area"));
@@ -465,7 +516,7 @@ impl McpHandler {
         }
         let resolved = ResolvedMeasureStarsParams {
             threshold_sigma: params.threshold_sigma,
-            min_area,
+            stars,
             max_area,
             stamp_half_size: params.stamp_half_size,
         };
