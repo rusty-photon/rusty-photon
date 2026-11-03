@@ -37,8 +37,8 @@ by hand:
 
 The D05 star database (~100 MB) is required for typical 0.6°–6° FOV
 imaging; download from the same SourceForge project. A narrower field
-needs a denser one (D20, ~400 MB, and up), as CI's 0.42° test frame does
-from ASTAP CLI-2026.10.30 on.
+needs a denser one (D20, ~400 MB, and up): with ASTAP CLI-2026.10.30 and
+later, CI's 0.42° test frame solves with D20 and not with D05.
 
 Configure `plate-solver` to point at the install:
 
