@@ -228,6 +228,16 @@ build:windows --enable_runfiles
 # qhyccd statically (no runtime lib), so this is Windows-only.
 build:windows --test_env=PATH
 
+# GitHub's Windows image builds Windows PowerShell's module analysis cache in
+# advance and names it in PSModuleAnalysisCachePath. Without that cache, a
+# powershell.exe analyses the modules on its path to find the first cmdlet it
+# runs: 20-27 s per launch on that image, against under a second with it. The
+# install actions' tests launch one for each unpacking (`unpackZips` in
+# .github/actions/lib/install.mjs), so without the variable their Windows legs
+# outrun their size's timeout. Forwarded by name, on `build:windows` for the
+# reason PATH is above.
+build:windows --test_env=PSModuleAnalysisCachePath
+
 # zwo-camera's `libzwo-sys` build script (bindgen) + link step need native ZWO
 # SDK toolchain env that `--incompatible_strict_action_env` (above) otherwise
 # strips. The `install-zwo-sdk` composite action (run in bazel.yml /
