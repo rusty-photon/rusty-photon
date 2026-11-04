@@ -16,7 +16,7 @@ All three passed on the second night's runs. The first night's runs
 passed B and C, and only half of A: every run confirmed on the derived
 grid, but the ends of the sweep sat at 7–11× the best HFR instead of the
 4× the derivation aims for. The measured wing slope (4.14–4.37 px per 100
-steps) was 2.2× the predicted 2.012, and focus-model.md § Sweep sizing
+steps) was 2.06–2.17× the predicted 2.012, and focus-model.md § Sweep sizing
 reads that as a wrong input. The input was `microns_per_step`, which `rp`
 took from the FocusLynx server's ASCOM `StepSize` (1.06985 µm). With
 `microns_per_step: 2.1` set on the focuser in `rp.json`, the second night's
@@ -76,7 +76,7 @@ night is off-centre, and its ends say nothing about the width.
 
 | Check | Night 1 | Night 2 |
 |---|---|---|
-| A — the derived sweep | partial: confirms on the derived grid, R² 0.969–0.978 against the hand-tuned block's 0.958 on 2026-09-26; ends at 7–11× | **pass**: ends at 3.0–3.8× on the centred runs |
+| A — the derived sweep | partial: confirms on the derived grid at the first attempt, R² 0.969–0.978; ends at 7–11× | **pass**: ends at 3.0–3.8× on the centred runs |
 | B — the predicted start inside the band | **pass**: 29618 predicted, 29613 found (5 steps, inside the CFZ) | **pass**: 29557 predicted, 29553 found (4 steps) |
 | C — a hand-entered offset on a filter change | **pass**: wheel to R, `terms.offset` 20, start 29633; the move itself was skipped as within half a CFZ (31 steps) of the focuser | **pass**: wheel to R, start 29573, and moved there (20 > 16). R focused at L + 15 (night 1: + 14) |
 
@@ -85,13 +85,17 @@ night is off-centre, and its ends say nothing about the width.
 1. **The FocusLynx server's `StepSize` is not this focuser's travel.**
    `rp` reads a focuser's ASCOM `StepSize` when `microns_per_step` is not
    configured (rp.md § Train optics), and Optec's server reported
-   1.06985 µm. The night-1 sweeps measured the defocus growth at 2.2× what
-   that value predicts, which implies about 2.26 µm per step. The
-   focus-model plan's night-3 numbers had already put the slope near
-   4 px per 100 steps. With 2.1 µm configured, the predicted slope (3.949)
-   is within 6% of night 1's wide-grid measurements. Night 2's narrower
-   grids reached only 3–4× the best HFR, sampled less of the wing's
-   straight part, and fitted lower slopes (3.12–3.65).
+   1.06985 µm. The night-1 sweeps measured the defocus growth at
+   2.06–2.17× what that value predicts (mean 2.11×), which implies about
+   2.26 µm per step. The focus-model plan's night-3 numbers had already
+   put the slope near 4 px per 100 steps. 2.1 µm, the value configured
+   for night 2, predicts 3.949, which is 5–11% below night 1's wide-grid
+   measurements (4.14–4.37). Night 2's narrower grids reached only 3–4×
+   the best HFR, sampled less of the wing's straight part, and fitted
+   lower slopes (3.12–3.65), which would imply 1.66–1.94 µm. So the
+   sweeps bracket the focuser's travel near 2 µm, against the driver's
+   1.07, without pinning it closer; 2.1 put check A's ends where the
+   derivation aims.
 2. **Focus follows temperature at about 14 steps per °C.** L focus was
    29613 at 14.4 °C (01:18Z) and 29553 at 10.0 °C (05:14Z). The change of
    `microns_per_step` made the record stale, as an optical fact is part of
