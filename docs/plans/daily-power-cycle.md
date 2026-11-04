@@ -45,7 +45,7 @@ device's USB interface draws its power, not on which port can be switched:
 | Device | 12 V cut, USB left on | Source |
 |---|---|---|
 | QHY178M (dev box) | Stays on the bus, answers every call, reports its cooler as present. Its filter wheel, fed from the camera's 12 V, homes for about 20 s when the 12 V returns | [Linux](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md) and [Windows](../validation/2026-10-06-qhy-camera-qhy178m-cfw-windows-departure/README.md) departure records |
-| QHY600M (rig2) | Leaves the bus | the Windows departure record above |
+| QHY600M (rig2) | Leaves the bus, and comes back through its firmware loader about 1 s after its 12 V returns | the Windows departure record above; Validation |
 | Optec FocusLynx hub (rig2) | Leaves: its COM port appears only once the hub has power | the tracking issue's 2026-09-06 measurement |
 | DSD FP2 (rig2) | Its COM port was gone with the power box off; whether its USB was on a switched port is not recorded | the tracking issue's 2026-09-06 comment |
 | ZWO cooled cameras, SVBONY, Pegasus Falcon and Scops, QHY focuser, Star Adventurer GTi | Not measured | P0 |
@@ -215,7 +215,9 @@ Each is settled before the slice that needs it.
   emits `equipment_changed {connected: true}` only for a device that was
   disconnected. A QHY178M whose 12 V was cut stayed connected all day, so
   the dusk document needs another signal that its cooler and wheel have
-  power.
+  power. Readiness also covers the first exposure: on rig2, 3 of 22 QHY600M
+  exposures started 3–9 s after the camera came up wedged it until the next
+  power cycle, and none of 14 started 30 s or more after (Validation).
 - **O5 (P7). When dusk starts.** At an offset from civil twilight and with
   the roof open, or the camera earlier so that it cools before the roof
   opens.
@@ -228,26 +230,34 @@ Each is settled before the slice that needs it.
   listener reports it (its `RegisterPnpEventIn` callback fires), and that
   is unreliable: no `ScanQHYCCD` or `OpenQHYCCD` sees the camera sooner, and
   an in-process Release + Init reports zero cameras again. A new process
-  sees it at once (Validation). So a Windows QHY service that started while
-  its cameras were off, after a daytime boot or upgrade, cannot bind them
-  reliably in process. The options:
+  sees it at once. On rig2's bare metal the listener reported 17 of 30 such
+  arrivals within 80 ms of Windows starting the device and missed the rest
+  outright, whether the process was scanning every second, waiting for the
+  callback, or scanning through the firmware load. A missed camera stayed
+  invisible to that process until its next arrival (Validation). So
+  a Windows QHY service that started while its cameras were off, after a
+  daytime boot or upgrade, cannot bind them reliably in process. The
+  options:
   - **(a) Initialise the SDK at the first bind**, not at start, and never
     release it. With the identity in the list nothing needs the SDK before
-    then. This covers a service whose QHY cameras power on together; a
-    camera powered on after the first bind still meets the unreliable
-    path.
+    then, and a fresh init enumerates every camera present (9 of 9 new
+    processes on rig2). This covers a service whose QHY cameras power on
+    together; a camera powered on after the first bind still meets the
+    listener.
   - **(b) Restart the service process** when an unbound QHY camera's port
     fills and no device of the service is connected (Windows only). This
     helps only a service that serves one QHY camera, or whose cameras power
     on together: a camera powered on while rp holds another of the same
     service waits for that session to end, which does not happen while rp
     holds the cameras all night (decision 3).
-  - **(c) Bind on the SDK's arrival callback**, with retries, accepting its
-    latency and its misses.
-  - **(d) One SDK process per QHY camera.**
+  - **(c) Bind on the SDK's arrival callback.** It misses about four
+    arrivals in ten, and a miss lasts until the camera's next arrival, which
+    no driver may cause (tenet 3), so on its own it leaves a camera unbound
+    for the night.
+  - **(d) One SDK process per QHY camera**, so that a camera's arrival can
+    be met with a fresh init without touching the others.
 
-  Every Windows run so far was in a KVM guest, so the behaviour is
-  confirmed on bare-metal Windows (rig2) before one is chosen.
+  Bare metal confirms what the KVM guest showed, so the choice is open.
 - **O8 (P6). Which output feeds which device.** rp's `switches[]` entries
   name a power box, not the devices on its outputs, so P6's refusal to
   switch off an output whose device is busy needs a mapping from each output
@@ -273,7 +283,7 @@ Each is settled before the slice that needs it.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M probed on Linux and Windows (Validation); the rest not started | |
+| P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
 | P1 | Serial drivers never fail their start on a device that is not there (O2), in all eight shared-transport drivers | Not started | |
 | P2 | rp logs a powered-off device once, not every pass (O3) | Not started | |
 | P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module. rp's placeholder handling (`alpaca::connect_refused`, the identity pin's placeholder refusal) and doctor's `service.devices` key on the placeholder `UniqueID` form, so they change with the drivers | Not started; needs P2, O1, and O7 for QHY on Windows | |
@@ -335,11 +345,32 @@ guest's device tree through the Configuration Manager API.
 | An open handle power-cycled (12 s off), the camera present at the first init | Clean. The first call after the camera returned failed at once, the close succeeded, and a reopen by id opened it on the first attempt, 3 s after it returned |
 | An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned 0.0 °C instead of failing (−722.2 °C on Linux) |
 
+### QHY, Windows bare metal (2026-11-04)
+
+rig2: an Intel NUC on Windows 11 Pro (build 26200). Its QHY600M
+(`QHY600M-3b1ea54688eb9f9d7`, with a 7-slot wheel) sits on the UPBv2's USB
+port 1 and was switched through `upbv2-driver` by its 12 V output 1, which
+takes it off the bus. Its QHY5III678M (`QHY5III678M-4a94be45b27d3aa79`) sits
+on USB port 3, whose power the UPBv2 switches. Windows' own QHY driver,
+from QHY's All-in-One pack, loads the 600M's firmware. Two SDK builds were
+used: the All-in-One's `qhyccd.dll` 24.1.9.12, which the installed service
+loads, and 26.06.04 beside the probe. The probe is the one from the KVM
+runs, built in the guest, with `qhy-camera` stopped while it ran. It ran as
+`SYSTEM` from a scheduled task (session 0, as a service runs), except two
+runs over SSH, both of which missed the arrival.
+
+| Question | Result |
+|---|---|
+| What restoring the 600M's 12 V looks like | Clean every time. Windows starts the firmware loader (`1618:c600`) about 0.3 s after the 12 V, and the camera (`1618:c601`) about 0.6 s later; no SDK is involved |
+| Camera absent at the process's first `InitQHYCCDResource`, then arriving (one camera) | 26 runs. In 16 the SDK's `RegisterPnpEventIn` callback named it 30–80 ms after Windows started the device, and `ScanQHYCCD` then listed it and `OpenQHYCCD` opened it. In the other 10 no callback came, and no scan or open saw the camera for the rest of the run: 15–30 s, plus two Release + Init rounds of 20 s in four of them, every one enumerating zero cameras. 24.1.9.12 kept 14 of 19 arrivals, 26.06.04 kept 2 of 7. Arrivals were missed with the process scanning and opening every second, with it waiting for the callback, with it scanning every 20 ms during the firmware load, and 16 s as well as 1.2 s after the init. Misses came in clusters: the first four runs all missed, and 12 of the 14 in the next 20 minutes kept theirs. The 8 runs that made one call, or a call every 5 ms, as the device started all kept theirs, but all of them fell in those 20 minutes. The four arrivals in which Windows was seen taking 50 ms or more to start the device were all missed |
+| A second arrival in the same process, after a missed one | Reported both times: the callback fired and the camera opened |
+| The same camera in a new process | Enumerated at the init, 9 of 9 |
+| The 600M arriving while the 678M, present at the init, is open on the same SDK | Reported and opened 1 of 2 times with the 678M idle and 0 of 2 while it exposed back to back; the 678M's 84 frames were all good |
+| The callbacks for a camera present at the init | `RegisterPnpEventIn` fires for it during the init. When its 12 V is cut, `RegisterPnpEventOut` fires 0.6–0.9 s after Windows drops the device; when the 12 V returns, `RegisterPnpEventIn` fires 35–80 ms after Windows starts it |
+| An open handle power-cycled (5 s off), the camera present at the first init | 7 of 7 clean, on both SDK builds, with nothing touching the handle while off or with a call and a close while off. The first call after the return failed at once, the close succeeded, and a reopen by id 3 s or 30 s after the return opened it on the first attempt. The first exposure after one of them wedged (last row) |
+| `ScanQHYCCD` from a second thread during the 600M's exposures | No effect. 2 exposures of 2 s with 18 scans each through the 1.5 s readout; every scan took under 1 ms and the frames matched the controls |
+| The first exposures after a power-up | 3 of the 22 full-frame exposures started 3–9 s after the camera came up read out for 60–66 s and returned an all-zero frame. The close or SDK release that followed hung until the process was killed, and only a power cycle cleared the camera: a new process's first exposure on it wedged the same way. None of the 14 started 30 s or more after power-up wedged |
+
 ### Owed
 
-- Bare-metal Windows (rig2) for O7: a camera that arrives after the
-  process's first SDK init, with the firmware loaded by Windows' own QHY
-  driver rather than the host's `fxload`.
-- rig2's QHY600M, which leaves the bus when its 12 V is cut, and its two
-  QHY cameras, for a camera arriving while another exposes.
 - The P0 survey of every other device.

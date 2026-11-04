@@ -1153,8 +1153,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   case; finding it still needs a restart, or on Linux a reload (C0). On
   Windows a reload's fresh SDK, made in the same process, did not enumerate
   a camera that arrived after the process first initialised the SDK, while a
-  new process did (measured in a KVM guest:
-  [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-2026-11-03)).
+  new process did (measured in a KVM guest and on bare metal:
+  [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-bare-metal-2026-11-04)).
   That plan replaces both with a device that binds when its camera arrives.
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
