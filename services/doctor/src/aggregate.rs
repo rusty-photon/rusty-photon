@@ -420,7 +420,7 @@ fn inventory_checks(
             Some(service.to_string()),
             detail,
             Some(format!(
-                "run `{command}`; once the camera is fixed, reload or restart {service}"
+                "run `{command}`; once the camera is fixed, restart {service}"
             )),
         ));
     }
@@ -996,11 +996,8 @@ mod tests {
         assert_eq!(
             checks[1].suggestion.as_deref(),
             Some(
-                format!(
-                    "run `{DEVICES_COMMAND}`; once the camera is fixed, reload or restart \
-                     qhy-camera"
-                )
-                .as_str()
+                format!("run `{DEVICES_COMMAND}`; once the camera is fixed, restart qhy-camera")
+                    .as_str()
             )
         );
         assert!(

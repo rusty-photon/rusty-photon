@@ -1158,8 +1158,8 @@ on its own (U5).
   6. the camera placed on the port could not be opened for its identity — the
      SDK's error (U5).
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
   (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs

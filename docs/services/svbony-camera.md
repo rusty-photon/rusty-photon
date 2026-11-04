@@ -1294,8 +1294,8 @@ one core at load average 65, see "Real-hardware validation").
   the open or opening a different camera. A camera
   absent when the service started is another matter; finding it still needs a
   reload or a restart (C0), which is why the services start with every
-  camera powered ([Linux](../packaging.md#switching-devices-off-between-sessions)
-  and [Windows](../packaging-windows.md#switching-devices-off-between-sessions)
+  camera powered ([Linux](../packaging.md#start-the-services-with-every-device-powered)
+  and [Windows](../packaging-windows.md#start-the-services-with-every-device-powered)
   packaging guides).
 
   **A departure between two failures goes unseen.** A camera unplugged and
@@ -1523,8 +1523,8 @@ and what `doctor --devices` can say about a camera without opening it — is
      message adds how many and points at doctor's `hardware.usb-fault`.
      Another vendor's fault is that vendor's device, and is not offered.
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
   (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs

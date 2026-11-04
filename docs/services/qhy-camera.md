@@ -1155,10 +1155,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   a camera that arrived after the process first initialised the SDK, while a
   new process did (measured in a KVM guest and on bare metal:
   [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-bare-metal-2026-11-04)).
-  So the services start with every camera powered, and cameras are switched
-  off only once they have
-  ([Linux](../packaging.md#switching-devices-off-between-sessions) and
-  [Windows](../packaging-windows.md#switching-devices-off-between-sessions)
+  So the services start and reload with every camera powered
+  ([Linux](../packaging.md#start-the-services-with-every-device-powered) and
+  [Windows](../packaging-windows.md#start-the-services-with-every-device-powered)
   packaging guides).
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
@@ -1353,11 +1352,11 @@ which a list replaces with the declaration.
   (its identity needs an open): nothing here opens one. A placed camera that
   cannot be opened fails its client's connect (C2), as without a list.
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. On Windows only
-  the restart is known to find a camera that was absent when the process
-  started (C9). The failed scan's
-  is the exception: the service re-scans and rebuilds on its own (U6), so it
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. It names a restart because
+  that works on every platform: on Windows a reload does not find a camera
+  that was absent when the process started (C9). A failed scan's reason is
+  the exception: the service re-scans and rebuilds on its own (U6), so it
   says that, and sends nobody to restart anything. (The device-claims plan's
   D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
   signal the collectors do not read yet, so a camera that fell back to USB 2

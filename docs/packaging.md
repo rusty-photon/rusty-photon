@@ -366,16 +366,16 @@ derived from the discovered unit names — the rule's scope and the discovery
 scope are the same set (see
 [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
 
-## Switching devices off between sessions
+## Start the services with every device powered
 
-Start the services, whether at install, upgrade, reboot or by hand, with
-every device powered, USB and 12 V, and switch devices off only once the
-services have started. A device a service started with is picked up again
-when its power returns: a camera opens again on the next connect, and a
-serial driver retries its link every 5 s until the device answers. A camera
-that was off when its service started is not served until the service is
-restarted or reloaded with the camera powered, and a serial device that is
-off fails its service's start every 5 s until it answers.
+Start, restart or reload the services, whether at install, upgrade or
+reboot, by hand, or by saving a setup page (which reloads its service),
+with every device powered, USB and 12 V. A start or a reload looks for each
+service's devices then. A camera that is off at that moment is not served
+until the service is restarted or reloaded with the camera powered (a
+listed camera is a placeholder meanwhile). A serial device that is off
+fails its service's start, or ends its process on a reload, and the service
+restarts every 5 s until the device answers.
 
 ## Camera specifics
 

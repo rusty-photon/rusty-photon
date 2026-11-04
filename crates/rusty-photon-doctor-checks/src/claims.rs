@@ -721,8 +721,8 @@ impl<'a> Claims<'a> {
     /// failed scan's ends with.
     fn with_the_way_back(&self, reason: &str) -> String {
         format!(
-            "{reason}. Once the camera is fixed, reload or restart {}, which \
-             re-opens every camera it serves",
+            "{reason}. Once the camera is fixed, restart {}, which re-opens every \
+             camera it serves",
             self.service
         )
     }
@@ -2159,8 +2159,8 @@ mod tests {
         let reason = placeholder_reason(claims(Ok(scan(Vec::new())), Vec::new()).resolve("p1"));
         assert!(
             reason.ends_with(
-                "Once the camera is fixed, reload or restart svbony-camera, which re-opens \
-                 every camera it serves"
+                "Once the camera is fixed, restart svbony-camera, which re-opens every \
+                 camera it serves"
             ),
             "{reason}"
         );
@@ -2175,7 +2175,7 @@ mod tests {
             "{reason}"
         );
         assert!(
-            reason.contains("re-scans on its own") && !reason.contains("reload or restart"),
+            reason.contains("re-scans on its own") && !reason.contains("Once the camera is fixed"),
             "a failed scan heals itself, so its reason sends nobody to restart: {reason}"
         );
         assert_eq!(claims.placement(), None);
@@ -2353,8 +2353,7 @@ mod tests {
         assert_eq!(
             reason,
             "the SVBony SDK could not open the camera placed on p1: general error. Once the \
-             camera is fixed, reload or restart svbony-camera, which re-opens every camera it \
-             serves"
+             camera is fixed, restart svbony-camera, which re-opens every camera it serves"
         );
     }
 

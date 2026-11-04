@@ -512,7 +512,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers. Same behavior as the other serial drivers, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#switching-devices-off-between-sessions), [Windows](../packaging-windows.md#switching-devices-off-between-sessions))). |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers. Same behavior as the other serial drivers, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
