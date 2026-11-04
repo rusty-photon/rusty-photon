@@ -138,6 +138,14 @@ by switching the Gemini Advanced 3's `USB A`.
    other device on the service. QHY's declared filter wheel binds with its
    camera. The camera drivers already reach their SDK through one handle
    seam (`CameraHandle`), and the binding belongs there.
+   - **A connect costs no scan while the device is off.** Before the full
+     passive scan, a bind asks the OS in process whether any device with the
+     listed device's vendor id is present (sysfs on Linux, the
+     Configuration Manager's device list on Windows, as the Windows probe
+     read it, IOKit on macOS), and runs the scan only when one is. rp tries
+     an unbound device's connect three times a pass, every pass, and on
+     Windows the scan starts a PowerShell process, so a scan on every
+     connect would be the timer decision 2 rejects, only more often.
    - **Not a rebuild.** Rebuilding the server when a device arrives (what a
      reload does) ends every session on the service, including an exposure
      in flight on another camera, so each arrival would have to wait for a
@@ -216,13 +224,21 @@ Each is settled before the slice that needs it.
     camera powered on after the first bind still meets the unreliable
     path.
   - **(b) Restart the service process** when an unbound QHY camera's port
-    fills and no device of the service is connected (Windows only).
+    fills and no device of the service is connected (Windows only). This
+    helps only a service that serves one QHY camera, or whose cameras power
+    on together: a camera powered on while rp holds another of the same
+    service waits for that session to end, which does not happen while rp
+    holds the cameras all night (decision 3).
   - **(c) Bind on the SDK's arrival callback**, with retries, accepting its
     latency and its misses.
   - **(d) One SDK process per QHY camera.**
 
   Every Windows run so far was in a KVM guest, so the behaviour is
   confirmed on bare-metal Windows (rig2) before one is chosen.
+- **O8 (P6). Which output feeds which device.** rp's `switches[]` entries
+  name a power box, not the devices on its outputs, so P6's refusal to
+  switch off an output whose device is busy needs a mapping from each output
+  to the devices it feeds, in rp's configuration or in a train's.
 
 ## Implementation Status
 
@@ -231,16 +247,18 @@ Each is settled before the slice that needs it.
 | P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M probed on Linux and Windows (Validation); the rest not started | |
 | P1 | Serial drivers never fail their start on a device that is not there (O2), in all eight shared-transport drivers | Not started | |
 | P2 | rp logs a powered-off device once, not every pass (O3) | Not started | |
-| P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module | Not started; needs O1, and O7 for QHY on Windows | |
+| P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module. rp's placeholder handling (`alpaca::connect_refused`, the identity pin's placeholder refusal) and doctor's `service.devices` key on the placeholder `UniqueID` form, so they change with the drivers | Not started; needs P2, O1, and O7 for QHY on Windows | |
 | P4 | The hotplug nudge (decision 2) in `rusty-photon-driver`, used by the three camera drivers | Not started; follows P3 | |
 | P5 | `zwo-focuser` gains a `usb_devices` list, the disconnected device and the nudge | Not started; follows P4 | |
-| P6 | rp `get_switch` / `set_switch` tools, addressing a power-box output by its name or label, and refusing to switch off an output whose device is busy | Not started | |
+| P6 | rp `get_switch` / `set_switch` tools, addressing a power-box output by its name or label, and refusing to switch off an output whose device is busy | Not started; needs O8 | |
 | P7 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for readiness, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, outputs off | Not started; needs P6, O4, O5 | |
 | P8 | doctor's reading of a device off by design (O6) | Not started | |
 
-P1 and P2 depend on nothing else and are small. P3 comes before P4
-because hotplug has nothing to bind before there is an unbound device. P6
-comes before P7.
+P1 and P2 depend on nothing else and are small. P3 comes after P2: an
+unbound device's refusal does not carry the placeholder form that rp's quiet
+rule keys on today, so without P2 every powered-off camera would log every
+pass. P3 comes before P4 because hotplug has nothing to bind before there is
+an unbound device. P6 comes before P7.
 
 `gemini-powerbox-adv3-driver` has a narrower start bug of its own, separate
 from P1: one reply that does not decode as UTF-8 during its handshake fails

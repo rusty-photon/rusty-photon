@@ -690,7 +690,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   port order, and the CFW found on each (U11); with a `usb_devices` list, each
   entry at its number, opening nothing at startup at all (U1-U10). Zero
   registered cameras is **not** a hard failure — the service starts with no
-  Camera devices, logged at `warn!`; a later reload re-enumerates.
+  Camera devices, logged at `warn!`; a later restart re-enumerates, and on
+  Linux a reload does too (on Windows, see C9).
 
   **Enumerating opens nothing; finding the CFW opens each camera, but never
   initialises one.** The enumeration is `ScanQHYCCD` and `GetQHYCCDId` per
@@ -1149,9 +1150,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera that had been unplugged and plugged back in, with no scan and no
   reload, although it came back as a new USB device: `OpenQHYCCD` finds it by
   its id. A camera that was absent when the service started is a different
-  case; finding it still needs a reload or a restart (C0), and the
-  [daily power cycle plan](../plans/daily-power-cycle.md) replaces that
-  with a device that binds when its camera arrives.
+  case; finding it still needs a restart, or on Linux a reload (C0). On
+  Windows a reload's fresh SDK, made in the same process, did not enumerate
+  a camera that arrived after the process first initialised the SDK, while a
+  new process did (measured in a KVM guest:
+  [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-2026-11-03)).
+  That plan replaces both with a device that binds when its camera arrives.
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
   [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))
@@ -1346,7 +1350,9 @@ which a list replaces with the declaration.
   cannot be opened fails its client's connect (C2), as without a list.
 
   Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed scan's
+  restart the service, which re-opens every camera it serves. On Windows only
+  the restart is known to find a camera that was absent when the process
+  started (C9). The failed scan's
   is the exception: the service re-scans and rebuilds on its own (U6), so it
   says that, and sends nobody to restart anything. (The device-claims plan's
   D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
