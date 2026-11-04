@@ -811,7 +811,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour, which the [daily power cycle plan](../plans/daily-power-cycle.md)'s P1 changes. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers — the siblings' behaviour, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#switching-devices-off-between-sessions), [Windows](../packaging-windows.md#switching-devices-off-between-sessions))). |
 | The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not yet with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |

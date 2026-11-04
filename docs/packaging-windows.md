@@ -229,6 +229,19 @@ Services log to rolling files
 files retained) — under the SCM there is no usable stderr. Console runs
 (`rusty-photon-<svc>.exe` from a terminal) log to stderr unchanged.
 
+## Switching devices off between sessions
+
+Start the services, whether at install, upgrade, reboot or by hand, with
+every device powered, USB and 12 V, and switch devices off only once the
+services have started. A device a service started with is picked up again
+when its power returns: a camera opens again on the next connect, and a
+serial driver retries its link every 5 s until the device answers. A camera
+that was off when its service started is not served until the service is
+restarted with the camera powered, because QHY's SDK on Windows reliably
+lists only the cameras that were present when the process first initialised
+it. A serial device that is off fails its service's start every 5 s until
+it answers.
+
 ## Camera specifics
 
 **qhy-camera** — QHYCCD's SDK is proprietary and never redistributed

@@ -1293,9 +1293,10 @@ one core at load average 65, see "Real-hardware validation").
   failing, or reconnecting — could otherwise leave the index stale, failing
   the open or opening a different camera. A camera
   absent when the service started is another matter; finding it still needs a
-  reload or a restart (C0); the
-  [daily power cycle plan](../plans/daily-power-cycle.md) replaces that
-  with a device that binds when its camera arrives.
+  reload or a restart (C0), which is why the services start with every
+  camera powered ([Linux](../packaging.md#switching-devices-off-between-sessions)
+  and [Windows](../packaging-windows.md#switching-devices-off-between-sessions)
+  packaging guides).
 
   **A departure between two failures goes unseen.** A camera unplugged and
   plugged back with nothing failing on it meanwhile enumerates exactly as

@@ -366,6 +366,17 @@ derived from the discovered unit names — the rule's scope and the discovery
 scope are the same set (see
 [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
 
+## Switching devices off between sessions
+
+Start the services, whether at install, upgrade, reboot or by hand, with
+every device powered, USB and 12 V, and switch devices off only once the
+services have started. A device a service started with is picked up again
+when its power returns: a camera opens again on the next connect, and a
+serial driver retries its link every 5 s until the device answers. A camera
+that was off when its service started is not served until the service is
+restarted or reloaded with the camera powered, and a serial device that is
+off fails its service's start every 5 s until it answers.
+
 ## Camera specifics
 
 **qhy-camera** — QHYCCD's SDK is proprietary and never redistributed

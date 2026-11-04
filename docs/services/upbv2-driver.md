@@ -512,7 +512,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops. Same behavior as the other serial drivers, which the [daily power cycle plan](../plans/daily-power-cycle.md)'s P1 changes. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers. Same behavior as the other serial drivers, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#switching-devices-off-between-sessions), [Windows](../packaging-windows.md#switching-devices-off-between-sessions))). |
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
@@ -538,7 +538,7 @@ master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the
 ## Relationship to the daily power cycle plan
 
 The [daily power cycle plan](../plans/daily-power-cycle.md) switches
-outputs at dusk and dawn through rp's switch tools (its P6). This driver
+outputs at dusk and dawn through rp's switch tools. This driver
 *exposes* the outputs; deciding to flip one at dusk is a workflow decision
 that belongs in a session-runner document, not in any connect or
 supervisory path here (tenet 3).

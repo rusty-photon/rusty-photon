@@ -1155,7 +1155,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   a camera that arrived after the process first initialised the SDK, while a
   new process did (measured in a KVM guest and on bare metal:
   [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-bare-metal-2026-11-04)).
-  That plan replaces both with a device that binds when its camera arrives.
+  So the services start with every camera powered, and cameras are switched
+  off only once they have
+  ([Linux](../packaging.md#switching-devices-off-between-sessions) and
+  [Windows](../packaging-windows.md#switching-devices-off-between-sessions)
+  packaging guides).
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
   [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))
