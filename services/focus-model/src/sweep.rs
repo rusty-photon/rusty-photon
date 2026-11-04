@@ -2954,8 +2954,8 @@ mod tests {
             .collect()
     }
 
-    /// The fine sweep of #1187: ±400 by 100 around 29666, 359 stars
-    /// listed.
+    /// rig2's fine sweep of 2026-09-08: ±400 by 100 around 29666, 359
+    /// stars listed.
     fn recorded_fine_sweep() -> Vec<CurvePoint> {
         recorded(&[
             (29_266, Some(20.861), 298),
@@ -2970,9 +2970,10 @@ mod tests {
         ])
     }
 
-    /// The coarse sweep of #1187: ±1200 by 300 around 29966, 152 stars
-    /// listed. The two frames 900 and 1200 steps above focus are beyond
-    /// the size cap, and the one 1000 steps below keeps three stars.
+    /// rig2's coarse sweep of 2026-09-08: ±1200 by 300 around 29966, 152
+    /// stars listed. The two frames 900 and 1200 steps above focus are
+    /// beyond the size cap, and the one 1000 steps below keeps three
+    /// stars.
     fn recorded_coarse_sweep() -> Vec<CurvePoint> {
         recorded(&[
             (28_766, Some(37.435), 3),
@@ -3026,10 +3027,9 @@ mod tests {
         assert!(stage.r_squared > 0.98, "{stage:?}");
     }
 
-    /// Measured on its listed stars, the coarse sweep that failed on
-    /// detected components keeps seven samples, the one of three stars
-    /// among them, and places focus within three steps of the fine
-    /// sweep's vertex.
+    /// Measured on its listed stars, the coarse sweep keeps seven
+    /// samples, the one of three stars among them, and places focus
+    /// within three steps of the fine sweep's vertex.
     #[test]
     fn the_recorded_coarse_sweep_places_focus_beside_the_fine_sweeps() {
         let mut points = recorded_coarse_sweep();

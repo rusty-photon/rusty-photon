@@ -676,9 +676,10 @@ impl SweepOps for RigSweep<'_> {
                 .await?;
             // An empty list has nothing to measure; the frame is kept
             // all the same, so the record shows what the position saw.
-            if list.is_empty() {
-                counts.push(0);
-            } else {
+            // A frame that measured no star enters neither the point's
+            // HFR nor its count, so a clouded frame does not make a
+            // point that measured sparse.
+            if !list.is_empty() {
                 let measured = self
                     .rig
                     .measure_stars(
@@ -691,8 +692,8 @@ impl SweepOps for RigSweep<'_> {
                     .await?;
                 if let Some(hfr) = measured.hfr.filter(|hfr| hfr.is_finite()) {
                     hfrs.push(hfr);
+                    counts.push(measured.star_count);
                 }
-                counts.push(measured.star_count);
                 // Each star where this frame saw it, or where it was last
                 // seen when this frame did not measure it.
                 if measured.stars.len() == list.len() {
@@ -2627,6 +2628,52 @@ mod tests {
             [9.0, 29.0, 49.0],
             "the confirmation, after nine samples"
         );
+    }
+
+    /// With two frames a point, every second frame clouded: a point's
+    /// count is its measuring frame's, so no point reads sparse.
+    #[tokio::test]
+    async fn a_clouded_frame_leaves_its_points_count_to_the_frames_that_measured() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        let at = position.clone();
+        let listed_frames = Arc::new(Mutex::new(0_u32));
+        active
+            .expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                let clouded = stars.is_some() && {
+                    let mut frames = listed_frames.lock().unwrap();
+                    *frames += 1;
+                    *frames % 2 == 1
+                };
+                let hfr = (!clouded).then(|| (f64::from(at.get() - 25_010) / 10.0).hypot(1.0));
+                Box::pin(async move { Ok(rp_frame(hfr, 100, stars)) })
+            });
+        let cleanup = MockFocusRig::new();
+        let two_frames = config(&CONFIGURED.replace(
+            r#""max_attempts": 1"#,
+            r#""max_attempts": 1, "frames_per_step": 2"#,
+        ));
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &two_frames,
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.samples_used, 9);
+        for point in &outcome.curve_points {
+            assert_eq!(point.star_count, 100, "{point:?}");
+            assert_eq!(point.rejected, None, "{point:?}");
+        }
     }
 
     #[tokio::test]

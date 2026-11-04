@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn the_retired_sparse_gate_fraction_fails_the_load_naming_it() {
+    fn a_min_star_fraction_fails_the_load_naming_it() {
         let json = r#"{ "mcp_server_url": "http://x/mcp",
                         "trains": { "t": { "min_star_fraction": 0.1 } } }"#;
         let err = parse_config(json, "test").unwrap_err();

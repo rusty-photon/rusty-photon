@@ -1452,10 +1452,11 @@ every default and must have complete optics. Every bound above is
 checked at load (parse-don't-validate): a bad value fails startup
 naming the field. `--port` / `--bind-address` override `server.port` /
 `server.bind_address` from the command line. Unknown keys fail the
-load (`deny_unknown_fields`). That includes `trains.<id>.min_star_fraction`,
-the sparse gate's fraction the fixed star list retired
-([The sweep](#the-sweep), step 2): a config that still sets it fails at
-load naming the field, and deleting the line is the whole fix.
+load (`deny_unknown_fields`). That includes `trains.<id>.min_star_fraction`:
+the sweep has no relative star-count gate, because its fixed star list
+measures the same stars at every point ([The sweep](#the-sweep), step
+2), so a config that sets it fails at load naming the field, and
+deleting the line is the whole fix.
 
 `focus-model doctor [--config <file>] [--json]` diagnoses the config
 read-only through the same load path — [doctor.md § Per-service
