@@ -38,6 +38,7 @@ pub use analysis::background::{
 pub use analysis::fwhm::{fit_2d_gaussian, GaussianFit2D};
 pub use analysis::hfr::star_hfr;
 pub use analysis::pixel::Pixel;
+pub use analysis::saturation::{frame_clip, saturation_level};
 pub use analysis::snr::{compute_snr, per_star_snr, SnrResult};
 pub use analysis::stars::{detect, detect_stars, Detection, DetectionParams, Star};
 pub use analysis::stats::{compute_stats, ImageStats};

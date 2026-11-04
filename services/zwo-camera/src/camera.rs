@@ -891,8 +891,8 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 /// code: a physical 14-bit ASI178MM clips at `16382 << 2 = 65528`, one count
 /// short of the `16383 << 2 = 65532` the shift alone predicts, at every gain
 /// and bin. ASCOM defines this property as the maximum value the camera *can
-/// produce*, and a client that tests saturation as `pixel >= MaxADU`, as rp
-/// does, finds no saturated pixel under an unreachable ceiling: reporting one
+/// produce*, and a client that tests saturation as `pixel >= MaxADU` finds
+/// no saturated pixel under an unreachable ceiling: reporting one
 /// does not merely round badly, it can make saturation undetectable, which is
 /// the whole point of the property for autofocus star selection and
 /// flat-panel exposure targeting.

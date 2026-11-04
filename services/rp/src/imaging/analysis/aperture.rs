@@ -72,8 +72,8 @@ pub struct MeasuredStar {
     pub flux: f64,
     /// The aperture's radius (px).
     pub radius: f64,
-    /// Whether the aperture holds a pixel at or above the camera's
-    /// `max_adu`. Always `false` when `max_adu` is `None`.
+    /// Whether the aperture holds a pixel at or above the frame's
+    /// saturation level. Always `false` when the level is `None`.
     pub saturated: bool,
     /// The index, in the detection list, of the detection the star was
     /// measured from.
@@ -130,15 +130,16 @@ impl Rejections {
 /// aperture, brightest first.
 ///
 /// `max_area` bounds a star's size: one whose half-flux disc is larger
-/// has no HFR. `max_adu` flags a star whose aperture holds a saturated
-/// pixel; saturation does not reject it.
+/// has no HFR. `saturation_level` (`super::saturation::saturation_level`)
+/// flags a star whose aperture holds a pixel at or above it; saturation
+/// does not reject it.
 #[must_use]
 pub fn measure_in_apertures<T: Pixel>(
     view: &ArrayView2<T>,
     detection: &Detection,
     background_mean: f64,
     max_area: usize,
-    max_adu: Option<u32>,
+    saturation_level: Option<u32>,
 ) -> Vec<MeasuredStar> {
     let max_hfr = half_flux_radius_cap(max_area);
     let mut rejected = Rejections::default();
@@ -174,7 +175,7 @@ pub fn measure_in_apertures<T: Pixel>(
             hfr: aperture.hfr,
             flux: aperture.flux,
             radius: aperture.radius,
-            saturated: holds_saturated_pixel(view, &aperture, &detection.hot, max_adu),
+            saturated: holds_saturated_pixel(view, &aperture, &detection.hot, saturation_level),
             detection: index,
         })
         .collect();
@@ -370,15 +371,15 @@ fn half_flux_distance(samples: &[(f64, f64)], flux: f64) -> f64 {
     previous_distance
 }
 
-/// Whether the aperture holds a pixel at or above `max_adu`, hot pixels
-/// left out.
+/// Whether the aperture holds a pixel at or above the frame's saturation
+/// level, hot pixels left out.
 fn holds_saturated_pixel<T: Pixel>(
     view: &ArrayView2<T>,
     aperture: &Aperture,
     hot: &[(usize, usize)],
-    max_adu: Option<u32>,
+    saturation_level: Option<u32>,
 ) -> bool {
-    let Some(max_adu) = max_adu.map(f64::from) else {
+    let Some(level) = saturation_level.map(f64::from) else {
         return false;
     };
     let mut saturated = false;
@@ -388,7 +389,7 @@ fn holds_saturated_pixel<T: Pixel>(
         aperture.x,
         aperture.y,
         aperture.radius,
-        |_, value| saturated = saturated || value >= max_adu,
+        |_, value| saturated = saturated || value >= level,
     );
     saturated
 }

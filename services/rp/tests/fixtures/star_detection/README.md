@@ -34,7 +34,7 @@ format as the crop above.
 
 - **Source frame:** document `6e47ad6a-5e8b-4738-b7c7-fbd4533af925`. That is
   the sample 800 steps outside focus of the coarse `auto_focus` sweep on rig2,
-  2026-09-08 UTC (issue #1187): the same QHY600M at bin 1, 9576×6388, 4 s.
+  2026-09-08 UTC: the same QHY600M at bin 1, 9576×6388, 4 s.
 - **Crop:** columns 3673–4184 and rows 1469–1980 of that frame (0-based,
   row 0 first), centred on one of the frame's three stars.
 - **Content:** the star is a blur disc about 105 px across, about 60 ADU above
@@ -52,3 +52,22 @@ format as the crop above.
     `max_area 5000`, and `measure_basic` reports the same star, at
     38.10–38.14 px: its `max_area` bounds the star's half-flux disc, not
     the component (`detect_stars`, which reports components, drops it).
+
+## `qhy600m_saturated_crop.fits`
+
+A 512×512 crop of a real frame, unmodified apart from the crop, in the same
+format as the crops above.
+
+- **Source frame:** document `53cde8de-d5e8-49bb-8e4c-b9a907129f5b`. That is
+  the lowest-HFR sample of the fine `auto_focus` sweep on rig2, 2026-09-08
+  UTC: the same QHY600M at bin 1, 9576×6388, 4 s.
+- **Crop:** columns 3682–4193 and rows 3433–3944 of that frame (0-based,
+  row 0 first), centred on the frame's brightest star.
+- **Content:** the star's core is clipped: 65 pixels sit on 65534, the
+  crop's maximum, and the next value down, 63910, is held by one pixel. The
+  camera reported `MaxADU` 65535, which no pixel reaches.
+  - At `threshold_sigma 8`, `min_area 6` and `max_area 400`, `measure_basic`
+    reports ten stars. The clipped one measures an aperture HFR of 4.66 px;
+    the nine others, none of them clipped, 0.80–1.04 px.
+  - The frame's saturation level (`measure_basic` contract) is its clip,
+    65534, so the clipped star counts as saturated with no `max_adu` given.
