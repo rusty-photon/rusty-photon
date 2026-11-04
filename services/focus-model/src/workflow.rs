@@ -993,10 +993,13 @@ async fn record_run(
     let kept = config.runs_kept.get();
     let (record, model) = store
         .update(&ctx.train_id, move |held| {
+            let was_empty = held.is_none();
             let stale = stale_fields(held.as_ref(), ctx);
             let (mut record, was_reset) = record_for_write(held, &stale, ctx);
             record.push_run(run, kept);
-            let model = if was_reset {
+            let model = if was_empty {
+                "empty".to_owned()
+            } else if was_reset {
                 format!("reset: {}", stale.join("; "))
             } else if stale.is_empty() {
                 "fresh".to_owned()
@@ -2431,7 +2434,7 @@ mod tests {
         assert_eq!(outcome.best_position, 25_010);
         assert_eq!(outcome.filter.as_deref(), Some("Luminance"));
         assert_eq!(outcome.sweep.source, crate::sizing::SweepSource::Configured);
-        assert_eq!(outcome.model, "fresh");
+        assert_eq!(outcome.model, "empty", "no record before this run");
         assert!(outcome.recorded.last_good_updated);
         assert_eq!(outcome.recorded.runs, 1);
         assert!(!outcome.guiding_paused);
@@ -2448,6 +2451,40 @@ mod tests {
         assert_eq!(record.runs[0].outcome, RunOutcome::Confirmed);
         assert_eq!(record.runs[0].curve_points.len(), 9);
         assert_eq!(record.runs[0].temperature_c, Some(11.0));
+    }
+
+    #[tokio::test]
+    async fn a_run_onto_a_matching_record_reports_it_fresh() {
+        let (store, _dir) = temp_store().await;
+        store
+            .put(FocusRecord::new(
+                "main",
+                Some("main-focuser"),
+                Some("main-cam"),
+                Some(wheel_filters()),
+            ))
+            .await
+            .unwrap();
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.model, "fresh");
+        assert_eq!(outcome.recorded.runs, 1);
     }
 
     #[tokio::test]
