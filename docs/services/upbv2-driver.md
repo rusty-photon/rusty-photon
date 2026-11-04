@@ -512,7 +512,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops. Same behavior as the other serial drivers, and the same open design question — see [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops. Same behavior as the other serial drivers, which the [daily power cycle plan](../plans/daily-power-cycle.md)'s P1 changes. |
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
@@ -535,15 +535,13 @@ poll loop, setup pages, TLS/auth, doctor, packaging, BDD and ConformU.
 master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the
 `XS:` external motor controller.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) names "UPBv2 unsupported" as one of the facts its design
-rests on, and lists `set_switch`/`get_switch` + UPBv2 as slice 2. This
-service is that slice's driver half. Note the tenet-3 boundary the issue
-already draws: this driver *exposes* the outputs; deciding to flip one at
-dusk is a workflow decision that belongs in a session-runner document, not
-in any connect or supervisory path here.
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn through rp's switch tools (its P6). This driver
+*exposes* the outputs; deciding to flip one at dusk is a workflow decision
+that belongs in a session-runner document, not in any connect or
+supervisory path here (tenet 3).
 
 ## What the wire actually does
 

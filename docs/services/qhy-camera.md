@@ -1149,8 +1149,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera that had been unplugged and plugged back in, with no scan and no
   reload, although it came back as a new USB device: `OpenQHYCCD` finds it by
   its id. A camera that was absent when the service started is a different
-  case; finding it still needs a reload or a restart (C0), and hotplug
-  re-enumeration belongs to #1173.
+  case; finding it still needs a reload or a restart (C0), and the
+  [daily power cycle plan](../plans/daily-power-cycle.md) replaces that
+  with a device that binds when its camera arrives.
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
   [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))

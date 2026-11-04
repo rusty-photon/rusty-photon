@@ -1293,8 +1293,9 @@ one core at load average 65, see "Real-hardware validation").
   failing, or reconnecting — could otherwise leave the index stale, failing
   the open or opening a different camera. A camera
   absent when the service started is another matter; finding it still needs a
-  reload or a restart (C0), and hotplug re-enumeration belongs to
-  [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
+  reload or a restart (C0); the
+  [daily power cycle plan](../plans/daily-power-cycle.md) replaces that
+  with a device that binds when its camera arrives.
 
   **A departure between two failures goes unseen.** A camera unplugged and
   plugged back with nothing failing on it meanwhile enumerates exactly as

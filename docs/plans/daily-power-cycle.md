@@ -1,0 +1,252 @@
+# Daily power cycle — devices off when they are not needed, back on when they are
+
+## Goal
+
+A remote rig runs with as many devices as possible powered off whenever
+nothing needs them, and powers them back on when a session does. The
+cooled camera is the sharpest case, since its fan should not run all day,
+but the focuser hub, the flat panel, the mount and the guide camera are the
+same. So a device that is off for most of the day is the normal case, not
+an error. The stack has to notice a device coming back without a service
+restart, a reload or a person, and nothing may log in a loop or give up
+while a device is off.
+
+Deciding when to switch power is a workflow's job (D1). What this plan
+builds is everything around that decision: drivers that survive a device
+being off and pick it up when it returns, rp tools that switch a power-box
+output, the dusk and dawn documents that use them, and a doctor that does
+not report the daytime state as a fault.
+
+Tracking issue:
+[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
+
+Out of scope: re-cabling a device onto another port. Placement holds from
+one start or reload to the next, as the camera drivers' device claims
+already say, and moving a device stays a reload's job.
+
+## What a power cut does to a device
+
+The rig switches devices through a power box: its 12 V outputs, and its
+switchable USB ports for whatever hangs off the box's hub. A device plugged
+straight into the host keeps its USB power, so often only its 12 V is cut.
+A cut does one of two things to a device. Which one depends on where the
+device's USB interface draws its power, not on which port can be switched:
+
+1. **It leaves the bus**, because its USB interface runs off the supply that
+   was cut. The host sees a disconnect even on a port nobody switched, and
+   the OS reports a removal, then an arrival when power returns.
+2. **It stays on the bus with its function dead**, because its USB interface
+   runs off USB power. Nothing has to be found again, but its driver has to
+   keep serving it while it does not work and pick it up when power returns.
+
+| Device | 12 V cut, USB left on | Source |
+|---|---|---|
+| QHY178M (dev box) | Stays on the bus, answers every call, reports its cooler as present. Its filter wheel, fed from the camera's 12 V, homes for about 20 s when the 12 V returns | [Linux](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md) and [Windows](../validation/2026-10-06-qhy-camera-qhy178m-cfw-windows-departure/README.md) departure records |
+| QHY600M (rig2) | Leaves the bus | the Windows departure record above |
+| Optec FocusLynx hub (rig2) | Leaves: its COM port appears only once the hub has power | the tracking issue's 2026-09-06 measurement |
+| DSD FP2 (rig2) | Its COM port was gone with the power box off; whether its USB was on a switched port is not recorded | the tracking issue's 2026-09-06 comment |
+| ZWO cooled cameras, SVBONY, Pegasus Falcon and Scops, QHY focuser, Star Adventurer GTi | Not measured | P0 |
+
+A switched USB port takes any device off the bus. The ZWO departure records
+were made by switching the PPBA's `USB Hub` output, and the QHY probe below
+by switching the Gemini Advanced 3's `USB A`.
+
+## Where the stack stands
+
+- **The camera drivers and `zwo-focuser` build their device list once**, at
+  start and at each reload. The Alpaca server library (the pinned
+  `ascom-alpaca-rs` fork) moves the list into an `Arc` when it builds its
+  router, so no device can be added or replaced while a server runs. With a
+  `usb_devices` list, a camera absent when the list is built is a
+  placeholder at its number (`UniqueID` `placeholder:<service>:<port>`,
+  `Connected = true` refused with `0x540`) until the next reload. Without a
+  list it is not served at all. `zwo-focuser` has no list and serves the
+  EAFs the SDK enumerates. A camera that was served, left the bus and came
+  back opens again on a plain `Connected = true`, on all three camera
+  drivers (measured).
+- **The serial drivers run an eager startup handshake** before binding
+  their listener: `dsd-fp2`, `ppba-driver`, `upbv2-driver`,
+  `gemini-powerbox-adv3-driver`, `qhy-focuser`, `pa-falcon-rotator`,
+  `pa-scops-oag` and `star-adventurer-gti`. A port that is absent, or a
+  device that does not answer, fails the start, and a reload with the device
+  absent ends the process. The units restart on failure every 5 s with no
+  start limit, so a boot or an upgrade while a device is off loops until the
+  device has power (rig2, 2026-09-06: 608 starts in 69 minutes). Once
+  running, the shared transport's supervisor retries a lost link every 5 s
+  and never gives up.
+- **rp's reconnect supervisor** retries every configured device every
+  `equipment.reconnect_interval` (30 s by default) and never gives up. A
+  placeholder's refusal costs one attempt, logged at `debug!`. Any other
+  failed connect is tried three times within the pass, with two `INFO`
+  lines, so every powered-off device that is not a placeholder logs twice
+  every 30 s.
+- **rp has no switch tools.** `switches[]` is roster membership and
+  connectivity only. `ppba-driver`, `upbv2-driver` and
+  `gemini-powerbox-adv3-driver` expose their outputs as ASCOM Switch ids,
+  each with an operator label.
+- **doctor** fails `hardware.usb-device` for an enabled service whose
+  device is absent from the bus.
+- **Linux serial device names follow enumeration order** (`/dev/ttyUSBn`,
+  `/dev/ttyACMn`), and every power-up enumerates the bridge chip again. Only
+  a `/dev/serial/by-id/…` or `by-path/…` link names the same device across
+  power cycles. A CH340 publishes no serial, so two of them share one by-id
+  name and need `by-path`.
+
+## Decisions (settled 2026-11-03)
+
+1. **Power is switched by a workflow**: a `session-runner` document or an
+   operator's tool call. Never by a driver, a connect path, rp's reconnect
+   supervisor or any other passive transition (tenet 3, *no actuation on
+   connect*). Noticing that a device has come back is a read, and may run
+   anywhere.
+2. **An enumerating driver learns that a device arrived from the OS's USB
+   hotplug notification**: udev on Linux, `CM_Register_Notification` on
+   Windows (which works in a service and needs no window), IOKit matching
+   notifications on macOS. The candidate implementation is `nusb`'s
+   `watch_devices()` (0.2.9: pure Rust, all three platforms,
+   `HotplugEvent::Connected(DeviceInfo)` with vendor and product ids and a
+   `port_chain` documented as stable across insertions). The camera units'
+   systemd sandbox already allows `AF_NETLINK`.
+   - **The event is a nudge, not a description.** The driver acts only on
+     arrivals of its own vendor id, waits for the bus to go quiet, then runs
+     the passive USB scan it already runs for its device claims, and binds
+     each unbound device whose listed port now holds its device (decision
+     3). It never decodes the event into a port spelling. Departures need no
+     event: the departure contract notices one at the next SDK failure.
+   - **The wait matters.** A QHY camera powering up on Linux shows up first
+     as its firmware loader on the hub's USB 2 side and then, once `fxload`
+     has run, as the camera on the USB 3 side, about 1.3 s after power-on
+     (Validation). udev's rules are still running when the kernel event
+     arrives. On Windows a composite device's interfaces may not be ready
+     when its arrival is reported. And one switched port can carry several
+     devices at once.
+   - **Hotplug makes a return faster; it is not what makes it work.** A
+     client's `Connected = true` on an unbound device runs the same bind,
+     so a missed or filtered event costs one reconnect interval, not a lost
+     device.
+   - **Not a timer.** On Windows the passive scan runs `Get-PnpDevice` in a
+     PowerShell process. A poll every minute all day would start one every
+     minute, and would still be up to a minute late.
+3. **The disconnected device.** At each listed number the driver registers
+   the device itself from the start, unbound. It knows its number, its port,
+   its names and its identity (decision 4), but holds no SDK handle, and it
+   answers as a disconnected device of its kind does. `Connected = true`
+   binds it if its port now holds its device and then connects as usual, or
+   fails naming what is on the port. Binding is one-way for the life of the
+   process. A bound device that loses power is the departure contract's: it
+   reads disconnected and opens again once it is back. Binding touches no
+   other device on the service. QHY's declared filter wheel binds with its
+   camera. The camera drivers already reach their SDK through one handle
+   seam (`CameraHandle`), and the binding belongs there.
+   - **Not a rebuild.** Rebuilding the server when a device arrives (what a
+     reload does) ends every session on the service, including an exposure
+     in flight on another camera, so each arrival would have to wait for a
+     moment when nothing is connected, which never comes while rp holds the
+     other cameras all night.
+   - **Not a wrapper.** A slot that swaps a placeholder for the camera
+     forwards every Camera and FilterWheel member and swaps whole objects.
+     The unbound state is a property of the device, not a second object.
+4. **A listed device's identity is stored in its list entry**: the SDK id
+   for QHY, the serial for ZWO and SVBONY, the strings the `UniqueID`
+   already derives from. So the `UniqueID` is the device's own from the first
+   listing. Binding checks it: a device with another identity on the port is
+   not bound, and `Connected = true` fails naming it. The setup page's
+   Cameras section records the identity when it places a camera, and
+   `doctor --devices` prints it in its paste-ready block. A ZWO serial needs
+   one uninitialised open, which the join already makes.
+   - **Not a `UniqueID` that changes once at binding.** A client that caches
+     `UniqueID` sees the device's own from the start, rp's identity pin has
+     one value to compare, and a wrong camera on a listed port is refused
+     instead of served.
+5. **QHY binds without touching the SDK's camera list.** The passive scan
+   confirms the listed port holds a camera rather than its firmware loader,
+   then `OpenQHYCCD` opens the recorded id. Measured: the SDK opens a camera
+   that was absent at `InitQHYCCDResource` with no `ScanQHYCCD`, and a
+   `ScanQHYCCD` on a live SDK disturbs no open camera, so neither order is a
+   hazard (Validation). ZWO and SVBONY bind through the SDK-list rescan their
+   connect already makes under their SDK lock.
+
+## Open questions
+
+Each is settled before the slice that needs it.
+
+- **O1 (P3). A list entry with no recorded identity.** Either the load
+  refuses it (a breaking change, which pre-1.0 allows), or it is served as
+  today's placeholder until a page save records the identity.
+- **O2 (P1). A serial device that does not answer at start.** The
+  2026-09-06 slicing split the start into "port absent" (served
+  disconnected, retrying) and "port present" (fatal). With 12 V-only cuts, a
+  device that keeps its USB-serial bridge powered keeps its port while its
+  controller is off, and that is the daytime state. Proposed: a port that is
+  absent and a device that stays silent through the handshake's timeout are
+  both served disconnected with the transport retrying. Only a device that
+  answers as something else (wrong identity, firmware refused) fails the
+  start. A reload with the device absent rebuilds and serves it
+  disconnected.
+- **O3 (P2). rp's log for a powered-off device.** Proposed: rp logs that a
+  device is unreachable at `INFO` once, on the transition, and at `debug!`
+  while it stays unreachable, for every device and driver. The three
+  attempts within a pass stay. This needs no trust in a driver's error
+  code, which today's placeholder rule needs (it checks the `UniqueID`
+  form, because any Alpaca driver may use `0x540`).
+- **O4 (P7). Readiness at dusk for a device that stays on the bus.** rp
+  emits `equipment_changed {connected: true}` only for a device that was
+  disconnected. A QHY178M whose 12 V was cut stayed connected all day, so
+  the dusk document needs another signal that its cooler and wheel have
+  power.
+- **O5 (P7). When dusk starts.** At an offset from civil twilight and with
+  the roof open, or the camera earlier so that it cools before the roof
+  opens.
+- **O6 (P8). doctor for a device off by design.** A daytime-aware reading
+  of `hardware.usb-device`, or a "powered down by schedule" state.
+
+## Implementation Status
+
+| Phase | Description | Status | Branch / PR |
+|-------|-------------|--------|-------------|
+| P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M on Linux done (Validation); the rest not started | |
+| P1 | Serial drivers never fail their start on a device that is not there (O2), in all eight shared-transport drivers | Not started | |
+| P2 | rp logs a powered-off device once, not every pass (O3) | Not started | |
+| P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module | Not started; needs O1 | |
+| P4 | The hotplug nudge (decision 2) in `rusty-photon-driver`, used by the three camera drivers | Not started; follows P3 | |
+| P5 | `zwo-focuser` gains a `usb_devices` list, the disconnected device and the nudge | Not started; follows P4 | |
+| P6 | rp `get_switch` / `set_switch` tools, addressing a power-box output by its name or label, and refusing to switch off an output whose device is busy | Not started | |
+| P7 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for readiness, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, outputs off | Not started; needs P6, O4, O5 | |
+| P8 | doctor's reading of a device off by design (O6) | Not started | |
+
+P1 and P2 depend on nothing else and are small. P3 comes before P4
+because hotplug has nothing to bind before there is an unbound device. P6
+comes before P7.
+
+`gemini-powerbox-adv3-driver` has a narrower start bug of its own, separate
+from P1: one reply that does not decode as UTF-8 during its handshake fails
+the start. It was seen once, on the dev box's first start on 2026-11-03,
+and the retry was clean.
+
+## Validation
+
+### QHY, Linux (2026-11-03)
+
+The dev box's QHY178M (`QHY178M-222b16468c5966524`) on the Gemini
+Advanced 3's `USB A` (its VIA VL817 hub), Fedora 44 (kernel 7.2.11), QHY SDK
+26.06.04, with the camera's 12 V off throughout. The probe was a hand-run
+program over `qhyccd-rs` and `libqhyccd-sys`, not the service. It switched
+`USB A` through `gemini-powerbox-adv3-driver` and watched sysfs and
+`udevadm monitor` for the camera.
+
+| Question | Result |
+|---|---|
+| What powering `USB A` on looks like | 7 of 7 clean. The firmware loader (`1618:c178`) appears on `1-1.1` (USB 2) about 1.0 s after power-on, the kernel removes it once `fxload` has run, and the camera (`1618:c179`) appears on `2-1.1` at 5000 Mbit/s about 0.3 s later |
+| Does `OpenQHYCCD(id)` open a camera that was absent at `InitQHYCCDResource`, with no `ScanQHYCCD`? | Yes, 3 of 3. An open 35 ms after the camera appeared failed; the next, 500 ms later, opened it, and its frame was good |
+| Does `ScanQHYCCD` on a live SDK disturb an exposure, scanning between calls on the capture thread? | No. 3 exposures of 3 s with 18 scans each; frames and timings matched the controls |
+| … scanning from a second thread through the exposure and the blocking readout? | No. 4 exposures of 3 s with 25 scans each. Every scan took under 1 ms and returned the same camera |
+| Does scanning every 250 ms during power-up disturb the firmware load? | No. The scan reported the camera as soon as it appeared, and it opened and exposed normally |
+| An open handle power-cycled with nothing touching it while off (0.15 s and 10 s off) | Clean. The first call after the camera returned failed at once (no stall, no blank frame), the close succeeded, and a reopen by id with no scan exposed normally |
+| An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned −722.2 °C instead of failing; the close and the reopen after power returned were clean. The service's `CCDTemperature` checks the cooler's availability first, which the departure contract treats as a presence question; that path is not yet exercised through the service |
+
+### Owed
+
+- QHY on Windows.
+- rig2's QHY600M, which leaves the bus when its 12 V is cut, and its two
+  QHY cameras, for a camera arriving while another exposes.
+- The P0 survey of every other device.
