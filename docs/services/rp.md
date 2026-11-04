@@ -2658,11 +2658,32 @@ The first analysis tool to implement. Behavioral contract:
   aperture, so a defocused star that fragments at the threshold counts
   once.
 - `saturated_star_count` — number of those stars whose aperture holds
-  at least one pixel at `max_adu`. `0` when `max_adu` is unknown (e.g.
-  when called via `image_path` outside an exposure context).
+  at least one pixel at or above the frame's saturation level (below).
+  `0` when the frame has none.
 - `background_mean` — sigma-clipped background mean (ADU).
 - `background_stddev` — sigma-clipped background standard deviation (ADU).
 - `pixel_count` — total pixels analyzed.
+
+**The saturation level** is where a pixel counts as saturated, for
+`saturated_star_count` here and `saturated_pixel_count` in
+`detect_stars`. It is the frame's own clip when the frame shows one,
+the camera's `max_adu` otherwise, and the lower of the two when both are
+known. A sensor that clips piles pixels on one value and puts none above
+it, so the frame's maximum is a clip when at least three pixels hold it;
+the brightest pixels of a frame that does not clip spread over many
+values, one or two to a value. The clip is read from the frame because
+a camera's `max_adu` can lie above anything its sensor delivers:
+rig2's QHY600M reports 65535, the container's top, and its frames clip
+at 65534 — on all 79 of rig2's 2026-09 frames the maximum is 65534,
+held by 7 to 1,310 pixels, with at most four single pixels in the 200
+values below it — and `qhy-camera`'s 12- and 14-bit sensors deliver at
+most 65520 and 65532 under the same 65535. (`zwo-camera` reports its
+`MaxADU` one quantization step below full scale for the same reason —
+[zwo-camera.md](zwo-camera.md), ST3.) The lower of the two never flags
+fewer pixels than `max_adu` alone, and a frame read from a bare
+`image_path`, with no `max_adu`, still finds its clip. One or two pixels
+on the frame's top value are not taken for a clip: a star clipped that
+lightly measures the HFR of its unclipped neighbours.
 
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).
@@ -3006,9 +3027,16 @@ slope that sweep's own V-curve rises at.
 - Saturated stars are measured and counted, as in step 7, and the
   brightest stars are the likeliest to saturate. A clipped core reads a
   larger HFR near focus, so a frame whose brightest twenty saturate
-  measures a flatter bottom to the V-curve. In rig2's 4 s frames, none
-  of the 79 has a saturated star among its brightest twenty, at
-  `threshold_sigma` 8 or 10.
+  measures a flatter bottom to the V-curve. In rig2's 4 s frames, at
+  their saturation level of 65534, 57 of the 79 have a saturated star
+  among their brightest twenty, at `threshold_sigma` 8 or 10: every
+  frame near focus, with 1 to 10 of the twenty, and at most 2 on a
+  defocused one. At `threshold_sigma 8` / `min_area 6` they raise the
+  aggregate by at most 0.09 px. Where a frame near focus measures few
+  stars, one clipped star weighs more: at `threshold_sigma 10` /
+  `min_area 40` the 2026-09-26 sizing sweep's confirmation frame
+  measures 1.66 px on two stars, one of them clipped, and 0.87 px
+  without it.
 - A detection that has not settled after 40 rounds is not a star. On
   rig2's frames those are fragments on the flat part of a defocused
   star, which is measured from its other fragments.
@@ -3108,8 +3136,9 @@ exposure.
     component (ADU).
   - `peak` — maximum *raw* pixel value over the component (ADU, not
     background-subtracted). Useful for saturation awareness.
-  - `saturated_pixel_count` — pixels at or above the camera's `max_adu`.
-    Always `0` when `max_adu` is unknown (bare `image_path` mode).
+  - `saturated_pixel_count` — pixels at or above the frame's saturation
+    level: its own clip, or the camera's `max_adu`, the lower of the two
+    (`measure_basic` contract).
 - `star_count` — convenience aggregate (`stars.length`).
 - `saturated_star_count` — count of stars with `saturated_pixel_count > 0`.
 - `background_mean` / `background_stddev` — sigma-clipped background used

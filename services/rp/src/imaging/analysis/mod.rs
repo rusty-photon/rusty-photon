@@ -11,6 +11,7 @@ pub mod background;
 pub mod fwhm;
 pub mod hfr;
 pub mod pixel;
+pub mod saturation;
 pub mod snr;
 pub mod stars;
 pub mod stats;

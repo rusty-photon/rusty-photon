@@ -25,9 +25,13 @@ Feature: Basic image measurement tool
   centre and count as one star, a star the threshold keeps whole is measured
   the same, and a star whose half-flux disc is larger than max_area is not
   measured. The aggregate HFR is the median over the 20
-  brightest stars. The real-frame scenarios run on 512x512 crops of two
+  brightest stars. A star is saturated when its aperture holds a pixel at
+  or above the frame's saturation level: the frame's own clip, its maximum
+  when at least three pixels hold it, or the camera's max_adu, the lower of
+  the two. The real-frame scenarios run on 512x512 crops of three
   QHY600M frames: one at best focus, whose twelve stars sit among the
-  sensor's hot pixels, and one far from focus, whose single star is a blur
+  sensor's hot pixels, one whose brightest star clips at 65534 under the
+  camera's MaxADU of 65535, and one far from focus, whose single star is a blur
   disc that fragments at the threshold.
 
   Scenario: Tool catalog includes measure_basic
@@ -113,6 +117,15 @@ Feature: Basic image measurement tool
     When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_best_focus_crop.fits" with threshold_sigma 5.0, min_area 4 and max_area 400
     Then the measure_basic result should contain "star_count" with value 12
     And the measure_basic result should contain "hfr" between 1.1 and 1.2
+    And the measure_basic result should contain "saturated_star_count" with value 0
+
+  Scenario: A star clipped at the frame's own ceiling is saturated without a max_adu
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_saturated_crop.fits" with threshold_sigma 8.0, min_area 6 and max_area 400
+    Then the measure_basic result should contain "star_count" with value 10
+    And the measure_basic result should contain "saturated_star_count" with value 1
 
   Scenario: A defocused star that fragments at the threshold is measured as one star
     Given a running Alpaca simulator

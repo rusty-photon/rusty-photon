@@ -81,8 +81,8 @@ pub struct Star {
     /// Inclusive bounding box `(min_x, min_y, max_x, max_y)` of the whole
     /// component, hot pixels included.
     pub bounding_box: (usize, usize, usize, usize),
-    /// How many of `pixels` are at or above the camera's `max_adu`.
-    /// Always `0` when `DetectionParams::max_adu` is `None`.
+    /// How many of `pixels` are at or above the frame's saturation level.
+    /// Always `0` when `DetectionParams::saturation_level` is `None`.
     pub saturated_pixel_count: u32,
 }
 
@@ -102,10 +102,11 @@ pub struct DetectionParams {
     pub min_area: usize,
     /// Maximum component pixel area to admit as a star.
     pub max_area: usize,
-    /// Camera's saturation level. When `Some`, components with any pixel
-    /// at or above this value have their `saturated_pixel_count` reported.
-    /// Saturation does *not* gate detection.
-    pub max_adu: Option<u32>,
+    /// The frame's saturation level ([`super::saturation::saturation_level`]).
+    /// When `Some`, components with any pixel at or above it have their
+    /// `saturated_pixel_count` reported. Saturation does *not* gate
+    /// detection.
+    pub saturation_level: Option<u32>,
 }
 
 /// What [`detect`] found in a frame.
@@ -375,8 +376,8 @@ fn build_star<T: Pixel>(
         if raw_f > peak {
             peak = raw_f;
         }
-        if let Some(max_adu) = params.max_adu {
-            if raw.to_u32() >= max_adu {
+        if let Some(level) = params.saturation_level {
+            if raw.to_u32() >= level {
                 saturated = saturated.saturating_add(1);
             }
         }
@@ -488,7 +489,7 @@ mod tests {
             smoothing_sigma: 1.0,
             min_area,
             max_area,
-            max_adu: Some(65535),
+            saturation_level: Some(65535),
         }
     }
 
@@ -678,7 +679,7 @@ mod tests {
             n_pixels: 4096,
         };
         let mut params = default_params(5, 1000);
-        params.max_adu = None;
+        params.saturation_level = None;
         let stars = detect_stars(&arr.view(), &bg, &params);
         assert_eq!(stars.len(), 1);
         assert_eq!(stars[0].saturated_pixel_count, 0);

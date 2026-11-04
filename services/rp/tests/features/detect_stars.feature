@@ -10,6 +10,10 @@ Feature: Star detection tool
   "image_analysis" and estimate_background's "background" so all three tools
   can coexist on one document.
 
+  A pixel is saturated at or above the frame's saturation level: the frame's
+  own clip, its maximum when at least three pixels hold it, or the camera's
+  max_adu, the lower of the two.
+
   Scenario: Tool catalog includes detect_stars
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
@@ -100,3 +104,18 @@ Feature: Star detection tool
     And the MCP client calls "detect_stars" with the captured image path but no max_area
     Then the tool call should return an error
     And the error message should contain "max_area"
+
+  Scenario: A star clipped at the frame's own ceiling is saturated without a max_adu
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "detect_stars" on the fixture "star_detection/qhy600m_saturated_crop.fits" with threshold_sigma 8.0
+    Then the detect_stars result should contain "saturated_star_count" with value 1
+    And the detect_stars stars should hold 65 saturated pixels in all
+
+  Scenario: A frame that does not clip has no saturated star
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "detect_stars" on the fixture "star_detection/qhy600m_best_focus_crop.fits" with threshold_sigma 5.0
+    Then the detect_stars result should contain "saturated_star_count" with value 0
