@@ -2687,9 +2687,12 @@ fewer pixels than `max_adu` alone, and a frame read from a bare
 `image_path`, with no `max_adu`, still finds its clip. The clip is the
 frame's, not the star's: a star clipped on a single pixel is flagged
 when other pixels in the frame hold the clip too. A clipped star goes
-unflagged only when four pixels or fewer hold the maximum in the whole
-frame and `max_adu` lies above it; clipped that lightly, it measures the
-HFR of its unclipped neighbours.
+unflagged only when the saturation level lies above its clipped value,
+which takes both: no `max_adu`, or one above that value, and no frame
+clip at or below that value. A sensor puts nothing above its clip, so the second
+holds only when four pixels or fewer in the whole frame sit at the clip;
+clipped that lightly, a star measures the HFR of its unclipped
+neighbours.
 
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).
