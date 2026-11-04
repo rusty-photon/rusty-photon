@@ -25,8 +25,9 @@ pub struct MeasureBasicResult {
     pub hfr: Option<f64>,
     /// Stars measured, one per aperture.
     pub star_count: u32,
-    /// Number of those stars whose aperture holds a saturated pixel.
-    /// Always `0` when `max_adu` is unknown (e.g. bare `image_path` mode).
+    /// Number of those stars whose aperture holds a pixel at or above the
+    /// frame's saturation level: its own clip, or `max_adu`, the lower of
+    /// the two. A frame read with no `max_adu` still finds its clip.
     pub saturated_star_count: u32,
     pub background_mean: f64,
     pub background_stddev: f64,
@@ -255,16 +256,17 @@ mod tests {
         assert_eq!(r.pixel_count, 64 * 64);
     }
 
+    /// Two pixels at `max_adu` are too few for the frame to show a clip,
+    /// so only `max_adu` can flag the star.
     #[test]
-    fn saturation_is_flagged_when_max_adu_provided() {
-        let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
-        for r in 30..35 {
-            for c in 30..35 {
-                arr[[r, c]] = 65535;
-            }
-        }
-        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
-        assert_eq!(r.star_count, 1);
-        assert_eq!(r.saturated_star_count, 1);
+    fn saturation_is_flagged_at_max_adu_where_the_frame_shows_no_clip() {
+        let mut arr = make_gaussian(64, 64, 32.0, 32.0, 1.5, 20_000.0, 1000.0);
+        arr[[32, 32]] = 65535;
+        arr[[32, 33]] = 65535;
+        let flagged = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        assert_eq!(flagged.star_count, 1);
+        assert_eq!(flagged.saturated_star_count, 1);
+        let unknown = measure_basic(&arr.view(), 5.0, 5, 4096, None).unwrap();
+        assert_eq!(unknown.saturated_star_count, 0);
     }
 }

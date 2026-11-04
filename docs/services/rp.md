@@ -2669,9 +2669,12 @@ The first analysis tool to implement. Behavioral contract:
 `detect_stars`. It is the frame's own clip when the frame shows one,
 the camera's `max_adu` otherwise, and the lower of the two when both are
 known. A sensor that clips piles pixels on one value and puts none above
-it, so the frame's maximum is a clip when at least three pixels hold it;
-the brightest pixels of a frame that does not clip spread over many
-values, one or two to a value. The clip is read from the frame because
+it, so the frame's maximum is a clip when at least five pixels hold it.
+The brightest pixels of a frame that does not clip spread over many
+values, one or two to a value, but a star centred on a pixel corner can
+put its four core pixels on one value when the data are quantized — a
+12-bit sensor shifted into 16 bits steps by 16 — so four are not taken
+for a clip. The clip is read from the frame because
 a camera's `max_adu` can lie above anything its sensor delivers:
 rig2's QHY600M reports 65535, the container's top, and its frames clip
 at 65534 — on all 79 of rig2's 2026-09 frames the maximum is 65534,
@@ -2681,9 +2684,9 @@ most 65520 and 65532 under the same 65535. (`zwo-camera` reports its
 `MaxADU` one quantization step below full scale for the same reason —
 [zwo-camera.md](zwo-camera.md), ST3.) The lower of the two never flags
 fewer pixels than `max_adu` alone, and a frame read from a bare
-`image_path`, with no `max_adu`, still finds its clip. One or two pixels
-on the frame's top value are not taken for a clip: a star clipped that
-lightly measures the HFR of its unclipped neighbours.
+`image_path`, with no `max_adu`, still finds its clip. A star clipped on
+four pixels or fewer is not flagged unless `max_adu` catches it; clipped
+that lightly, it measures the HFR of its unclipped neighbours.
 
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).

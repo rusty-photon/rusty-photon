@@ -27,7 +27,7 @@ Feature: Basic image measurement tool
   measured. The aggregate HFR is the median over the 20
   brightest stars. A star is saturated when its aperture holds a pixel at
   or above the frame's saturation level: the frame's own clip, its maximum
-  when at least three pixels hold it, or the camera's max_adu, the lower of
+  when at least five pixels hold it, or the camera's max_adu, the lower of
   the two. The real-frame scenarios run on 512x512 crops of three
   QHY600M frames: one at best focus, whose twelve stars sit among the
   sensor's hot pixels, one whose brightest star clips at 65534 under the

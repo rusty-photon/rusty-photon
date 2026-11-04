@@ -17,9 +17,11 @@ use super::pixel::Pixel;
 /// How many pixels on a frame's maximum make it a clip.
 ///
 /// The brightest pixels of a frame that does not clip spread over many
-/// values, one or two to a value; on rig2's 79 clipped frames, 7 to 1,310
-/// pixels hold the maximum.
-pub const CLIP_PIXELS: usize = 3;
+/// values, one or two to a value — but a star centred on a pixel corner
+/// puts its four core pixels on one value when the data are quantized
+/// (a 12-bit sensor shifted into 16 bits steps by 16), so four are not a
+/// clip. On rig2's 79 clipped frames, 7 to 1,310 pixels hold the maximum.
+pub const CLIP_PIXELS: usize = 5;
 
 /// The frame's clip: its maximum, when at least [`CLIP_PIXELS`] pixels
 /// hold it. `None` for a frame that does not clip, and for an empty one.
@@ -63,21 +65,28 @@ mod tests {
     }
 
     #[test]
-    fn a_maximum_three_pixels_hold_is_a_clip() {
+    fn a_maximum_five_pixels_hold_is_a_clip() {
         let mut arr = ramp();
-        for c in 0..3 {
+        for c in 0..5 {
             arr[(8, c)] = 65534;
         }
         assert_eq!(frame_clip(&arr.view()), Some(65534));
     }
 
     #[test]
-    fn a_maximum_one_or_two_pixels_hold_is_not() {
+    fn a_maximum_up_to_four_pixels_hold_is_not() {
         let mut arr = ramp();
         assert_eq!(frame_clip(&arr.view()), None, "every value once");
-        arr[(8, 0)] = 65534;
-        arr[(8, 1)] = 65534;
-        assert_eq!(frame_clip(&arr.view()), None, "two pixels on the top value");
+        // A star centred on a pixel corner, its four core pixels on one
+        // quantized value, and nothing brighter.
+        for (r, c) in [(7, 7), (7, 8), (8, 7), (8, 8)] {
+            arr[(r, c)] = 41_600;
+        }
+        assert_eq!(
+            frame_clip(&arr.view()),
+            None,
+            "four pixels on the top value"
+        );
     }
 
     #[test]
@@ -95,7 +104,7 @@ mod tests {
     #[test]
     fn the_level_is_the_lower_of_the_clip_and_max_adu() {
         let mut arr = ramp();
-        for c in 0..3 {
+        for c in 0..5 {
             arr[(8, c)] = 65534;
         }
         let view = arr.view();

@@ -11,7 +11,7 @@ Feature: Star detection tool
   can coexist on one document.
 
   A pixel is saturated at or above the frame's saturation level: the frame's
-  own clip, its maximum when at least three pixels hold it, or the camera's
+  own clip, its maximum when at least five pixels hold it, or the camera's
   max_adu, the lower of the two.
 
   Scenario: Tool catalog includes detect_stars

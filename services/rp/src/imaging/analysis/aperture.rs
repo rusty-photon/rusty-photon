@@ -72,8 +72,8 @@ pub struct MeasuredStar {
     pub flux: f64,
     /// The aperture's radius (px).
     pub radius: f64,
-    /// Whether the aperture holds a pixel at or above the camera's
-    /// `max_adu`. Always `false` when `max_adu` is `None`.
+    /// Whether the aperture holds a pixel at or above the frame's
+    /// saturation level. Always `false` when the level is `None`.
     pub saturated: bool,
     /// The index, in the detection list, of the detection the star was
     /// measured from.
