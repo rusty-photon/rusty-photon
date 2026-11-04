@@ -158,13 +158,14 @@ by switching the Gemini Advanced 3's `USB A`.
      `UniqueID` sees the device's own from the start, rp's identity pin has
      one value to compare, and a wrong camera on a listed port is refused
      instead of served.
-5. **QHY binds without touching the SDK's camera list.** The passive scan
-   confirms the listed port holds a camera rather than its firmware loader,
-   then `OpenQHYCCD` opens the recorded id. Measured: the SDK opens a camera
-   that was absent at `InitQHYCCDResource` with no `ScanQHYCCD`, and a
-   `ScanQHYCCD` on a live SDK disturbs no open camera, so neither order is a
-   hazard (Validation). ZWO and SVBONY bind through the SDK-list rescan their
-   connect already makes under their SDK lock.
+5. **On Linux, QHY binds without touching the SDK's camera list.** The
+   passive scan confirms the listed port holds a camera rather than its
+   firmware loader, then `OpenQHYCCD` opens the recorded id: the Linux SDK
+   opens a camera that was absent at `InitQHYCCDResource` with no
+   `ScanQHYCCD`. A `ScanQHYCCD` on a live SDK disturbs no open camera, on
+   Linux or on Windows, so a bind may scan whenever it needs to (Validation).
+   ZWO and SVBONY bind through the SDK-list rescan their connect already
+   makes under their SDK lock. QHY on Windows is O7.
 
 ## Open questions
 
@@ -199,15 +200,38 @@ Each is settled before the slice that needs it.
   opens.
 - **O6 (P8). doctor for a device off by design.** A daytime-aware reading
   of `hardware.usb-device`, or a "powered down by schedule" state.
+- **O7 (P3). QHY on Windows: a camera the SDK has never seen.** The Windows
+  SDK builds its camera list at the process's first `InitQHYCCDResource`. A
+  camera that was present then opens again by id after any power cycle. One
+  that arrives later becomes visible only when the SDK's own device-arrival
+  listener reports it (its `RegisterPnpEventIn` callback fires), and that
+  is unreliable: no `ScanQHYCCD` or `OpenQHYCCD` sees the camera sooner, and
+  an in-process Release + Init reports zero cameras again. A new process
+  sees it at once (Validation). So a Windows QHY service that started while
+  its cameras were off, after a daytime boot or upgrade, cannot bind them
+  reliably in process. The options:
+  - **(a) Initialise the SDK at the first bind**, not at start, and never
+    release it. With the identity in the list nothing needs the SDK before
+    then. This covers a service whose QHY cameras power on together; a
+    camera powered on after the first bind still meets the unreliable
+    path.
+  - **(b) Restart the service process** when an unbound QHY camera's port
+    fills and no device of the service is connected (Windows only).
+  - **(c) Bind on the SDK's arrival callback**, with retries, accepting its
+    latency and its misses.
+  - **(d) One SDK process per QHY camera.**
+
+  Every Windows run so far was in a KVM guest, so the behaviour is
+  confirmed on bare-metal Windows (rig2) before one is chosen.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M on Linux done (Validation); the rest not started | |
+| P0 | Power-cut survey: for each device on the dev box and rig2, cut only its 12 V and record whether it stays on the bus, whether it still answers, what stops working, and what its driver does when it starts in that state. Fills the table above | QHY178M probed on Linux and Windows (Validation); the rest not started | |
 | P1 | Serial drivers never fail their start on a device that is not there (O2), in all eight shared-transport drivers | Not started | |
 | P2 | rp logs a powered-off device once, not every pass (O3) | Not started | |
-| P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module | Not started; needs O1 | |
+| P3 | Camera drivers: the identity in the list entry and the disconnected device that binds on connect (decisions 3–5), one PR per driver (`qhy-camera`, `zwo-camera`, `svbony-camera`), shared parts in `rusty-photon-driver`'s `claims` module and `rusty-photon-doctor-checks`' `claims` module | Not started; needs O1, and O7 for QHY on Windows | |
 | P4 | The hotplug nudge (decision 2) in `rusty-photon-driver`, used by the three camera drivers | Not started; follows P3 | |
 | P5 | `zwo-focuser` gains a `usb_devices` list, the disconnected device and the nudge | Not started; follows P4 | |
 | P6 | rp `get_switch` / `set_switch` tools, addressing a power-box output by its name or label, and refusing to switch off an output whose device is busy | Not started | |
@@ -244,9 +268,31 @@ program over `qhyccd-rs` and `libqhyccd-sys`, not the service. It switched
 | An open handle power-cycled with nothing touching it while off (0.15 s and 10 s off) | Clean. The first call after the camera returned failed at once (no stall, no blank frame), the close succeeded, and a reopen by id with no scan exposed normally |
 | An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned −722.2 °C instead of failing; the close and the reopen after power returned were clean. The service's `CCDTemperature` checks the cooler's availability first, which the departure contract treats as a presence question; that path is not yet exercised through the service |
 
+### QHY, Windows (2026-11-03)
+
+The same camera passed through to the dev box's Windows 11 KVM guest as a
+USB `hostdev`, with QHY SDK 26.06.04 (`qhyccd.dll` 26.6.4.16) beside the
+probe, built in the guest from the same source. A power-off was `USB A`
+off followed at once by a detach from the guest; a power-on was `USB A` on,
+then an attach once the host showed the camera. So the host's `fxload`
+loaded the firmware, and the guest only ever saw the loaded camera
+(`1618:c179`). The probe ran as `SYSTEM` through the guest agent (session 0,
+as a service runs), except four runs as a user over SSH, and read the
+guest's device tree through the Configuration Manager API.
+
+| Question | Result |
+|---|---|
+| Camera absent at the process's first `InitQHYCCDResource`, then arriving | In 14 runs the SDK reported it in process 6 times: three times on its own, 4–8 s after Windows had the device running, and three times only after a Release + Init, 0.5–16 s after the re-init. The other eight runs saw nothing within 12–55 s. No `ScanQHYCCD` or `OpenQHYCCD` saw the camera before the SDK's `RegisterPnpEventIn` callback fired, and every in-process re-init enumerated zero cameras. The SDK's device listener watches WMI for departures only (`__InstanceDeletionEvent … Win32_PnPEntity`) and takes arrivals from a hidden window's `RegisterDeviceNotification` |
+| The same camera, in a new process | Enumerated at the init, 7 of 7 |
+| `ScanQHYCCD` on a live SDK during exposures | No effect. 4 exposures of 3 s with 18 scans each on the capture thread, and 4 with 26 scans each from a second thread through the readout |
+| An open handle power-cycled (12 s off), the camera present at the first init | Clean. The first call after the camera returned failed at once, the close succeeded, and a reopen by id opened it on the first attempt, 3 s after it returned |
+| An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned 0.0 °C instead of failing (−722.2 °C on Linux) |
+
 ### Owed
 
-- QHY on Windows.
+- Bare-metal Windows (rig2) for O7: a camera that arrives after the
+  process's first SDK init, with the firmware loaded by Windows' own QHY
+  driver rather than the host's `fxload`.
 - rig2's QHY600M, which leaves the bus when its 12 V is cut, and its two
   QHY cameras, for a camera arriving while another exposes.
 - The P0 survey of every other device.
