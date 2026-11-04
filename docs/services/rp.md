@@ -2684,9 +2684,12 @@ most 65520 and 65532 under the same 65535. (`zwo-camera` reports its
 `MaxADU` one quantization step below full scale for the same reason —
 [zwo-camera.md](zwo-camera.md), ST3.) The lower of the two never flags
 fewer pixels than `max_adu` alone, and a frame read from a bare
-`image_path`, with no `max_adu`, still finds its clip. A star clipped on
-four pixels or fewer is not flagged unless `max_adu` catches it; clipped
-that lightly, it measures the HFR of its unclipped neighbours.
+`image_path`, with no `max_adu`, still finds its clip. The clip is the
+frame's, not the star's: a star clipped on a single pixel is flagged
+when other pixels in the frame hold the clip too. A clipped star goes
+unflagged only when four pixels or fewer hold the maximum in the whole
+frame and `max_adu` lies above it; clipped that lightly, it measures the
+HFR of its unclipped neighbours.
 
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).
