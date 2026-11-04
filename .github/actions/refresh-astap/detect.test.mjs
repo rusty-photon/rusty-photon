@@ -85,8 +85,8 @@ function scenarioFile(scenario) {
 }
 
 const DATABASE_ZIP = zip([
-  { path: 'd05_0101.1476', data: 'tile 1' },
-  { path: 'd05_0201.1476', data: 'tile 2' },
+  { path: 'd20_0101.1476', data: 'tile 1' },
+  { path: 'd20_0201.1476', data: 'tile 2' },
 ]);
 
 // A SourceForge stand-in serving this runner's CLI archive, its binary
@@ -178,11 +178,11 @@ test('a rotated archive whose binary solves M101 is a passed result, with its ba
     runs.map(({ args, cwd }) => [args, cwd]),
     [
       [[], work],
-      [['-f', join(solve, M101.file), '-d', join(work, 'd05'), '-wcs', '-ra', '14.0540', '-spd', '144.3469', '-fov', '0.42', '-r', '3.0'], solve],
-      [['-f', join(solve, DEGENERATE), '-d', join(work, 'd05'), '-wcs'], solve],
+      [['-f', join(solve, M101.file), '-d', join(work, 'd20'), '-wcs', '-ra', '14.0540', '-spd', '144.3469', '-fov', '0.42', '-r', '3.0'], solve],
+      [['-f', join(solve, DEGENERATE), '-d', join(work, 'd20'), '-wcs'], solve],
     ],
   );
-  assert.deepEqual(readdirSync(join(work, 'd05')).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+  assert.deepEqual(readdirSync(join(work, 'd20')).sort(), ['d20_0101.1476', 'd20_0201.1476']);
 });
 
 test('without verify, a rotated archive is compared and nothing more', async (t) => {
@@ -200,6 +200,36 @@ test('without verify, a rotated archive is compared and nothing more', async (t)
   });
   assert.deepEqual(downloads(site), [ENTRY.archive]);
   assert.deepEqual(runs, []);
+});
+
+// A SourceForge that serves nothing, as a folder that does not hold the
+// archive answers.
+async function emptySite() {
+  const server = await serve((req, res) => {
+    res.statusCode = 404;
+    res.end();
+  });
+  return { server, table: structuredClone(TABLE) };
+}
+
+test('without verify, an archive that cannot be downloaded is an unavailable result that keeps its pin, and the step goes on', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  const { value, stdout, runs, result } = await detectHere(site, { here: 'Linux-ARM64', verify: false });
+  assert.deepEqual(value, { rotated: false, unavailable: true });
+  assert.deepEqual(
+    { ...result, problem: undefined },
+    { runner: RUNNER, archive: ENTRY.archive, pinned: ENTRY.sha256, banner: CROSS_MIRROR, verified: 'unavailable', problem: undefined },
+  );
+  assert.match(result.problem, /404/);
+  assert.ok(stdout.includes(`::warning::${ENTRY.archive} could not be downloaded, so ${RUNNER}'s pin stays: `), stdout);
+  assert.deepEqual(runs, []);
+});
+
+test('with verify, an archive that cannot be downloaded fails the step, as there is no binary to check', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  await assert.rejects(detectHere(site), /404/);
 });
 
 test("verify on another runner's archive is refused before anything is downloaded", async (t) => {
@@ -228,10 +258,10 @@ test('a binary that fails a solve is a failed result with the reason, annotated,
 });
 
 test('a database that rotated too is warned about, and the binary is checked against it', async (t) => {
-  const site = await sourceForge(GOOD, { pin: OLD_PIN, database: zip([{ path: 'd05_0101.1476', data: 'a new tile' }]) });
+  const site = await sourceForge(GOOD, { pin: OLD_PIN, database: zip([{ path: 'd20_0101.1476', data: 'a new tile' }]) });
   t.after(site.server.close);
   const { stdout, result } = await detectHere(site);
-  assert.match(stdout, /^::warning::d05_star_database\.zip also rotated upstream \([0-9a-f]{64}, pinned [0-9a-f]{64}\)\. The refresh does not move that pin/m);
+  assert.match(stdout, /^::warning::d20_star_database\.zip also rotated upstream \([0-9a-f]{64}, pinned [0-9a-f]{64}\)\. The refresh does not move that pin/m);
   assert.equal(result.verified, 'passed');
 });
 

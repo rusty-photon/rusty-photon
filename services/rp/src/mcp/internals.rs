@@ -1307,8 +1307,8 @@ impl McpHandler {
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        // No camera context here, so we can't reliably know max_adu — pass None
-        // (saturation flagging is best-effort; not a correctness issue).
+        // No camera context here, so we can't reliably know max_adu — pass None;
+        // the frame's own clip still sets its saturation level.
         self.measure_via_path(&resolved.fits_path.to_string_lossy(), params)
             .await
     }
@@ -1387,7 +1387,8 @@ impl McpHandler {
             .ok_or_else(|| {
                 crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
-        // No camera context here — pass max_adu = None (matches measure_basic).
+        // No camera context here — pass max_adu = None (matches measure_basic);
+        // the frame's own clip still sets its saturation level.
         self.detect_via_path(&resolved.fits_path.to_string_lossy(), params)
             .await
     }
@@ -3846,7 +3847,7 @@ pub(crate) fn detect_outcome<T: imaging::Pixel>(
         smoothing_sigma: 1.0,
         min_area: params.min_area,
         max_area: params.max_area,
-        max_adu,
+        saturation_level: imaging::saturation_level(view, max_adu),
     };
     let stars = imaging::detect_stars(view, &background, &detection);
     Ok(DetectStarsOutcome { stars, background })

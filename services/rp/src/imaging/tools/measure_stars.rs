@@ -24,6 +24,7 @@ use crate::imaging::analysis::aperture::{
 use crate::imaging::analysis::background::{estimate_background, BackgroundStats};
 use crate::imaging::analysis::fwhm::fit_2d_gaussian;
 use crate::imaging::analysis::pixel::Pixel;
+use crate::imaging::analysis::saturation::saturation_level;
 use crate::imaging::analysis::stars::{detect, hot_pixels, DetectionParams};
 
 /// Default postage-stamp half-size (pixels). 8 ⇒ 17×17 stamp, comfortably
@@ -98,9 +99,10 @@ pub struct MeasureStarsResult {
 /// Run the measurement pipeline.
 ///
 /// `max_area` bounds a star's half-flux disc, not a component's area, as
-/// in `measure_basic`. `max_adu` flags saturation; the per-star
-/// saturation count is not surfaced in the result (callers wanting it
-/// call `detect_stars` directly).
+/// in `measure_basic`. `max_adu` is the camera's, for the frame's
+/// saturation level as in `measure_basic`; the per-star saturation count
+/// is not surfaced in the result (callers wanting it call `detect_stars`
+/// directly).
 ///
 /// # Errors
 ///
@@ -117,15 +119,16 @@ pub fn measure_stars<T: Pixel>(
     let background = estimate_background(view)
         .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
 
+    let saturation_level = saturation_level(view, max_adu);
     let detection = DetectionParams {
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
         max_area: usize::MAX,
-        max_adu,
+        saturation_level,
     };
     let detected = detect(view, &background, &detection);
-    let stars = measure_in_apertures(view, &detected, background.mean, max_area, max_adu);
+    let stars = measure_in_apertures(view, &detected, background.mean, max_area, saturation_level);
 
     let measurements: Vec<StarMeasurement> = stars
         .iter()

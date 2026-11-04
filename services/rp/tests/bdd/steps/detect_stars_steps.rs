@@ -67,6 +67,22 @@ async fn mcp_call_with_document_id(world: &mut RpWorld, document_id: String) {
     call_tool(world, None, Some(&document_id), None, true, true).await;
 }
 
+#[when(
+    expr = "the MCP client calls \"detect_stars\" on the fixture {string} with threshold_sigma {float}"
+)]
+async fn mcp_call_on_fixture(world: &mut RpWorld, fixture: String, threshold_sigma: f64) {
+    // The suite runs from the package directory (cargo's default, and
+    // `BDD_PACKAGE_DIR` under Bazel); rp gets an absolute path because it
+    // runs as its own process.
+    let path = std::env::current_dir()
+        .expect("current directory")
+        .join("tests/fixtures")
+        .join(&fixture);
+    assert!(path.is_file(), "fixture {} not found", path.display());
+    let path = path.to_str().expect("fixture path is UTF-8").to_string();
+    call_tool(world, Some(&path), None, Some(threshold_sigma), true, true).await;
+}
+
 #[when("the MCP client calls \"detect_stars\" with no arguments")]
 async fn mcp_call_no_args(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
@@ -159,6 +175,28 @@ fn result_contains_empty_array(world: &mut RpWorld, field: String) {
         "expected '{}' to be empty, got {} entries",
         field,
         arr.len()
+    );
+}
+
+#[then(expr = "the detect_stars stars should hold {int} saturated pixels in all")]
+fn stars_hold_saturated_pixels(world: &mut RpWorld, expected: u64) {
+    let result = world
+        .last_detect_stars_result
+        .as_ref()
+        .expect("no detect_stars result");
+    let total: u64 = result["stars"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected 'stars' to be an array, got: {result:?}"))
+        .iter()
+        .map(|star| {
+            star["saturated_pixel_count"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("expected a 'saturated_pixel_count', got: {star:?}"))
+        })
+        .sum();
+    assert_eq!(
+        total, expected,
+        "saturated pixels across the stars: {result:?}"
     );
 }
 

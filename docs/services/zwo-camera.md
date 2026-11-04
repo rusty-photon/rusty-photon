@@ -1900,9 +1900,11 @@ in its **Device** column with no renumbering note, and closed with
   and at exposures from 1 s to 15 s, with ~98 000 pixels piled on 65528 and
   nothing above it. ASCOM defines this property as *"the maximum ADU value the
   camera can produce"*, and a client that tests saturation as
-  `pixel >= MaxADU`, as rp does, finds no saturated pixel under an unreachable
+  `pixel >= MaxADU` finds no saturated pixel under an unreachable
   ceiling: it does not merely round badly, it can make saturation
-  **undetectable**. Measured through the driver before the margin existed, a
+  **undetectable**. (`rp` also reads the frame's own clip and takes the lower
+  of the two — [rp.md](rp.md), `measure_basic` contract, the saturation level —
+  but a client that trusts `MaxADU` alone does not.) Measured through the driver before the margin existed, a
   comprehensively blown-out frame gave `pixels >= MaxADU` = 0 while 13 655
   pixels sat at the sensor's real ceiling; with it, the same frame reports
   6 709 saturated pixels.

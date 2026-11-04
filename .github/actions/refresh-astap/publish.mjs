@@ -12,7 +12,7 @@ import path from 'node:path';
 
 import { formatTable, parseTable } from '../install-astap/astap.mjs';
 import { commentOrOpen, github, openIssues } from '../lib/github.mjs';
-import { io } from '../lib/helpers.mjs';
+import { io, warning } from '../lib/helpers.mjs';
 import { forRunner } from '../lib/install.mjs';
 import { FLAKE_LABEL } from '../tracking-issue/issue.mjs';
 
@@ -45,17 +45,21 @@ export const BLOCKER = { label: 'astap-refresh-blocked', title: 'astap: upstream
 /** install-astap's tracking issue, as its notify-on-failure job opens it. */
 export const TRACKER = { label: 'install-astap-nightly', title: 'nightly: install-astap smoke failing (likely upstream SHA rotation)' };
 
-const VERIFIED = new Set(['passed', 'failed', 'skipped']);
+const VERIFIED = new Set(['passed', 'failed', 'skipped', 'unavailable']);
 
-// Throws unless `result`, from the artifact `where`, is one detect writes.
+// Throws unless `result`, from the artifact `where`, is one detect writes. An
+// 'unavailable' result names no upstream, since the archive was not
+// downloaded, and says why in its problem.
 function checkResult(result, where) {
   for (const field of ['runner', 'archive', 'banner']) {
     if (typeof result?.[field] !== 'string') throw new Error(`${where}: no ${field}`);
   }
-  for (const field of ['pinned', 'upstream']) {
+  if (!VERIFIED.has(result.verified)) throw new Error(`${where}: verified is ${JSON.stringify(result.verified)}, not one of ${[...VERIFIED].join(', ')}`);
+  const unavailable = result.verified === 'unavailable';
+  for (const field of unavailable ? ['pinned'] : ['pinned', 'upstream']) {
     if (!SHA256.test(result[field] ?? '')) throw new Error(`${where}: ${field}, ${JSON.stringify(result[field])}, is not a SHA-256 in lowercase hex`);
   }
-  if (!VERIFIED.has(result.verified)) throw new Error(`${where}: verified is ${JSON.stringify(result.verified)}, not one of ${[...VERIFIED].join(', ')}`);
+  if (unavailable && typeof result.problem !== 'string') throw new Error(`${where}: an unavailable result with no problem`);
 }
 
 /**
@@ -85,18 +89,18 @@ export async function readResults(dir) {
 
 /**
  * `table` with each result's new pin in it, and what changed: a pin already
- * at its new SHA-256 is no change. A result's archive must be the one the
- * table names for its runner.
+ * at its new SHA-256 is no change, and an unavailable result keeps its pin. A
+ * result's archive must be the one the table names for its runner.
  */
 export function repin(table, results) {
   const next = structuredClone(table);
   const changes = [];
-  for (const { runner, archive, upstream } of results) {
+  for (const { runner, archive, upstream, verified } of results) {
     const entry = forRunner(next.cli, runner, 'ASTAP');
     if (entry.archive !== archive) {
       throw new Error(`the table names ${entry.archive} for ${runner}, not ${archive}, which the refresh downloaded`);
     }
-    if (entry.sha256 === upstream) continue;
+    if (verified === 'unavailable' || entry.sha256 === upstream) continue;
     changes.push({ runner, archive, from: entry.sha256, to: upstream });
     entry.sha256 = upstream;
   }
@@ -108,7 +112,10 @@ export function repin(table, results) {
  * new binary printed, so it goes in a code span, without the backticks that
  * would end one.
  */
-export function row({ runner, banner, pinned, upstream, verified, problem }) {
+export function row({ runner, archive, banner, pinned, upstream, verified, problem }) {
+  if (verified === 'unavailable') {
+    return `- **${runner}**: \`${archive}\` could not be downloaded, so its pin \`${pinned.slice(0, 8)}…\` stays: ${problem}`;
+  }
   const why = problem === undefined ? '' : `: ${problem}`;
   return `- **${runner}** (\`${banner.replace(/`/g, '')}\`): \`${pinned.slice(0, 8)}…\` → \`${upstream.slice(0, 8)}…\` — M101 verify: **${verified}**${why}`;
 }
@@ -132,7 +139,9 @@ checked.
 
 Windows-ARM64 has no GH-hosted runner, so its SHA is refreshed
 cross-mirror with no verification — same posture ADR-005
-documents.
+documents. If its archive could not be downloaded, its pin stays
+and its row above says why; the table may name a folder upstream
+no longer uses.
 
 Full verification logs:
 ${runUrl}
@@ -165,7 +174,7 @@ ${rows.join('\n')}
 - Upstream shipped a broken release
 - CLI surface changed (e.g. \`-wcs\` or \`-d\` flags renamed)
 - \`.wcs\` sidecar format changed (CRVAL keys renamed, PLTSOLVD card removed)
-- New binary requires a newer D05 database
+- New binary requires a newer D20 database
 
 Workflow run: ${runUrl}`;
 }
@@ -272,6 +281,10 @@ export async function publish({ api, repo, token, runUrl, results, dryRun = fals
   }
   const rows = results.map(row);
   io.stdout(`${rows.join('\n')}\n`);
+  if (results.every(({ verified }) => verified === 'unavailable')) {
+    warning('No archive that could be downloaded rotated, so nothing is proposed; the pins of those that could not stay');
+    return { outcome: 'none' };
+  }
   const context = { api, repo, token, ...options };
 
   if (results.some(({ verified }) => verified === 'failed')) {

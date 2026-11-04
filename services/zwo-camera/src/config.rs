@@ -111,9 +111,10 @@ pub enum MaxAduReporting {
     ///
     /// No pixel of a sub-16-bit sensor reaches the value, so this **may
     /// disable saturation detection**: a client that counts a pixel saturated
-    /// only at or above `MaxADU`, as rp does, finds none. A client with a lower
-    /// threshold is unaffected. It is a compatibility mode, not a second
-    /// correct answer.
+    /// only at or above `MaxADU` finds none. A client with a lower threshold
+    /// is unaffected, and so is rp on a frame that clips, since it also reads
+    /// the frame's own clip. It is a compatibility mode, not a second correct
+    /// answer.
     #[schemars(
         title = "zwo_driver: 65535 in Raw16, as ZWO's own driver reports; may disable saturation detection"
     )]

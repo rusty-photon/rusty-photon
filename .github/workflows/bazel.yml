@@ -5,7 +5,8 @@
 # Windows matrix, producing the `bazel / ubuntu-latest` and
 # `bazel / windows-latest` required checks; macOS joins the matrix on
 # push-to-main and on the nightly schedule only — see the `os:` comment for
-# why. Coverage is gated separately by bazel-coverage.yml.
+# why; a failing nightly macOS leg opens a tracking issue
+# (notify-macos-failure). Coverage is gated separately by bazel-coverage.yml.
 #
 # Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the Linux and
 # Windows legs run on the ephemeral self-hosted pool
@@ -44,8 +45,10 @@ jobs:
         # runners where it is the slowest leg by a wide margin — it decides
         # when a PR goes green while Linux and Windows have long finished. It
         # still runs on push-to-main and on the nightly schedule, so a
-        # macOS-only break surfaces within minutes of a merge rather than at
-        # the next PR, and the hosted macOS cache keeps being written.
+        # macOS-only break turns main red within minutes of a merge, and the
+        # hosted macOS cache keeps being written. A red push tells nobody; the
+        # alarm is the nightly's, whose failure opens the `macos-nightly`
+        # tracking issue (notify-macos-failure below).
         #
         # Computed with `fromJSON` rather than a job-level `if`: a job-level
         # `if` that reads the `matrix` context is not a skipped job, it is a
@@ -469,3 +472,54 @@ jobs:
             }
             Write-Output ("  rlibs in manifest={0} unreachable={1}" -f $checked, $bad)
           }
+
+  notify-macos-failure:
+    # Open or update a tracking issue when the nightly macOS leg fails. macOS
+    # joins the matrix only off-PR (see the `os:` comment), so a macOS-only
+    # break lands on main, and without this nobody is told. Only the macOS
+    # leg, and only on the schedule: the Linux and Windows legs gate every
+    # PR, and a push-to-main failure is left to show on its commit.
+    #
+    # `needs` on the matrix runs this when any leg failed, so the action is
+    # given the macOS leg's name (`job`) and files only if that leg failed. A
+    # name the run has no job by fails the step, so renaming the leg means
+    # changing it here too. Listing the run's jobs takes `actions: read`.
+    #
+    # cancelled() alongside failure(): a job killed by timeout-minutes reports
+    # conclusion "cancelled", not "failure" — failure() alone silently misses
+    # it. Safe to OR in here: on the schedule github.head_ref is empty, so the
+    # concurrency group above falls back to the per-run github.run_id and no
+    # other run can cancel this one via supersession — every "cancelled"
+    # conclusion this can see is a genuine timeout (or a human explicitly
+    # cancelling, which is worth surfacing too).
+    needs: build-test
+    if: (failure() || cancelled()) && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          job: bazel / macos-latest
+          title: "nightly: bazel / macos-latest failing"
+          label: macos-nightly
+          body: |
+            The nightly bazel workflow's `bazel / macos-latest` leg failed.
+
+            Likely causes: the known macOS remote-cache wedge (#765), in which
+            `bazel build` hangs in the remote cache's download tail until the
+            step's 30-minute timeout, with nothing in the log to say why; or a
+            build or test failure on macOS alone. Inspect the failed job in the
+            linked run: a `bazel build` step that ran to its timeout points at
+            the wedge, a failing target at a genuine break.

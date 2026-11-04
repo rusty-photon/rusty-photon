@@ -56,6 +56,7 @@ tools/rusty-photon-ci/
   src/pool_routing.rs      a guard over the workflows, compiled only for tests
   src/toolchain_pins.rs    a guard over MODULE.bazel's Rust pins, likewise
   src/pkg_assets.rs        a guard over the packaging files, likewise
+  src/bare_refs.rs         a guard over the comments in the code, likewise
   testdata/                files the tests include_str!: saved channel
                            manifests, the formulas the shell rendered
 ```
@@ -89,7 +90,10 @@ tools/rusty-photon-ci/
   Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
   relative to the runfiles root. It reads a YAML file with the parser
   (`saphyr`), never line by line: R6's guard started line by line, and
-  each review of it found YAML it misread. No parser in the workspace
+  each review of it found YAML it misread. A guard over comments is the
+  exception, since a parser drops them: `bare_refs.rs` takes a `#`
+  outside quotes that starts the line or follows a space, YAML's own
+  rule, and reads nothing else of the file. No parser in the workspace
   reads Starlark, so the guard over `MODULE.bazel` reads its
   `rust.toolchain` call line by line, in the shape `rust-toolchain-sha256s`
   prints, and fails on any other line inside `versions` and `sha256s`
@@ -347,7 +351,7 @@ above.
   that crawls rather than fails, such as a SourceForge mirror, a caller
   can also set a floor on the rate (`minBytesPerSecond`, measured over the
   stall time) and a time after which no attempt starts (`retryForMs`), as
-  `install-astap` does for its 100 MB database. A failure a later attempt
+  `install-astap` does for its 400 MB database. A failure a later attempt
   would meet again (a 404, a bad certificate) is final, unless the caller
   sets `retryAll` for a pool of mirrors, where the next attempt likely
   reaches another; `install-astap` does, as SourceForge's are one.
@@ -561,7 +565,8 @@ rate limit's wait as its `retryAfterMs` for `retry`; a POST or PATCH
 sent once; with `json` or `upload`, a body, such as a release asset's
 bytes; with `missing`, a 404 is no error; with `accept`, the answer in
 another media type, such as a pull request's diff), `everyPage` (every
-item of a paged list, a next page on another origin refused),
+item of a paged list, a next page on another origin refused; with `key`,
+of a list each answer wraps in an object, as a run's jobs come),
 `openIssues` (every page of the open issues with a label, pull requests
 left out) and `commentOrOpen` (the open issue with a label and an exact
 title gets a comment, or one is opened; an issue opened without the

@@ -100,3 +100,20 @@ rust_doc_test(
     name = "rusty-photon-service-lifecycle_doc_test",
     crate = ":rusty-photon-service-lifecycle",
 )
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

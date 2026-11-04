@@ -8,6 +8,23 @@
 
 load(":node_test.bzl", "node_binary", "node_link_test", "node_test")
 
+# Every JavaScript file and action.yml here, which the tools crate's
+# bare-reference guard reads (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.mjs",
+            "**/*.yml",
+            "**/*.yaml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
 # The helper module every action imports.
 node_test(
     name = "helpers_test",
@@ -230,7 +247,7 @@ node_test(
     ],
 )
 
-# install-astap: the ASTAP CLI and its D05 star database from SourceForge, and
+# install-astap: the ASTAP CLI and its D20 star database from SourceForge, and
 # the table of pins refresh-astap rewrites.
 node_test(
     name = "install_astap_test",
@@ -443,7 +460,8 @@ node_test(
 )
 
 # tracking-issue: a scheduled workflow's tracking issue, opened or commented on
-# when a scheduled run fails.
+# when a scheduled run fails, or when one job of it failed. The tests answer
+# the run's jobs with a recorded answer.
 node_test(
     name = "tracking_issue_test",
     size = "small",
@@ -453,6 +471,7 @@ node_test(
         "lib/helpers.mjs",
         "lib/testing.mjs",
         "tracking-issue/issue.mjs",
+        "tracking-issue/testdata/jobs.json",
     ],
 )
 

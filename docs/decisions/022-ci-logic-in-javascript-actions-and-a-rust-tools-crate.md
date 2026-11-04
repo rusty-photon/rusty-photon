@@ -34,8 +34,8 @@ Shell has cost this repo in four ways:
   only be tried by pushing it.
 - **Defects of the language.** Quoting, word splitting, a pipeline's exit
   status read through `!`, a `local` that shadows an outer variable:
-  [code-review.md](../skills/code-review.md#what-the-record-shows) records
-  five genuine bugs drawn by new bash in one PR (#857), and shellcheck.yml's
+  [the code-review record](../plans/archive/code-review-record-2026-10.md)
+  records five genuine bugs drawn by new bash in one PR (#857), and shellcheck.yml's
   job comment names the orchestrator's worst defects as this kind.
 - **No home for shared logic.** Even the CI's existing JavaScript is
   pasted inline: the `actions/github-script` block that opens or updates a
