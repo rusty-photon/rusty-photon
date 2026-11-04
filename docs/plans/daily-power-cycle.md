@@ -22,7 +22,10 @@ Tracking issue:
 
 Out of scope: re-cabling a device onto another port. Placement holds from
 one start or reload to the next, as the camera drivers' device claims
-already say, and moving a device stays a reload's job.
+already say, and moving a device stays a reload's job. So is a camera
+driver with no `usb_devices` list: no number is reserved for a camera that
+is absent, so it keeps finding cameras only at a start or reload. Daily
+power cycling needs the list.
 
 ## What a power cut does to a device
 
@@ -139,13 +142,18 @@ by switching the Gemini Advanced 3's `USB A`.
    camera. The camera drivers already reach their SDK through one handle
    seam (`CameraHandle`), and the binding belongs there.
    - **A connect costs no scan while the device is off.** Before the full
-     passive scan, a bind asks the OS in process whether any device with the
-     listed device's vendor id is present (sysfs on Linux, the
-     Configuration Manager's device list on Windows, as the Windows probe
-     read it, IOKit on macOS), and runs the scan only when one is. rp tries
-     an unbound device's connect three times a pass, every pass, and on
-     Windows the scan starts a PowerShell process, so a scan on every
-     connect would be the timer decision 2 rejects, only more often.
+     passive scan, a bind asks the OS in process whether a device of the
+     listed vendor is present on the listed port (the port read from sysfs
+     on Linux, a device node's location paths from the Configuration
+     Manager on Windows, an IOKit location id on macOS), and runs the scan
+     only when one is. A vendor-wide check would not do: another camera of
+     the same vendor that is on keeps the vendor present all day. rp tries
+     an unbound device's connect every pass, and on Windows the scan starts
+     a PowerShell process, so a scan on every connect would be the timer
+     decision 2 rejects, only more often.
+   - **A bind counts only once the open succeeds.** An open that fails, as
+     one 35 ms after the camera appeared did on Linux, leaves the device
+     unbound, and the next connect tries again.
    - **Not a rebuild.** Rebuilding the server when a device arrives (what a
      reload does) ends every session on the service, including an exposure
      in flight on another camera, so each arrival would have to wait for a
@@ -191,11 +199,16 @@ Each is settled before the slice that needs it.
   both served disconnected with the transport retrying. Only a device that
   answers as something else (wrong identity, firmware refused) fails the
   start. A reload with the device absent rebuilds and serves it
-  disconnected.
+  disconnected. `star-adventurer-gti`'s start-up halt is then issued by the
+  first reconnect that succeeds with no client attached, which already
+  re-issues it on a fresh link.
 - **O3 (P2). rp's log for a powered-off device.** Proposed: rp logs that a
   device is unreachable at `INFO` once, on the transition, and at `debug!`
   while it stays unreachable, for every device and driver. The three
-  attempts within a pass stay. This needs no trust in a driver's error
+  attempts within a pass stay for a device rp cannot reach, but an unbound
+  device's refusal is final for the pass, as a placeholder's is today: one
+  attempt, no backoff. rp walks the devices one after another, so 3 s of
+  backoff per powered-off camera would delay every other device's check. This needs no trust in a driver's error
   code, which today's placeholder rule needs (it checks the `UniqueID`
   form, because any Alpaca driver may use `0x540`).
 - **O4 (P7). Readiness at dusk for a device that stays on the bus.** rp
@@ -239,6 +252,22 @@ Each is settled before the slice that needs it.
   name a power box, not the devices on its outputs, so P6's refusal to
   switch off an output whose device is busy needs a mapping from each output
   to the devices it feeds, in rp's configuration or in a train's.
+- **O9 (P7). Driver state under a device whose 12 V is cut while it stays
+  connected.** A QHY178M whose 12 V is cut stays on the bus and keeps its
+  session all day. When the 12 V returns its filter wheel homes to slot 0
+  for about 20 s, but `qhy-camera` answers a settled wheel's `Position` from
+  the slot it cached and does not resend the slot it last commanded (FW1,
+  FW2), and the wheel drops a command sent while it homes. So the first
+  filter move at dusk can be skipped or lost, and the frame taken through
+  the wrong filter. The options:
+  - **(a) The power documents disconnect each device** on an output before
+    switching it off, and connect it again once it has power and has
+    settled. rp keeps such a device out of its reconnect supervisor in
+    between, which needs O8's mapping. A fresh connect re-reads every cache
+    its handshake fills (`qhy-camera` C6), and its
+    `equipment_changed {connected: true}` doubles as O4's readiness signal.
+  - **(b) The drivers re-read what they cache when a device's power
+    returns.** With only the 12 V cut, no USB event tells them.
 
 ## Implementation Status
 
@@ -251,7 +280,7 @@ Each is settled before the slice that needs it.
 | P4 | The hotplug nudge (decision 2) in `rusty-photon-driver`, used by the three camera drivers | Not started; follows P3 | |
 | P5 | `zwo-focuser` gains a `usb_devices` list, the disconnected device and the nudge | Not started; follows P4 | |
 | P6 | rp `get_switch` / `set_switch` tools, addressing a power-box output by its name or label, and refusing to switch off an output whose device is busy | Not started; needs O8 | |
-| P7 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for readiness, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, outputs off | Not started; needs P6, O4, O5 | |
+| P7 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for readiness, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, outputs off | Not started; needs P6, O4, O5, O9 | |
 | P8 | doctor's reading of a device off by design (O6) | Not started | |
 
 P1 and P2 depend on nothing else and are small. P3 comes after P2: an
