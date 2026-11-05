@@ -71,7 +71,7 @@ once and kept.
 | S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7a | The design of S7's three slices ([§ S7](#s7--three-slices-decided-2026-11-04)), and D12, D16 and D17 amended to match | In progress | `docs/focus-model-s7a-design` |
 | S7b | `session-runner`: `deep_sky.json` calls `focus_train` wherever it called the capture `auto_focus` and `refocus_train`, its escalation choosing between `focus_train {shared: true}` and the metric `auto_focus` from the guiding train's `get_refocus_plan`; `bdd-infra` starts the real `focus-model` for session-runner's deep-sky scenarios | Not started | |
-| S7c | `rp`: the capture-based `auto_focus` and `refocus_train` retire with the `refocus_*` events; an `auto_focus` block on an imaging train, and a focuser in an imaging train that no train ends in, are refused at load; the Guide Focus Watch stops reading `refocus_complete`; the provider's refusal of such a step stops naming `refocus_train` | Not started | |
+| S7c | `rp`: the capture-based `auto_focus` and `refocus_train` retire with the `refocus_*` events; an `auto_focus` block on an imaging train, and a focuser shared between trains that none of them ends in, are refused at load; the Guide Focus Watch stops reading `refocus_complete`; the provider's refusal of such a step stops naming `refocus_train` | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Merged | [#1673](https://github.com/rusty-photon/rusty-photon/pull/1673) |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2), the fit shared through the `rp-focus-curve` crate | Merged | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
 | S10 | = [device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Merged — the reconciliation with C7 was settled on 2026-10-13: the guide-train sweep is a training run of `focus_train` ([device-claims-and-phd2-camera.md](archive/device-claims-and-phd2-camera.md) D12, "Settled in C7"), and it does not wait for S7. C7a, the design, C7b, the facade's sweep lease, C7c, rp's train lease and the gate change, and this plan's own part, C7d, the training run on a guiding train ([focus-model.md](../services/focus-model.md) § Training runs on a guiding train), merged; C7e, the shared focuser focused through the imaging camera alone (O4 rules 2, 4 and 8, settled by the owner on 2026-10-15), merged | `feature/device-claims-c7` ([#1509](https://github.com/rusty-photon/rusty-photon/pull/1509)), `feature/device-claims-c7b` ([#1517](https://github.com/rusty-photon/rusty-photon/pull/1517)), `feature/device-claims-c7c` ([#1520](https://github.com/rusty-photon/rusty-photon/pull/1520)), `feature/device-claims-c7d` ([#1528](https://github.com/rusty-photon/rusty-photon/pull/1528)), `feature/device-claims-c7e` ([#1535](https://github.com/rusty-photon/rusty-photon/pull/1535)) |
@@ -903,11 +903,15 @@ train's terminal one — a shared focuser terminal nowhere — is refused,
 naming the focuser, before anything moves. Before S7, `rp`'s
 `refocus_train`, which sweeps the step's focuser itself, ran such a plan.
 S7c retires it, and makes `rp` refuse that topology at load instead: a
-focuser in an imaging train must be the terminal focuser of at least
-one train (decided 2026-11-04). Only an optical splitter builds it — one
-telescope's focuser, then a beam splitter feeding two cameras, each
-behind a focuser of its own — and no rig has one. The provider's
-refusal then guards a plan that no loadable config produces.
+focuser shared between trains must be the terminal focuser of at least
+one of them (decided 2026-11-04). It takes trains that each follow the
+shared focuser with a focuser of their own, such as an imaging train
+`[eaf, helical, main-cam]` beside a guiding train
+`[eaf, oag-focuser, guide-cam]`. No rig is configured that way, and the
+owner judged it not a setup worth supporting. A single train holding
+two focusers stays legal: no other train shares the upstream one, so no
+plan holds it, today or after S7c. The provider's refusal then guards a
+plan that no loadable config produces.
 
 Since S10 (C7e) a guide step appears only when the guiding train has a
 focuser of its own, because the shared-focuser step already focused a
@@ -1546,6 +1550,11 @@ and this section.
   and calls `focus_train {train_id: event.train_id, shared: true}` when
   the plan holds a `capture` step, or `rp`'s metric `auto_focus` on the
   guiding train when it holds only the guide step (D12).
+  The read sits inside the trigger's `try`, so a plan `rp` cannot answer
+  (a guiding train with no focuser) is logged and the session goes on.
+  After a shared walk the trigger records `last_focus_hfr` and
+  `last_focus_temperature` from `focus_train`'s result, as every other
+  focus call does, since the walk moved the imaging train's focuser.
   `guide-af-on-degraded` is unchanged.
 - The sweep's per-train settings come from `focus-model.json`'s
   `trains.<id>`. `focus_min_area` and `focus_max_area` stay, read only
@@ -1555,8 +1564,18 @@ and this section.
   `focus_train` there. `bdd-infra` starts the real `focus-model` binary
   beside `rp`, registered as a tool provider (owner, 2026-11-04),
   rather than a stub serving canned results. Its sweeps against
-  OmniSim's frames end as the provider's own suite expects, and `rp`'s
-  bracket still emits the focus events the scenarios count.
+  OmniSim's frames end as the provider's own suite expects. `rp`'s
+  bracket emits the `focus_*` events around each `focus_train`, so the
+  scenarios that count focus events still count them. That needs the
+  OmniSim train's optics complete (aperture, focal length,
+  `microns_per_step`) or a configured `step_size` and `half_width`, and
+  the starless threshold the provider's suite pins.
+  The guide-watch scenario asserts a `refocus_started` today, which no
+  path emits after S7b: it asserts the escalation through the focus
+  events instead. Its guiding train shares no focuser with an imaging
+  train, so its plan holds only the guide step and it exercises the
+  metric branch. A second scenario, with the guiding train sharing the
+  imaging train's focuser, covers `focus_train {shared: true}`.
 
 **S7c**, `rp`, after S7b:
 
@@ -1567,9 +1586,8 @@ and this section.
   The metric `auto_focus` on a guiding train stays, with that train's
   block.
 - At load, `rp` refuses an `auto_focus` block on an imaging train,
-  naming the train and `focus-model.json` (D17), and a focuser in an
-  imaging train that is the terminal focuser of no train, naming the
-  focuser (D16).
+  naming the train and `focus-model.json` (D17), and a focuser shared
+  between trains that none of them ends in, naming the focuser (D16).
 - The Guide Focus Watch drops its `refocus_complete` arm. A
   `focus_complete` carrying `steps` already re-arms it (D15).
 - The provider's refusal of a capture step that is not its run train's
