@@ -27,14 +27,39 @@ use crate::manager::{AxisSnapshot, MountParameters, MountSnapshot};
 /// whose position at the cut is not known closely enough.
 const MAX_TRUSTED_RATE_SIDEREAL: f64 = 2.0;
 
-/// The controller's power state, shared by the handshake, the poll loop
-/// and the device.
+/// The longest outage after which the last sample is written back.
+///
+/// A blip, plus the transport's 5 s retry, fits well inside it; a longer
+/// cut may be a planned one, during which someone can have moved the
+/// mount by hand, so the mount state record decides instead.
+pub const MAX_TRUSTED_OUTAGE: Duration = Duration::from_secs(30);
+
+/// What the driver knows about the mount's position across power cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    /// The encoders say where the mount is.
+    Known,
+    /// The controller restarted after an outage too long to trust the
+    /// last sample, and its encoders hold power-up values. The power-up
+    /// check against the mount state record decides: at the next
+    /// connect, or at once when a client is connected.
+    AwaitingCheck,
+    /// Lost: only a sync or the recovery from a named park clears it.
+    Lost,
+}
+
+/// The controller's power state, shared by the handshake, the request
+/// paths and the device.
 #[derive(Debug)]
 pub struct PowerWatch {
-    position_lost: AtomicBool,
-    /// When a background poll first failed after its last success: the
-    /// latest instant the link can have gone. `None` while polls succeed.
-    first_failed_poll: Mutex<Option<Instant>>,
+    position: Mutex<Position>,
+    /// A restart the handshake saw but has not finished handling: its
+    /// `:F` set the init flags, so a retry after a failure later in the
+    /// handshake would otherwise read them set and miss it.
+    restart_pending: AtomicBool,
+    /// When a request first failed after the last success: the latest
+    /// instant the link can have gone. `None` while requests succeed.
+    first_failed_request: Mutex<Option<Instant>>,
     /// Bumped once per restart the handshake finds while serving; the
     /// connected device watches it to drop what the cut ended.
     restarts: watch::Sender<u64>,
@@ -43,59 +68,91 @@ pub struct PowerWatch {
 impl Default for PowerWatch {
     fn default() -> Self {
         Self {
-            position_lost: AtomicBool::new(false),
-            first_failed_poll: Mutex::new(None),
+            position: Mutex::new(Position::Known),
+            restart_pending: AtomicBool::new(false),
+            first_failed_request: Mutex::new(None),
             restarts: watch::Sender::new(0),
         }
     }
 }
 
+/// Lock `m`, recovering the value from a poisoned lock: every value these
+/// locks guard is a plain copy, whole after any panic.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl PowerWatch {
-    /// Whether the mount's position is lost: slews, tracking and guide
-    /// pulses are refused and `Park()` parks in place until ground truth
-    /// clears it.
-    pub fn position_lost(&self) -> bool {
-        self.position_lost.load(Ordering::SeqCst)
+    /// What the driver knows about the mount's position.
+    pub fn position(&self) -> Position {
+        *lock(&self.position)
+    }
+
+    /// Whether the encoders say where the mount is. While they do not,
+    /// slews, tracking and guide pulses are refused and `Park()` parks in
+    /// place.
+    pub fn position_known(&self) -> bool {
+        self.position() == Position::Known
     }
 
     /// Mark the position lost.
     pub fn mark_position_lost(&self) {
-        self.position_lost.store(true, Ordering::SeqCst);
+        *lock(&self.position) = Position::Lost;
     }
 
-    /// Clear a lost position: ground truth (a sync, or the recovery from a
-    /// named park) has anchored the frame again. Returns whether it was
+    /// Hold the position for the power-up check, unless it is already
     /// lost.
-    pub fn clear_position_lost(&self) -> bool {
-        self.position_lost.swap(false, Ordering::SeqCst)
-    }
-
-    /// A background poll failed at `at`. Keeps the first failure after the
-    /// last success.
-    pub fn note_poll_failed(&self, at: Instant) {
-        let mut first = self
-            .first_failed_poll
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if first.is_none() {
-            *first = Some(at);
+    pub fn await_power_up_check(&self) {
+        let mut position = lock(&self.position);
+        if *position == Position::Known {
+            *position = Position::AwaitingCheck;
         }
     }
 
-    /// A background poll succeeded: the link is up.
-    pub fn note_poll_succeeded(&self) {
-        *self
-            .first_failed_poll
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    /// The power-up check found the position (`true`, the seed ran) or
+    /// lost it. A no-op unless a check was awaited.
+    pub fn settle_power_up_check(&self, found: bool) {
+        let mut position = lock(&self.position);
+        if *position == Position::AwaitingCheck {
+            *position = if found {
+                Position::Known
+            } else {
+                Position::Lost
+            };
+        }
     }
 
-    /// The first background poll that failed since the last success.
-    pub fn first_failed_poll(&self) -> Option<Instant> {
-        *self
-            .first_failed_poll
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Ground truth (a sync, or the recovery from a named park) has
+    /// anchored the frame: the position is known. Returns whether it was
+    /// not.
+    pub fn clear_position_lost(&self) -> bool {
+        std::mem::replace(&mut *lock(&self.position), Position::Known) != Position::Known
+    }
+
+    /// Whether a restart the handshake saw is still being handled.
+    pub fn restart_pending(&self) -> bool {
+        self.restart_pending.load(Ordering::SeqCst)
+    }
+
+    /// Set or clear the restart being handled.
+    pub fn set_restart_pending(&self, pending: bool) {
+        self.restart_pending.store(pending, Ordering::SeqCst);
+    }
+
+    /// A request failed at `at`. Keeps the first failure after the last
+    /// success.
+    pub fn note_request_failed(&self, at: Instant) {
+        lock(&self.first_failed_request).get_or_insert(at);
+    }
+
+    /// A request succeeded: the link is up.
+    pub fn note_request_succeeded(&self) {
+        *lock(&self.first_failed_request) = None;
+    }
+
+    /// The first request that failed since the last success.
+    pub fn first_failed_request(&self) -> Option<Instant> {
+        *lock(&self.first_failed_request)
     }
 
     /// Record a restart found while serving.
@@ -121,22 +178,23 @@ pub struct Restore {
 }
 
 /// What a restart while serving writes back: each axis' last sample,
-/// carried forward to `first_failed_poll` when the axis was tracking.
+/// carried forward to `first_failed_request` when the axis was tracking.
 ///
 /// `None` when `previous` holds no sample, so there is nothing to carry
 /// over (the controller restarted before the driver first read it).
 ///
 /// An axis is trusted when it was stopped (exact), or tracking at a known
-/// rate no faster than [`MAX_TRUSTED_RATE_SIDEREAL`] with a failed poll
-/// no more than `max_age` after its sample to bound the motion. Anything
-/// else — a goto, the fast regime, a blocked axis, an unknown rate, a
-/// tracking sample nothing bounds — is written back as it was sampled,
-/// the best estimate there is, and marks the position lost.
+/// rate no faster than [`MAX_TRUSTED_RATE_SIDEREAL`] with a failed
+/// request no more than `max_age` after its sample to bound the motion.
+/// Anything else — a goto, the fast regime, a blocked axis, an unknown
+/// rate or status, a tracking sample nothing bounds — is written back as
+/// it was sampled, the best estimate there is, and marks the position
+/// lost.
 #[must_use]
 pub fn position_to_restore(
     previous: &MountSnapshot,
     params: &MountParameters,
-    first_failed_poll: Option<Instant>,
+    first_failed_request: Option<Instant>,
     max_age: Duration,
 ) -> Option<Restore> {
     if previous.ra.sampled_at.is_none() && previous.dec.sampled_at.is_none() {
@@ -147,7 +205,7 @@ pub fn position_to_restore(
         params.tmr_freq,
         params.high_speed_ratio_ra,
         params.cpr_ra,
-        first_failed_poll,
+        first_failed_request,
         max_age,
     );
     let dec = carry_axis(
@@ -155,7 +213,7 @@ pub fn position_to_restore(
         params.tmr_freq,
         params.high_speed_ratio_dec,
         params.cpr_dec,
-        first_failed_poll,
+        first_failed_request,
         max_age,
     );
     Some(Restore {
@@ -172,11 +230,13 @@ fn carry_axis(
     tmr_freq: u32,
     high_speed_ratio: u32,
     cpr: u32,
-    first_failed_poll: Option<Instant>,
+    first_failed_request: Option<Instant>,
     max_age: Duration,
 ) -> (i32, bool) {
     let sampled = axis.position_ticks.clamp(POSITION_MIN, POSITION_MAX);
-    let Some(sampled_at) = axis.sampled_at else {
+    // No sample, or no status since the last handshake: how the axis
+    // was moving is not known.
+    let (Some(sampled_at), Some(_)) = (axis.sampled_at, axis.status) else {
         return (sampled, false);
     };
     if !axis.running() {
@@ -184,12 +244,15 @@ fn carry_axis(
     }
     let rate = axis.rate_ticks_per_sec(tmr_freq, high_speed_ratio);
     let sidereal = f64::from(cpr) * SIDEREAL_DEG_PER_SEC / 360.0;
-    let trusted_rate =
-        axis.status.is_some() && rate != 0.0 && rate.abs() <= MAX_TRUSTED_RATE_SIDEREAL * sidereal;
-    let bounded = first_failed_poll
-        .is_some_and(|failed| failed.saturating_duration_since(sampled_at) <= max_age);
-    match first_failed_poll {
-        Some(failed) if trusted_rate && bounded => {
+    let trusted_rate = rate != 0.0 && rate.abs() <= MAX_TRUSTED_RATE_SIDEREAL * sidereal;
+    // A failure that predates the sample says nothing about when the
+    // link went after it.
+    match first_failed_request {
+        Some(failed)
+            if trusted_rate
+                && failed >= sampled_at
+                && failed.duration_since(sampled_at) <= max_age =>
+        {
             let carried = axis.projected_to(failed, tmr_freq, high_speed_ratio, max_age);
             (
                 carried.position_ticks.clamp(POSITION_MIN, POSITION_MAX),
@@ -286,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tracking_axis_is_carried_to_the_first_failed_poll() {
+    fn a_tracking_axis_is_carried_to_the_first_failed_request() {
         let t = Instant::now();
         let previous = MountSnapshot {
             ra: tracking_sidereal(100_000, t),
@@ -303,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tracking_axis_with_no_failed_poll_is_lost() {
+    fn a_tracking_axis_with_no_failed_request_is_lost() {
         let t = Instant::now();
         let previous = MountSnapshot {
             ra: tracking_sidereal(100_000, t),
@@ -389,23 +452,76 @@ mod tests {
     }
 
     #[test]
-    fn the_first_failed_poll_survives_later_failures_until_a_success() {
-        let watch = PowerWatch::default();
+    fn an_axis_with_no_status_since_the_handshake_is_lost() {
         let t = Instant::now();
-        watch.note_poll_failed(t);
-        watch.note_poll_failed(t + Duration::from_millis(50));
-        assert_eq!(watch.first_failed_poll(), Some(t));
-        watch.note_poll_succeeded();
-        assert_eq!(watch.first_failed_poll(), None);
+        let previous = MountSnapshot {
+            ra: AxisSnapshot {
+                position_ticks: 400_000,
+                sampled_at: Some(t),
+                ..AxisSnapshot::default()
+            },
+            dec: stopped(725_760, t),
+        };
+        let restore = position_to_restore(&previous, &params(), None, MAX_AGE).unwrap();
+        assert_eq!(restore.ra_ticks, 400_000);
+        assert!(restore.lost);
     }
 
     #[test]
-    fn clearing_a_lost_position_says_whether_it_was_lost() {
+    fn a_failure_older_than_the_tracking_sample_bounds_nothing() {
+        let t = Instant::now();
+        let previous = MountSnapshot {
+            ra: tracking_sidereal(100_000, t + Duration::from_millis(500)),
+            dec: stopped(725_760, t),
+        };
+        let restore = position_to_restore(&previous, &params(), Some(t), MAX_AGE).unwrap();
+        assert!(restore.lost);
+    }
+
+    #[test]
+    fn the_first_failed_request_survives_later_failures_until_a_success() {
+        let watch = PowerWatch::default();
+        let t = Instant::now();
+        watch.note_request_failed(t);
+        watch.note_request_failed(t + Duration::from_millis(50));
+        assert_eq!(watch.first_failed_request(), Some(t));
+        watch.note_request_succeeded();
+        assert_eq!(watch.first_failed_request(), None);
+    }
+
+    #[test]
+    fn clearing_a_lost_position_says_whether_it_was_not_known() {
         let watch = PowerWatch::default();
         assert!(!watch.clear_position_lost());
         watch.mark_position_lost();
-        assert!(watch.position_lost());
+        assert_eq!(watch.position(), Position::Lost);
         assert!(watch.clear_position_lost());
-        assert!(!watch.position_lost());
+        assert!(watch.position_known());
+    }
+
+    #[test]
+    fn a_power_up_check_settles_known_or_lost() {
+        let watch = PowerWatch::default();
+        watch.await_power_up_check();
+        assert_eq!(watch.position(), Position::AwaitingCheck);
+        watch.settle_power_up_check(true);
+        assert_eq!(watch.position(), Position::Known);
+        watch.await_power_up_check();
+        watch.settle_power_up_check(false);
+        assert_eq!(watch.position(), Position::Lost);
+    }
+
+    #[test]
+    fn a_lost_position_does_not_wait_for_a_power_up_check() {
+        let watch = PowerWatch::default();
+        watch.mark_position_lost();
+        watch.await_power_up_check();
+        assert_eq!(watch.position(), Position::Lost);
+        watch.settle_power_up_check(true);
+        assert_eq!(
+            watch.position(),
+            Position::Lost,
+            "only ground truth clears it"
+        );
     }
 }

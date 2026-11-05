@@ -2724,6 +2724,38 @@ async fn sync_anchors_the_frame_and_arms_the_park_target() {
 }
 
 #[tokio::test]
+async fn a_sync_that_clears_a_lost_position_arms_the_raw_park_override_again() {
+    // The lost position dropped the operator's raw park override with the
+    // rest; the sync that clears it arms the override first, as a connect
+    // would, not the preferred AP park.
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.park_ra_ticks = Some(100_000);
+    cfg.mount.park_dec_ticks = Some(200_000);
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.manager.power().mark_position_lost();
+    d.drop_what_the_cut_ended().await;
+    {
+        let s = d.state.read().await;
+        assert_eq!(
+            (s.park_ra_ticks, s.park_dec_ticks),
+            (None, None),
+            "precondition: the lost position dropped the targets"
+        );
+    }
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    assert!(d.manager.power().position_known());
+    let s = d.state.read().await;
+    assert_eq!(
+        (s.park_ra_ticks, s.park_dec_ticks),
+        (Some(100_000), Some(200_000))
+    );
+}
+
+#[tokio::test]
 async fn sync_after_anchored_connect_leaves_armed_park_targets_unchanged() {
     // With a named unpark pose the connect already armed both targets;
     // the sync's re-arm hook must leave them untouched (the both-armed

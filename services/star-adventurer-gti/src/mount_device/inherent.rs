@@ -47,6 +47,7 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 use crate::manager::{AxisSnapshot, MountParameters, MountSnapshot};
+use crate::power::Position;
 use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
 use super::mount_state::{self, power_up_verdict, MountStateRecord, PowerUpVerdict, ReadRecord};
@@ -335,23 +336,26 @@ impl MountDevice {
         }
     }
 
-    /// Refuse a motion while the mount's position is lost (design doc
-    /// §Power cut while serving). Only a stop, a park in place, a sync and
-    /// the recovery from a named park run until ground truth returns.
-    /// `what` names the refused operation in the message.
+    /// Refuse a motion while the mount's position is not known (design
+    /// doc §Power cut while serving). Only a stop, a park in place, a sync
+    /// and the recovery from a named park run until it is. `what` names the
+    /// refused operation in the message.
     pub(super) fn refuse_while_position_lost(&self, what: &str) -> ASCOMResult<()> {
-        if self.manager.power().position_lost() {
-            Err(ASCOMError::new(
-                ASCOMErrorCode::INVALID_OPERATION,
-                format!(
-                    "{what} refused: the mount's position is lost after a power cut; sync to \
-                     a plate solve, or run the recovery from a named park on the mount's \
-                     setup page"
-                ),
-            ))
-        } else {
-            Ok(())
-        }
+        let why = match self.manager.power().position() {
+            Position::Known => return Ok(()),
+            Position::Lost => {
+                "the mount's position is lost after a power cut; sync to a plate solve, or \
+                 run the recovery from a named park on the mount's setup page"
+            }
+            Position::AwaitingCheck => {
+                "the mount's position is being checked against its state record after a \
+                 power cut"
+            }
+        };
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_OPERATION,
+            format!("{what} refused: {why}"),
+        ))
     }
 
     /// Refuse the operation when the transport is not connected. Returns
@@ -616,7 +620,7 @@ impl MountDevice {
         // where the mount is, so the frame is unanchored and there is no
         // park target at all, raw override included, until ground truth
         // anchors it again.
-        let lost = self.manager.power().position_lost();
+        let lost = !self.manager.power().position_known();
         let anchored = !lost && cfg.unpark_from_ap_position != ApPark::ApPark0;
         // Fallback for an axis without a raw override: the
         // `preferred_ap_park` encoder pair when the frame is anchored,
@@ -671,6 +675,13 @@ impl MountDevice {
     pub(super) async fn anchor_frame_and_rearm_park_target(&self) {
         if self.manager.power().clear_position_lost() {
             info!("the mount's position is known again; slews, tracking and guiding are allowed");
+            // The lost position dropped the operator's raw park override
+            // with the rest: arm it again first, as a connect would.
+            if let Ok(cfg) = self.read_connect_config().await {
+                let mut s = self.state.write().await;
+                s.park_ra_ticks = s.park_ra_ticks.or(cfg.park_ra_ticks);
+                s.park_dec_ticks = s.park_dec_ticks.or(cfg.park_dec_ticks);
+            }
         }
         let preferred = {
             let mut s = self.state.write().await;
@@ -849,11 +860,12 @@ impl MountDevice {
         // The record outlives a reload and a restart of the service, so
         // every connect reads it: a lost position stays lost until ground
         // truth clears it, whatever the encoders now read.
+        let power = self.manager.power();
         let record = self.read_mount_state_record().await;
         if matches!(record, Some(ReadRecord::Record(MountStateRecord::Lost)))
-            && !self.manager.power().position_lost()
+            && power.position() != Position::Lost
         {
-            self.manager.power().mark_position_lost();
+            power.mark_position_lost();
             warn!(
                 "the mount state record says the mount's position is lost: slews, tracking \
                  and guiding stay refused until a plate-solve sync or the recovery from a \
@@ -862,15 +874,18 @@ impl MountDevice {
         }
         // A lost position is never seeded: neither the encoders nor the
         // operator's power-up assertion say where the mount is.
-        if self.manager.power().position_lost() {
+        if power.position() == Position::Lost {
             return Ok(());
         }
         // `ap_park_0` ("current position") has no codebase encoder
         // mapping — trust the firmware encoder as-is and emit no logs.
+        // Its frame is unanchored at power-up either way, so a pending
+        // power-up check has nothing to decide.
         let (Some(mech_ha), Some(dec_deg)) = (
             unpark_from_ap_position.codebase_mech_ha_hours(self.config.site_latitude_deg),
             unpark_from_ap_position.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
         ) else {
+            power.settle_power_up_check(true);
             return Ok(());
         };
         let params = self
@@ -895,6 +910,9 @@ impl MountDevice {
                 "skipping unpark_from_ap_position encoder seed: firmware encoder \
                  is non-zero beyond tolerance"
             );
+            // A pending power-up check expected power-up values: these
+            // are not, so nothing says where the mount is.
+            power.settle_power_up_check(false);
             return Ok(());
         }
         let ra_ticks = MechHa::new(mech_ha)
@@ -907,7 +925,7 @@ impl MountDevice {
             if let PowerUpVerdict::Lost(reason) =
                 power_up_verdict(&read, (ra_ticks, dec_ticks), FRESH_POWER_UP_TICK_TOLERANCE)
             {
-                self.manager.power().mark_position_lost();
+                power.mark_position_lost();
                 warn!(
                     %reason,
                     unpark_from_ap_position = ?unpark_from_ap_position,
@@ -920,6 +938,7 @@ impl MountDevice {
         }
         self.reset_mount_encoders(session, ra_ticks, dec_ticks)
             .await?;
+        power.settle_power_up_check(true);
         info!(
             seeded_ra_ticks = ra_ticks,
             seeded_dec_ticks = dec_ticks,

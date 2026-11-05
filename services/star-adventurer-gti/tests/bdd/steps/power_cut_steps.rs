@@ -63,6 +63,22 @@ async fn mount_loses_power(world: &mut StarAdventurerWorld) {
     wait_for_reconnect(world, mark).await;
 }
 
+/// Longer than the driver's 30 s trusted outage, with margin for a slow
+/// runner to reach the power-on.
+const LONGER_THAN_A_BLIP: Duration = Duration::from_secs(35);
+
+#[when("the mount loses power for longer than a blip and comes back")]
+async fn mount_loses_power_long(world: &mut StarAdventurerWorld) {
+    sleep(POLLS).await;
+    let off = world.post_debug("mock-power", json!({ "on": false })).await;
+    world.ticks_at_cut = Some((ticks(&off, "ra_ticks"), ticks(&off, "dec_ticks")));
+    sleep(LONGER_THAN_A_BLIP).await;
+    let on = world.post_debug("mock-power", json!({ "on": true })).await;
+    let mark = usize::try_from(ticks(&on, "log_len")).expect("log length fits usize");
+    world.reconnect_mark = Some(mark);
+    wait_for_reconnect(world, mark).await;
+}
+
 #[when("the link to the mount drops while the mount keeps its power")]
 async fn link_drops(world: &mut StarAdventurerWorld) {
     sleep(POLLS).await;
@@ -72,14 +88,24 @@ async fn link_drops(world: &mut StarAdventurerWorld) {
     wait_for_reconnect(world, mark).await;
 }
 
+/// Polls: after a long cut the power-up check runs just after the
+/// reconnect, and its seed may land a moment later.
 #[then(expr = "the mount's encoders should read RA {int} and Dec {int} ticks")]
 async fn encoders_read(world: &mut StarAdventurerWorld, ra: i64, dec: i64) {
-    let state = world.get_debug("mock-state").await;
-    assert_eq!(
-        (ticks(&state, "ra_ticks"), ticks(&state, "dec_ticks")),
-        (ra, dec),
-        "mock encoders"
-    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = world.get_debug("mock-state").await;
+        let read = (ticks(&state, "ra_ticks"), ticks(&state, "dec_ticks"));
+        if read == (ra, dec) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "mock encoders read {read:?}, expected {:?}",
+            (ra, dec)
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[then(

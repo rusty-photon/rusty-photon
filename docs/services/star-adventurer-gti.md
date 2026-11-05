@@ -1111,10 +1111,10 @@ frame), in this order of preference:
    target is re-armed from `preferred_ap_park` and subsequent parks
    slew normally.
 
-A lost position has no park target on either axis, raw override
-included. Raw ticks are an encoder value, and the encoders no longer say
-where the mount is, so `Park()` parks in place until the frame is
-anchored again.
+A lost position, or one awaiting its power-up check, has no park target
+on either axis, raw override included. Raw ticks are an encoder value,
+and the encoders do not say where the mount is, so `Park()` parks in
+place until the frame is anchored again.
 
 The ship default `unpark_from_ap_position` is `ap_park_0`: the field
 is the operator's assertion about the physical world, and "current
@@ -2846,25 +2846,45 @@ the flags still say what the controller went through:
   are power-up values. They are not the mount's position. On pier1 every
   cut read `=100` on both axes before `:F`, and `=101` after it.
 
+A restart is remembered until the handshake that saw it completes. An
+attempt that fails after its `:F` (a lost datagram, a USB node that
+bounces again) has already set the flags, and the retry still handles
+the restart.
+
 **Restore.** A restart while the driver serves the mount (the snapshot
 holds samples from an earlier conduit) makes the handshake write the
-mount's last known position back with `:E1` / `:E2`. It does so before
-the transport serves again, so no client ever reads the reset encoders.
-For each axis that position is the last polled sample. A tracking sample
-is carried forward at its rate
+mount's last known position back with `:E1` / `:E2`, if the outage was
+short. It does so before the transport serves again, so no client ever
+reads the reset encoders. The outage runs from the first request that
+failed, whoever sent it (the poll, a client, a watcher), to the
+handshake. For each axis the position is the last polled sample. A
+tracking sample is carried forward at its rate
 ([§Encoder samples and the read instant](#encoder-samples-and-the-read-instant))
-to the first poll that failed. How exact that is depends on what the
-axis was doing:
+to that first failure. How exact that is depends on what the axis was
+doing:
 
 - **Stopped:** exact.
 - **Tracking or guiding:** tracking mode, at a known `:I` period no
   faster than twice sidereal. The written position is within one polling
   interval of motion, about 3″ at sidereal and the default 200 ms.
 - **Anything else:** a goto, the fast regime, a blocked axis, an unknown
-  rate, or a tracking sample that no failed poll bounds. The position is
-  still written back as the best estimate there is: a goto stopped by
-  the cut lies within one polling interval at goto speed of it, so its
-  pier side still reads true. But the position is **lost**.
+  rate, an axis not polled since the last handshake, or a tracking
+  sample that no failure after it bounds. The position is still written
+  back as the best estimate there is: a goto stopped by the cut lies
+  within one polling interval at goto speed of it, so its pier side
+  still reads true. But the position is **lost**.
+
+**A long outage** writes nothing back. Past 30 s, or with no failed
+request to date the outage, the cut is not a blip: it may be a planned
+one, and someone may have moved the mount by hand while it was off. The
+encoders keep their power-up values, and the position **awaits the
+power-up check**. That check is the one a power-up connect makes
+against the [mount state record](#the-mount-state-record): it seeds the
+configured pose when the record says the mount came to rest there, and
+otherwise loses the position. It runs at once when a client is
+connected, and at the next connect when none is. Thirty seconds holds a
+blip and the transport's 5 s retry. A WiFi GTi whose access point takes
+longer to come back gets the check instead of the restore.
 
 An encoder write is not actuation: nothing moves, and the restarted
 firmware holds every axis still. The driver does not restart tracking:
@@ -2879,8 +2899,8 @@ the cut ended:
 An `info!` line names the restart and the ticks written back. A lost
 position is logged at `warn!` with the recoveries it needs.
 
-**A lost position** refuses every motion but a stop until there is
-ground truth again:
+**A lost position**, like one awaiting its power-up check, refuses every
+motion but a stop until the position is known again:
 
 - Slews fail with `INVALID_OPERATION`, and so do `SetSideOfPier` and
   the auto-flip, which run through them. `Tracking = true` and
@@ -2893,8 +2913,9 @@ ground truth again:
 - `AbortSlew` and the setup page's stop work as ever.
 
 A successful `SyncToCoordinates` / `SyncToTarget`, or the recovery from
-a named park, anchors the frame and clears the lost state. The state
-outlives a client's disconnect. Through the
+a named park, anchors the frame and clears the lost state. The park
+target is then armed as a connect arms it: the raw override first, then
+`preferred_ap_park`. The state outlives a client's disconnect. Through the
 [mount state record](#the-mount-state-record), it also outlives a reload
 and a restart of the service.
 
@@ -2918,8 +2939,10 @@ The record is written only when its state changes, never on each poll or
 pulse. A night of imaging writes it about twice: at the first slew and
 at the dawn park. The writer runs only while a client is connected,
 because that is the only time anything can move the mount. It derives
-the state from the snapshot the poll refreshes, and skips while the
-transport is reconnecting. The write is atomic: a temp file in the same
+the state from the snapshot the poll refreshes. It skips while the
+transport is reconnecting, while an axis has no status since the last
+handshake, and while a power-up check is pending, because the record is
+that check's evidence. The write is atomic: a temp file in the same
 directory, `fsync`'d and renamed, like `SetPark`'s. A failed write logs
 a `warn!`.
 
@@ -2945,8 +2968,9 @@ nothing tells the driver whether someone moved the mount by hand while
 it was off. To power up at the configured pose after parking elsewhere,
 run the recovery from that pose.
 
-`ap_park_0` reads no record, because its frame stays unanchored until a
-sync either way. Nothing in the record is configuration, and the setup
+`ap_park_0` makes no power-up check, because its frame stays unanchored
+until a sync either way; a record that says lost still keeps its
+position lost. Nothing in the record is configuration, and the setup
 page neither shows nor edits it.
 
 #### Recovery on the mount's setup page
@@ -3069,7 +3093,7 @@ What to do after various crash / disconnect scenarios:
 |---|---|
 | Driver crashed, mount still powered, OTA points at solvable sky | Reconnect (no power cycle) → the recovery from `ap_park_0` (or standard `Unpark()`) → plate-solve current view → `SyncToCoordinates(plate_solved_coords)`. Encoder counter is intact from the session; sync writes the offset to match celestial truth. |
 | Driver crashed, mount still powered, OTA points at unsolvable sky (below horizon, clouded out) | Restart the driver and reconnect → on the mount's recovery page, check that the motion reads stopped (the [safety stop at startup](#safety-stop-at-startup) halts what the crash left running) and press **Stop** if it does not → the recovery from `ap_park_N`, where `N` is the AP park you've physically positioned the OTA at. No `Park()` is needed first, and none should be: a `Park()` of an anchored frame slews. The `ResetMountEncoders` sequence writes the park's encoder values; subsequent slews start from a known frame. Alternatively, power-cycle the mount and let the fresh-power-up auto-seed run from the persisted `unpark_from_ap_position` config value. |
-| Mount lost power while the driver ran | If the mount was stopped or tracking, nothing is needed: the driver wrote the last position back ([§Power cut while serving](#power-cut-while-serving)), so turn tracking on again. If it was slewing, the position is lost. Either plate-solve the current view and `SyncToCoordinates`, or physically put the OTA at a named park and run the recovery from it. |
+| Mount lost power while the driver ran | After a cut of up to 30 s with the mount stopped or tracking, nothing is needed: the driver wrote the last position back ([§Power cut while serving](#power-cut-while-serving)), so turn tracking on again. After a longer cut, the mount state record decides, as at a power-up. If the mount was slewing, or the record does not place it at its power-up pose, the position is lost. Either plate-solve the current view and `SyncToCoordinates`, or physically put the OTA at a named park and run the recovery from it. |
 | Mount lost power (planned shutdown or otherwise) | Park at `unpark_from_ap_position`'s pose before the power goes. The [mount state record](#the-mount-state-record) then says the mount is at rest there, and the power-on connect seeds that pose. If you instead moved the OTA to the configured pose by hand while it was off, run the recovery from that pose after power-on. Otherwise the record holds a different pose, and the driver reports the position lost. |
 
 The genuinely dangerous pattern is a power cycle that leaves the mount

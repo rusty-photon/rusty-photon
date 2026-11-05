@@ -872,14 +872,14 @@ impl Telescope for MountDevice {
             // axis parks IN PLACE. A goto from an unanchored frame
             // would slew to a fabricated position (workspace tenet:
             // no actuation on connect).
-            // A lost position has no park target either, whatever the
-            // state still holds: the encoders no longer say where the
-            // mount is (design doc §Power cut while serving).
-            let (target_ra_ticks, target_dec_ticks) = if self.manager.power().position_lost() {
-                (None, None)
-            } else {
+            // A position that is not known has no park target either,
+            // whatever the state still holds: the encoders do not say
+            // where the mount is (design doc §Power cut while serving).
+            let (target_ra_ticks, target_dec_ticks) = if self.manager.power().position_known() {
                 let s = self.state.read().await;
                 (s.park_ra_ticks, s.park_dec_ticks)
+            } else {
+                (None, None)
             };
             // Same wire sequence as `slew_to_coordinates_async`:
             // `:K`-and-wait, `:G` with direction chosen from

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::manager::MountSnapshot;
+use crate::power::Position;
 
 /// What the driver last knew about the mount.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,16 +25,25 @@ pub(super) enum MountStateRecord {
 }
 
 impl MountStateRecord {
-    /// The record that `snapshot` and the lost flag describe.
-    pub(super) const fn of(snapshot: &MountSnapshot, position_lost: bool) -> Self {
-        if position_lost {
-            Self::Lost
-        } else if snapshot.ra.running() || snapshot.dec.running() {
-            Self::Moving
-        } else {
-            Self::AtRest {
-                ra_ticks: snapshot.ra.position_ticks,
-                dec_ticks: snapshot.dec.position_ticks,
+    /// The record that `snapshot` and `position` describe, or `None` when
+    /// they say nothing to record: a power-up check is pending (the record
+    /// is its evidence, and stays as it is), or an axis has no status
+    /// since the last handshake, so whether it moves is not known.
+    pub(super) const fn of(snapshot: &MountSnapshot, position: Position) -> Option<Self> {
+        match position {
+            Position::Lost => Some(Self::Lost),
+            Position::AwaitingCheck => None,
+            Position::Known => {
+                if snapshot.ra.status.is_none() || snapshot.dec.status.is_none() {
+                    None
+                } else if snapshot.ra.running() || snapshot.dec.running() {
+                    Some(Self::Moving)
+                } else {
+                    Some(Self::AtRest {
+                        ra_ticks: snapshot.ra.position_ticks,
+                        dec_ticks: snapshot.dec.position_ticks,
+                    })
+                }
             }
         }
     }
@@ -181,11 +191,11 @@ mod tests {
             dec: axis(SEED.1, false),
         };
         assert_eq!(
-            MountStateRecord::of(&snap, false),
-            MountStateRecord::AtRest {
+            MountStateRecord::of(&snap, Position::Known),
+            Some(MountStateRecord::AtRest {
                 ra_ticks: SEED.0,
                 dec_ticks: SEED.1
-            }
+            })
         );
     }
 
@@ -195,7 +205,10 @@ mod tests {
             ra: axis(SEED.0, true),
             dec: axis(SEED.1, false),
         };
-        assert_eq!(MountStateRecord::of(&snap, false), MountStateRecord::Moving);
+        assert_eq!(
+            MountStateRecord::of(&snap, Position::Known),
+            Some(MountStateRecord::Moving)
+        );
     }
 
     #[test]
@@ -204,7 +217,32 @@ mod tests {
             ra: axis(0, false),
             dec: axis(0, false),
         };
-        assert_eq!(MountStateRecord::of(&snap, true), MountStateRecord::Lost);
+        assert_eq!(
+            MountStateRecord::of(&snap, Position::Lost),
+            Some(MountStateRecord::Lost)
+        );
+    }
+
+    #[test]
+    fn a_pending_power_up_check_records_nothing() {
+        let snap = MountSnapshot {
+            ra: axis(0, false),
+            dec: axis(0, false),
+        };
+        assert_eq!(MountStateRecord::of(&snap, Position::AwaitingCheck), None);
+    }
+
+    #[test]
+    fn an_axis_without_a_status_records_nothing() {
+        let snap = MountSnapshot {
+            ra: AxisSnapshot {
+                position_ticks: SEED.0,
+                sampled_at: Some(Instant::now()),
+                ..AxisSnapshot::default()
+            },
+            dec: axis(SEED.1, false),
+        };
+        assert_eq!(MountStateRecord::of(&snap, Position::Known), None);
     }
 
     #[test]
