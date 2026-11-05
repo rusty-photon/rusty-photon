@@ -1560,7 +1560,7 @@ and what `doctor --devices` can say about a camera without opening it — is
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the camera is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)).
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)).
   ConformU pointed at a placeholder fails its connect test — acceptable,
   since conformance runs use the simulation build with no list.
 - **U5. A listed camera is the camera, with its entry's display names.** It

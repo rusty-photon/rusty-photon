@@ -69,8 +69,9 @@ impl RosterAddress<'_> {
             )),
             Refusal::Placeholder { found } => EstablishError::Failed(format!(
                 "{kind} at device_number {number} is {:?}, a placeholder (UniqueID {:?}) \
-                 its driver serves until it reloads, not a device: its Description says \
-                 why, and the next pass checks the pinned unique_id {pin:?} again",
+                 its driver serves until it restarts or reloads, not a device: its \
+                 Description says why, and the next pass checks the pinned unique_id \
+                 {pin:?} again",
                 found.name, found.unique_id
             )),
             Refusal::Unverifiable { found_name } => EstablishError::IdentityRefused(format!(
@@ -286,8 +287,9 @@ enum Refusal {
     },
     /// The device there is a driver's placeholder: its `UniqueID` has the
     /// device-claims placeholder form, and it holds the number for a
-    /// device its driver cannot serve until it reloads. That is no device
-    /// at all rather than another one, so it is not an identity refusal.
+    /// device its driver cannot serve until it restarts or reloads. That is
+    /// no device at all rather than another one, so it is not an identity
+    /// refusal.
     Placeholder { found: ListedIdentity },
 }
 
@@ -716,9 +718,9 @@ mod tests {
             camera_address(Some(&expected)).refusal(&refusal),
             EstablishError::Failed(
                 "camera at device_number 0 is \"Main\", a placeholder (UniqueID \
-                 \"placeholder:svbony-camera:p9\") its driver serves until it reloads, not a \
-                 device: its Description says why, and the next pass checks the pinned \
-                 unique_id \"SVBONY:SV605CC:noserial-0\" again"
+                 \"placeholder:svbony-camera:p9\") its driver serves until it restarts or \
+                 reloads, not a device: its Description says why, and the next pass checks \
+                 the pinned unique_id \"SVBONY:SV605CC:noserial-0\" again"
                     .to_string()
             )
         );

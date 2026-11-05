@@ -13,13 +13,14 @@ while a device is off.
 
 Deciding when to switch power is a workflow's job (decision 1), the
 services start with every device powered (decision 2), no device's session
-crosses a power cut (decision 3), and the serial drivers find their device
-again on their own (decision 4). What this plan builds is
-everything around those: a survey of what each device does across a power
-cut, quiet logging while a device is off, a guard for a camera's first
-exposure after power-up, rp tools that disconnect and connect a device and
-switch a power-box output, the dusk and dawn documents that use them, and a
-doctor that does not report the daytime state as a fault.
+crosses a power cut (decision 3), the serial drivers find their device
+again on their own (decision 4), and a camera service restarts itself at
+dusk (decision 5). What this plan builds is everything around those: a
+survey of what each device does across a power cut, quiet logging while a
+device is off, camera services that restart on request, rp tools that
+disconnect and connect a device and switch a power-box output, the dusk and
+dawn documents that use them, and a doctor that does not report the daytime
+state as a fault.
 
 Tracking issue:
 [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
@@ -62,7 +63,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
   router, so no device can be added or replaced while a server runs. With a
   `usb_devices` list, a camera absent when the list is built is a
   placeholder at its number (`UniqueID` `placeholder:<service>:<port>`,
-  `Connected = true` refused with `0x540`) until the next reload. Without a
+  `Connected = true` refused with `0x540`) until the service next starts or
+  reloads. Without a
   list it is not served at all. `zwo-focuser` has no list and serves the
   EAFs the SDK enumerates. A camera that was served, left the bus and came
   back opens again on a plain `Connected = true`, on all three camera
@@ -152,8 +154,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    through rp. rp's reconnect supervisor leaves a device disconnected that
    way alone until it is connected through rp again, which the dusk
    document does, or an operator with the same tool, once the output is back
-   on and the device has settled. A session held across a cut comes back
-   stale:
+   on and the device has settled. A connect through rp is always fresh: a
+   device that already reads connected is disconnected and connected again,
+   so the dusk connect starts a new session whatever happened while the
+   device was off, an rp restart that lost the hold-out included. A session
+   held across a cut comes back stale:
    - `star-adventurer-gti` seeds its encoders and anchors its frame only in
      `Connected = true`. A transport reconnect after the mount's power
      returns does not seed again, so its next Park or goto would slew from
@@ -194,6 +199,29 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    - **Not opening the port only for a client**, as the transport once did.
      That gives up the check of the device at start and the stop sent with
      no client attached.
+5. **A camera service restarts itself at dusk, before its first exposure**
+   (settled 2026-11-04). Once the outputs are on and the devices have
+   settled, the dusk document asks each camera service to restart, through
+   rp as the driver's ordinary client. The service closes its devices and
+   exits with a dedicated code, the service manager starts it again within
+   about 5 s (systemd's `Restart=on-failure`, the SCM failure actions it
+   applies to non-crash failures, launchd's respawn), and the document then
+   connects its devices through rp. On rig2 no QHY600M exposure wedged in a
+   fresh process (0 of 20). Once the camera had been power-cycled while the
+   process's SDK was alive, 6 of 30 did, 3 of 6 after an in-process
+   Release + Init, and waiting 30 s after the camera returned did not
+   prevent it (Validation). A wedged camera reads out for a minute, returns
+   an all-zero frame, hangs the close, and needs another power cycle. The
+   restart makes every night's first exposure the fresh-process case, and
+   decision 2's rule hold every day.
+   - **Sentinel stays an independent watcher.** rp asks the driver, never
+     sentinel or the service manager. Sentinel restarts a service only after
+     3 failed health probes 30 s apart, so a restart passes under it.
+   - **Not a hold before the first exposure.** Waiting 30 s did not help.
+   - **Not the SDK in a child process.** Frames of up to 120 MB would
+     cross a process boundary, and every SDK call would become a message.
+   - **Not a workflow with the service manager's rights.** It would make
+     session-runner or rp a second supervisor beside sentinel.
 
 ## Open questions
 
@@ -211,26 +239,16 @@ Each is settled before the slice that needs it.
   not tried at all. The shared transport does the same for its own log: it
   warns once when a link is lost and logs each failed retry at `debug!`, where
   today a device off for 16 hours costs about 11,500 warnings.
-- **O2 (P2). The first exposure after a power-up.** On rig2, 3 of 22
-  QHY600M exposures started 3–9 s after the camera came up read out for
-  60–66 s and returned an all-zero frame. The close that followed hung, and
-  only a power cycle cleared the camera. None of 14 started 30 s or more
-  after power-up wedged (Validation). The guard has to be one that every
-  path powering a camera on meets: the dusk document, an operator's switch
-  call, a recovery power cycle. Proposed: the camera driver holds the first
-  exposure until its camera has been back long enough, timed from the open
-  that a fresh connect makes (decision 3). P0 measures whether the delay is
-  what matters, how long it must be, and which other cameras need it.
-- **O3 (P4). When dusk starts.** At an offset from civil twilight and with
+- **O2 (P4). When dusk starts.** At an offset from civil twilight and with
   the roof open, or the camera earlier so that it cools before the roof
   opens.
-- **O4 (P5). doctor for a device off by design.** A daytime-aware reading
+- **O3 (P5). doctor for a device off by design.** A daytime-aware reading
   of the checks a powered-off device fails or warns on
   (`hardware.usb-device`, `hardware.serial-node` for a COM port that leaves
   with its device, `hardware.sdk-devices` for a camera or EAF service that
   enumerates none, `usb-devices.resolve` for a listed camera that is off),
   or a "powered down by schedule" state.
-- **O5 (P3). Which output feeds which device.** rp's `switches[]` entries
+- **O4 (P3). Which output feeds which device.** rp's `switches[]` entries
   name a power box, not the devices on its outputs, so P3's switch tool
   needs a mapping from each output to the devices it feeds, in rp's
   configuration or in a train's, to refuse to switch off an output while a
@@ -240,15 +258,14 @@ Each is settled before the slice that needs it.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above and measures O2's delay | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
+| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, and records whether each camera's first exposure after a power cycle wedges under a live SDK | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
-| P2 | Camera drivers guard the first exposure after their camera returns (O2) | Not started; needs P0's measurement | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected | Not started; needs O5 | |
-| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, connect it through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, disconnect each device through rp, outputs off | Not started; needs P2, P3, O3 | |
-| P5 | doctor's reading of a device off by design (O4) | Not started | |
+| P2 | Camera services restart themselves on request (decision 5): the request on the service's own API, closing its devices and exiting with a code the service managers restart on, and rp's tool that sends it | Not started | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp, and `connect_device` always starts a fresh session (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected | Not started; needs O4 | |
+| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each camera service through rp, connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2 | |
+| P5 | doctor's reading of a device off by design (O3) | Not started | |
 
-P0 and P1 depend on nothing else. P2 follows P0, which measures the delay
-it needs, and P4 needs P2 and P3.
+P0, P1 and P2 depend on nothing else, and P4 needs P2 and P3.
 
 `gemini-powerbox-adv3-driver` has a start bug of its own: one reply that
 does not decode as UTF-8 during its handshake fails the start. It was seen
@@ -324,9 +341,26 @@ runs over SSH, both of which missed the arrival.
 | The same camera in a new process | Enumerated at the init, 9 of 9 |
 | The 600M arriving while the 678M, present at the init, is open on the same SDK | Reported and opened 1 of 2 times with the 678M idle and 0 of 2 while it exposed back to back; the 678M's 84 frames were all good |
 | The callbacks for a camera present at the init | `RegisterPnpEventIn` fires for it during the init. When its 12 V is cut, `RegisterPnpEventOut` fires 0.6–0.9 s after Windows drops the device; when the 12 V returns, `RegisterPnpEventIn` fires 35–80 ms after Windows starts it |
-| An open handle power-cycled (5 s off), the camera present at the first init | 7 of 7 clean, on both SDK builds, with nothing touching the handle while off or with a call and a close while off. The first call after the return failed at once, the close succeeded, and a reopen by id 3 s or 30 s after the return opened it on the first attempt. The first exposure after one of them wedged (last row) |
+| An open handle power-cycled (5 s off), the camera present at the first init | 7 of 7 clean, on both SDK builds, with nothing touching the handle while off or with a call and a close while off. The first call after the return failed at once, the close succeeded, and a reopen by id 3 s or 30 s after the return opened it on the first attempt. The first exposure after one of them wedged (last row, and the 2026-11-05 runs below) |
 | `ScanQHYCCD` from a second thread during the 600M's exposures | No effect. 2 exposures of 2 s with 18 scans each through the 1.5 s readout; every scan took under 1 ms and the frames matched the controls |
-| The first exposures after a power-up | 3 of the 22 full-frame exposures started 3–9 s after the camera came up read out for 60–66 s and returned an all-zero frame. The close or SDK release that followed hung until the process was killed, and only a power cycle cleared the camera: a new process's first exposure on it wedged the same way. None of the 14 started 30 s or more after power-up wedged |
+| The first exposures after a power-up | 3 of the 22 full-frame exposures started 3–9 s after the camera came up read out for 60–66 s and returned an all-zero frame. The close or SDK release that followed hung until the process was killed, and only a power cycle cleared the camera: a new process's first exposure on it wedged the same way. None of the 14 started 30 s or more after power-up wedged; the 2026-11-05 runs below show the delay is not what decides it |
+
+### QHY, Windows bare metal: a reload and the first exposure (2026-11-05)
+
+rig2 again, with the same QHY600M, UPBv2 switching and SDK builds. The probe
+gained a mode that uses the camera, closes it, power-cycles it, waits 30 s
+after it returns, then releases and initialises the SDK again in process, as
+a reload does. It ran as `SYSTEM` with `qhy-camera` stopped. Then
+`qhy-camera` itself was started with the 600M on, the camera was
+power-cycled, and the service was reloaded with
+`sc.exe control rusty-photon-qhy-camera paramchange`.
+
+| Question | Result |
+|---|---|
+| An in-process Release + Init, the camera present throughout | Listed and opened, 2 of 2, frames good |
+| The same after the camera was power-cycled | Listed and opened, 6 of 6, on both SDK builds: the re-init keeps a camera the first init saw. Its first exposure, started about 32 s after the camera came back, wedged in 3 of the 6 |
+| `qhy-camera`'s own reload after a power cycle | Camera 0 and its wheel were served as the camera both times, not as placeholders |
+| Every full-frame 600M exposure of 2026-11-04 and -05, by what the process's SDK had seen | In a fresh process, with the camera present at the first init: 0 of 20 wedged. After the camera was power-cycled while the SDK was alive: 6 of 30, made up of a late arrival opened after the callback 1 of 15, a second arrival 1 of 2, a reopen without re-init 1 of 7, and a reopen after re-init 3 of 6 |
 
 ### Owed
 

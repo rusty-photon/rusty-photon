@@ -364,7 +364,8 @@ fn devices_command(
 /// them, which stands in for a listed camera (or its wheel) and is not one.
 /// A placeholder never re-scans, so when `hardware`'s USB scan holds a
 /// working device on its port, the warning names it, and leaves whether a
-/// reload would place it to the driver's `doctor --devices`: a placeholder's
+/// restart would place it to the driver's `doctor --devices`, which
+/// enumerates in a fresh process as a restart does: a placeholder's
 /// reason (a look-alike, an unknown model, a failed scan the service re-scans
 /// by itself) is not in `configureddevices`, and only the driver's join knows
 /// it. `command` runs that `doctor --devices` ([`devices_command`]).
@@ -409,7 +410,7 @@ fn inventory_checks(
             let _ = write!(
                 detail,
                 "; the host's USB scan shows {} ({}:{}) on {port}: `{command}` says whether a \
-                 reload of {service} would place it",
+                 restart of {service} would place it",
                 device.model.as_deref().unwrap_or("a device"),
                 device.vendor,
                 device.product
@@ -1035,7 +1036,7 @@ mod tests {
         assert!(
             checks[1].detail.ends_with(&format!(
                 "; the host's USB scan shows QHY678U3G20-20230106 (1618:0679) on \
-                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a reload of qhy-camera would \
+                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a restart of qhy-camera would \
                  place it"
             )),
             "{}",

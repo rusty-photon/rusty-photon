@@ -4196,11 +4196,13 @@ devices:
   ASCOM error `0x540` ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
   D4.5, [svbony-camera.md](svbony-camera.md) U4,
   [zwo-camera.md](zwo-camera.md) U4). Retrying it cannot
-  help — a placeholder becomes a device only when its driver reloads —
+  help — a placeholder becomes a device only when its driver restarts, or
+  reloads and finds the camera —
   so the connect routine takes that refusal as it takes "device not
   found": one attempt, no backoff, logged at `debug!` with the driver's
   reason, and the entry stays disconnected. The next pass tries again, so
-  the device is picked up on the first pass after a reload serves it. A
+  the device is picked up on the first pass after a restart or reload serves
+  it. A
   refusal counts as a placeholder's only when the device's `UniqueID` has
   the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
   `0x500`–`0xFFF` range is every Alpaca driver's to use, so another

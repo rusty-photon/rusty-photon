@@ -1393,7 +1393,7 @@ which a list replaces with the declaration.
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the device is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
   is shared by every kind rp binds, so a placeholder wheel gets the same
   treatment. ConformU pointed at a placeholder fails its connect test —
   acceptable, since conformance runs use the simulation build with no list.

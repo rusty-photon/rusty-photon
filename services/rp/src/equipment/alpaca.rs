@@ -55,10 +55,11 @@ pub(super) enum AttemptOutcome<T, P = String> {
 ///
 /// A device-claims placeholder's refusal — its error code, from a device whose
 /// `UniqueID` has the placeholder form, standing in for a device its driver
-/// cannot serve until it reloads — is permanent for the pass, as "device not
-/// found" is: retrying with backoff cannot help, and the next pass picks the
-/// device up once the driver serves it (rp.md § Device Session Recovery). The
-/// code alone is not enough: the driver range is every Alpaca driver's to use.
+/// cannot serve until it restarts or reloads — is permanent for the pass, as
+/// "device not found" is: retrying with backoff cannot help, and the next pass
+/// picks the device up once the driver serves it (rp.md § Device Session
+/// Recovery). The code alone is not enough: the driver range is every Alpaca
+/// driver's to use.
 /// Any other refusal may pass.
 pub(super) fn connect_refused<T, P: From<String>>(
     label: &str,
@@ -74,8 +75,8 @@ pub(super) fn connect_refused<T, P: From<String>>(
             "the driver holds this number with a placeholder; not retrying this pass"
         );
         return AttemptOutcome::Permanent(P::from(format!(
-            "set_connected: the driver serves a placeholder at this number until it reloads: \
-             {error}"
+            "set_connected: the driver serves a placeholder at this number until it restarts \
+             or reloads: {error}"
         )));
     }
     AttemptOutcome::Transient(format!("set_connected: {error}"))
