@@ -870,8 +870,8 @@ mod tests {
         errors.iter().map(|e| e.path.as_str()).collect()
     }
 
-    /// rig2's imaging block as it was written: refused whole, at the
-    /// block, naming the train and where its settings belong.
+    /// A full capture-sweep block on an imaging train is refused whole,
+    /// at the block, naming the train and where its settings belong.
     #[test]
     fn an_imaging_block_is_refused_naming_the_train_and_focus_model_json() {
         let mut config = reference_rig();
