@@ -2913,13 +2913,27 @@ async fn test_golden_deep_sky_degraded_event_runs_a_guide_only_auto_focus() {
     );
 }
 
-/// The escalation's tools: `get_refocus_plan` answers `plan`, and the
-/// two calls it can choose answer as a sweep would.
-fn escalation_tools(plan: Result<Value, ToolCallError>) -> MockTools {
-    MockTools::new(move |_, tool, _| match tool {
+/// The escalation's tools: `get_refocus_plan` answers `plan`, the two
+/// calls it can choose answer as a sweep would, and the
+/// `guide_focus_escalation` arrives with the second pass's
+/// `get_next_target`, after the first frame was counted, so a reset of
+/// `frames_since_focus` shows in the count the second frame leaves.
+fn escalation_tools(plan: Result<Value, ToolCallError>) -> (MockTools, EventIntake) {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let passes = std::sync::atomic::AtomicUsize::new(0);
+    let tools = MockTools::new(move |_, tool, _| match tool {
         "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
         | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
-        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "get_next_target" => {
+            if passes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                tx.try_send(EngineEvent {
+                    event: "guide_focus_escalation".to_owned(),
+                    payload: json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0 }),
+                })
+                .expect("the intake must accept the escalation");
+            }
+            Ok(planned_recommendation(Value::Null, Value::Null))
+        }
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         "get_refocus_plan" => plan.clone(),
         "focus_train" => Ok(json!({
@@ -2933,7 +2947,8 @@ fn escalation_tools(plan: Result<Value, ToolCallError>) -> MockTools {
         })),
         "auto_focus" => Ok(json!({ "best_hfd": 2.1 })),
         other => panic!("unexpected tool call `{other}`"),
-    })
+    });
+    (tools, EventIntake::new(rx))
 }
 
 async fn run_escalation(plan: Result<Value, ToolCallError>) -> (MockTools, RunOutcome, Value) {
@@ -2944,15 +2959,11 @@ async fn run_escalation(plan: Result<Value, ToolCallError>) -> (MockTools, RunOu
             "focus": false,
             "centering": false,
             "guide": true,
-            "max_frames": 1,
+            "max_frames": 2,
             "park_on_finish": false
         }),
     );
-    let tools = escalation_tools(plan);
-    let events = buffered_events(&[(
-        "guide_focus_escalation",
-        json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0 }),
-    )]);
+    let (tools, events) = escalation_tools(plan);
     let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
     (tools, outcome, session)
 }
@@ -2991,6 +3002,11 @@ async fn test_golden_deep_sky_escalation_walks_the_shared_refocus_when_the_plan_
         "the walk moved the imaging focuser, so its HFR is the new baseline"
     );
     assert_eq!(session["last_focus_temperature"], json!(9.5));
+    assert_eq!(
+        session["frames_since_focus"],
+        json!(1.0),
+        "the walk refocused the imaging train after frame 1, so only frame 2 counts"
+    );
 }
 
 #[tokio::test]
@@ -3014,6 +3030,11 @@ async fn test_golden_deep_sky_escalation_runs_the_metric_sweep_when_the_plan_is_
     assert!(
         session.get("last_focus_hfr").is_none_or(Value::is_null),
         "the metric sweep moved no imaging focuser, so no baseline is recorded: {session}"
+    );
+    assert_eq!(
+        session["frames_since_focus"],
+        json!(2.0),
+        "the metric sweep moved no imaging focuser, so both frames count"
     );
 }
 

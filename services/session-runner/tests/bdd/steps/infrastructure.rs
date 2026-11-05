@@ -1,6 +1,7 @@
 //! Shared BDD infrastructure helpers for the session-runner suite: the
-//! three-process topology (`OmniSim` + rp + session-runner, in that
-//! order — session-runner's config names rp's MCP endpoint) and the run
+//! process topology (`OmniSim`, focus-model for the deep-sky document,
+//! rp, then session-runner, in that order — focus-model's and
+//! session-runner's configs name rp's MCP endpoint) and the run
 //! request every scenario posts, reused by every feature's step
 //! definitions.
 

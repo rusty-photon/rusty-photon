@@ -1,7 +1,8 @@
 //! BDD test entry point for the session-runner service.
 //!
-//! These tests spawn three processes — `OmniSim`, rp, and session-runner —
-//! and drive workflow documents end-to-end via rp's REST API.
+//! These tests spawn `OmniSim`, rp and session-runner, plus focus-model
+//! for the deep-sky document (it names `focus_train`), and drive workflow
+//! documents end-to-end via rp's REST API.
 
 #![allow(
     clippy::arithmetic_side_effects,

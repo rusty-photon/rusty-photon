@@ -84,7 +84,7 @@ rust_test(
 # OMNISIM_PATH set, like any rp_harness BDD target.
 rust_test(
     name = "bdd",
-    # Spawns three processes per scenario; generous timeout. The deep-sky
+    # Spawns three or four processes per scenario; generous timeout. The deep-sky
     # scenarios drive real-speed OmniSim slews, so the suite is ~6 min of
     # mostly-@serial wall clock in one process.
     size = "large",

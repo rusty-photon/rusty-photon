@@ -275,6 +275,10 @@ Feature: Deep-sky workflow document
     And the SSE stream should show at least 1 "focus_started" events
     And the SSE stream should show at least 1 "guide_focus_escalation" events
     And at least 1 "focus_started" event should follow the first "guide_focus_escalation" on the stream
+    # The degraded trigger can run late, after the escalation, so the
+    # count is what proves both fired: the watch degrades once (its
+    # cooldown is 10 minutes) and escalates once per episode.
+    And the SSE stream should show exactly 2 "focus_started" events
 
   Scenario: An escalation on a guiding train that shares the imaging focuser walks the shared refocus
     Given a running Alpaca simulator
