@@ -366,6 +366,17 @@ derived from the discovered unit names — the rule's scope and the discovery
 scope are the same set (see
 [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
 
+## Start the services with every device powered
+
+Start, restart or reload the services, whether at install, upgrade or
+reboot, by hand, or by saving a setup page (which reloads its service),
+with every device powered, USB and 12 V. A start or a reload looks for each
+service's devices then. A camera that is off at that moment is not served
+until the service is restarted or reloaded with the camera powered (a
+listed camera is a placeholder meanwhile). A serial device that is off
+fails its service's start, or ends its process on a reload, and the service
+restarts every 5 s until the device answers.
+
 ## Camera specifics
 
 **qhy-camera** — QHYCCD's SDK is proprietary and never redistributed

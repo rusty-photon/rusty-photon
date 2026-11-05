@@ -811,7 +811,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers — the siblings' behaviour, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
 | The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not yet with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
@@ -850,13 +850,13 @@ transport lock across the 3 s cadence and delay writes — not worth it while
 a `>G#` draws its whole frame in about 50 ms, measured on the dev box's
 unit); any persistence of dew modes.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) wants a Switch to flip outputs at dusk and dawn. This
-driver exposes the outputs; the decision to flip one belongs to a
-session-runner document, never to any connect or supervisory path here —
-the same boundary [`upbv2-driver`](upbv2-driver.md#relationship-to-issue-1173)
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn. This driver exposes the outputs; the decision to
+flip one belongs to a session-runner document, never to any connect or
+supervisory path here — the same boundary
+[`upbv2-driver`](upbv2-driver.md#relationship-to-the-daily-power-cycle-plan)
 draws.
 
 ## Testing

@@ -998,7 +998,7 @@ mod list_tests {
             reason.starts_with("no working camera is enumerated on p9"),
             "{reason}"
         );
-        assert!(reason.contains("reload or restart qhy-camera"), "{reason}");
+        assert!(reason.contains("fixed, restart qhy-camera"), "{reason}");
     }
 
     fn enumerated(id: &str, model: &str) -> claims::Enumerated {

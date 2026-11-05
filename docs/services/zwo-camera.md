@@ -1158,8 +1158,8 @@ on its own (U5).
   6. the camera placed on the port could not be opened for its identity — the
      SDK's error (U5).
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
   (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
@@ -1195,7 +1195,7 @@ on its own (U5).
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the camera is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)).
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)).
   ConformU pointed at a placeholder fails its connect test — acceptable,
   since conformance runs use the simulation build with no list.
 - **U5. A listed camera is the camera, with its entry's display names.** The

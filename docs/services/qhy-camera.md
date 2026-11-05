@@ -690,7 +690,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   port order, and the CFW found on each (U11); with a `usb_devices` list, each
   entry at its number, opening nothing at startup at all (U1-U10). Zero
   registered cameras is **not** a hard failure — the service starts with no
-  Camera devices, logged at `warn!`; a later reload re-enumerates.
+  Camera devices, logged at `warn!`; a later restart re-enumerates, and on
+  Linux a reload does too (on Windows, see C9).
 
   **Enumerating opens nothing; finding the CFW opens each camera, but never
   initialises one.** The enumeration is `ScanQHYCCD` and `GetQHYCCDId` per
@@ -1149,8 +1150,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera that had been unplugged and plugged back in, with no scan and no
   reload, although it came back as a new USB device: `OpenQHYCCD` finds it by
   its id. A camera that was absent when the service started is a different
-  case; finding it still needs a reload or a restart (C0), and hotplug
-  re-enumeration belongs to #1173.
+  case; finding it still needs a restart, or on Linux a reload (C0). On
+  Windows a reload's fresh SDK, made in the same process, did not enumerate
+  a camera that arrived after the process first initialised the SDK, while a
+  new process did (measured in a KVM guest and on bare metal:
+  [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-bare-metal-2026-11-04)).
+  So the services start and reload with every camera powered
+  ([Linux](../packaging.md#start-the-services-with-every-device-powered) and
+  [Windows](../packaging-windows.md#start-the-services-with-every-device-powered)
+  packaging guides).
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
   [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))
@@ -1344,9 +1352,11 @@ which a list replaces with the declaration.
   (its identity needs an open): nothing here opens one. A placed camera that
   cannot be opened fails its client's connect (C2), as without a list.
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed scan's
-  is the exception: the service re-scans and rebuilds on its own (U6), so it
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. It names a restart because
+  that works on every platform: on Windows a reload does not find a camera
+  that was absent when the process started (C9). A failed scan's reason is
+  the exception: the service re-scans and rebuilds on its own (U6), so it
   says that, and sends nobody to restart anything. (The device-claims plan's
   D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
   signal the collectors do not read yet, so a camera that fell back to USB 2
@@ -1383,7 +1393,7 @@ which a list replaces with the declaration.
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the device is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
   is shared by every kind rp binds, so a placeholder wheel gets the same
   treatment. ConformU pointed at a placeholder fails its connect test —
   acceptable, since conformance runs use the simulation build with no list.

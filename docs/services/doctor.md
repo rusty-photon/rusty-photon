@@ -1103,9 +1103,10 @@ installed service, and the two paths are naturally exclusive:
   re-scans, so when doctor's own USB scan holds a working device on that
   port — a hub powered on after the service started, or the look-alike that
   made the placeholder — the detail says what the scan shows there and sends
-  the operator to the driver's `doctor --devices` to learn whether a reload
-  would place it. `configureddevices` does not
-  carry a placeholder's reason, and not every reason yields to a reload: a
+  the operator to the driver's `doctor --devices` to learn whether a restart
+  would place it: it enumerates in a fresh process, as a restart does.
+  `configureddevices` does not
+  carry a placeholder's reason, and not every reason yields to a restart: a
   look-alike or an unknown model stays a placeholder, and a service whose own
   scan failed re-scans and places the camera by itself. The `ok` names the other devices, and is still reported when
   every device is a placeholder: the service answered, so it is alive. A

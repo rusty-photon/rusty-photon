@@ -1148,7 +1148,7 @@ mod list_tests {
             ),
             "{reason}"
         );
-        assert!(reason.contains("reload or restart zwo-camera"), "{reason}");
+        assert!(reason.contains("fixed, restart zwo-camera"), "{reason}");
         assert_eq!(resolved[1].1.as_ref().unwrap().index, 1);
     }
 
