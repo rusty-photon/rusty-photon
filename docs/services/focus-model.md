@@ -510,8 +510,10 @@ sweep carries the outcome in full (`confirmed`, `fallback`,
 points; `get_focus_runs` is where a sweep is read in detail.
 `differences` is what each median was taken over, so an operator can
 see a spread the median hid. `restored` is where the call left the
-rig. `model` is as `focus_train` reports it, the first sweep having
-reset a stale record.
+rig. `model` is as `focus_train` reports it for the call's first
+sweep: `empty` when the train had no record before the call, `reset:
+…` when that sweep replaced a stale one, otherwise how the record reads
+once the offsets are written.
 
 Progress: one tick per sweep, `total` the sweeps the procedure will run
 (`rounds` × `filters`), message naming the round, the filter and what

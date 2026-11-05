@@ -165,6 +165,9 @@ struct Plan {
     /// offsets are written the record reads fresh and the reason would
     /// be lost.
     entering_stale: Vec<String>,
+    /// Whether the train had no record when the call arrived. The first
+    /// sweep's write creates one, so this too would be lost by then.
+    entering_empty: bool,
 }
 
 impl Plan {
@@ -418,6 +421,7 @@ async fn resolve(
         )));
     }
     let entering_stale = stale_fields(held.as_ref(), &ctx);
+    let entering_empty = held.is_none();
     // Every filter's sweep must be sizable before the first one moves.
     // Incomplete optics with no configured sweep is a configuration
     // fault, identical for every filter and recorded as no run at all,
@@ -456,6 +460,7 @@ async fn resolve(
         reference,
         rounds,
         entering_stale,
+        entering_empty,
     })
 }
 
@@ -777,8 +782,12 @@ async fn write_offsets(
     let ctx = &plan.ctx;
     let reference = plan.reference.clone();
     let measured_offsets = offsets.clone();
-    let reset = (!plan.entering_stale.is_empty())
-        .then(|| format!("reset: {}", plan.entering_stale.join("; ")));
+    let entering = if plan.entering_empty {
+        Some("empty".to_owned())
+    } else {
+        (!plan.entering_stale.is_empty())
+            .then(|| format!("reset: {}", plan.entering_stale.join("; ")))
+    };
     let written = store
         .update(&ctx.train_id, move |held| {
             let stale = stale_fields(held.as_ref(), ctx);
@@ -810,7 +819,7 @@ async fn write_offsets(
                 runs: Some(record.run_count(None)),
                 error: None,
             },
-            reset.unwrap_or_else(|| model_label(Some(&record), &stale)),
+            entering.unwrap_or_else(|| model_label(Some(&record), &stale)),
         ),
         Err(error) => {
             warn!(train_id = %ctx.train_id, error = %error, "the offsets could not be recorded");
@@ -1515,7 +1524,7 @@ mod tests {
         assert!(view.unmeasured.is_empty(), "{:?}", view.unmeasured);
         assert!(view.recorded.offsets_written);
         assert_eq!(view.recorded.runs, Some(6));
-        assert_eq!(view.model, "fresh");
+        assert_eq!(view.model, "empty", "no record before this call");
 
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.reference_filter.as_deref(), Some("Luminance"));
@@ -1842,6 +1851,26 @@ mod tests {
             view.model,
             "reset: camera_id changed from retired-cam to main-cam"
         );
+    }
+
+    #[tokio::test]
+    async fn a_call_onto_a_matching_record_reports_it_fresh() {
+        let (store, _dir) = temp_store().await;
+        let record = crate::store::FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(filters()),
+        );
+        store.put(record).await.unwrap();
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+
+        let view = run(&bench, &store, &params(1)).await.unwrap();
+
+        assert_eq!(view.model, "fresh");
     }
 
     /// A sweep that fell back measured a position: the lowest sample it
