@@ -2,8 +2,11 @@
 //!
 //! Composes background estimation → star detection → the aperture
 //! measurement (HFR, flux, one star per aperture) → 2D Gaussian fit (FWHM,
-//! eccentricity) into a single result. Pure logic — no I/O, no MCP types. The MCP wrapper resolves pixels (cache or FITS) and
-//! serializes the result; this module only computes.
+//! eccentricity) into a single result; or, for a list of stars already
+//! known, measures those stars where they were last seen instead of
+//! detecting any ([`measure_listed_stars`]). Pure logic — no I/O, no MCP
+//! types. The MCP wrapper resolves pixels (cache or FITS) and serializes
+//! the result; this module only computes.
 //!
 //! When the Gaussian fit fails (centroid too close to the edge, divergent
 //! solver, degenerate sigma), the row is *kept* with `fwhm: None` and
@@ -14,12 +17,15 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 
 use crate::error::{Result, RpError};
-use crate::imaging::analysis::aperture::{aggregate_hfr, measure_in_apertures};
-use crate::imaging::analysis::background::estimate_background;
+use crate::imaging::analysis::aperture::{
+    aggregate_hfr, aperture_snr, measure_in_apertures, measure_listed, peak_in_aperture, Listed,
+    MeasuredStar,
+};
+use crate::imaging::analysis::background::{estimate_background, BackgroundStats};
 use crate::imaging::analysis::fwhm::fit_2d_gaussian;
 use crate::imaging::analysis::pixel::Pixel;
 use crate::imaging::analysis::saturation::saturation_level;
-use crate::imaging::analysis::stars::{detect, DetectionParams};
+use crate::imaging::analysis::stars::{detect, hot_pixels, DetectionParams};
 
 /// Default postage-stamp half-size (pixels). 8 ⇒ 17×17 stamp, comfortably
 /// captures a PSF with σ ≤ 4 px (FWHM ≤ ~9 px).
@@ -33,8 +39,10 @@ pub struct StarMeasurement {
     pub x: f64,
     /// The centre the star's aperture settled on, along the rows.
     pub y: f64,
-    /// Aperture half-flux radius (pixels). Never `None`: a detection
-    /// without one is not a star.
+    /// The radius of the aperture the star settled in (pixels).
+    pub radius: f64,
+    /// Aperture half-flux radius (pixels). `None` only for a listed star
+    /// that was not measured, which keeps the place it was listed at.
     pub hfr: Option<f64>,
     /// Geometric-mean FWHM (pixels) from the 2D Gaussian fit. `None` when
     /// the fit failed.
@@ -44,17 +52,39 @@ pub struct StarMeasurement {
     pub eccentricity: Option<f64>,
     /// Aperture flux: the sum of the aperture's signed,
     /// background-subtracted pixels (ADU).
-    pub flux: f64,
+    pub flux: Option<f64>,
+    /// The aperture flux's signal-to-noise ratio
+    /// ([`aperture_snr`]).
+    pub snr: Option<f64>,
+}
+
+impl StarMeasurement {
+    /// A listed star that was not measured, at the place it was listed.
+    const fn unmeasured(listed: Listed) -> Self {
+        Self {
+            x: listed.x,
+            y: listed.y,
+            radius: listed.radius,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+            flux: None,
+            snr: None,
+        }
+    }
 }
 
 /// Aggregate result of the `measure_stars` pipeline.
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasureStarsResult {
-    /// One per star, brightest first.
+    /// One per star, brightest first; for a list of stars, one per listed
+    /// star in the order given.
     pub stars: Vec<StarMeasurement>,
+    /// The stars measured.
     pub star_count: u32,
     /// The aggregate HFR `measure_basic` reports: the median aperture HFR
-    /// of the brightest stars. `None` when there are no stars.
+    /// of the brightest stars; for a list, the median over every listed
+    /// star measured. `None` when there are no stars.
     pub hfr: Option<f64>,
     /// Median FWHM across stars whose fit succeeded. `None` when no fits
     /// converged (or no stars were detected).
@@ -100,45 +130,113 @@ pub fn measure_stars<T: Pixel>(
     let detected = detect(view, &background, &detection);
     let stars = measure_in_apertures(view, &detected, background.mean, max_area, saturation_level);
 
-    let mut measurements: Vec<StarMeasurement> = Vec::with_capacity(stars.len());
-    for star in &stars {
-        // The peak is the detection's own, an initial amplitude for the fit.
-        let peak = detected
-            .stars
-            .get(star.detection)
-            .map_or(background.mean, |d| d.peak);
-        let fit = fit_2d_gaussian(
-            view,
-            star.x,
-            star.y,
-            peak,
-            background.mean,
-            1.5,
-            stamp_half_size,
-        );
-        measurements.push(StarMeasurement {
-            x: star.x,
-            y: star.y,
-            hfr: Some(star.hfr),
-            fwhm: fit.map(|f| f.fwhm),
-            eccentricity: fit.map(|f| f.eccentricity),
-            flux: star.flux,
-        });
-    }
+    let measurements: Vec<StarMeasurement> = stars
+        .iter()
+        .map(|star| {
+            // The peak is the detection's own, an initial amplitude for the fit.
+            let peak = detected
+                .stars
+                .get(star.detection)
+                .map_or(background.mean, |d| d.peak);
+            measurement(view, star, peak, &background, stamp_half_size)
+        })
+        .collect();
+    let hfr = aggregate_hfr(&stars);
+    Ok(result(measurements, hfr, &background))
+}
 
+/// Measure `listed`, stars already known, where they were last seen,
+/// detecting nothing.
+///
+/// Each is measured in an aperture that starts at its place and radius
+/// and follows it, kept when it settles as a star, lies inside no
+/// brighter listed star's aperture and clears the SNR threshold
+/// ([`measure_listed`]). The hot pixels left out are the ones detection
+/// at `threshold_sigma` would find. The stars come back in the order
+/// given, one not measured at the place it was listed, and the aggregate
+/// HFR is the median over every star measured.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if background estimation fails.
+pub fn measure_listed_stars<T: Pixel>(
+    view: &ArrayView2<T>,
+    threshold_sigma: f64,
+    max_area: usize,
+    listed: &[Listed],
+    stamp_half_size: usize,
+) -> Result<MeasureStarsResult> {
+    let background = estimate_background(view)
+        .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
+    let hot = hot_pixels(view, &background, threshold_sigma);
+    let measured = measure_listed(view, listed, &hot, background.stddev, max_area);
+
+    let measurements: Vec<StarMeasurement> = listed
+        .iter()
+        .zip(&measured)
+        .map(|(&place, star)| {
+            star.as_ref().map_or_else(
+                || StarMeasurement::unmeasured(place),
+                |star| {
+                    // No detection gives a peak; the aperture's brightest
+                    // pixel seeds the fit's amplitude.
+                    let peak = peak_in_aperture(view, star, &hot).unwrap_or(background.mean);
+                    measurement(view, star, peak, &background, stamp_half_size)
+                },
+            )
+        })
+        .collect();
+    let hfr = median_of(measured.iter().flatten().map(|s| s.hfr));
+    Ok(result(measurements, hfr, &background))
+}
+
+/// A measured star with its Gaussian fit and SNR.
+fn measurement<T: Pixel>(
+    view: &ArrayView2<T>,
+    star: &MeasuredStar,
+    peak: f64,
+    background: &BackgroundStats,
+    stamp_half_size: usize,
+) -> StarMeasurement {
+    let fit = fit_2d_gaussian(
+        view,
+        star.x,
+        star.y,
+        peak,
+        background.mean,
+        1.5,
+        stamp_half_size,
+    );
+    StarMeasurement {
+        x: star.x,
+        y: star.y,
+        radius: star.radius,
+        hfr: Some(star.hfr),
+        fwhm: fit.map(|f| f.fwhm),
+        eccentricity: fit.map(|f| f.eccentricity),
+        flux: Some(star.flux),
+        snr: Some(aperture_snr(star.flux, star.radius, background.stddev)),
+    }
+}
+
+/// The result over `measurements`, with `hfr` its aggregate.
+fn result(
+    measurements: Vec<StarMeasurement>,
+    hfr: Option<f64>,
+    background: &BackgroundStats,
+) -> MeasureStarsResult {
     let median_fwhm = median_of(measurements.iter().filter_map(|m| m.fwhm));
     let median_hfr = median_of(measurements.iter().filter_map(|m| m.hfr));
-    let star_count = u32::try_from(measurements.len()).unwrap_or(u32::MAX);
-
-    Ok(MeasureStarsResult {
+    let measured = measurements.iter().filter(|m| m.hfr.is_some()).count();
+    MeasureStarsResult {
         stars: measurements,
-        star_count,
-        hfr: aggregate_hfr(&stars),
+        star_count: u32::try_from(measured).unwrap_or(u32::MAX),
+        hfr,
         median_fwhm,
         median_hfr,
         background_mean: background.mean,
         background_stddev: background.stddev,
-    })
+    }
 }
 
 fn median_of<I: IntoIterator<Item = f64>>(iter: I) -> Option<f64> {
@@ -307,6 +405,96 @@ mod tests {
         assert!((fwhm - 4.71).abs() < 0.6, "fwhm = {fwhm} (expected ≈ 4.71)");
     }
 
+    fn two_stars() -> Array2<u16> {
+        let mut arr = make_gaussian_with_dither(96, 96, 30.0, 30.0, 2.0, 20_000.0, 1000.0);
+        let arr2 = make_gaussian_with_dither(96, 96, 66.0, 66.0, 2.0, 5_000.0, 0.0);
+        for r in 0..96 {
+            for c in 0..96 {
+                arr[[r, c]] = arr[[r, c]].saturating_add(arr2[[r, c]]);
+            }
+        }
+        arr
+    }
+
+    #[test]
+    fn listed_stars_come_back_in_the_order_given_with_the_unmeasured_at_their_places() {
+        let arr = two_stars();
+        let listed = [
+            Listed {
+                x: 66.5,
+                y: 65.5,
+                radius: 3.0,
+            },
+            Listed {
+                x: 48.0,
+                y: 15.0,
+                radius: 4.5,
+            },
+            Listed {
+                x: 29.5,
+                y: 30.5,
+                radius: 3.0,
+            },
+        ];
+        let r = measure_listed_stars(&arr.view(), 5.0, 4096, &listed, 8).unwrap();
+        assert_eq!(r.stars.len(), 3);
+        assert_eq!(r.star_count, 2);
+        let (faint, empty, bright) = (&r.stars[0], &r.stars[1], &r.stars[2]);
+        assert!(
+            (faint.x - 66.0).abs() < 0.2 && (faint.y - 66.0).abs() < 0.2,
+            "{faint:?}"
+        );
+        assert!(
+            (bright.x - 30.0).abs() < 0.2 && (bright.y - 30.0).abs() < 0.2,
+            "{bright:?}"
+        );
+        assert!(faint.snr.unwrap() > 3.0 && bright.flux.unwrap() > faint.flux.unwrap());
+        assert_eq!((empty.x, empty.y, empty.radius), (48.0, 15.0, 4.5));
+        assert!(empty.hfr.is_none() && empty.flux.is_none() && empty.snr.is_none());
+        assert!(empty.fwhm.is_none() && empty.eccentricity.is_none());
+    }
+
+    #[test]
+    fn a_lists_aggregate_is_the_median_over_every_star_measured() {
+        let arr = two_stars();
+        let listed = [
+            Listed {
+                x: 30.0,
+                y: 30.0,
+                radius: 3.0,
+            },
+            Listed {
+                x: 66.0,
+                y: 66.0,
+                radius: 3.0,
+            },
+        ];
+        let r = measure_listed_stars(&arr.view(), 5.0, 4096, &listed, 8).unwrap();
+        let hfrs: Vec<f64> = r.stars.iter().map(|s| s.hfr.unwrap()).collect();
+        let mean = f64::midpoint(hfrs[0], hfrs[1]);
+        assert!((r.hfr.unwrap() - mean).abs() < 1e-12, "{r:?}");
+        assert_eq!(r.median_hfr, r.hfr);
+    }
+
+    #[test]
+    fn an_empty_list_measures_nothing() {
+        let arr = two_stars();
+        let r = measure_listed_stars(&arr.view(), 5.0, 4096, &[], 8).unwrap();
+        assert_eq!(r.star_count, 0);
+        assert!(r.stars.is_empty() && r.hfr.is_none() && r.median_hfr.is_none());
+    }
+
+    #[test]
+    fn a_detected_star_carries_its_aperture_radius_and_snr() {
+        let arr = make_gaussian_with_dither(64, 64, 32.0, 32.0, 2.0, 20_000.0, 1000.0);
+        let r = measure_stars(&arr.view(), 5.0, 5, 4096, None, 8).unwrap();
+        let s = &r.stars[0];
+        assert!(s.radius >= 3.0, "{s:?}");
+        let snr = s.snr.unwrap();
+        let expected = aperture_snr(s.flux.unwrap(), s.radius, r.background_stddev);
+        assert!((snr - expected).abs() < 1e-9, "{snr} vs {expected}");
+    }
+
     #[test]
     fn json_field_names_match_contract() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);
@@ -320,5 +508,44 @@ mod tests {
         assert!(v.get("background_stddev").is_some());
         assert!(v["median_fwhm"].is_null());
         assert!(v["median_hfr"].is_null());
+    }
+
+    #[test]
+    fn a_stars_json_fields_match_contract() {
+        let arr = two_stars();
+        let listed = [
+            Listed {
+                x: 30.0,
+                y: 30.0,
+                radius: 3.0,
+            },
+            Listed {
+                x: 48.0,
+                y: 15.0,
+                radius: 3.0,
+            },
+        ];
+        let r = measure_listed_stars(&arr.view(), 5.0, 4096, &listed, 8).unwrap();
+        let v = serde_json::to_value(&r).unwrap();
+        for field in [
+            "x",
+            "y",
+            "radius",
+            "hfr",
+            "fwhm",
+            "eccentricity",
+            "flux",
+            "snr",
+        ] {
+            assert!(
+                v["stars"][0].get(field).is_some(),
+                "measured star lacks {field}: {v}"
+            );
+            assert!(
+                v["stars"][1].get(field).is_some(),
+                "unmeasured star lacks {field}: {v}"
+            );
+        }
+        assert!(v["stars"][1]["hfr"].is_null() && v["stars"][1]["snr"].is_null());
     }
 }

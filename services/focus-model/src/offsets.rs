@@ -1028,7 +1028,7 @@ mod tests {
     use crate::sizing::Optics;
     use crate::store::LastGood;
     use crate::workflow::{
-        CaptureResult, FocuserPosition, MockFocusRig, RefocusPlan, StarMeasurement, TrainInfo,
+        rp_frame, CaptureResult, FocuserPosition, MockFocusRig, RefocusPlan, TrainInfo,
     };
 
     /// A train whose sweep is configured outright, so the tests need no
@@ -1404,25 +1404,13 @@ mod tests {
             let position = Arc::clone(&self.position);
             let filter = Arc::clone(&self.filter);
             let vertices = Arc::clone(&self.vertices);
-            rig.expect_measure_stars().returning(move |_, _, _, _| {
-                let at = *position.lock().unwrap();
-                let vertex = vertices.get(&*filter.lock().unwrap()).copied();
-                Box::pin(async move {
-                    Ok(match vertex {
-                        Some(vertex) => {
-                            let dx = f64::from(at - vertex);
-                            StarMeasurement {
-                                hfr: Some((dx / 10.0).hypot(1.0)),
-                                star_count: 100,
-                            }
-                        }
-                        None => StarMeasurement {
-                            hfr: None,
-                            star_count: 0,
-                        },
-                    })
-                })
-            });
+            rig.expect_measure_stars()
+                .returning(move |_, _, _, _, stars| {
+                    let at = *position.lock().unwrap();
+                    let vertex = vertices.get(&*filter.lock().unwrap()).copied();
+                    let hfr = vertex.map(|vertex| (f64::from(at - vertex) / 10.0).hypot(1.0));
+                    Box::pin(async move { Ok(rp_frame(hfr, 100, stars)) })
+                });
         }
     }
 

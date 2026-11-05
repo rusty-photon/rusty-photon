@@ -14,7 +14,10 @@ Feature: Focus tools served through rp
   with the hyperbolic defocus curve, a train's min_fit_r_squared (unset
   by default) failing a fit below it as poor_fit, and every run — the
   ones that fail included — is recorded with its curve points, its
-  prediction and its outcome. A record measured through another
+  prediction and its outcome. Each attempt takes a reference frame at
+  its centre and measures the stars it lists, and only those, at every
+  frame of its walk; a sample with fewer than two of them measured is
+  sparse, one with none starless. A record measured through another
   camera, focuser, filter set, optics or temperature sensor is stale
   and predicts nothing; an optical fact either side does not know is
   no change. A train's temperature_sensor names another focuser whose
@@ -211,9 +214,12 @@ Feature: Focus tools served through rp
 
   # A starless sweep says nothing about which side focus lies on, so the
   # retry walks the same grid. The attempts log names, for each attempt
-  # that failed to fit, why, where its grid was centred, what the gate
-  # left of it and what the sweep did next, and each entry's points
-  # count splits the run's curve points by attempt.
+  # that failed to fit, why, where its grid was centred, how many stars
+  # its reference frame listed, what the gate left of it and what the
+  # sweep did next, and each entry's points count splits the run's curve
+  # points by attempt. A reference frame that lists no star leaves its
+  # attempt nothing to measure: the walk still records each frame,
+  # every point starless.
   Scenario: A repeated sweep records why each attempt failed and what came next
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
@@ -231,6 +237,7 @@ Feature: Focus tools served through rp
     And the tool result at "/runs/0/attempts_log/0/attempt" should be the JSON 1
     And the tool result at "/runs/0/attempts_log/0/outcome" should be the JSON "not_enough_stars"
     And the tool result at "/runs/0/attempts_log/0/centre" should be the JSON 25000
+    And the tool result at "/runs/0/attempts_log/0/listed" should be the JSON 0
     And the tool result at "/runs/0/attempts_log/0/points" should be the JSON 7
     And the tool result at "/runs/0/attempts_log/0/accepted" should be the JSON 0
     And the tool result at "/runs/0/attempts_log/0/sparse" should be the JSON 0
@@ -240,6 +247,8 @@ Feature: Focus tools served through rp
     And the tool result at "/runs/0/attempts_log/1/attempt" should be the JSON 2
     And the tool result at "/runs/0/attempts_log/1/retry" should be the JSON "no_attempts_left"
     And the tool result at "/runs/0/attempts_log/1/next_centre" should be the JSON null
+    And the tool result at "/runs/0/reference/position" should be the JSON 25000
+    And the tool result at "/runs/0/reference/listed" should be the JSON 0
 
   # rp brackets a focus tool named in the registration's focus_tools
   # map with the same event triple it emits around its own sweeps, so a

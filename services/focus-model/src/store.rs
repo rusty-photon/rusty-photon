@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::prediction::Prediction;
 use crate::sizing::{SweepSource, DEFAULT_WAVELENGTH_NM};
-use crate::sweep::{CurvePoint, FailedAttempt, SweepOutcome};
+use crate::sweep::{CurvePoint, FailedAttempt, Reference, SweepOutcome};
 
 /// The schema version this build writes for a fresh store.
 ///
@@ -123,6 +123,14 @@ pub struct FocusRun {
     /// recorded before the log existed.
     #[serde(default)]
     pub attempts_log: Vec<FailedAttempt>,
+    /// The reference frame of the attempt that ended the run: where it
+    /// was taken and how many stars it listed. `None` when that attempt
+    /// took none — a run stopped before its first reference frame, or a
+    /// retry whose reference frame failed or was cancelled, the earlier
+    /// attempts' centres and counts being in `attempts_log` — and on a
+    /// run recorded before the star list existed.
+    #[serde(default)]
+    pub reference: Option<Reference>,
     /// The sweep's samples, exactly as it measured them.
     #[serde(default)]
     pub curve_points: Vec<CurvePoint>,
@@ -213,6 +221,7 @@ impl FocusRun {
             sweep_source,
             prediction: None,
             attempts_log: Vec::new(),
+            reference: None,
             curve_points: Vec::new(),
         }
     }
@@ -234,6 +243,7 @@ impl FocusRun {
         self.attempts = Some(outcome.attempts);
         self.wing_slope = outcome.wing_slope;
         self.attempts_log.clone_from(&outcome.attempts_log);
+        self.reference = Some(outcome.reference.clone());
         self.curve_points.clone_from(&outcome.curve_points);
         self
     }

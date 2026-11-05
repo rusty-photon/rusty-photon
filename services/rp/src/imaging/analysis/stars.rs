@@ -232,23 +232,7 @@ fn suppress_hot_pixels<T: Pixel>(
     body_level: f64,
     background_mean: f64,
 ) -> Vec<(usize, usize)> {
-    let dim = view.dim();
-    let holds_body = |step: usize, needed: usize, (r, c): (usize, usize)| {
-        window(dim, r, c, step)
-            .filter(|&cell| view.get(cell).is_some_and(|v| v.to_f64() > body_level))
-            .count()
-            >= needed
-    };
-    let hot: Vec<(usize, usize)> = view
-        .indexed_iter()
-        .filter(|&((r, c), raw)| {
-            raw.to_f64() > threshold
-                && !WINDOWS.iter().any(|&(step, needed)| {
-                    window(dim, r, c, step).any(|centre| holds_body(step, needed, centre))
-                })
-        })
-        .map(|(cell, _)| cell)
-        .collect();
+    let hot = find_hot_pixels(view, threshold, body_level);
     for &(r, c) in &hot {
         let replacement = median_of_the_rest(view, &hot, r, c).unwrap_or(background_mean);
         if let Some(slot) = data.get_mut((r, c)) {
@@ -260,6 +244,45 @@ fn suppress_hot_pixels<T: Pixel>(
         "hot pixels replaced before star detection"
     );
     hot
+}
+
+/// The hot pixels of `view` at `threshold_sigma`, in row-major order,
+/// as [`detect`] finds and replaces them before it smooths: for a
+/// measurement that leaves them out without detecting anything.
+#[must_use]
+pub fn hot_pixels<T: Pixel>(
+    view: &ArrayView2<T>,
+    background: &BackgroundStats,
+    threshold_sigma: f64,
+) -> Vec<(usize, usize)> {
+    let (threshold, body_level) = detection_levels(background, threshold_sigma);
+    find_hot_pixels(view, threshold, body_level)
+}
+
+/// The pixels of `view` above `threshold` that no window of [`WINDOWS`]
+/// containing them shows to be part of a star's body, in row-major
+/// order ([`suppress_hot_pixels`] has the rule).
+fn find_hot_pixels<T: Pixel>(
+    view: &ArrayView2<T>,
+    threshold: f64,
+    body_level: f64,
+) -> Vec<(usize, usize)> {
+    let dim = view.dim();
+    let holds_body = |step: usize, needed: usize, (r, c): (usize, usize)| {
+        window(dim, r, c, step)
+            .filter(|&cell| view.get(cell).is_some_and(|v| v.to_f64() > body_level))
+            .count()
+            >= needed
+    };
+    view.indexed_iter()
+        .filter(|&((r, c), raw)| {
+            raw.to_f64() > threshold
+                && !WINDOWS.iter().any(|&(step, needed)| {
+                    window(dim, r, c, step).any(|centre| holds_body(step, needed, centre))
+                })
+        })
+        .map(|(cell, _)| cell)
+        .collect()
 }
 
 /// The cells of the 3×3 window centred on `(r, c)`, `step` pixels apart,
@@ -1235,5 +1258,30 @@ mod tests {
             .filter(|cell| hot.binary_search(cell).is_err())
             .collect();
         assert!(kept.is_empty(), "hot pixels left in place: {kept:?}");
+    }
+
+    #[test]
+    fn hot_pixels_are_the_ones_detection_finds() {
+        // A star and two hot pixels: the finder lists what detection
+        // replaces before it smooths, and nothing of the star.
+        let mut arr = Array2::<u16>::from_elem((64, 64), 1000);
+        for ((r, c), v) in arr.indexed_iter_mut() {
+            let d2 = (c as f64 - 32.0).powi(2) + (r as f64 - 32.0).powi(2);
+            *v += (2000.0 * (-d2 / 8.0).exp()) as u16 + u16::from((r + c) % 2 == 0) * 4;
+        }
+        arr[(10, 50)] = 9000;
+        arr[(50, 12)] = 9000;
+        let view = arr.view();
+        let background = crate::imaging::analysis::background::estimate_background(&view).unwrap();
+        let params = DetectionParams {
+            threshold_sigma: 5.0,
+            smoothing_sigma: 1.0,
+            min_area: 5,
+            max_area: 4096,
+            saturation_level: None,
+        };
+        let hot = hot_pixels(&view, &background, 5.0);
+        assert_eq!(hot, [(10, 50), (50, 12)]);
+        assert_eq!(hot, detect(&view, &background, &params).hot);
     }
 }

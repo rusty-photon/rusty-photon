@@ -31,7 +31,9 @@
 pub mod analysis;
 pub mod tools;
 
-pub use analysis::aperture::{aggregate_hfr, measure_in_apertures, MeasuredStar};
+pub use analysis::aperture::{
+    aggregate_hfr, measure_in_apertures, Listed, MeasuredStar, MIN_APERTURE_RADIUS,
+};
 pub use analysis::background::{
     estimate_background, sigma_clipped_stats, sigma_clipped_values, BackgroundStats,
 };
@@ -45,5 +47,6 @@ pub use analysis::stats::{compute_stats, ImageStats};
 pub use tools::center_on_target::haversine_arcsec;
 pub use tools::measure_basic::{measure_basic, MeasureBasicResult};
 pub use tools::measure_stars::{
-    measure_stars, MeasureStarsResult, StarMeasurement, DEFAULT_STAMP_HALF_SIZE,
+    measure_listed_stars, measure_stars, MeasureStarsResult, StarMeasurement,
+    DEFAULT_STAMP_HALF_SIZE,
 };
