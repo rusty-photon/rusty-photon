@@ -1531,7 +1531,14 @@ rig2 has no guider and no `session-runner`, so the `shared: true` walk
 and the temperature rule could not run there. The owner decided on
 2026-11-04 to start S7 on that evidence: the two are validated on
 pier1 once S7b reaches it. S7c does not wait for that night, because
-after S7b no session calls what S7c removes.
+after S7b no session calls what S7c removes. pier1 needs one config
+change first. Its guiding train `[zwo-eaf, scops-oag, guide camera]`
+carries no `auto_focus` block, and the shared walk ends in `rp`'s
+metric `auto_focus` on that train, which takes its `step_size` and
+`half_width` from the guiding train's block and refuses without one
+(rp.md § Guide-train sweep). So the guiding train needs a metric block
+before that night, or the walk fails at its guide step after moving
+the EAF.
 
 **S7a** is this design: the decisions above as amended (D12, D16, D17)
 and this section.
