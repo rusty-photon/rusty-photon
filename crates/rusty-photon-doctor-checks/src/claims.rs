@@ -34,8 +34,8 @@ use crate::report::{Check, Status};
 ///
 /// Driver code `0x40` of the `0x500`–`0xFFF` driver range, the same in every
 /// camera driver with device claims, so a client — rp's reconnect supervisor
-/// — can tell "no camera here until the driver reloads" from a transient
-/// failure without parsing the message.
+/// — can tell "no camera here until the driver restarts or reloads" from a
+/// transient failure without parsing the message.
 pub const PLACEHOLDER_ERROR_CODE: u16 = 0x500 + PLACEHOLDER_DRIVER_CODE;
 
 /// [`PLACEHOLDER_ERROR_CODE`] as an offset into the driver range, the form

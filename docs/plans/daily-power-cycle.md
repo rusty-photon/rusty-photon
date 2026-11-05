@@ -7,17 +7,18 @@ nothing needs them, and powers them back on when a session does. The
 cooled camera is the sharpest case, since its fan should not run all day,
 but the focuser hub, the flat panel, the mount and the guide camera are the
 same. So a device that is off for most of the day is the normal case, not
-an error. The stack has to notice a device coming back without a service
-restart, a reload or a person, and nothing may log in a loop or give up
-while a device is off.
+an error. The stack has to bring a device back when its power returns
+without a person, and nothing may log in a loop or give up while a device
+is off.
 
 Deciding when to switch power is a workflow's job (decision 1), the
 services start with every device powered (decision 2), no device's session
 crosses a power cut (decision 3), the serial drivers find their device
-again on their own (decision 4), and a camera service restarts itself at
-dusk (decision 5). What this plan builds is everything around those: a
-survey of what each device does across a power cut, quiet logging while a
-device is off, camera services that restart on request, rp tools that
+again after a cut nobody planned (decision 4), and every service whose
+device was off restarts at dusk (decision 5). What this plan builds is
+everything around those: a survey of what each device does across a power
+cut, quiet logging while a device is off, services that restart on request,
+rp tools that
 disconnect and connect a device and switch a power-box output, the dusk and
 dawn documents that use them, and a doctor that does not report the daytime
 state as a fault.
@@ -64,7 +65,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
   `usb_devices` list, a camera absent when the list is built is a
   placeholder at its number (`UniqueID` `placeholder:<service>:<port>`,
   `Connected = true` refused with `0x540`) until the service next starts or
-  reloads. Without a
+  reloads (for a QHY camera on Windows, until it restarts: decision 2).
+  Without a
   list it is not served at all. `zwo-focuser` has no list and serves the
   EAFs the SDK enumerates. A camera that was served, left the bus and came
   back opens again on a plain `Connected = true`, on all three camera
@@ -154,11 +156,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    through rp. rp's reconnect supervisor leaves a device disconnected that
    way alone until it is connected through rp again, which the dusk
    document does, or an operator with the same tool, once the output is back
-   on and the device has settled. A connect through rp is always fresh: a
-   device that already reads connected is disconnected and connected again,
-   so the dusk connect starts a new session whatever happened while the
-   device was off, an rp restart that lost the hold-out included. A session
-   held across a cut comes back stale:
+   on, the device has settled and its service has restarted (decision 5).
+   A connect through rp never cycles a connection: the restart is what
+   makes the session fresh, whatever happened while the device was off,
+   including an rp restart that dropped the hold-out (it lives in rp's
+   memory) and let the supervisor reconnect a device that stayed on the bus.
+   A session held across a cut comes back stale:
    - `star-adventurer-gti` seeds its encoders and anchors its frame only in
      `Connected = true`. A transport reconnect after the mount's power
      returns does not seed again, so its next Park or goto would slew from
@@ -175,7 +178,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    A fresh connect seeds the mount from its power-up pose, opens the camera
    afresh, and re-reads every cache its handshake fills (`qhy-camera` C6).
    Its `equipment_changed {connected: true}` is the dusk document's signal
-   that a device is ready.
+   that a device is ready. The mount's seed is right only if the mount was
+   parked at that pose, so its park target must be its
+   `unpark_from_ap_position` pose. The two match unless someone configures
+   them apart (a `SetPark` capture, or another named park), and the dawn
+   document checks them before it cuts the mount's power, refusing to cut it
+   when they differ.
    - **Not rp's supervisor reconnecting.** A disconnect made through
      another client does not stick, because the supervisor heals every
      disconnect, and its reconnect could land while a device is still
@@ -183,13 +191,15 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    - **Not each driver recovering on its own.** Every driver would need its
      own way to notice a return, and a 12 V-only cut gives it none.
 4. **The serial drivers keep their transport running** (settled
-   2026-11-04). The transport stays open for the service's lifetime and its
-   poll loop runs throughout, so a power cut fails the next poll whether the
-   COM port leaves or stays with a dead controller behind it. The supervisor
-   then retries every 5 s and, once the device answers, runs the read-only
-   handshake again, which checks the device and refreshes the driver's
-   cache. A serial device is ready before the dusk document connects it, and
-   only the log changes (O1). A start still fails on a device that does not
+   2026-11-04). The transport stays open for the service's lifetime, and
+   every driver but `pa-falcon-rotator` polls throughout, so a power cut
+   fails the next poll whether the COM port leaves or stays with a dead
+   controller behind it. The Falcon polls only when asked, so it notices a
+   cut at its next request. The supervisor then retries every 5 s and, once
+   the device answers, runs the read-only handshake again, which checks the
+   device and refreshes the driver's cache. Only the log changes (O1). This
+   covers a cut nobody planned; a planned one ends in decision 5's restart,
+   which starts every serial driver afresh. A start still fails on a device that does not
    answer: under decision 2 that means a wrong or misconfigured port, and a
    restart loop shows it loudly.
    - **Not retrying only while a client is connected**, nor backing off
@@ -199,25 +209,40 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    - **Not opening the port only for a client**, as the transport once did.
      That gives up the check of the device at start and the stop sent with
      no client attached.
-5. **A camera service restarts itself at dusk, before its first exposure**
-   (settled 2026-11-04). Once the outputs are on and the devices have
-   settled, the dusk document asks each camera service to restart, through
-   rp as the driver's ordinary client. The service closes its devices and
-   exits with a dedicated code, the service manager starts it again within
-   about 5 s (systemd's `Restart=on-failure`, the SCM failure actions it
-   applies to non-crash failures, launchd's respawn), and the document then
-   connects its devices through rp. On rig2 no QHY600M exposure wedged in a
-   fresh process (0 of 20). Once the camera had been power-cycled while the
-   process's SDK was alive, 6 of 30 did, 3 of 6 after an in-process
-   Release + Init, and waiting 30 s after the camera returned did not
-   prevent it (Validation). A wedged camera reads out for a minute, returns
-   an all-zero frame, hangs the close, and needs another power cycle. The
-   restart makes every night's first exposure the fresh-process case, and
-   decision 2's rule hold every day.
-   - **Sentinel stays an independent watcher.** rp asks the driver, never
-     sentinel or the service manager. Sentinel restarts a service only after
-     3 failed health probes 30 s apart, so a restart passes under it.
+5. **Every service whose device was power-cycled restarts at dusk, before
+   its devices are connected** (settled 2026-11-04). Once the outputs are on
+   and the devices have settled, the dusk document has each such service
+   restart: the camera services, the serial drivers, and PHD2. A driver
+   restarts itself when rp, as its ordinary client, asks it to. It closes
+   its devices and exits with a dedicated code, and the service manager
+   starts it again: systemd's `Restart=on-failure` and the SCM failure
+   actions it applies to non-crash failures within about 5 s, launchd's
+   respawn within about 10 s. PHD2, which is not a rusty-photon service,
+   is restarted through `phd2-guider` (O5). The document then connects the
+   devices through rp. Each service then meets its device in a fresh
+   process:
+   - **A camera.** On rig2 no QHY600M exposure wedged in a fresh process (0
+     of 20). Once the camera had been power-cycled while the process's SDK
+     was alive, 6 of 30 did, 3 of 6 after an in-process Release + Init, and
+     waiting 30 s after the camera returned did not prevent it
+     (Validation). A wedged camera reads out for a minute, returns an
+     all-zero frame, hangs the close, and needs another power cycle.
+   - **The guide camera under PHD2.** PHD2 drives it with its own QHY
+     driver, whose SDK lives in PHD2's process through the camera's power
+     cycle, and PHD2's connections are its own, out of rp's reach.
+   - **A serial driver.** A fresh start runs the eager handshake and checks
+     the device, the Falcon included, which has no poll to notice the cut,
+     and the mount's first connect seeds its encoders.
+
+   The restart also makes decision 2's rule hold every day.
+   - **Sentinel stays an independent watcher.** rp asks the driver, and
+     `phd2-guider` asks PHD2, never sentinel or the service manager.
+     Sentinel restarts a service only after 3 failed health probes 30 s
+     apart, so a restart passes under it.
    - **Not a hold before the first exposure.** Waiting 30 s did not help.
+   - **Not cycling connections instead.** A disconnect and reconnect through
+     rp leaves the SDK's process alive across the cut, and `Connected` is
+     shared, so cycling a device another client uses would abort its work.
    - **Not the SDK in a child process.** Frames of up to 120 MB would
      cross a process boundary, and every SDK call would become a message.
    - **Not a workflow with the service manager's rights.** It would make
@@ -253,16 +278,22 @@ Each is settled before the slice that needs it.
   needs a mapping from each output to the devices it feeds, in rp's
   configuration or in a train's, to refuse to switch off an output while a
   device on it is still connected.
+- **O5 (P2). How `phd2-guider` restarts PHD2.** Its library stops PHD2
+  (guiding stopped, equipment disconnected, the `shutdown` RPC, a kill if
+  that fails) and starts it, but its service does not manage the PHD2
+  process yet. On Windows PHD2 runs in the operator's desktop session,
+  where a service in session 0 cannot open a window, so the start needs a
+  way into that session or PHD2 run where `phd2-guider` can manage it.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, and records whether each camera's first exposure after a power cycle wedges under a live SDK | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
+| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
-| P2 | Camera services restart themselves on request (decision 5): the request on the service's own API, closing its devices and exiting with a code the service managers restart on, and rp's tool that sends it | Not started | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp, and `connect_device` always starts a fresh session (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected | Not started; needs O4 | |
-| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each camera service through rp, connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2 | |
+| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 (O5); rp's tool sends the request | Not started; needs O5 for PHD2 | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) | Not started; needs O4 | |
+| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2 | |
 | P5 | doctor's reading of a device off by design (O3) | Not started | |
 
 P0, P1 and P2 depend on nothing else, and P4 needs P2 and P3.
@@ -360,7 +391,7 @@ power-cycled, and the service was reloaded with
 | An in-process Release + Init, the camera present throughout | Listed and opened, 2 of 2, frames good |
 | The same after the camera was power-cycled | Listed and opened, 6 of 6, on both SDK builds: the re-init keeps a camera the first init saw. Its first exposure, started about 32 s after the camera came back, wedged in 3 of the 6 |
 | `qhy-camera`'s own reload after a power cycle | Camera 0 and its wheel were served as the camera both times, not as placeholders |
-| Every full-frame 600M exposure of 2026-11-04 and -05, by what the process's SDK had seen | In a fresh process, with the camera present at the first init: 0 of 20 wedged. After the camera was power-cycled while the SDK was alive: 6 of 30, made up of a late arrival opened after the callback 1 of 15, a second arrival 1 of 2, a reopen without re-init 1 of 7, and a reopen after re-init 3 of 6 |
+| Every full-frame 600M exposure of 2026-11-04 and -05, by what the process's SDK had seen | In a fresh process, with the camera present at the first init: 0 of 20 wedged (the first exposure of the 7 power-cycle runs and the 8 re-init runs, and the 5 of the concurrent-scan run). After the camera was power-cycled while the SDK was alive: 6 of 30, made up of a late arrival opened after the callback 1 of 15, a second arrival 1 of 2, a reopen without re-init 1 of 7, and a reopen after re-init 3 of 6. Not counted: the first exposure of a new process on a camera an earlier run had left wedged, which wedged too, since only a power cycle clears one |
 
 ### Owed
 
