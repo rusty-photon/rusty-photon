@@ -98,7 +98,7 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order (ra → dec → settle_after) so
         // the error message points at the first missing or out-of-range
-        // field. Same convention as `auto_focus` / `measure_basic`.
+        // field. Same convention as `measure_basic`.
         let Some(ra) = params.ra else {
             return Ok(tool_error!("missing required parameter: ra"));
         };

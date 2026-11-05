@@ -245,7 +245,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 - **Implication for BDD scenarios:** with the per-scenario reset
   wired into `before(scenario)` (issue #149), the focuser is set
   back to 25000 before every scenario. Test target positions in
-  `services/rp/tests/features/{focuser,auto_focus}.feature` are
+  `services/rp/tests/features/focuser.feature` are
   anchored near 25000 (typically `25000`, `24500`, `25500`, plus
   bounds like `24900..25100`) so each `move_focuser` call slews ≤
   ~500 steps and completes in ~1 s. Without that anchoring the rp
