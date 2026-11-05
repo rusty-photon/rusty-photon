@@ -73,6 +73,9 @@ bdd_infra::bdd_main! {
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }
+                    if let Some(provider) = world.focus_model.as_mut() {
+                        provider.stop().await;
+                    }
                     // Put back OmniSim's telescope site when a deep-sky
                     // scenario overwrote it with a computed one. The
                     // site is a profile setting the per-scenario

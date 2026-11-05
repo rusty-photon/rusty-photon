@@ -319,6 +319,35 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
     });
 }
 
+/// A guiding train whose only focuser is the imaging train's, as behind
+/// an unmotorised OAG: its plan is that focuser's capture step in the
+/// imaging train and no guide step, so the escalation walks
+/// `focus_train {shared: true}` and rp refuses the guide-only metric
+/// `auto_focus` on it. The guide camera is offline: the walk measures
+/// through the imaging camera.
+#[given(expr = "a guiding train {string} sharing the imaging train's focuser")]
+async fn guiding_train_sharing_imaging_focuser(world: &mut SessionRunnerWorld, train_id: String) {
+    ensure_omnisim(world).await;
+    crate::steps::infrastructure::ensure_focuser(world);
+    world.cameras.push(bdd_infra::rp_harness::CameraConfig {
+        id: "guide-cam".to_string(),
+        alpaca_url: "not-a-url".to_string(),
+        device_number: 0,
+        cooler_targets_c: Vec::new(),
+    });
+    world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
+        aperture_mm: None,
+        obstruction_mm: None,
+        id: train_id,
+        purpose: Some("guiding".to_string()),
+        focal_length_mm: None,
+        default_position_angle_degrees: None,
+        devices: vec!["main-focuser".to_string(), "guide-cam".to_string()],
+        auto_focus: None,
+    });
+}
+
 #[given("a stub plate solver echoing the first target")]
 async fn stub_plate_solver_echoing_first_target(world: &mut SessionRunnerWorld) {
     let first = *world
@@ -359,6 +388,7 @@ async fn rp_with_camera_mount_and_workflow(
 ) {
     configure_deep_sky_equipment(world, false).await;
     stage_deep_sky(world, &workflow, step);
+    crate::steps::infrastructure::ensure_focus_model(world).await;
     start_rp_service(world).await;
     start_session_runner_service(world).await;
 }
@@ -374,6 +404,7 @@ async fn rp_with_camera_mount_focuser_and_workflow(
 ) {
     configure_deep_sky_equipment(world, true).await;
     stage_deep_sky(world, &workflow, step);
+    crate::steps::infrastructure::ensure_focus_model(world).await;
     start_rp_service(world).await;
     start_session_runner_service(world).await;
 }
@@ -439,12 +470,51 @@ async fn events_follow_second(
     boundary: String,
 ) {
     let boundary_seq = second_seq(world, &boundary).await;
+    events_follow(
+        world,
+        minimum,
+        &needle,
+        &format!("second '{boundary}'"),
+        boundary_seq,
+    )
+    .await;
+}
+
+#[then(expr = "at least {int} {string} event(s) should follow the first {string} on the stream")]
+async fn events_follow_first(
+    world: &mut SessionRunnerWorld,
+    minimum: usize,
+    needle: String,
+    boundary: String,
+) {
+    let seqs = sse_event_seqs(world, &boundary).await;
+    let boundary_seq = *seqs
+        .first()
+        .unwrap_or_else(|| panic!("expected a '{boundary}' event on the stream, saw none"));
+    events_follow(
+        world,
+        minimum,
+        &needle,
+        &format!("first '{boundary}'"),
+        boundary_seq,
+    )
+    .await;
+}
+
+/// Wait for at least `minimum` `needle` events after `boundary_seq`.
+async fn events_follow(
+    world: &SessionRunnerWorld,
+    minimum: usize,
+    needle: &str,
+    boundary: &str,
+    boundary_seq: u64,
+) {
     // Each awaited event is one more frame's worth of real work, so this
     // waits on the same pipeline the frame-count steps do.
     let budget = frame_budget(world, minimum as u64);
     let started = std::time::Instant::now();
     loop {
-        let count = sse_event_seqs(world, &needle)
+        let count = sse_event_seqs(world, needle)
             .await
             .into_iter()
             .filter(|seq| *seq > boundary_seq)
@@ -455,8 +525,8 @@ async fn events_follow_second(
         let elapsed = started.elapsed();
         if elapsed >= budget {
             let headline = format!(
-                "expected at least {minimum} '{needle}' event(s) after the second \
-                 '{boundary}' (seq {boundary_seq}), saw {count}"
+                "expected at least {minimum} '{needle}' event(s) after the {boundary} \
+                 (seq {boundary_seq}), saw {count}"
             );
             panic!(
                 "{}",
@@ -500,9 +570,11 @@ async fn stub_guider_received_exactly(
 // ---------------------------------------------------------------------------
 
 /// The deep-sky equipment set: one camera and the singular mount —
-/// plus, for the refocus scenarios, a focuser and the imaging train's
-/// `auto_focus` block (the document is train-addressed, so sweep
-/// geometry lives on the train, not in parameters). No filter wheel —
+/// plus, for the refocus scenarios, a focuser in the imaging train. The
+/// document focuses through focus-model's `focus_train`, whose sweep
+/// for train `main` the provider's starless block configures
+/// (`ensure_focus_model`), so the train carries no `auto_focus` block.
+/// No filter wheel —
 /// the scenarios leave the document's `filter` parameter at its empty
 /// default and give their planner targets unfiltered exposure plans
 /// (if any), so `set_filter` never runs.
@@ -510,29 +582,11 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
     ensure_omnisim(world).await;
     crate::steps::infrastructure::ensure_camera(world);
     crate::steps::infrastructure::ensure_mount(world);
-    let (devices, auto_focus) = if with_focuser {
+    let devices = if with_focuser {
         crate::steps::infrastructure::ensure_focuser(world);
-        (
-            vec!["main-focuser".to_string(), "main-cam".to_string()],
-            Some(TrainAutoFocusConfig {
-                binning: None,
-                duration: Some("100ms".to_string()),
-                step_size: 100,
-                half_width: 200,
-                min_area: Some(5),
-                max_area: Some(65536),
-                // A threshold no simulator frame clears, whatever the
-                // runner's timing does to the exposure: the frames
-                // read as starless by construction (testing.md §5.13).
-                threshold_sigma: Some(bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA),
-                frames_per_step: None,
-                // Those starless frames fail every fit; a retry would
-                // only double each sweep in these budgets.
-                max_attempts: Some(1),
-            }),
-        )
+        vec!["main-focuser".to_string(), "main-cam".to_string()]
     } else {
-        (vec!["main-cam".to_string()], None)
+        vec!["main-cam".to_string()]
     };
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
@@ -543,7 +597,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
         focal_length_mm: None,
         default_position_angle_degrees: None,
         devices,
-        auto_focus,
+        auto_focus: None,
     });
 }
 

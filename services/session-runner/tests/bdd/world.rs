@@ -26,6 +26,10 @@ pub struct SessionRunnerWorld {
     // --- Infrastructure handles ---
     pub omnisim: Option<bdd_infra::rp_harness::OmniSimHandle>,
     pub rp: Option<ServiceHandle>,
+    /// The real focus-model, started before rp for the deep-sky
+    /// document, which names `focus_train` (bdd-infra's
+    /// `FocusModelProvider`).
+    pub focus_model: Option<ServiceHandle>,
     pub session_runner: Option<ServiceHandle>,
     /// A test-side subscriber to rp's SSE stream, for seq-ordered
     /// assertions on what the engine's triggers did.

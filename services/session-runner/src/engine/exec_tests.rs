@@ -2913,8 +2913,30 @@ async fn test_golden_deep_sky_degraded_event_runs_a_guide_only_auto_focus() {
     );
 }
 
-#[tokio::test]
-async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
+/// The escalation's tools: `get_refocus_plan` answers `plan`, and the
+/// two calls it can choose answer as a sweep would.
+fn escalation_tools(plan: Result<Value, ToolCallError>) -> MockTools {
+    MockTools::new(move |_, tool, _| match tool {
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "get_refocus_plan" => plan.clone(),
+        "focus_train" => Ok(json!({
+            "position": 29770,
+            "hfr": 1.4,
+            "best_position": 29768,
+            "best_hfr": 1.3,
+            "confirmed": true,
+            "temperature_c": 9.5,
+            "steps": [{ "focuser_id": "main-focuser", "run_train_id": "main", "metric": "capture" }],
+        })),
+        "auto_focus" => Ok(json!({ "best_hfd": 2.1 })),
+        other => panic!("unexpected tool call `{other}`"),
+    })
+}
+
+async fn run_escalation(plan: Result<Value, ToolCallError>) -> (MockTools, RunOutcome, Value) {
     let doc = make_doc(crate::document::corpus::golden_deep_sky());
     let params = deep_sky_params(
         &doc,
@@ -2926,30 +2948,89 @@ async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
             "park_on_finish": false
         }),
     );
-    let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
-        | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
-        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
-        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
-        "refocus_train" => Ok(json!({ "steps": [] })),
-        other => panic!("unexpected tool call `{other}`"),
-    });
+    let tools = escalation_tools(plan);
     let events = buffered_events(&[(
         "guide_focus_escalation",
         json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0 }),
     )]);
-    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+    (tools, outcome, session)
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_escalation_walks_the_shared_refocus_when_the_plan_starts_with_a_capture_step(
+) {
+    let (tools, outcome, session) = run_escalation(Ok(json!({
+        "train_id": "guide",
+        "guide_coupled": true,
+        "steps": [
+            { "focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture" }
+        ],
+    })))
+    .await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    let calls = tools.calls();
-    let refocus = calls
-        .iter()
-        .find(|(name, _)| name == "refocus_train")
-        .expect("guide_focus_escalation must fire refocus_train");
     assert_eq!(
-        refocus.1,
-        json!({ "train_id": "guide", "reason": "guide_focus_escalation" })
+        calls_to(&tools, "get_refocus_plan"),
+        vec![json!({ "train_id": "guide" })],
+        "the escalation reads the guiding train's plan"
     );
+    assert_eq!(
+        calls_to(&tools, "focus_train"),
+        vec![json!({ "train_id": "guide", "shared": true })],
+        "a plan holding a capture step is walked by the shared focus_train"
+    );
+    assert_eq!(
+        calls_to(&tools, "auto_focus"),
+        Vec::<Value>::new(),
+        "the metric sweep is the other branch"
+    );
+    assert_eq!(
+        session["last_focus_hfr"],
+        json!(1.4),
+        "the walk moved the imaging focuser, so its HFR is the new baseline"
+    );
+    assert_eq!(session["last_focus_temperature"], json!(9.5));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_escalation_runs_the_metric_sweep_when_the_plan_is_guide_only() {
+    let (tools, outcome, session) = run_escalation(Ok(json!({
+        "train_id": "guide",
+        "guide_coupled": false,
+        "steps": [
+            { "focuser_id": "guide-focuser", "run_train_id": "guide", "camera_id": "guide-cam", "metric": "guide" }
+        ],
+    })))
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        calls_to(&tools, "auto_focus"),
+        vec![json!({ "train_id": "guide" })],
+        "a guide-only plan gets the metric sweep on the guiding train"
+    );
+    assert_eq!(calls_to(&tools, "focus_train"), Vec::<Value>::new());
+    assert!(
+        session.get("last_focus_hfr").is_none_or(Value::is_null),
+        "the metric sweep moved no imaging focuser, so no baseline is recorded: {session}"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_escalation_logs_a_plan_rp_cannot_answer_and_goes_on() {
+    let (tools, outcome, _) = run_escalation(Err(ToolCallError::Failed(
+        "train 'guide' has no focuser".to_owned(),
+    )))
+    .await;
+
+    assert_eq!(
+        outcome,
+        RunOutcome::Completed,
+        "a failed plan read must not end the night"
+    );
+    assert_eq!(calls_to(&tools, "focus_train"), Vec::<Value>::new());
+    assert_eq!(calls_to(&tools, "auto_focus"), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -3116,7 +3197,7 @@ async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
 // --- deep_sky.json: refocus-on-temperature ----------------------------------
 
 /// What the temperature-rule tests script: the imaging train's
-/// `get_train_info` answer, the `auto_focus` results in call order (the
+/// `get_train_info` answer, the `focus_train` results in call order (the
 /// last one repeats), and an event pushed into the intake during every
 /// `capture` — the moment a probe drift arrives mid-frame.
 struct TemperatureScript {
@@ -3133,12 +3214,12 @@ fn temperature_tools(script: TemperatureScript) -> (MockTools, EventIntake) {
         | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "get_train_info" => script.train_info.clone(),
-        "auto_focus" => {
+        "focus_train" => {
             let mut queue = focus_results.lock().unwrap();
             let result = queue
                 .front()
                 .cloned()
-                .expect("the script must supply at least one auto_focus result");
+                .expect("the script must supply at least one focus_train result");
             if queue.len() > 1 {
                 queue.pop_front();
             }
@@ -3171,10 +3252,10 @@ fn main_train_info() -> Value {
 
 fn focus_result(temperature_c: Value) -> Value {
     json!({
+        "position": 29766,
+        "hfr": 1.0,
         "best_position": 29766,
         "best_hfr": 1.0,
-        "final_position": 29766,
-        "final_hfr": 1.0,
         "confirmed": true,
         "temperature_c": temperature_c,
     })
@@ -3229,7 +3310,7 @@ async fn test_golden_deep_sky_refocuses_when_the_imaging_focuser_drifts_past_the
         "the session learns its focuser from get_train_info exactly once"
     );
     assert_eq!(
-        calls_to(&tools, "auto_focus"),
+        calls_to(&tools, "focus_train"),
         vec![json!({ "train_id": "main" }), json!({ "train_id": "main" })],
         "the drift must refocus the imaging train, addressed by train"
     );
@@ -3253,7 +3334,7 @@ async fn test_golden_deep_sky_temperature_rule_stays_silent_below_the_delta() {
 
     assert_eq!(outcome, RunOutcome::Completed);
     assert_eq!(
-        calls_to(&tools, "auto_focus").len(),
+        calls_to(&tools, "focus_train").len(),
         1,
         "0.8 °C is under the 1.0 delta"
     );
@@ -3278,7 +3359,7 @@ async fn test_golden_deep_sky_temperature_rule_ignores_another_focusers_probe() 
     let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 1);
 }
 
 #[tokio::test]
@@ -3296,7 +3377,7 @@ async fn test_golden_deep_sky_temperature_rule_is_off_at_a_zero_delta() {
     let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 1);
 }
 
 #[tokio::test]
@@ -3317,7 +3398,7 @@ async fn test_golden_deep_sky_temperature_rule_waits_for_a_focus_to_record_a_bas
     let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 1);
     assert_eq!(session["last_focus_temperature"], json!(10.0));
 }
 
@@ -3339,7 +3420,7 @@ async fn test_golden_deep_sky_a_null_focus_temperature_keeps_the_previous_baseli
     let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 2);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 2);
     assert_eq!(session["last_focus_temperature"], json!(10.0));
 }
 
@@ -3365,7 +3446,7 @@ async fn test_golden_deep_sky_the_frame_count_refocus_records_its_temperature_to
     let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 2);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 2);
     assert_eq!(session["last_focus_temperature"], json!(12.0));
 }
 
@@ -3387,7 +3468,7 @@ async fn test_golden_deep_sky_temperature_rule_is_off_when_the_train_cannot_be_d
     let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert_eq!(calls_to(&tools, "focus_train").len(), 1);
     assert!(
         session.get("focuser_id").is_none_or(Value::is_null),
         "no focuser id may be recorded from a failed get_train_info: {session}"
