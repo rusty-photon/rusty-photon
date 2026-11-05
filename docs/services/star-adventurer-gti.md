@@ -2874,10 +2874,11 @@ doing:
   within one polling interval at goto speed of it, so its pier side
   still reads true. But the position is **lost**.
 
-**A long outage** writes nothing back. Past 30 s, or with no failed
-request to date the outage, the cut is not a blip: it may be a planned
-one, and someone may have moved the mount by hand while it was off. The
-encoders keep their power-up values, and the position **awaits the
+**A long outage** writes the estimate back too, but trusts nothing.
+Past 30 s, or with no failed request to date the outage, the cut is not
+a blip: it may be a planned one, and someone may have moved the mount by
+hand while it was off. The encoders hold the written-back estimate, so a
+sync still reads the pier side from it, and the position **awaits the
 power-up check**. That check is the one a power-up connect makes
 against the [mount state record](#the-mount-state-record): it seeds the
 configured pose when the record says the mount came to rest there, and
@@ -2915,6 +2916,14 @@ motion but a stop until the position is known again:
   ([§The anchored-frame rule](#the-anchored-frame-rule)). A safety park
   therefore still stops the mount and sets `AtPark`.
 - `AbortSlew` and the setup page's stop work as ever.
+
+A sync writes the encoder pair for the pier side that the Dec encoder
+reads, so it is only as right as that side. After a restart the driver
+saw, the written-back estimate keeps the side true. After a power-up
+whose record loses the position (the rig lost power with the driver),
+the encoders hold power-up values that say nothing about the side, and
+read as the pre-flip side. Sync then only with the mount on its pre-flip
+side, or run the recovery from a named park instead.
 
 A successful `SyncToCoordinates` / `SyncToTarget`, or the recovery from
 a named park, anchors the frame and clears the lost state. The park

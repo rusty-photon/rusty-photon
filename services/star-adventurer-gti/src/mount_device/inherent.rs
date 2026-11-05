@@ -908,8 +908,13 @@ impl MountDevice {
             unpark_from_ap_position = ?unpark_from_ap_position,
             "pre-seed encoder snapshot at connect"
         );
-        if snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
-            || snap.dec.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+        // A pending power-up check follows a restart the driver saw: the
+        // encoders hold the estimate it wrote back, not power-up values,
+        // and the record alone decides.
+        let awaiting_check = power.position() == Position::AwaitingCheck;
+        if !awaiting_check
+            && (snap.ra.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE
+                || snap.dec.position_ticks.abs() > FRESH_POWER_UP_TICK_TOLERANCE)
         {
             debug!(
                 ra = snap.ra.position_ticks,
@@ -918,9 +923,6 @@ impl MountDevice {
                 "skipping unpark_from_ap_position encoder seed: firmware encoder \
                  is non-zero beyond tolerance"
             );
-            // A pending power-up check expected power-up values: these
-            // are not, so nothing says where the mount is.
-            power.settle_power_up_check(false);
             return Ok(());
         }
         let ra_ticks = MechHa::new(mech_ha)
@@ -934,7 +936,7 @@ impl MountDevice {
                 &read,
                 (ra_ticks, dec_ticks),
                 FRESH_POWER_UP_TICK_TOLERANCE,
-                power.position() == Position::AwaitingCheck,
+                awaiting_check,
             ) {
                 power.mark_position_lost();
                 warn!(

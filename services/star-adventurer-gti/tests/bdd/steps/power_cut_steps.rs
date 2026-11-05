@@ -121,6 +121,31 @@ async fn encoders_near_cut(world: &mut StarAdventurerWorld, tolerance: i64) {
     );
 }
 
+/// The seed's `info!` line follows the power-up check settling the
+/// position as known, so its second appearance (the first is the
+/// connect's) is the check's end, logged by the service itself.
+#[then("the driver should seed the power-up pose again")]
+async fn seeds_again(world: &mut StarAdventurerWorld) {
+    const SEEDED: &str = "seeded firmware encoder for unpark_from_ap_position";
+    let handle = world.service_handle.as_ref().expect("a service is running");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let seeds = handle
+            .stderr_lines()
+            .iter()
+            .filter(|line| line.contains(SEEDED))
+            .count();
+        if seeds >= 2 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the driver logged {seeds} seed(s) of the power-up pose; expected a second after the cut"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[then("the mount should not have received an encoder write since the link came back")]
 async fn no_encoder_write_since_mark(world: &mut StarAdventurerWorld) {
     let mark = world.reconnect_mark.expect("the link dropped");

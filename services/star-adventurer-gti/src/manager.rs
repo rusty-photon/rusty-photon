@@ -1133,10 +1133,11 @@ type AxisSample = (i32, Instant);
 /// samples to seed the snapshot with: the written ones, or `read` when
 /// there is no earlier sample to carry over.
 ///
-/// Only after an outage of at most [`MAX_TRUSTED_OUTAGE`] since the first
-/// failed request. After a longer one, or one nothing dates, someone may
-/// have moved the mount by hand: the encoders keep their power-up values
-/// and the position awaits the power-up check against the mount state
+/// The position is trusted only after an outage of at most
+/// [`MAX_TRUSTED_OUTAGE`] since the first failed request. After a longer
+/// one, or one nothing dates, someone may have moved the mount by hand:
+/// the estimate is still written back, so a sync reads the pier side from
+/// it, but the position awaits the power-up check against the mount state
 /// record.
 async fn restore_after_restart(
     conn: &Connection<SkywatcherCodec>,
@@ -1150,22 +1151,25 @@ async fn restore_after_restart(
     let Some(restore) = position_to_restore(previous, params, first_failed, max_age) else {
         return Ok(read);
     };
+    // Written back on every path, as the best estimate there is: even
+    // when it is not trusted, its pier side reads true for a sync.
+    let ra = write_position(conn, Axis::Ra, restore.ra_ticks).await?;
+    let dec = write_position(conn, Axis::Dec, restore.dec_ticks).await?;
+    let ((read_ra, _), (read_dec, _)) = read;
     let outage = first_failed.map(|failed| Instant::now().saturating_duration_since(failed));
     if outage.is_none_or(|outage| outage > MAX_TRUSTED_OUTAGE) {
         power.await_power_up_check();
         info!(
             ?outage,
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
             "the mount's controller restarted after a cut too long to trust its last \
-             position: its encoders keep their power-up values, and the mount state \
-             record decides whether the power-up pose is seeded"
+             position: that position is written back as an estimate, and the mount \
+             state record decides whether the power-up pose is seeded"
         );
-        power.record_restart();
-        return Ok(read);
-    }
-    let ra = write_position(conn, Axis::Ra, restore.ra_ticks).await?;
-    let dec = write_position(conn, Axis::Dec, restore.dec_ticks).await?;
-    let ((read_ra, _), (read_dec, _)) = read;
-    if restore.lost {
+    } else if restore.lost {
         power.mark_position_lost();
         warn!(
             read_ra_ticks = read_ra,
@@ -2991,7 +2995,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cut_no_failure_dates_awaits_the_power_up_check_and_writes_nothing() {
+    async fn a_cut_no_failure_dates_awaits_the_power_up_check_with_the_estimate_written_back() {
         let (m, mock) = manager_polled_at_rest().await;
         {
             let mut s = mock.lock().await;
@@ -3000,7 +3004,7 @@ mod tests {
         }
         let session = m.transport().acquire().await.unwrap();
         let s = mock.lock().await;
-        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (0, 0));
+        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
         drop(s);
         assert_eq!(m.power().position(), crate::power::Position::AwaitingCheck);
         session.close().await.unwrap();
@@ -3018,7 +3022,7 @@ mod tests {
         tokio::time::advance(MAX_TRUSTED_OUTAGE + Duration::from_secs(1)).await;
         let session = m.transport().acquire().await.unwrap();
         let s = mock.lock().await;
-        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (0, 0));
+        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
         drop(s);
         assert_eq!(m.power().position(), crate::power::Position::AwaitingCheck);
         session.close().await.unwrap();
