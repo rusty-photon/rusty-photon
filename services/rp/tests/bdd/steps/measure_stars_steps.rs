@@ -8,6 +8,7 @@
 //! and are reused here -- all four imaging tools persist into the same
 //! exposure document, so the document-fetch plumbing is shared.
 
+use cucumber::gherkin::Step;
 use cucumber::{then, when};
 use serde_json::Value;
 
@@ -149,15 +150,7 @@ async fn mcp_call_on_fixture(
     min_area: u64,
     max_area: u64,
 ) {
-    // The suite runs from the package directory (cargo's default, and
-    // `BDD_PACKAGE_DIR` under Bazel); rp gets an absolute path because it
-    // runs as its own process.
-    let path = std::env::current_dir()
-        .expect("current directory")
-        .join("tests/fixtures")
-        .join(&fixture);
-    assert!(path.is_file(), "fixture {} not found", path.display());
-    let path = path.to_str().expect("fixture path is UTF-8").to_string();
+    let path = fixture_path(&fixture);
 
     call_tool(
         world,
@@ -186,6 +179,48 @@ async fn mcp_call_missing_min_area(world: &mut RpWorld) {
         None,
         None,
         SIM_AREAS.1,
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"measure_stars\" on the fixture {string} with max_area {int} and the stars that call returned"
+)]
+async fn mcp_call_with_returned_stars(world: &mut RpWorld, fixture: String, max_area: u64) {
+    let stars = result_or_panic(world)["stars"].clone();
+    call_with_stars(world, &fixture_path(&fixture), Some(max_area), stars).await;
+}
+
+#[when(
+    expr = "the MCP client calls \"measure_stars\" on the fixture {string} with max_area {int} and the stars:"
+)]
+async fn mcp_call_with_listed_stars(
+    world: &mut RpWorld,
+    fixture: String,
+    max_area: u64,
+    step: &Step,
+) {
+    let stars = stars_from_table(step);
+    call_with_stars(world, &fixture_path(&fixture), Some(max_area), stars).await;
+}
+
+#[when(
+    expr = "the MCP client calls \"measure_stars\" on the fixture {string} with no max_area and the stars:"
+)]
+async fn mcp_call_with_listed_stars_no_max_area(world: &mut RpWorld, fixture: String, step: &Step) {
+    let stars = stars_from_table(step);
+    call_with_stars(world, &fixture_path(&fixture), None, stars).await;
+}
+
+#[when(
+    expr = "the MCP client calls \"measure_stars\" on the fixture {string} with max_area {int} and no stars"
+)]
+async fn mcp_call_with_no_stars(world: &mut RpWorld, fixture: String, max_area: u64) {
+    call_with_stars(
+        world,
+        &fixture_path(&fixture),
+        Some(max_area),
+        serde_json::json!([]),
     )
     .await;
 }
@@ -335,7 +370,169 @@ fn stars_listed_brightest_first(world: &mut RpWorld) {
     );
 }
 
+#[then(
+    expr = "every measure_stars star should lie within {float} px of the star listed in its place"
+)]
+fn stars_lie_near_their_listed_places(world: &mut RpWorld, tolerance: f64) {
+    let listed = listed_or_panic(world);
+    let stars = stars_or_panic(world);
+    assert_eq!(
+        stars.len(),
+        listed.len(),
+        "expected one star per listed star, got: {stars:?}"
+    );
+    for (index, (star, given)) in stars.iter().zip(listed).enumerate() {
+        let distance =
+            (number(star, "x") - number(given, "x")).hypot(number(star, "y") - number(given, "y"));
+        assert!(
+            distance <= tolerance,
+            "star {index} came back {distance:.3} px from where it was listed: {star:?} vs {given:?}"
+        );
+    }
+}
+
+#[then(
+    expr = "every measured measure_stars star should have a radius of at least {float} and an snr above {float}"
+)]
+fn measured_stars_carry_radius_and_snr(world: &mut RpWorld, min_radius: f64, min_snr: f64) {
+    let stars = stars_or_panic(world);
+    let measured: Vec<&Value> = stars.iter().filter(|s| !s["hfr"].is_null()).collect();
+    assert!(
+        !measured.is_empty(),
+        "expected measured stars, got: {stars:?}"
+    );
+    for star in measured {
+        assert!(
+            number(star, "radius") >= min_radius,
+            "expected a radius of at least {min_radius}: {star:?}"
+        );
+        assert!(
+            number(star, "snr") > min_snr,
+            "expected an snr above {min_snr}: {star:?}"
+        );
+    }
+}
+
+#[then("the measure_stars stars should be, in order, unmeasured at:")]
+fn stars_unmeasured_at(world: &mut RpWorld, step: &Step) {
+    let expected = stars_from_table(step);
+    let expected = expected.as_array().expect("the table is a list of stars");
+    let stars = stars_or_panic(world);
+    assert_eq!(
+        stars.len(),
+        expected.len(),
+        "expected {} stars, got: {stars:?}",
+        expected.len()
+    );
+    for (index, (star, place)) in stars.iter().zip(expected).enumerate() {
+        for field in ["x", "y", "radius"] {
+            assert!(
+                (number(star, field) - number(place, field)).abs() < 1e-9,
+                "star {index} should keep its {field} as listed: {star:?} vs {place:?}"
+            );
+        }
+        for field in ["hfr", "fwhm", "eccentricity", "flux", "snr"] {
+            assert!(
+                star[field].is_null(),
+                "star {index} should have a null {field}: {star:?}"
+            );
+        }
+    }
+}
+
+#[then(expr = "exactly {int} of the {int} measure_stars stars should be measured")]
+fn exactly_n_stars_measured(world: &mut RpWorld, measured: usize, total: usize) {
+    let stars = stars_or_panic(world);
+    assert_eq!(stars.len(), total, "expected {total} stars, got: {stars:?}");
+    let count = stars.iter().filter(|s| !s["hfr"].is_null()).count();
+    assert_eq!(
+        count, measured,
+        "expected {measured} measured, got: {stars:?}"
+    );
+}
+
 // --- Helpers ---
+
+/// The absolute path of a fixture under `tests/fixtures`. The suite runs
+/// from the package directory (cargo's default, and `BDD_PACKAGE_DIR`
+/// under Bazel); rp gets an absolute path because it runs as its own
+/// process.
+fn fixture_path(fixture: &str) -> String {
+    let path = std::env::current_dir()
+        .expect("current directory")
+        .join("tests/fixtures")
+        .join(fixture);
+    assert!(path.is_file(), "fixture {} not found", path.display());
+    path.to_str().expect("fixture path is UTF-8").to_string()
+}
+
+/// A `stars` array from a table with the header `x | y | radius`.
+fn stars_from_table(step: &Step) -> Value {
+    let table = step.table.as_ref().expect("the step needs a data table");
+    let header = &table.rows[0];
+    let column = |name: &str| {
+        header
+            .iter()
+            .position(|h| h == name)
+            .unwrap_or_else(|| panic!("the table has no '{name}' column"))
+    };
+    let (x, y, radius) = (column("x"), column("y"), column("radius"));
+    let stars: Vec<Value> = table.rows[1..]
+        .iter()
+        .map(|row| {
+            let cell = |i: usize| -> f64 { row[i].parse().expect("a number") };
+            serde_json::json!({ "x": cell(x), "y": cell(y), "radius": cell(radius) })
+        })
+        .collect();
+    Value::Array(stars)
+}
+
+/// `measure_stars` on `image_path` with `stars`, at the default
+/// threshold, remembering the stars passed.
+async fn call_with_stars(
+    world: &mut RpWorld,
+    image_path: &str,
+    max_area: Option<u64>,
+    stars: Value,
+) {
+    ensure_mcp_client(world).await;
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "image_path".to_string(),
+        Value::String(image_path.to_string()),
+    );
+    if let Some(max_area) = max_area {
+        args.insert("max_area".to_string(), serde_json::json!(max_area));
+    }
+    args.insert("stars".to_string(), stars.clone());
+    world.last_listed_stars = Some(stars);
+    let result = world
+        .mcp()
+        .call_tool("measure_stars", Value::Object(args))
+        .await;
+    record_result(world, result);
+}
+
+fn stars_or_panic(world: &RpWorld) -> &Vec<Value> {
+    let result = result_or_panic(world);
+    result["stars"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected 'stars' to be an array, got: {result:?}"))
+}
+
+fn listed_or_panic(world: &RpWorld) -> &Vec<Value> {
+    world
+        .last_listed_stars
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("no listed stars passed")
+}
+
+fn number(value: &Value, field: &str) -> f64 {
+    value[field]
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected a numeric '{field}', got: {value:?}"))
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn call_tool(

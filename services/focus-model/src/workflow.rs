@@ -30,7 +30,8 @@ use crate::store::{
 };
 use crate::sweep::{
     check_grid, grid_length, run_sweep, Confirmation, CurvePoint, Direction, FailedAttempt,
-    FitOutcome, Measurement, SweepFailure, SweepOps, SweepOutcome, SweepParams,
+    FitOutcome, ListedStar, Measurement, Reference, ReferenceFrame, ReferenceStar, SweepFailure,
+    SweepOps, SweepOutcome, SweepParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -142,10 +143,35 @@ pub struct CaptureResult {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StarMeasurement {
     /// The frame's aggregate HFR: the median aperture HFR of its
-    /// brightest stars.
+    /// brightest stars, or of the listed stars it measured.
     #[serde(default)]
     pub hfr: Option<f64>,
     pub star_count: u32,
+    /// Its stars, brightest first; for a list, one per listed star in
+    /// the order given, each where it was seen.
+    #[serde(default)]
+    pub stars: Vec<MeasuredStar>,
+}
+
+/// One star of a `measure_stars` result.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct MeasuredStar {
+    pub x: f64,
+    pub y: f64,
+    pub radius: f64,
+    /// `None` for a listed star that was not measured.
+    #[serde(default)]
+    pub hfr: Option<f64>,
+}
+
+impl MeasuredStar {
+    const fn listed(self) -> ListedStar {
+        ListedStar {
+            x: self.x,
+            y: self.y,
+            radius: self.radius,
+        }
+    }
 }
 
 /// What `rp`'s own metric `auto_focus` reports for a guiding-train
@@ -193,12 +219,15 @@ pub trait FocusRig: Send + Sync {
         duration: Duration,
         lease_id: Option<String>,
     ) -> Result<CaptureResult>;
+    /// Detects the frame's stars, or with `stars` measures those where
+    /// they were last seen.
     async fn measure_stars(
         &self,
         document_id: &str,
         min_area: usize,
         max_area: usize,
         threshold_sigma: Option<f64>,
+        stars: Option<Vec<ListedStar>>,
     ) -> Result<StarMeasurement>;
     /// Whether the guider reports an active loop; a failed read is an
     /// error the caller turns into a skipped handshake.
@@ -297,6 +326,8 @@ pub struct FocusTrainOutcome {
     /// The attempts that failed to fit before the one that produced
     /// this result.
     pub attempts_log: Vec<FailedAttempt>,
+    /// The reference frame of the attempt that produced this result.
+    pub reference: Reference,
     pub confirmation: Confirmation,
     pub curve_points: Vec<CurvePoint>,
     pub temperature_c: Option<f64>,
@@ -596,7 +627,45 @@ impl SweepOps for RigSweep<'_> {
             .await
     }
 
-    async fn measure(&self) -> std::result::Result<Measurement, FocusModelError> {
+    async fn reference(&self) -> std::result::Result<ReferenceFrame, FocusModelError> {
+        let frame = self
+            .rig
+            .capture(&self.train_id, self.train.duration, self.lease_id.clone())
+            .await?;
+        let measured = self
+            .rig
+            .measure_stars(
+                &frame.document_id,
+                self.train.min_area,
+                self.train.max_area,
+                self.train.threshold_sigma,
+                None,
+            )
+            .await?;
+        let stars = measured
+            .stars
+            .iter()
+            .filter_map(|star| {
+                star.hfr
+                    .filter(|hfr| hfr.is_finite())
+                    .map(|hfr| ReferenceStar {
+                        x: star.x,
+                        y: star.y,
+                        radius: star.radius,
+                        hfr,
+                    })
+            })
+            .collect();
+        Ok(ReferenceFrame {
+            document_id: frame.document_id,
+            stars,
+        })
+    }
+
+    async fn measure(
+        &self,
+        list: &mut Vec<ListedStar>,
+    ) -> std::result::Result<Measurement, FocusModelError> {
         let mut hfrs = Vec::new();
         let mut counts = Vec::new();
         let mut document_id = String::new();
@@ -605,19 +674,32 @@ impl SweepOps for RigSweep<'_> {
                 .rig
                 .capture(&self.train_id, self.train.duration, self.lease_id.clone())
                 .await?;
-            let measured = self
-                .rig
-                .measure_stars(
-                    &frame.document_id,
-                    self.train.min_area,
-                    self.train.max_area,
-                    self.train.threshold_sigma,
-                )
-                .await?;
-            if let Some(hfr) = measured.hfr.filter(|hfr| hfr.is_finite()) {
-                hfrs.push(hfr);
+            // An empty list has nothing to measure; the frame is kept
+            // all the same, so the record shows what the position saw.
+            // A frame that measured no star enters neither the point's
+            // HFR nor its count, so a clouded frame does not make a
+            // point that measured sparse.
+            if !list.is_empty() {
+                let measured = self
+                    .rig
+                    .measure_stars(
+                        &frame.document_id,
+                        self.train.min_area,
+                        self.train.max_area,
+                        self.train.threshold_sigma,
+                        Some(list.clone()),
+                    )
+                    .await?;
+                if let Some(hfr) = measured.hfr.filter(|hfr| hfr.is_finite()) {
+                    hfrs.push(hfr);
+                    counts.push(measured.star_count);
+                }
+                // Each star where this frame saw it, or where it was last
+                // seen when this frame did not measure it.
+                if measured.stars.len() == list.len() {
+                    *list = measured.stars.iter().map(|star| star.listed()).collect();
+                }
             }
-            counts.push(measured.star_count);
             document_id = frame.document_id;
         }
         Ok(Measurement {
@@ -653,6 +735,24 @@ impl SweepOps for RigSweep<'_> {
                 done,
                 Some(self.total),
                 format!("position {position}: {hfr}"),
+            )
+            .await;
+    }
+
+    async fn tick_reference(&self, position: i32, listed: usize) {
+        let done = {
+            let mut frames = self
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *frames += 1.0;
+            *frames
+        };
+        self.progress
+            .tick(
+                done,
+                Some(self.total),
+                format!("position {position}: reference frame, {listed} stars listed"),
             )
             .await;
     }
@@ -927,7 +1027,6 @@ fn sweep_params(train: &TrainConfig, plan: &SweepPlan, start: &FocuserPosition) 
         step_size: plan.step_size,
         half_width: plan.half_width,
         min_fit_points: train.min_fit_points.get(),
-        min_star_fraction: train.min_star_fraction.get(),
         min_fit_r_squared: train.min_fit_r_squared.map(MinFitRSquared::get),
         confirmation_tolerance: train.confirmation_tolerance.get(),
         max_attempts: train.max_attempts.get(),
@@ -993,10 +1092,13 @@ async fn record_run(
     let kept = config.runs_kept.get();
     let (record, model) = store
         .update(&ctx.train_id, move |held| {
+            let was_empty = held.is_none();
             let stale = stale_fields(held.as_ref(), ctx);
             let (mut record, was_reset) = record_for_write(held, &stale, ctx);
             record.push_run(run, kept);
-            let model = if was_reset {
+            let model = if was_empty {
+                "empty".to_owned()
+            } else if was_reset {
                 format!("reset: {}", stale.join("; "))
             } else if stale.is_empty() {
                 "fresh".to_owned()
@@ -1222,10 +1324,11 @@ async fn sweep_prepared(
         progress,
         frames: Mutex::new(0.0),
         // The grid this sweep will actually walk, bounds included,
-        // and the confirmation frame after it. A retry walks another
-        // grid and pushes progress past the total, which is what a
-        // repeated sweep looks like from outside.
-        total: f64::from(grid_length(centre, params).saturating_add(1)),
+        // the reference frame before it and the confirmation frame
+        // after it. A retry walks another grid and pushes progress past
+        // the total, which is what a repeated sweep looks like from
+        // outside.
+        total: f64::from(grid_length(centre, params).saturating_add(2)),
     };
     match run_sweep(&sweeper, centre, params).await {
         Ok(outcome) => {
@@ -1624,6 +1727,7 @@ fn succeeded(
         attempts: outcome.attempts,
         wing_slope: outcome.wing_slope,
         attempts_log: outcome.attempts_log.clone(),
+        reference: outcome.reference.clone(),
         confirmation: outcome.confirmation.clone(),
         curve_points: outcome.curve_points.clone(),
         temperature_c: call.temperature_c,
@@ -1646,6 +1750,7 @@ fn failure_error(
             error,
             attempts,
             attempts_log,
+            reference,
             curve_points,
         } => {
             run.outcome = match error.outcome() {
@@ -1656,6 +1761,7 @@ fn failure_error(
             run.fit_r_squared = error.fit_r_squared();
             run.attempts = Some(*attempts);
             run.attempts_log.clone_from(attempts_log);
+            run.reference.clone_from(reference);
             run.curve_points.clone_from(curve_points);
             let log = serde_json::to_string(attempts_log).unwrap_or_else(|_| "[]".to_owned());
             let points = serde_json::to_string(curve_points).unwrap_or_else(|_| "[]".to_owned());
@@ -1678,6 +1784,7 @@ fn failure_error(
         SweepFailure::Rig {
             error,
             attempts_log,
+            reference,
             curve_points,
         } => {
             run.outcome = if error.is_cancelled() {
@@ -1687,6 +1794,7 @@ fn failure_error(
             };
             run.error = Some(error.tool_message());
             run.attempts_log.clone_from(attempts_log);
+            run.reference.clone_from(reference);
             run.curve_points.clone_from(curve_points);
             // The kind survives the fold: a caller running several
             // sweeps tells a cancellation and a failed device from a
@@ -2159,6 +2267,32 @@ pub async fn reset_focus_model(
     })
 }
 
+/// What `rp`'s `measure_stars` answers, for the mocks: a frame whose
+/// stars all measure `hfr` (`None`: a starless frame). Detecting
+/// (`stars` absent), it lists `count` stars; measuring a list, it
+/// measures every listed star where it was listed.
+#[cfg(test)]
+pub(crate) fn rp_frame(
+    hfr: Option<f64>,
+    count: u32,
+    stars: Option<Vec<ListedStar>>,
+) -> StarMeasurement {
+    let measured = |x: f64, y: f64, radius: f64| MeasuredStar { x, y, radius, hfr };
+    let stars: Vec<MeasuredStar> = match stars {
+        None if hfr.is_some() => (0..count)
+            .map(|i| measured(f64::from(i) * 20.0, 50.0, 3.0))
+            .collect(),
+        None => Vec::new(),
+        Some(list) => list.iter().map(|l| measured(l.x, l.y, l.radius)).collect(),
+    };
+    let measured_count = stars.iter().filter(|star| star.hfr.is_some()).count();
+    StarMeasurement {
+        hfr,
+        star_count: u32::try_from(measured_count).unwrap_or(u32::MAX),
+        stars,
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -2298,28 +2432,18 @@ mod tests {
     /// Measure a clean V centred on `vertex`.
     fn measures_a_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
         let at = position.clone();
-        rig.expect_measure_stars().returning(move |_, _, _, _| {
-            let dx = f64::from(at.get() - vertex);
-            let hfr = (dx / 10.0).hypot(1.0);
-            Box::pin(async move {
-                Ok(StarMeasurement {
-                    hfr: Some(hfr),
-                    star_count: 100,
-                })
-            })
-        });
+        rig.expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                let dx = f64::from(at.get() - vertex);
+                let hfr = (dx / 10.0).hypot(1.0);
+                Box::pin(async move { Ok(rp_frame(Some(hfr), 100, stars)) })
+            });
     }
 
     /// Measure starless frames, as the simulator does.
     fn measures_nothing(rig: &mut MockFocusRig) {
-        rig.expect_measure_stars().returning(|_, _, _, _| {
-            Box::pin(async {
-                Ok(StarMeasurement {
-                    hfr: None,
-                    star_count: 0,
-                })
-            })
-        });
+        rig.expect_measure_stars()
+            .returning(|_, _, _, _, stars| Box::pin(async move { Ok(rp_frame(None, 0, stars)) }));
     }
 
     /// A cleanup rig that expects the put-back to `restore_to` and
@@ -2431,7 +2555,7 @@ mod tests {
         assert_eq!(outcome.best_position, 25_010);
         assert_eq!(outcome.filter.as_deref(), Some("Luminance"));
         assert_eq!(outcome.sweep.source, crate::sizing::SweepSource::Configured);
-        assert_eq!(outcome.model, "fresh");
+        assert_eq!(outcome.model, "empty", "no record before this run");
         assert!(outcome.recorded.last_good_updated);
         assert_eq!(outcome.recorded.runs, 1);
         assert!(!outcome.guiding_paused);
@@ -2448,6 +2572,145 @@ mod tests {
         assert_eq!(record.runs[0].outcome, RunOutcome::Confirmed);
         assert_eq!(record.runs[0].curve_points.len(), 9);
         assert_eq!(record.runs[0].temperature_c, Some(11.0));
+    }
+
+    /// The reference frame is detected, and each later frame measures
+    /// the stars where the frame before it saw them.
+    #[tokio::test]
+    async fn each_frame_measures_the_list_where_the_frame_before_saw_it() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        let at = position.clone();
+        let passed: Arc<Mutex<Vec<Option<Vec<ListedStar>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&passed);
+        // Every frame sees each star one pixel to the right of where it
+        // was listed: a sweep drifting along the rows.
+        active
+            .expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                seen.lock().unwrap().push(stars.clone());
+                let hfr = (f64::from(at.get() - 25_010) / 10.0).hypot(1.0);
+                let drifted = stars.map(|list| {
+                    list.iter()
+                        .map(|l| ListedStar { x: l.x + 1.0, ..*l })
+                        .collect()
+                });
+                Box::pin(async move { Ok(rp_frame(Some(hfr), 3, drifted)) })
+            });
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.reference.listed, 3);
+        let passed = passed.lock().unwrap();
+        assert_eq!(
+            passed.len(),
+            11,
+            "the reference, nine samples, the confirmation"
+        );
+        assert_eq!(passed[0], None, "the reference frame detects");
+        let xs = |call: usize| -> Vec<f64> {
+            passed[call].as_ref().unwrap().iter().map(|l| l.x).collect()
+        };
+        assert_eq!(xs(1), [0.0, 20.0, 40.0], "the reference frame's stars");
+        assert_eq!(xs(2), [1.0, 21.0, 41.0], "where the first sample saw them");
+        assert_eq!(
+            xs(10),
+            [9.0, 29.0, 49.0],
+            "the confirmation, after nine samples"
+        );
+    }
+
+    /// With two frames a point, every second frame clouded: a point's
+    /// count is its measuring frame's, so no point reads sparse.
+    #[tokio::test]
+    async fn a_clouded_frame_leaves_its_points_count_to_the_frames_that_measured() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        let at = position.clone();
+        let listed_frames = Arc::new(Mutex::new(0_u32));
+        active
+            .expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                let clouded = stars.is_some() && {
+                    let mut frames = listed_frames.lock().unwrap();
+                    *frames += 1;
+                    *frames % 2 == 1
+                };
+                let hfr = (!clouded).then(|| (f64::from(at.get() - 25_010) / 10.0).hypot(1.0));
+                Box::pin(async move { Ok(rp_frame(hfr, 100, stars)) })
+            });
+        let cleanup = MockFocusRig::new();
+        let two_frames = config(&CONFIGURED.replace(
+            r#""max_attempts": 1"#,
+            r#""max_attempts": 1, "frames_per_step": 2"#,
+        ));
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &two_frames,
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.samples_used, 9);
+        for point in &outcome.curve_points {
+            assert_eq!(point.star_count, 100, "{point:?}");
+            assert_eq!(point.rejected, None, "{point:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_onto_a_matching_record_reports_it_fresh() {
+        let (store, _dir) = temp_store().await;
+        store
+            .put(FocusRecord::new(
+                "main",
+                Some("main-focuser"),
+                Some("main-cam"),
+                Some(wheel_filters()),
+            ))
+            .await
+            .unwrap();
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.model, "fresh");
+        assert_eq!(outcome.recorded.runs, 1);
     }
 
     #[tokio::test]
@@ -2626,21 +2889,17 @@ mod tests {
     /// the samples and an R² short of 1.
     fn measures_a_ragged_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
         let at = position.clone();
-        rig.expect_measure_stars().returning(move |_, _, _, _| {
-            let position = at.get();
-            let hfr = (f64::from(position - vertex) / 10.0).hypot(1.0);
-            let hfr = if (position / 10) % 2 == 0 {
-                hfr * 1.2
-            } else {
-                hfr
-            };
-            Box::pin(async move {
-                Ok(StarMeasurement {
-                    hfr: Some(hfr),
-                    star_count: 100,
-                })
-            })
-        });
+        rig.expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                let position = at.get();
+                let hfr = (f64::from(position - vertex) / 10.0).hypot(1.0);
+                let hfr = if (position / 10) % 2 == 0 {
+                    hfr * 1.2
+                } else {
+                    hfr
+                };
+                Box::pin(async move { Ok(rp_frame(Some(hfr), 100, stars)) })
+            });
     }
 
     /// A fit below the train's `min_fit_r_squared` is recorded as
@@ -2701,31 +2960,23 @@ mod tests {
         config(&CONFIGURED.replace(r#""max_attempts": 1"#, r#""max_attempts": 2"#))
     }
 
-    /// A rig whose first walk of nine frames sees no stars and whose
-    /// second measures a clean V centred on `vertex`.
+    /// A rig whose first reference frame sees no stars, so the first
+    /// walk measures nothing, and whose next measures a clean V centred
+    /// on `vertex`.
     fn starless_then_a_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
         let at = position.clone();
         let frames = Arc::new(Mutex::new(0_u32));
-        rig.expect_measure_stars().returning(move |_, _, _, _| {
-            let frame = {
-                let mut frames = frames.lock().unwrap();
-                *frames += 1;
-                *frames
-            };
-            let dx = f64::from(at.get() - vertex);
-            let measurement = if frame <= 9 {
-                StarMeasurement {
-                    hfr: None,
-                    star_count: 0,
-                }
-            } else {
-                StarMeasurement {
-                    hfr: Some((dx / 10.0).hypot(1.0)),
-                    star_count: 100,
-                }
-            };
-            Box::pin(async move { Ok(measurement) })
-        });
+        rig.expect_measure_stars()
+            .returning(move |_, _, _, _, stars| {
+                let frame = {
+                    let mut frames = frames.lock().unwrap();
+                    *frames += 1;
+                    *frames
+                };
+                let dx = f64::from(at.get() - vertex);
+                let hfr = (frame > 1).then(|| (dx / 10.0).hypot(1.0));
+                Box::pin(async move { Ok(rp_frame(hfr, 100, stars)) })
+            });
     }
 
     #[tokio::test]
@@ -2767,7 +3018,8 @@ mod tests {
         let mut active = MockFocusRig::new();
         let captures = Arc::new(Mutex::new(0_u32));
         // Registered before `base_rig`'s, so this answer wins: the first
-        // walk's nine frames and one more, then the camera stops.
+        // attempt's reference frame and nine samples, the retry's
+        // reference frame and one sample, then the camera stops.
         active.expect_capture().returning(move |_, _, _| {
             let capture = {
                 let mut captures = captures.lock().unwrap();
@@ -2775,7 +3027,7 @@ mod tests {
                 *captures
             };
             Box::pin(async move {
-                if capture <= 10 {
+                if capture <= 12 {
                     Ok(CaptureResult {
                         document_id: "doc".to_owned(),
                     })
@@ -2815,6 +3067,11 @@ mod tests {
         };
         assert_eq!(only.retry, crate::sweep::Retry::SameGrid);
         assert_eq!(record.runs[0].curve_points.len(), 10, "nine, then one");
+        assert_eq!(
+            record.runs[0].reference.as_ref().map(|r| r.listed),
+            Some(0),
+            "the retry's reference frame, which listed no stars, is on the record"
+        );
     }
 
     #[tokio::test]
@@ -4595,9 +4852,9 @@ mod tests {
         }
     }"#;
 
-    /// The lease `GUIDING`'s sweep asks for: 10 frames at 10 ms + 2 s
-    /// and 12 moves at 2 s is 45 s, and half again is 68 s.
-    const GUIDING_LEASE: &str = "1m 8s";
+    /// The lease `GUIDING`'s sweep asks for: 11 frames at 10 ms + 2 s
+    /// and 13 moves at 2 s is 49 s, and half again is 74 s.
+    const GUIDING_LEASE: &str = "1m 14s";
 
     fn guiding_info(shared_with: &[&str]) -> TrainInfo {
         TrainInfo {
@@ -4843,7 +5100,11 @@ mod tests {
             "the lease comes before the handshake"
         );
         let (walk, tail) = rest.split_at(rest.len() - 2);
-        assert_eq!(walk.len(), 18, "a move and a capture per point: {walk:?}");
+        assert_eq!(
+            walk.len(),
+            19,
+            "the reference frame's capture, and a move and a capture per point: {walk:?}"
+        );
         for entry in walk {
             assert!(
                 entry.ends_with(&format!(" {id}")),

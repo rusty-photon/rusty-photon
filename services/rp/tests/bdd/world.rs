@@ -182,6 +182,8 @@ pub struct RpWorld {
     pub last_detect_stars_result: Option<Value>,
     /// Last `measure_stars` result
     pub last_measure_stars_result: Option<Value>,
+    /// The `stars` the last `measure_stars` call passed, when it passed any
+    pub last_listed_stars: Option<Value>,
     /// Last `compute_snr` result
     pub last_compute_snr_result: Option<Value>,
     /// Last `auto_focus` result

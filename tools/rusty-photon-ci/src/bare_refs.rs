@@ -256,7 +256,6 @@ const PENDING: &[(&str, &str, usize)] = &[
         1,
     ),
     ("services/dsd-fp2/src/mock.rs", "#423", 1),
-    ("services/focus-model/src/sweep.rs", "#1187", 2),
     ("services/pa-falcon-rotator/src/manager.rs", "#280", 1),
     ("services/pa-falcon-rotator/src/manager.rs", "#949", 1),
     (
