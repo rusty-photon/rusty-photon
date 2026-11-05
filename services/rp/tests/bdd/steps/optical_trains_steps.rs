@@ -87,10 +87,7 @@ fn reference_equipment() -> Value {
         },
         "optical_trains": [
             { "id": "main", "purpose": "imaging", "focal_length_mm": 1000.0,
-              "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
-              "auto_focus": { "duration": "3s", "step_size": 100,
-                              "half_width": 1000, "min_area": 4,
-                              "max_area": 500 } },
+              "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
             { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
               "devices": ["main-focuser", "guide-focuser", "guide-cam"],
               "auto_focus": { "step_size": 50, "half_width": 500,
@@ -228,6 +225,16 @@ async fn rp_with_optics_train(
 /// provider starts rp through the provider's Given.
 #[given(expr = "a camera and a focuser on the simulator in train {string}")]
 async fn camera_and_focuser_in_train(world: &mut RpWorld, train_id: String) {
+    push_camera_and_focuser_train(world, train_id).await;
+}
+
+#[given(expr = "rp is running with a camera and a focuser on the simulator in train {string}")]
+async fn rp_with_camera_and_focuser_in_train(world: &mut RpWorld, train_id: String) {
+    push_camera_and_focuser_train(world, train_id).await;
+    start_rp(world).await;
+}
+
+async fn push_camera_and_focuser_train(world: &mut RpWorld, train_id: String) {
     ensure_omnisim(world).await;
     add_camera(world);
     add_focuser(world, None, None, None);

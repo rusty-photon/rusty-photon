@@ -706,17 +706,3 @@ Feature: Focus tools served through rp
     And the error message should contain "not enough stars"
     And the focuser should be back at position 25000 within 60 seconds
 
-  # main-focuser is upstream in both trains and terminal in neither, so
-  # rp plans it through the main camera, while a sweep of train main
-  # moves main-helical, the focuser that train ends in.
-  Scenario: A shared walk refuses a plan step whose focuser its run train does not end in
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a shared focuser terminal in no train and focus-model registered as a tool provider
-    And an MCP client connected to rp
-    And the focuser is at position 25000
-    When the MCP client calls "focus_train" with {"train_id": "guide", "shared": true}
-    Then the tool call should return an error
-    And the error message should contain "train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'"
-    And the stub guider should not have received a pause request
-    And the focuser should still be at position 25000

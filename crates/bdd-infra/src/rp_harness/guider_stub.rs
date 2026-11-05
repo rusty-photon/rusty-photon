@@ -44,7 +44,7 @@ pub struct CannedGuiding {
     /// Whether `guiding/stats` reports an active guiding loop
     /// (`guiding: true`, `app_state: "Guiding"`). `false` reports a
     /// stopped guider (`app_state: "Stopped"`) — the state
-    /// `refocus_train`'s pause/resume handshake checks before pausing.
+    /// a guide-train `auto_focus` refuses to sweep under.
     pub guiding: bool,
     /// Delay applied before answering the settle-blocking endpoints
     /// (`guiding/start`, `dither`). Zero (the default) answers

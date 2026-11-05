@@ -1,40 +1,35 @@
 @serial
 Feature: Guide-train focus via PHD2 metrics
-  Auto-focus on the guiding train never captures through the guide
-  camera: addressed with the guiding train's id, auto_focus moves the
-  train's terminal focuser and samples PHD2's per-frame HFD from the
-  guider service's metrics window — the median of frames_per_step
-  fresh frames per position — then fits the hyperbolic V-curve, the
-  defocus curve the focus-model provider's capture sweep fits too, where
-  rp's own capture sweep still fits a parabola; it reports the fit's
-  fit_r_squared and enforces no threshold. It requires an active guide
-  loop (PHD2 only emits
+  rp's auto_focus is the guiding train's sweep, and it never captures
+  through the guide camera: addressed with the guiding train's id, it
+  moves the train's terminal focuser and samples PHD2's per-frame HFD
+  from the guider service's metrics window — the median of
+  frames_per_step fresh frames per position — then fits the hyperbolic
+  V-curve, the defocus curve the focus-model provider's capture sweep
+  fits too; it reports the fit's fit_r_squared and enforces no
+  threshold. It requires an active guide loop (PHD2 only emits
   GuideStep while guiding), and corrections stay active for the whole
   sweep. On success the focuser moves to the fitted minimum and one
-  more sample set collected there confirms it, with the same
-  tolerance and fallback to the lowest sweep sample as the capture
-  sweep; a fit that fails moves the focuser back to where the sweep
-  started. The capture-only parameters, the sparse gate
-  (min_star_fraction) included, are rejected for this train.
-  refocus_train expansions run a guiding-train step the same way,
-  always last and never under paused corrections. The sweep moves only
-  a focuser no imaging train holds: one an imaging train holds is
-  focused through the imaging camera alone, the guide camera taken as
-  parfocal with it, so the guide-train sweep refuses it before anything
-  moves, naming the imaging train, and refocus_train on that guiding
-  train runs the focuser's capture step in the imaging train. The stub guider in
-  these scenarios serves perfectly flat HFD, so the fit
-  deterministically reports no minimum (a monotonic_curve error) —
-  the success-path payload is pinned by unit tests over scripted
-  V-curves instead.
+  more sample set collected there confirms it, falling back to the
+  lowest sweep sample when it measures worse than the tolerance
+  allows; a fit that fails moves the focuser back to where the sweep
+  started. An imaging train is refused: the focus-model provider's
+  focus_train focuses it. The sweep moves only a focuser no imaging
+  train holds: one an imaging train holds is focused through the
+  imaging camera alone, the guide camera taken as parfocal with it, so
+  the sweep refuses it before anything moves, naming the imaging
+  train. The stub guider in these scenarios serves perfectly flat HFD,
+  so the fit deterministically reports no minimum (a monotonic_curve
+  error) — the success-path payload is pinned by unit tests over
+  scripted V-curves instead.
 
   The guide focus watch (equipment.mount.guiding.focus_watch) turns
   a degrading HFD trend into events, never actions: rp emits
   guide_focus_degraded once the trailing median exceeds baseline
   times degrade_ratio, and guide_focus_escalation when the episode
   is still degraded escalation_deadline later. Orchestrators wire
-  those events to refocus_train; rp never moves a focuser on its
-  own initiative.
+  those events to a refocus; rp never moves a focuser on its own
+  initiative.
 
   Scenario: Guide-train auto_focus sweeps the focuser against PHD2 metrics and reports a flat curve honestly
     Given a running Alpaca simulator
@@ -61,32 +56,16 @@ Feature: Guide-train focus via PHD2 metrics
     Then the tool call should return an error
     And the error message should contain "requires active guiding"
 
-  Scenario: Capture-only sweep parameters are rejected for the guiding train
+  Scenario: auto_focus refuses an imaging train, naming focus_train
     Given a running Alpaca simulator
     And a stub guider returning canned guiding stats
-    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
+    And rp is running with a focuser on the simulator shared by imaging train "main" and guiding train "guide"
     And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "guide" and duration "3s"
+    When the MCP client calls auto_focus with train "main"
     Then the tool call should return an error
-    And the error message should contain "capture-based"
-
-  Scenario: The sparse-sample gate is rejected for the guiding train
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
-    And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "guide" and min_star_fraction 0.2
-    Then the tool call should return an error
-    And the error message should contain "capture-based"
-
-  Scenario: The retry budget is rejected for the guiding train, whose sweep makes one attempt
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
-    And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "guide" and max_attempts 2
-    Then the tool call should return an error
-    And the error message should contain "capture-based"
+    And the error message should contain "train 'main' is an imaging train"
+    And the error message should contain "focus_train"
+    And the stub guider should not have received a "/guiding/metrics" request
 
   Scenario: A guiding train without a metric block requires per-call geometry
     Given a running Alpaca simulator
@@ -96,25 +75,6 @@ Feature: Guide-train focus via PHD2 metrics
     When the MCP client calls auto_focus with train "guide"
     Then the tool call should return an error
     And the error message should contain "step_size"
-
-  Scenario: refocus_train runs the guiding train's metric step without pausing corrections
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
-    And an MCP client connected to rp
-    When the MCP client calls "refocus_train" with train "guide"
-    Then the tool call should return an error
-    And the error message should contain "step 1 (focuser 'main-focuser' in train 'guide') failed:"
-    And the stub guider should not have received a pause request
-
-  Scenario: refocus_train with a guiding-train step refuses while guiding is idle
-    Given a running Alpaca simulator
-    And a stub guider reporting guiding inactive
-    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
-    And an MCP client connected to rp
-    When the MCP client calls "refocus_train" with train "guide"
-    Then the tool call should return an error
-    And the error message should contain "requires active guiding"
 
   # An unmotorised OAG: the guiding train's only focuser is the imaging
   # train's, which only the imaging camera focuses.
@@ -127,17 +87,6 @@ Feature: Guide-train focus via PHD2 metrics
     Then the tool call should return an error
     And the error message should contain "guide-train auto_focus: focuser 'main-focuser' is in imaging train 'main', which focuses it"
     And the stub guider should not have received a "/guiding/metrics" request
-
-  # With guiding idle a metric step would be refused up front; the
-  # capture step runs instead, and fails on the offline main camera.
-  Scenario: refocus_train on a guiding train with no focuser of its own sweeps through the imaging camera
-    Given a running Alpaca simulator
-    And a stub guider reporting guiding inactive
-    And rp is running with a focuser on the simulator shared by imaging train "main" and guiding train "guide"
-    And an MCP client connected to rp
-    When the MCP client calls "refocus_train" with train "guide"
-    Then the tool call should return an error
-    And the error message should contain "step 1 (focuser 'main-focuser' in train 'main') failed:"
 
   Scenario: The guide focus watch turns a degrading HFD trend into events naming the guiding train
     Given a running Alpaca simulator

@@ -304,17 +304,9 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         default_position_angle_degrees: None,
         devices: vec!["guide-focuser".to_string(), "guide-cam".to_string()],
         auto_focus: Some(TrainAutoFocusConfig {
-            binning: None,
-            duration: None,
             step_size: 50,
             half_width: 100,
-            min_area: None,
-            max_area: None,
-            // A metric sweep measures the guider's HFD, never stars:
-            // rp refuses a capture-only knob on a guiding block.
-            threshold_sigma: None,
             frames_per_step: Some(2),
-            max_attempts: None,
         }),
     });
 }

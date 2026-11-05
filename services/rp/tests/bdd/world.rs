@@ -186,8 +186,6 @@ pub struct RpWorld {
     pub last_listed_stars: Option<Value>,
     /// Last `compute_snr` result
     pub last_compute_snr_result: Option<Value>,
-    /// Last `auto_focus` result
-    pub last_auto_focus_result: Option<Value>,
     /// Last successful rotator-tool result (`move_rotator`,
     /// `get_rotator_position`)
     pub last_rotator_result: Option<Value>,

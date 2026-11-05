@@ -5,8 +5,9 @@
 //! It emits `guide_focus_degraded` when the trailing median exceeds
 //! `baseline × degrade_ratio`, `guide_focus_escalation` when the
 //! episode is still degraded `escalation_deadline` later. The
-//! orchestrator wires those events to `refocus_train`; rp never moves
-//! a focuser on its own initiative.
+//! orchestrator wires those events to a refocus (`deep_sky.json`'s
+//! guide-only `auto_focus` and its escalation over the guiding train's
+//! plan); rp never moves a focuser on its own initiative.
 //!
 //! The trend logic lives in [`WatchCore`], a pure state machine over
 //! `(guiding, valid HFDs, now)` observations so the thresholds are
@@ -241,11 +242,11 @@ pub fn spawn(
 
 /// Whether an rp event means the guiding train's focus changed — a
 /// metric `focus_complete` in the guiding train, a capture
-/// `focus_complete` on a guiding-member focuser, or a
-/// `focus_complete` / `refocus_complete` whose `steps` carry a step
-/// that did either (a shared guiding-member focuser swept in an
-/// imaging train changes the guide focus just the same; a step names
-/// its run train as `run_train_id` or `train_id`).
+/// `focus_complete` on a guiding-member focuser, or a `focus_complete`
+/// whose `steps` carry a step that did either (a shared guiding-member
+/// focuser swept in an imaging train changes the guide focus just the
+/// same; the payload names its train as `train_id`, a step its run
+/// train as `run_train_id`).
 fn rearms_baseline(
     event: &str,
     payload: &serde_json::Value,
@@ -266,11 +267,7 @@ fn rearms_baseline(
             .as_array()
             .is_some_and(|steps| steps.iter().any(step_touches_guiding))
     };
-    match event {
-        "focus_complete" => step_touches_guiding(payload) || any_step_touches_guiding(),
-        "refocus_complete" => any_step_touches_guiding(),
-        _ => false,
-    }
+    event == "focus_complete" && (step_touches_guiding(payload) || any_step_touches_guiding())
 }
 
 #[cfg(test)]
@@ -452,19 +449,9 @@ mod tests {
                 false,
             ),
             (
-                "refocus_complete",
-                serde_json::json!({ "steps": [{ "train_id": "guide" }] }),
-                true,
-            ),
-            (
-                "refocus_complete",
-                serde_json::json!({ "steps": [{ "train_id": "main" }] }),
-                false,
-            ),
-            (
-                "refocus_complete",
-                serde_json::json!({ "steps": [
-                    { "train_id": "main", "focuser_id": "guide-focuser" }
+                "focus_complete",
+                serde_json::json!({ "focuser_id": "main-focuser", "steps": [
+                    { "run_train_id": "main", "focuser_id": "guide-focuser" }
                 ] }),
                 true,
             ),
@@ -485,6 +472,12 @@ mod tests {
                 false,
             ),
             ("exposure_complete", serde_json::json!({}), false),
+            // No other event re-arms, whatever its steps name.
+            (
+                "refocus_complete",
+                serde_json::json!({ "steps": [{ "train_id": "guide" }] }),
+                false,
+            ),
         ] {
             assert_eq!(
                 rearms_baseline(event, &payload, Some("guide"), &focusers),

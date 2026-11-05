@@ -107,7 +107,6 @@ pub const UNGATED: &[&str] = &[
     "abort_slew",
     // auto-focus
     "auto_focus",
-    "refocus_train",
     // rotator
     "move_rotator",
     "get_rotator_position",
