@@ -3209,10 +3209,6 @@ fn train_addressable_tool_schemas_declare_their_addressing_alternatives() {
             serde_json::json!([{"required": ["camera_id"]}, {"required": ["train_id"]}]),
         ),
         (
-            schemars::schema_for!(crate::mcp::built_in::auto_focus::AutoFocusToolParams),
-            serde_json::json!([{"required": ["camera_id", "focuser_id"]}, {"required": ["train_id"]}]),
-        ),
-        (
             schemars::schema_for!(crate::mcp::built_in::rotator::MoveRotatorParams),
             serde_json::json!([{"required": ["rotator_id"]}, {"required": ["train_id"]}]),
         ),
@@ -3227,11 +3223,12 @@ fn train_addressable_tool_schemas_declare_their_addressing_alternatives() {
             "schema missing its addressing oneOf: {value}"
         );
     }
-    let refocus = serde_json::to_value(schemars::schema_for!(
-        crate::mcp::built_in::auto_focus::RefocusTrainParams
+    // auto_focus takes the guiding train alone, so it marks it required.
+    let auto_focus = serde_json::to_value(schemars::schema_for!(
+        crate::mcp::built_in::auto_focus::AutoFocusToolParams
     ))
     .unwrap();
-    assert_eq!(refocus["required"], serde_json::json!(["train_id"]));
+    assert_eq!(auto_focus["required"], serde_json::json!(["train_id"]));
 }
 
 #[tokio::test]
@@ -4257,7 +4254,8 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
     use super::built_in::trains::GetTrainInfoParams;
     // A registry whose only device is the wheel: the camera and the
     // calibrator are roster ids that never connected, and the read
-    // still answers — the train model is config, not device state.
+    // still answers — the train model is config, not device state. A
+    // guiding train, the one train that may hold two focusers.
     let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
         "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
         "focusers": [
@@ -4267,8 +4265,9 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
         "filter_wheels": [{"id": "fw", "alpaca_url": "http://localhost:1", "filters": ["Lum", "Red"]}],
         "rotators": [{"id": "falcon", "alpaca_url": "http://localhost:1"}],
         "cover_calibrators": [{"id": "cc", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
         "optical_trains": [
-            {"id": "main", "purpose": "imaging", "focal_length_mm": 360.0,
+            {"id": "main", "purpose": "guiding", "focal_length_mm": 360.0,
              "devices": ["cc", "eaf", "fw", "falcon", "helical", "cam"]}
         ]
     }))
@@ -4286,7 +4285,7 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
             .unwrap(),
     );
     assert_eq!(json["train_id"], "main");
-    assert_eq!(json["purpose"], "imaging");
+    assert_eq!(json["purpose"], "guiding");
     assert_eq!(json["focal_length_mm"], 360.0);
     assert_eq!(json["camera_id"], "cam");
     assert_eq!(json["filter_wheel_id"], "fw");
@@ -4310,8 +4309,21 @@ async fn get_train_info_names_the_other_trains_its_terminal_focuser_moves() {
     use super::built_in::trains::GetTrainInfoParams;
     // The guiding train's only focuser is the imaging train's: a
     // training run on it would move the imaging train's focus.
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
+        "optical_trains": [
+            {"id": "main", "devices": ["foc", "cam"]},
+            {"id": "guide", "purpose": "guiding", "devices": ["foc", "guide-cam"]}
+        ]
+    }))
+    .unwrap();
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
-        .with_trains(fixture_trains(true));
+        .with_trains(crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap());
     for (train_id, shared_with) in [("guide", "main"), ("main", "guide")] {
         let json = success_json(
             handler
@@ -7890,506 +7902,25 @@ async fn plate_solve_maps_internal_error_with_internal_prefix() {
     assert_tool_error(result, "internal");
 }
 
-// =======================================================================
-// auto_focus happy-path test
-//
-// Closes the coverage gap on lines 156-176 of
-// `mcp/built_in/auto_focus.rs` (the `Ok(result)` branch — `focus_complete`
-// emit + JSON success-result construction). Drives the full
-// `run_auto_focus` sweep against the canonical V-curve fixtures
-// under `tests/fixtures/auto_focus/`, asserts the JSON shape and the
-// `focus_complete` event payload.
-//
-// Why not OmniSim: the simulator's camera (`Camera.Simulator/Camera.cs`
-// in ASCOM.Alpaca.Simulators) loads a single JPG/PNG via ImageSharp's
-// `Image.Load<Rgba32>` and reuses it for every exposure with no
-// optics simulation — every focuser position would yield the same
-// HFR → singular fit → `monotonic_curve` error. We synthesize the
-// V-curve ourselves and inject the per-step images via `FixtureCamera`,
-// which implements `ascom_alpaca::api::Camera` directly (no HTTP) and
-// returns the fixtures in sweep order.
-// =======================================================================
-
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
-
-/// The 11 canonical V-curve fixtures embedded at compile time via
-/// `include_bytes!` so the test runs under both Cargo and Bazel
-/// without filesystem access. Bazel sandboxes test execution and
-/// would need explicit `data` declarations in `BUILD.bazel` to make
-/// `tests/fixtures/**` visible at runtime — `include_bytes!` sidesteps
-/// that, matching the precedent set by
-/// `services/plate-solver/src/bin/mock_astap.rs`. Order matches the
-/// natural sweep order (`-100, -80, …, +100`) `run_auto_focus`
-/// produces, so the `FixtureCamera` counter indexes directly into
-/// this slice. The twelfth entry is the in-focus frame once more:
-/// after the sweep `run_auto_focus` captures a confirmation frame at
-/// the fitted vertex, which for this symmetric V is the `pos_p000`
-/// offset.
-const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 12] = [
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m100.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m080.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m060.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m040.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m020.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p020.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p040.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p060.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p080.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p100.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
-];
-
-/// Decode the embedded V-curve fixtures into `(width, height, 1)`
-/// `Array3<i32>` frames in sweep order. `ascom_alpaca`'s
-/// `ImageArray::from` expects that width-major shape for monochrome
-/// data, while FITS is row-major — so the decoded rows are transposed
-/// into it, exactly the inverse of what `capture` does on the way back.
-fn load_auto_focus_fixtures() -> Vec<ndarray::Array3<i32>> {
-    AUTO_FOCUS_FIXTURE_BYTES
-        .iter()
-        .map(|bytes| {
-            let (pixels, w, h) = rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(*bytes))
-                .expect("decode fixture");
-            ndarray::Array2::from_shape_vec((h, w), pixels)
-                .expect("fixture shape")
-                .reversed_axes()
-                .insert_axis(ndarray::Axis(2))
-                .as_standard_layout()
-                .into_owned()
-        })
-        .collect()
-}
-
-/// Mock camera that returns a sequence of pre-loaded `Array3<i32>`
-/// frames in order, one per `image_array()` call. Used to drive
-/// `auto_focus` end-to-end with a known V-curve.
-struct FixtureCamera {
-    images: Vec<ndarray::Array3<i32>>,
-    counter: AtomicUsize,
-}
-
-impl FixtureCamera {
-    fn new(images: Vec<ndarray::Array3<i32>>) -> Self {
-        Self {
-            images,
-            counter: AtomicUsize::new(0),
-        }
-    }
-}
-
-impl_mock_device!(FixtureCamera);
-
-#[async_trait::async_trait]
-impl ascom_alpaca::api::Camera for FixtureCamera {
-    async fn start_exposure(
-        &self,
-        _duration: Duration,
-        _light: bool,
-    ) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn image_ready(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn image_array(
-        &self,
-    ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::ImageArray> {
-        let idx = self.counter.fetch_add(1, Ordering::SeqCst);
-        let img = self
-            .images
-            .get(idx)
-            .unwrap_or_else(|| {
-                panic!(
-                    "FixtureCamera exhausted: requested image {} of {}",
-                    idx,
-                    self.images.len()
-                )
-            })
-            .clone();
-        Ok(img.into())
-    }
-
-    async fn max_adu(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(65535)
-    }
-
-    async fn camera_x_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(200)
-    }
-
-    async fn camera_y_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(200)
-    }
-
-    async fn pixel_size_x(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(3.76)
-    }
-
-    async fn pixel_size_y(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(3.76)
-    }
-
-    async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_hours(1))
-    }
-
-    async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_millis(1))
-    }
-
-    async fn exposure_resolution(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_millis(1))
-    }
-
-    async fn has_shutter(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn start_x(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(0)
-    }
-
-    async fn set_start_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn start_y(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(0)
-    }
-
-    async fn set_start_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(1)
-    }
-
-    async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(1)
-    }
-
-    async fn set_bin_x(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_bin_y(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_num_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_num_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-}
-
-/// Mock focuser that tracks position across `move_(target)` calls
-/// via an interior `AtomicI32`. Returns a constant temperature.
-struct TrackingFocuser {
-    position: AtomicI32,
-    temperature_c: f64,
-}
-
-impl TrackingFocuser {
-    fn new(starting_position: i32, temperature_c: f64) -> Self {
-        Self {
-            position: AtomicI32::new(starting_position),
-            temperature_c,
-        }
-    }
-}
-
-impl_mock_device!(TrackingFocuser);
-
-#[async_trait::async_trait]
-impl ascom_alpaca::api::Focuser for TrackingFocuser {
-    async fn absolute(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100_000)
-    }
-
-    async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100_000)
-    }
-
-    async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
-        Ok(self.position.load(Ordering::SeqCst))
-    }
-
-    async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
-    }
-
-    async fn temp_comp(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn set_temp_comp(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
-    }
-
-    async fn temp_comp_available(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(self.temperature_c)
-    }
-
-    async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn move_(&self, position: i32) -> ascom_alpaca::ASCOMResult<()> {
-        self.position.store(position, Ordering::SeqCst);
-        Ok(())
-    }
-}
-
-/// Build an `EquipmentRegistry` with a `FixtureCamera` (preloaded
-/// V-curve fixtures) and a `TrackingFocuser` (starting at
-/// `starting_position`). The IDs match the ones the test calls
-/// `auto_focus` with: `"cam"` and `"foc"`.
-fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentRegistry {
-    let camera = FixtureCamera::new(load_auto_focus_fixtures());
-    let focuser = TrackingFocuser::new(starting_position, 4.5);
-    crate::equipment::EquipmentRegistry {
-        safety_monitors: vec![],
-        cameras: vec![crate::equipment::CameraEntry::new(
-            "cam".to_string(),
-            crate::config::CameraConfig {
-                id: "cam".to_string(),
-                name: "fixture".to_string(),
-                alpaca_url: "http://localhost:1".to_string(),
-                device_type: String::new(),
-                device_number: 0,
-                unique_id: None,
-                cooler_targets_c: Vec::new(),
-                gain: None,
-                offset: None,
-                readout_time_estimate: None,
-                auth: None,
-            },
-            // FixtureCamera reports pixel_size=3.76 µm and
-            // sensor_*_size=200 px (see its impl); mirror those values
-            // here so `do_capture` (which consumes the cache rather than
-            // calling the device) behaves identically to a real connect.
-            crate::equipment::DeviceSession::connected_with(
-                Arc::new(camera),
-                crate::equipment::CameraInvariants {
-                    name: None,
-                    max_bin_x: Some(4),
-                    max_bin_y: Some(4),
-                    can_asymmetric_bin: Some(true),
-                    pixel_size_x_um: Some(3.76),
-                    pixel_size_y_um: Some(3.76),
-                    sensor_width_px: Some(200),
-                    sensor_height_px: Some(200),
-                    ..Default::default()
-                },
-            ),
-        )],
-        filter_wheels: vec![],
-        cover_calibrators: vec![],
-        focusers: vec![crate::equipment::FocuserEntry {
-            id: "foc".to_string(),
-            config: crate::config::FocuserConfig {
-                microns_per_step: None,
-                id: "foc".to_string(),
-                alpaca_url: "http://localhost:1".to_string(),
-                device_number: 0,
-                unique_id: None,
-                min_position: None,
-                max_position: None,
-                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
-                backlash: None,
-                auth: None,
-            },
-            session: crate::equipment::DeviceSession::connected_with(
-                Arc::new(focuser),
-                crate::equipment::FocuserInvariants::default(),
-            ),
-            slot: crate::equipment::DeviceSlot::default(),
-        }],
-        mount: None,
-        ..Default::default()
-    }
-}
-
-#[tokio::test]
-async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
-    // starting_position pinned at a realistic focuser scale (QHY
-    // M-series, Pegasus FocusCube, Robofocus all operate in the
-    // 5_000–100_000 range). fit_parabola recenters x by the weighted
-    // mean before solving the normal equations, so the design matrix
-    // stays well-conditioned at any plausible focuser scale (#174).
-    // The fitted vertex must land near `starting_position` because
-    // the synthesised parabola in HFR is symmetric about d=0.
-    const STARTING_POSITION: i32 = 11_000;
-
-    // Sandbox the FITS writes do_capture performs in a per-test temp
-    // dir so successive runs don't pollute /tmp.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    // Sweep grid: 11 positions at step_size=20 over half_width=100,
-    // matching the eleven fixture offsets generated by
-    // `examples/gen_autofocus_fixtures.rs`.
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: None,
-                camera_id: Some("cam".to_string()),
-                focuser_id: Some("foc".to_string()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: Some(5.0),
-                min_fit_points: None,
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: None,
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-    let call_result = result.expect("auto_focus protocol error");
-    assert!(
-        !call_result.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call_result.content
-    );
-    let body: serde_json::Value = ok_text(call_result);
-
-    // Vertex of the synthesised parabola sits at the focuser's
-    // starting_position by construction (HFR(d) = 2.0 + 0.0005·d² is
-    // symmetric about d=0). The fitted best_position should land
-    // within a couple of steps of that — empirically the σ≈1 px
-    // measure_basic smoothing kernel introduces a small negative
-    // bias on HFRs around 3-4 px, but the symmetry of the curve
-    // keeps the fitted vertex within ±2 step_size of true minimum.
-    let best_position = body["best_position"].as_i64().expect("best_position i64");
-    assert!(
-        (best_position - i64::from(STARTING_POSITION)).abs() <= 2 * 20,
-        "best_position {best_position} not within ±2·step_size of starting {STARTING_POSITION}"
-    );
-
-    // best_hfr should be near the synthesised minimum (2.0 px). The
-    // measured curve at d=0 is essentially exact (2.0023 px); the
-    // parabolic fit on the 11 noisy samples lands very close.
-    let best_hfr = body["best_hfr"].as_f64().expect("best_hfr f64");
-    assert!(
-        (best_hfr - 2.0).abs() < 0.5,
-        "best_hfr {best_hfr} not near 2.0"
-    );
-
-    // Final focuser position must equal best_position — auto_focus
-    // moves the focuser to the fit's vertex at the end of the run.
-    let final_position = body["final_position"].as_i64().expect("final_position i64");
-    assert_eq!(final_position, best_position);
-
-    // All 11 sweep frames have detectable stars (the V-curve fixture
-    // generation pipeline ensures non-null HFR at every offset) and
-    // the same nine of them, so the sparse gate rejects nothing and
-    // `samples_used` must be 11 — every grid point contributes.
-    let samples_used = body["samples_used"].as_u64().expect("samples_used u64");
-    assert_eq!(samples_used, 11);
-
-    // curve_points must have one entry per grid point — the
-    // confirmation frame is not one of them.
-    let curve_points = body["curve_points"].as_array().expect("curve_points array");
-    assert_eq!(curve_points.len(), 11);
-    for entry in curve_points {
-        assert!(entry["position"].is_i64());
-        assert!(entry["hfr"].is_f64() || entry["hfr"].is_null());
-        assert!(entry["star_count"].is_u64());
-        assert!(entry["document_id"].is_string());
-        assert!(entry["rejected"].is_null(), "unexpected rejection: {entry}");
-    }
-
-    // The synthesised curve is an exact parabola, so the fit explains
-    // it; the confirmation frame is the in-focus fixture again, so it
-    // measures what the vertex predicts and the fit is trusted.
-    let fit_r_squared = body["fit_r_squared"].as_f64().expect("fit_r_squared f64");
-    assert!(fit_r_squared > 0.9, "fit_r_squared {fit_r_squared}");
-    assert_eq!(body["confirmed"], true);
-    assert_eq!(body["confirmation"]["accepted"], true);
-    assert!(body["confirmation"]["document_id"].is_string());
-    let final_hfr = body["final_hfr"].as_f64().expect("final_hfr f64");
-    assert!((final_hfr - 2.0).abs() < 0.5, "final_hfr {final_hfr}");
-
-    // The first fit held, so the run made one sweep; the synthesised
-    // V rises on both wings, so a slope is reported.
-    assert_eq!(body["attempts"], 1);
-    let wing_slope = body["wing_slope"].as_f64().expect("wing_slope f64");
-    assert!(wing_slope > 0.0, "wing_slope {wing_slope}");
-
-    // Temperature passes through from the focuser's `temperature()`
-    // read in `auto_focus`'s step-1 (recorded once before any sweep
-    // motion).
-    let temperature_c = body["temperature_c"].as_f64().expect("temperature_c f64");
-    assert!(
-        (temperature_c - 4.5).abs() < 1e-9,
-        "temperature_c {temperature_c} not 4.5"
-    );
-
-    // The handler emits `focus_complete` at the end of
-    // `run_auto_focus_step`'s success branch. The event_bus exposed by
-    // `test_handler` is an empty-config bus, so subscribers list is
-    // empty; the most readable assertion is that the whole pipeline
-    // produced an Ok result without an error, which is what the body
-    // checks above. The event itself is an outbound webhook
-    // side-effect and is exercised by the event_delivery BDD
-    // scenarios.
-}
-
 // -----------------------------------------------------------------------
-// Train addressing on auto_focus + the refocus_train expansion.
+// auto_focus, the guiding train's metric sweep.
 //
-// These pin the resolution and pre-motion validation paths that need
-// no live devices: addressing conflicts, unknown trains, the
-// guiding-train refusal, the config-block requirement, and the
-// train-block parameter fallback (proven by the error advancing past
-// "missing required parameter" to device resolution against an empty
-// registry). The full sweep-through-train path runs in
-// auto_focus.feature / refocus_train.feature against OmniSim.
+// The resolution and pre-motion paths need no live devices: an unknown
+// or imaging train, the train-block fallback, the active-guiding
+// precondition. The sweep itself runs against a mock focuser and a
+// mock guider scripting PHD2's HFD (`scripted_metrics_guider`).
 // -----------------------------------------------------------------------
 
 /// The reference-rig train shape: main = [main-focuser → main-cam]
-/// (imaging, with an `auto_focus` block unless `with_block` is false),
-/// guide = [main-focuser → guide-focuser → guide-cam] (guiding).
+/// (imaging), guide = [main-focuser → guide-focuser → guide-cam]
+/// (guiding, with a metric `auto_focus` block unless `with_block` is
+/// false).
 fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
-    let mut main = serde_json::json!({
+    let main = serde_json::json!({
         "id": "main",
         "focal_length_mm": 1000.0,
         "devices": ["main-focuser", "main-cam"]
     });
-    if with_block {
-        main["auto_focus"] = serde_json::json!({
-            "duration": "100ms", "step_size": 100, "half_width": 200,
-            "min_area": 5, "max_area": 65536
-        });
-    }
     let mut guide = serde_json::json!({
         "id": "guide", "purpose": "guiding",
         "devices": ["main-focuser", "guide-focuser", "guide-cam"]
@@ -8421,32 +7952,23 @@ fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
 
 fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
     AutoFocusToolParams {
-        binning: None,
-        camera_id: None,
-        focuser_id: None,
         train_id: Some(train_id.to_string()),
-        duration: None,
         step_size: None,
         half_width: None,
-        min_area: None,
-        max_area: None,
-        threshold_sigma: None,
         min_fit_points: None,
-        min_star_fraction: None,
         confirmation_tolerance: None,
-        max_attempts: None,
     }
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_train_id_combined_with_an_explicit_id() {
+async fn auto_focus_requires_a_train_id() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("main");
-    params.camera_id = Some("main-cam".to_string());
+    let mut params = af_params_with_train("guide");
+    params.train_id = None;
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
-    assert_tool_error(result, "mutually exclusive");
+    assert_tool_error(result, "missing required parameter: train_id");
 }
 
 #[tokio::test]
@@ -8456,6 +7978,21 @@ async fn auto_focus_rejects_an_unknown_train() {
         .auto_focus_inner(af_params_with_train("nonexistent"), None, Cancel::never())
         .await;
     assert_tool_error(result, "train not found");
+}
+
+/// An imaging train is the focus-model provider's to focus: refused,
+/// naming the provider's tool, before any device or the guider is read.
+#[tokio::test]
+async fn auto_focus_refuses_an_imaging_train_naming_focus_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "auto_focus: train 'main' is an imaging train, which the focus-model provider's \
+         focus_train focuses; auto_focus sweeps only the guiding train",
+    );
 }
 
 #[tokio::test]
@@ -8479,51 +8016,14 @@ async fn auto_focus_on_a_blockless_guiding_train_requires_per_call_geometry() {
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+async fn auto_focus_on_a_blockless_guiding_train_requires_a_per_call_half_width() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
     let mut params = af_params_with_train("guide");
-    params.duration = Some(Duration::from_secs(3));
+    params.step_size = Some(50);
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_the_retry_budget_for_the_guiding_train() {
-    // The metric sweep makes one attempt; a budget cannot influence it.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.max_attempts = Some(2);
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_a_binning_for_the_guiding_train() {
-    // The metric sweep reads PHD2's HFD and never captures, so there
-    // is no frame for a binning to apply to.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.binning = Some(rp_vocabulary::Binning { x: 2, y: 2 });
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_the_sparse_gate_for_the_guiding_train() {
-    // A metric sweep has no star counts to gate on.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.min_star_fraction = Some(0.2);
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
+    assert_tool_error(result, "missing required parameter: half_width");
 }
 
 /// Minimal mock rotator for the rotate-while-guiding ladder tests:
@@ -8821,6 +8321,78 @@ async fn ladder_success_reports_the_calibration_decision() {
     assert!((ladder["delta_deg"].as_f64().unwrap() - 90.0).abs() < 1e-9);
 }
 
+use std::sync::atomic::{AtomicI32, Ordering};
+
+/// Mock focuser that tracks position across `move_(target)` calls
+/// via an interior `AtomicI32`. Returns a constant temperature.
+struct TrackingFocuser {
+    position: AtomicI32,
+    temperature_c: f64,
+}
+
+impl TrackingFocuser {
+    fn new(starting_position: i32, temperature_c: f64) -> Self {
+        Self {
+            position: AtomicI32::new(starting_position),
+            temperature_c,
+        }
+    }
+}
+
+impl_mock_device!(TrackingFocuser);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::Focuser for TrackingFocuser {
+    async fn absolute(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
+        Ok(100_000)
+    }
+
+    async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
+        Ok(100_000)
+    }
+
+    async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
+        Ok(self.position.load(Ordering::SeqCst))
+    }
+
+    async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn temp_comp(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn set_temp_comp(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn temp_comp_available(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(self.temperature_c)
+    }
+
+    async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn move_(&self, position: i32) -> ascom_alpaca::ASCOMResult<()> {
+        self.position.store(position, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 /// A guiding train terminating in the mock-focuser fixture's "foc",
 /// with a metric block giving a 5-position grid around the focuser's
 /// starting position.
@@ -9043,39 +8615,6 @@ async fn guide_train_auto_focus_clamps_its_grid_at_zero_without_configured_bound
         .await;
     assert_tool_error(result, "sweep grid has 3 positions after clamping");
     assert!(foc.move_targets.lock().unwrap().is_empty());
-}
-
-/// The same floor clamps the capture sweep: from 0, the eleven-point
-/// grid over ±100 keeps the six points from 0 up.
-#[tokio::test]
-async fn auto_focus_clamps_its_grid_at_zero_without_configured_bounds() {
-    let handler = test_handler(auto_focus_registry(0));
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: None,
-                camera_id: Some("cam".to_string()),
-                focuser_id: Some("foc".to_string()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: Some(5.0),
-                min_fit_points: Some(7),
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: None,
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-    assert_tool_error(
-        result,
-        "sweep grid has 6 positions after clamping to focuser bounds; min_fit_points=7",
-    );
 }
 
 #[tokio::test]
@@ -9412,39 +8951,6 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
 }
 
 #[tokio::test]
-async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
-    // The guide train's expansion is its single terminal focuser as a
-    // metric step; the scripted V gives a deterministic success
-    // payload with no camera involved.
-    let foc = guide_sweep_focuser();
-    let start = foc.position_value;
-    let mock = scripted_metrics_guider(vec![
-        9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
-    ]);
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
-        .with_trains(guide_sweep_trains())
-        .with_guider(Some(client), GuiderDefaults::default());
-    let json = ok_text(
-        handler
-            .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
-            .await
-            .unwrap(),
-    );
-    assert_eq!(json["guiding_paused"], false);
-    let steps = json["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0]["focuser_id"], "foc");
-    assert_eq!(steps[0]["train_id"], "guide");
-    assert!(steps[0]["camera_id"].is_null());
-    assert_eq!(steps[0]["best_position"], start);
-    assert!(steps[0]["best_hfd"].as_f64().is_some());
-    assert_eq!(steps[0]["final_position"], start);
-    assert_eq!(steps[0]["final_hfd"], 2.0);
-    assert_eq!(steps[0]["confirmed"], true);
-}
-
-#[tokio::test]
 async fn guide_train_auto_focus_reports_a_flat_curve_as_monotonic() {
     let foc = guide_sweep_focuser();
     let mock = scripted_metrics_guider(vec![2.5]);
@@ -9498,385 +9004,24 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_a_train_without_a_focuser() {
-    // `cam_trains` builds a camera-only train "main".
-    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "has no focuser");
-}
-
-#[tokio::test]
-async fn auto_focus_train_block_fills_the_sweep_parameters() {
-    // Against an empty registry the call must advance past every
-    // "missing required parameter" check (the block filled them all)
-    // and fail at device resolution instead.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "camera not found: main-cam");
-}
-
-#[tokio::test]
-async fn auto_focus_train_without_a_block_still_requires_sweep_parameters() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "missing required parameter: duration");
-}
-
-fn refocus_params(train_id: &str) -> super::built_in::auto_focus::RefocusTrainParams {
-    super::built_in::auto_focus::RefocusTrainParams {
-        train_id: Some(train_id.to_string()),
-        reason: None,
-    }
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_an_unknown_train() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .refocus_train_inner(refocus_params("nonexistent"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "train not found");
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_a_train_without_focusers() {
-    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "has no focusers");
-}
-
-#[tokio::test]
-async fn refocus_train_with_a_guiding_step_requires_active_guiding() {
-    // Refocusing the guiding train itself always expands to a
-    // guide-train metric step (its own terminal focuser); with no
-    // guider configured the expansion is refused before any motion.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "guide-train step requires active guiding");
-}
-
-#[tokio::test]
-async fn refocus_train_requires_the_run_trains_auto_focus_block() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "auto_focus config block");
-}
-
-// The success-path and handshake tests below run real V-curve sweeps
-// over `auto_focus_registry`'s fixture devices — BDD cannot pin the
-// success payload because OmniSim's camera image is focuser-
-// independent (flat HFR, non-deterministic fit outcome).
-
-/// Trains over the fixture registry: main = [foc → cam] with an
-/// `auto_focus` block matching the fixture sweep (step 20, ±100), plus
-/// optionally a guiding train sharing "foc".
-fn fixture_trains(with_guiding: bool) -> crate::equipment::trains::TrainModel {
-    let mut trains = vec![serde_json::json!({
-        "id": "main",
-        "devices": ["foc", "cam"],
-        "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
-                       "min_area": 4, "max_area": 2000}
-    })];
-    let mut equipment = serde_json::json!({
-        "cameras": [
-            {"id": "cam", "alpaca_url": "http://localhost:1"},
-            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
-        ],
-        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}]
-    });
-    if with_guiding {
-        trains.push(serde_json::json!({
-            "id": "guide", "purpose": "guiding", "devices": ["foc", "guide-cam"]
-        }));
-        equipment["mount"] = serde_json::json!({
+async fn auto_focus_rejects_a_guiding_train_without_a_focuser() {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "guide-cam", "alpaca_url": "http://localhost:1"}],
+        "mount": {
             "alpaca_url": "http://localhost:1",
             "guiding": {"url": "http://localhost:1"}
-        });
-    }
-    equipment["optical_trains"] = serde_json::Value::Array(trains);
-    let equipment: crate::config::EquipmentConfig = serde_json::from_value(equipment).unwrap();
-    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
-}
-
-fn stats_with_guiding(guiding: bool) -> GuidingStats {
-    GuidingStats {
-        app_state: if guiding { "Guiding" } else { "Stopped" }.to_string(),
-        guiding,
-        rms_ra_px: None,
-        rms_dec_px: None,
-        total_rms_px: None,
-        snr: None,
-        star_mass: None,
-        sample_count: 0,
-        totals: None,
-    }
-}
-
-/// A `fixture_trains`-shaped model whose imaging train asks for a
-/// binning the fixture camera cannot do (its cached maximum is 4).
-fn fixture_trains_binned(binning: &str) -> crate::equipment::trains::TrainModel {
-    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
-        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
-        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
-        "optical_trains": [{
-            "id": "main",
-            "devices": ["foc", "cam"],
-            "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
-                           "min_area": 4, "max_area": 2000, "binning": binning}
-        }]
+        },
+        "optical_trains": [
+            {"id": "guide", "purpose": "guiding", "devices": ["guide-cam"]}
+        ]
     }))
     .unwrap();
-    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_an_impossible_binning_before_the_focus_event() {
-    // Without the preflight the sweep would still fail — at the first
-    // frame, after `focus_started` and after the focuser moved. The
-    // point of the check is that neither happens.
-    const STARTING_POSITION: i32 = 11_000;
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION));
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: Some("5x5".parse().unwrap()),
-                camera_id: Some("cam".into()),
-                focuser_id: Some("foc".into()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: None,
-                min_fit_points: None,
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: Some(1),
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-
-    assert_tool_error(result, "this camera bins at most 4 on x");
-    assert_no_more_events(&mut rx).await;
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
-    // Planning is the last point before `refocus_started` and the
-    // guiding pause. A train configured beyond its camera must not
-    // announce a refocus, or interrupt guiding, on its way to failing.
-    const STARTING_POSITION: i32 = 11_000;
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_trains(fixture_trains_binned("5x5"));
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-
-    assert_tool_error(result, "this camera bins at most 4 on x");
-    assert_no_more_events(&mut rx).await;
-}
-
-#[tokio::test]
-async fn refocus_train_refuses_a_leased_step_before_announcing_the_refocus() {
-    // A guiding-coupled refocus, with guiding live, over a focuser and
-    // camera a train lease holds: refused before `refocus_started` and
-    // before the guiding handshake, which has no expectations here, so
-    // any call to the guider fails the test.
-    const STARTING_POSITION: i32 = 11_000;
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(MockGuiderClient::new());
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    let plan = crate::train_lease::LeasePlan {
-        train_id: "other".into(),
-        guiding: false,
-        camera_id: "cam".into(),
-        focuser_id: "foc".into(),
-        filter_wheel_ids: vec![],
-        held_focuser_ids: vec![],
-        held_rotator_ids: vec![],
-        drained_camera_ids: vec![],
-    };
-    let acquiring = handler.leases.reserve("held", plan).unwrap();
-    acquiring.lease().grant(Duration::from_mins(5)).unwrap();
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-
-    assert_tool_error(result, "lease 'held' reserves its camera or focuser");
-    assert_no_more_events(&mut rx).await;
-    drop(acquiring);
-}
-
-#[tokio::test]
-async fn refocus_train_success_payload_over_the_fixture_registry() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut handler =
-        test_handler(auto_focus_registry(STARTING_POSITION)).with_trains(fixture_trains(false));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(
-        !call.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call.content
-    );
-    let body = ok_text(call);
-    assert_eq!(body["train_id"], "main");
-    assert_eq!(body["reason"], "manual");
-    assert_eq!(body["guiding_paused"], false);
-    let steps = body["steps"].as_array().expect("steps array");
-    assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0]["focuser_id"], "foc");
-    assert_eq!(steps[0]["train_id"], "main");
-    assert_eq!(steps[0]["camera_id"], "cam");
-    // The synthesised V-curve is symmetric about the starting
-    // position; the auto_focus happy-path test pins the ±2·step_size
-    // tolerance, so here presence + plausibility suffices.
-    assert!(steps[0]["best_position"].is_i64());
-    assert!(steps[0]["best_hfr"].is_f64());
-    assert!(steps[0]["samples_used"].is_u64());
-}
-
-#[tokio::test]
-async fn refocus_train_pauses_and_resumes_around_a_guiding_coupled_step() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding()
-        .with(mockall::predicate::eq(false))
-        .times(1)
-        .returning(|_| Ok(()));
-    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(
-        !call.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call.content
-    );
-    assert_eq!(ok_text(call)["guiding_paused"], true);
-}
-
-#[tokio::test]
-async fn refocus_train_skips_the_handshake_when_not_guiding() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(false)));
-    // No pause/resume expectations: reaching either would panic.
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(!call.is_error.unwrap_or(false));
-    assert_eq!(ok_text(call)["guiding_paused"], false);
-}
-
-#[tokio::test]
-async fn refocus_train_step_failure_still_resumes_guiding() {
-    // Empty registry: the step fails at device resolution, after the
-    // pause. mockall's drop check enforces that resume still ran.
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        .times(1)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
-    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(empty_registry())
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-
+        .with_trains(crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap());
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
-    assert_tool_error(
-        result,
-        "step 1 (focuser 'foc' in train 'main') failed: camera not found: cam",
-    );
-}
-
-#[tokio::test]
-async fn refocus_train_resume_failure_after_success_is_an_error() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
-    mock.expect_resume_guiding()
-        .times(1)
-        .returning(|| Err(GuiderError::Internal("boom".to_string())));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "resuming guiding failed");
+    assert_tool_error(result, "train 'guide' has no focuser");
 }
 
 // -----------------------------------------------------------------------
@@ -14410,7 +13555,8 @@ fn rig_conditions(
 }
 
 /// Train "main": focusers "foc-a" and "foc-b", rotator "rot", camera
-/// "cam", in that optical order.
+/// "cam", in that optical order — a guiding train, the one train that
+/// may hold two focusers.
 fn rig_trains() -> crate::equipment::trains::TrainModel {
     let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
         "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
@@ -14419,8 +13565,9 @@ fn rig_trains() -> crate::equipment::trains::TrainModel {
             {"id": "foc-b", "alpaca_url": "http://localhost:1"}
         ],
         "rotators": [{"id": "rot", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
         "optical_trains": [
-            {"id": "main", "devices": ["foc-a", "foc-b", "rot", "cam"]}
+            {"id": "main", "purpose": "guiding", "devices": ["foc-a", "foc-b", "rot", "cam"]}
         ]
     }))
     .unwrap();

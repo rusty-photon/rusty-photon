@@ -79,7 +79,7 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order so the missing-parameter
         // outline always points at the first missing field — same
-        // convention as `auto_focus` / `measure_basic`.
+        // convention as `measure_basic`.
         let camera_id = match self.resolve_camera_addressing(
             "center_on_target",
             params.camera_id.as_deref(),
@@ -99,8 +99,8 @@ impl McpHandler {
         // Every other parameter error here lands before any motion;
         // the binning must too, or an impossible value would arrive as
         // a centering started/failed pair after the first capture
-        // instead of as a parameter error. Same check `auto_focus`
-        // makes, against the same cached capabilities.
+        // instead of as a parameter error. The same check the capture
+        // path makes, against the same cached capabilities.
         let binning = params.binning.unwrap_or(DEFAULT_BINNING);
         if let Err(e) = crate::mcp::internals::validate_binning(binning, &cam_entry.invariants()) {
             return Ok(tool_error!("{}", e));

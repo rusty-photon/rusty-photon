@@ -68,7 +68,7 @@ async fn rp_with_two_offline_rotators_in_train(world: &mut RpWorld, train_id: St
 
 /// A roster with one offline camera in a camera-only train "main" —
 /// the train-without-a-rotator / train-without-a-focuser composition
-/// shared with `auto_focus.feature` and `refocus_train.feature`.
+/// shared with `optical_trains.feature`.
 #[given("rp is running with an offline camera-only train")]
 async fn rp_with_camera_only_train(world: &mut RpWorld) {
     add_offline_camera(world, "main-cam");

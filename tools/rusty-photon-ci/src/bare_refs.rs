@@ -306,7 +306,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("services/rp/src/equipment/supervisor.rs", "#1138", 1),
     ("services/rp/src/equipment/test_support.rs", "#111", 1),
     ("services/rp/src/events.rs", "#800", 1),
-    ("services/rp/src/imaging/tools/auto_focus.rs", "#174", 1),
     (
         "services/rp/src/imaging/tools/center_on_target.rs",
         "#319",
@@ -316,7 +315,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("services/rp/src/lib.rs", "#792", 1),
     ("services/rp/src/mcp/internals.rs", "#319", 1),
     ("services/rp/src/mcp/tests.rs", "#1163", 1),
-    ("services/rp/src/mcp/tests.rs", "#174", 1),
     ("services/rp/src/mcp/tests.rs", "#175", 1),
     ("services/rp/src/mcp/tests.rs", "#319", 2),
     ("services/rp/tests/bdd.rs", "#143", 1),

@@ -7,8 +7,8 @@
 //!
 //! `pub(crate)` is the visibility we use for items called from sibling
 //! `built_in/<category>.rs` files (e.g. `do_capture` is called from
-//! both `built_in/camera.rs` and `built_in/auto_focus.rs`'s
-//! `AutoFocusAdapter`). The `crate::mcp` module is private to the
+//! both `built_in/camera.rs` and `built_in/center_on_target.rs`). The
+//! `crate::mcp` module is private to the
 //! crate, so `pub(crate)` does not widen the public API.
 
 use std::sync::Arc;
@@ -1551,7 +1551,7 @@ impl McpHandler {
 
     /// Run the full capture pipeline against the named camera and return
     /// `(image_path, document_id)`. Shared body of the `capture` MCP tool
-    /// and the `auto_focus` compound tool's per-step capture call —
+    /// and the `center_on_target` compound tool's per-iteration capture —
     /// both want the same exposure / FITS-write / cache-insert / event
     /// flow.
     ///
@@ -2798,8 +2798,8 @@ impl McpHandler {
     /// `position` after settling plus whether the move was compensated.
     ///
     /// This is the shared body of the `move_focuser` MCP tool and the
-    /// `auto_focus` compound tool's per-step focuser drive — both want
-    /// the same bounds-check + blocking-poll semantics.
+    /// guide-train `auto_focus` sweep's per-step focuser drive — both
+    /// want the same bounds-check + blocking-poll semantics.
     ///
     /// When `progress` is `Some`, the `is_moving` poll loop emits
     /// `notifications/progress` every [`PROGRESS_INTERVAL`] so a

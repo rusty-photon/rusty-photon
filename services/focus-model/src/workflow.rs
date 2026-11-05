@@ -1958,8 +1958,9 @@ async fn release_guiding(rig: Rig<'_>, paused: &mut bool, when: &str) -> Result<
 
 /// Refuse a plan with a capture step a sweep cannot measure, before
 /// anything pauses or moves. A sweep moves its train's terminal focuser
-/// and records on that train, and `rp` plans a shared focuser terminal
-/// in no train through a train that ends in another focuser.
+/// and records on that train. No config `rp` loads plans such a step,
+/// since an imaging train holds one focuser; the check keeps the walk
+/// from moving a focuser it cannot measure should a plan hold one.
 async fn check_capture_steps(rig: &dyn FocusRig, train_id: &str, plan: &RefocusPlan) -> Result<()> {
     for step in plan.steps.iter().filter(|step| !step.is_guide()) {
         let info = rig.get_train_info(&step.run_train_id).await?;
@@ -1967,7 +1968,7 @@ async fn check_capture_steps(rig: &dyn FocusRig, train_id: &str, plan: &RefocusP
         if terminal != Some(step.focuser_id.as_str()) {
             return Err(FocusModelError::Workflow(format!(
                 "train '{train_id}' has a plan step this provider cannot sweep: focuser '{}' \
-                 in train '{}', whose sweep moves '{}'; rp's refocus_train runs that plan",
+                 in train '{}', whose sweep moves '{}'",
                 step.focuser_id,
                 step.run_train_id,
                 terminal.unwrap_or("no focuser")
@@ -3970,8 +3971,7 @@ mod tests {
         assert_eq!(
             err.tool_message(),
             "train 'guide' has a plan step this provider cannot sweep: focuser \
-             'shared-focuser' in train 'main', whose sweep moves 'main-focuser'; \
-             rp's refocus_train runs that plan"
+             'shared-focuser' in train 'main', whose sweep moves 'main-focuser'"
         );
         assert_eq!(position.get(), 25_000);
         active.checkpoint();

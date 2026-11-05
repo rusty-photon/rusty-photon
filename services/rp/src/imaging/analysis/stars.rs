@@ -9,8 +9,8 @@
 //! flux-weighted mean of the column index; `centroid_y` of the row index.
 //!
 //! Saturated components are *not* rejected — they're flagged via
-//! [`Star::saturated_pixel_count`] so downstream consumers (`auto_focus`,
-//! quality-screen tools) apply their own policy. See `docs/services/rp.md`
+//! [`Star::saturated_pixel_count`] so downstream consumers (a focus
+//! sweep, quality-screen tools) apply their own policy. See `docs/services/rp.md`
 //! (MVP `measure_basic` Contract, algorithm step 7) for the rationale.
 //!
 //! Connected-components is a hand-rolled 4-connectivity BFS over `Array2<bool>`

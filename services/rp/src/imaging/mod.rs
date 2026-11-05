@@ -7,12 +7,12 @@
 //! [`tools`] (`measure_basic`, `measure_stars`) are async- and
 //! I/O-free so they can be unit-tested in isolation.
 //!
-//! Compound tools that drive equipment loops (`auto_focus` and the
-//! planned `center_on_target`) also live under [`tools`]. They are
-//! async and they take device-trait objects, so they are *not*
-//! async-/I/O-free at the top level — but the math and grid logic
-//! they bundle (`build_grid`, `fit_parabola`, `validate_params`) are
-//! still pure helpers that test independently. The MCP wrappers in
+//! Compound tools that drive equipment loops (`center_on_target`, and
+//! the helpers of the guiding train's `auto_focus`) also live under
+//! [`tools`]. `center_on_target` is async and takes device-trait
+//! objects, so it is *not* async-/I/O-free at the top level — but the
+//! math and grid logic they bundle (`build_grid`, `haversine_arcsec`)
+//! are still pure helpers that test independently. The MCP wrappers in
 //! `mcp.rs` provide concrete adapters that bind the equipment traits
 //! to live Alpaca clients; tests substitute synthetic adapters.
 //!
@@ -21,7 +21,7 @@
 //!   snr, stats, pixel trait). Pure, generic over [`Pixel`], no I/O.
 //! - [`tools`]: compositional analyzers (`measure_basic`,
 //!   `measure_stars`) plus compound equipment-driving tools
-//!   (`auto_focus`).
+//!   (`center_on_target`, the `auto_focus` helpers).
 //!
 //! The flat re-exports below preserve the previous `crate::imaging::*`
 //! call-site shape so MCP wiring doesn't have to know which submodule

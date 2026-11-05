@@ -108,8 +108,8 @@ async fn rp_with_camera_and_unbound_plate_solver(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     add_camera(world);
     // Port 1 is reserved and reliably unbound on Linux dev hosts /
-    // CI runners, mirroring the `unreachable focuser` /
-    // `unreachable camera` pattern in auto_focus_steps.rs.
+    // CI runners, mirroring the `unreachable camera` pattern in
+    // center_on_target_steps.rs.
     world.plate_solver = Some(PlateSolverConfig {
         url: "http://127.0.0.1:1".to_string(),
         timeout: None,

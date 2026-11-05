@@ -11,7 +11,8 @@
 //! and `the error message should contain {string}` in `tool_steps.rs`,
 //! the background calls and their joins in `motion_gate_steps.rs`, the
 //! event waits in `event_steps.rs`, and `the MCP client calls auto_focus
-//! with camera {string} and focuser {string}` in `auto_focus_steps.rs`.
+//! with train {string}, step_size {int} and half_width {int}` in
+//! `guide_focus_steps.rs`.
 
 use std::time::Duration;
 
@@ -79,7 +80,7 @@ async fn rp_with_imaging_rig_and_side_camera(
 }
 
 #[given(
-    expr = "rp is running with imaging train {string} behind an offline upstream focuser {string}"
+    expr = "rp is running with guiding train {string} behind an offline upstream focuser {string} and the stub camera facade"
 )]
 async fn rp_with_upstream_focuser(world: &mut RpWorld, train_id: String, upstream: String) {
     ensure_omnisim(world).await;
@@ -93,18 +94,31 @@ async fn rp_with_upstream_focuser(world: &mut RpWorld, train_id: String, upstrea
         max_position: None,
         backlash: None,
     });
-    add_filter_wheel(world);
-    add_camera(world);
-    push_train(
-        world,
-        &train_id,
-        vec![
+    let facade = FacadeCameraStub::start().await;
+    world.cameras.push(CameraConfig {
+        id: "guide-cam".to_string(),
+        alpaca_url: facade.url(),
+        device_number: 0,
+        cooler_targets_c: Vec::new(),
+    });
+    world.facade_stub = Some(facade);
+    world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
+        aperture_mm: None,
+        obstruction_mm: None,
+        id: train_id,
+        purpose: Some("guiding".to_string()),
+        focal_length_mm: None,
+        default_position_angle_degrees: None,
+        devices: vec![
             upstream,
             "main-focuser".to_string(),
-            "main-fw".to_string(),
-            "main-cam".to_string(),
+            "guide-cam".to_string(),
         ],
-    );
+        auto_focus: None,
+    });
+    // A guiding train needs `equipment.mount.guiding`.
+    add_stub_guider(world, Duration::ZERO).await;
     start_rp(world).await;
 }
 

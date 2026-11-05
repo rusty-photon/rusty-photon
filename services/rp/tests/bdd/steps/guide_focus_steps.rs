@@ -90,17 +90,9 @@ async fn rp_with_sim_rotator_in_guiding_train(world: &mut RpWorld, train_id: Str
 
 fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block: bool) {
     let auto_focus = with_block.then_some(bdd_infra::rp_harness::TrainAutoFocusConfig {
-        binning: None,
-        duration: None,
         step_size: 50,
         half_width: 100,
-        min_area: None,
-        max_area: None,
-        // A metric sweep measures the guider's HFD, never stars: rp
-        // refuses a capture-only knob on a guiding train's block.
-        threshold_sigma: None,
         frames_per_step: Some(2),
-        max_attempts: None,
     });
     world
         .optical_trains
@@ -131,8 +123,7 @@ async fn rp_with_guide_focuser_and_block(world: &mut RpWorld, train_id: String) 
 /// The simulator focuser terminal in both an imaging train and the
 /// guiding train — a guide path with no focuser of its own, as behind
 /// an unmotorised OAG. Both cameras are offline: what these scenarios
-/// assert is settled before a frame would be taken. The imaging block
-/// carries the capture fields a `refocus_train` step needs.
+/// assert is settled before a frame would be taken.
 #[given(
     expr = "rp is running with a focuser on the simulator shared by imaging train {string} and guiding train {string}"
 )]
@@ -156,17 +147,7 @@ async fn rp_with_focuser_shared_by_imaging_and_guiding(
             focal_length_mm: None,
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
-            auto_focus: Some(bdd_infra::rp_harness::TrainAutoFocusConfig {
-                binning: None,
-                duration: Some("100ms".to_string()),
-                step_size: 50,
-                half_width: 100,
-                min_area: Some(4),
-                max_area: Some(500),
-                threshold_sigma: None,
-                frames_per_step: None,
-                max_attempts: Some(1),
-            }),
+            auto_focus: None,
         });
     push_guiding_focuser_train(world, guiding_id, true);
     start_rp(world).await;
@@ -237,12 +218,32 @@ fn set_focus_watch(world: &mut RpWorld, window: i64, poll_interval: &str, escala
 
 // --- When steps ------------------------------------------------------
 
-#[when(expr = "the MCP client calls auto_focus with train {string} and duration {string}")]
-async fn call_auto_focus_train_duration(world: &mut RpWorld, train_id: String, duration: String) {
-    ensure_mcp_client(world).await;
+#[when(expr = "the MCP client calls auto_focus with train {string}")]
+async fn call_auto_focus_train(world: &mut RpWorld, train_id: String) {
     let mut args = Map::new();
     args.insert("train_id".into(), Value::String(train_id));
-    args.insert("duration".into(), Value::String(duration));
+    call_auto_focus(world, args).await;
+}
+
+/// The sweep geometry per call, for a guiding train with no block.
+#[when(
+    expr = "the MCP client calls auto_focus with train {string}, step_size {int} and half_width {int}"
+)]
+async fn call_auto_focus_train_geometry(
+    world: &mut RpWorld,
+    train_id: String,
+    step_size: i64,
+    half_width: i64,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("step_size".into(), Value::from(step_size));
+    args.insert("half_width".into(), Value::from(half_width));
+    call_auto_focus(world, args).await;
+}
+
+async fn call_auto_focus(world: &mut RpWorld, args: Map<String, Value>) {
+    ensure_mcp_client(world).await;
     let result = world
         .mcp()
         .call_tool("auto_focus", Value::Object(args))
@@ -251,6 +252,26 @@ async fn call_auto_focus_train_duration(world: &mut RpWorld, train_id: String, d
 }
 
 // --- Then steps: stub guider request assertions ----------------------
+
+#[then("the stub guider should have received a pause request with full false")]
+async fn stub_pause_request_full_false(world: &mut RpWorld) {
+    let mut pauses = stub(world).requests_to("/guiding/pause").await;
+    let request = pauses.pop().expect("stub guider received no pause request");
+    assert_eq!(
+        request.get("full").and_then(Value::as_bool),
+        Some(false),
+        "full mismatch in {request}"
+    );
+}
+
+#[then("the stub guider should not have received a pause request")]
+async fn stub_no_pause_request(world: &mut RpWorld) {
+    let pauses = stub(world).requests_to("/guiding/pause").await;
+    assert!(
+        pauses.is_empty(),
+        "expected no pause request, got {pauses:?}"
+    );
+}
 
 const fn stub(world: &RpWorld) -> &bdd_infra::rp_harness::GuiderStub {
     world

@@ -67,9 +67,9 @@ Feature: Train lease
     And the error message should contain "lease 'lease-a'"
 
   Scenario: An auto_focus sweep over a leased light path is refused at once, naming the lease
-    Given rp is running with imaging train "main" of a focuser, a filter wheel and a camera on the simulator
-    And the MCP client holds train lease "lease-a" on train "main"
-    When the MCP client calls auto_focus with camera "main-cam" and focuser "main-focuser"
+    Given rp is running with guiding train "guide" of a focuser on the simulator and the stub camera facade
+    And the MCP client holds train lease "lease-a" on train "guide"
+    When the MCP client calls auto_focus with train "guide", step_size 100 and half_width 200
     Then the tool call should return an error
     And the error message should contain "lease 'lease-a'"
 
@@ -104,9 +104,11 @@ Feature: Train lease
     Then the tool call should return an error
     And the error message should contain "camera 'side-cam' is not held by lease 'lease-a'"
 
+  # Only the guiding train holds a focuser ahead of the one it moves:
+  # an imaging train holds one.
   Scenario: A move under the lease of a focuser it holds still is refused
-    Given rp is running with imaging train "main" behind an offline upstream focuser "upstream-focuser"
-    When the MCP client calls "acquire_train_lease" for train "main" with lease id "lease-a"
+    Given rp is running with guiding train "guide" behind an offline upstream focuser "upstream-focuser" and the stub camera facade
+    When the MCP client calls "acquire_train_lease" for train "guide" with lease id "lease-a"
     Then the train lease result list "held_focuser_ids" should be "upstream-focuser"
     When the MCP client calls "move_focuser" with focuser "upstream-focuser" to position 25100 under lease "lease-a"
     Then the tool call should return an error
