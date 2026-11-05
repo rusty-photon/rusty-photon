@@ -287,7 +287,7 @@ procedure runs:
   to the correction `rp` delivers; it cannot abort on its own.
 - An uncaught error in a `do` block fails the session. A trigger that must
   not take the night down wraps its body in `try` with a logging `catch` —
-  the shipped deep-sky document does exactly this around `auto_focus`
+  the shipped deep-sky document does exactly this around `focus_train`
   (a failed refocus degrades the night; ending it would be worse).
 - A poll's first cycle is due one `interval` after the run starts; a
   failing poll call logs at `debug!` and skips the cycle.
@@ -554,7 +554,7 @@ change: slew, center, focus → one capture per pass → `record_exposure`)
 - phase-scoping triggers with a `while session.imaging == true` gate;
 - all three trigger shapes that ship: event-sourced refocus rules (count-
   and HFR-based, with `cooldown`), and a `poll` meridian-flip rule;
-- resilient triggers (`try` + logging `catch` around `auto_focus`);
+- resilient triggers (`try` + logging `catch` around `focus_train`);
 - recovery branching (`params._recovery.reason` → re-acquire);
 - zero `once` markers — dispatch state lives in `rp`'s counters.
 

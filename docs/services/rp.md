@@ -1219,7 +1219,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
 | `guide_rotator_unmodeled` | rotator_id, train_id | `start_guiding` settled with a rotator-coupled guide camera but PHD2 reports no connected rotator (point event — see [Guider Service](#guider-service)) |
 | `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train (null when the watch runs without one), so a workflow trigger can address the guide-only sweep without knowing the rig |
-| `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full `refocus_train` sequence is indicated (point event; once per episode). `train_id` names the guiding train (null when the watch runs without one, same as `guide_focus_degraded`) |
+| `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full refocus of the guiding train's plan is indicated (point event; once per episode). `train_id` names the guiding train (null when the watch runs without one, same as `guide_focus_degraded`) |
 | `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
 | `dither_failed` | error | Dither or its settle failed |
@@ -5143,8 +5143,10 @@ orchestrator owns sequencing (§ Orchestration), so it decides when a
 refocus fits between exposures. Both events carry the guiding
 train's `train_id`, and the shipped `deep_sky.json` wires the
 responses as triggers (session-runner.md § `deep_sky.json`): a
-guide-only `auto_focus` on `guide_focus_degraded`, the full
-`refocus_train` on `guide_focus_escalation`. rp never moves a
+guide-only `auto_focus` on `guide_focus_degraded`, and on
+`guide_focus_escalation` focus-model's `focus_train {shared: true}`
+over the guiding train's plan, or the guide-only `auto_focus` when
+that plan holds no capture step. rp never moves a
 focuser on its own initiative.
 
 Mechanics — the watch polls `GET /guiding/metrics` every
@@ -5170,9 +5172,10 @@ guide loop, and is idle otherwise:
   `guide_focus_degraded` fired — the guide-only AF the orchestrator
   ran did not recover the trend, or none ran — emit
   `guide_focus_escalation {train_id, baseline_hfd, current_hfd}` once per
-  episode. The full `refocus_train` sequence is the indicated
-  response: it covers the shared-focuser drift the guide-only sweep
-  cannot fix.
+  episode. The full refocus of the guiding train's plan is the
+  indicated response (`deep_sky.json` walks it with focus-model's
+  `focus_train {shared: true}`): it covers the shared-focuser drift the
+  guide-only sweep cannot fix.
 - **Recovery** (trailing median back within the threshold) ends the
   episode silently; frames flagged `star_lost` or with a null HFD
   never enter a median.
@@ -6100,8 +6103,8 @@ Requirements, checked before any motion:
   in imaging train 'main', which focuses it; the guide camera is taken
   as parfocal with that train's camera". `deep_sky.json`'s
   `guide_focus_degraded` trigger logs this and goes on, and the
-  escalation's `refocus_train` sweeps the focuser through the imaging
-  camera.
+  escalation's `focus_train {shared: true}` sweeps the focuser through
+  the imaging camera.
 - `equipment.mount.guiding` is configured, and the guider's stats
   report an **active guide loop** — PHD2 only emits `GuideStep`
   (and with it HFD) while guiding, so without it there is nothing

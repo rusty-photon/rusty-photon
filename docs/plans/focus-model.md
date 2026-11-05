@@ -69,8 +69,8 @@ once and kept.
 | S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1215](https://github.com/rusty-photon/rusty-photon/pull/1215) |
 | S5 | `focus-model`: `determine_filter_offsets` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
 | S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
-| S7a | The design of S7's three slices ([§ S7](#s7--three-slices-decided-2026-11-04)), and D12, D16 and D17 amended to match | In progress | `docs/focus-model-s7a-design` |
-| S7b | `session-runner`: `deep_sky.json` calls `focus_train` wherever it called the capture `auto_focus` and `refocus_train`, its escalation choosing between `focus_train {shared: true}` and the metric `auto_focus` from the guiding train's `get_refocus_plan`; `bdd-infra` starts the real `focus-model` for session-runner's deep-sky scenarios | Not started | |
+| S7a | The design of S7's three slices ([§ S7](#s7--three-slices-decided-2026-11-04)), and D12, D16 and D17 amended to match | Merged | [#1704](https://github.com/rusty-photon/rusty-photon/pull/1704) |
+| S7b | `session-runner`: `deep_sky.json` calls `focus_train` wherever it called the capture `auto_focus` and `refocus_train`, its escalation choosing between `focus_train {shared: true}` and the metric `auto_focus` from the guiding train's `get_refocus_plan`; `bdd-infra` starts the real `focus-model` for session-runner's deep-sky scenarios | In progress | `feature/focus-model-s7b` |
 | S7c | `rp`: the capture-based `auto_focus` and `refocus_train` retire with the `refocus_*` events; an `auto_focus` block on an imaging train, and an imaging train holding more than one focuser, are refused at load; the Guide Focus Watch stops reading `refocus_complete`; the provider's refusal of such a step stops naming `refocus_train` | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`, and `obstruction_mm` in the capture sidecar's `optics` block; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Merged | [#1673](https://github.com/rusty-photon/rusty-photon/pull/1673) |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2), the fit shared through the `rp-focus-curve` crate | Merged | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
@@ -1541,7 +1541,9 @@ metric `auto_focus` on that train, which takes its `step_size` and
 `half_width` from the guiding train's block and refuses without one
 (rp.md § Guide-train sweep). So the guiding train needs a metric block
 before that night, or the walk fails at its guide step after moving
-the EAF.
+the EAF. Nor does pier1 run `focus-model` or `session-runner` yet:
+neither package is installed there (2026-10-31), and the night needs
+both, `focus-model` registered with `rp` and configured for both trains.
 
 **S7a** is this design: the decisions above as amended (D12, D16, D17)
 and this section.

@@ -1634,7 +1634,9 @@ stars, and at the exposures the suites use that is a coin flip:
 — a threshold no frame can clear, so the premise holds on every platform
 and at any timing. Pin it wherever the sweep's parameters are set: the
 train's `auto_focus` block (`TrainAutoFocusConfig::threshold_sigma`), the
-`auto_focus` tool call's arguments, or focus-model's per-train block.
+`auto_focus` tool call's arguments, or focus-model's per-train block
+(`bdd_infra::rp_harness::starless_focus_train()` builds one, and
+session-runner's deep-sky scenarios register the provider with it).
 Never leave it to the default and hope.
 
 Two limits are worth knowing. rp **refuses** `threshold_sigma` on a
