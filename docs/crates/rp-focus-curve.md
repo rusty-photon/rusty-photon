@@ -4,7 +4,7 @@ The V-curve a star traces through focus, and its weighted fit. Two sweeps
 fit it: the `focus-model` provider's capture sweep
 ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 4)
 and `rp`'s guide-train sweep, which measures PHD2's HFD instead of
-capturing ([rp.md § Guide-train sweep](../services/rp.md#guide-train-sweep-phd2-metric-variant)).
+capturing ([rp.md § `auto_focus` Contract](../services/rp.md#auto_focus-contract)).
 One fit in one place means the two sweeps cannot drift apart in how they
 find focus.
 

@@ -1097,10 +1097,11 @@ Rules the table does not show:
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
   written for `RA`/`DEC`: they are in the mount's own equatorial
   system, which `rp` does not query or convert.
-- **The focuser cards are the terminal focuser's.** A train can hold
-  several focusers, and the header has room for one. The cards take
-  the train's terminal focuser, the last focuser in `train_devices`:
-  the one the train's `auto_focus` sweeps, whose step size
+- **The focuser cards are the terminal focuser's.** A guiding train
+  can hold several focusers, and the header has room for one. The
+  cards take the train's terminal focuser, the last focuser in
+  `train_devices` (an imaging train's only one): the one a focus sweep
+  of the train moves, whose step size
   `optics.microns_per_step` records and `FOCUSSZ` carries. They are
   read from that focuser's `focusers` entry, so when it has no entry,
   or an entry without the field, the card is left out, and another
@@ -1124,8 +1125,8 @@ Rules the table does not show:
   side both reach the header, and where both report the same sensor,
   config order decides. `WINDSPD` and `WINDGUST` are in km/h, the
   sidecar's m/s times 3.6, as N.I.N.A. writes them.
-- **Untyped captures** (`frame_type` omitted — `auto_focus` and
-  `center_on_target` frames among them) carry every keyword except
+- **Untyped captures** (`frame_type` omitted — a focus provider's
+  sweep frames and `center_on_target`'s among them) carry every keyword except
   `IMAGETYP`, `OBJECT`, `OBJCTRA` and `OBJCTDEC`.
 - **No `SITEELEV`**: the site carries no elevation
   ([Site Configuration](#site-configuration)).
@@ -1207,12 +1208,9 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `centering_iteration` | camera_id, document_id, residual_arcsec, solved_ra, solved_dec, action | One centering iteration completed |
 | `centering_complete` | camera_id, final_error_arcsec, attempts, final_ra, final_dec | Centering converged |
 | `centering_failed` | error | Centering failed |
-| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins. rp's own sweeps emit it, and so does the bracket rp puts around a provider tool declared in a registration's `focus_tools` map (§ [Tool Provider Registration](#tool-provider-registration)): the train's terminal camera and focuser, and the focuser's position and temperature read before the call (`null` when a read fails) |
-| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts, steps | Auto-focus result. `position`/`hfr` are `final_position`/`final_hfr`: where the focuser ended and the HFR measured there — the confirmation frame's when `confirmed`, otherwise the lowest accepted sweep sample's (the fallback move captures no further frame); `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree (the guiding train reports `hfd`/`best_hfd`); `attempts` counts the sweeps the run made — capture sweeps only, the metric sweep's payload omits it. `steps`, present when the run walked a refocus plan ([`get_refocus_plan`](#get_refocus_plan-contract)), lists one `{focuser_id, run_train_id, camera_id, metric, position, hfr, best_position, best_hfr, confirmed, samples_used}` per completed sweep in run order. Around a `focus_tools` call every field comes from the result's top-level field of the same name — one the result lacks is `null`, `attempts` and `steps` present only when the result carries them |
-| `focus_failed` | error | Auto-focus failed. A fit failure's `error` ends in `attempts: <n>; curve_points: <JSON array>` — the final sweep's samples, so the run is diagnosable from the event alone (§ [`auto_focus` Contract](#auto_focus-contract), Error cases). Around a `focus_tools` call: the provider's tool error, the cancellation reason, or the unreachable-provider error |
-| `refocus_started` | train_id, reason, steps, guiding_paused | Dependency-ordered refocus begins; `steps` lists `{focuser_id, train_id}` in run order, `guiding_paused` says whether rp pauses guide corrections for the sequence |
-| `refocus_complete` | train_id, steps | Every AF step done (guiding resumed if it was paused); `steps` carries per-step `{focuser_id, train_id, camera_id, best_position, best_hfr, final_position, final_hfr, confirmed, samples_used}` (`best_hfd`/`final_hfd` for the guiding train's metric step) |
-| `refocus_failed` | error | A step failed, the pause/resume handshake failed, or the expansion was invalid |
+| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins. The guiding train's metric sweep emits it (with `train_id` and `method: "phd2_hfd"`, and a `null` `camera_id`, since nothing is captured), and so does the bracket rp puts around a provider tool declared in a registration's `focus_tools` map (§ [Tool Provider Registration](#tool-provider-registration)): the train's terminal camera and focuser, and the focuser's position and temperature read before the call (`null` when a read fails) |
+| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts, steps | Auto-focus result. `position`/`hfr` are where the focuser ended and the HFR measured there; `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree. The guiding train's metric sweep reports `hfd`/`best_hfd` and no `attempts`, since it makes one. Around a `focus_tools` call every field comes from the result's top-level field of the same name — one the result lacks is `null`, `attempts` and `steps` present only when the result carries them; `steps`, present when the run walked a refocus plan ([`get_refocus_plan`](#get_refocus_plan-contract)), lists one `{focuser_id, run_train_id, camera_id, metric, position, hfr, best_position, best_hfr, confirmed, samples_used}` per completed sweep in run order |
+| `focus_failed` | error | Auto-focus failed: the metric sweep's error (§ [`auto_focus` Contract](#auto_focus-contract), Error cases), or, around a `focus_tools` call, the provider's tool error, the cancellation reason, or the unreachable-provider error |
 | `guide_started` | recalibrate, settle_pixels, settle_time, settle_timeout | Guiding loop starting; carries the settle deadline (`max_duration_ms` = settle_timeout + the service's 10 s backstop grace) when a settle timeout is resolved |
 | `guide_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-start settle complete |
 | `guide_failed` | error | Guiding start or settle failed |
@@ -1870,8 +1868,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits — a parabola on the capture sweep, the hyperbola on the guide-train sweep — then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). Each sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
-| `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
+| `auto_focus` | Ungated | train_id (the guiding train); step_size, half_width, min_fit_points, confirmation_tolerance (all optional, each falling back to the guiding train's `auto_focus` config block) | best_position, best_hfd, fit_r_squared, confirmation, confirmed, final_position, final_hfd, samples_used, curve_points, temperature_c | The guiding train's PHD2-metric V-curve sweep: the median HFD of fresh guide frames per position, the hyperbola fitted, the fitted position confirmed with one more sample set and the best measured sample taken when the confirmation fails. Requires active guiding; never captures through the guide camera; refuses an imaging train, which the focus-model provider's `focus_train` focuses, and a focuser an imaging train holds. The sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
@@ -2044,13 +2041,12 @@ notice only at its first readout poll. Abandoning the writes half-done
 is safe: nothing has been exposed, and the next capture writes all four
 properties again from scratch.
 
-`auto_focus` and `center_on_target` take the same optional `binning`
-and capture through this same path; see their contracts. Both validate
-it against the resolved camera up front — before `focus_started` /
-`centering_started` is emitted — so an impossible binning is a
-parameter error rather than a started/failed pair, and stops a run
-before the focuser moves or the loop starts rather than at the first
-frame.
+`center_on_target` takes the same optional `binning` and captures
+through this same path; see its contract. It validates it against the
+resolved camera up front — before `centering_started` is emitted — so
+an impossible binning is a parameter error rather than a
+started/failed pair, and stops a run before the loop starts rather
+than at the first frame.
 
 **Concurrency.** Captures through one camera run one at a time. Each
 camera has a capture slot, and a capture holds it from its first
@@ -2062,8 +2058,8 @@ it, but not one that lands after it — the other capture re-bins the
 camera while this one is still writing its subframe, and the frame
 runs at a binning its document and filename do not name.
 
-A `capture` — or an internal capture of `auto_focus`, `refocus_train`
-or `center_on_target` — through a camera whose slot is held **waits
+A `capture` — or an internal capture of `center_on_target` —
+through a camera whose slot is held **waits
 its turn rather than failing**, and waiters take the slot in arrival
 order. An orchestrator does not have to track which camera is busy.
 Captures through different cameras never wait for each other.
@@ -2155,9 +2151,9 @@ at the moment `capture` runs; it was simply never passed.
 `capture` behaves exactly as before — a flat `<doc_uuid_8>.fits`, no
 `target`/`frame_type` on the exposure document, `target` ignored if
 somehow supplied anyway. This is what every caller that hasn't been
-updated for Decision 11 keeps doing unchanged, including `auto_focus`'s
-and `center_on_target`'s internal captures (see below) and any
-orchestrator predating this feature.
+updated for Decision 11 keeps doing unchanged, including a focus
+provider's sweep captures, `center_on_target`'s internal captures (see
+below) and any orchestrator predating this feature.
 
 **The templated path is a second, independent switch:
 `session.file_naming_pattern`** (§ Persistence). Supplying `frame_type`
@@ -2277,15 +2273,15 @@ call — after the exposure has already completed, since
 wasted exposure on a misconfiguration for never silently mis-filing a
 frame; the operator fixes the configuration and retries.
 
-**Deferred, not yet decided:** organizing `auto_focus`'s and
+**Deferred, not yet decided:** organizing a focus sweep's captures and
 `center_on_target`'s internal diagnostic captures the same way. Unlike
 calibration frames, these can run multiple times against the same
 target in one night (repeated focus/centering attempts), so they'd
 need a directory shape that doesn't exist yet (something like
-`_diagnostics/<train>/auto_focus/...`) and a naming-template token at
+`_diagnostics/<train>/focus/...`) and a naming-template token at
 finer-than-`{night_date}` granularity — there is no `{time}` token in
 [`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse)
-today. Both tools keep calling `capture` with `frame_type` omitted
+today. Both keep calling `capture` with `frame_type` omitted
 (today's flat-file behavior) until this is designed.
 
 **Sidecar failure contract.** If the sidecar write fails after a
@@ -2436,8 +2432,8 @@ runs the **rotate-while-guiding ladder** around the move:
 
 A move failure still runs re-select + resume (the field may have
 partially rotated) and reports the move error; a resume failure is a
-hard tool error on top of whatever preceded it — mirroring
-`refocus_train`'s handshake contract. When guiding is not active,
+hard tool error on top of whatever preceded it, since a night with
+guiding silently left paused must not look like success. When guiding is not active,
 the stats read fails, or no guider is configured, the move runs bare
 (Tenet 2: a mid-day rotation must not fail because PHD2 is closed).
 The result gains `guiding_ladder`: `null` when the ladder did not
@@ -2477,13 +2473,12 @@ the position the device actually reports (`actual_position` is
 always the read-back, never the request) and the shortfall is
 logged; a device still moving at the deadline is the timeout error.
 The same settle rule governs every focuser move rp makes on its own
-behalf: the `auto_focus` sweep steps and final move, and everything
-`refocus_train` expands to.
+behalf: the guide-train `auto_focus` sweep's steps and final move.
 
 **One move through a focuser at a time.** Each focuser has a slot, and
 a move holds it from its plan (the pre-move position read) to its last
-leg's settle. A second `move_focuser`, or a step of `auto_focus` or
-`refocus_train`, through a focuser whose slot is held waits its turn,
+leg's settle. A second `move_focuser`, or a step of `auto_focus`,
+through a focuser whose slot is held waits its turn,
 raced against its own cancellation as a capture's wait for its camera
 is. A cancelled move halts the focuser and gives the slot back once the
 halt has been sent, so a put-back queued behind it starts from where
@@ -2528,7 +2523,7 @@ along `approach` so each one arrives from the direction
 
 **Backlash compensation.** A mechanical focuser reaches a different
 physical position for the same step count depending on the
-direction it arrives from. An `auto_focus` sweep samples its grid
+direction it arrives from. A focus sweep samples its grid
 moving one way and then returns to the fitted minimum from the far
 end of the grid, so without compensation the position it ends at
 sits on the wrong side of the backlash — and reads a worse HFR than
@@ -2570,11 +2565,12 @@ starves the return leg — and the tool result carries the same flag
 beside `actual_position`. Without the block every move is
 single-leg and the flag is `false`.
 
-The compensation applies wherever rp moves a focuser, and
-`auto_focus` orders its sweep grid to match `approach` (see the
-[`auto_focus` Contract](#auto_focus-contract)): every sample and
-the final move then arrive from the same side, and the sweep's own
-steps never trigger the overshoot. Enable a focuser hub's firmware
+The compensation applies wherever rp moves a focuser, and the
+guide-train `auto_focus` orders its sweep grid to match `approach`
+(see the [`auto_focus` Contract](#auto_focus-contract)), as the
+focus-model provider's sweep does: every sample and the final move
+then arrive from the same side, and the sweep's own steps never
+trigger the overshoot. Enable a focuser hub's firmware
 compensation *or* this block, not both — stacked overshoots double
 the travel for no gain.
 
@@ -2788,7 +2784,7 @@ single hot pixel into a blob of 5–25 pixels that passes any `min_area` a
 caller would choose for real stars, and its HFR, measured on the raw
 pixels, is close to 0. On an uncooled QHY600M those blobs outnumbered the
 stars many times over and pulled the median HFR to about 0.004 px, so
-`auto_focus` saw a flat curve. The only way out was a `min_area` large
+a focus sweep saw a flat curve. The only way out was a `min_area` large
 enough to exclude them, which also excluded the compact stars at best
 focus. PixInsight's star detector and Hocus Focus also remove hot pixels
 before they blur, for the same reason.
@@ -2905,7 +2901,7 @@ they settle inside the star's aperture and are dropped with the
 others. The frame reports 83 detections, at a median component HFR of
 1.43 px, and 7 stars, at 37.2–38.9 px; the threshold keeps the other
 four whole. Counting each star once is also
-what gives `star_count` its meaning for `auto_focus`'s sparse gate.
+what gives `star_count` its meaning for a focus sweep's star floor.
 
 **Why the brightest 20.** A sweep compares frames, so its aggregate
 should come from the same stars in each, and the bright stars are the
@@ -3386,8 +3382,8 @@ analyze the image just captured.
 
 When `capture` completes, the camera's pixel array is already decoded
 in memory and the document has just been constructed. The cache holds
-both so subsequent tools (`measure_basic`, the next iteration of
-`auto_focus`, an external analyzer plugin) and document-API consumers
+both so subsequent tools (`measure_basic`, the `measure_stars` a
+focus sweep runs on its frame, an external analyzer plugin) and document-API consumers
 don't re-read from disk. The on-disk FITS+sidecar pair remains the
 durable source of truth — the cache is strictly a hot-path
 optimization, with the disk as fallback on miss.
@@ -3747,8 +3743,8 @@ role:
 | **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
 
 A plugin can combine types. For example, a focus plugin can be a
-**tool provider** (exposes an `auto_focus_ml` tool beside the built-in
-`auto_focus`) and also an **event plugin** (subscribes to
+**tool provider** (exposes a `focus_train` tool, as `focus-model`
+does) and also an **event plugin** (subscribes to
 `temperature_changed` to track focus drift).
 
 **Orchestrators are not a plugin type.** The client that drives the
@@ -3940,9 +3936,9 @@ Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
 
 The plugin reuses `rp`'s image cache HTTP API for pixel access (no FITS
 re-decode), and writes its results back into the exposure document via
-the section endpoint. Built-in compound tools (`auto_focus`,
-`center_on_target`) follow the same orchestration pattern but without
-the MCP-over-HTTP hop — see [Compound Tools](#compound-tools).
+the section endpoint. The built-in compound tool `center_on_target`
+follows the same orchestration pattern but without the MCP-over-HTTP
+hop — see [Compound Tools](#compound-tools).
 
 ### Safety Guardrails
 
@@ -4385,9 +4381,7 @@ decisions recorded there are fixed.
     "focal_length_mm": 1000.0,
     "aperture_mm": 200.0, "obstruction_mm": 68.0,
     "default_position_angle_degrees": 254.0,
-    "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
-    "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
-                    "min_area": 4, "max_area": 500, "binning": "2x2" } },
+    "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"] },
   { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
     "aperture_mm": 50.0,
     "devices": ["main-focuser", "guide-focuser", "guide-cam"],
@@ -4416,6 +4410,15 @@ Semantics:
   calibrator tools accept `train_id` and report the trains a cover or
   panel affects — see
   [CoverCalibrator Tool Details](#covercalibrator-tool-details).
+- An **imaging** train holds **at most one focuser**, the one its
+  camera is focused with. Only the guiding train may hold more: a
+  focuser it shares with an imaging train ahead of one of its own, as
+  a guide camera behind an off-axis pick-off with its own focuser has.
+  A second focuser in an imaging train has no camera to focus it
+  through on its own (the main camera is focused with one focuser, and
+  a focuser the guide path shares is focused through the imaging
+  camera, the guide camera taken as parfocal), so rp refuses it at
+  load, naming the train.
 - `purpose` is `"imaging"` (the default when omitted) or `"guiding"`.
   The guiding train tells rp which camera's focus and rotation state
   the guider depends on; at most one train may carry it, and it
@@ -4470,51 +4473,29 @@ Semantics:
   re-mounting the camera (and updating this value) deliberately
   reinterprets every target that inherits the default; per-target
   explicit angles freeze framing and are never reinterpreted.
-- `auto_focus` is an optional per-train block holding the V-curve
-  sweep parameters for focusing this train. Which fields it takes
-  depends on the train's `purpose`, validated at load with
-  dotted-path errors:
-  - **imaging** trains run the capture sweep: `duration`,
-    `step_size`, `half_width`, `min_area`, `max_area` (all required
-    when the block is present) plus optional `binning` (`"AxB"`,
-    default `"1x1"`, both factors at least 1 — rejected at load
-    otherwise, since a sweep binning is a device setting and the
-    alternative is failing at the first frame of a sweep that has
-    already moved the focuser), `threshold_sigma`
-    (default `5.0`), `min_fit_points` (default `5`),
-    `min_star_fraction` (default `0.1`), `confirmation_tolerance`
-    (default `0.25`), and `max_attempts` (default `2`, an integer
-    from `1` to `5`) — how many sweeps a run may make before it
-    errors (see the [`auto_focus` Contract](#auto_focus-contract)).
-    `binning` belongs here for the same reason sweep geometry does: it
-    is a property of the light path and the sensor behind it, not of
-    the moment. Binning a focus frame trades resolution that focus
-    measurement does not need for a readout that is four times smaller
-    at `2x2` — on a 60 Mbit link a full 60-megapixel frame is about
-    16 s of transfer per sweep point, and a sweep has a dozen of them.
-    The block is the *default*, not the only way to say it: a
-    train-addressed `auto_focus` call may pass its own `binning` and it
-    wins, the same field-by-field merge every other sweep parameter
-    gets. `refocus_train` takes the block only — it expands a trigger
-    rather than carrying a call's parameters.
-  - the **guiding** train runs the PHD2-metric sweep: `step_size`
-    and `half_width` (required) plus optional `frames_per_step`
-    (default `3`), `min_fit_points`, and `confirmation_tolerance`.
-    The capture-only fields (`duration`, `min_area`, `max_area`,
-    `binning`, `threshold_sigma`, `min_star_fraction`, `max_attempts`)
-    are rejected in a guiding train's block, as is `frames_per_step` in
-    an imaging train's — a knob that cannot influence the sweep must
-    not pretend to.
+- `auto_focus` is an optional block on the **guiding** train holding
+  its PHD2-metric sweep's parameters: `step_size` and `half_width`
+  (required when the block is present) plus optional `frames_per_step`
+  (default `3`), `min_fit_points` (default `5`), and
+  `confirmation_tolerance` (default `0.25`). `step_size`, `half_width`,
+  and `frames_per_step` must be positive integers and
+  `confirmation_tolerance` a finite number `≥ 0`, all rejected at load
+  otherwise (`frames_per_step` also at most 50, the guider's metrics
+  window). Any other field — the capture fields (`duration`,
+  `min_area`, `max_area`, `binning`, `threshold_sigma`,
+  `min_star_fraction`, `max_attempts`) among them — is rejected in it,
+  by name: a knob that cannot influence the metric sweep must not
+  pretend to. The block backs `auto_focus` on the guiding
+  train (per-call parameters override it field by field): sweep
+  geometry is per-train, which is why it lives here and not in the
+  tool call.
 
-  `step_size`, `half_width`, and `frames_per_step` must be positive
-  integers, `max_attempts` an integer from `1` to `5`,
-  `min_star_fraction` a finite number in `[0, 1)`, and
-  `confirmation_tolerance` a finite number `≥ 0`, all rejected at
-  load otherwise. The block backs
-  train-addressed `auto_focus` calls (per-call parameters override it
-  field by field) and is required on every train a `refocus_train`
-  expansion runs in — sweep geometry is per-train, which is exactly
-  why it lives here and not in the tool call.
+  An **imaging** train carries no `auto_focus` block. The focus-model
+  provider focuses it, with the train's sweep settings in its own
+  `focus-model.json` (`trains.<id>`, [focus-model.md](focus-model.md)),
+  so rp refuses a block on an imaging train at load and on a
+  setup-page save, naming the train and `focus-model.json`; the
+  operator removes it by hand.
 - Trains attach implicitly to the singular `equipment.mount`. Devices
   left out of every train stay legal and behave exactly as today —
   trains are enrichment, not a gate.
@@ -4541,15 +4522,14 @@ the offending entry:
   across them (the merged order relation is acyclic);
 - at most one train has `purpose: "guiding"`, and a guiding train
   requires `equipment.mount.guiding`;
-- the guiding train's terminal focuser, where an imaging train holds
-  it, is that imaging train's terminal focuser too. A focuser after it
-  in an imaging train would move the main camera's focus and not the
-  guide camera's, so no camera could focus the shared one for both
-  paths, which the AF sequence below needs: a shared focuser is
-  focused through the imaging camera, the guide camera taken as
-  parfocal. The error names the shared focuser, the guiding train,
-  and the imaging train with the focuser that follows it, at the
-  guiding train's entry for the shared focuser.
+- an imaging train holds at most one focuser (the error names the
+  train and its focusers, at its `devices`), so a focuser an imaging
+  train holds is always that train's terminal focuser, and the AF
+  sequence below focuses it through the imaging camera, the guide
+  camera taken as parfocal;
+- an imaging train carries no `auto_focus` block (the error names the
+  train and `focus-model.json`, at its `auto_focus`), and a guiding
+  train's block holds only the metric sweep's fields.
 
 Derivation rules — the questions the derived train model answers.
 Consumers land phase by phase per the plan:
@@ -4557,7 +4537,7 @@ Consumers land phase by phase per the plan:
 | Question | Rule |
 |---|---|
 | Which focuser focuses camera C? | Last focuser in C's train list |
-| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in an imaging train (T itself for T's own terminal focuser when T images, else the first imaging train where the focuser is terminal, else T when T images, else the first imaging train holding it), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, `refocus_train` runs it |
+| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in that imaging train, through its camera (an imaging T's sequence is its own focuser alone), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, and the focus-model provider's `focus_train {shared: true}` walks it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only on one whose camera is the PHD2 facade, under the [Train Lease](#train-lease) — the vendor driver being excluded from the guide camera by the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)'s Part A — and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
@@ -4574,10 +4554,9 @@ Consumers of the derived model:
   `telescope` and `devices`, and into the `optics` block its
   `focal_length_mm`, `aperture_mm`, `obstruction_mm` and terminal
   focuser's `microns_per_step`.
-- `auto_focus` accepts `train_id` as an alternative to the explicit
-  `camera_id` + `focuser_id` pair, resolving the train's camera and
-  terminal focuser and falling back to the train's `auto_focus`
-  config block for sweep parameters — see the
+- `auto_focus` on the guiding train sweeps its terminal focuser
+  against PHD2's HFD, falling back to the train's `auto_focus` block
+  for sweep parameters — see the
   [`auto_focus` Contract](#auto_focus-contract).
 - `capture` and `center_on_target` accept `train_id` as an
   alternative to `camera_id` (the train's terminal camera), and
@@ -4591,14 +4570,10 @@ Consumers of the derived model:
   tool's input schema publishes its alternatives as a top-level
   `oneOf` of **presence-only** branches (each carrying nothing but
   `required`, e.g. `[{"required": ["camera_id"]}, {"required":
-  ["train_id"]}]`; `refocus_train` simply marks `train_id` required)
+  ["train_id"]}]`; `auto_focus` simply marks `train_id` required)
   so schema-driven validators — session-runner's layer-2 catalog
   validation — can fail a call that names no alternative, or
   several, before anything moves.
-- `refocus_train` expands one trigger into the dependency-ordered AF
-  sequence, with a guiding pause/resume handshake around steps that
-  move a guiding-train focuser — see the
-  [`refocus_train` Contract](#refocus_train-contract).
 - The rotator tools (`move_rotator`, `get_rotator_position`) accept
   `train_id` addressing and report which trains a move rotated — see
   [Rotator Tool Details](#rotator-tool-details).
@@ -4626,24 +4601,23 @@ Consumers of the derived model:
   camera terminating any train contend with mount motion, and only a
   camera outside every train is exempt.
 
-rp's own auto-focus **on the guiding train itself** never captures
-through the guide camera (PHD2 may own it at the SDK level):
-train-addressed `auto_focus` and `refocus_train` steps that run in
-the guiding train use the PHD2-metric sweep — moving the focuser and
-reading PHD2's per-frame HFD — and require an active guide loop. That
-sweep moves only a focuser no imaging train holds: a focuser an
-imaging train holds is focused through the imaging camera alone, the
-guide camera being taken as parfocal with it (the owner's rule of
-2026-10-15, the focus-model plan's O4 rules 2, 4 and 8). So the AF
-sequence runs such a focuser in an imaging train, and train-addressed
-`auto_focus` on a guiding train whose terminal focuser an imaging
-train holds is refused, naming that imaging train. A
+rp's own auto-focus is the **guiding train's** alone, and it never
+captures through the guide camera (PHD2 may own it at the SDK level):
+`auto_focus` on the guiding train is the PHD2-metric sweep — moving
+the focuser and reading PHD2's per-frame HFD — and requires an active
+guide loop. An imaging train is focused by the focus-model provider,
+which captures through rp's tools. The metric sweep moves only a
+focuser no imaging train holds: a focuser an imaging train holds is
+focused through the imaging camera alone, the guide camera being taken
+as parfocal with it (the owner's rule of 2026-10-15, the focus-model
+plan's O4 rules 2, 4 and 8). So the AF sequence runs such a focuser in
+an imaging train, and `auto_focus` on a guiding train whose terminal
+focuser an imaging train holds is refused, naming that imaging train. A
 client may still capture through a guiding train's camera when it is
 the PHD2 camera facade ([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)): that is how
 a focus provider's training run on a guiding train samples it, under
 a [train lease](#train-lease) that holds PHD2 `Stopped`. See the
-[Guide-train sweep](#guide-train-sweep-phd2-metric-variant)
-contract, the rotate-while-guiding ladder under
+[`auto_focus` Contract](#auto_focus-contract), the rotate-while-guiding ladder under
 [Rotator Tool Details](#rotator-tool-details), and the
 [Guide Focus Watch](#guide-focus-watch).
 
@@ -4745,7 +4719,7 @@ Acquisition rules:
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
 | `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
-| `capture` through a camera terminating **any** train, imaging or guiding — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency). A capture cancelled mid-exposure gives its permit back as soon as its abort is sent. A capture under a [train lease](#train-lease) takes no permit of its own: it runs under the lease's |
+| `capture` through a camera terminating **any** train, imaging or guiding — including the internal captures of `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency). A capture cancelled mid-exposure gives its permit back as soon as its abort is sent. A capture under a [train lease](#train-lease) takes no permit of its own: it runs under the lease's |
 | A granted [train lease](#train-lease) | Shared | Taken after the lease's slots, held from the grant until the lease ends and no capture under it that was not cancelled is in flight. Slews, dithers and flips wait for it, so none lands between two samples of a training run |
 
 Queueing semantics (Decision 5 of the
@@ -4805,9 +4779,8 @@ Exemptions — operations that deliberately bypass the gate:
   concern; the gate stays out of it.
 
 Focuser and rotator moves are not mount motion and take no part in
-the gate: they perturb only the trains containing them, and the
-compound tools that move them (`auto_focus`, `refocus_train`)
-already sequence their own captures around the moves. A
+the gate: they perturb only the trains containing them, and a focus
+sweep sequences its own samples around its moves. A
 [train lease](#train-lease) holds them off a training run's light
 path. Otherwise, coordinating a manual `move_rotator` against
 another train's exposure remains the orchestrator's concern (the
@@ -5003,19 +4976,16 @@ take an optional `lease_id`.
   that way is sent again without the id, as an ordinary call that waits
   its turn like any other.
 
-**rp's own sweeps.** `auto_focus`, `refocus_train` and
-`center_on_target` capture and move through the internal paths, and
-meet a lease as a call without an id does. An `auto_focus` sweep, and
-each sweep of `refocus_train`, capture or metric, enters the
-reservation table for its length, put-back included: its camera and its
-focuser. It takes its slots per call, as today, and holds none across
+**rp's own sweeps.** `auto_focus` and `center_on_target` capture or
+move through the internal paths, and meet a lease as a call without an
+id does. An `auto_focus` sweep, the guiding train's metric sweep,
+enters the reservation table for its length, put-back included: its
+train's camera and its focuser. It takes its slots per call, as today, and holds none across
 calls: a sweep that held slots across calls would take them in another
 order than a lease and could deadlock with one. An acquire whose
 reservation overlaps a running sweep's is refused at once, naming the
 sweep, and a sweep that overlaps a lease's reservation is refused at
-once, naming the lease, before it moves anything. `refocus_train` checks
-every planned step before it announces the refocus or pauses guiding,
-so a refocus a lease would refuse interrupts nothing. Neither waits on the
+once, naming the lease, before it moves anything. Neither waits on the
 other, so a lease is never granted between two of a sweep's moves with
 the focuser at a sample position. Two of rp's own sweeps never refuse
 each other. A sweep that another client drives move by move has no such
@@ -5156,10 +5126,10 @@ guide loop, and is idle otherwise:
 - **Baseline**: the median HFD of the first `window` (default 10)
   valid frames after guiding becomes active. The watch subscribes
   to rp's own event stream and re-arms after any `focus_complete`
-  or `refocus_complete` that involved the guiding train **or moved
-  one of its focusers** — the event's own `train_id` / `focuser_id`,
-  or any entry of its `steps` (a shared focuser swept in an imaging
-  train changes the guide focus just the same) — a fresh focus is a fresh
+  that involved the guiding train **or moved one of its focusers** —
+  the event's own `train_id` / `focuser_id`, or any entry of its
+  `steps` by `run_train_id` / `focuser_id` (a shared focuser swept in
+  an imaging train changes the guide focus just the same) — a fresh focus is a fresh
   reference, and re-arming also clears the cooldown so a trend
   degrading against the new baseline fires immediately.
 - **Degraded**: the median HFD of the trailing `window` frames
@@ -5559,8 +5529,9 @@ the format and engine are specified in
 - **Conditional logic** — when to refocus (temperature drift, HFR
   degradation), when to take flats, how to handle meridian flips.
 - **Sub-workflow delegation** — the orchestrator can call compound tools
-  provided by other plugins (e.g., `auto_focus`, `center_on_target`)
-  or implement sub-workflows directly using primitive tools.
+  provided by plugins (e.g., `focus-model`'s `focus_train`) or built
+  into `rp` (`center_on_target`), or implement sub-workflows directly
+  using primitive tools.
 - **Its own lifecycle** — starting the run, persisting whatever it
   needs to resume, waiting out an unsafe spell or an `rp` outage, and
   resuming itself after its own restart. `session-runner` does all of
@@ -5626,9 +5597,9 @@ Loop:
     (compound tool — centering plugin handles internally)
   ← {final_error_arcsec: 2.1, attempts: 3}
 
-  → tools/call auto_focus {camera_id: "main-cam", focuser_id: "main-focuser"}
-    (compound tool — focus plugin handles internally)
-  ← {best_position: 12450, best_hfr: 2.1}
+  → tools/call focus_train {train_id: "main"}
+    (provider tool — focus-model handles internally)
+  ← {position: 12450, hfr: 2.1}
 
   → tools/call start_guiding {}
   ← {rms_ra: 0.4, rms_dec: 0.3}
@@ -5640,7 +5611,7 @@ Loop:
     ← {progress: [{filter: "Luminance", binning: "1x1", exposure_duration: "5m",
                    desired_count: 40, good: 13, total: 13}, ...]}
     → check if dither needed → tools/call dither {pixels: 5}
-    → check if temperature drifted → tools/call auto_focus {...}
+    → check if temperature drifted → tools/call focus_train {...}
     → check if meridian flip needed → stop guide, flip, re-center, re-focus, start guide
     → tools/call get_next_target → if target changed, break capture loop
 
@@ -5650,450 +5621,81 @@ Loop:
 
 ### Compound Tools
 
-Sub-workflows like `auto_focus` and `center_on_target` are **built-in
-compound tools** — they live in `rp`'s process, drive a multi-step
-loop using primitive built-in tools, and expose a single high-level
-tool to the orchestrator. The orchestrator does not need to know the
-focus algorithm or the centering algorithm; it calls one tool and
-gets a result.
+Sub-workflows like `center_on_target` and the guiding train's
+`auto_focus` are **built-in compound tools** — they live in `rp`'s
+process, drive a multi-step loop using primitive built-in tools, and
+expose a single high-level tool to the orchestrator. The orchestrator
+does not need to know the centering algorithm or the metric sweep; it
+calls one tool and gets a result.
 
 ```
 Orchestrator                    rp (single process)
     │                           ┌───────────────────────────────┐
-    │  tools/call auto_focus    │                               │
-    ├──────────────────────────►│  auto_focus impl (Rust)       │
-    │                           │   ├─ move_focuser             │
-    │                           │   ├─ capture                  │
-    │                           │   ├─ measure_basic            │
-    │                           │   │   (cache hit, no decode)  │
-    │                           │   ├─ ... 12 more iterations   │
-    │                           │   └─ pick best_position       │
-    │  ← {best_position, hfr}  │                               │
+    │  tools/call               │                               │
+    │  center_on_target         │  center_on_target impl (Rust) │
+    ├──────────────────────────►│   ├─ capture                  │
+    │                           │   ├─ plate_solve              │
+    │                           │   ├─ sync_mount               │
+    │                           │   ├─ slew                     │
+    │                           │   └─ ... until within         │
+    │                           │       tolerance_arcsec        │
+    │  ← {final_error_arcsec}   │                               │
     │◄──────────────────────────│                               │
     │                           └───────────────────────────────┘
 ```
 
-No MCP-over-HTTP hop, no FITS re-decode (the in-process call resolves
-each capture's pixels via the image cache).
+No MCP-over-HTTP hop: each step is an in-process call into the
+primitive's own path.
 
 #### `auto_focus` Contract
 
-A built-in compound tool that drives a V-curve focus sweep using
-`move_focuser`, `capture`, and `measure_basic` internally. The
-orchestrator calls one tool and gets back the best focuser position
-without having to know the focus algorithm.
+The guiding train's focus sweep. A built-in compound tool that sweeps
+the guiding train's terminal focuser and samples each position with
+the **median HFD of fresh PHD2 guide frames**, read from the guider
+service's per-frame metrics window
+(phd2-guider.md § `GET /api/v1/guiding/metrics`). It never captures
+through the guide camera — PHD2 may own it at the SDK level. A
+client's training run that captures through the PHD2 camera facade
+is a different operation, under a [train lease](#train-lease).
+
+An imaging train has no sweep in `rp`: the focus-model provider's
+`focus_train` focuses it, capturing through `capture` and measuring
+with `measure_stars` ([focus-model.md](focus-model.md)), and walks a
+refocus plan's guide step by calling this tool. `auto_focus` refuses
+an imaging train.
 
 **Input**:
-- Addressing — exactly one form:
-  - `camera_id` + `focuser_id` — the explicit pair, or
-  - `train_id` — an `equipment.optical_trains[]` id, mutually
-    exclusive with both explicit ids. Resolves `camera_id` to the
-    train's terminal camera and `focuser_id` to its terminal focuser
-    (error when the train has no focuser). Addressing the **guiding
-    train** selects the PHD2-metric sweep instead of the capture
-    sweep — rp's guide-train AF never captures through the guide
-    camera (PHD2 may own it at the SDK level); it moves the focuser
-    and reads PHD2's per-frame HFD. A client's capture through the
-    PHD2 camera facade is not this sweep (see
-    [Train Lease](#train-lease)). See
-    [Guide-train sweep](#guide-train-sweep-phd2-metric-variant).
-
-  When addressed by `train_id`, every sweep parameter below
-  additionally falls back, field by field, to the train's
-  `auto_focus` config block before the "missing required parameter"
-  check. Explicit-pair addressing takes per-call parameters only —
-  the config block is train-scoped by design.
-- `duration` — required, humantime string (same shape as `capture`'s
-  `duration`, e.g. `"3s"`, `"500ms"`). Per-frame exposure for every
-  point in the sweep. No default: the right value depends on focal
-  ratio, sky brightness, and target field, none of which `auto_focus`
-  can infer. Deriving it from a probe `measure_basic` star count was
-  considered and rejected — the probe itself runs at unknown focus,
-  so its star count is unreliable as a driver for the rest of the
-  sweep.
-- `step_size` — required, positive integer focuser steps. Required
-  for the same reason `min_area`/`max_area` are required on
-  `measure_basic`: focuser step → µm and rig depth-of-focus vary per
-  setup and `rp` cannot infer them.
-- `half_width` — required, positive integer. The sweep covers
-  `[current_position − half_width, current_position + half_width]`
-  in `step_size` increments. The grid is then clamped to the
-  focuser's travel bounds `min_position`/`max_position` — the
-  configured bounds narrowed to the driver's `0` to `MaxStep`, which
-  stand in where the config sets none (see
-  [Focuser Tool Details](#focuser-tool-details)).
-  The grid is walked ascending unless the focuser's `backlash`
-  block says `approach: "in"`, in which case it is walked
-  descending — every sample is then approached from the same side
-  as the final move (see
-  [Focuser Tool Details](#focuser-tool-details)).
-- `min_area` and `max_area` — required, passed through to each
-  per-frame `measure_basic` call. At extreme defocus, a star's blur
-  disc can span thousands of pixels, and `measure_basic` measures a
-  star only while its half-flux disc fits in `max_area` — set
-  `max_area` accordingly so the wings of the V-curve remain
-  measurable.
-- Optional `binning` (default `"1x1"`, overriding the train's
-  `auto_focus.binning` when both are present) — the binning every
-  sweep frame is captured at, spelled `"AxB"` and applied by the same
-  `capture` path (§ Capture Tool Details, "Binning"). Focus
-  measurement is an HFR comparison between frames of one sweep, so it
-  needs the frames to be alike, not fine: `"2x2"` quarters the readout
-  and the download of every sweep point, which on a large sensor over
-  a slow link is most of a sweep's wall-clock. Set it per train in the
-  `auto_focus` config block rather than per call — it is a property of
-  the light path (§ Optical Trains).
-- Optional `threshold_sigma` (default `5.0`) — passed through to
-  `measure_basic`.
-- Optional `min_fit_points` (default `5`) — minimum number of
-  accepted HFR samples (non-null, past the sparse gate below)
-  required to fit the V-curve. Also enforced on the *grid size*
-  before any motion happens — a sweep that cannot produce at least
-  this many capture positions errors before moving the focuser.
-- Optional `min_star_fraction` (default `0.1`; finite,
-  `0 ≤ value < 1`) — the sparse-sample gate. After the sweep, a
-  sample whose `star_count` is below
-  `min_star_fraction × max(star_count)` over the sweep is rejected
-  as `sparse` and excluded from the fit. The gate is relative to the
-  sweep's own best frame, so a field that is sparse everywhere is
-  never gated; only a collapse in stars is — the wings of a wide
-  sweep, where only the brightest stars stay measurable and a frame
-  that holds a few of them, or a few hot-pixel clusters, measures
-  whatever those few are. `0` disables the gate.
+- `train_id` — required, the guiding train's
+  `equipment.optical_trains[]` id.
+- `step_size` — positive integer focuser steps between grid points.
+- `half_width` — positive integer. The sweep covers
+  `[current_position − half_width, current_position + half_width]` in
+  `step_size` increments, clamped to the focuser's travel bounds
+  `min_position`/`max_position` — the configured bounds narrowed to
+  the driver's `0` to `MaxStep`, which stand in where the config sets
+  none (see [Focuser Tool Details](#focuser-tool-details)).
+- Optional `min_fit_points` (default `5`) — minimum number of valid
+  samples the fit needs. Also enforced on the clamped grid's size
+  before any motion: a sweep that cannot produce this many positions
+  errors before moving the focuser.
 - Optional `confirmation_tolerance` (default `0.25`; finite, `≥ 0`)
-  — how much worse than the lowest accepted sweep sample the
-  confirmation frame's HFR may measure before the fitted position is
-  rejected (algorithm step 7). `0.25` admits seeing jitter and the
-  parabola's small vertex bias; the failure this guards against
-  measures about twice the best sample.
-- Optional `max_attempts` (default `2`; an integer from `1` to `5`)
-  — how many sweeps the run may make before it errors. A fit
-  failure (`not_enough_stars`, `monotonic_curve`) does not end the
-  run while attempts remain: the sweep is repeated with the same
-  parameters, the way the mainstream packages retry. After
-  `not_enough_stars` the grid is the same one; after
-  `monotonic_curve` the grid's centre moves by `half_width` toward
-  the lowest accepted sample (clamped to the focuser's
-  `min_position`/`max_position`), so the next sweep brackets the
-  minimum the last one only approached — the SGP Smart Focus and
-  Ekos restart behaviour. No attempt halves or doubles the step: no
-  package does, and a different grid measures a different thing.
-  `1` is the single sweep of before. The cap of `5` is a guardrail
-  like the grid-size cap: a field that fails five sweeps is not
-  going to fit on the sixth. Capture sweeps only — the guide-train
-  sweep makes one attempt (see its section).
+  — how much worse than the lowest valid sweep sample the
+  confirmation sample may measure before the fitted position is
+  rejected (algorithm step 4). `0.25` admits seeing jitter; the
+  failure this guards against measures about twice the best sample.
 
-**Output**:
-- `best_position` (i32) — focuser position at the fitted V-curve
-  minimum, rounded to the nearest integer step.
-- `best_hfr` (f64) — fitted HFR at `best_position`, in pixels. A fit
-  value, not a measurement — see `final_hfr`.
-- `fit_r_squared` (f64) — weighted coefficient of determination of
-  the fitted curve over the accepted samples, clamped to `[0, 1]`
-  (`1.0` is a perfect fit; a sweep whose wings were sparse fragments
-  scores near `0`): the parabola's on the capture sweep, the
-  hyperbola's on the guide-train sweep. Reported, not enforced, on
-  either sweep (see Caveats).
-- `confirmation` —
-  `{document_id: string, hfr: f64 | null, star_count: u32, accepted: bool}`:
-  the fresh frame captured at `best_position` after the move, and
-  its verdict (algorithm step 7).
-- `confirmed` (bool) — `confirmation.accepted`, hoisted for
-  orchestrators.
-- `final_position` (i32) — where the focuser was left:
-  `best_position` when the confirmation was accepted, the lowest
-  accepted sweep sample's position otherwise.
-- `final_hfr` (f64) — the HFR measured at `final_position`: the
-  confirmation frame's when accepted, the lowest accepted sample's
-  otherwise. This is the number an orchestrator keeps as its refocus
-  baseline.
-- `samples_used` (usize) — number of accepted samples that
-  contributed to the fit: captures with a non-null HFR that passed
-  the sparse gate. `≤ curve_points.length`.
-- `curve_points` — array of
-  `{position: i32, hfr: f64 | null, star_count: u32, document_id: string, rejected: string | null}`,
-  one entry per sweep capture, in sweep order (ascending positions,
-  or descending when the focuser's `backlash.approach` is `"in"`).
-  `hfr: null` flags a starless capture; `rejected: "sparse"` a
-  capture the gate excluded. Either entry is preserved as a record
-  but does not contribute to the fit. The confirmation frame is not
-  a curve point. `curve_points` are the successful attempt's — an
-  earlier attempt's frames are on disk like any capture, but the
-  curve is the one the fit used.
-- `attempts` (u32) — how many sweeps the run made; `1` when the
-  first fit held. Capture sweeps only: the metric sweep makes one
-  attempt and reports neither this field nor `wing_slope`.
-- `wing_slope` (f64 | null) — how steeply the V rises, in HFR
-  pixels per 100 focuser steps, measured from the accepted samples
-  of the successful attempt. Each wing is the accepted samples
-  strictly on one side of the lowest accepted sample (the minimum
-  itself belongs to neither: the V flattens there, and the wings
-  are the part of the curve that is linear); a wing with at least
-  two samples has a least-squares slope of HFR against position,
-  and `wing_slope` is the steeper of the two wings' slopes as a
-  positive number, `null` when neither wing has two samples. The
-  steeper wing is the one whose end leaves the detectable band
-  first, so it is the constraint that sizes a symmetric sweep: a
-  caller that wants the sweep ends at `k` times the focused HFR
-  solves `half_width = (k − 1) × final_hfr / wing_slope × 100`.
-  Reported, never stored — the focus-model provider keeps it per
-  run and sizes the next sweep from it
-  ([plan](../plans/focus-model.md), D9).
-- `temperature_c` (f64 | null) — focuser temperature read once at
-  the start of the run. `null` when the focuser does not implement
-  temperature readout (`NOT_IMPLEMENTED`) **or** when the read
-  itself fails for any other reason. Temperature is informational
-  on the result and never load-bearing on the sweep, so a transient
-  read failure does not abort the run — the field is just
-  surrendered to `null`. Useful for downstream
-  temperature-compensation logic that records
-  `(position, temperature)` pairs across runs (callers that need
-  absolute temperature confidence should fall back to
-  `get_focuser_temperature` per call rather than relying on this
-  field).
-
-**Algorithm**:
-1. Resolve `camera_id` and `focuser_id` (train addressing has
-   already been reduced to the pair at this point). Read the focuser's current
-   position and temperature once each; record both on the result.
-   Emit `focus_started` carrying the resolved ids, the current
-   position, and the temperature.
-2. Compute the sweep grid:
-   `start = current_position − half_width`; positions are
-   `start, start + step_size, start + 2·step_size, …`, continuing
-   while `≤ current_position + half_width`. Clamp the grid to
-   `[min_position, max_position]` (any point outside is dropped,
-   not coerced — coercion would create duplicate sweep positions
-   at the bound). Reject before any motion if the clamped grid has
-   fewer than `min_fit_points` positions. Walk the grid ascending,
-   or descending when the focuser's `backlash.approach` is `"in"`.
-3. For each grid position, in order:
-   1. `move_focuser(position)` — block until the focuser has
-      settled (the same poll loop, settle rule, and backlash
-      compensation as the primitive `move_focuser` tool; see
-      [Focuser Tool Details](#focuser-tool-details)). Because the
-      grid is walked in the `approach` direction, only the first
-      move of the sweep can incur an overshoot leg.
-   2. `capture(camera_id, duration)` — yields `document_id`. The
-      pixels populate the image cache as a side effect.
-   3. `measure_basic(document_id, min_area, max_area, threshold_sigma)`
-      — yields `hfr` and `star_count`. The cache hit avoids any
-      FITS decode.
-   4. Append `{position, hfr, star_count, document_id}` to
-      `curve_points`. A capture with `star_count == 0` (or a
-      `null` or non-finite HFR for any reason) is recorded with
-      `hfr: null` and contributes nothing to the fit — a NaN would
-      otherwise compare equal to nothing and propagate through the
-      lowest-sample choice, the parabola and the wing slope. The
-      confirmation frame's HFR is read under the same rule.
-4. Gate the samples: with `max_stars` the largest `star_count`
-   among entries with a non-null HFR, every entry whose
-   `star_count` is below `min_star_fraction × max_stars` is marked
-   `rejected: "sparse"`. If fewer than `min_fit_points` entries
-   remain accepted, the fit has failed with `not_enough_stars`
-   (step 5a).
-5. Fit a parabola in raw HFR vs. position to the accepted samples
-   by least squares, weighted by `star_count` per point. From the
-   fit `hfr = a·position² + b·position + c`:
-   `best_position = round(−b / 2a)`; `best_hfr = c − b²/(4a)`;
-   `fit_r_squared` is the weighted R² of that fit over the accepted
-   samples. The fit has failed with `monotonic_curve` (step 5a) in
-   any of three cases: (i) the design matrix is singular at fit
-   time (essentially flat HFR over the sweep — no parabola can be
-   fitted), (ii) `a ≤ 0` (the curve is monotonic or concave-down —
-   no minimum exists), or (iii) `a > 0` but the fitted vertex falls
-   outside `[min(grid), max(grid)]` (a true minimum exists
-   somewhere off-grid, so the visible curve is monotonic *over the
-   sampled range*).
-   1. **A failed fit is retried while attempts remain.** With fewer
-      than `max_attempts` sweeps made, go back to step 2 with the
-      same parameters: after `not_enough_stars` the grid is
-      unchanged; after `monotonic_curve` its centre is the previous
-      centre moved by `half_width` toward the lowest accepted
-      sample (unchanged when that sample sits at the centre),
-      clamped to `[min_position, max_position]` — a shift the
-      bounds absorb repeats the grid. A retry whose clamped grid
-      would hold fewer than `min_fit_points` positions is not made.
-      Between attempts the focuser is not returned to the start:
-      the next attempt's first grid move is the same travel. When
-      no retry follows, move the focuser back to the run's
-      starting position — where it was before the first attempt,
-      never a shifted centre — and abort with the error, which
-      carries `attempts` and the final attempt's `curve_points`.
-   2. After a successful fit, compute `wing_slope` from the
-      accepted samples, and log a warning naming the ratio when the
-      outermost accepted sample on either side measures more than
-      five times the lowest accepted HFR: the sweep reaches beyond
-      the 3–5× band the mainstream packages size to, and
-      `half_width` — per call or from the train's block — is wider
-      than it needs to be.
-6. Move the focuser to `best_position` (already inside the sweep
-   range by construction, so the focuser's travel bounds
-   `min_position`/`max_position` are guaranteed to hold).
-   This move travels back against the sweep direction, so with a
-   `backlash` block it is the overshoot-then-approach pair: the
-   focuser ends at `best_position` arriving from the same side as
-   every sample, which is what makes the confirmation below
-   comparable to the sweep samples.
-7. Confirm: `capture` + `measure_basic` once more at
-   `best_position`, with the sweep's parameters — the
-   `confirmation` frame. It is accepted when it has a non-null HFR,
-   its `star_count` passes the same gate as the sweep
-   (`≥ min_star_fraction × max_stars`), and its HFR is at most
-   `(1 + confirmation_tolerance) × lowest`, where `lowest` is the
-   smallest HFR among the accepted sweep samples. Accepted →
-   `final_position = best_position` and `final_hfr` is the
-   confirmation HFR. Rejected → move the focuser to the position of
-   that lowest accepted sample (approach-corrected like step 6, so
-   the mechanism sits where the sample was measured);
-   `final_position` is that position
-   and `final_hfr` that sample's HFR. Two positions have now been
-   measured and the better one wins; the run still succeeds, with
-   `confirmed: false` telling the orchestrator the fit was not
-   trusted (a finer sweep around `final_position` is the usual
-   next move).
-8. Emit `focus_complete` with
-   `{camera_id, focuser_id, position: final_position, hfr: final_hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts}`.
-
-**Error cases**:
-- `train_id` passed together with `camera_id` or `focuser_id`, or
-  no addressing at all → MCP error naming the conflict / the first
-  missing field.
-- `train_id` unknown → MCP error naming the train.
-- The train has no focuser → MCP error naming the train and the
-  reason.
-- `camera_id` not found → MCP error naming the camera.
-- `focuser_id` not found → MCP error naming the focuser.
-- Camera or focuser not connected → MCP error.
-- `duration`, `step_size`, `half_width`, `min_area`, `max_area`
-  missing → MCP error naming the missing parameter (validated in
-  body in input order, same convention as `measure_basic`).
-- `step_size <= 0`, `half_width <= 0`, or `min_fit_points < 3`
-  → MCP error naming the bad parameter (a parabolic fit needs at
-  least 3 non-collinear points). `min_star_fraction` outside
-  `[0, 1)` or `confirmation_tolerance` negative (or either
-  non-finite) → the same, naming the parameter. `max_attempts`
-  outside `1..=5` → the same, naming the parameter. A `binning` the
-  camera cannot do → the error the capture path raises, checked
-  against the resolved camera before `focus_started` is emitted, so it
-  lands before any motion or exposure (§ Capture Tool Details,
-  "Binning").
-- Estimated unclamped grid size (`2·half_width / step_size + 1`)
-  exceeds the safety cap (1000 points) → MCP error before any
-  motion or exposure. The cap is purely a guardrail against
-  operator misconfiguration that would otherwise produce
-  thousands of captures and tie up the rig for hours; any
-  plausible auto-focus run fits well inside it (typical 10–30
-  points).
-- Sweep grid (after clamping to `min_position`/`max_position`)
-  has fewer than `min_fit_points` positions → MCP error before
-  any motion or exposure. The error message names `min_fit_points`
-  so the caller can tell the grid-size failure apart from a
-  parameter-validation failure.
-- A `move_focuser`, `capture`, or `measure_basic` call inside
-  the sweep returns an error → `auto_focus` propagates that
-  error and stops sweeping. Captures already taken are persisted
-  on disk normally (that path is owned by `capture`, not
-  `auto_focus`); the focuser is left at its current position — no
-  restore, because the device that failed may be the focuser, and a
-  cancelled run must stop motion, not start more.
-- Fewer than `min_fit_points` accepted samples (non-null HFR, past
-  the sparse gate) after the last permitted sweep → `not_enough_stars`
-  error. The focuser is first moved back to the run's starting
-  position, best effort: a failed restore is logged and the fit
-  error is still the one returned.
-- Parabolic fit yields no meaningful minimum within the sampled
-  range on the last permitted sweep → `monotonic_curve` error. This
-  fires when the design matrix is singular (the input is
-  essentially flat HFR), when `a ≤ 0` (the curve is monotonic or
-  concave-down — no minimum exists), or when `a > 0` but the fitted
-  vertex falls outside `[min(grid), max(grid)]` (a true minimum
-  exists somewhere off-grid, so the *visible* curve over the
-  sampled range is monotonic). The run's own retries have already
-  shifted the grid toward the minimum `max_attempts − 1` times; the
-  caller is expected to widen `half_width`, coarse-focus
-  externally, or both, then call again. The focuser is first moved
-  back to the run's starting position, best effort as above — never
-  to the lowest observed sample, which without a confirmation frame
-  is unverified as a true minimum.
-- Both fit-failure errors are diagnosable without re-measuring a
-  frame: the message is `<reason>; attempts: <n>; curve_points:
-  <JSON array>`, where the array is the final attempt's
-  `curve_points` exactly as a success would report them (the frames
-  are on disk under their `document_id`s). A consumer that wants the
-  table splits the message at `curve_points: ` and parses the rest.
-  The same string is the `focus_failed` event's `error`.
-
-**Persistence**: `auto_focus` does **not** write a section on any
-single exposure document — its result spans the sweep. Each capture
-inside the sweep gets its own `image_analysis` section written by
-the embedded `measure_basic` call exactly as if `measure_basic` had
-been called directly. The compound result is returned in the MCP
-response and emitted as `focus_complete`. Each entry in
-`curve_points` carries the per-step `document_id`, so callers that
-need per-step provenance can fetch the individual exposure documents
-and read their `image_analysis` sections.
-
-**Caveats**:
-- Parabolic fit is the V1 choice for simplicity. Real V-curves are
-  often slightly asymmetric (extra-focal vs. intra-focal slopes
-  differ); a parabola fits an effective vertex that may sit one
-  or two steps off the true minimum. Acceptable for amateur rigs.
-  An asymmetric V or piecewise-linear fit can ship later as a
-  built-in revision, or from a tool provider under its own name
-  (e.g. `auto_focus_asymmetric_v`) — see
-  [Third-party alternatives](#third-party-alternatives).
-  `fit_r_squared` is reported so an orchestrator can judge the fit,
-  but not enforced: a parabola scores about `0.7` on a clean,
-  asymmetric fine sweep, so a threshold would reject good runs.
-  The guide-train sweep here fits the hyperbolic model, and so does
-  the focus-model provider's capture sweep, which replaces this one.
-  Its threshold is the provider's `min_fit_r_squared`, unset by default
-  ([plan](../plans/auto-focus-sample-gating.md), G2). This sweep keeps
-  the parabola until the focus-model plan's S7 retires it.
-- The confirmation frame costs one exposure per run and is always
-  taken. It catches a fit that landed away from the measured
-  minimum; it cannot catch a sweep whose every sample was dense yet
-  wrong (frames dominated by artifacts the detector still admits,
-  say) — that is the detector's problem, see the `measure_basic`
-  caveats.
-- The retry is bounded and never changes the step. `max_attempts`
-  sweeps with the same parameters, the grid shifted toward the
-  minimum after a monotonic curve, is what N.I.N.A., Ekos, SGP and
-  FocusMax do; none of them halves the step on failure, and a
-  coarse-then-fine ladder is a designed second pass, not a retry.
-  `auto_focus` still does not widen the sweep or coarse-focus on
-  its own: drift is corrected by moving the start (per-filter
-  offsets, a temperature model), which is the focus-model
-  provider's job ([plan](../plans/focus-model.md)), and a sweep
-  that fails every attempt reports the curve it saw so the block
-  can be resized from data.
-- Saturated stars are included in `star_count` and contribute to
-  the fit through their HFR, mirroring `measure_basic`'s policy.
-  Filtering them at the auto-focus layer would reintroduce the
-  HFR-vs-focus monotonicity break the policy was designed to
-  avoid (see `measure_basic` Contract). Callers that need a
-  per-curve saturation aggregate can fetch each
-  `curve_points[i].document_id` and read its `image_analysis`
-  section.
-- `auto_focus` is a built-in compound tool; a tool-provider plugin
-  advertising the same `auto_focus` name fails startup per
-  Config-Time Validation. An alternative ships under its own name.
-
-##### Guide-train sweep (PHD2-metric variant)
-
-Addressing `auto_focus` with the guiding train's `train_id` runs the
-same V-curve algorithm with a different sample source: instead of
-`capture` + `measure_basic`, each grid position's sample is the
-**median HFD of fresh PHD2 guide frames**, read from the guider
-service's per-frame metrics window
-(phd2-guider.md § `GET /api/v1/guiding/metrics`). This sweep never
-captures through the guide camera — PHD2 may own it at the SDK level.
-A client's training run that captures through the PHD2 camera facade
-is a different operation, under a [train lease](#train-lease).
+Each parameter falls back, field by field, to the guiding train's
+`auto_focus` config block ([Optical Trains](#optical-trains)) before
+the "missing required parameter" check; a per-call value wins. The
+block also carries `frames_per_step` (default `3`), the fresh frames
+collected per grid position — a positive integer at most 50, the
+guider's metrics window, since a larger value could never be
+satisfied.
 
 Requirements, checked before any motion:
 
+- The train is the guiding train. An imaging train is refused,
+  naming the train and `focus_train`.
 - The guiding train's terminal focuser is one no imaging train
   holds. A focuser an imaging train holds is focused through the
   imaging camera alone, with the guide camera taken as parfocal
@@ -6115,180 +5717,143 @@ Requirements, checked before any motion:
   HFD in fact streams in PHD2's paused modes is a rig-verification
   item; `get_star_image` polling is the recorded fallback should a
   real rig contradict this.)
-- Sweep geometry comes from `step_size` + `half_width` — per-call
-  or from the guiding train's `auto_focus` block, same field-by-field
-  fallback as the capture sweep. The capture-only parameters
-  (`duration`, `min_area`, `max_area`, `binning`, `threshold_sigma`,
-  `min_star_fraction`, `max_attempts`) are **rejected** when passed
-  per-call with a guiding `train_id`, and rejected at config load
-  inside a guiding train's block — a parameter that cannot
-  influence the run must not pretend to. `confirmation_tolerance`
-  applies to both variants and falls back to the block like the
-  geometry.
-- The metric sweep makes **one attempt**. Its failure shape is
-  different — a position's frame count is nearly constant, so
-  there is no sparse gate to starve the fit, and the star-lost
-  bracket at deep defocus is the expected curve edge — and every
-  extra sweep defocuses the guide star under active corrections
-  for another full grid. A failed metric fit restores the start as
-  before; the guiding train's focus policy is an open item of the
-  focus-model plan (O4), and the retry can follow it there.
-- `frames_per_step` (config-block only, default `3`): a positive
-  integer of fresh frames per grid position, at most 50 — the
-  guider's metrics window; a larger value could never be satisfied
-  and is rejected at load.
 
-Per grid position: `move_focuser` (the guiding train's terminal
-focuser — same grid order and backlash compensation as the capture
-sweep), then refresh the freshness watermark from the metrics
-window — frames exposed *during* the focuser motion, at a stale
-focus, never count. A refresh read that fails errors the run:
-without a fresh watermark, frames exposed during the motion (or, at
-the first position, before the sweep) would pass as fresh. Then poll
-until
-`frames_per_step` frames above it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
-exposures are seconds; expiry errors the run, and a metrics
-response reporting guiding stopped fails it immediately). The **earliest**
-`frames_per_step` fresh frames form the position's sample set, so a
-slow poll cannot inflate it; the sample is the median HFD of the
-valid ones among them. Frames flagged `star_lost` or with a null
-HFD are **invalid**: a sample set with no valid frame records a
-null sample — at deep defocus the star genuinely vanishes, so null
-samples at the sweep edges are the expected bracket shape, exactly
-like starless captures in the capture sweep.
+**Algorithm**:
+1. Read the focuser's current position and temperature once each.
+   Compute the grid: `start = current_position − half_width`;
+   positions are `start, start + step_size, start + 2·step_size, …`,
+   continuing while `≤ current_position + half_width`. Clamp it to
+   `[min_position, max_position]` (a point outside is dropped, not
+   coerced — coercion would create duplicate positions at the bound),
+   and reject before any motion if fewer than `min_fit_points`
+   positions remain. Walk the grid ascending, or descending when the
+   focuser's `backlash.approach` is `"in"`, so every sample is reached
+   from the same side as the final move (see
+   [Focuser Tool Details](#focuser-tool-details)). Emit
+   `focus_started` with `{camera_id: null, focuser_id, train_id,
+   position, temperature, method: "phd2_hfd"}`.
+2. At each grid position: `move_focuser` (the settle rule and backlash
+   compensation of the primitive tool), then refresh the freshness
+   watermark from the metrics window — frames exposed *during* the
+   focuser motion, at a stale focus, never count. A refresh read that
+   fails errors the run: without a fresh watermark, frames exposed
+   during the motion (or, at the first position, before the sweep)
+   would pass as fresh. Then poll until `frames_per_step` frames above
+   it arrive, bounded by a fixed 30 s-per-frame ceiling — guide
+   exposures are seconds; expiry errors the run, and a metrics
+   response reporting guiding stopped fails it immediately. The
+   **earliest** `frames_per_step` fresh frames form the position's
+   sample set, so a slow poll cannot inflate it; the sample is the
+   median HFD of the valid ones among them. Frames flagged
+   `star_lost` or with a null HFD are **invalid**: a sample set with
+   no valid frame records a null sample — at deep defocus the star
+   genuinely vanishes, so null samples at the sweep edges are the
+   expected bracket shape.
+3. Fit the hyperbola `hfd = a·√(1 + ((x − x₀)/b)²)`, the defocus
+   curve of a star, to the valid samples, each weighted by its
+   valid-frame count, with
+   [`rp-focus-curve`](../crates/rp-focus-curve.md) — the fit the
+   focus-model provider's capture sweep uses
+   ([focus-model.md § The sweep](focus-model.md#the-sweep), step 4,
+   which covers what it does with three samples). Fewer than
+   `min_fit_points` valid samples is `not_enough_stars`.
+   `best_position` is `x₀` rounded to a step and `best_hfd` is `a`,
+   which is 0 when the fit is the nearest V: the samples never reached
+   the floor near focus, and `final_hfd` is the measured value to read.
+   A centre past the positions that produced an HFD is
+   `monotonic_curve`: the samples bound it, as they do in the
+   provider's sweep, rather than the grid, whose null edges are where
+   the star was lost. On either failure the focuser is moved back to
+   the starting position, best effort — a failed restore is logged and
+   the fit error is still the one returned.
+4. Move the focuser to `best_position` (approach-corrected, so it
+   arrives from the same side as every sample) and collect one more
+   sample set there — the confirmation. It is accepted when it is
+   valid and its HFD is at most `(1 + confirmation_tolerance) ×
+   lowest`, where `lowest` is the smallest valid sweep sample.
+   Accepted → `final_position = best_position` and `final_hfd` is the
+   confirmation HFD. Rejected → move the focuser to that lowest
+   sample's position; `final_position` is that position and
+   `final_hfd` that sample's HFD. The run still succeeds, with
+   `confirmed: false` telling the caller the fit was not trusted.
+5. Emit `focus_complete` with `{camera_id: null, focuser_id,
+   train_id, position: final_position, hfd: final_hfd, best_position,
+   best_hfd, confirmed, fit_r_squared, samples_used, method:
+   "phd2_hfd"}`.
 
-Fit, confirmation, recovery, and result mirror the capture sweep,
-except for the curve. The metric sweep fits the hyperbola
-`hfd = a·√(1 + ((x − x₀)/b)²)`, the defocus curve of a star, with
-[`rp-focus-curve`](../crates/rp-focus-curve.md), the fit the
-focus-model provider's capture sweep uses
-([focus-model.md § The sweep](focus-model.md#the-sweep), step 4,
-which covers what it does with three samples). `best_position` is `x₀`
-rounded to a step and `best_hfd` is `a`, which is 0 when the fit is the
-nearest V: the samples never reached the floor near focus, and
-`final_hfd` is the measured value to read. A centre past the positions
-that produced an HFD is `monotonic_curve`. The samples bound it, as they
-do in the provider's sweep, rather than the grid, whose null edges are
-where the star was lost. `fit_r_squared`
-is reported with no threshold and no `poor_fit`: the threshold is
-the provider's `min_fit_r_squared`, and this sweep has no knob for one
-([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).
-`min_fit_points` valid samples required; samples weighted by their
-valid-frame count — the capture sweep's star-count weighting, one
-metric over; `not_enough_stars` / `monotonic_curve` errors restore
-the starting position (single attempt, no `attempts` or
-`wing_slope` on the result); on success the focuser moves to the fitted
-minimum and one more sample set is collected there as the
-confirmation, accepted when it is valid and its HFD is at most
-`(1 + confirmation_tolerance) × lowest` accepted sweep sample, with
-the same fallback to that sample's position otherwise. The shape
-differences: there is no sparse gate (`min_star_fraction` is a
-capture-only parameter — a position's frame count is nearly constant
-and carries no such signal); the result reports `best_hfd` /
-`final_hfd` (PHD2's half-flux **diameter**, in guide-camera pixels)
-instead of `best_hfr` / `final_hfr`; `confirmation` is
-`{hfd: f64 | null, frames_used: u32, accepted: bool}`; and
-`curve_points` entries are
-`{position, hfd: f64 | null, frames_used: u32}` — there are no
-`document_id`s because nothing was captured, and no `rejected` field
-because nothing is gated. `focus_started` / `focus_complete` /
-`focus_failed` payloads gain `method: "capture" | "phd2_hfd"` on both
-sweep variants.
-
-#### `refocus_train` Contract
-
-A built-in compound tool that expands one refocus trigger on a train
-into the dependency-ordered auto-focus sequence derived from the
-train model (see [Optical Trains](#optical-trains)). One call, the
-right AF runs in the right order — the caller does not need to know
-which focusers are shared or which train each one focuses.
-
-**Input**:
-- `train_id` — required, an `equipment.optical_trains[]` id.
-- `reason` — optional free-form string recorded on `refocus_started`
-  and the result (e.g. `"temperature_drift"`, `"filter_change"`);
-  defaults to `"manual"`. An orchestrator reacting to the
-  [Guide Focus Watch](#guide-focus-watch) events passes reasons like
-  `"guide_focus_degraded"`.
-
-There are no per-call sweep parameters: steps span trains, and sweep
-geometry is per-train — each step takes its parameters from its
-**run train's** `auto_focus` config block, which must be present.
-
-**Expansion**: the train model's AF sequence — shared focusers of
-the train upstream-first, each run in the train where that focuser
-is *terminal* (capturing through that train's camera), then the
-train's own terminal focuser, with any focuser an imaging train
-holds run in an imaging train (the derivation table's *run train*,
-[Optical Trains](#optical-trains)). Each step is one full V-curve run with
-the semantics of the [`auto_focus` Contract](#auto_focus-contract),
-including its per-step `focus_started` / `focus_complete` /
-`focus_failed` triple. A step whose run train is the **guiding
-train** is the
-[PHD2-metric sweep](#guide-train-sweep-phd2-metric-variant) — it
-requires an active guide loop, checked with the rest of the
-expansion before any motion. Steps run strictly sequentially, and
-the sequence derivation puts any guiding-train step last.
-
-**Guiding handshake**: when `equipment.mount.guiding` is configured
-and at least one **capture-based** step moves a focuser that is a
-member of the guiding train, rp reads the guider's stats first; if
-guiding is active, it pauses guide *corrections* (output-only — the
-guide camera keeps looping) before the first step and resumes after
-the last capture-based step. Sweeping a guide-coupled focuser
-mid-correction defocuses the guide star under PHD2's feet; pausing
-output while the loop keeps running lets PHD2 re-acquire cleanly on
-resume. A guiding-train **metric** step runs *after* that resume,
-under active corrections — the metric sweep needs the `GuideStep`
-stream (see its contract), so an expansion never ends with
-corrections paused before its own guide step. When the stats read
-fails or reports not-guiding, capture-based steps run without the
-handshake (`guiding_paused: false`) — a broken guider service must
-not block a refocus (Tenet 2) — but a guiding-train metric step
-still requires active guiding and errors without it. A failed
-*pause* after stats reported active guiding is an error (the
-service is alive and refusing); a failed *resume* after the
-capture-based steps completed is also an error — a night with
-guiding silently left paused must not look like success.
-
-**Events**: a `refocus_started` / `refocus_complete` /
-`refocus_failed` operation triple wraps the sequence (payloads in
-the [Events](#events) table; no predictive deadline yet — the
-per-step AF runs carry their own event triples).
-
-**Output**: `train_id`, `reason`, `guiding_paused`, and `steps` —
-one entry per completed AF run, in run order:
-`{focuser_id, train_id, camera_id, best_position, best_hfr,
-samples_used}` for capture-based steps; a guiding-train metric step
-reports `best_hfd` instead of `best_hfr` and a `null` `camera_id`
-(nothing was captured).
+**Output**:
+- `best_position` (i32) and `best_hfd` (f64) — the fit's centre and
+  minimum (step 3). `best_hfd` is a fit value, not a measurement — see
+  `final_hfd`.
+- `fit_r_squared` (f64) — weighted coefficient of determination of
+  the hyperbola over the valid samples, clamped to `[0, 1]`. Reported,
+  not enforced: the threshold is the focus-model provider's
+  `min_fit_r_squared`, and this sweep has no knob for one
+  ([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).
+- `confirmation` — `{hfd: f64 | null, frames_used: u32, accepted: bool}`,
+  the sample set collected at `best_position` and its verdict.
+- `confirmed` (bool) — `confirmation.accepted`, hoisted for callers.
+- `final_position` (i32) and `final_hfd` (f64) — where the focuser was
+  left and the HFD measured there (step 4). HFD is PHD2's half-flux
+  **diameter**, in guide-camera pixels.
+- `samples_used` (usize) — valid samples that entered the fit.
+- `curve_points` — `[{position: i32, hfd: f64 | null, frames_used: u32}]`,
+  one per grid position in walk order. There are no `document_id`s,
+  because nothing was captured.
+- `temperature_c` (f64 | null) — focuser temperature read once at the
+  start of the run; `null` when the focuser does not implement
+  temperature readout or the read fails for any other reason.
+  Informational: a failed read never aborts the run.
 
 **Error cases**:
+- `train_id` missing → MCP error naming it.
 - `train_id` unknown → MCP error naming the train.
-- The train has no focusers → MCP error (nothing to refocus).
-- The expansion contains a guiding-train metric step but the guider
-  is not configured, the stats read fails, or guiding is not active
-  → MCP error ("guide-train step requires active guiding"),
-  validated with the rest of the expansion before any motion.
-- A step's run train has no `auto_focus` config block → MCP error
-  naming the train and the missing block. Validated for every step
-  before any motion.
-- A step's AF run fails → the sequence stops, later steps do not
-  run, guiding is resumed if it was paused, and the tool error names
-  the failed step and its underlying error. Completed steps are not
-  rolled back — their fitted minima are good positions.
-- Pause / resume failures per the Guiding handshake above.
+- An imaging train → MCP error naming the train and `focus_train`.
+- The guiding train has no focuser → MCP error naming the train.
+- Its terminal focuser is one an imaging train holds → the error
+  above, before anything moves.
+- `step_size` or `half_width` set neither per call nor in the block →
+  MCP error naming the missing parameter.
+- `confirmation_tolerance` negative or non-finite → MCP error naming
+  the parameter.
+- Guiding not configured, not active, or its stats unreadable → the
+  "requires active guiding" error, with the reason.
+- Focuser not found or not connected → MCP error.
+- A [train lease](#train-lease) reserves the guiding train's camera or
+  the focuser → refused at once, naming the lease, before anything
+  moves.
+- The clamped grid has fewer than `min_fit_points` positions → MCP
+  error naming `min_fit_points`, before any motion.
+- A focuser move or a metrics read fails, guiding stops, or the frames
+  stop arriving within the ceiling (step 2) → the run errors and the
+  focuser is left where it is: the device that failed may be the
+  focuser, and a cancelled run must stop motion, not start more.
+- `not_enough_stars` / `monotonic_curve` → the starting position is
+  restored (step 3) and the run errors with the reason.
 
-Like every built-in tool, `refocus_train` cannot be shadowed: a
-tool-provider plugin advertising the same name fails startup.
+**Caveats**:
+- The sweep makes **one attempt**. A position's frame count is
+  nearly constant, so there is no sparse gate to starve the fit, and
+  the star-lost bracket at deep defocus is the expected curve edge;
+  every extra sweep would defocus the guide star under active
+  corrections for another full grid. The guiding train's focus policy
+  is an open item of the focus-model plan (O4), and a retry can follow
+  it there.
+- The confirmation sample costs `frames_per_step` guide frames per run
+  and is always collected. It catches a fit that landed away from the
+  measured minimum.
+- `auto_focus` is a built-in compound tool; a tool-provider plugin
+  advertising the same `auto_focus` name fails startup per
+  Config-Time Validation. An alternative ships under its own name.
 
 #### `get_refocus_plan` Contract
 
-The expansion `refocus_train` runs, as a read: which focusers a
-refocus of a train touches, in what order, and through which camera
-each one is measured. A focus provider walks the plan without
-learning the train model ([focus-model plan](../plans/focus-model.md),
-D16), and `rp` moves nothing in answering.
+The train model's AF sequence, as a read: which focusers a refocus of
+a train touches, in what order, and through which camera each one is
+measured. A focus provider walks the plan without learning the train
+model — the focus-model provider's `focus_train {shared: true}` does
+([focus-model plan](../plans/focus-model.md), D16) — and `rp` moves
+nothing in answering.
 
 **Input**: `train_id` — required, an `equipment.optical_trains[]` id.
 
@@ -6296,22 +5861,20 @@ D16), and `rp` moves nothing in answering.
 each `{focuser_id, run_train_id, camera_id, metric}`:
 
 - the train's shared focusers upstream-first, then the train's own
-  terminal focuser, each with its run train (`run_train_id`) — the
-  same derivation `refocus_train` executes. A focuser an imaging train
-  holds runs in an imaging train: where it is terminal, or, for a
-  shared focuser terminal in no imaging train, the addressed train
-  when it images and otherwise the first imaging train holding it. A
-  focuser no imaging train holds runs in the guiding train. So a
-  guiding train whose only focuser is the imaging train's plans that
-  focuser's capture step in the imaging train, and no guide step;
+  terminal focuser, each with its run train (`run_train_id`) — the AF
+  sequence of [Optical Trains](#optical-trains). A focuser an imaging
+  train holds runs in that imaging train, where it is the only focuser
+  and so the terminal one; a focuser no imaging train holds runs in the
+  guiding train. So an imaging train's plan is its own focuser alone,
+  and a guiding train whose only focuser is the imaging train's plans
+  that focuser's capture step in the imaging train, and no guide step;
 - `metric` is `"capture"` — measure through `camera_id`, the run
   train's terminal camera — or `"guide"` for a step whose run train
   is the guiding train: the PHD2-metric sweep, with a `null`
   `camera_id` because nothing is captured through the guide camera,
   and always last, since only the guiding train's own terminal
-  focuser runs there. A capture step's focuser is the run train's
-  terminal focuser unless the shared focuser is terminal in no
-  imaging train;
+  focuser runs there. A capture step's focuser is always its run
+  train's terminal focuser, since an imaging train holds one;
 - `guide_coupled` is `true` when a capture step moves a focuser that
   is a member of the guiding train. A walker pauses guide corrections
   around such steps (`pause_guiding` / `resume_guiding`) and resumes
@@ -6642,7 +6205,7 @@ exactly one mount.
 - `camera_id` missing or names a camera that doesn't exist /
   isn't connected → MCP error naming the field/condition (parameter
   validation runs in input order, same convention as
-  `auto_focus` / `measure_basic`).
+  `measure_basic`).
 - `ra`, `dec`, `duration`, `tolerance_arcsec`, `max_attempts`
   missing → MCP error naming the missing parameter.
 - `ra` outside `[0, 24)` or `dec` outside `[-90, 90]` → MCP error
@@ -6714,31 +6277,27 @@ sections.
   per [Config-Time Validation](#config-time-validation). An
   alternative ships under its own name.
 
-#### Example: `auto_focus` (V-curve)
+#### Example: `auto_focus` (guide-train V-curve)
 
 See [`auto_focus` Contract](#auto_focus-contract) for the full parameter
-set, error policy, and persistence rules. The pseudo-code below
-illustrates the loop shape only.
+set and error policy. The pseudo-code below illustrates the loop shape
+only.
 
 ```
-Orchestrator: tools/call auto_focus {
-    camera_id: "main-cam",  focuser_id: "main-focuser",
-    duration: "2s",         step_size: 200,          half_width: 1500,
-    min_area: 8,            max_area: 400
-}
+Orchestrator: tools/call auto_focus { train_id: "guide" }
+  the guiding train's auto_focus block: step_size 50, half_width 250,
+                                        frames_per_step 3
   rp's auto_focus implementation (current_position = 11000):
-    move_focuser(position=9500) → 9500
-    capture(camera_id="main-cam", duration="2s") → {document_id: "doc-001"}
-    measure_basic(document_id="doc-001", min_area=8, max_area=400)
-                                                   → {hfr: 6.8, star_count: 220}
-    move_focuser(position=9700) → 9700
-    ... 14 more sweep points (15 total) ...
-    move_focuser(position=12500) → 12500   # last sweep point
-    fit parabola → best_position = 11212
-    move_focuser(position=11212) → 11212   # final move to fitted vertex
-  ← {best_position: 11212, best_hfr: 2.1, final_position: 11212,
-     samples_used: 15, curve_points: [...], attempts: 1,
-     wing_slope: 0.62, temperature_c: 4.3}
+    move_focuser(position=10750) → 10750
+    the next 3 fresh guide frames → HFD 4.1, 4.3, 4.2 → sample 4.2
+    move_focuser(position=10800) → 10800
+    ... 9 more grid points (11 total) ...
+    fit hyperbola → best_position = 11012
+    move_focuser(position=11012) → 11012   # final move to the fitted centre
+    the next 3 fresh guide frames → confirmation 2.3 (accepted)
+  ← {best_position: 11012, best_hfd: 2.2, final_position: 11012,
+     final_hfd: 2.3, confirmed: true, samples_used: 11,
+     curve_points: [...], temperature_c: 4.3}
 ```
 
 #### Example: `center_on_target`
@@ -6778,10 +6337,10 @@ Orchestrator: tools/call center_on_target {
 
 #### Third-party alternatives
 
-A site that wants a different algorithm (parabolic-fit focus, ML-based
-focus, plate-solve-driven centering with custom heuristics) ships it
-from a tool provider under a *different* tool name (e.g.
-`auto_focus_parabolic`). The orchestrator opts in by calling the
+A site that wants a different algorithm (ML-based focus,
+plate-solve-driven centering with custom heuristics) ships it from a
+tool provider under a *different* tool name (e.g.
+`center_on_target_ml`), the way `focus-model` ships `focus_train`. The orchestrator opts in by calling the
 plugin's tool name — a `session-runner` document names the tool it
 wants — and both algorithms stay reachable. There is no drop-in
 replacement: a plugin advertising a built-in's name, or a name another
@@ -7736,7 +7295,7 @@ On the overall safe → unsafe transition:
    but not a dark, a bias or a panel flat that `rp` is taking. Step 2
    already aborted every exposure a cancelled `capture` was driving;
    this catches a camera left exposing with no body to answer for it,
-   such as an `auto_focus` sweep's or another client's, since the park
+   such as another client's, since the park
    that follows would ruin a sky frame either way. A capture of a frame
    that needs no sky holds its camera's *indoor slot* from the moment
    it holds the camera until it ends, and this step skips a camera
@@ -7793,7 +7352,7 @@ never gated, even where it moves the mount, because it is what the
 transition itself does. Everything else is **ungated**: every read, the
 target-store writes, `plate_solve`, and the indoor actuators (`capture`,
 `set_filter`, `move_focuser`, `move_rotator`, `calibrator_on`,
-`start_cooldown`, `sync_mount`, `auto_focus`, `refocus_train`) — darks,
+`start_cooldown`, `sync_mount`, `auto_focus`) — darks,
 bias, panel flats and cooling are what an unsafe hour is for (tenet 1). `unpark` and
 `set_tracking` move nothing by themselves but are the door to motion,
 so the sequence fails at its first step.
@@ -7816,9 +7375,7 @@ cancellation follow the same rule. A sky capture in flight is
 cancelled through its body, which aborts its exposure, so the caller
 learns its frame died for safety rather than seeing a bare hardware
 error; a dark, a bias or a panel flat in flight runs to its end, and
-step 3's exposure abort leaves its camera alone. A compound ungated
-tool with a sky exposure in flight (`auto_focus`, `refocus_train`)
-sees that abort's hardware error instead (step 3) and fails with it.
+step 3's exposure abort leaves its camera alone.
 
 **The safety gate.** The class is checked at tool dispatch, *after*
 the call is registered — the registration is what the unsafe
@@ -7917,8 +7474,8 @@ returns without moving anything.
 | Cancelled body | Stop-class counterpart |
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
-| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
-| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
+| `capture`, and the captures inside `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
+| `move_focuser`, and the moves inside `auto_focus` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
@@ -8351,7 +7908,7 @@ positive number rejected at load otherwise. The optional
 `focuser.backlash` block (`approach`: `"in"` or `"out"`; `steps`: a
 positive integer larger than the mechanism's backlash) turns on
 approach-direction backlash compensation for every move of that
-focuser, including `auto_focus` sweeps — see
+focuser, including a focus sweep's — see
 [Focuser Tool Details](#focuser-tool-details). Any other `approach`
 value, a zero `steps` or one beyond `i32::MAX`, or an unknown key
 inside the block is rejected at load with the field named.
@@ -8473,15 +8030,7 @@ return a structured "site not configured" error.
         "purpose": "imaging",
         "focal_length_mm": 1000.0,
         "default_position_angle_degrees": 254.0,
-        "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
-        "auto_focus": {
-          "duration": "3s",
-          "step_size": 100,
-          "half_width": 1000,
-          "min_area": 4,
-          "max_area": 500,
-          "binning": "2x2"
-        }
+        "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"]
       },
       {
         "id": "guide",
@@ -8888,13 +8437,10 @@ services/rp/src/
                           GetTrackingParams, GetMountPositionParams,
                           ParkParams, UnparkParams, GetParkStateParams,
                           AbortSlewParams + the 9 mount tools.
-      auto_focus.rs     AutoFocusToolParams, RefocusTrainParams +
-                          auto_focus + refocus_train tools +
-                          AutoFocusAdapter (binds the imaging::tools::auto_focus
-                          traits to the handler's primitives) + the
-                          guide-train PHD2-metric sweep (median HFD
-                          per position over the guider metrics
-                          window).
+      auto_focus.rs     AutoFocusToolParams + the auto_focus tool:
+                          the guiding train's PHD2-metric sweep
+                          (median HFD per position over the guider
+                          metrics window).
       rotator.rs        MoveRotatorParams, RotatorPositionParams +
                           move_rotator, get_rotator_position
                           (rotator_id / train_id addressing, blocking

@@ -228,12 +228,13 @@ so a walk started on a filterless guiding train may still name the
 filter its imaging step focuses through. A plan whose only step is the
 guide step is refused before anything actuates: its result has nowhere
 to go without a capture step to report. So is a plan with a capture
-step whose focuser is not its run train's terminal focuser, which
-`rp` plans for a shared focuser terminal in no train: a sweep moves
-its train's terminal focuser and is recorded on that train, so it
-cannot measure that step, and the walk reads each run train's
-`get_train_info` before anything moves to tell. `rp`'s own
-`refocus_train` sweeps the step's focuser and runs such a plan. A failed step stops the
+step whose focuser is not its run train's terminal focuser: a sweep
+moves its train's terminal focuser and is recorded on that train, so
+it cannot measure that step, and the walk reads each run train's
+`get_train_info` before anything moves to tell. No config `rp` loads
+plans such a step, since an imaging train holds at most one focuser
+([rp.md § Optical Trains](rp.md#optical-trains)); the check keeps the
+walk from moving a focuser it cannot measure should a plan hold one. A failed step stops the
 sequence and puts back only that step's focuser; completed steps are
 good positions. The guide step is `rp`'s tool and keeps `rp`'s
 put-back rule ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)):
@@ -821,7 +822,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
-| `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
+| `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'` |
 | A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, each sweep of `determine_filter_offsets`, and `set_focus_offsets` and `reset_focus_model` before they write) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
 | A `temperature_sensor` that names a focuser `rp` does not know (the same calls) | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
@@ -878,9 +879,10 @@ reports `guiding: true`, the body calls `pause_guiding` (corrections
 only, `full: false`) before the first move and `resume_guiding` after
 the confirmation frame, on the failure path and on cancellation too.
 A stats read that fails, or reports not guiding, skips the handshake
-rather than blocking the sweep; a failed resume is an error, as it is
-for `rp`'s `refocus_train`, and a sweep whose run was otherwise good is
-recorded before that error surfaces. The plan read is the one that
+rather than blocking the sweep; a failed resume is an error, since a
+night with guiding silently left paused must not look like success,
+and a sweep whose run was otherwise good is recorded before that error
+surfaces. The plan read is the one that
 does not skip: it is the only thing that says whether the guiding
 train shares this focuser, so a plan `rp` cannot answer fails the call
 before anything moves. A `shared: true` walk holds its pause until a
@@ -1052,17 +1054,11 @@ sensor every sweep refuses.
 
 ## The sweep
 
-The V-curve with the semantics `rp`'s capture sweep has today
-([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)), through
-`rp`'s primitives — except for what it measures (steps 2 and 3), the
-same list of stars at every frame where `rp`'s capture sweep detects
-each frame afresh and gates a sample on a fraction of the densest
-frame's count, the curve it fits (step 4), which is the
-hyperbola where `rp`'s capture sweep fits a parabola, and where the
-retry goes (step 6): `rp`'s sweep
-makes no shift after a sweep whose stars ran out on one side, and
-reads the `monotonic_curve` side against the grid's centre. The capture
-sweep retires at the plan's S7, and the rules live here:
+The V-curve, driven through `rp`'s primitives: `move_focuser`,
+`capture` and `measure_stars`. `rp` has no capture sweep of its own —
+its `auto_focus` is the guiding train's PHD2-metric sweep
+([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)) — so an
+imaging train's sweep follows these rules:
 
 1. The grid is `centre ± half_width` in `step_size` increments, clamped
    to the focuser's bounds (points outside are dropped, not coerced),
