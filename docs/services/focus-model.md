@@ -1307,8 +1307,11 @@ file written by a newer build.
   sweep did next ([The sweep](#the-sweep), step 7) — empty for a run
   whose first fit held, and on a run recorded before the log existed.
   `reference` is the result's `{position, document_id, listed}` for the
-  attempt that ended the run, null on a run that took no reference
-  frame and on one recorded before the star list existed.
+  attempt that ended the run. It is null when that attempt took none —
+  a run stopped before its first reference frame, or a retry whose
+  reference frame a device error or a cancellation stopped, the earlier
+  attempts' `centre` and `listed` being in `attempts_log` — and on a
+  run recorded before the star list existed.
   The curve points are `{position, hfr, star_count, document_id,
   rejected}` as the sweep measured them — every attempt's, and the
   partial walk of a run a device error or a cancellation stopped; the

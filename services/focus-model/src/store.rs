@@ -124,8 +124,11 @@ pub struct FocusRun {
     #[serde(default)]
     pub attempts_log: Vec<FailedAttempt>,
     /// The reference frame of the attempt that ended the run: where it
-    /// was taken and how many stars it listed. `None` on a run that took
-    /// none, and on one recorded before the star list existed.
+    /// was taken and how many stars it listed. `None` when that attempt
+    /// took none — a run stopped before its first reference frame, or a
+    /// retry whose reference frame failed or was cancelled, the earlier
+    /// attempts' centres and counts being in `attempts_log` — and on a
+    /// run recorded before the star list existed.
     #[serde(default)]
     pub reference: Option<Reference>,
     /// The sweep's samples, exactly as it measured them.
