@@ -2935,6 +2935,7 @@ fn escalation_tools(plan: Result<Value, ToolCallError>) -> (MockTools, EventInta
             Ok(planned_recommendation(Value::Null, Value::Null))
         }
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "get_train_info" => Ok(main_train_info()),
         "get_refocus_plan" => plan.clone(),
         "focus_train" => Ok(json!({
             "position": 29770,
@@ -2951,12 +2952,18 @@ fn escalation_tools(plan: Result<Value, ToolCallError>) -> (MockTools, EventInta
     (tools, EventIntake::new(rx))
 }
 
-async fn run_escalation(plan: Result<Value, ToolCallError>) -> (MockTools, RunOutcome, Value) {
+/// Run the deep-sky document with an escalation during its second pass.
+/// `focus` turns on the acquisition focus, which seeds the baselines the
+/// escalation must or must not replace.
+async fn run_escalation(
+    plan: Result<Value, ToolCallError>,
+    focus: bool,
+) -> (MockTools, RunOutcome, Value) {
     let doc = make_doc(crate::document::corpus::golden_deep_sky());
     let params = deep_sky_params(
         &doc,
         json!({
-            "focus": false,
+            "focus": focus,
             "centering": false,
             "guide": true,
             "max_frames": 2,
@@ -2977,7 +2984,7 @@ async fn test_golden_deep_sky_escalation_walks_the_shared_refocus_when_the_plan_
         "steps": [
             { "focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture" }
         ],
-    })))
+    })), false)
     .await;
 
     assert_eq!(outcome, RunOutcome::Completed);
@@ -3017,7 +3024,7 @@ async fn test_golden_deep_sky_escalation_runs_the_metric_sweep_when_the_plan_is_
         "steps": [
             { "focuser_id": "guide-focuser", "run_train_id": "guide", "camera_id": "guide-cam", "metric": "guide" }
         ],
-    })))
+    })), true)
     .await;
 
     assert_eq!(outcome, RunOutcome::Completed);
@@ -3026,10 +3033,15 @@ async fn test_golden_deep_sky_escalation_runs_the_metric_sweep_when_the_plan_is_
         vec![json!({ "train_id": "guide" })],
         "a guide-only plan gets the metric sweep on the guiding train"
     );
-    assert_eq!(calls_to(&tools, "focus_train"), Vec::<Value>::new());
-    assert!(
-        session.get("last_focus_hfr").is_none_or(Value::is_null),
-        "the metric sweep moved no imaging focuser, so no baseline is recorded: {session}"
+    assert_eq!(
+        calls_to(&tools, "focus_train"),
+        vec![json!({ "train_id": "main" })],
+        "only the acquisition focuses the imaging train"
+    );
+    assert_eq!(
+        session["last_focus_hfr"],
+        json!(1.4),
+        "the metric sweep moved no imaging focuser, so the acquisition's baseline stands: {session}"
     );
     assert_eq!(
         session["frames_since_focus"],
@@ -3040,9 +3052,12 @@ async fn test_golden_deep_sky_escalation_runs_the_metric_sweep_when_the_plan_is_
 
 #[tokio::test]
 async fn test_golden_deep_sky_escalation_logs_a_plan_rp_cannot_answer_and_goes_on() {
-    let (tools, outcome, _) = run_escalation(Err(ToolCallError::Failed(
-        "train 'guide' has no focuser".to_owned(),
-    )))
+    let (tools, outcome, _) = run_escalation(
+        Err(ToolCallError::Failed(
+            "train 'guide' has no focuser".to_owned(),
+        )),
+        false,
+    )
     .await;
 
     assert_eq!(

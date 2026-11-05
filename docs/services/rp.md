@@ -5118,9 +5118,10 @@ guide loop, and is idle otherwise:
   `guide_focus_degraded` fired — the guide-only AF the orchestrator
   ran did not recover the trend, or none ran — emit
   `guide_focus_escalation {train_id, baseline_hfd, current_hfd}` once per
-  episode. The full `refocus_train` sequence is the indicated
-  response: it covers the shared-focuser drift the guide-only sweep
-  cannot fix.
+  episode. The full refocus of the guiding train's plan is the
+  indicated response (`deep_sky.json` walks it with focus-model's
+  `focus_train {shared: true}`): it covers the shared-focuser drift the
+  guide-only sweep cannot fix.
 - **Recovery** (trailing median back within the threshold) ends the
   episode silently; frames flagged `star_lost` or with a null HFD
   never enter a median.
