@@ -937,6 +937,17 @@ the `slope` line — `microns_per_step`, the focal length or aperture
 behind `N`, the pixel size, or the obstruction behind `c` — and
 `get_sweep_plan` reports both side by side.
 
+**Real-hardware validation.** 2026-11-04, on `rig2` (Windows 11, a
+530 mm f/5 refractor, a QHY600M with its wheel and a FocusLynx), at
+`00b87c77`: the derived sweep, a predicted start and a hand-entered
+offset on a filter change, under a real sky. The check above caught a
+wrong input there. `rp` took `microns_per_step` from the FocusLynx
+server's `StepSize`, 1.06985 µm, and the runs measured a wing slope
+about 2.1× the predicted one, so the sweep's ends sat at 5.0–8.1× the
+focused HFR.
+With 2.1 µm configured, the ends sat at 2.9–3.5×
+([record](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
+
 ## The predicted start
 
 ```

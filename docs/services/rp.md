@@ -4620,7 +4620,15 @@ optics — the numbers a focus provider sizes a sweep from
   re-establish, cached on the entry like the camera's pixel size —
   and a driver that does not implement it, or reports a non-positive
   or non-finite value, leaves the fact unknown. A property read;
-  nothing moves.
+  nothing moves. A driver's `StepSize` can be wrong for the focuser
+  it drives: on `rig2`, Optec's FocusLynx server reported 1.06985 µm,
+  while the focus sweeps' defocus growth put the focuser's travel near
+  2 µm per step, and 2.1 is configured there
+  ([record](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
+  When a focus provider's measured wing slope disagrees with its
+  predicted one, check every input of the slope — the step size is one
+  of five (focus-model.md § Sweep sizing) — and configure the one that
+  is wrong.
 - the terminal camera's `PixelSizeX`, the connect-time invariant the
   capture sidecar's `optics` block also records.
 
