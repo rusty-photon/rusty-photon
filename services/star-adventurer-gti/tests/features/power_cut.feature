@@ -10,7 +10,8 @@ Feature: A power cut while serving
   position back with :E1 and :E2 before the transport serves again.
   Tracking stays off until a client turns it on. After a longer outage
   someone may have moved the mount, so nothing is written back: the
-  mount state record decides, as at a power-up. If the mount was slewing at the cut, the position written back is
+  mount state record decides, as at a power-up. An ap_park_0 mount names
+  no pose to check against, and loses its position. If the mount was slewing at the cut, the position written back is
   only an estimate and the position is lost: slews, tracking and guide
   pulses are refused, and Park parks in place. A plate-solve sync, or the
   recovery from a named park, clears a lost position. A link that drops

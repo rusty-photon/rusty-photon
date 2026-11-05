@@ -2881,8 +2881,12 @@ encoders keep their power-up values, and the position **awaits the
 power-up check**. That check is the one a power-up connect makes
 against the [mount state record](#the-mount-state-record): it seeds the
 configured pose when the record says the mount came to rest there, and
-otherwise loses the position. It runs at once when a client is
-connected, and at the next connect when none is. Thirty seconds holds a
+otherwise loses the position. A missing record loses it too, because
+after a restart the driver saw, it cannot mean a first install.
+`ap_park_0` names no pose to check against, so its position is lost. A
+mount that was parked stays parked when the check seeds its park pose.
+The check runs at once when a client is connected, and at the next
+connect when none is. Thirty seconds holds a
 blip and the transport's 5 s retry. A WiFi GTi whose access point takes
 longer to come back gets the check instead of the restore.
 
@@ -2936,15 +2940,16 @@ record beside its config file, named after it:
 | `{"state":"lost"}` | the position is lost | the driver loses the position |
 
 The record is written only when its state changes, never on each poll or
-pulse. A night of imaging writes it about twice: at the first slew and
+pulse. A write that fails is retried on every tick until it lands, with
+one `warn!`, because an older record left on disk can mislead the next
+power-up. A night of imaging writes it about twice: at the first slew and
 at the dawn park. The writer runs only while a client is connected,
 because that is the only time anything can move the mount. It derives
 the state from the snapshot the poll refreshes. It skips while the
 transport is reconnecting, while an axis has no status since the last
 handshake, and while a power-up check is pending, because the record is
 that check's evidence. The write is atomic: a temp file in the same
-directory, `fsync`'d and renamed, like `SetPark`'s. A failed write logs
-a `warn!`.
+directory, `fsync`'d and renamed, like `SetPark`'s.
 
 Every connect reads the record. A record that says lost keeps the
 position lost, whatever the encoders read: the in-memory state does not
@@ -2956,7 +2961,8 @@ On a fresh-power-up connect with a named `unpark_from_ap_position`, the
 seed also checks the record against the configured pose:
 
 - **No record** (a first install): the seed runs, as the operator's
-  assertion says.
+  assertion says. Not after a restart the driver saw while serving:
+  there, a missing record loses the position.
 - **At rest at the seed pose**, within the fresh-power-up tolerance of
   that pose's ticks: the seed runs. This is the dawn park that the
   daily power-cycle plan requires.
@@ -2968,9 +2974,10 @@ nothing tells the driver whether someone moved the mount by hand while
 it was off. To power up at the configured pose after parking elsewhere,
 run the recovery from that pose.
 
-`ap_park_0` makes no power-up check, because its frame stays unanchored
-until a sync either way; a record that says lost still keeps its
-position lost. Nothing in the record is configuration, and the setup
+`ap_park_0` makes no power-up check at a power-up connect, because its
+frame stays unanchored until a sync either way. A record that says lost
+still keeps its position lost, and a pending check after a long cut
+loses it ([§Power cut while serving](#power-cut-while-serving)). Nothing in the record is configuration, and the setup
 page neither shows nor edits it.
 
 #### Recovery on the mount's setup page

@@ -108,13 +108,21 @@ pub(super) enum PowerUpVerdict {
 
 /// Decide a fresh-power-up connect from the record. `seed` is the
 /// configured pose's encoder ticks; `tolerance` is how far from them a
-/// record still counts as at that pose.
+/// record still counts as at that pose. `after_restart` says the check
+/// follows a restart the driver saw while serving: a missing record then
+/// cannot be a first install, and seeds nothing.
 pub(super) fn power_up_verdict(
     read: &ReadRecord,
     seed: (i32, i32),
     tolerance: i32,
+    after_restart: bool,
 ) -> PowerUpVerdict {
     match read {
+        ReadRecord::Absent if after_restart => PowerUpVerdict::Lost(
+            "the driver saw the mount's controller restart, and no record says where the \
+             mount came to rest"
+                .to_string(),
+        ),
         ReadRecord::Absent => PowerUpVerdict::Seed,
         ReadRecord::Record(MountStateRecord::AtRest {
             ra_ticks,
@@ -281,7 +289,27 @@ mod tests {
     #[test]
     fn no_record_seeds() {
         assert_eq!(
-            power_up_verdict(&ReadRecord::Absent, SEED, 10),
+            power_up_verdict(&ReadRecord::Absent, SEED, 10, false),
+            PowerUpVerdict::Seed
+        );
+    }
+
+    #[test]
+    fn no_record_after_a_restart_the_driver_saw_is_lost() {
+        assert!(matches!(
+            power_up_verdict(&ReadRecord::Absent, SEED, 10, true),
+            PowerUpVerdict::Lost(_)
+        ));
+    }
+
+    #[test]
+    fn at_rest_at_the_seed_pose_after_a_restart_still_seeds() {
+        let read = ReadRecord::Record(MountStateRecord::AtRest {
+            ra_ticks: SEED.0,
+            dec_ticks: SEED.1,
+        });
+        assert_eq!(
+            power_up_verdict(&read, SEED, 10, true),
             PowerUpVerdict::Seed
         );
     }
@@ -292,7 +320,10 @@ mod tests {
             ra_ticks: SEED.0 + 10,
             dec_ticks: SEED.1 - 10,
         });
-        assert_eq!(power_up_verdict(&read, SEED, 10), PowerUpVerdict::Seed);
+        assert_eq!(
+            power_up_verdict(&read, SEED, 10, false),
+            PowerUpVerdict::Seed
+        );
     }
 
     #[test]
@@ -302,7 +333,7 @@ mod tests {
             dec_ticks: SEED.1,
         });
         assert!(matches!(
-            power_up_verdict(&read, SEED, 10),
+            power_up_verdict(&read, SEED, 10, false),
             PowerUpVerdict::Lost(_)
         ));
     }
@@ -315,7 +346,10 @@ mod tests {
             ReadRecord::Unreadable("x does not parse".to_string()),
         ] {
             assert!(
-                matches!(power_up_verdict(&read, SEED, 10), PowerUpVerdict::Lost(_)),
+                matches!(
+                    power_up_verdict(&read, SEED, 10, false),
+                    PowerUpVerdict::Lost(_)
+                ),
                 "{read:?}"
             );
         }

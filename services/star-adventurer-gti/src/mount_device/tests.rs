@@ -2403,6 +2403,32 @@ async fn the_cut_reaction_keeps_a_restored_mount_parked_and_anchored() {
 }
 
 #[tokio::test]
+async fn a_pending_power_up_check_on_ap_park_0_loses_the_position() {
+    // `ap_park_0` names no power-up pose: after a long cut there is
+    // nothing to check the record against, and the encoders' (0, 0) is
+    // not where the cut left the mount.
+    let d = device();
+    d.manager.power().await_power_up_check();
+    d.set_connected(true).await.unwrap();
+    assert_eq!(d.manager.power().position(), crate::power::Position::Lost);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_leaves_at_park_to_a_pending_power_up_check() {
+    let d = connected_device().await;
+    d.state.write().await.at_park = true;
+    d.manager.power().await_power_up_check();
+    d.drop_what_the_cut_ended().await;
+    let s = d.state.read().await;
+    assert!(
+        s.at_park,
+        "the check decides whether the mount is still parked"
+    );
+    assert!(!s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+}
+
+#[tokio::test]
 async fn debug_impl_includes_config_file_path() {
     // Pins the `derive_more::Debug` derive — adding a new field
     // that should appear in Debug requires keeping it un-`#[debug(skip)]`

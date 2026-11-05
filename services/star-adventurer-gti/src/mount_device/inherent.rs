@@ -879,13 +879,21 @@ impl MountDevice {
         }
         // `ap_park_0` ("current position") has no codebase encoder
         // mapping — trust the firmware encoder as-is and emit no logs.
-        // Its frame is unanchored at power-up either way, so a pending
-        // power-up check has nothing to decide.
+        // It asserts no power-up pose, so a pending power-up check has
+        // nothing to check the record against: after a long cut the mount
+        // is wherever the cut left it, not at the encoders' (0, 0).
         let (Some(mech_ha), Some(dec_deg)) = (
             unpark_from_ap_position.codebase_mech_ha_hours(self.config.site_latitude_deg),
             unpark_from_ap_position.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
         ) else {
-            power.settle_power_up_check(true);
+            if power.position() == Position::AwaitingCheck {
+                power.settle_power_up_check(false);
+                warn!(
+                    "the mount's controller restarted after a long cut, and ap_park_0 names \
+                     no power-up pose to check: the position is lost until a plate-solve \
+                     sync or the recovery from a named park on the mount's setup page"
+                );
+            }
             return Ok(());
         };
         let params = self
@@ -922,9 +930,12 @@ impl MountDevice {
             .to_ticks(Cpr::new(params.cpr_dec))
             .value();
         if let Some(read) = record {
-            if let PowerUpVerdict::Lost(reason) =
-                power_up_verdict(&read, (ra_ticks, dec_ticks), FRESH_POWER_UP_TICK_TOLERANCE)
-            {
+            if let PowerUpVerdict::Lost(reason) = power_up_verdict(
+                &read,
+                (ra_ticks, dec_ticks),
+                FRESH_POWER_UP_TICK_TOLERANCE,
+                power.position() == Position::AwaitingCheck,
+            ) {
                 power.mark_position_lost();
                 warn!(
                     %reason,

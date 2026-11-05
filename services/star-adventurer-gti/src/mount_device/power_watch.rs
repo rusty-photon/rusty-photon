@@ -20,23 +20,28 @@ impl MountDevice {
     /// both axes, so the slew or park in flight is over (emptying the
     /// slot makes its watcher stand down), every guide pulse is over, and
     /// tracking is off until a client turns it on again. A position that
-    /// is not known also leaves the frame unanchored, without a park
-    /// target, and not parked.
+    /// is not known also leaves the frame unanchored and without a park
+    /// target; a lost one leaves the mount not parked.
     pub(super) async fn drop_what_the_cut_ended(&self) {
         let _axes = self.axis_ownership.lock().await;
         self.slew_in_progress.clear();
-        let lost = !self.manager.power().position_known();
+        let position = self.manager.power().position();
         let mut s = self.state.write().await;
         s.tracking_requested = false;
         s.pulse_guiding = PulseGuiding::IDLE;
-        if lost {
+        if position != Position::Known {
             s.frame_anchored = false;
             s.park_ra_ticks = None;
             s.park_dec_ticks = None;
+        }
+        // A pending power-up check leaves `AtPark` to the check: a seed
+        // finds a parked mount still at its park pose, and a lost position
+        // clears it when the park target is loaded again.
+        if position == Position::Lost {
             s.at_park = false;
         }
         drop(s);
-        debug!(lost, "dropped the device state the power cut ended");
+        debug!(?position, "dropped the device state the power cut ended");
     }
 
     /// The power-up check for a long cut that ended while a client is
@@ -83,6 +88,9 @@ pub(super) fn spawn_power_watch(device: MountDevice, polling_interval: Duration)
     tokio::spawn(async move {
         let mut ticker = interval(polling_interval);
         let mut written: Option<MountStateRecord> = None;
+        // The record whose write last failed: warned about once, and
+        // retried every tick until it lands.
+        let mut failed: Option<MountStateRecord> = None;
         loop {
             tokio::select! {
                 changed = restarts.changed() => {
@@ -117,16 +125,26 @@ pub(super) fn spawn_power_watch(device: MountDevice, polling_interval: Duration)
                 continue;
             }
             let target = path.clone();
-            let result =
-                tokio::task::spawn_blocking(move || mount_state::write(&target, record)).await;
+            let result = tokio::task::spawn_blocking(move || mount_state::write(&target, record))
+                .await
+                .map_err(|e| format!("the write did not finish: {e}"))
+                .and_then(|written| written.map_err(|e| e.to_string()));
             match result {
-                Ok(Ok(())) => debug!(?record, "mount state record written"),
-                Ok(Err(e)) => warn!(?record, "mount state record not written: {e}"),
-                Err(e) => warn!(?record, "mount state record write did not finish: {e}"),
+                Ok(()) => {
+                    debug!(?record, "mount state record written");
+                    written = Some(record);
+                    failed = None;
+                }
+                // Retried every tick, since an older record left on disk
+                // can mislead the next power-up; warned about once.
+                Err(e) if failed == Some(record) => {
+                    debug!(?record, "mount state record still not written: {e}");
+                }
+                Err(e) => {
+                    warn!(?record, "mount state record not written; retrying: {e}");
+                    failed = Some(record);
+                }
             }
-            // One attempt per change: a failing write warns once, not on
-            // every tick.
-            written = Some(record);
         }
     });
 }
