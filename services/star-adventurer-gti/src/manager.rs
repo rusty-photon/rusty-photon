@@ -1133,12 +1133,13 @@ type AxisSample = (i32, Instant);
 /// samples to seed the snapshot with: the written ones, or `read` when
 /// there is no earlier sample to carry over.
 ///
-/// The position is trusted only after an outage of at most
-/// [`MAX_TRUSTED_OUTAGE`] since the first failed request. After a longer
-/// one, or one nothing dates, someone may have moved the mount by hand:
-/// the estimate is still written back, so a sync reads the pier side from
-/// it, but the position awaits the power-up check against the mount state
-/// record.
+/// A sample [`position_to_restore`] does not trust loses the position,
+/// whatever the outage. A trusted one is kept only after an outage of at
+/// most [`MAX_TRUSTED_OUTAGE`] since the first failed request. After a
+/// longer one, or one nothing dates, someone may have moved the mount by
+/// hand: the estimate is still written back, so a sync reads the pier side
+/// from it, but the position awaits the power-up check against the mount
+/// state record.
 async fn restore_after_restart(
     conn: &Connection<SkywatcherCodec>,
     previous: &MountSnapshot,
@@ -1157,7 +1158,23 @@ async fn restore_after_restart(
     let dec = write_position(conn, Axis::Dec, restore.dec_ticks).await?;
     let ((read_ra, _), (read_dec, _)) = read;
     let outage = first_failed.map(|failed| Instant::now().saturating_duration_since(failed));
-    if outage.is_none_or(|outage| outage > MAX_TRUSTED_OUTAGE) {
+    // A mount the last sample shows moving too fast is lost whatever the
+    // outage: no record written before that motion can say where it
+    // stopped. Only a trusted sample goes on to the outage test.
+    if restore.lost {
+        power.mark_position_lost();
+        warn!(
+            ?outage,
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
+            "the mount's controller restarted while the mount moved: its last \
+             position is written back as an estimate, and the position is lost \
+             until a plate-solve sync or the recovery from a named park on the \
+             mount's setup page"
+        );
+    } else if outage.is_none_or(|outage| outage > MAX_TRUSTED_OUTAGE) {
         power.await_power_up_check();
         info!(
             ?outage,
@@ -1168,18 +1185,6 @@ async fn restore_after_restart(
             "the mount's controller restarted after a cut too long to trust its last \
              position: that position is written back as an estimate, and the mount \
              state record decides whether the power-up pose is seeded"
-        );
-    } else if restore.lost {
-        power.mark_position_lost();
-        warn!(
-            read_ra_ticks = read_ra,
-            read_dec_ticks = read_dec,
-            written_ra_ticks = ra.0,
-            written_dec_ticks = dec.0,
-            "the mount's controller restarted while the mount moved: its last \
-             position is written back as an estimate, and the position is lost \
-             until a plate-solve sync or the recovery from a named park on the \
-             mount's setup page"
         );
     } else {
         info!(
@@ -3025,6 +3030,37 @@ mod tests {
         assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
         drop(s);
         assert_eq!(m.power().position(), crate::power::Position::AwaitingCheck);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_cut_of_a_moving_mount_loses_the_position_whatever_the_record() {
+        let factory = CapturingMockFactory::new();
+        let mock = Arc::clone(&factory.state);
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        {
+            // A goto in flight: the poll sees RA running in goto mode.
+            let mut s = mock.lock().await;
+            s.ra.running = true;
+            s.ra.mode = ModeKind::Goto;
+            s.ra.goto_target_ticks = 1_000_000;
+        }
+        let snap = m.poll_axes_now(&session).await.unwrap();
+        assert!(
+            snap.ra.goto() && snap.ra.running(),
+            "precondition: a goto polled"
+        );
+        session.close().await.unwrap();
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+        }
+        m.power().note_request_failed(Instant::now());
+        tokio::time::advance(MAX_TRUSTED_OUTAGE + Duration::from_secs(1)).await;
+        let session = m.transport().acquire().await.unwrap();
+        assert_eq!(m.power().position(), crate::power::Position::Lost);
         session.close().await.unwrap();
     }
 

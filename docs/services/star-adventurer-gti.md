@@ -2874,12 +2874,15 @@ doing:
   within one polling interval at goto speed of it, so its pier side
   still reads true. But the position is **lost**.
 
-**A long outage** writes the estimate back too, but trusts nothing.
-Past 30 s, or with no failed request to date the outage, the cut is not
-a blip: it may be a planned one, and someone may have moved the mount by
-hand while it was off. The encoders hold the written-back estimate, so a
-sync still reads the pier side from it, and the position **awaits the
-power-up check**. That check is the one a power-up connect makes
+A lost position does not depend on the outage: no record written before
+that motion can say where the mount stopped.
+
+**A long outage** of a mount that was stopped or tracking writes the
+estimate back too, but trusts nothing. Past 30 s, or with no failed
+request to date the outage, the cut is not a blip: it may be a planned
+one, and someone may have moved the mount by hand while it was off.
+The encoders hold the written-back estimate, so a sync still reads the
+pier side from it, and the position **awaits the power-up check**. That check is the one a power-up connect makes
 against the [mount state record](#the-mount-state-record): it seeds the
 configured pose when the record says the mount came to rest there, and
 otherwise loses the position. A missing record loses it too, because
