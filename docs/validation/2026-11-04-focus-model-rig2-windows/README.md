@@ -14,13 +14,14 @@ five checks could run there:
 
 All three passed on the second night's runs. The first night's runs
 passed B and C, and only half of A: every run confirmed on the derived
-grid, but the ends of the sweep sat at 7–11× the best HFR instead of the
-4× the derivation aims for. The measured wing slope (4.14–4.37 px per 100
+grid, but on the runs centred by a prediction the ends of the sweep sat
+at 5.0–8.1× the focused HFR the sweep was sized from (`hfr_focus`),
+instead of the 4× the derivation aims for. The measured wing slope (4.14–4.37 px per 100
 steps) was 2.06–2.17× the predicted 2.012, and focus-model.md § Sweep sizing
 reads that as a wrong input. The input was `microns_per_step`, which `rp`
 took from the FocusLynx server's ASCOM `StepSize` (1.06985 µm). With
 `microns_per_step: 2.1` set on the focuser in `rp.json`, the second night's
-derived sweep put its ends at 3.0–3.8× (observation 1).
+derived sweep put its ends at 2.9–3.5× (observation 1).
 
 The shared walk on a guide-coupled train and the `refocus-on-temperature`
 rule firing on a temperature change are not covered here: they need
@@ -57,16 +58,20 @@ relayed them, curve points included.
 
 ### The runs
 
-| Night | Run | Filter | Prediction | Grid (step, half width) | Focus | R² | Wing slope | Ends, × best HFR |
+| Night | Run | Filter | Prediction | Grid (step, half width) | Focus | R² | Wing slope | Ends, × `hfr_focus` |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 1 | L | none (no record) | 42, 165, centred on 29737 | 29618 | 0.969 | 4.14 | 1.8 / 9.3 (off-centre) |
-| 1 | 2 | L | 29618, moved from 29768 | 55, 217 | 29613 | 0.978 | 4.37 | 11.2 / 8.9 |
-| 1 | 3 | R | 29633 (+20), move skipped | 42, 165, centred on 29613 | 29627 | 0.976 | 4.23 | 11.3 / 7.1 |
-| 2 | 1 | L | none (record reset) | 21, 84, centred on 29613 | 29557 | 0.975 | 3.65 | 1.4 / 7.0 (off-centre) |
-| 2 | 2 | L | 29557, moved from 29707 | 23, 90 | 29553 | 0.973 | 3.21 | 3.3 / 3.0 |
-| 2 | 3 | R | 29573 (+20), moved from 29553 | 21, 84 | 29568 | 0.978 | 3.12 | 3.4 / 3.8 |
+| 1 | 1 | L | none (no record) | 42, 165, centred on 29737 | 29618 | 0.969 | 4.14 | 1.9 / 9.6 (off-centre) |
+| 1 | 2 | L | 29618, moved from 29768 | 55, 217 | 29613 | 0.978 | 4.37 | 7.7 / 6.1 |
+| 1 | 3 | R | 29633 (+20), move skipped | 42, 165, centred on 29613 | 29627 | 0.976 | 4.23 | 8.1 / 5.0 |
+| 2 | 1 | L | none (record reset) | 21, 84, centred on 29613 | 29557 | 0.975 | 3.65 | 1.3 / 6.3 (off-centre) |
+| 2 | 2 | L | 29557, moved from 29707 | 23, 90 | 29553 | 0.973 | 3.21 | 3.2 / 2.9 |
+| 2 | 3 | R | 29573 (+20), moved from 29553 | 21, 84 | 29568 | 0.978 | 3.12 | 3.1 / 3.5 |
 
-Every run confirmed at its first attempt. The confirmation frames held
+The ends are each run's outermost accepted samples, divided by the
+`hfr_focus` its sweep was sized from: the denominator the derivation's
+4× is defined against (focus-model.md § Sweep sizing), which is the
+last good HFR for the filter, or the seeing estimate (0.854 px) without
+one. Every run confirmed at its first attempt. The confirmation frames held
 1322–2355 stars, and each run took about two minutes. A run with no
 prediction is centred where the focuser stood, which on both nights was
 the previous focus, 60–120 steps away by then. So the first run of each
@@ -76,9 +81,9 @@ night is off-centre, and its ends say nothing about the width.
 
 | Check | Night 1 | Night 2 |
 |---|---|---|
-| A — the derived sweep | partial: confirms on the derived grid at the first attempt, R² 0.969–0.978; ends at 7–11× | **pass**: ends at 3.0–3.8× on the centred runs |
+| A — the derived sweep | partial: confirms on the derived grid at the first attempt, R² 0.969–0.978; ends at 5.0–8.1× on the centred runs | **pass**, slightly short: ends at 2.9–3.5× on the centred runs. The one end under 3× is where run 2's 8-point grid stopped 19 steps short of its half width |
 | B — the predicted start inside the band | **pass**: 29618 predicted, 29613 found (5 steps, inside the CFZ) | **pass**: 29557 predicted, 29553 found (4 steps) |
-| C — a hand-entered offset on a filter change | **pass**: wheel to R, `terms.offset` 20, start 29633; the move itself was skipped as within half a CFZ (31 steps) of the focuser | **pass**: wheel to R, start 29573, and moved there (20 > 16). R focused at L + 15 (night 1: + 14) |
+| C — a hand-entered offset on a filter change | **pass**: wheel to R, `terms.offset` 20, start 29633; the move itself was skipped as within half a CFZ (31 steps) of the focuser | **pass**: the first run's reset had dropped the record's offsets, so R's 20 was entered again with `set_focus_offsets`; wheel to R, start 29573, and moved there (20 > 16). R focused at L + 15 (night 1: + 14) |
 
 ## Observations
 
@@ -90,12 +95,12 @@ night is off-centre, and its ends say nothing about the width.
    2.26 µm per step. The focus-model plan's night-3 numbers had already
    put the slope near 4 px per 100 steps. 2.1 µm, the value configured
    for night 2, predicts 3.949, which is 5–11% below night 1's wide-grid
-   measurements (4.14–4.37). Night 2's narrower grids reached only 3–4×
-   the best HFR, sampled less of the wing's straight part, and fitted
+   measurements (4.14–4.37). Night 2's narrower grids reached only about
+   3× the focused HFR, sampled less of the wing's straight part, and fitted
    lower slopes (3.12–3.65), which would imply 1.66–1.94 µm. So the
    sweeps bracket the focuser's travel near 2 µm, against the driver's
-   1.07, without pinning it closer; 2.1 put check A's ends where the
-   derivation aims.
+   1.07, without pinning it closer; with 2.1, check A's ends sat at
+   2.9–3.5×, near the 4× the derivation aims for.
 2. **Focus follows temperature at about 14 steps per °C.** L focus was
    29613 at 14.4 °C (01:18Z) and 29553 at 10.0 °C (05:14Z). The change of
    `microns_per_step` made the record stale, as an optical fact is part of

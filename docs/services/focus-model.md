@@ -941,9 +941,9 @@ behind `N`, the pixel size, or the obstruction behind `c` — and
 offset on a filter change, under a real sky. The check above caught a
 wrong input there. `rp` took `microns_per_step` from the FocusLynx
 server's `StepSize`, 1.06985 µm, and the runs measured a wing slope
-about 2.1× the predicted one, so the sweep's ends sat at 7–11× the
+about 2.1× the predicted one, so the sweep's ends sat at 5.0–8.1× the
 focused HFR.
-With 2.1 µm configured, the ends sat at 3.0–3.8×
+With 2.1 µm configured, the ends sat at 2.9–3.5×
 ([record](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
 
 ## The predicted start
