@@ -545,16 +545,22 @@ After opening the transport and before the first motion command:
    outside the whitelist) the driver aborts the handshake with
    [`StarAdvError::WrongDevice`][wrong-device] *before* sending
    anything else — the wrong device sees exactly one frame (`:e1\r`).
-2. `:F1` → expect `=\r` (Initialize axis 1)
-3. `:F2` → expect `=\r` (Initialize axis 2)
-4. `:a1` → record RA-axis CPR
-5. `:a2` → record Dec-axis CPR
-6. `:b1` → record TMR_Freq
-7. `:g1` → record RA-axis high-speed ratio
-8. `:g2` → record Dec-axis high-speed ratio
-9. `:j1` / `:j2` → record initial encoder positions
+2. `:f1` / `:f2` → read each axis' init flag, before anything sets it.
+   Either flag clear means the controller has restarted since it was
+   last initialised (see [§Power cut while serving](#power-cut-while-serving)).
+3. `:F1` → expect `=\r` (Initialize axis 1)
+4. `:F2` → expect `=\r` (Initialize axis 2)
+5. `:a1` → record RA-axis CPR
+6. `:a2` → record Dec-axis CPR
+7. `:b1` → record TMR_Freq
+8. `:g1` → record RA-axis high-speed ratio
+9. `:g2` → record Dec-axis high-speed ratio
+10. `:j1` / `:j2` → record initial encoder positions
+11. `:E1` / `:E2` → only on a controller that restarted while the
+    driver served it: write the mount's last known position back
+    ([§Power cut while serving](#power-cut-while-serving))
 
-Steps 4-9 seed the in-memory mount-parameters cache used by the
+Steps 5-10 seed the in-memory mount-parameters cache used by the
 coordinate module and the slew planner. The motor-board-version reply
 from step 1 is also cached (`MountParameters::motor_board_version`)
 for diagnostic logging.
@@ -1074,6 +1080,11 @@ Anchoring is re-derived on every connect — a sync-derived anchor does
 **not** survive disconnect (conservative: a new session cannot know
 what an earlier one measured).
 
+A **lost** position ([§Power cut while serving](#power-cut-while-serving))
+overrides all three. Until a sync or the recovery from a named park
+anchors the frame again, it is unanchored, whatever
+`unpark_from_ap_position` says.
+
 #### Park-target resolution
 
 The **park-target encoder pair** is resolved per axis on every connect
@@ -1099,6 +1110,11 @@ frame), in this order of preference:
    it stands and sets `AtPark`. Once a sync anchors the frame the
    target is re-armed from `preferred_ap_park` and subsequent parks
    slew normally.
+
+A lost position has no park target on either axis, raw override
+included. Raw ticks are an encoder value, and the encoders no longer say
+where the mount is, so `Park()` parks in place until the frame is
+anchored again.
 
 The ship default `unpark_from_ap_position` is `ap_park_0`: the field
 is the operator's assertion about the physical world, and "current
@@ -1131,8 +1147,10 @@ anchoring sync updates it (see
 ### Park persistence
 
 `SetPark` writes the current encoder pair back into the **same JSON
-config file** the driver loaded at startup. No separate state file.
-Concretely:
+config file** the driver loaded at startup, because the park target is
+configuration. The [mount state record](#the-mount-state-record) beside
+that file is not: it is the driver's own record of where the mount
+rests. Concretely:
 
 1. **Capability gate.** The driver now always resolves a config-file
    path at startup — the `--config <path>` argument if given, else the
@@ -2797,7 +2815,139 @@ transport rather than the real wire.
 Documented operator assumption: when `unpark_from_ap_position` is
 set to one of `ap_park_1..ap_park_5`, the operator powers up the
 mount **at** that configured pose and connects the driver before
-any slew or sync.
+any slew or sync. Once the driver has a
+[mount state record](#the-mount-state-record), it checks that
+assumption against where it last left the mount, and seeds only when
+the record says the mount was at rest at that pose.
+
+#### Power cut while serving
+
+The controller runs off the mount's 12 V, and a cut as short as half a
+second restarts it. Measured on pier1 on 2026-11-04, with the mount on a
+PPBA quad output, linked over USB, and cuts of 0.5 s, 5 s and 30 s:
+
+- The controller's USB node leaves within about 0.2 s of the cut and is
+  back about 0.55 s after the power returns.
+- The restarted controller reads encoders `(0, 0)`, with both axes
+  stopped.
+
+The transport sees the link go, and at its next retry after the
+controller answers it runs the handshake again.
+
+**Detection.** Each axis' `:f` reply carries an init flag: the third
+nibble's bit 0, "`:F` issued since power-on". The handshake reads `:f1`
+and `:f2` after the identity gate and before its own `:F1` / `:F2`, so
+the flags still say what the controller went through:
+
+- **Both set:** only the link dropped (a WiFi glitch, a USB cable that
+  came back), and the encoders still hold the mount's position. Nothing
+  changes.
+- **Either clear:** the controller restarted, and the encoders it reports
+  are power-up values. They are not the mount's position. On pier1 every
+  cut read `=100` on both axes before `:F`, and `=101` after it.
+
+**Restore.** A restart while the driver serves the mount (the snapshot
+holds samples from an earlier conduit) makes the handshake write the
+mount's last known position back with `:E1` / `:E2`. It does so before
+the transport serves again, so no client ever reads the reset encoders.
+For each axis that position is the last polled sample. A tracking sample
+is carried forward at its rate
+([§Encoder samples and the read instant](#encoder-samples-and-the-read-instant))
+to the first poll that failed. How exact that is depends on what the
+axis was doing:
+
+- **Stopped:** exact.
+- **Tracking or guiding:** tracking mode, at a known `:I` period no
+  faster than twice sidereal. The written position is within one polling
+  interval of motion, about 3″ at sidereal and the default 200 ms.
+- **Anything else:** a goto, the fast regime, a blocked axis, an unknown
+  rate, or a tracking sample that no failed poll bounds. The position is
+  still written back as the best estimate there is: a goto stopped by
+  the cut lies within one polling interval at goto speed of it, so its
+  pier side still reads true. But the position is **lost**.
+
+An encoder write is not actuation: nothing moves, and the restarted
+firmware holds every axis still. The driver does not restart tracking:
+`Tracking` reads `false` until a client turns it on again
+([tenet 3](../workspace.md#project-tenets)). The device also drops what
+the cut ended:
+
+- the slew or park in flight, whose watcher stands down;
+- every guide pulse;
+- the tracking flag.
+
+An `info!` line names the restart and the ticks written back. A lost
+position is logged at `warn!` with the recoveries it needs.
+
+**A lost position** refuses every motion but a stop until there is
+ground truth again:
+
+- Slews fail with `INVALID_OPERATION`, and so do `SetSideOfPier` and
+  the auto-flip, which run through them. `Tracking = true` and
+  `PulseGuide` fail the same way. The message names the two recoveries:
+  a plate-solve sync, or the recovery from a named park on the mount's
+  setup page.
+- `Park()` parks in place, because a lost frame is unanchored
+  ([§The anchored-frame rule](#the-anchored-frame-rule)). A safety park
+  therefore still stops the mount and sets `AtPark`.
+- `AbortSlew` and the setup page's stop work as ever.
+
+A successful `SyncToCoordinates` / `SyncToTarget`, or the recovery from
+a named park, anchors the frame and clears the lost state. The state
+outlives a client's disconnect. Through the
+[mount state record](#the-mount-state-record), it also outlives a reload
+and a restart of the service.
+
+#### The mount state record
+
+A restart of the service forgets the snapshot. The power-up seed then
+rests on the operator's assertion that the mount powered up at
+`unpark_from_ap_position`. So that a power-up connect can check that
+assertion against what the driver last knew, the driver keeps a small
+record beside its config file, named after it:
+`star-adventurer-gti.mount-state.json` next to
+`star-adventurer-gti.json`.
+
+| Record | Meaning | Written when |
+|---|---|---|
+| `{"state":"at_rest","ra_ticks":…,"dec_ticks":…}` | both axes stopped at these ticks | the mount comes to rest, or the ticks of a mount at rest change (a sync, the recovery, the seed) |
+| `{"state":"moving"}` | an axis is running | an axis starts from rest |
+| `{"state":"lost"}` | the position is lost | the driver loses the position |
+
+The record is written only when its state changes, never on each poll or
+pulse. A night of imaging writes it about twice: at the first slew and
+at the dawn park. The writer runs only while a client is connected,
+because that is the only time anything can move the mount. It derives
+the state from the snapshot the poll refreshes, and skips while the
+transport is reconnecting. The write is atomic: a temp file in the same
+directory, `fsync`'d and renamed, like `SetPark`'s. A failed write logs
+a `warn!`.
+
+Every connect reads the record. A record that says lost keeps the
+position lost, whatever the encoders read: the in-memory state does not
+survive a reload, nor a restart of the service while the controller
+keeps its power and the estimate written back. A lost position is never
+seeded.
+
+On a fresh-power-up connect with a named `unpark_from_ap_position`, the
+seed also checks the record against the configured pose:
+
+- **No record** (a first install): the seed runs, as the operator's
+  assertion says.
+- **At rest at the seed pose**, within the fresh-power-up tolerance of
+  that pose's ticks: the seed runs. This is the dawn park that the
+  daily power-cycle plan requires.
+- **At rest elsewhere, moving or lost, or a record that does not
+  parse:** no seed, and the position is lost.
+
+An "at rest elsewhere" record is treated as lost, not restored, because
+nothing tells the driver whether someone moved the mount by hand while
+it was off. To power up at the configured pose after parking elsewhere,
+run the recovery from that pose.
+
+`ap_park_0` reads no record, because its frame stays unanchored until a
+sync either way. Nothing in the record is configuration, and the setup
+page neither shows nor edits it.
 
 #### Recovery on the mount's setup page
 
@@ -2919,17 +3069,20 @@ What to do after various crash / disconnect scenarios:
 |---|---|
 | Driver crashed, mount still powered, OTA points at solvable sky | Reconnect (no power cycle) → the recovery from `ap_park_0` (or standard `Unpark()`) → plate-solve current view → `SyncToCoordinates(plate_solved_coords)`. Encoder counter is intact from the session; sync writes the offset to match celestial truth. |
 | Driver crashed, mount still powered, OTA points at unsolvable sky (below horizon, clouded out) | Restart the driver and reconnect → on the mount's recovery page, check that the motion reads stopped (the [safety stop at startup](#safety-stop-at-startup) halts what the crash left running) and press **Stop** if it does not → the recovery from `ap_park_N`, where `N` is the AP park you've physically positioned the OTA at. No `Park()` is needed first, and none should be: a `Park()` of an anchored frame slews. The `ResetMountEncoders` sequence writes the park's encoder values; subsequent slews start from a known frame. Alternatively, power-cycle the mount and let the fresh-power-up auto-seed run from the persisted `unpark_from_ap_position` config value. |
-| Mount lost power (planned shutdown or otherwise) | Before the next power-on, physically position the OTA at whatever `unpark_from_ap_position` is configured for (or set it on the mount's setup page first). On power-on connect, the fresh-power-up auto-seed writes the encoder to that park's values. |
+| Mount lost power while the driver ran | If the mount was stopped or tracking, nothing is needed: the driver wrote the last position back ([§Power cut while serving](#power-cut-while-serving)), so turn tracking on again. If it was slewing, the position is lost. Either plate-solve the current view and `SyncToCoordinates`, or physically put the OTA at a named park and run the recovery from it. |
+| Mount lost power (planned shutdown or otherwise) | Park at `unpark_from_ap_position`'s pose before the power goes. The [mount state record](#the-mount-state-record) then says the mount is at rest there, and the power-on connect seeds that pose. If you instead moved the OTA to the configured pose by hand while it was off, run the recovery from that pose after power-on. Otherwise the record holds a different pose, and the driver reports the position lost. |
 
-The only genuinely dangerous pattern is "crash + power-cycle without
-re-parking AND with a non-`ap_park_0` `unpark_from_ap_position`
-configured" — the auto-seed will fire against fresh-power-up encoder
-and the driver will believe the OTA is at the configured park when
-it's actually wherever the crash left it. The operator-discipline
-mitigation is "if you power-cycle after a crash, physically re-park
-first." A heavier mitigation (refusing `Unpark()` after fresh-seed
-without an explicit operator confirmation gate) is deferred — opt-in
-behind a future config flag if hardware sessions show it's needed.
+The genuinely dangerous pattern is a power cycle that leaves the mount
+somewhere other than the configured park, with a non-`ap_park_0`
+`unpark_from_ap_position`. The auto-seed would then fire against
+fresh-power-up encoders, and the driver would believe the OTA is at the
+configured park when it is wherever the power left it.
+[§Power cut while serving](#power-cut-while-serving) covers a cut while
+the driver runs. The mount state record covers a cut while it does not:
+a record that says moving, lost or at rest elsewhere loses the position
+instead of seeding it. What remains is a mount moved by hand while it
+was off, away from where the record says it rests, and a first power-up
+before any record exists. Both rest on the operator's assertion.
 
 ### CLI arguments
 
@@ -3066,6 +3219,10 @@ src/
                            Handshake + poll loop +
                            on-last-disconnect / shutdown teardown live
                            in `Hooks` closures.
+  power.rs               — `PowerWatch` (the lost flag, the first failed
+                           poll, the restarts found while serving) and
+                           `position_to_restore`, what a restarted
+                           controller is given back
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
   mount_device.rs        — module entry point: `DriverState`,
@@ -3112,6 +3269,10 @@ src/
     park_persistence.rs  — JSON config-file read/write for `SetPark`
                            (read-as-`Value` + atomic-rename pattern)
                            and the boot-time writability probe
+    mount_state.rs       — the mount state record beside the config
+                           file, and what a power-up connect makes of it
+    power_watch.rs       — per-connection task: drops what a power cut
+                           ended and keeps the mount state record current
     tests.rs             — `#[cfg(test, feature = "mock")]` unit tests
                            for `MountDevice` and the private helpers
   lib.rs                 — ServerBuilder, BoundServer, `Handover` (what one
@@ -3152,6 +3313,7 @@ tests/
     park.feature
     abort.feature
     side_of_pier.feature
+    power_cut.feature
   test_lib.rs            — server-startup + CLI tests (gated on `mock`)
   conformu_integration.rs — ASCOM compliance (gated on `conformu`)
 ```
@@ -3685,11 +3847,15 @@ init handshake:
                                               and the process exits
                                               non-zero before binding
                                               the listener.
+  :f1, :f2          (axis status)          → init flags: has the
+                                              controller restarted?
   :F1, :F2          (initialize axes)
   :a1, :a2          (CPR per axis)         → cache
   :b1               (TMR_Freq)             → cache
   :g1, :g2          (high-speed ratio)     → cache
   :j1, :j2          (initial positions)    → cache + snapshot
+  :E1, :E2          (restarted while serving only: the last
+                     known position written back)
    ↓
 safety stop:
   :L1, :L2, :K1     (halt both axes, stop tracking) — the same

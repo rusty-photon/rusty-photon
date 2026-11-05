@@ -31,6 +31,10 @@
 //!   exclusion zone (issue #259).
 //! - [`park_persistence`] — JSON config-file read/write for `SetPark`
 //!   and the boot-time writability probe.
+//! - [`mount_state`] — the mount state record beside the config file,
+//!   and what a power-up connect makes of it.
+//! - [`power_watch`] — per-connection background task that drops what
+//!   a power cut ended and keeps the mount state record current.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -50,7 +54,9 @@ use crate::setup::StarAdvDriver;
 
 mod device;
 mod inherent;
+mod mount_state;
 mod park_persistence;
+mod power_watch;
 mod pulse;
 mod recovery;
 mod slew;

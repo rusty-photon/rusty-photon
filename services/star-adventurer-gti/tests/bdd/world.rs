@@ -152,6 +152,11 @@ pub struct StarAdventurerWorld {
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+    /// Length of the mock's command log when the power came back (or the
+    /// link dropped): the frames after it are the reconnect's.
+    pub reconnect_mark: Option<usize>,
+    /// The mock's encoder ticks `(ra, dec)` at the instant its power went.
+    pub ticks_at_cut: Option<(i64, i64)>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
@@ -493,6 +498,74 @@ impl StarAdventurerWorld {
             ),
             Err(CommandLogTimeout::NoMatch(_)) => unreachable!("the predicate accepts any log"),
         }
+    }
+
+    /// `POST` `body` to the running service's `/debug/v1/{path}` mock
+    /// endpoint and return its JSON reply, retrying transport failures
+    /// the way [`Self::apply_pending_seed`] does.
+    pub async fn post_debug(&self, path: &str, body: Value) -> Value {
+        let handle = self
+            .service_handle
+            .as_ref()
+            .expect("service not started — cannot reach the mock");
+        let url = format!("http://127.0.0.1:{}/debug/v1/{path}", handle.port());
+        let deadline = Instant::now() + DEBUG_RETRY_WINDOW;
+        loop {
+            let last_err = match debug_client().post(&url).json(&body).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    return resp.json().await.expect("mock endpoint replies with JSON");
+                }
+                Ok(resp) => {
+                    assert!(
+                        !resp.status().is_client_error(),
+                        "POST {path} rejected: {}",
+                        resp.status()
+                    );
+                    format!("POST {path} failed: {}", resp.status())
+                }
+                Err(e) => format!("{e:?}"),
+            };
+            assert!(
+                Instant::now() < deadline,
+                "{path} unreachable within {DEBUG_RETRY_WINDOW:?}: {last_err}"
+            );
+            sleep(DEBUG_POLL_INTERVAL).await;
+        }
+    }
+
+    /// `GET` the running service's `/debug/v1/{path}` mock endpoint,
+    /// retrying transport failures.
+    pub async fn get_debug(&self, path: &str) -> Value {
+        let handle = self
+            .service_handle
+            .as_ref()
+            .expect("service not started — cannot reach the mock");
+        let url = format!("http://127.0.0.1:{}/debug/v1/{path}", handle.port());
+        let deadline = Instant::now() + DEBUG_RETRY_WINDOW;
+        loop {
+            let last_err = match debug_client().get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    return resp.json().await.expect("mock endpoint replies with JSON");
+                }
+                Ok(resp) => format!("GET {path} failed: {}", resp.status()),
+                Err(e) => format!("{e:?}"),
+            };
+            assert!(
+                Instant::now() < deadline,
+                "{path} unreachable within {DEBUG_RETRY_WINDOW:?}: {last_err}"
+            );
+            sleep(DEBUG_POLL_INTERVAL).await;
+        }
+    }
+
+    /// Where the driver keeps its mount state record: beside the
+    /// scenario's `config.json`, named after it.
+    pub fn mount_state_record_path(&self) -> std::path::PathBuf {
+        self.temp_dir
+            .as_ref()
+            .expect("service started from a temp dir")
+            .path()
+            .join("config.mount-state.json")
     }
 
     pub fn clear_error(&mut self) {

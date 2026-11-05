@@ -161,11 +161,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    makes the session fresh, whatever happened while the device was off,
    including an rp restart that dropped the hold-out (it lives in rp's
    memory) and let the supervisor reconnect a device that stayed on the bus.
-   A session held across a cut comes back stale:
-   - `star-adventurer-gti` seeds its encoders and anchors its frame only in
-     `Connected = true`. A transport reconnect after the mount's power
-     returns does not seed again, so its next Park or goto would slew from
-     reset encoders.
+   The mount survives a session held across a cut. `star-adventurer-gti`
+   reads its controller's init flag in every handshake, writes the mount's
+   last position back after a restart, and marks the position lost when the
+   mount was slewing (its §Power cut while serving). Other devices'
+   sessions held across a cut come back stale:
    - A camera switched off while idle reads connected all day, since the
      departure check is lazy. What its first call on the stale handle does
      once the camera has returned is not measured.
@@ -179,7 +179,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    afresh, and re-reads every cache its handshake fills (`qhy-camera` C6).
    Its `equipment_changed {connected: true}` is the dusk document's signal
    that a device is ready. The mount's seed is right only if the mount was
-   parked at that pose, so its park target must be its
+   parked at that pose, and the driver seeds only when its mount state
+   record says the mount came to rest there. So its park target must be its
    `unpark_from_ap_position` pose. The two match unless someone configures
    them apart (a `SetPark` capture, or another named park), and the dawn
    document checks them before it cuts the mount's power, refusing to cut it

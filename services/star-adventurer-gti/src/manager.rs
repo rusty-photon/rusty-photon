@@ -38,6 +38,7 @@ use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
 use crate::coordinates::sidereal_step_period;
 use crate::error::{Result, StarAdvError};
+use crate::power::{position_to_restore, PowerWatch};
 use crate::units::{sat_round_i32, Cpr};
 
 /// Snapshot of the values the mount reports during the init handshake.
@@ -456,6 +457,7 @@ pub struct MountManager {
     snapshot: Arc<RwLock<MountSnapshot>>,
     step_periods: Arc<CommandedStepPeriods>,
     poll_pause_depth: Arc<AtomicU32>,
+    power: Arc<PowerWatch>,
     polling_interval: Duration,
     command_timeout: Duration,
 }
@@ -466,6 +468,7 @@ impl MountManager {
         let snapshot = Arc::new(RwLock::new(MountSnapshot::default()));
         let step_periods = Arc::new(CommandedStepPeriods::default());
         let poll_pause_depth = Arc::new(AtomicU32::new(0));
+        let power = Arc::new(PowerWatch::default());
         let (polling_interval, command_timeout) = match &config.transport {
             TransportConfig::Usb(usb) => (usb.polling_interval, usb.command_timeout),
             TransportConfig::Udp(udp) => (udp.polling_interval, udp.command_timeout),
@@ -480,6 +483,7 @@ impl MountManager {
             &snapshot,
             &step_periods,
             &poll_pause_depth,
+            &power,
             polling_interval,
             &port_label,
         );
@@ -491,6 +495,7 @@ impl MountManager {
             snapshot,
             step_periods,
             poll_pause_depth,
+            power,
             polling_interval,
             command_timeout,
         })
@@ -500,6 +505,13 @@ impl MountManager {
     #[must_use]
     pub const fn transport(&self) -> &Arc<SharedTransport<SkywatcherCodec>> {
         &self.transport
+    }
+
+    /// The controller's power state: restarts found while serving, and
+    /// whether the mount's position is lost.
+    #[must_use]
+    pub fn power(&self) -> &PowerWatch {
+        &self.power
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion
@@ -842,9 +854,13 @@ fn build_hooks(
     snapshot: &Arc<RwLock<MountSnapshot>>,
     step_periods: &Arc<CommandedStepPeriods>,
     poll_pause_depth: &Arc<AtomicU32>,
+    power: &Arc<PowerWatch>,
     polling_interval: Duration,
     port_label: &Arc<str>,
 ) -> Hooks<SkywatcherCodec> {
+    let power_hs = Arc::clone(power);
+    let power_poll = Arc::clone(power);
+    let max_age = polling_interval.saturating_mul(MAX_PROJECTION_POLLS);
     let p_hs = Arc::clone(parameters);
     let s_hs = Arc::clone(snapshot);
     let s_poll = Arc::clone(snapshot);
@@ -861,11 +877,16 @@ fn build_hooks(
             let snapshot = Arc::clone(&s_hs);
             let step_periods = Arc::clone(&periods_hs);
             let port_label = Arc::clone(&port_hs);
+            let power = Arc::clone(&power_hs);
             Box::pin(handshake(
                 conn,
-                parameters,
-                snapshot,
-                step_periods,
+                HandshakeState {
+                    parameters,
+                    snapshot,
+                    step_periods,
+                    power,
+                    max_age,
+                },
                 port_label,
             ))
         }),
@@ -909,11 +930,13 @@ fn build_hooks(
             let snapshot = Arc::clone(&s_poll);
             let step_periods = Arc::clone(&periods_poll);
             let depth = Arc::clone(&depth_poll);
+            let power = Arc::clone(&power_poll);
             Box::pin(poll_loop(
                 ctx,
                 snapshot,
                 step_periods,
                 depth,
+                power,
                 polling_interval,
             ))
         })),
@@ -934,17 +957,25 @@ fn build_hooks(
 /// that motivated this and the operator-facing diagnostic shape.
 ///
 /// On success, the rest of the handshake follows the documented order:
-/// initialise both axes, query parameters, seed the snapshot with the
-/// initial encoder positions.
+/// read both axes' init flags, initialise both axes, query parameters,
+/// seed the snapshot with the initial encoder positions. When the flags
+/// say the controller restarted while the driver was serving it, the
+/// mount's last known position is written back first; see
+/// [`position_to_restore`] and the design doc's §Power cut while serving.
 ///
 /// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
 async fn handshake(
     conn: &Connection<SkywatcherCodec>,
-    parameters: Arc<RwLock<Option<MountParameters>>>,
-    snapshot: Arc<RwLock<MountSnapshot>>,
-    step_periods: Arc<CommandedStepPeriods>,
+    state: HandshakeState,
     port_label: Arc<str>,
 ) -> std::result::Result<(), SkywatcherCodecError> {
+    let HandshakeState {
+        parameters,
+        snapshot,
+        step_periods,
+        power,
+        max_age,
+    } = state;
     // Step 1: identify the device. `:e1` is the first (and, on a
     // wrong-device handshake, the *only*) frame on the wire.
     //
@@ -990,23 +1021,30 @@ async fn handshake(
         "motor-board version validated"
     );
 
-    // Step 2–3: now safe to issue mount-specific init. Initialise both
-    // axes.
+    // Step 2: each axis' init flag, read before `:F` sets it. Either
+    // flag clear means the controller restarted since it was last
+    // initialised: a power cut, when the driver was serving it.
+    let ra_status = expect_status(request_typed(conn, Command::InquireStatus(Axis::Ra)).await?)?;
+    let dec_status = expect_status(request_typed(conn, Command::InquireStatus(Axis::Dec)).await?)?;
+    let restarted = !ra_status.init.initialized || !dec_status.init.initialized;
+    debug!(restarted, "axis init flags read");
+
+    // Step 3–4: initialise both axes.
     for axis in [Axis::Ra, Axis::Dec] {
         expect_ack(request_typed(conn, Command::Initialize(axis)).await?)?;
     }
 
-    // Step 4–5: per-axis CPR.
+    // Step 5–6: per-axis CPR.
     let cpr_ra = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Ra)).await?)?;
     let cpr_dec = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Dec)).await?)?;
-    // Step 6: TMR_Freq.
+    // Step 7: TMR_Freq.
     let tmr_freq = expect_u24(request_typed(conn, Command::InquireTmrFreq).await?)?;
-    // Step 7–8: high-speed ratio per axis.
+    // Step 8–9: high-speed ratio per axis.
     let hsr_ra = expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Ra)).await?)?;
     let hsr_dec =
         expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Dec)).await?)?;
 
-    // Step 9–10: initial encoder positions seed the snapshot, dated
+    // Step 10: initial encoder positions seed the snapshot, dated
     // like every other sample at the send of their `:j`.
     let (pos_ra, ra_timing) = request_typed_timed(conn, Command::InquirePosition(Axis::Ra)).await?;
     let pos_ra = expect_position(pos_ra)?;
@@ -1014,7 +1052,7 @@ async fn handshake(
         request_typed_timed(conn, Command::InquirePosition(Axis::Dec)).await?;
     let pos_dec = expect_position(pos_dec)?;
 
-    *parameters.write().await = Some(MountParameters {
+    let params = MountParameters {
         cpr_ra,
         cpr_dec,
         tmr_freq,
@@ -1023,7 +1061,18 @@ async fn handshake(
         motor_board_version: board,
         ra_at_handshake_ticks: pos_ra,
         dec_at_handshake_ticks: pos_dec,
-    });
+    };
+    *parameters.write().await = Some(params);
+
+    // Step 11: a controller that restarted while the driver served it
+    // reads power-up encoders; write the mount's last known position back.
+    let read = ((pos_ra, ra_timing.sent_at), (pos_dec, dec_timing.sent_at));
+    let ((ra_ticks, ra_at), (dec_ticks, dec_at)) = if restarted {
+        let previous = *snapshot.read().await;
+        restore_after_restart(conn, &previous, &params, &power, max_age, read).await?
+    } else {
+        read
+    };
     // A fresh conduit may be a power-cycled mount: whatever `:I` the
     // driver sent the old one says nothing about this firmware's period,
     // so forget it until the driver commands a rate again.
@@ -1033,17 +1082,90 @@ async fn handshake(
     // fills it in.
     *snapshot.write().await = MountSnapshot {
         ra: AxisSnapshot {
-            position_ticks: pos_ra,
-            sampled_at: Some(ra_timing.sent_at),
+            position_ticks: ra_ticks,
+            sampled_at: Some(ra_at),
             ..AxisSnapshot::default()
         },
         dec: AxisSnapshot {
-            position_ticks: pos_dec,
-            sampled_at: Some(dec_timing.sent_at),
+            position_ticks: dec_ticks,
+            sampled_at: Some(dec_at),
             ..AxisSnapshot::default()
         },
     };
     Ok(())
+}
+
+/// What the handshake reads and writes besides the wire.
+struct HandshakeState {
+    parameters: Arc<RwLock<Option<MountParameters>>>,
+    snapshot: Arc<RwLock<MountSnapshot>>,
+    step_periods: Arc<CommandedStepPeriods>,
+    power: Arc<PowerWatch>,
+    /// How far a tracking sample may be carried forward when a restart's
+    /// position is written back.
+    max_age: Duration,
+}
+
+/// One axis' encoder ticks, and the instant they were read or written.
+type AxisSample = (i32, Instant);
+
+/// The handshake's step 11, on a controller that restarted: write the
+/// mount's last known position back before the transport serves again,
+/// so no client reads the reset encoders. An encoder write moves
+/// nothing, and the restarted firmware holds both axes still. Answers the
+/// samples to seed the snapshot with: the written ones, or `read` when
+/// there is no earlier sample to carry over.
+async fn restore_after_restart(
+    conn: &Connection<SkywatcherCodec>,
+    previous: &MountSnapshot,
+    params: &MountParameters,
+    power: &PowerWatch,
+    max_age: Duration,
+    read: (AxisSample, AxisSample),
+) -> std::result::Result<(AxisSample, AxisSample), SkywatcherCodecError> {
+    let Some(restore) = position_to_restore(previous, params, power.first_failed_poll(), max_age)
+    else {
+        return Ok(read);
+    };
+    let ra = write_position(conn, Axis::Ra, restore.ra_ticks).await?;
+    let dec = write_position(conn, Axis::Dec, restore.dec_ticks).await?;
+    let ((read_ra, _), (read_dec, _)) = read;
+    if restore.lost {
+        power.mark_position_lost();
+        warn!(
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
+            "the mount's controller restarted while the mount moved: its last \
+             position is written back as an estimate, and the position is lost \
+             until a plate-solve sync or the recovery from a named park on the \
+             mount's setup page"
+        );
+    } else {
+        info!(
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
+            "the mount's controller restarted: its last known position is written \
+             back; tracking is off until a client turns it on"
+        );
+    }
+    power.record_restart();
+    Ok((ra, dec))
+}
+
+/// `:E<axis>` from the handshake: write `ticks` and answer them with when
+/// the write went out, the instant the encoder took the value.
+async fn write_position(
+    conn: &Connection<SkywatcherCodec>,
+    axis: Axis,
+    ticks: i32,
+) -> std::result::Result<AxisSample, SkywatcherCodecError> {
+    let (reply, timing) = request_typed_timed(conn, Command::SetPosition { axis, ticks }).await?;
+    expect_ack(reply)?;
+    Ok((ticks, timing.sent_at))
 }
 
 /// Halt on both axes (`:L1`, `:L2`, `:K1`), and say whether it took.
@@ -1151,6 +1273,7 @@ async fn poll_loop(
     snapshot: Arc<RwLock<MountSnapshot>>,
     step_periods: Arc<CommandedStepPeriods>,
     poll_pause_depth: Arc<AtomicU32>,
+    power: Arc<PowerWatch>,
     polling_interval: Duration,
 ) {
     let mut ticker = interval(polling_interval);
@@ -1172,15 +1295,21 @@ async fn poll_loop(
             // slew so ASCOM readers still see fresh data.
             continue;
         }
+        // A failed poll dates the latest the link can have gone, which
+        // bounds how far a tracking axis moved before a power cut.
+        let attempt = Instant::now();
         let mut snap = MountSnapshot::default();
         if let Err(e) = poll_axis_via_ctx(&ctx, &step_periods, Axis::Ra, &mut snap.ra).await {
             debug!("polling RA failed: {e}");
+            power.note_poll_failed(attempt);
             continue;
         }
         if let Err(e) = poll_axis_via_ctx(&ctx, &step_periods, Axis::Dec, &mut snap.dec).await {
             debug!("polling Dec failed: {e}");
+            power.note_poll_failed(attempt);
             continue;
         }
+        power.note_poll_succeeded();
         snapshot.write().await.merge_newer(&snap);
     }
 }
@@ -1337,6 +1466,17 @@ fn expect_position(r: Response) -> std::result::Result<i32, SkywatcherCodecError
         other => Err(SkywatcherCodecError::Protocol(
             skywatcher_motor_protocol::ProtocolError::FrameError(format!(
                 "expected Position, got {other:?}"
+            )),
+        )),
+    }
+}
+
+fn expect_status(r: Response) -> std::result::Result<AxisStatus, SkywatcherCodecError> {
+    match r {
+        Response::Status(s) => Ok(s),
+        other => Err(SkywatcherCodecError::Protocol(
+            skywatcher_motor_protocol::ProtocolError::FrameError(format!(
+                "expected Status, got {other:?}"
             )),
         )),
     }
