@@ -50,7 +50,7 @@ tell a clean V from a guess.
 | G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
 | G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686) |
 | G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) |
-| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, no further past the end than the samples span, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-retry-on-vertex` |
+| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, at most three half widths from the centre that failed, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-retry-on-vertex` |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -297,12 +297,22 @@ and 29498–29652, each holding 29572. The frames (66, with their
 sidecars) join the corpus.
 
 **Decided 2026-11-06** (owner): G3d. A monotonic curve's retry centres
-on the vertex the fit extrapolated, capped at the samples' span past
-their end, and half a width remains the shift only where the fit
-placed no vertex there. `max_attempts` keeps its default of 2: the
-capped retry reaches about four half widths from the centre that
-failed (about 330 steps for R on rig2), past the plan's 300, where more
-attempts of half a width would each cost a whole grid of exposures.
+on the vertex the fit extrapolated, capped against a wild
+extrapolation, and half a width remains the shift only where the fit
+placed no vertex there. `max_attempts` keeps its default of 2, where
+more attempts of half a width would each cost a whole grid of
+exposures.
+
+*Settled in G3d.* The cap holds the next centre at three half widths
+from the one that failed, a grid's width past that grid's end, rather
+than dropping a vertex further out back to half a width: a vertex far
+out still says focus lies that way. One retry then reaches about four
+half widths from the centre that failed (326 steps above it and 344
+below for R on rig2), past the plan's 300 either way. The cap is
+measured from the failed centre rather than as the samples' span past
+their end: rig2's R grid ends 18 steps short of its half width above
+its centre, so a span past the samples would reach only 290 steps
+above it, and a sweep started 300 below focus would fail.
 
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
@@ -459,5 +469,5 @@ fit on sub-pixel artefacts; the frames join the corpus. Run on rig2 on
 2026-11-05 (*Measured on rig2*, above): the list and the floor passed,
 150 steps passed, and 200 failed on either side through the
 half-width retry, which G3d replaces. G3d is validated the same way:
-on the next clear night the ±200 mis-starts, and a +300 one, must fit
+on the next clear night the ±200 mis-starts, and ±300 ones, must fit
 on their second attempt.

@@ -249,8 +249,9 @@ pub enum Retry {
     /// The next attempt's grid was moved toward the end of the accepted
     /// samples their lowest one sits nearer, as far as the bounds
     /// allowed: centred on the vertex a monotonic curve's fit
-    /// extrapolated past that end, no further past it than the samples
-    /// span, or by `half_width` when the fit placed no vertex there.
+    /// extrapolated past that end, at most three half widths from the
+    /// centre that failed, or by `half_width` when the fit placed no
+    /// vertex there.
     Shift,
     /// The attempt called for a shift and the focuser's bounds took it
     /// back whole, so the next attempt walked the same grid.
@@ -635,7 +636,9 @@ pub fn retry_centre(
         Ordering::Equal => return same_grid,
     };
     let shifted = match error {
-        FitError::VertexOutside { vertex, .. } => vertex_centre(*vertex, direction, &accepted),
+        FitError::VertexOutside { vertex, .. } => {
+            vertex_centre(*vertex, direction, &accepted, centre, half_width)
+        }
         _ => None,
     }
     .unwrap_or(by_half_width);
@@ -656,21 +659,31 @@ pub fn retry_centre(
 
 /// Where a monotonic curve's retry centres on the vertex its fit
 /// extrapolated: the vertex, when it lies past the end of the accepted
-/// samples `side` names, and no further past that end than the samples
-/// span; `None` when it lies on the other side of that end.
+/// samples `side` names, and no further from the `centre` that failed
+/// than three half widths; `None` when it lies on the other side of
+/// that end.
 ///
 /// The wing the samples walk fixes the slope the defocus curve falls
-/// along, so the vertex lands near focus; more than a span past the
-/// samples the fit is guessing, and the cap holds the grid there, from
-/// where it still reaches focus another half width out.
-fn vertex_centre(vertex: i32, side: Ordering, accepted: &[(i32, f64, u32)]) -> Option<i32> {
+/// along, so the vertex lands near focus. Three half widths put the
+/// grid a grid's width past the end of the one that failed, and further
+/// out than that the fit is guessing; the cap is measured from the
+/// centre, not from the samples, because a grid whose half width is not
+/// a whole number of steps ends short of it on the high side, and the
+/// retry reaches as far either way.
+fn vertex_centre(
+    vertex: i32,
+    side: Ordering,
+    accepted: &[(i32, f64, u32)],
+    centre: i32,
+    half_width: i32,
+) -> Option<i32> {
     let low_end = accepted.iter().map(|(position, _, _)| *position).min()?;
     let high_end = accepted.iter().map(|(position, _, _)| *position).max()?;
-    let span = high_end.saturating_sub(low_end);
+    let reach = half_width.saturating_mul(3);
     match side {
-        Ordering::Less => (vertex < low_end).then_some(vertex.max(low_end.saturating_sub(span))),
+        Ordering::Less => (vertex < low_end).then_some(vertex.max(centre.saturating_sub(reach))),
         Ordering::Greater => {
-            (vertex > high_end).then_some(vertex.min(high_end.saturating_add(span)))
+            (vertex > high_end).then_some(vertex.min(centre.saturating_add(reach)))
         }
         Ordering::Equal => None,
     }
@@ -1947,15 +1960,30 @@ mod tests {
         );
     }
 
-    /// More than a span past its samples the fit is guessing: the grid
-    /// goes the samples' span of 40 past their end, and no further.
+    /// Further out than a grid's width past the samples the fit is
+    /// guessing: the centre moves three half widths, 60, and no further.
     #[test]
-    fn a_vertex_further_out_than_the_samples_span_moves_the_grid_a_span_past_them() {
+    fn a_vertex_far_below_the_samples_moves_the_centre_three_half_widths() {
         assert_eq!(
             retry_centre(100, &vertex_outside(-200), &rising_wing(), 20, (None, None)),
             RetryPlan {
                 retry: Retry::Shift,
                 centre: 40
+            }
+        );
+    }
+
+    #[test]
+    fn a_vertex_far_above_the_samples_moves_the_centre_three_half_widths() {
+        let falling: Vec<CurvePoint> = (80..=120)
+            .step_by(10)
+            .map(|position| point(position, Some(f64::from(140 - position) / 10.0), 100))
+            .collect();
+        assert_eq!(
+            retry_centre(100, &vertex_outside(400), &falling, 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 160
             }
         );
     }
@@ -2646,11 +2674,11 @@ mod tests {
         );
     }
 
-    /// A vertex more than a span past the samples moves the grid a span
-    /// past them; the walk there extrapolates it again, now within a
-    /// span, and the third attempt centres on it and fits.
+    /// A vertex more than three half widths out moves the centre three
+    /// half widths; the walk there extrapolates it again, now within
+    /// reach, and the third attempt centres on it and fits.
     #[tokio::test]
-    async fn a_vertex_far_past_the_samples_is_reached_a_span_at_a_time() {
+    async fn a_vertex_far_past_the_samples_is_reached_three_half_widths_at_a_time() {
         let rig = ScriptedRig::hyperbola(-100);
         let three = SweepParams {
             max_attempts: 3,
@@ -2669,6 +2697,29 @@ mod tests {
             retries,
             [(Retry::Shift, Some(-20)), (Retry::Shift, Some(-100))]
         );
+    }
+
+    /// rig2's R sizing, step 22 and half width 86, walks a grid that
+    /// ends 18 steps short of its half width above the centre: a sweep
+    /// started 300 steps from focus on either side still centres its
+    /// retry on a grid that holds focus, and fits on its second attempt.
+    #[tokio::test]
+    async fn a_sweep_started_300_steps_off_focus_at_rig2s_r_sizing_fits_on_its_second_attempt() {
+        let r = SweepParams {
+            step_size: 22,
+            half_width: 86,
+            ..params()
+        };
+        for start in [29_272, 29_872] {
+            let rig = ScriptedRig::hyperbola(29_572);
+            let outcome = sweep(&rig, start, r).await.unwrap();
+            assert_eq!(
+                (outcome.attempts, outcome.best_position, outcome.confirmed),
+                (2, 29_572, true),
+                "the sweep started at {start}: {:?}",
+                outcome.attempts_log
+            );
+        }
     }
 
     /// A rig under a cloud that blanks every frame at a position `under`

@@ -795,8 +795,8 @@ semantics `rp`'s capture sweep has today:
    *Amended (2026-11-06, gating plan G3d).* How far a `monotonic_curve`
    retry shifts is the fit's to say: when the hyperbola placed its
    vertex past the end the lowest sample sits nearer, the next grid is
-   centred on that vertex, no further past the end than the accepted
-   samples span. Half a width stays the shift where the fit placed no
+   centred on that vertex, at most three half widths from the centre
+   that failed. Half a width stays the shift where the fit placed no
    vertex there, and after `not_enough_stars`, which fits nothing. On
    rig2 on 2026-11-05, R sweeps started 198 steps above and 201 below
    focus each extrapolated a vertex within 36 steps of it and failed both
