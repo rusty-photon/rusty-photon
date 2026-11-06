@@ -791,6 +791,18 @@ semantics `rp`'s capture sweep has today:
    the default sweep the cloud case always leaves accepted samples
    reaching the centre. `rp`'s capture sweep keeps the old test until
    S7.
+
+   *Amended (2026-11-06, gating plan G3d).* How far a `monotonic_curve`
+   retry shifts is the fit's to say: when the hyperbola placed its
+   vertex past the end the lowest sample sits nearer, the next grid is
+   centred on that vertex, no further past the end than the accepted
+   samples span. Half a width stays the shift where the fit placed no
+   vertex there, and after `not_enough_stars`, which fits nothing. On
+   rig2 on 2026-11-05, R sweeps started 198 steps above and 201 below
+   focus each extrapolated a vertex within 36 steps of it and failed both
+   attempts under the half-width shift, which reaches only about two
+   half widths in one retry
+   ([gating plan](auto-focus-sample-gating.md), *Measured on rig2*).
 6. Guiding: when `get_refocus_plan` says the focuser is guide-coupled
    and `get_guiding_stats` reports active guiding, `pause_guiding`
    before the first move and `resume_guiding` after the confirmation

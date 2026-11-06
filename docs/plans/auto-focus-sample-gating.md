@@ -49,7 +49,8 @@ tell a clean V from a guess.
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
 | G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
 | G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686) |
-| G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-g3c-fixed-star-list` |
+| G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) |
+| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, no further past the end than the samples span, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-retry-on-vertex` |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -272,6 +273,37 @@ The corpus holds no sized sweep started far from focus, which is the
 case the list is for; a deliberately mis-started sized sweep on the
 next clear night validates it (Validation).
 
+*Measured on rig2, 2026-11-05*, on the nightly that carries G3c: an L
+control at the prediction and three R sweeps started off focus by a
+hand-entered offset (R step 22, half width 86, 8 points;
+`max_attempts` 2). Every sample of every attempt measured the stars
+its reference frame listed at counts within 2 % of the list, every
+curve is smooth from 1.2 to 12.9 px, and no fit landed on a sub-pixel
+artefact: the list holds. The retry does not reach the plan's range:
+
+| Start (from focus) | Attempt 1 grid | Its extrapolated vertex | Half-width shift to | Outcome |
+|-------------------:|:---------------|------------------------:|--------------------:|---------|
+| 29770 (+198) | 29684–29838 | 29572 | 29684 | `monotonic_curve` twice, focus outside the second grid too |
+| 29371 (−201) | 29285–29439 | 29536 | 29457 | `monotonic_curve` twice, focus outside the second grid too |
+| 29721 (+149) | 29635–29789 | 29584 | 29635 | confirmed on attempt 2 at 29572, R² 0.996 |
+
+R's focus was 29572, 17 steps above L's 29555. A shift of half a
+width reaches focus on the second attempt only for a miss up to about
+two half widths, 163 steps here, while each first attempt had already
+extrapolated a vertex within 36 steps of focus and correctly refused
+to report it, since it lay outside the samples. Centred on those
+vertices, the second grids would have been 29486–29640, 29450–29604
+and 29498–29652, each holding 29572. The frames (66, with their
+sidecars) join the corpus.
+
+**Decided 2026-11-06** (owner): G3d. A monotonic curve's retry centres
+on the vertex the fit extrapolated, capped at the samples' span past
+their end, and half a width remains the shift only where the fit
+placed no vertex there. `max_attempts` keeps its default of 2: the
+capped retry reaches about four half widths from the centre that
+failed (about 330 steps for R on rig2), past the plan's 300, where more
+attempts of half a width would each cost a whole grid of exposures.
+
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
 ran (`threshold_sigma 10`, `min_area 40`). It is what lets a sweep run
@@ -423,4 +455,9 @@ through G3c's implementation*, above); the unit tests carry the
 recorded sweeps as the list measured them. On the next clear night, a sized
 sweep started 150–300 steps from focus, deliberately, must either fit
 or shift toward focus and fit on its second attempt, and must never
-fit on sub-pixel artefacts; the frames join the corpus.
+fit on sub-pixel artefacts; the frames join the corpus. Run on rig2 on
+2026-11-05 (*Measured on rig2*, above): the list and the floor passed,
+150 steps passed, and 200 failed on either side through the
+half-width retry, which G3d replaces. G3d is validated the same way:
+on the next clear night the ±200 mis-starts, and a +300 one, must fit
+on their second attempt.
