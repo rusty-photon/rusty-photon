@@ -1,6 +1,6 @@
 // The GitHub REST API, for the actions that call it (tracking-issue,
 // refresh-astap, uncovered-diff-lines, install-conformu, beta-clippy,
-// commit-repin, packages): the run's context, a request that says what failed
+// commit-repin, packages, runner-version): the run's context, a request that says what failed
 // with GitHub's own answer, every page of a list, the open issues with a
 // label, and an issue that a failure comments on or opens. Conventions:
 // docs/skills/ci-logic.md.

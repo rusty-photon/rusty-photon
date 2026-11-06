@@ -1,0 +1,62 @@
+# Whether the runner software in the self-hosted pool's templates is falling
+# behind actions/runner. The pool's just-in-time runners cannot update
+# themselves, and GitHub stops queueing jobs to a runner that has not taken an
+# available update within 30 days, after which every pool job sits queued.
+# This runs on a hosted runner, since it has to work when the pool does not.
+# docs/skills/proxmox-runner-pool.md §Runner releases.
+permissions:
+  contents: read
+on:
+  schedule:
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+name: runner-version
+jobs:
+  check:
+    name: pool runner version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/runner-version
+            .github/actions/lib
+            tools/ci/runner-guest
+      - name: Compare the templates' runner with actions/runner's releases
+        uses: ./.github/actions/runner-version
+
+  # Open or update a tracking issue when the scheduled check fails, so a
+  # rebuild is asked for while GitHub still queues jobs to the pool.
+  notify:
+    needs: [check]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "runner pool: the templates' runner is behind actions/runner"
+          label: runner-version
+          body: |
+            The pool templates' runner, as tools/ci/runner-guest/RUNNER_VERSION
+            records it, has been behind a release of actions/runner for 14
+            days. The pool's just-in-time runners cannot update themselves, and
+            GitHub stops queueing jobs to them 30 days after the release; from
+            then on every pool job sits queued while each clone registers and
+            powers off within seconds.
+
+            Rebuild both templates (Linux and Windows) with the newest runner
+            and update RUNNER_VERSION: docs/skills/proxmox-runner-pool.md
+            §Runner releases. The linked run's annotation names the release and
+            the date GitHub stops queueing jobs.
