@@ -921,7 +921,8 @@ dangerous combination. The rule bifurcates by runner kind
   Linux does **not** carry this variable in its action env, so the two
   venues behave differently here.
 * To update the runner toolchain (new SDK pin, new runner release), boot a
-  fresh clone of the template, apply the change, copy in the guest one-job
+  fresh clone of the template, apply the change (a new runner release on its
+  own: [§Runner releases](#runner-releases)), copy in the guest one-job
   script from `tools/ci/runner-guest/` if it has changed, confirm the apt
   timers are still masked and `unattended-upgrades`/`needrestart` still
   purged (the bullet on self-patching below), wipe
@@ -1632,6 +1633,70 @@ dangerous combination. The rule bifurcates by runner kind
   **a BIOS update resets firmware defaults, and the ECC setting goes with
   them.** Anyone flashing this board should re-check `dimm_edac_mode`
   afterwards, and the check will say so on its next firing if they forget.
+
+## Runner releases
+
+The templates carry the runner software, and the pool's runners cannot update
+it themselves. Every clone registers as a just-in-time runner: the settings in
+the config GitHub mints read `"DisableUpdate": true`, and the endpoint that
+mints it (`POST /orgs/<org>/actions/runners/generate-jitconfig`) takes only
+`name`, `runner_group_id`, `labels` and `work_folder`. GitHub's rule for a
+runner that does not update itself is in its docs ("Controlling runner
+software updates on self-hosted runners"): "If you do not perform a software
+update within 30 days, the GitHub Actions service will not queue jobs to your
+runner." So the templates are rebuilt within 30 days of every
+[actions/runner release](https://github.com/actions/runner/releases).
+
+* **The signature of a runner too old to serve.** Every slot cycles in the
+  journal: `runner clone <vmid> up and registered`, then `runner clone <vmid>
+  finished; destroying` about ten seconds later, hundreds of clones an hour on
+  both hosts, with no 401 and every pool job queued. Inside a clone, the
+  runner's `_diag/Runner_*.log` reaches `Listening for Jobs`, and the VM powers
+  off a second later. The same log's `Current runner version` line, read
+  against the newest release, settles it. Catching it takes a snapshot every
+  fraction of a second through the guest agent, since the agent stops
+  answering as the clone powers off.
+* **The check.** `runner-version.yml` compares
+  `tools/ci/runner-guest/RUNNER_VERSION`, the version the templates carry,
+  with actions/runner's releases every day, on a hosted runner because it has
+  to work when the pool does not. A scheduled run fails, and opens the
+  `runner-version` tracking issue, 14 days after the first release newer than
+  RUNNER_VERSION, leaving half of GitHub's window for the rebuild.
+  RUNNER_VERSION is part of what a template contains, like the one-job
+  scripts: a rebuild that changes the runner updates it in the same change.
+* **A rebuild that changes only the runner.** It follows the general
+  procedure ("To update the runner toolchain" above) with the runner as the
+  only change:
+  1. On the template's host, full-clone the current template
+     (`qm clone <template> <new> --full --storage cipool --name <name>`) and
+     start it. Stop the one-job loop without disabling it: `systemctl stop
+     gha-runner` on Linux, and on Windows `Stop-ScheduledTask -TaskName
+     gha-runner` once the autologon has started the task.
+  2. Inside the guest, download the release's package
+     (`actions-runner-linux-x64-<version>.tar.gz`,
+     `actions-runner-win-x64-<version>.zip`) and check it against the SHA-256
+     the release lists. On Windows, resync the clock first (`w32tm /resync
+     /force`): the clone boots with the template's stale clock, and TLS to
+     GitHub fails until it is right. The resync can take the guest agent away
+     for a moment, so wait for it to answer again.
+  3. Move `bin` and `externals` aside and unpack the package into the runner
+     directory (`/home/ci/actions-runner`, owned by `ci`; `C:\actions-runner`),
+     which keeps `.env`, `_work` and the Windows one-job script.
+     `bin/Runner.Listener --version` prints the new version. Remove the `_diag`
+     directory that command creates.
+  4. The general rebuild's hygiene: compare the guest scripts with
+     `tools/ci/runner-guest/` and copy in any that differ. On Linux, clear
+     `/tmp`, `/var/tmp` and the DHCP leases, run `cloud-init clean`, and wipe
+     `/etc/machine-id` last. On Windows, confirm the `gha-runner` task reads
+     `Ready` with priority 4. Power off and `qm template`.
+  5. Roll the host's slot table to the new VMID, keeping the old template and
+     a copy of the table, restart `rp-runner-pool`, confirm the lineage, and
+     dispatch `proxmox-runner-test.yml`, whose Linux and Windows jobs run on
+     clones of the new templates.
+
+  The general procedure's test run before capture checks the toolchain,
+  which a runner-only rebuild leaves as it was. The runner itself first runs
+  a job after the roll, in the dispatch of step 5.
 
 ## Bootstrapping a Runner Manually (no orchestrator)
 

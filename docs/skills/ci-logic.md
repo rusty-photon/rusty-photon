@@ -558,7 +558,7 @@ write credential.
 
 `lib/github.mjs` holds what `tracking-issue`, `refresh-astap`,
 `uncovered-diff-lines`, `install-conformu`, `beta-clippy`,
-`commit-repin` and `packages` share: `runContext` (the API, the
+`commit-repin`, `packages` and `runner-version` share: `runContext` (the API, the
 repository and the run's link from the runner's variables), `github` (a
 request that names what failed and carries GitHub's own answer, and a
 rate limit's wait as its `retryAfterMs` for `retry`; a POST or PATCH
