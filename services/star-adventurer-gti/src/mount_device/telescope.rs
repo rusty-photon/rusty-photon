@@ -310,6 +310,9 @@ impl Telescope for MountDevice {
 
     async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
         self.ensure_connected().await?;
+        if tracking {
+            self.refuse_while_position_lost("Tracking = true")?;
+        }
         // Take RA from any pulse in flight before mutating it, and keep
         // `axis_ownership` until `Tracking` matches the wire. A restore
         // already on the wire finishes first and a later one sees the
@@ -869,9 +872,14 @@ impl Telescope for MountDevice {
             // axis parks IN PLACE. A goto from an unanchored frame
             // would slew to a fabricated position (workspace tenet:
             // no actuation on connect).
-            let (target_ra_ticks, target_dec_ticks) = {
+            // A position that is not known has no park target either,
+            // whatever the state still holds: the encoders do not say
+            // where the mount is (design doc §Power cut while serving).
+            let (target_ra_ticks, target_dec_ticks) = if self.manager.power().position_known() {
                 let s = self.state.read().await;
                 (s.park_ra_ticks, s.park_dec_ticks)
+            } else {
+                (None, None)
             };
             // Same wire sequence as `slew_to_coordinates_async`:
             // `:K`-and-wait, `:G` with direction chosen from
@@ -1081,6 +1089,7 @@ impl Telescope for MountDevice {
     async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
         self.ensure_connected().await?;
         self.ensure_unparked().await?;
+        self.refuse_while_position_lost("PulseGuide")?;
         if self.slewing().await? {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,

@@ -127,6 +127,12 @@ impl Device for MountDevice {
                     self.clone(),
                     self.manager.polling_interval_for_watcher(),
                 );
+                // Follow the controller's power for this connection: drop
+                // what a cut ends, and keep the mount state record current.
+                super::power_watch::spawn_power_watch(
+                    self.clone(),
+                    self.manager.polling_interval_for_watcher(),
+                );
             }
             (false, true) => {
                 if let Some(session) = slot.take() {

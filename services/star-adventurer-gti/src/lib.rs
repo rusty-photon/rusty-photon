@@ -44,6 +44,7 @@ pub mod doctor;
 pub mod error;
 pub mod manager;
 pub mod mount_device;
+pub mod power;
 pub mod setup;
 pub mod transport;
 pub mod units;
@@ -564,16 +565,100 @@ impl BoundServer {
 ///   "ra_running": true, "ra_goto": true,
 ///   "dec_running": false }
 /// ```
-/// Returns `{"ok": true}` on success. Only available under
-/// `feature = "mock"`.
+/// Returns `{"ok": true}` on success.
+///
+/// `GET /debug/v1/mock-state` — the mock's encoders and flags now:
+/// `ra_ticks`, `dec_ticks`, `ra_running`, `dec_running`,
+/// `ra_initialized`, `dec_initialized`, `powered`.
+///
+/// `POST /debug/v1/mock-power` — `{"on": false}` cuts the controller's
+/// power and answers the encoder ticks at the cut (`ra_ticks`,
+/// `dec_ticks`); `{"on": true}` restores it, restarting the controller.
+/// Both answer `log_len`, the command log's length at that instant.
+///
+/// `POST /debug/v1/mock-link-drop` — fails the next request with an I/O
+/// error while the controller keeps its power; answers `log_len`.
+///
+/// Only available under `feature = "mock"`.
 #[cfg(feature = "mock")]
 fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Router {
     use axum::routing::{get, post};
 
     axum::Router::new()
         .route("/debug/v1/mock-commands", get(commands_handler))
-        .route("/debug/v1/mock-state", post(seed_handler))
+        .route(
+            "/debug/v1/mock-state",
+            post(seed_handler).get(state_handler),
+        )
+        .route("/debug/v1/mock-power", post(power_handler))
+        .route("/debug/v1/mock-link-drop", post(link_drop_handler))
         .with_state(state)
+}
+
+/// `GET /debug/v1/mock-state`: the mock's encoders and flags, brought up
+/// to the present.
+#[cfg(feature = "mock")]
+async fn state_handler(
+    axum::extract::State(state): axum::extract::State<Arc<tokio::sync::Mutex<MockMountState>>>,
+) -> axum::Json<serde_json::Value> {
+    let mut s = state.lock().await;
+    s.advance_to_now();
+    axum::Json(serde_json::json!({
+        "ra_ticks": s.ra.position_ticks,
+        "dec_ticks": s.dec.position_ticks,
+        "ra_running": s.ra.running,
+        "dec_running": s.dec.running,
+        "ra_initialized": s.ra.initialized,
+        "dec_initialized": s.dec.initialized,
+        "powered": s.link != transport::mock::MockLink::Unpowered,
+    }))
+}
+
+/// `POST /debug/v1/mock-power`: cut (`{"on": false}`) or restore
+/// (`{"on": true}`) the controller's power.
+#[cfg(feature = "mock")]
+async fn power_handler(
+    axum::extract::State(state): axum::extract::State<Arc<tokio::sync::Mutex<MockMountState>>>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> std::result::Result<
+    axum::Json<serde_json::Value>,
+    (axum::http::StatusCode, axum::Json<serde_json::Value>),
+> {
+    let on = body
+        .get("on")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "body must be {\"on\": <bool>}"})),
+            )
+        })?;
+    let mut s = state.lock().await;
+    if on {
+        s.power_on();
+        Ok(axum::Json(
+            serde_json::json!({ "ok": true, "log_len": s.command_log.len() }),
+        ))
+    } else {
+        let (ra, dec) = s.power_off();
+        Ok(axum::Json(serde_json::json!({
+            "ok": true,
+            "ra_ticks": ra,
+            "dec_ticks": dec,
+            "log_len": s.command_log.len(),
+        })))
+    }
+}
+
+/// `POST /debug/v1/mock-link-drop`: fail the next request while the
+/// controller keeps its power.
+#[cfg(feature = "mock")]
+async fn link_drop_handler(
+    axum::extract::State(state): axum::extract::State<Arc<tokio::sync::Mutex<MockMountState>>>,
+) -> axum::Json<serde_json::Value> {
+    let mut s = state.lock().await;
+    s.drop_link();
+    axum::Json(serde_json::json!({ "ok": true, "log_len": s.command_log.len() }))
 }
 
 /// `GET /debug/v1/mock-commands`: the mock's wire-command log as

@@ -2292,6 +2292,143 @@ async fn park_with_unanchored_frame_stops_in_place_without_goto() {
 }
 
 #[tokio::test]
+async fn park_parks_in_place_while_the_position_is_lost_though_targets_are_armed() {
+    // The handshake marks a position lost before the connected device has
+    // dropped the park targets it holds. `Park()` reads the flag itself,
+    // so the window between the two never lets a park slew to a target
+    // the encoders no longer locate — not even a raw config override.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    cfg.mount.park_ra_ticks = Some(100_000);
+    cfg.mount.park_dec_ticks = Some(200_000);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    assert_eq!(
+        d.state.read().await.park_ra_ticks,
+        Some(100_000),
+        "precondition: the raw override arms RA"
+    );
+    d.manager.power().mark_position_lost();
+    d.park().await.unwrap();
+    let log: Vec<String> = mock
+        .lock()
+        .await
+        .command_log
+        .iter()
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect();
+    assert!(
+        !log.iter().any(|c| c.starts_with(":S")),
+        "expected no :S goto targets on the wire, log: {log:?}"
+    );
+    wait_for_at_park(&d).await;
+}
+
+#[tokio::test]
+async fn a_connect_while_the_position_is_lost_arms_no_park_target_and_clears_at_park() {
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    cfg.mount.park_ra_ticks = Some(100_000);
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager).with_retained(RetainedState {
+        at_park: true,
+        slew_settle_time: None,
+    });
+    d.manager.power().mark_position_lost();
+    d.set_connected(true).await.unwrap();
+    let s = d.state.read().await;
+    assert!(!s.frame_anchored, "a lost position is unanchored");
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+    assert!(!s.at_park, "a lost position is not parked");
+}
+
+#[tokio::test]
+async fn pulse_guide_is_refused_while_the_position_is_lost() {
+    let d = connected_device().await;
+    d.manager.power().mark_position_lost();
+    let err = d
+        .pulse_guide(GuideDirection::East, Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("position is lost"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_ends_tracking_pulses_and_the_slew_and_unanchors_a_lost_frame() {
+    let d = connected_device().await;
+    {
+        let mut s = d.state.write().await;
+        s.tracking_requested = true;
+        s.at_park = true;
+        s.frame_anchored = true;
+        s.park_ra_ticks = Some(1);
+        s.park_dec_ticks = Some(2);
+        s.pulse_guiding.set(Axis::Ra, Some(PulseId(7)));
+    }
+    let token = d.slew_in_progress.try_claim().unwrap();
+    d.manager.power().mark_position_lost();
+    d.drop_what_the_cut_ended().await;
+    assert!(!d.slew_in_progress.holds(token), "the slew's claim lapsed");
+    let s = d.state.read().await;
+    assert!(!s.tracking_requested);
+    assert!(!s.pulse_guiding.is_active());
+    assert!(!s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+    assert!(!s.at_park);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_keeps_a_restored_mount_parked_and_anchored() {
+    let d = connected_device().await;
+    {
+        let mut s = d.state.write().await;
+        s.tracking_requested = true;
+        s.at_park = true;
+        s.frame_anchored = true;
+        s.park_ra_ticks = Some(1);
+        s.park_dec_ticks = Some(2);
+    }
+    d.drop_what_the_cut_ended().await;
+    let s = d.state.read().await;
+    assert!(!s.tracking_requested, "the cut stopped tracking");
+    assert!(s.at_park, "the position was written back exactly");
+    assert!(s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (Some(1), Some(2)));
+}
+
+#[tokio::test]
+async fn a_pending_power_up_check_on_ap_park_0_loses_the_position() {
+    // `ap_park_0` names no power-up pose: after a long cut there is
+    // nothing to check the record against, and the encoders' (0, 0) is
+    // not where the cut left the mount.
+    let d = device();
+    d.manager.power().await_power_up_check();
+    d.set_connected(true).await.unwrap();
+    assert_eq!(d.manager.power().position(), crate::power::Position::Lost);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_leaves_at_park_to_a_pending_power_up_check() {
+    let d = connected_device().await;
+    d.state.write().await.at_park = true;
+    d.manager.power().await_power_up_check();
+    d.drop_what_the_cut_ended().await;
+    let s = d.state.read().await;
+    assert!(
+        s.at_park,
+        "the check decides whether the mount is still parked"
+    );
+    assert!(!s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+}
+
+#[tokio::test]
 async fn debug_impl_includes_config_file_path() {
     // Pins the `derive_more::Debug` derive — adding a new field
     // that should appear in Debug requires keeping it un-`#[debug(skip)]`
@@ -2610,6 +2747,38 @@ async fn sync_anchors_the_frame_and_arms_the_park_target() {
     assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
     assert_eq!(s.park_dec_ticks, Some(725_760));
+}
+
+#[tokio::test]
+async fn a_sync_that_clears_a_lost_position_arms_the_raw_park_override_again() {
+    // The lost position dropped the operator's raw park override with the
+    // rest; the sync that clears it arms the override first, as a connect
+    // would, not the preferred AP park.
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.park_ra_ticks = Some(100_000);
+    cfg.mount.park_dec_ticks = Some(200_000);
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.manager.power().mark_position_lost();
+    d.drop_what_the_cut_ended().await;
+    {
+        let s = d.state.read().await;
+        assert_eq!(
+            (s.park_ra_ticks, s.park_dec_ticks),
+            (None, None),
+            "precondition: the lost position dropped the targets"
+        );
+    }
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    assert!(d.manager.power().position_known());
+    let s = d.state.read().await;
+    assert_eq!(
+        (s.park_ra_ticks, s.park_dec_ticks),
+        (Some(100_000), Some(200_000))
+    );
 }
 
 #[tokio::test]
