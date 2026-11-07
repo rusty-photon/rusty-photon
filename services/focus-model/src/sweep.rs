@@ -174,6 +174,18 @@ pub enum FitError {
     NotEnoughStars { got: usize, needed: usize },
     #[error("monotonic curve: {0}")]
     MonotonicCurve(String),
+    /// The hyperbola fitted with its vertex outside the positions the
+    /// accepted samples were measured at: a monotonic curve, whose
+    /// retry centres on that vertex.
+    #[error(
+        "monotonic curve: fitted vertex {vertex} is outside sampled grid \
+         [{sampled_min}, {sampled_max}]"
+    )]
+    VertexOutside {
+        vertex: i32,
+        sampled_min: i32,
+        sampled_max: i32,
+    },
     /// The fit held its centre among the samples and explained less of
     /// them than the train's `min_fit_r_squared` asks.
     #[error("poor fit: fit_r_squared {r_squared:.3} is below min_fit_r_squared {threshold}")]
@@ -186,7 +198,7 @@ impl FitError {
     pub const fn outcome(&self) -> FitOutcome {
         match self {
             Self::NotEnoughStars { .. } => FitOutcome::NotEnoughStars,
-            Self::MonotonicCurve(_) => FitOutcome::MonotonicCurve,
+            Self::MonotonicCurve(_) | Self::VertexOutside { .. } => FitOutcome::MonotonicCurve,
             Self::PoorFit { .. } => FitOutcome::PoorFit,
         }
     }
@@ -197,7 +209,9 @@ impl FitError {
     pub const fn fit_r_squared(&self) -> Option<f64> {
         match self {
             Self::PoorFit { r_squared, .. } => Some(*r_squared),
-            Self::NotEnoughStars { .. } | Self::MonotonicCurve(_) => None,
+            Self::NotEnoughStars { .. } | Self::MonotonicCurve(_) | Self::VertexOutside { .. } => {
+                None
+            }
         }
     }
 }
@@ -232,9 +246,12 @@ impl FitOutcome {
 pub enum Retry {
     /// The next attempt walked the same grid.
     SameGrid,
-    /// The next attempt's grid was centred `half_width` (or as far as
-    /// the bounds allowed) toward the end of the accepted samples their
-    /// lowest one sits nearer.
+    /// The next attempt's grid was moved toward the end of the accepted
+    /// samples their lowest one sits nearer, as far as the bounds
+    /// allowed: centred on the vertex a monotonic curve's fit
+    /// extrapolated past that end, at most three half widths from the
+    /// centre that failed, or by `half_width` when the fit placed no
+    /// vertex there.
     Shift,
     /// The attempt called for a shift and the focuser's bounds took it
     /// back whole, so the next attempt walked the same grid.
@@ -571,12 +588,14 @@ pub struct RetryPlan {
 
 /// Where the next attempt's grid is centred after a failed fit.
 ///
-/// Moved by `half_width` when the attempt says focus lies past one end
-/// of its accepted samples — after `monotonic_curve` the end
-/// [`monotonic_side`] finds, after `not_enough_stars` the side
-/// [`one_sided_starvation`] finds — clamped to the focuser's bounds;
-/// the same place otherwise, and always after `poor_fit`, whose centre
-/// lay among the samples.
+/// Moved toward focus when the attempt says it lies past one end of its
+/// accepted samples — after `monotonic_curve` the end [`monotonic_side`]
+/// finds, after `not_enough_stars` the side [`one_sided_starvation`]
+/// finds — clamped to the focuser's bounds; the same place otherwise,
+/// and always after `poor_fit`, whose centre lay among the samples. The
+/// move is the one [`vertex_centre`] finds when the fit extrapolated
+/// its vertex past that end, and `half_width` when it placed none
+/// there.
 ///
 /// Either side is read from the samples alone, never against the
 /// centre: a grid a bound clipped, or one whose frames on one side of
@@ -603,17 +622,26 @@ pub fn retry_centre(
         return same_grid;
     };
     let direction = match error {
-        FitError::MonotonicCurve(_) => monotonic_side(lowest_position, &accepted, curve_points),
+        FitError::MonotonicCurve(_) | FitError::VertexOutside { .. } => {
+            monotonic_side(lowest_position, &accepted, curve_points)
+        }
         FitError::NotEnoughStars { .. } => {
             one_sided_starvation(curve_points).unwrap_or(Ordering::Equal)
         }
         FitError::PoorFit { .. } => Ordering::Equal,
     };
-    let shifted = match direction {
+    let by_half_width = match direction {
         Ordering::Less => centre.saturating_sub(half_width),
         Ordering::Greater => centre.saturating_add(half_width),
         Ordering::Equal => return same_grid,
     };
+    let shifted = match error {
+        FitError::VertexOutside { vertex, .. } => {
+            vertex_centre(*vertex, direction, &accepted, centre, half_width)
+        }
+        _ => None,
+    }
+    .unwrap_or(by_half_width);
     let shifted = bounds.0.map_or(shifted, |min| shifted.max(min));
     let shifted = bounds.1.map_or(shifted, |max| shifted.min(max));
     if shifted == centre {
@@ -626,6 +654,38 @@ pub fn retry_centre(
             retry: Retry::Shift,
             centre: shifted,
         }
+    }
+}
+
+/// Where a monotonic curve's retry centres on the vertex its fit
+/// extrapolated: the vertex, when it lies past the end of the accepted
+/// samples `side` names, and no further from the `centre` that failed
+/// than three half widths; `None` when it lies on the other side of
+/// that end.
+///
+/// The wing the samples walk fixes the slope the defocus curve falls
+/// along, so the vertex lands near focus. Three half widths put the
+/// grid a grid's width past the end of the one that failed, and further
+/// out than that the fit is guessing; the cap is measured from the
+/// centre, not from the samples, because a grid whose half width is not
+/// a whole number of steps ends short of it on the high side, and the
+/// retry reaches as far either way.
+fn vertex_centre(
+    vertex: i32,
+    side: Ordering,
+    accepted: &[(i32, f64, u32)],
+    centre: i32,
+    half_width: i32,
+) -> Option<i32> {
+    let low_end = accepted.iter().map(|(position, _, _)| *position).min()?;
+    let high_end = accepted.iter().map(|(position, _, _)| *position).max()?;
+    let reach = half_width.saturating_mul(3);
+    match side {
+        Ordering::Less => (vertex < low_end).then_some(vertex.max(centre.saturating_sub(reach))),
+        Ordering::Greater => {
+            (vertex > high_end).then_some(vertex.min(centre.saturating_add(reach)))
+        }
+        Ordering::Equal => None,
     }
 }
 
@@ -872,10 +932,11 @@ fn gate_and_fit(
         ));
     };
     if best_position < sampled_min || best_position > sampled_max {
-        return Err(FitError::MonotonicCurve(format!(
-            "fitted vertex {best_position} is outside sampled grid \
-             [{sampled_min}, {sampled_max}]"
-        )));
+        return Err(FitError::VertexOutside {
+            vertex: best_position,
+            sampled_min,
+            sampled_max,
+        });
     }
     if let Some(threshold) = params
         .min_fit_r_squared
@@ -1853,6 +1914,126 @@ mod tests {
         );
     }
 
+    // --- the retry onto a monotonic curve's extrapolated vertex ---
+
+    /// One wing rising from 80 to 120: the curve fell toward 80, so
+    /// focus lies below the samples.
+    fn rising_wing() -> Vec<CurvePoint> {
+        (80..=120)
+            .step_by(10)
+            .map(|position| point(position, Some(f64::from(position - 60) / 10.0), 100))
+            .collect()
+    }
+
+    fn vertex_outside(vertex: i32) -> FitError {
+        FitError::VertexOutside {
+            vertex,
+            sampled_min: 80,
+            sampled_max: 120,
+        }
+    }
+
+    /// Half a width would centre the next grid on 80, the samples' end.
+    #[test]
+    fn a_vertex_past_the_low_end_centres_the_retry_on_it() {
+        assert_eq!(
+            retry_centre(100, &vertex_outside(65), &rising_wing(), 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 65
+            }
+        );
+    }
+
+    #[test]
+    fn a_vertex_past_the_high_end_centres_the_retry_on_it() {
+        let falling: Vec<CurvePoint> = (80..=120)
+            .step_by(10)
+            .map(|position| point(position, Some(f64::from(140 - position) / 10.0), 100))
+            .collect();
+        assert_eq!(
+            retry_centre(100, &vertex_outside(150), &falling, 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 150
+            }
+        );
+    }
+
+    /// Further out than a grid's width past the samples the fit is
+    /// guessing: the centre moves three half widths, 60, and no further.
+    #[test]
+    fn a_vertex_far_below_the_samples_moves_the_centre_three_half_widths() {
+        assert_eq!(
+            retry_centre(100, &vertex_outside(-200), &rising_wing(), 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 40
+            }
+        );
+    }
+
+    #[test]
+    fn a_vertex_far_above_the_samples_moves_the_centre_three_half_widths() {
+        let falling: Vec<CurvePoint> = (80..=120)
+            .step_by(10)
+            .map(|position| point(position, Some(f64::from(140 - position) / 10.0), 100))
+            .collect();
+        assert_eq!(
+            retry_centre(100, &vertex_outside(400), &falling, 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 160
+            }
+        );
+    }
+
+    /// A vertex past the end the lowest sample does not sit nearer
+    /// contradicts the samples: the shift is half a width toward the
+    /// lowest one.
+    #[test]
+    fn a_vertex_past_the_other_end_shifts_half_a_width() {
+        assert_eq!(
+            retry_centre(100, &vertex_outside(130), &rising_wing(), 20, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 80
+            }
+        );
+    }
+
+    /// Frames the sky took past the lowest sample keep the grid,
+    /// whatever the fit extrapolated through the samples that are left.
+    #[test]
+    fn a_vertex_past_frames_the_sky_took_repeats_the_grid() {
+        let mut points = rising_wing();
+        points.insert(0, point(70, None, 0));
+        assert_eq!(
+            retry_centre(100, &vertex_outside(65), &points, 20, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 100
+            }
+        );
+    }
+
+    #[test]
+    fn a_vertex_past_a_bound_centres_the_retry_on_the_bound() {
+        assert_eq!(
+            retry_centre(
+                100,
+                &vertex_outside(65),
+                &rising_wing(),
+                20,
+                (Some(72), None)
+            ),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 72
+            }
+        );
+    }
+
     // --- the retry after a sweep starved on one side ---
 
     /// The rig2 sweep of 2026-09-26, gated as the sweep gates it:
@@ -2458,6 +2639,89 @@ mod tests {
         );
     }
 
+    /// A sweep started two and a half half widths above focus walks one
+    /// wing, and its fit extrapolates the vertex to focus: the retry
+    /// centres there and fits, where half a width would have left focus
+    /// below the second grid too.
+    #[tokio::test]
+    async fn a_sweep_started_off_focus_centres_its_retry_on_the_vertex_and_fits() {
+        let rig = ScriptedRig::hyperbola(0);
+        let outcome = sweep(&rig, 100, params()).await.unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.best_position, 0);
+        assert!(outcome.confirmed);
+        assert_eq!(
+            outcome.attempts_log,
+            [FailedAttempt {
+                attempt: 1,
+                outcome: FitOutcome::MonotonicCurve,
+                error: "monotonic curve: fitted vertex 0 is outside sampled grid [60, 140]"
+                    .to_owned(),
+                centre: 100,
+                listed: 100,
+                points: 9,
+                accepted: 9,
+                sparse: 0,
+                starless: 0,
+                retry: Retry::Shift,
+                next_centre: Some(0),
+            }]
+        );
+        assert_eq!(
+            rig.references(),
+            [100, 0],
+            "the second reference frame is taken at the vertex"
+        );
+    }
+
+    /// A vertex more than three half widths out moves the centre three
+    /// half widths; the walk there extrapolates it again, now within
+    /// reach, and the third attempt centres on it and fits.
+    #[tokio::test]
+    async fn a_vertex_far_past_the_samples_is_reached_three_half_widths_at_a_time() {
+        let rig = ScriptedRig::hyperbola(-100);
+        let three = SweepParams {
+            max_attempts: 3,
+            ..params()
+        };
+        let outcome = sweep(&rig, 100, three).await.unwrap();
+        assert_eq!(outcome.attempts, 3);
+        assert_eq!(outcome.best_position, -100);
+        assert!(outcome.confirmed);
+        let retries: Vec<(Retry, Option<i32>)> = outcome
+            .attempts_log
+            .iter()
+            .map(|attempt| (attempt.retry, attempt.next_centre))
+            .collect();
+        assert_eq!(
+            retries,
+            [(Retry::Shift, Some(-20)), (Retry::Shift, Some(-100))]
+        );
+    }
+
+    /// rig2's R sizing, step 22 and half width 86, walks a grid that
+    /// ends 18 steps short of its half width above the centre: a sweep
+    /// started 300 steps from focus on either side still centres its
+    /// retry on a grid that holds focus, and fits on its second attempt.
+    #[tokio::test]
+    async fn a_sweep_started_300_steps_off_focus_at_rig2s_r_sizing_fits_on_its_second_attempt() {
+        let r = SweepParams {
+            step_size: 22,
+            half_width: 86,
+            ..params()
+        };
+        for start in [29_272, 29_872] {
+            let rig = ScriptedRig::hyperbola(29_572);
+            let outcome = sweep(&rig, start, r).await.unwrap();
+            assert_eq!(
+                (outcome.attempts, outcome.best_position, outcome.confirmed),
+                (2, 29_572, true),
+                "the sweep started at {start}: {:?}",
+                outcome.attempts_log
+            );
+        }
+    }
+
     /// A rig under a cloud that blanks every frame at a position `under`
     /// covers, for the first `frames` frames, over the V `hfr` draws.
     fn clouded(
@@ -3045,6 +3309,96 @@ mod tests {
         assert_eq!(sizing.best_position, 29_747, "{sizing:?}");
         let sized = gate_and_fit(&mut recorded_sized_sweep(), params()).unwrap();
         assert_eq!(sized.best_position, 29_739, "{sized:?}");
+    }
+
+    /// rig2's R sweep of 2026-11-05, first attempt: ±86 by 22 around
+    /// 29770, 198 steps above R's focus at 29572, 114 stars listed.
+    fn recorded_r_sweep_above_focus() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_684, Some(5.427), 114),
+            (29_706, Some(6.479), 114),
+            (29_728, Some(7.432), 114),
+            (29_750, Some(8.588), 114),
+            (29_772, Some(9.658), 114),
+            (29_794, Some(10.679), 114),
+            (29_816, Some(11.735), 114),
+            (29_838, Some(12.755), 114),
+        ])
+    }
+
+    /// The same night's R sweep around 29371, 201 steps below focus, 134
+    /// stars listed.
+    fn recorded_r_sweep_below_focus() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_285, Some(12.961), 134),
+            (29_307, Some(11.877), 134),
+            (29_329, Some(10.809), 134),
+            (29_351, Some(9.762), 134),
+            (29_373, Some(8.621), 134),
+            (29_395, Some(7.692), 134),
+            (29_417, Some(6.566), 134),
+            (29_439, Some(5.633), 134),
+        ])
+    }
+
+    /// The same night's R sweep around 29721, 149 steps above focus, 187
+    /// stars listed.
+    fn recorded_r_sweep_nearer_focus() -> Vec<CurvePoint> {
+        recorded(&[
+            (29_635, Some(3.167), 187),
+            (29_657, Some(4.104), 187),
+            (29_679, Some(5.248), 187),
+            (29_701, Some(6.237), 187),
+            (29_723, Some(7.271), 187),
+            (29_745, Some(8.381), 187),
+            (29_767, Some(9.515), 187),
+            (29_789, Some(10.636), 187),
+        ])
+    }
+
+    /// Each sweep walked one wing and fitted a vertex outside its
+    /// samples, where the rig's own run put it; the retry centres there,
+    /// and the grid it walks holds R's focus, 29572, which half a width
+    /// left outside the second grids of the two sweeps started 200 steps
+    /// off.
+    #[test]
+    fn rig2s_sweeps_started_off_focus_centre_their_retry_on_a_grid_holding_focus() {
+        const FOCUS: i32 = 29_572;
+        let r = SweepParams {
+            step_size: 22,
+            half_width: 86,
+            ..params()
+        };
+        for (mut points, centre, vertex) in [
+            (recorded_r_sweep_above_focus(), 29_770, 29_572),
+            (recorded_r_sweep_below_focus(), 29_371, 29_536),
+            (recorded_r_sweep_nearer_focus(), 29_721, 29_584),
+        ] {
+            let error = gate_and_fit(&mut points, r).unwrap_err();
+            let FitError::VertexOutside { vertex: fitted, .. } = error else {
+                panic!("the sweep around {centre} failed as {error:?}");
+            };
+            assert_eq!(fitted, vertex, "the sweep around {centre}");
+            let plan = retry_centre(centre, &error, &points, r.half_width, r.bounds());
+            assert_eq!(
+                plan,
+                RetryPlan {
+                    retry: Retry::Shift,
+                    centre: vertex
+                },
+                "the sweep around {centre}"
+            );
+            let (low, high) = grid_span(&build_grid(
+                plan.centre,
+                r.step_size,
+                r.half_width,
+                r.bounds(),
+            ));
+            assert!(
+                low < Some(FOCUS) && Some(FOCUS) < high,
+                "the retry of the sweep around {centre} walks {low:?}..{high:?}"
+            );
+        }
     }
 
     /// The sizing sweep's confirmation frame at 29744 detects two stars

@@ -40,12 +40,15 @@ anything except through `rp`'s tools. The decision record is the
    optimisation: focus is reached without it.
 3. **Retry with the same parameters; shift, never widen.** A failed fit
    is repeated up to `max_attempts` times, the way N.I.N.A. and Ekos
-   retry, the grid shifted half a width whenever the samples say focus
+   retry, the grid shifted toward focus whenever the samples say it
    lies past one end of them — a monotonic curve that lost no frames
    past the end its lowest sample sits nearer, or stars that ran out on
    one side only while the samples that kept them fall strictly toward
-   the other ([The sweep](#the-sweep)). No attempt halves or doubles
-   the step.
+   the other ([The sweep](#the-sweep)). The shift centres the next grid
+   on the vertex the fit extrapolated past that end, at most three half
+   widths from the centre that failed, and moves it half a width when
+   the fit placed no such vertex. No attempt halves or doubles the
+   step.
 4. **Put things back.** A sweep that fails after every attempt, a
    cancelled sweep and an equipment error all end with the focuser
    moved back to where it was before the call — the position read at
@@ -1167,10 +1170,10 @@ imaging train's sweep follows these rules:
 6. Retry: a failed fit is repeated while attempts remain, up to
    `max_attempts`, and where the next grid sits depends on what the
    failed one said about focus:
-   - After `monotonic_curve` the centre moves by `half_width` toward
-     whichever end of the accepted samples the lowest one sits nearer:
-     the curve fell toward that end, so focus lies past it. The ends
-     are the samples', never the grid's centre: a grid a bound clipped,
+   - After `monotonic_curve` the grid shifts toward whichever end of
+     the accepted samples the lowest one sits nearer: the curve fell
+     toward that end, so focus lies past it. The ends are the
+     samples', never the grid's centre: a grid a bound clipped,
      or one whose frames on one side of the centre all lost their stars
      to a passing cloud, holds every accepted sample on one side of a
      centre they were never measured around, and a comparison with the
@@ -1181,10 +1184,38 @@ imaging train's sweep follows these rules:
      any accepted sample, so the sky took its stars, not the far wing
      leaving the detector's band, and the frames that would place
      focus are ones the grid already walks. With focus near the lowest
-     sample, as a good prediction leaves it, a shift would start the
-     next grid at focus and a curve fitted through its one wing would
-     put its centre past the samples again, where the same grid under a
-     cleared sky fits.
+     sample, as a good prediction leaves it, a shift gains nothing: half
+     a width would start the next grid at focus, where a curve fitted
+     through its one wing puts its centre past the samples again, and
+     the vertex the remaining wing extrapolates would at best recentre
+     the grid on positions it already walks. The same grid, under a
+     cleared sky, fits.
+
+     How far the grid shifts is the fit's to say. A hyperbola that
+     fitted the samples with its vertex past that end centres the next
+     grid on the vertex, but at most three half widths from the centre
+     that failed. The wing a sweep walks fixes the slope the defocus
+     curve falls along, so the extrapolation lands near focus: the
+     focused HFR the wing never sees moves the vertex by less than that
+     HFR over the slope, about 22 steps on rig2, and the scatter of the
+     wing's samples adds to that — rig2's R sweeps of 2026-11-05,
+     started 149–201 steps from focus at a half width of 86,
+     extrapolated vertices within 36 steps of the 29572 a sweep around
+     focus confirmed that night. Three half widths put the next grid a
+     grid's width past the end of the one that failed, and further out
+     than that the fit is guessing; the grid walked there reaches focus
+     about another half width out, so one retry reaches about four half
+     widths from the centre that failed — for R on rig2, 326 steps
+     above it and 344 below, since its grid ends 18 steps short of its
+     half width above its centre. The cap is measured from the centre,
+     not from the samples' end, so that the reach either way differs by
+     no more than that shortfall. When the fit placed no vertex — the
+     samples sit at fewer than three positions, their squared HFRs do
+     not turn upward, or the curve flattened — or placed it past the
+     other end, which the lowest sample contradicts, the centre moves
+     by `half_width`. Half
+     a width alone reaches focus on the next attempt only while focus
+     lies within about two half widths of the centre that failed.
    - After `not_enough_stars` the grid is the same one, unless the
      attempt's points — ordered by position, sparse and starless
      points alike counted as not accepted — say focus lies past one
@@ -1641,8 +1672,11 @@ credential — and that `tools/list` answers with no `rp` running.
   and the 2026-09-26 sized ones, each placed where the G3c replay
   placed it — the confirmation
   verdict and its reason, the 2026-09-26 sizing sweep's confirmation
-  frame accepted on its listed stars, the retry centre — the shift after a sweep starved on one
-  side, and each way the samples can fail to agree on a side — the
+  frame accepted on its listed stars, the retry centre — the shift onto a monotonic curve's
+  extrapolated vertex and its cap, rig2's 2026-11-05 sweeps started off
+  focus each centring the next grid on focus, the shift after a sweep
+  starved on one side, and each way the samples can fail to agree on a
+  side — the
   attempts log of a run that shifted, repeated, ran out of attempts or
   of grid, the wing slope.
 - Workflow, against a `mockall` rig: the resolution errors, the filter
