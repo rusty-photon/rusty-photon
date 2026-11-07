@@ -4103,8 +4103,10 @@ Recovery](#device-session-recovery)):
 6. **The pin cannot be verified**, because the listed entry's
    `UniqueID` is empty. A driver still filling in its listing can
    answer that for a moment, so the routine's 1 s / 2 s retries ride it
-   out like a transport error. If every attempt still lists it blank,
-   the connect is refused, naming why. A pin that cannot be checked
+   out like a transport error. If every attempt still lists it blank
+   (the single attempt, for an entry already disconnected before the
+   pass: § [Device Session Recovery](#device-session-recovery)), the
+   connect is refused, naming why. A pin that cannot be checked
    never passes, and the blank device is never switched on. A list
    that cannot be read, or one
    with no entry at `device_number`, fails the connect as it always
@@ -4270,12 +4272,31 @@ devices:
   bounce between two supervisor passes, which drew no
   `connected: false` event — so a healed session is always visible in
   the event stream.
-- **On failure** the entry stays disconnected (`equipment_changed` with
-  `connected: false` once per transition, not once per attempt) and the
-  next pass retries.
+- **On failure** the entry stays disconnected and the next pass retries.
+  The transition is logged once at `info!` and announced once with
+  `equipment_changed` `connected: false`, not once per attempt; each
+  later pass that still fails logs at `debug!`, as do the retries inside
+  one connect routine. A device that was unreachable at startup is
+  logged once by the startup connect, and at `debug!` by every pass
+  after it. A device switched off for the day is no fault, so between
+  its loss and its return it adds nothing to the log at default
+  verbosity; its return logs the bound device at `info!`.
   There is no give-up state: an outcome that is permanent within one
   connect routine ("device not found", or a refused identity pin) is
   still retried on the next pass, which is exactly what case 3 needs.
+- **An entry already disconnected gets one attempt a pass.** The
+  connect routine's full budget, three attempts with 1 s and then 2 s
+  of backoff between them, is for the startup connect and for a session
+  that was live until this pass: a stall the retries can ride out is
+  likely there, and the pass is the device's only try for a whole
+  interval. An entry that was already disconnected before the pass (its
+  session lost on an earlier pass, or its device unreachable at startup)
+  gets one attempt and no backoff. A pass walks the devices one after
+  another, so 3 s of backoff for every device that stays off would delay
+  every other device's check, and the next pass is the retry anyway.
+  `rp` knows which entries were disconnected from its own record, so
+  the rule needs no trust in a driver's error code, which is also why
+  the placeholder rule below checks the `UniqueID` form.
 - **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
@@ -4305,9 +4326,10 @@ device per interval is the steady-state cost, and the interval itself
 bounds the load on an unreachable host. A pass handles devices
 sequentially and the loop sleeps for the full interval between passes,
 so worst-case recovery latency is one interval plus the pass itself —
-the connect routines of every other device needing re-establishment (a
-few seconds each, bounded by the connect retry budget) run ahead of the
-last device's.
+the connect routines of every other device needing re-establishment run
+ahead of the last device's: a few seconds each for a session lost on
+this pass (bounded by the connect retry budget), one attempt each for
+an entry that was already disconnected.
 
 Consequences and constraints:
 
