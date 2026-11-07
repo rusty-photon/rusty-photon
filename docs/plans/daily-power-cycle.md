@@ -172,10 +172,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    mount was slewing (its §Power cut while serving). Other devices'
    sessions held across a cut come back stale:
    - A camera switched off while idle reads connected all day, since the
-     departure check is lazy. Once it has returned, its first call on the
-     stale handle fails `NOT_CONNECTED` and ends the session; a plain
-     reconnect then works, for a QHY camera only once its wheel has been
-     released too (Validation).
+     departure check is lazy. Once it has returned, its first exposure on
+     the stale handle fails `NOT_CONNECTED` and ends the session. Until
+     then a ZWO camera's reads, `CCDTemperature` among them, can still
+     answer from the SDK's memory. A plain reconnect then works, for a QHY
+     camera only once its wheel has been released too (Validation).
    - A QHY178M whose 12 V alone is cut keeps its session, and its wheel
      homes to slot 0 under a cached position: `qhy-camera` answers a settled
      wheel's `Position` from the slot it cached and does not resend the slot
@@ -297,16 +298,25 @@ Each is settled before the slice that needs it.
   process yet. On Windows PHD2 runs in the operator's desktop session,
   where a service in session 0 cannot open a window, so the start needs a
   way into that session or PHD2 run where `phd2-guider` can manage it.
+- **O6 (P4). What dusk does with a wedged camera.** A QHY camera can wedge
+  on its first exposure even in a fresh process (Validation): the frame is
+  ready only after about a minute, every pixel is 0, the close hangs, and
+  only a power cycle clears it. Proposed: dusk takes one short test
+  exposure per camera after the connect. A frame that is late by more than
+  a fixed margin, or all zero, counts as a wedge. The document then
+  disconnects the camera, cuts its outputs, restarts its service (killing
+  it if the hung close keeps it from exiting) and tries once more before it
+  gives the camera up for the night.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | Done (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and pier1's mount and FP2. Owed: the rest of pier1 and rig2 | |
+| P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and pier1's mount and FP2 with their drivers stopped. Owed (Validation §Owed): the rest of pier1, rig2's other devices, and every serial driver across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 (O5); rp's tool sends the request | Not started; needs O5 for PHD2 | |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation) | Not started; needs O4 | |
-| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2 | |
+| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2, O6 | |
 | P5 | doctor's reading of a device off by design (O3) | Not started | |
 
 P0, P1 and P2 depend on nothing else, and P4 needs P2 and P3.
