@@ -15,7 +15,13 @@ Deciding when to switch power is a workflow's job (decision 1), the
 services start with every device powered (decision 2), no device's session
 crosses a power cut (decision 3), the serial drivers find their device
 again after a cut nobody planned (decision 4), and every service whose
-device was off restarts at dusk (decision 5). What this plan builds is
+device was off restarts at dusk (decision 5). A powered-off device is
+logged once (decision 6), dusk starts at civil twilight once the roof is
+open (decision 7), rp's power-box entries map each output to its devices
+(decision 8), doctor reads a device's output before it reports the device
+absent (decision 9), `phd2-guider` starts PHD2 in the operator's session
+(decision 10), and dusk checks each camera for a wedge (decision 11).
+What this plan builds is
 everything around those: a survey of what each device does across a power
 cut, quiet logging while a device is off, services that restart on request,
 rp tools that
@@ -214,7 +220,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    no request notices that: a move is accepted and reads finished without
    moving (Validation). The supervisor then retries every 5 s and, once
    the device answers, runs the read-only handshake again, which checks the
-   device and refreshes the driver's cache. Only the log changes (O1). This
+   device and refreshes the driver's cache. Only the log changes (decision
+   6). This
    covers a cut nobody planned; a planned one ends in decision 5's restart,
    which starts every serial driver afresh. A start still fails on a device that does not
    answer: under decision 2 that means a wrong or misconfigured port, and a
@@ -235,7 +242,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    starts it again: systemd's `Restart=on-failure` and the SCM failure
    actions it applies to non-crash failures within about 5 s, launchd's
    respawn within about 10 s. PHD2, which is not a rusty-photon service,
-   is restarted through `phd2-guider` (O5). The document then connects the
+   is restarted through `phd2-guider` (decision 10). The document then
+   connects the
    devices through rp. Each service then meets its device in a fresh
    process:
    - **A camera.** On rig2 no QHY600M exposure wedged in a fresh process (0
@@ -270,69 +278,109 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    - **Not a workflow with the service manager's rights.** It would make
      session-runner or rp a second supervisor beside sentinel.
 
-## Open questions
+6. **A powered-off device is logged once** (settled 2026-11-07). rp logs
+   that a device is unreachable at `INFO` once, on the transition, and at
+   `debug!` while it stays unreachable, for every device and driver. A
+   device that was unreachable on the previous pass gets one attempt, not
+   three: rp walks the devices one after another, so 3 s of backoff per
+   powered-off device would delay every other device's check. rp knows
+   which devices were unreachable from its own record, so the rule needs no
+   trust in a driver's error code: any Alpaca driver may use `0x540`, which
+   is why the placeholder rule checks the `UniqueID` form. A device
+   disconnected through rp (decision 3) is not tried at all. The shared
+   transport does the same for its own log: it warns once when a link is
+   lost and logs each failed retry at `debug!`. A device off for 16 hours
+   otherwise costs about 11,500 warnings.
+7. **Dusk starts at civil twilight, once the roof is open** (settled
+   2026-11-07). The dusk document starts at a configured offset from civil
+   twilight and powers nothing up until rp's safety monitors read safe, with
+   the roof open. On a night the roof stays shut, no device is powered at
+   all. The camera then cools in time that is already dark.
+   - **Not before dark, without the roof.** Powering up, restarting and
+     connecting move nothing (tenet 3), so the document could start early
+     enough for the camera to reach its setpoint by dark, but it would power
+     every device on nights the roof never opens.
+8. **rp's power-box entries map each output to its devices** (settled
+   2026-11-07). Each `switches[]` entry lists the power box's outputs, the
+   ids of the devices each one feeds, and marks as protected every output
+   that feeds the host or the power box's own link (pier1's Adjustable
+   Output feeds its Pi: Validation). P3's switch tool refuses to switch off
+   an output while a device on it is connected, and never switches off a
+   protected one. Power is rig-wide, so a mount or guide camera that
+   several trains share needs no copy.
+   - **Not on each device's entry.** A protected output feeds no device the
+     roster lists, so the power-box entry needs its marks anyway, and the
+     map would live in two places.
+   - **Not on each train.** The host and a shared mount belong to no train.
+9. **doctor reads a device's output before it reports the device absent**
+   (settled 2026-11-07). For each check a powered-off device fails or warns
+   on (`hardware.usb-device`, `hardware.serial-node` for a COM port that
+   leaves with its device, `hardware.sdk-devices` for a camera or EAF
+   service that enumerates none, `usb-devices.resolve` for a listed camera
+   that is off), doctor looks up the device's output in the power map
+   (decision 8) and reads it from the power box's driver. A device whose
+   output reads off is reported as powered off, not as a fault. One missing
+   while its output reads on fails as an absent device does, and so does
+   one whose output doctor cannot read. The reading survives an rp restart
+   and needs no schedule.
+   - **Not rp's hold-out list** (decision 3). It lives in rp's memory, so
+     after an rp restart in the day every powered-off device would fail
+     again until dusk.
+   - **Not a daytime window.** A device that dies during the day would go
+     unreported until dusk.
+10. **`phd2-guider` starts PHD2 in the operator's session** (settled
+    2026-11-07). PHD2 runs as the operator, in their desktop or VNC
+    session, and the `phd2-guider` service runs as `rusty-photon` or
+    `LocalSystem`, which cannot open a window there. `phd2-guider` stops
+    PHD2 through its RPC (guiding stopped, equipment disconnected,
+    `shutdown`) and starts it through a launcher the packaging registers in
+    the operator's session: a Task Scheduler task that runs only while the
+    operator is logged on (Windows), a unit of the operator's user service
+    manager (Linux), a launch agent (macOS). The same launcher ends a PHD2
+    the RPC leaves running. The start needs the operator's session logged
+    on, as PHD2 itself does; without one it fails and dusk reports the
+    guider unavailable.
+    - **Not `phd2-guider` in the operator's session.** Run at logon instead
+      of as a service, it could own PHD2 as its child, but nothing would
+      reach it until someone logs on, the service manager would not restart
+      it, and packaging, sentinel and doctor would treat it apart from every
+      other service.
+11. **Dusk checks each camera for a wedge** (settled 2026-11-07). After the
+    connect, the dusk document takes one short test exposure per camera. A
+    frame late by more than a fixed margin, or all zero, counts as a wedge.
+    The document then disconnects the camera and every other device on its
+    outputs (its wheel among them, decision 3), cuts the outputs, switches
+    them back on, waits for the camera to settle (decision 2), has the
+    service restart (decision 5) and tries once more. A second wedge gives
+    the camera up for the night, with a log line that says so. The restart
+    makes a wedge rare without ruling one out (decision 5), a wedge that
+    slips through costs the camera its night, and the test frame costs
+    seconds.
 
-Each is settled before the slice that needs it.
-
-- **O1 (P1). The log for a powered-off device.** Proposed: rp logs that a
-  device is unreachable at `INFO` once, on the transition, and at `debug!`
-  while it stays unreachable, for every device and driver. A device that
-  was unreachable on the previous pass gets one attempt, not three: rp walks
-  the devices one after another, so 3 s of backoff per powered-off device
-  would delay every other device's check. rp knows that from its own record,
-  so this needs no trust in a driver's error code. Today's placeholder rule
-  avoids that trust by checking the `UniqueID` form, because any Alpaca
-  driver may use `0x540`. A device disconnected through rp (decision 3) is
-  not tried at all. The shared transport does the same for its own log: it
-  warns once when a link is lost and logs each failed retry at `debug!`, where
-  today a device off for 16 hours costs about 11,500 warnings.
-- **O2 (P4). When dusk starts.** At an offset from civil twilight and with
-  the roof open, or the camera earlier so that it cools before the roof
-  opens.
-- **O3 (P5). doctor for a device off by design.** A daytime-aware reading
-  of the checks a powered-off device fails or warns on
-  (`hardware.usb-device`, `hardware.serial-node` for a COM port that leaves
-  with its device, `hardware.sdk-devices` for a camera or EAF service that
-  enumerates none, `usb-devices.resolve` for a listed camera that is off),
-  or a "powered down by schedule" state.
-- **O4 (P3). Which output feeds which device.** rp's `switches[]` entries
-  name a power box, not the devices on its outputs, so P3's switch tool
-  needs a mapping from each output to the devices it feeds, in rp's
-  configuration or in a train's, to refuse to switch off an output while a
-  device on it is still connected. The mapping also marks each output that
-  feeds the host or the power box's own link, which P3 never switches off.
-- **O5 (P2). How `phd2-guider` restarts PHD2.** Its library stops PHD2
-  (guiding stopped, equipment disconnected, the `shutdown` RPC, a kill if
-  that fails) and starts it, but its service does not manage the PHD2
-  process yet. On Windows PHD2 runs in the operator's desktop session,
-  where a service in session 0 cannot open a window, so the start needs a
-  way into that session or PHD2 run where `phd2-guider` can manage it.
-- **O6 (P4). What dusk does with a wedged camera.** A QHY camera can wedge
-  on its first exposure even in a fresh process (Validation): the frame is
-  ready only after about a minute, every pixel is 0, the close hangs, and
-  only a power cycle clears it. Proposed: dusk takes one short test
-  exposure per camera after the connect. A frame that is late by more than
-  a fixed margin, or all zero, counts as a wedge. The document then
-  disconnects the camera and every other device on its outputs (its wheel
-  among them, decision 3), cuts the outputs, switches them back on and
-  waits for the camera to settle (decision 2), asks the service to restart
-  (P2), and tries once more before it gives the camera up for the night. A
-  wedge can hang the close, so the restart request may never end in an
-  exit. The question includes who ends a service stuck in its close: not
-  the document, which decision 5 keeps from acting as a second supervisor.
+    A wedged camera can hang its service's close, so a service asked to
+    restart gives the close of its devices a fixed deadline and exits with
+    the restart code when the deadline passes. Its service manager starts
+    it again as after any restart.
+    - **Not the restart alone.** The dev box's one wedge in a fresh process
+      came after a long outage, the case closest to a day off, and a missed
+      wedge shows only as the night's frames coming back all zero.
+    - **Not sentinel ending a stuck close.** Its rule, 3 failed health
+      probes 30 s apart, takes 90 s or more, and the restart would then
+      depend on a hung close failing a probe.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2` and `pa-scops-oag` across a cut. Owed (Validation §Owed): `star-adventurer-gti` across a cut on hardware, and rig2's other devices with their drivers across a cut | |
-| P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
-| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 (O5); rp's tool sends the request | Not started; needs O5 for PHD2 | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation) | Not started; needs O4 | |
-| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2, O6 | |
-| P5 | doctor's reading of a device off by design (O3) | Not started | |
+| P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
+| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs (decision 10); rp's tool sends the request | Not started | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation). The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
+| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, a test exposure per camera with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2 and P3 | |
+| P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
-P0, P1 and P2 depend on nothing else, and P4 needs P2 and P3.
+P0, P1 and P2 depend on nothing else, P4 needs P2 and P3, and P5 needs P3's
+power map.
 
 `gemini-powerbox-adv3-driver` has a start bug of its own: one reply that
 does not decode as UTF-8 during its handshake fails the start. It was seen
