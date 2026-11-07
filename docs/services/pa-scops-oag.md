@@ -40,7 +40,9 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   updates the position only: read before the move reached the device, its
   idle flag would clear the move, and `IsMoving`, which re-reads the device
   only while the cache says moving, would answer false for a focuser that
-  is moving. The move and `Halt` date the cache by their answers. See
+  is moving. A move stops counting as unanswered however its request ends,
+  a caller that hangs up mid-request included, so it cannot hold `is_moving`
+  up. The move and `Halt` date the cache by their answers. See
   `src/manager.rs`.
 - **Protocol layer**: ASCII command serialization and the `A`-report parser
   (`src/protocol.rs`).

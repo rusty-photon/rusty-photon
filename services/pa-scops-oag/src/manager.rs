@@ -19,6 +19,7 @@
 //! before a move was answered says nothing about that move, so it cannot
 //! clear it.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,10 +52,33 @@ pub struct CachedState {
     pub status_read: ReadStamp,
     /// Moves sent and not yet answered. While one is, a report cannot clear
     /// `is_moving`: it may have been read before the move reached the
-    /// device.
-    pub moves_in_flight: u32,
+    /// device. Counted by [`MoveInFlight`], which takes a move off the count
+    /// however its request ends.
+    pub moves_in_flight: Arc<AtomicU32>,
     /// Firmware version reported by the handshake's status report.
     pub firmware_version: Option<String>,
+}
+
+/// One move sent and not yet answered, on [`CachedState::moves_in_flight`]
+/// for as long as it lives.
+///
+/// Dropping it takes the move off the count: on the echo, on a failure, or
+/// with the caller's future when a client hangs up mid-request. A move
+/// nobody waits for any more therefore cannot keep reports from clearing
+/// `is_moving`.
+struct MoveInFlight(Arc<AtomicU32>);
+
+impl MoveInFlight {
+    fn start(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for MoveInFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Manager that wraps the shared transport plus Scops-specific cached state.
@@ -113,16 +137,15 @@ impl FocuserManager {
     pub async fn move_absolute(&self, session: &Session<ScopsCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read can't
         // observe `is_moving == false` while the move is in flight.
-        {
+        let in_flight = {
             let mut state = self.cached_state.write().await;
             state.target_position = Some(position);
             state.is_moving = true;
-            state.moves_in_flight = state.moves_in_flight.saturating_add(1);
-        }
+            MoveInFlight::start(&state.moves_in_flight)
+        };
         let cmd = Command::MoveAbsolute { position };
         let outcome = session.request_timed(cmd.clone()).await;
         let mut state = self.cached_state.write().await;
-        state.moves_in_flight = state.moves_in_flight.saturating_sub(1);
         match outcome {
             Ok((ScopsResponse::Echo(echo), timing)) => {
                 if let Err(e) = validate_echo(&cmd, &echo) {
@@ -135,6 +158,10 @@ impl FocuserManager {
                 if !state.status_read.admit(timing.received_at) {
                     debug!("a report read after the move's echo is already cached");
                 }
+                // Off the count only now, with the cache still held: a report
+                // read before the echo meets the echo's date, never a moment
+                // with neither guard up.
+                drop(in_flight);
             }
             Ok((other, _)) => {
                 rollback_move_if_ours(&mut state, position);
@@ -332,7 +359,7 @@ fn apply_status(state: &mut CachedState, status: &ScopsStatus, read_at: Instant)
         return;
     }
     state.position = Some(status.position);
-    if state.moves_in_flight > 0 {
+    if state.moves_in_flight.load(Ordering::SeqCst) > 0 {
         return;
     }
     state.is_moving = status.is_moving;
@@ -728,6 +755,42 @@ mod tests {
         assert_eq!(state.target_position, Some(50000));
 
         factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_move_whose_caller_hangs_up_mid_request_does_not_hold_is_moving_up() {
+        let factory = Arc::new(HoldingFactory::default());
+        let manager = make_manager_polling_fast(&factory);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // The move's echo is held, and the caller goes away while it waits
+        // — an HTTP client hanging up mid-request. The mock steps 1000 per
+        // report, so the move to 1500 ends at the second report.
+        let move_command = Command::MoveAbsolute { position: 1500 };
+        factory.hold_next_reply_to(&move_command);
+        let mut moving = Box::pin(manager.move_absolute(&session, 1500));
+        tokio::select! {
+            result = &mut moving => panic!("the move ended with its echo held: {result:?}"),
+            () = factory.reply_held() => {}
+        }
+        drop(moving);
+        assert!(
+            manager.get_cached_state().await.is_moving,
+            "the move committed before its caller went away"
+        );
+        factory.release_reply();
+
+        // Reports clear the move once the focuser says it is idle.
+        tokio::time::timeout(HOLD_DEADLINE, async {
+            while manager.get_cached_state().await.is_moving {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("is_moving stayed up after the move's caller went away");
+        assert_eq!(manager.get_cached_state().await.position, Some(1500));
+
         session.close().await.unwrap();
     }
 
