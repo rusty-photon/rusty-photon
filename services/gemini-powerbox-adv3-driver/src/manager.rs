@@ -12,10 +12,11 @@
 //!   the three sensor sliding-window means).
 //!
 //! Every frame is stored with the instant it was read off the wire, and the
-//! cache keeps the frame read last. Requests take turns on the wire, but
-//! each stores its frame after its turn ends, so a poll's store can land
-//! after that of a write that went on the wire behind it; the poll's frame
-//! is then the older one and is dropped ([`apply_status`]).
+//! cache keeps the frame read last ([`ReadStamp`]). Requests take turns on
+//! the wire, but each stores its frame after its turn ends, so a poll's
+//! store can land after that of a write that went on the wire behind it;
+//! the poll's frame is then the older one and is dropped
+//! ([`apply_status`]).
 //!
 //! Both the handshake and the poll loop are **read-only by construction**:
 //! the only [`GeminiCommand`] variants either one sends are the three
@@ -35,8 +36,8 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportError,
-    TransportFactory, WhileOpen,
+    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    TransportError, TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
 use tokio::time::{interval, Instant};
@@ -67,7 +68,7 @@ pub struct CachedState {
     pub status: Option<StatusFrame>,
     /// When [`status`](Self::status) was read off the wire, which is what
     /// [`apply_status`] orders an incoming frame against.
-    pub status_read_at: Option<Instant>,
+    pub status_read: ReadStamp,
     /// The firmware `>V#` reported, kept for `DriverInfo`.
     pub firmware: Option<u16>,
     pub temp_mean: SensorMean,
@@ -419,9 +420,7 @@ async fn poll_loop(
 /// A frame read before the held one shows the hub as it was before the
 /// held one was produced: stored, a poll's frame read ahead of a write
 /// would report the written switch at its old value after the write was
-/// confirmed. It is dropped, samples and all. Only a strictly earlier read
-/// is dropped, so frames read at one instant — every frame on a paused test
-/// clock — are stored in turn.
+/// confirmed. It is dropped, samples and all ([`ReadStamp::admit`]).
 ///
 /// The windows are fed only while the AHT20 says it is attached, and only
 /// from a field that carries a reading. The first frame whose flag reads
@@ -430,19 +429,12 @@ async fn poll_loop(
 /// a field with no reading while the flag is `1` adds no sample and clears
 /// nothing, and the window ages out on its own if that persists.
 fn apply_status(state: &mut CachedState, dated: &DatedFrame) {
-    if let Some(held) = state.status_read_at {
-        if dated.read_at < held {
-            let read_before_held = held.saturating_duration_since(dated.read_at);
-            debug!(
-                ?read_before_held,
-                "dropping a frame read before the cached one"
-            );
-            return;
-        }
+    if !state.status_read.admit(dated.read_at) {
+        debug!("dropping a frame read before the cached one");
+        return;
     }
     let frame = &dated.frame;
     state.status = Some(frame.clone());
-    state.status_read_at = Some(dated.read_at);
     if frame.ambient_sensor_attached {
         for (mean, reading) in [
             (&mut state.temp_mean, frame.ambient_temperature),
@@ -703,7 +695,7 @@ mod tests {
         apply_status(&mut state, &dated(DC3_ON, earlier));
 
         assert!(!dc3_on(&state), "the older frame replaced the newer one");
-        assert_eq!(state.status_read_at, Some(later));
+        assert_eq!(state.status_read.read_at(), Some(later));
         assert_eq!(
             state.temp_mean.sample_count(),
             1,

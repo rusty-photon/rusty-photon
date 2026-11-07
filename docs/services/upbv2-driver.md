@@ -330,7 +330,11 @@ explicitly. Therefore:
   construction.
 - The poll loop refreshes `PA` + `PC` + `PS` every `polling_interval`
   (default 5 s) into the shared cache. Reads are served from cache; a write
-  refreshes on demand.
+  refreshes on demand. Each frame is stored with the instant it was read
+  off the wire, and one read before the cached frame is dropped, so a
+  poll's `PA` or `PS` read just before a write cannot land after the
+  write's refresh and put an output or the variable-output setpoint back
+  ([the shared pattern](../workspace.md#serial-based-services-ppba-driver-qhy-focuser)).
 - A setup-page save never pushes output states to hardware.
 - The excluded `PE:`/`US:` boot-state commands would have been the one place
   a config-driven output state could leak onto the hardware. Their exclusion

@@ -29,7 +29,12 @@ service contributes the protocol-specific pieces:
   `Hooks { handshake, teardown, while_open }` that the shared transport
   runs across the connection lifecycle. The handshake seeds firmware,
   position, and temperature; the `while_open` poll loop refreshes
-  position + temperature on the configured interval. See `src/manager.rs`.
+  position + temperature on the configured interval. Each reading is
+  stored with the instant it was read off the wire, and one read before
+  the cached reading is dropped: a poll's position read on the way to a
+  target cannot replace the one `IsMoving`'s refresh read at the target,
+  which would report the focuser stopped short of where it says it
+  arrived. See `src/manager.rs`.
 - **Protocol layer**: JSON command serialization and value-level
   response parsers (`src/protocol.rs`).
 - **ASCOM device**: `QhyFocuserDevice` holds an

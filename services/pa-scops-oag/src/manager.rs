@@ -10,16 +10,24 @@
 //!   the `A` report.
 //! * The cached state the ASCOM `Focuser` properties read (`position`,
 //!   `is_moving`).
+//!
+//! Each `A` report is stored with the instant it was read off the wire, and
+//! the cache keeps the report read last ([`ReadStamp`]). Requests take turns
+//! on the wire, but each stores what it read after its turn ends, so a
+//! poll's report can land after a newer one, or after a move this driver
+//! has since sent. A report read before the cached one is dropped; one read
+//! before a move was answered says nothing about that move, so it cannot
+//! clear it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
-    WhileOpen,
+    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::{debug, warn};
 
 use crate::codec::{ScopsCodec, ScopsCodecError, ScopsResponse};
@@ -37,6 +45,14 @@ pub struct CachedState {
     /// True between move start and the poll/refresh that observes the device
     /// reporting idle (or a successful Halt).
     pub is_moving: bool,
+    /// When the position and the moving state were last brought up to date:
+    /// the read of the report they came from, or the answer to a move or a
+    /// halt. A report read before it is dropped.
+    pub status_read: ReadStamp,
+    /// Moves sent and not yet answered. While one is, a report cannot clear
+    /// `is_moving`: it may have been read before the move reached the
+    /// device.
+    pub moves_in_flight: u32,
     /// Firmware version reported by the handshake's status report.
     pub firmware_version: Option<String>,
 }
@@ -101,29 +117,37 @@ impl FocuserManager {
             let mut state = self.cached_state.write().await;
             state.target_position = Some(position);
             state.is_moving = true;
+            state.moves_in_flight = state.moves_in_flight.saturating_add(1);
         }
         let cmd = Command::MoveAbsolute { position };
-        match session.request(cmd.clone()).await {
-            Ok(ScopsResponse::Echo(echo)) => {
+        let outcome = session.request_timed(cmd.clone()).await;
+        let mut state = self.cached_state.write().await;
+        state.moves_in_flight = state.moves_in_flight.saturating_sub(1);
+        match outcome {
+            Ok((ScopsResponse::Echo(echo), timing)) => {
                 if let Err(e) = validate_echo(&cmd, &echo) {
-                    let mut state = self.cached_state.write().await;
                     rollback_move_if_ours(&mut state, position);
                     return Err(e);
                 }
+                // Date the move by its echo, so a report read before it —
+                // one that may show the focuser idle before the move began —
+                // cannot clear it.
+                if !state.status_read.admit(timing.received_at) {
+                    debug!("a report read after the move's echo is already cached");
+                }
             }
-            Ok(other) => {
-                let mut state = self.cached_state.write().await;
+            Ok((other, _)) => {
                 rollback_move_if_ours(&mut state, position);
                 return Err(ScopsOagError::InvalidResponse(format!(
                     "MoveAbsolute returned non-echo frame: {other:?}"
                 )));
             }
             Err(e) => {
-                let mut state = self.cached_state.write().await;
                 rollback_move_if_ours(&mut state, position);
                 return Err(ScopsOagError::from(e));
             }
         }
+        drop(state);
         debug!(position, "move command sent");
         Ok(())
     }
@@ -136,11 +160,16 @@ impl FocuserManager {
     /// transport error, a response the codec cannot decode, or an exhausted
     /// skip budget — with the cached move state left as it was.
     pub async fn abort(&self, session: &Session<ScopsCodec>) -> Result<()> {
-        session
-            .request(Command::Halt)
+        let (_, timing) = session
+            .request_timed(Command::Halt)
             .await
             .map_err(ScopsOagError::from)?;
         let mut state = self.cached_state.write().await;
+        // Date the halt by its answer, so a report read before it cannot
+        // mark the focuser moving again.
+        if !state.status_read.admit(timing.received_at) {
+            debug!("a report read after the halt's answer is already cached");
+        }
         state.is_moving = false;
         state.target_position = None;
         drop(state);
@@ -160,8 +189,8 @@ impl FocuserManager {
     /// wrong variant is consumed by the skip budget rather than returned.
     /// The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<ScopsCodec>) -> Result<()> {
-        let resp = session
-            .request(Command::Status)
+        let (resp, timing) = session
+            .request_timed(Command::Status)
             .await
             .map_err(ScopsOagError::from)?;
         let status = match resp {
@@ -173,7 +202,7 @@ impl FocuserManager {
             }
         };
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, &status);
+        apply_status(&mut state, &status, timing.received_at);
         Ok(())
     }
 }
@@ -215,9 +244,9 @@ async fn handshake(
         }
     }
 
-    let status = match conn.request(Command::Status).await? {
-        ScopsResponse::Status(s) => s,
-        other => {
+    let (status, read_at) = match conn.request_timed(Command::Status).await? {
+        (ScopsResponse::Status(s), timing) => (s, timing.received_at),
+        (other, _) => {
             return Err(ScopsCodecError::InvalidResponse(format!(
                 "Status returned non-status frame: {other:?}"
             )));
@@ -230,13 +259,12 @@ async fn handshake(
     );
 
     let mut state = cached_state.write().await;
-    state.firmware_version = Some(status.firmware_version);
-    state.position = Some(status.position);
-    state.is_moving = status.is_moving;
     // A previous session may have disconnected mid-move; the device's `A`
     // report is authoritative for `is_moving`, so re-seed from it and drop any
     // stale target.
     state.target_position = None;
+    apply_status(&mut state, &status, read_at);
+    state.firmware_version = Some(status.firmware_version);
     drop(state);
     Ok(())
 }
@@ -259,12 +287,12 @@ async fn poll_loop(
             }
         }
 
-        match ctx.request(Command::Status).await {
-            Ok(ScopsResponse::Status(s)) => {
+        match ctx.request_timed(Command::Status).await {
+            Ok((ScopsResponse::Status(s), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, &s);
+                apply_status(&mut state, &s, timing.received_at);
             }
-            Ok(other) => warn!("poll: Status returned unexpected variant: {other:?}"),
+            Ok((other, _)) => warn!("poll: Status returned unexpected variant: {other:?}"),
             Err(e) => session_err_to_warn("Status", &e),
         }
     }
@@ -284,12 +312,29 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
     }
 }
 
-/// Apply an `A` status report to the cache: position + moving state come from
-/// the device, and a not-moving report clears the target. The Scops reports
-/// `is_moving` directly (unlike qhy-focuser, which infers it from
-/// position == target), so completion is read straight from the device.
-const fn apply_status(state: &mut CachedState, status: &ScopsStatus) {
+/// Apply an `A` status report read at `read_at` to the cache: position +
+/// moving state come from the device, and a not-moving report clears the
+/// target. The Scops reports `is_moving` directly (unlike qhy-focuser, which
+/// infers it from position == target), so completion is read straight from
+/// the device.
+///
+/// A report read before the cached state was brought up to date is
+/// dropped. While a move is unanswered, a report updates the position only:
+/// read before the move reached the device, its idle flag would clear a
+/// move that is about to start, and `is_moving` would answer false without
+/// asking the device again.
+fn apply_status(state: &mut CachedState, status: &ScopsStatus, read_at: Instant) {
+    if !state.status_read.admit(read_at) {
+        debug!(
+            position = status.position,
+            "dropping a report read before the cached state"
+        );
+        return;
+    }
     state.position = Some(status.position);
+    if state.moves_in_flight > 0 {
+        return;
+    }
     state.is_moving = status.is_moving;
     if !status.is_moving {
         state.target_position = None;
@@ -449,7 +494,7 @@ mod tests {
     // ---- transport-failure rollback via an injectable factory --------------
 
     use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError};
+    use rusty_photon_shared_transport::{Codec as _, FrameTransport, TransportError};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Default, Clone)]
@@ -549,5 +594,209 @@ mod tests {
         let state = manager.get_cached_state().await;
         assert_eq!(state.firmware_version, None);
         assert_eq!(state.position, None);
+    }
+
+    // ---- a poll against a move or a refresh -----------------------------
+
+    /// How long a test waits for a request to reach its held reply, or for
+    /// the cache to show a move, before declaring the code under test
+    /// stuck: a failure deadline, not a duration.
+    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
+
+    /// Wraps the canonical mock and, once armed with a command, holds the
+    /// reply to the next send of it: `recv_frame` says it has been reached
+    /// and waits to be let go. The device has the command by then, so the
+    /// held reply is already decided.
+    #[derive(Default, Clone)]
+    struct HoldingFactory {
+        inner: MockScopsTransportFactory,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[derive(Default)]
+    struct ReplyHold {
+        /// The command whose reply is held next, as it goes on the wire.
+        armed: std::sync::Mutex<Option<Vec<u8>>>,
+        holding: AtomicBool,
+        reached: tokio::sync::Notify,
+        released: tokio::sync::Notify,
+    }
+
+    impl HoldingFactory {
+        fn hold_next_reply_to(&self, command: &Command) {
+            *self.hold.armed.lock().unwrap() = Some(ScopsCodec.encode(command));
+        }
+
+        /// Wait until the armed command's reply is held, or fail at
+        /// [`HOLD_DEADLINE`].
+        async fn reply_held(&self) {
+            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
+                .await
+                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
+        }
+
+        fn release_reply(&self) {
+            self.hold.released.notify_one();
+        }
+    }
+
+    #[async_trait]
+    impl TransportFactory for HoldingFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let inner = self.inner.open().await?;
+            Ok(Box::new(HoldingTransport {
+                inner,
+                hold: Arc::clone(&self.hold),
+            }))
+        }
+    }
+
+    struct HoldingTransport {
+        inner: Box<dyn FrameTransport>,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[async_trait]
+    impl FrameTransport for HoldingTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            let armed_command = self
+                .hold
+                .armed
+                .lock()
+                .unwrap()
+                .take_if(|command| bytes.starts_with(command));
+            if armed_command.is_some() {
+                self.hold.holding.store(true, Ordering::SeqCst);
+            }
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(
+            &mut self,
+            buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            if self.hold.holding.swap(false, Ordering::SeqCst) {
+                self.hold.reached.notify_one();
+                self.hold.released.notified().await;
+            }
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    fn make_manager_polling_fast(factory: &Arc<HoldingFactory>) -> Arc<FocuserManager> {
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_millis(20);
+        FocuserManager::new(&config, Arc::clone(factory) as Arc<dyn TransportFactory>)
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_move_does_not_clear_it() {
+        let factory = Arc::new(HoldingFactory::default());
+        let manager = make_manager_polling_fast(&factory);
+        let session = manager.transport().acquire().await.unwrap();
+        assert!(!manager.get_cached_state().await.is_moving, "idle at start");
+
+        // A poll's report is on the wire: the focuser idle at 0. The next
+        // poll's is held too, so that its report — read after the move —
+        // never reaches the cache before the assertion.
+        factory.hold_next_reply_to(&Command::Status);
+        factory.reply_held().await;
+        factory.hold_next_reply_to(&Command::Status);
+
+        // The move commits to the cache and waits for the wire; once the
+        // commit shows, the poll's idle report goes on to be stored.
+        let (moved, ()) = tokio::join!(manager.move_absolute(&session, 50000), async {
+            tokio::time::timeout(HOLD_DEADLINE, async {
+                while manager.get_cached_state().await.target_position != Some(50000) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the move never committed to the cache");
+            factory.release_reply();
+        });
+        moved.unwrap();
+
+        // The poll stores before its next request, which is now held.
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            state.is_moving,
+            "a poll's report read before the move cleared it"
+        );
+        assert_eq!(state.target_position, Some(50000));
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_report_read_before_a_move_was_answered_does_not_clear_it_once_answered() {
+        // A poll interval long enough that no poll runs during the test.
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_mins(5);
+        let manager = FocuserManager::new(&config, Arc::new(MockScopsTransportFactory::default()));
+        let session = manager.transport().acquire().await.unwrap();
+
+        let read_before_the_move = Instant::now();
+        manager.move_absolute(&session, 50000).await.unwrap();
+
+        // The idle report a poll read before the move, stored only now.
+        let idle_at_start = ScopsStatus {
+            firmware_version: "1.2".to_string(),
+            position: 0,
+            is_moving: false,
+        };
+        let mut state = manager.cached_state.write().await;
+        apply_status(&mut state, &idle_at_start, read_before_the_move);
+        assert!(state.is_moving, "a report read before the move cleared it");
+        assert_eq!(state.target_position, Some(50000));
+        drop(state);
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_refresh_does_not_replace_the_refreshed_arrival() {
+        let factory = Arc::new(HoldingFactory::default());
+        let manager = make_manager_polling_fast(&factory);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // The mock steps 1000 per report: the poll's read lands at 1000,
+        // still moving, and the next read arrives at 1500.
+        manager.move_absolute(&session, 1500).await.unwrap();
+        factory.hold_next_reply_to(&Command::Status);
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads its report and cannot store
+        // it; `is_moving`'s refresh goes on the wire behind it, reads the
+        // arrival and lands first — what a poll task slow to run again on a
+        // loaded host does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        let (refreshed, timing) = session.request_timed(Command::Status).await.unwrap();
+        let ScopsResponse::Status(refreshed) = refreshed else {
+            panic!("A answered by {refreshed:?}");
+        };
+        assert_eq!(refreshed.position, 1500, "the refresh read the arrival");
+        assert!(!refreshed.is_moving);
+        apply_status(&mut cache, &refreshed, timing.received_at);
+
+        // The poll stores next, and its next report is the sign it has.
+        factory.hold_next_reply_to(&Command::Status);
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert_eq!(
+            state.position,
+            Some(1500),
+            "a poll's report read before the refresh replaced the arrival"
+        );
+        assert!(!state.is_moving, "a stale report marked the focuser moving");
+
+        factory.release_reply();
+        session.close().await.unwrap();
     }
 }

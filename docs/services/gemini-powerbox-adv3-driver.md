@@ -624,7 +624,8 @@ shared crate's supervisor reconnects (re-running the read-only handshake).
 
 Every frame is stored with the instant it was read off the wire (the
 shared crate's `WireTiming::received_at`), and a frame read before the one
-the cache holds is dropped, sensor samples included. Requests take turns
+the cache holds is dropped, sensor samples included (the shared crate's
+`ReadStamp`). Requests take turns
 on the wire, so read order is the order the hub produced the frames in.
 Store order is not: each request stores its frame after its turn ends, and
 a poll whose task is slow to run again — a loaded host — can store the
