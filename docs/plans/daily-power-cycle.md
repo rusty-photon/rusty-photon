@@ -307,9 +307,12 @@ Each is settled before the slice that needs it.
   exposure per camera after the connect. A frame that is late by more than
   a fixed margin, or all zero, counts as a wedge. The document then
   disconnects the camera and every other device on its outputs (its wheel
-  among them, decision 3), cuts the outputs, restarts the service (killing
-  it if the hung close keeps it from exiting) and tries once more before it
-  gives the camera up for the night.
+  among them, decision 3), cuts the outputs, switches them back on and
+  waits for the camera to settle (decision 2), asks the service to restart
+  (P2), and tries once more before it gives the camera up for the night. A
+  wedge can hang the close, so the restart request may never end in an
+  exit. The question includes who ends a service stuck in its close: not
+  the document, which decision 5 keeps from acting as a second supervisor.
 
 ## Implementation Status
 
