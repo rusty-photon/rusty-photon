@@ -55,7 +55,11 @@ device's USB interface draws its power, not on which port can be switched:
 | DSD FP2 (pier1) | Leaves the bus. It shares the PPBA's quad 12 V output with the mount, and is back about 0.25 s after the mount when the output returns | Validation |
 | Star Adventurer GTi (pier1) | Leaves the bus within about 0.2 s and is back about 0.55 s after its 12 V returns, its controller restarted with its encoders at 0 | `star-adventurer-gti`'s [§Power cut while serving](../services/star-adventurer-gti.md#power-cut-while-serving) |
 | QHY5III715C (pier1) | Has no 12 V input and sits on a host USB port, so no output the rig switches reaches it | Validation |
-| SVBONY SV605CC, Pegasus Falcon and Scops, ZWO EAF (pier1); QHY focuser | Not measured | P0 |
+| Pegasus Falcon Rotator (pier1) | Stays on the bus with its motor dead: the motor runs off the quad output, the controller off USB. A move sent during the cut is accepted with no error and reads finished at once, with the rotator where it was, and nothing moves when the 12 V returns | Validation |
+| Pegasus Scops OAG (pier1) | Not fed by the quad output: it moves through that cut. The PPBA's `USB Hub` switch takes it off the bus | Validation |
+| ZWO EAF (pier1) | Powered from USB, on a port of the PPBA's hub that no switch reaches | Validation |
+| SVBONY SV605CC (pier1) | Its cooler kept cooling through the quad cut. It draws from the PPBA's Adjustable Output, the only other output carrying a load, which also feeds the Pi and is never cut | Validation |
+| QHY focuser | Not measured: no rig has one | P0 |
 
 A switched USB port takes any device off the bus. The ZWO departure records
 were made by switching the PPBA's `USB Hub` output, and the QHY probes below
@@ -205,7 +209,10 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    every driver but `pa-falcon-rotator` polls throughout, so a power cut
    fails the next poll whether the COM port leaves or stays with a dead
    controller behind it. The Falcon polls only when asked, so it notices a
-   cut at its next request. The supervisor then retries every 5 s and, once
+   cut at its next request, when that cut takes its controller. pier1's
+   Falcon keeps its controller on USB power and loses only its motor, and
+   no request notices that: a move is accepted and reads finished without
+   moving (Validation). The supervisor then retries every 5 s and, once
    the device answers, runs the read-only handshake again, which checks the
    device and refreshes the driver's cache. Only the log changes (O1). This
    covers a cut nobody planned; a planned one ends in decision 5's restart,
@@ -318,7 +325,7 @@ Each is settled before the slice that needs it.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and pier1's mount and FP2 with their drivers stopped. Owed (Validation §Owed): the rest of pier1, rig2's other devices, and every serial driver across a cut | |
+| P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2` and `pa-scops-oag` across a cut. Owed (Validation §Owed): `star-adventurer-gti` across a cut on hardware, and rig2's other devices with their drivers across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 (O5); rp's tool sends the request | Not started; needs O5 for PHD2 | |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation) | Not started; needs O4 | |
@@ -449,23 +456,32 @@ of the service or not, a connect, and an exposure.
 
 pier1 is a Raspberry Pi 5 on Raspberry Pi OS, with a Pegasus PPBA Gen2
 switching the rig and the nightly packages of 2026-10-31 installed. The
-mount (on a host USB port) and the DSD FP2 share the PPBA's quad 12 V
-output. The SV605CC and the QHY5III715C sit on the Pi's USB 3 ports. The
-PPBA's own serial bridge, the Falcon, the Scops, the EAF and the FP2 hang
-off the PPBA's internal hub.
+mount's controller (on a host USB port), the DSD FP2 and the Falcon's motor
+share the PPBA's quad 12 V output. The Adjustable Output feeds the Pi and
+the SV605CC's cooler. The SV605CC and the QHY5III715C sit on the Pi's USB 3
+ports. The PPBA's internal hub carries its own serial bridge on port 1, a
+2-port hub with the Scops and the FP2 on port 2, the Falcon on port 3 and
+the EAF on port 4. Its `USB Hub` switch powers port 2 alone. On
+2026-11-06 the tests ran with rp, sentinel and `star-adventurer-gti`
+stopped, so the mount was never commanded. Every other driver kept running,
+and each cut went through `ppba-driver`'s Alpaca API.
 
 | Question | Result |
 |---|---|
 | The quad output cut for 0.5, 5 and 30 s, with the drivers stopped (2026-11-04) | The mount left the bus about 0.2 s after the cut and was back about 0.55 s after power-on, its controller restarted (`star-adventurer-gti`'s §Power cut while serving). The FP2 left with it and was back about 0.25 s after the mount |
 | The Adjustable Output cut for 10 s, sent from the Pi itself (2026-11-06) | The Pi went down with it: the Adjustable Output feeds the host. The PPBA is reachable only through `ppba-driver` on the Pi, so nothing can switch the output back on, and it stays off until someone at the rig restores it |
+| The quad output cut for 10 s, every device connected (2026-11-06) | The mount left the bus 0.16 s after the cut and the FP2 0.41 s after, both back 0.5–0.6 s after power-on. `dsd-fp2` logged one failed poll and then a warning at each 5 s retry, read disconnected through the cut, and reconnected on its own, without a restart. Its light then went on and off. The SV605CC kept cooling. The Falcon, the Scops and the EAF answered throughout and then moved and came back |
+| The quad output cut for 30 s, the FP2 disconnected first | During the cut the Scops moved and came back. The Falcon accepted a move to 153° with no error, read `IsMoving == false` at once and stayed at 152°, and it did not move when the 12 V returned. Once power was back the FP2 connected and worked on a plain `Connected = true`, and again after its driver was restarted |
+| The `USB Hub` switch cut for 10 s, every device connected, then for 30 s with the Scops and the FP2 disconnected first | The PPBA's serial link stayed up. Only the 2-port hub went, with the Scops and the FP2, both off the bus within 0.3 s and back 0.9–1.1 s after power-on. Through the 10 s cut both drivers read disconnected and warned at each 5 s retry, then reconnected on their own. After both cuts each device moved, or lit, on a plain connect, and again after its driver was restarted |
 
 ### Owed
 
-- pier1's SV605CC, Falcon, Scops and EAF, behind its quad output and its
-  `USB Hub` switch, and the FP2's own driver across a cut. An output that
-  may feed the Pi or the PPBA's own serial bridge is not cut remotely at
-  all: the PPBA is reachable only through `ppba-driver` on the Pi, so once
-  either is down no host can switch the output back on.
-- rig2's other devices, and a QHY focuser, which neither rig has.
+- `star-adventurer-gti` across a cut on the mount, with the restore its
+  §Power cut while serving describes: pier1 runs a build from before it.
+- rig2's other devices.
+- An output that may feed the host or the power box's own serial bridge is
+  not cut remotely at all: on pier1 the PPBA is reachable only through
+  `ppba-driver` on the Pi, so once either is down no host can switch the
+  output back on.
 - Why the QHY178M wedged after three days with only its 12 V off: whether
   the length of the outage decides it.
