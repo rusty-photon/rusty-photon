@@ -2456,7 +2456,7 @@ which a list replaces with the declaration.
   control is available; otherwise the related getters return `NOT_IMPLEMENTED`.
 - **K2.** `CCDTemperature` returns the current sensor temperature when cooling is
   supported. **A reading no sensor can give is a failed read, not a
-  temperature.** A `CurTemp` below absolute zero (−273.15 °C), above 1000 °C or
+  temperature.** A `CurTemp` below absolute zero (−273.15 °C), above 100 °C or
   not a number answers `INVALID_VALUE`, as a read the SDK refuses does. Like
   any failure it asks C9's question first, so a camera that has left the bus
   answers `NOT_CONNECTED` instead. The SDK returns such numbers as successes.
@@ -2466,11 +2466,12 @@ which a list replaces with the declaration.
   ([2026-11-03](../plans/daily-power-cycle.md#qhy-linux-2026-11-03)).
   Served as a temperature, such a number would reach rp's cooling as a sample
   and a frame's header as a measurement, and no client can tell it from one.
-  The bounds are the ones ConformU checks a reported `CCDTemperature` against,
-  and they are wide on purpose: a false failure blinds the cooling to a camera
-  that works, so only a number no camera can report is refused. A plausible
-  number still passes: the Windows SDK read 0.0 °C on the handle of that
-  unpowered camera, and no bound tells that from a real reading. The members
+  No sensor reads below absolute zero, and no working sensor reaches 100 °C.
+  The bounds stay that wide on purpose: a false failure blinds the cooling to
+  a camera that works, so only a number no working camera can report is
+  refused. A plausible number still passes: the Windows SDK read 0.0 °C on
+  the handle of that unpowered camera, and no bound tells that from a real
+  reading. The members
   that fall back to the reading follow the same rule: `SetCCDTemperature`
   before any target is set (K3), and `CoolerOn(true)` before any target is set
   (K4), which then engages nothing rather than regulating to a number the

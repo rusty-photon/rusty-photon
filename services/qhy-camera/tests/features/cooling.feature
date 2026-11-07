@@ -8,7 +8,7 @@ Feature: Cooling
   back (K3), and CoolerOn / CoolerPower map to the SDK PWM controls (K4).
   CoolerOn reports what survived a reconnect's init: a cooler still drawing
   power after it reads on, and one the init switched off reads off (K4).
-  A reading no sensor can have, below -273.15 or above 1000 degrees Celsius
+  A reading no sensor can have, below -273.15 or above 100 degrees Celsius
   or not a number, is a failed read and not a temperature: CCDTemperature
   answers INVALID_VALUE, as for a read the SDK refuses, and the camera stays
   connected while it is still on the bus. SetCCDTemperature and CoolerOn,
@@ -65,7 +65,7 @@ Feature: Cooling
       | reading |
       | -5005.8 |
       | -273.16 |
-      | 1000.1  |
+      | 100.1   |
       | NaN     |
 
   Scenario Outline: The widest readings a camera can give are temperatures
@@ -75,7 +75,7 @@ Feature: Cooling
     Examples:
       | reading |
       | -273.15 |
-      | 1000.0  |
+      | 100.0   |
 
   Scenario: With no target set, a refused reading is not read back as the setpoint
     When the sensor of camera device 0 reads -5005.8

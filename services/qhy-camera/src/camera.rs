@@ -2402,10 +2402,10 @@ fn cooler_available(handle: &dyn CameraHandle) -> ASCOMResult<()> {
     Ok(())
 }
 
-/// The temperatures, in °C, a camera can report: `ConformU` flags a reported
-/// `CCDTemperature` outside them as un-physical. Wide on purpose, so that no
-/// real reading is ever refused (K2).
-const REPORTABLE_TEMPERATURE_C: RangeInclusive<f64> = -273.15..=1000.0;
+/// The temperatures, in °C, a camera sensor can report: none reads below
+/// absolute zero, and no working sensor reaches 100 °C. Still wide, so that a
+/// working camera's reading is never refused (K2).
+const REPORTABLE_TEMPERATURE_C: RangeInclusive<f64> = -273.15..=100.0;
 
 /// The sensor's temperature, or a failed read when the SDK answers with a
 /// number no sensor can have (K2).
@@ -5553,7 +5553,7 @@ mod tests {
     }
 
     /// A `CurTemp` no sensor can have is a failed read, not a temperature (K2):
-    /// below absolute zero, above the 1000 °C `ConformU` allows, or not a number.
+    /// below absolute zero, above 100 °C, or not a number.
     /// The first two are what the SDK returned from a wedged QHY178M and from
     /// the open handle of one with its USB power off.
     #[tokio::test]
@@ -5562,7 +5562,7 @@ mod tests {
             -5005.8,
             -722.2,
             -273.16,
-            1000.1,
+            100.1,
             f64::NAN,
             f64::INFINITY,
             f64::NEG_INFINITY,
@@ -5582,7 +5582,7 @@ mod tests {
     /// refused (K2).
     #[tokio::test]
     async fn the_widest_readings_a_camera_can_give_are_temperatures() {
-        for reading in [-273.15, 1000.0] {
+        for reading in [-273.15, 100.0] {
             let device = connected_device(
                 MockCameraHandle::default().with_param(ControlType::CurTemp, reading),
             )
