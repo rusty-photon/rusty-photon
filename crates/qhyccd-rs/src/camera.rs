@@ -2186,6 +2186,9 @@ impl Camera {
                 }
                 ControlType::CfwSlotsNum => Ok(f64::from(state.config.filter_wheel_slots)),
                 ControlType::CurTemp => {
+                    if let Some(reading) = state.scripted_temperature() {
+                        return reading;
+                    }
                     // Real GetQHYCCDParam(CURTEMP) tracks the CONTROL_COOLER setpoint;
                     // advance one poll-step toward it and report the new value.
                     state.update_temperature();

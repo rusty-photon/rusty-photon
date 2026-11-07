@@ -1068,13 +1068,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   SDK stops answering for it once the device has gone.
 
   **Only a failure asks (decided 2026-10-06).** A blank frame counts as one,
-  and QHY's capability probes, which answer live rather than from a cache, ask
-  whatever they answer. So the question is asked after any SDK call that
-  fails; after every capability probe, whose "absent" is an answer rather than
-  a failure, so the failure path alone would never ask it (E11); after a
-  capture that fails (E9); after an abort's SDK cancel that fails, the one
-  call a capture cancelled in its wait makes; and after a readout that comes
-  back **blank**. A camera that stops answering inside
+  as does a temperature no sensor can read (K2), and QHY's capability probes,
+  which answer live rather than from a cache, ask whatever they answer. So the
+  question is asked after any SDK call that fails; after every capability
+  probe, whose "absent" is an answer rather than a failure, so the failure path
+  alone would never ask it (E11); after a capture that fails (E9); after an
+  abort's SDK cancel that fails, the one call a capture cancelled in its wait
+  makes; after a readout that comes back **blank**; and after a `CurTemp` read
+  that K2 refuses. A camera that stops answering inside
   `GetQHYCCDSingleFrame` can make it report success with an all-zero frame.
   A frame from a camera the question finds gone is discarded, the capture
   fails, and nothing is published as `ImageReady`. A blank frame from a camera
@@ -2454,13 +2455,35 @@ which a list replaces with the declaration.
 - **K1.** `CanSetCCDTemperature` / `CanGetCoolerPower` are `true` iff the `Cooler`
   control is available; otherwise the related getters return `NOT_IMPLEMENTED`.
 - **K2.** `CCDTemperature` returns the current sensor temperature when cooling is
-  supported.
+  supported. **A reading no sensor can give is a failed read, not a
+  temperature.** A `CurTemp` below absolute zero (−273.15 °C), above 100 °C or
+  not a number answers `INVALID_VALUE`, as a read the SDK refuses does. Like
+  any failure it asks C9's question first, so a camera that has left the bus
+  answers `NOT_CONNECTED` instead. The SDK returns such numbers as successes.
+  A QHY178M still on the bus whose first exposure had wedged read −5005.8 °C
+  ([2026-11-06](../plans/daily-power-cycle.md#zwo-and-qhy-linux-dawn-and-dusk-2026-11-06)),
+  and on Linux the open handle of one whose USB power was off read −722.2 °C
+  ([2026-11-03](../plans/daily-power-cycle.md#qhy-linux-2026-11-03)).
+  Served as a temperature, such a number would reach rp's cooling as a sample
+  and a frame's header as a measurement, and no client can tell it from one.
+  No sensor reads below absolute zero, and no working sensor reaches 100 °C.
+  The bounds stay that wide on purpose: a false failure blinds the cooling to
+  a camera that works, so only a number no working camera can report is
+  refused. A plausible number still passes: the Windows SDK read 0.0 °C on
+  the handle of that unpowered camera, and no bound tells that from a real
+  reading. The members
+  that fall back to the reading follow the same rule: `SetCCDTemperature`
+  before any target is set (K3), and `CoolerOn(true)` before any target is set
+  (K4), which then engages nothing rather than regulating to a number the
+  camera did not measure.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
-  `SetCCDTemperature` reads it back.
+  `SetCCDTemperature` reads it back. Before any target is set it reads back the
+  current `CCDTemperature`, so a reading K2 refuses fails it the same way.
 - **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation via
   `handle.set_target_temperature_celsius(…)` (the `ControlType::Cooler` typed
   accessor) at the stored `SetCCDTemperature` target (falling back to the
-  current `CCDTemperature` if no target has been set yet); `set_cooler_on(false)`
+  current `CCDTemperature` if no target has been set yet, and engaging nothing
+  when K2 refuses that reading); `set_cooler_on(false)`
   calls `handle.set_manual_cooler_pwm(0.0)` (the `ControlType::ManualPWM`
   accessor). `CoolerOn` reports the last-commanded on/off state (tracked
   independently of the PWM readback, since neither real hardware nor the
@@ -3123,6 +3146,20 @@ Layered per [`testing.md`](../skills/testing.md).
   Windows (hypervisor detaches), for an idle camera and for one gone
   mid-exposure. The mock's blank frame from a readout its camera left is what
   the SDK was measured returning on Windows (C9).
+- **A temperature no sensor can read (K2)** — `cooling.feature` starts the
+  `simulation` binary with the hidden `--simulation-temperature-file <path>`
+  flag, which builds the default simulated camera
+  (`SimulatedCameraConfig::sdk_default()`) with `qhyccd-rs`'s temperature
+  file: while the file exists, a `CurTemp` read answers the number written in
+  it. The suite writes the file once the camera is connected, so the scenarios
+  run the shipped check end to end, on `CCDTemperature` and on the
+  `SetCCDTemperature` and `CoolerOn` fallbacks. Unit tests against
+  `MockCameraHandle`, whose `CurTemp` parameter a test sets, pin the question a
+  refused reading asks. A camera still on the bus stays connected. One the
+  question finds gone answers `NOT_CONNECTED`, which the simulator cannot show:
+  a departed simulated camera fails every read before its temperature file is
+  looked at. The unit tests also pin the infinities and a commanded target,
+  which needs no reading.
 - **Device claims (U1-U12)** — `usb_devices.feature` drives the `simulation`
   binary with its staged scan (U7) and the hidden `--usb-inventory <file>`
   flag, through placement, placeholders, declared wheels, the failed scan's
