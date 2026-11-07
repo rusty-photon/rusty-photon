@@ -45,7 +45,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::codec::Codec;
 use crate::connection::Connection;
@@ -74,10 +74,42 @@ pub const MIN_RECONNECT_INTERVAL: Duration = Duration::from_millis(50);
 /// the transport is in the `Reconnecting` state.
 ///
 /// Five seconds is fast enough that a brief USB unplug/replug recovers
-/// within one or two attempts and slow enough that a permanently-dead
-/// device doesn't spam syslog. Configurable per service via
+/// within one or two attempts and slow enough that a device that stays
+/// off is not reopened needlessly often. However long it stays off, its
+/// outage logs one warning ([`Outage`]). Configurable per service via
 /// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The reconnect supervisor's count of one outage, which decides how
+/// loudly each attempt is logged.
+///
+/// A device switched off for the day fails an attempt every interval:
+/// at the 5 s default that is over ten thousand failures in sixteen
+/// hours. Only the first is a warning, since the link going down is
+/// news and staying down is not; the rest are `debug!`. A recovery that
+/// follows such a warning is logged at `info!`, so the log shows the
+/// outage ended. A link that recovers on its first attempt was never
+/// warned about and logs nothing at default verbosity.
+#[derive(Debug, Default)]
+struct Outage {
+    /// Attempts that failed since the link was last recovered.
+    failed_attempts: u32,
+}
+
+impl Outage {
+    /// Count a failed attempt, returning how many have failed in this
+    /// outage; `1` is its first.
+    const fn attempt_failed(&mut self) -> u32 {
+        self.failed_attempts = self.failed_attempts.saturating_add(1);
+        self.failed_attempts
+    }
+
+    /// End the outage, returning how many attempts failed in it, or
+    /// `None` when none did and nothing was warned about.
+    fn recovered(&mut self) -> Option<u32> {
+        Some(std::mem::take(&mut self.failed_attempts)).filter(|&failed| failed > 0)
+    }
+}
 
 /// Clears the retry promise if a cold start does not finish.
 ///
@@ -1055,7 +1087,12 @@ impl<C: Codec> SharedTransport<C> {
     /// At most one attempt per `reconnect_interval`, however the wake
     /// arrived — see the floor below for why the signal alone is not a
     /// safe trigger.
+    ///
+    /// An outage is logged once, however long it lasts ([`Outage`]): a
+    /// warning at its first failed attempt, `debug!` for each later one,
+    /// and an `info!` when the link comes back after that warning.
     async fn supervisor_loop(self: Arc<Self>, cancel: CancellationToken) {
+        let mut outage = Outage::default();
         loop {
             let interval = *self.reconnect_interval.lock().await;
 
@@ -1150,7 +1187,11 @@ impl<C: Codec> SharedTransport<C> {
             match outcome {
                 Ok(()) => {
                     if self.publish_recovery() {
-                        debug!("transport reconnected successfully");
+                        if let Some(failed_attempts) = outage.recovered() {
+                            info!(failed_attempts, "transport link recovered");
+                        } else {
+                            debug!("transport reconnected successfully");
+                        }
                     } else {
                         // `reconnecting` is still set, so the next turn
                         // round this loop attempts again and replays
@@ -1159,11 +1200,22 @@ impl<C: Codec> SharedTransport<C> {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        error = %e,
-                        retry_in = ?interval,
-                        "transport reconnect attempt failed; will retry"
-                    );
+                    let failed_attempts = outage.attempt_failed();
+                    if failed_attempts == 1 {
+                        warn!(
+                            error = %e,
+                            retry_in = ?interval,
+                            "transport reconnect attempt failed; will retry, and log further \
+                             failures at debug until the link recovers"
+                        );
+                    } else {
+                        debug!(
+                            error = %e,
+                            retry_in = ?interval,
+                            failed_attempts,
+                            "transport reconnect attempt failed; will retry"
+                        );
+                    }
                 }
             }
         }
@@ -2239,7 +2291,9 @@ mod tests {
 
     use std::sync::atomic::AtomicU32;
 
-    use super::{Arc, Codec, Hooks, Ordering, SharedTransport, TransportError, TransportFactory};
+    use super::{
+        Arc, Codec, Hooks, Ordering, Outage, SharedTransport, TransportError, TransportFactory,
+    };
     use crate::transport::FrameTransport;
     use crate::{Connection, SessionError};
 
@@ -2377,6 +2431,58 @@ mod tests {
 
         session.close().await.unwrap();
         st.shutdown().await.unwrap();
+    }
+
+    // ----- Outage: how loudly the supervisor logs an attempt -----------
+    //
+    // The supervisor's log hangs off these counts (warn at the first
+    // failure, debug after it, info on a recovery that follows a warning),
+    // so the counts are what is asserted, not the log
+    // (docs/skills/testing.md §6.8).
+
+    #[test]
+    fn an_outages_first_failed_attempt_is_counted_as_its_first() {
+        let mut outage = Outage::default();
+        assert_eq!(
+            outage.attempt_failed(),
+            1,
+            "the first failure of an outage is the one that warns"
+        );
+        assert_eq!(outage.attempt_failed(), 2);
+        assert_eq!(outage.attempt_failed(), 3);
+    }
+
+    #[test]
+    fn a_recovery_reports_the_attempts_that_failed_before_it() {
+        let mut outage = Outage::default();
+        outage.attempt_failed();
+        outage.attempt_failed();
+        assert_eq!(outage.recovered(), Some(2));
+    }
+
+    #[test]
+    fn the_failure_after_a_recovery_starts_a_new_outage() {
+        let mut outage = Outage::default();
+        outage.attempt_failed();
+        outage.recovered();
+        assert_eq!(
+            outage.attempt_failed(),
+            1,
+            "a link lost again must warn again"
+        );
+    }
+
+    #[test]
+    fn a_recovery_with_no_failed_attempt_reports_nothing() {
+        let mut outage = Outage::default();
+        assert_eq!(
+            outage.recovered(),
+            None,
+            "a link that came back on its first attempt was never warned about"
+        );
+        outage.attempt_failed();
+        outage.recovered();
+        assert_eq!(outage.recovered(), None, "a recovery is reported once");
     }
 
     #[test]

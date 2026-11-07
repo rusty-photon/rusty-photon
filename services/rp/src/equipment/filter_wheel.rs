@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::FilterWheel;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, reported_name, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -47,8 +48,9 @@ impl FilterWheelEntry {
 pub(super) async fn establish_filter_wheel(
     config: &config::FilterWheelConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<(Arc<dyn FilterWheel>, FilterWheelInvariants), EstablishError> {
-    let fw = establish_listed(config, ca_cert_path).await?;
+    let fw = establish_listed(config, ca_cert_path, budget).await?;
     let invariants = FilterWheelInvariants {
         name: reported_name(&config.id, fw.name().await),
     };
@@ -61,7 +63,7 @@ pub(super) async fn connect_filter_wheel(
 ) -> FilterWheelEntry {
     debug!(fw_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to filter wheel");
 
-    match establish_filter_wheel(config, ca_cert_path).await {
+    match establish_filter_wheel(config, ca_cert_path, ConnectBudget::Full).await {
         Ok((fw, invariants)) => {
             debug!(fw_id = %config.id, name = ?invariants.name, "filter wheel connected successfully; cached its name");
             FilterWheelEntry {
