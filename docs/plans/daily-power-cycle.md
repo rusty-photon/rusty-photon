@@ -205,10 +205,10 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    document checks them before it cuts the mount's power, refusing to cut it
    when they differ. When `star-adventurer-gti` serves through the cut
    (decision 4), it sees the controller restart first and writes the mount's
-   last position back. The restarted process's connect then reads that
-   position rather than power-up values and seeds nothing; after a dawn park
-   at the seed pose, the encoders hold that pose either way (pier1,
-   Validation).
+   last position back, which after a cut longer than 30 s awaits the same
+   power-up check. The driver keeps that pending check in its mount state
+   record, so the process decision 5 restarts runs it at the dusk connect,
+   and the check seeds the pose dawn parked at.
    - **Not rp's supervisor reconnecting.** A disconnect made through
      another client does not stick, because the supervisor heals every
      disconnect, and its reconnect could land while a device is still
@@ -299,8 +299,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 7. **Dusk starts at civil twilight, once the roof is open** (settled
    2026-11-07). The dusk document starts at a configured offset from civil
    twilight and powers nothing up until rp's safety monitors read safe, with
-   the roof open. On a night the roof stays shut, no device is powered at
-   all. The camera then cools in time that is already dark.
+   the roof open, waiting until dawn at most. On a night the roof stays
+   shut, no device is powered at all. The camera then cools in time that
+   is already dark.
    - **Not before dark, without the roof.** Nothing in the dusk sequence
      slews the mount, so the document could start early enough for the
      camera to reach its setpoint by dark, but it would power every device
@@ -308,11 +309,13 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 8. **rp's power-box entries map each output to its devices** (settled
    2026-11-07). Each `switches[]` entry lists the power box's outputs, the
    ids of the devices each one feeds, and marks as protected every output
-   that feeds the host or the power box's own link (pier1's Adjustable
-   Output feeds its Pi: Validation). P3's switch tool refuses to switch off
-   an output while a device on it is still connected through rp, and never
-   switches off a protected one. Power is rig-wide, so a mount or guide camera that
-   several trains share needs no copy.
+   that feeds the host, the power box's own link, or a safety monitor
+   (pier1's Adjustable Output feeds its Pi: Validation). A safety monitor
+   stays powered because dusk waits for it to read safe (decision 7). P3's
+   switch tool refuses to switch off an output while a device on it is
+   still connected through rp, and never switches off a protected one.
+   Power is rig-wide, so a mount or guide camera that several trains share
+   needs no copy.
    - **Not on each device's entry.** The host is no device the roster
      lists, so the power-box entry needs its protected marks anyway, and the
      map would live in two places.
@@ -389,7 +392,7 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2`, `pa-scops-oag` and `star-adventurer-gti` across a cut. Owed (Validation §Owed): rig2's other devices with their drivers across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs (decision 10); rp's tool sends the request | Not started | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation). The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
 | P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, a test exposure per camera with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2 and P3 | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
@@ -401,6 +404,13 @@ does not decode as UTF-8 during its handshake fails the start. It was seen
 once, on the dev box's first start on 2026-11-03, the retry 5 s later was
 clean, and it is filed as
 [#1700](https://github.com/rusty-photon/rusty-photon/issues/1700).
+
+`star-adventurer-gti` keeps a pending power-up check only in memory today:
+on pier1 on 2026-11-07 the restart decision 5 makes took the check with
+it, and the restarted process trusted the written-back estimate
+(Validation). Keeping it in the mount state record, as decision 3 needs,
+is filed as
+[#1722](https://github.com/rusty-photon/rusty-photon/issues/1722).
 
 ## Validation
 
