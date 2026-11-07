@@ -1184,10 +1184,12 @@ imaging train's sweep follows these rules:
      any accepted sample, so the sky took its stars, not the far wing
      leaving the detector's band, and the frames that would place
      focus are ones the grid already walks. With focus near the lowest
-     sample, as a good prediction leaves it, a shift would start the
-     next grid at focus and a curve fitted through its one wing would
-     put its centre past the samples again, where the same grid under a
-     cleared sky fits.
+     sample, as a good prediction leaves it, a shift gains nothing: half
+     a width would start the next grid at focus, where a curve fitted
+     through its one wing puts its centre past the samples again, and
+     the vertex the remaining wing extrapolates would at best recentre
+     the grid on positions it already walks. The same grid, under a
+     cleared sky, fits.
 
      How far the grid shifts is the fit's to say. A hyperbola that
      fitted the samples with its vertex past that end centres the next
