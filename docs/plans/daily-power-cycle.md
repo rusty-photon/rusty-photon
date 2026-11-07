@@ -366,7 +366,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     outputs, switches them back on, waits for the devices to settle
     (decision 2), has each of their services restart (decision 5), connects
     them through rp and tries once more. A second wedge gives the camera up
-    for the night, with a log line that says so. The restart
+    for the night, with a log line that says so. The guide camera PHD2
+    drives takes its test frame through `phd2-guider`'s camera facade,
+    which serves that camera to rp, so a rig whose guide camera sits on a
+    switched output enables the facade; its retry restarts PHD2 through
+    `phd2-guider` (decision 10) where another camera's restarts its
+    service. The restart
     makes a wedge rare without ruling one out (decision 5), a wedge that
     slips through costs the camera its night, and the test frame costs
     seconds.
@@ -393,11 +398,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs (decision 10); rp's tool sends the request | Not started | |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
-| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, a test exposure per camera with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2 and P3 | |
+| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3 and `star-adventurer-gti` keeping a pending power-up check across a restart ([#1722](https://github.com/rusty-photon/rusty-photon/issues/1722)) | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
-P0, P1 and P2 depend on nothing else, P4 needs P2 and P3, and P5 needs P3's
-power map.
+P0, P1 and P2 depend on nothing else, P4 needs P2, P3 and the GTi driver's
+kept check, and P5 needs P3's power map.
 
 `gemini-powerbox-adv3-driver` has a start bug of its own: one reply that
 does not decode as UTF-8 during its handshake fails the start. It was seen
