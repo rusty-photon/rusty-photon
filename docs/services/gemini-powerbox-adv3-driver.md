@@ -620,6 +620,22 @@ from the cache; a poll that fails to parse leaves the cache untouched and
 logs at `debug!`; a poll that times out is a transport error and the
 shared crate's supervisor reconnects (re-running the read-only handshake).
 
+### The cache keeps the frame read last
+
+Every frame is stored with the instant it was read off the wire (the
+shared crate's `WireTiming::received_at`), and a frame read before the one
+the cache holds is dropped, sensor samples included. Requests take turns
+on the wire, so read order is the order the hub produced the frames in.
+Store order is not: each request stores its frame after its turn ends, and
+a poll whose task is slow to run again — a loaded host — can store the
+frame it read just before a write after the write's confirmed frame. That
+frame shows the written switch at its old value, and stored, it would
+make a read straight after a confirmed write report the old value until
+the next poll. Only a strictly earlier read is dropped, so frames read at
+one instant (every frame on a paused test clock) are stored in turn. The
+handshake, the poll, a write's readback and its second look all store
+through this one rule.
+
 ### Writes are confirmed against a fresh frame
 
 Set commands get no acknowledgement, and the frame is the only evidence a
@@ -630,7 +646,9 @@ produced after acting on the set, and the driver compares the field the
 write addressed with what it asked for:
 
 - a match stores the frame in the cache and the write succeeds — so a read
-  straight after a write reflects the device, as in the siblings;
+  straight after a write reflects the device, as in the siblings, and a
+  poll that read its frame before the write cannot put the old value back
+  ([The cache keeps the frame read last](#the-cache-keeps-the-frame-read-last));
 - a mismatch is asked once more (discard, `>G#`) before it is believed,
   because a periodic frame the hub starts after the set went out can
   still predate it and is then the first whole frame read. Measured on
@@ -923,6 +941,14 @@ are the unit-test equivalents. The knobs fix the sensor flags for the run,
 so the mid-session unplug — a full window, then a frame with the AHT20
 flag at `0`, then `VALUE_NOT_SET` at once — is a unit test on the poll
 loop over a scripted mock, not a scenario.
+
+A poll's store landing after a write's is a unit test on the poll loop
+too, because the gap it needs lies after the poll's turn on the wire,
+inside the driver, where no knob on a subprocess's mock reaches: the
+test transport holds a poll's reply, the test holds the cache while it
+lets the reply go and writes behind it, stores the write's frame first,
+and then reads the cache once the poll's next request shows the poll has
+stored.
 
 ### ConformU
 
