@@ -47,10 +47,15 @@ device's USB interface draws its power, not on which port can be switched:
 | Device | 12 V cut, USB left on | Source |
 |---|---|---|
 | QHY178M (dev box) | Stays on the bus, answers every call, reports its cooler as present. Its filter wheel, fed from the camera's 12 V, homes for about 20 s when the 12 V returns | [Linux](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md) and [Windows](../validation/2026-10-06-qhy-camera-qhy178m-cfw-windows-departure/README.md) departure records |
+| ZWO ASI1600MM-Cool (dev box) | Stays on the bus and exposes normally. Its cooler stops with no sign of it: `CoolerOn` stays true and `CoolerPower` climbs while the sensor warms, and it cools again as soon as the 12 V returns | Validation |
+| ZWO ASI178MM and ASI120MC-S (dev box) | Have no 12 V input. Only their switched USB ports power them off, and then they leave the bus | Validation |
 | QHY600M (rig2) | Leaves the bus, and comes back through its firmware loader about 1 s after its 12 V returns | the Windows departure record above; Validation |
 | Optec FocusLynx hub (rig2) | Leaves: its COM port appears only once the hub has power | the tracking issue's 2026-09-06 measurement |
 | DSD FP2 (rig2) | Its COM port was gone with the power box off; whether its USB was on a switched port is not recorded | the tracking issue's 2026-09-06 comment |
-| ZWO cooled cameras, SVBONY, Pegasus Falcon and Scops, QHY focuser, Star Adventurer GTi | Not measured | P0 |
+| DSD FP2 (pier1) | Leaves the bus. It shares the PPBA's quad 12 V output with the mount, and is back about 0.25 s after the mount when the output returns | Validation |
+| Star Adventurer GTi (pier1) | Leaves the bus within about 0.2 s and is back about 0.55 s after its 12 V returns, its controller restarted with its encoders at 0 | `star-adventurer-gti`'s [§Power cut while serving](../services/star-adventurer-gti.md#power-cut-while-serving) |
+| QHY5III715C (pier1) | Has no 12 V input and sits on a host USB port, so no output the rig switches reaches it | Validation |
+| SVBONY SV605CC, Pegasus Falcon and Scops, ZWO EAF (pier1); QHY focuser | Not measured | P0 |
 
 A switched USB port takes any device off the bus. The ZWO departure records
 were made by switching the PPBA's `USB Hub` output, and the QHY probes below
@@ -167,8 +172,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    mount was slewing (its §Power cut while serving). Other devices'
    sessions held across a cut come back stale:
    - A camera switched off while idle reads connected all day, since the
-     departure check is lazy. What its first call on the stale handle does
-     once the camera has returned is not measured.
+     departure check is lazy. Once it has returned, its first exposure on
+     the stale handle fails `NOT_CONNECTED` and ends the session. Until a
+     failure anywhere in its service rescans the bus, a ZWO camera's reads,
+     `CCDTemperature` among them, still answer from the SDK's memory
+     (`zwo-camera`'s C6). A plain reconnect then works, for a QHY camera
+     only once its wheel has been released too (Validation).
    - A QHY178M whose 12 V alone is cut keeps its session, and its wheel
      homes to slot 0 under a cached position: `qhy-camera` answers a settled
      wheel's `Position` from the slot it cached and does not resend the slot
@@ -227,7 +236,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
      was alive, 6 of 30 did, 3 of 6 after an in-process Release + Init, and
      waiting 30 s after the camera returned did not prevent it
      (Validation). A wedged camera reads out for a minute, returns an
-     all-zero frame, hangs the close, and needs another power cycle.
+     all-zero frame, hangs the close, and needs another power cycle. The
+     dev box's QHY178M on Linux wedged in neither case across 22 power
+     cycles, but did wedge once in a fresh process, on the first exposure
+     after its 12 V had been off for three days with its USB on. The same
+     sequence after 40 minutes off did not (Validation), so a fresh process
+     makes a wedge rarer without ruling one out.
    - **The guide camera under PHD2.** PHD2 drives it with its own QHY
      driver, whose SDK lives in PHD2's process through the camera's power
      cycle, and PHD2's connections are its own, out of rp's reach.
@@ -278,23 +292,37 @@ Each is settled before the slice that needs it.
   name a power box, not the devices on its outputs, so P3's switch tool
   needs a mapping from each output to the devices it feeds, in rp's
   configuration or in a train's, to refuse to switch off an output while a
-  device on it is still connected.
+  device on it is still connected. The mapping also marks each output that
+  feeds the host or the power box's own link, which P3 never switches off.
 - **O5 (P2). How `phd2-guider` restarts PHD2.** Its library stops PHD2
   (guiding stopped, equipment disconnected, the `shutdown` RPC, a kill if
   that fails) and starts it, but its service does not manage the PHD2
   process yet. On Windows PHD2 runs in the operator's desktop session,
   where a service in session 0 cannot open a window, so the start needs a
   way into that session or PHD2 run where `phd2-guider` can manage it.
+- **O6 (P4). What dusk does with a wedged camera.** A QHY camera can wedge
+  on its first exposure even in a fresh process (Validation): the frame is
+  ready only after about a minute, every pixel is 0, the close hangs, and
+  only a power cycle clears it. Proposed: dusk takes one short test
+  exposure per camera after the connect. A frame that is late by more than
+  a fixed margin, or all zero, counts as a wedge. The document then
+  disconnects the camera and every other device on its outputs (its wheel
+  among them, decision 3), cuts the outputs, switches them back on and
+  waits for the camera to settle (decision 2), asks the service to restart
+  (P2), and tries once more before it gives the camera up for the night. A
+  wedge can hang the close, so the restart request may never end in an
+  exit. The question includes who ends a service stuck in its close: not
+  the document, which decision 5 keeps from acting as a second supervisor.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| P0 | Power-cut survey: for each device on the dev box and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows (Validation); the rest not started | |
+| P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and pier1's mount and FP2 with their drivers stopped. Owed (Validation §Owed): the rest of pier1, rig2's other devices, and every serial driver across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (O1) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 (O5); rp's tool sends the request | Not started; needs O5 for PHD2 | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) | Not started; needs O4 | |
-| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2 | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3); `get_switch` and `set_switch`, addressing a power-box output by its name or label and refusing to switch one off while a device on it is connected, or ever when the output feeds the rig's own links (the power box's serial bridge, the hub to the host) or the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation) | Not started; needs O4 | |
+| P4 | `session-runner` dusk and dawn documents. Dusk: outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, `start_cooldown`. Dawn: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect each device through rp, outputs off | Not started; needs P2, P3, O2, O6 | |
 | P5 | doctor's reading of a device off by design (O3) | Not started | |
 
 P0, P1 and P2 depend on nothing else, and P4 needs P2 and P3.
@@ -394,6 +422,50 @@ power-cycled, and the service was reloaded with
 | `qhy-camera`'s own reload after a power cycle | Camera 0 and its wheel were served as the camera both times, not as placeholders |
 | Every full-frame 600M exposure of 2026-11-04 and -05, by what the process's SDK had seen | In a fresh process, with the camera present at the first init: 0 of 20 wedged (the first exposure of the 7 power-cycle runs and the 8 re-init runs, and the 5 of the concurrent-scan run). After the camera was power-cycled while the SDK was alive: 6 of 30, made up of a late arrival opened after the callback 1 of 15, a second arrival 1 of 2, a reopen without re-init 1 of 7, and a reopen after re-init 3 of 6. Not counted: the first exposure of a new process on a camera an earlier run had left wedged, which wedged too, since only a power cycle clears one |
 
+### ZWO and QHY, Linux: dawn and dusk (2026-11-06)
+
+The dev box's cameras on its Gemini Advanced 3 (firmware 3.0.8), Fedora 44
+(kernel 7.2.11), ASI SDK 1.41 and QHY SDK 26.06.04, with `zwo-camera`,
+`qhy-camera` and `gemini-powerbox-adv3-driver` started with `cargo run` from
+`main` at `745de193`. Every switch and every camera call went through the
+services' Alpaca APIs. The Gemini's outputs feed: `USB A` the QHY178M,
+`USB B` the ASI1600MM-Cool and its built-in USB 2 hub, `USB C` the ASI178MM,
+`USB D` the ASI120MC-S, `DC2` the ASI1600MM-Cool's cooler, and `DC3` the
+QHY178M's cooler and its wheel. A dawn here is a disconnect, then the
+camera's outputs off for 30 s. A dusk is the outputs on, a settle, a restart
+of the service or not, a connect, and an exposure.
+
+| Question | Result |
+|---|---|
+| ZWO dawn and dusk: the three cameras' USB ports and DC2 together | Every camera was back on the bus 0.4–0.6 s after power-on. In 10 cycles, 5 with `zwo-camera` restarted before the connect and 5 with the same process, each camera connected on a plain `Connected = true` 10 s after power-on, and its first exposure was good, 30 of 30 |
+| The ASI1600MM-Cool's 12 V cut for 60 s, USB on, its cooler regulating to 8 °C | It stayed on the bus and exposed normally. Nothing reported the cut: `CoolerOn` stayed true and `CoolerPower` climbed from 14 % to 39 % while the sensor warmed from 11.6 °C to 19.0 °C. When the 12 V returned it cooled at once, overshooting to 3.3 °C within 50 s with the power its loop had built up |
+| A ZWO session held across a 10 s cut, the cameras idle | Each camera read `Connected == true` once power was back. Its first call failed `NOT_CONNECTED` and ended the session (`zwo-camera`'s C6): an exposure for the first camera, and for the other two a `CCDTemperature` read, after the first camera's check had rescanned the bus. A plain reconnect then exposed normally |
+| `CCDTemperature` right after a connect | The ASI1600MM-Cool read 0.0 °C on the first read after every connect, power cut or not, and its real temperature a second later |
+| QHY178M dawn and dusk | 22 cycles, all clean. 11 cut `USB A` and DC3 (the camera leaves the bus and is back 1.2–1.5 s after power-on), 6 of them with `qhy-camera` restarted. 11 cut DC3 alone (the camera stays on the bus), 5 of them with a restart. Every connect found the wheel at slot 0, and every first exposure, started 30 s after power-on, was ready 3.3 s after its 1 s start with a good frame |
+| QHY178M after three days with DC3 off, its USB on, and no process holding it | The first exposure of a fresh `qhy-camera`, started 30 s after DC3 came on, wedged. It was ready only after 96.7 s, with every pixel 0, and then `CCDTemperature` read −5005.8 °C and the wheel could not report its slot count. Cutting both outputs and restarting the service cleared it. The same sequence after 40 minutes with DC3 off gave a good first exposure |
+| A QHY session held across a 10 s cut of both outputs, camera and wheel connected | Both read `Connected == true` once power was back. The camera's first call failed `NOT_CONNECTED`, and then both devices read disconnected. A reconnect of the camera alone was refused until the wheel was disconnected too (`qhy-camera`'s C9). Then both connected and the camera exposed normally |
+
+### pier1 (2026-11-04 and 2026-11-06)
+
+pier1 is a Raspberry Pi 5 on Raspberry Pi OS, with a Pegasus PPBA Gen2
+switching the rig and the nightly packages of 2026-10-31 installed. The
+mount (on a host USB port) and the DSD FP2 share the PPBA's quad 12 V
+output. The SV605CC and the QHY5III715C sit on the Pi's USB 3 ports. The
+PPBA's own serial bridge, the Falcon, the Scops, the EAF and the FP2 hang
+off the PPBA's internal hub.
+
+| Question | Result |
+|---|---|
+| The quad output cut for 0.5, 5 and 30 s, with the drivers stopped (2026-11-04) | The mount left the bus about 0.2 s after the cut and was back about 0.55 s after power-on, its controller restarted (`star-adventurer-gti`'s §Power cut while serving). The FP2 left with it and was back about 0.25 s after the mount |
+| The Adjustable Output cut for 10 s, sent from the Pi itself (2026-11-06) | The Pi went down with it: the Adjustable Output feeds the host. The PPBA is reachable only through `ppba-driver` on the Pi, so nothing can switch the output back on, and it stays off until someone at the rig restores it |
+
 ### Owed
 
-- The P0 survey of every other device.
+- pier1's SV605CC, Falcon, Scops and EAF, behind its quad output and its
+  `USB Hub` switch, and the FP2's own driver across a cut. An output that
+  may feed the Pi or the PPBA's own serial bridge is not cut remotely at
+  all: the PPBA is reachable only through `ppba-driver` on the Pi, so once
+  either is down no host can switch the output back on.
+- rig2's other devices, and a QHY focuser, which neither rig has.
+- Why the QHY178M wedged after three days with only its 12 V off: whether
+  the length of the outage decides it.
