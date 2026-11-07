@@ -173,10 +173,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    sessions held across a cut come back stale:
    - A camera switched off while idle reads connected all day, since the
      departure check is lazy. Once it has returned, its first exposure on
-     the stale handle fails `NOT_CONNECTED` and ends the session. Until
-     then a ZWO camera's reads, `CCDTemperature` among them, can still
-     answer from the SDK's memory. A plain reconnect then works, for a QHY
-     camera only once its wheel has been released too (Validation).
+     the stale handle fails `NOT_CONNECTED` and ends the session. Until a
+     failure anywhere in its service rescans the bus, a ZWO camera's reads,
+     `CCDTemperature` among them, still answer from the SDK's memory
+     (`zwo-camera`'s C6). A plain reconnect then works, for a QHY camera
+     only once its wheel has been released too (Validation).
    - A QHY178M whose 12 V alone is cut keeps its session, and its wheel
      homes to slot 0 under a cached position: `qhy-camera` answers a settled
      wheel's `Position` from the slot it cached and does not resend the slot
@@ -291,7 +292,8 @@ Each is settled before the slice that needs it.
   name a power box, not the devices on its outputs, so P3's switch tool
   needs a mapping from each output to the devices it feeds, in rp's
   configuration or in a train's, to refuse to switch off an output while a
-  device on it is still connected.
+  device on it is still connected. The mapping also marks each output that
+  feeds the host or the power box's own link, which P3 never switches off.
 - **O5 (P2). How `phd2-guider` restarts PHD2.** Its library stops PHD2
   (guiding stopped, equipment disconnected, the `shutdown` RPC, a kill if
   that fails) and starts it, but its service does not manage the PHD2
@@ -304,7 +306,8 @@ Each is settled before the slice that needs it.
   only a power cycle clears it. Proposed: dusk takes one short test
   exposure per camera after the connect. A frame that is late by more than
   a fixed margin, or all zero, counts as a wedge. The document then
-  disconnects the camera, cuts its outputs, restarts its service (killing
+  disconnects the camera and every other device on its outputs (its wheel
+  among them, decision 3), cuts the outputs, restarts the service (killing
   it if the hung close keeps it from exiting) and tries once more before it
   gives the camera up for the night.
 
@@ -451,13 +454,15 @@ off the PPBA's internal hub.
 | Question | Result |
 |---|---|
 | The quad output cut for 0.5, 5 and 30 s, with the drivers stopped (2026-11-04) | The mount left the bus about 0.2 s after the cut and was back about 0.55 s after power-on, its controller restarted (`star-adventurer-gti`'s §Power cut while serving). The FP2 left with it and was back about 0.25 s after the mount |
-| The Adjustable Output cut for 10 s, sent from the Pi itself (2026-11-06) | The Pi went down with it: the Adjustable Output feeds the host. The command that would switch it back on was to run on the Pi too, so it never went out, and the output stays off until someone at the rig restores it |
+| The Adjustable Output cut for 10 s, sent from the Pi itself (2026-11-06) | The Pi went down with it: the Adjustable Output feeds the host. The PPBA is reachable only through `ppba-driver` on the Pi, so nothing can switch the output back on, and it stays off until someone at the rig restores it |
 
 ### Owed
 
 - pier1's SV605CC, Falcon, Scops and EAF, behind its quad output and its
-  `USB Hub` switch, and the FP2's own driver across a cut. An output whose
-  load is not known is cut from another host, never from the Pi.
+  `USB Hub` switch, and the FP2's own driver across a cut. An output that
+  may feed the Pi or the PPBA's own serial bridge is not cut remotely at
+  all: the PPBA is reachable only through `ppba-driver` on the Pi, so once
+  either is down no host can switch the output back on.
 - rig2's other devices, and a QHY focuser, which neither rig has.
 - Why the QHY178M wedged after three days with only its 12 V off: whether
   the length of the outage decides it.
