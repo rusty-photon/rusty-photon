@@ -75,6 +75,14 @@ struct Args {
     #[arg(long, hide = true, value_name = "PATH")]
     simulation_departure_file: Option<PathBuf>,
 
+    /// Test-only: while this file exists, the simulated camera's sensor
+    /// reads the number written in it, to exercise a reading no sensor can
+    /// have (contract K2). Only meaningful when built with
+    /// `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    simulation_temperature_file: Option<PathBuf>,
+
     /// Test-only: stage the USB scan cameras are placed from, with a
     /// `usb_devices` list or without, with
     /// the document in this file (docs/services/doctor.md "USB inventory"),
@@ -175,6 +183,8 @@ fn main() -> ServiceResult {
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
     #[cfg(feature = "simulation")]
+    let simulation_temperature_file = args.simulation_temperature_file;
+    #[cfg(feature = "simulation")]
     let usb_source = qhy_camera::claims::usb_source_from_flag(args.usb_inventory)
         .map_err(qhy_camera::QhyCameraError::UsbInventory)?;
 
@@ -227,12 +237,19 @@ fn main() -> ServiceResult {
                         let builder = builder.with_usb_source(usb_source.clone());
                         if simulation_empty {
                             builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
-                        } else if let Some(departure) = &simulation_departure_file {
+                        } else if simulation_departure_file.is_some()
+                            || simulation_temperature_file.is_some()
+                        {
+                            let mut camera =
+                                qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default();
+                            if let Some(departure) = &simulation_departure_file {
+                                camera = camera.with_departure_file(departure);
+                            }
+                            if let Some(temperature) = &simulation_temperature_file {
+                                camera = camera.with_temperature_file(temperature);
+                            }
                             let mut sdk = qhyccd_rs::Sdk::new_simulated();
-                            sdk.add_simulated_camera(
-                                qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default()
-                                    .with_departure_file(departure),
-                            );
+                            sdk.add_simulated_camera(camera);
                             builder.with_sdk(sdk)
                         } else {
                             builder

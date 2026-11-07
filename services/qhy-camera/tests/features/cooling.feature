@@ -8,10 +8,17 @@ Feature: Cooling
   back (K3), and CoolerOn / CoolerPower map to the SDK PWM controls (K4).
   CoolerOn reports what survived a reconnect's init: a cooler still drawing
   power after it reads on, and one the init switched off reads off (K4).
-  The simulated QHY178M-Simulated camera has a cooler.
+  A reading no sensor can have, below -273.15 or above 1000 degrees Celsius
+  or not a number, is a failed read and not a temperature: CCDTemperature
+  answers INVALID_VALUE, as for a read the SDK refuses, and the camera stays
+  connected while it is still on the bus. SetCCDTemperature and CoolerOn,
+  which with no target set fall back to the reading, refuse it the same
+  way, leaving the cooler off (K2). The simulated QHY178M-Simulated camera
+  has a cooler, and while a temperature file the suite controls exists, its
+  sensor reads the number written in it.
 
   Background:
-    Given the qhy-camera service running with the simulation backend
+    Given the qhy-camera service running with a simulated camera whose temperature reading the suite can set
     And camera device 0 is connected
 
   Scenario: A cooled camera advertises temperature control
@@ -47,3 +54,36 @@ Feature: Cooling
     And I connect camera device 0
     Then camera device 0 reports CoolerOn as true
     And camera device 0 reports SetCCDTemperature as -10.0
+
+  Scenario Outline: A reading no sensor can have is a failed read, not a temperature
+    When the sensor of camera device 0 reads <reading>
+    And I try to read CCDTemperature from camera device 0
+    Then the call is rejected with ASCOM INVALID_VALUE
+    And camera device 0 reports Connected as true
+
+    Examples:
+      | reading |
+      | -5005.8 |
+      | -273.16 |
+      | 1000.1  |
+      | NaN     |
+
+  Scenario Outline: The widest readings a camera can give are temperatures
+    When the sensor of camera device 0 reads <reading>
+    Then camera device 0 reports CCDTemperature as <reading>
+
+    Examples:
+      | reading |
+      | -273.15 |
+      | 1000.0  |
+
+  Scenario: With no target set, a refused reading is not read back as the setpoint
+    When the sensor of camera device 0 reads -5005.8
+    And I try to read SetCCDTemperature from camera device 0
+    Then the call is rejected with ASCOM INVALID_VALUE
+
+  Scenario: With no target set, a refused reading leaves the cooler off
+    When the sensor of camera device 0 reads -5005.8
+    And I try to turn the cooler on for camera device 0
+    Then the call is rejected with ASCOM INVALID_VALUE
+    And camera device 0 reports CoolerOn as false

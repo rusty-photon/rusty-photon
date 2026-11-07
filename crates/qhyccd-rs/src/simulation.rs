@@ -98,6 +98,10 @@ pub struct SimulatedCameraConfig {
     /// answers the first query. Set with
     /// [`with_cfw_plug_misses`](SimulatedCameraConfig::with_cfw_plug_misses).
     pub cfw_plug_misses: u32,
+    /// A file whose content, while it exists, is what a `CurTemp` read
+    /// answers — **default `None`**, the reading tracks the cooler. Set with
+    /// [`with_temperature_file`](SimulatedCameraConfig::with_temperature_file).
+    pub temperature_file: Option<PathBuf>,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -179,6 +183,7 @@ impl Default for SimulatedCameraConfig {
             departure_file: None,
             close_failure_file: None,
             cfw_plug_misses: 0,
+            temperature_file: None,
         }
     }
 }
@@ -372,6 +377,19 @@ impl SimulatedCameraConfig {
         self.cfw_plug_misses = misses;
         self
     }
+
+    /// Makes a [`CurTemp`](ControlType::CurTemp) read answer the number
+    /// written in `path` whenever that file exists, the way a real camera's
+    /// reading can go bad: for a camera whose readout has wedged, the SDK
+    /// reports a temperature no sensor can have, as a success. A file that holds
+    /// no number makes the read fail. Without the file the reading tracks the
+    /// cooler as usual. Checked on every read, like the departure file, so a
+    /// test can change the reading from another process.
+    #[must_use]
+    pub fn with_temperature_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.temperature_file = Some(path.into());
+        self
+    }
 }
 
 // ===== Runtime state for a simulated camera =====
@@ -523,6 +541,21 @@ impl SimulatedCameraState {
             .departure_file
             .as_ref()
             .is_some_and(|path| path.exists())
+    }
+
+    /// The reading the temperature file holds while it exists, or `None` when
+    /// the reading tracks the cooler (see
+    /// [`with_temperature_file`](SimulatedCameraConfig::with_temperature_file)).
+    pub fn scripted_temperature(&self) -> Option<Result<f64>> {
+        let path = self.config.temperature_file.as_ref()?;
+        let text = std::fs::read_to_string(path).ok()?;
+        Some(
+            text.trim()
+                .parse::<f64>()
+                .map_err(|_| QHYError::GetParameter {
+                    control: ControlType::CurTemp,
+                }),
+        )
     }
 
     /// Whether a close fails right now (see
