@@ -42,12 +42,24 @@ use super::binding::ListedIdentity;
 /// new session, because `Connected` is device-wide. A caller that must
 /// attribute an answer to the session it took the handle from checks
 /// [`Self::is_live`] after the call.
+///
+/// A slot can also be *held out* (rp.md § Power Switching): taken out
+/// of rp's hands by `disconnect_device` until `connect_device` gives it
+/// back. A held-out slot reads disconnected and hands out no handle, so
+/// every caller treats its device as unreachable, and an install that
+/// lands while it is held out keeps the pair without going live.
 pub struct DeviceSession<T: ?Sized, M = ()> {
     state: RwLock<SessionState<T, M>>,
+    /// Taken by whoever runs this entry's connect routine (a reconnect
+    /// pass, a `connect_device`) for the whole routine, and by a
+    /// `disconnect_device` while it sends `Connected = false`, so the
+    /// two never interleave at the device.
+    connecting: tokio::sync::Mutex<()>,
 }
 
 struct SessionState<T: ?Sized, M> {
     connected: bool,
+    held_out: bool,
     device: Option<Arc<T>>,
     metadata: M,
 }
@@ -60,9 +72,11 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
         Self {
             state: RwLock::new(SessionState {
                 connected: true,
+                held_out: false,
                 device: Some(device),
                 metadata,
             }),
+            connecting: tokio::sync::Mutex::const_new(()),
         }
     }
 
@@ -81,8 +95,23 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
     /// the device back on, and are answered by the new session after
     /// that — a caller that must tell the two apart checks
     /// [`Self::is_live`] after the call.
+    ///
+    /// `None` while the slot is held out, as for a device rp never
+    /// reached.
     #[must_use]
     pub fn device(&self) -> Option<Arc<T>> {
+        let state = self.read();
+        if state.held_out {
+            return None;
+        }
+        state.device.clone()
+    }
+
+    /// The handle the slot keeps, held out or not: what a
+    /// `disconnect_device` sends `Connected = false` through, since a
+    /// held-out slot hands out no handle to anyone else.
+    #[must_use]
+    pub(super) fn kept_device(&self) -> Option<Arc<T>> {
         self.read().device.clone()
     }
 
@@ -104,12 +133,17 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
     /// separately could take a handle, have a re-establish land, and
     /// then read metadata describing a session its handle never
     /// belonged to.
+    ///
+    /// `None` while the slot is held out, as [`Self::device`].
     #[must_use]
     pub fn snapshot(&self) -> Option<(Arc<T>, M)>
     where
         M: Clone,
     {
         let state = self.read();
+        if state.held_out {
+            return None;
+        }
         state
             .device
             .clone()
@@ -137,12 +171,44 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
     }
 
     /// Install a freshly established session — its handle and the
-    /// metadata read from it — and mark it connected.
-    pub fn install(&self, device: Arc<T>, metadata: M) {
+    /// metadata read from it — and mark it connected, unless the slot
+    /// is held out: then the pair is kept, for a `disconnect_device` to
+    /// send `Connected = false` through, and the slot stays
+    /// disconnected. Returns whether the session went live.
+    pub fn install(&self, device: Arc<T>, metadata: M) -> bool {
         let mut state = self.write();
         state.device = Some(device);
         state.metadata = metadata;
-        state.connected = true;
+        state.connected = !state.held_out;
+        state.connected
+    }
+
+    /// Whether `disconnect_device` holds the slot out.
+    #[must_use]
+    pub fn is_held_out(&self) -> bool {
+        self.read().held_out
+    }
+
+    /// Hold the slot out and mark it disconnected, in one step. Returns
+    /// whether the session was live until now.
+    pub fn hold_out(&self) -> bool {
+        let mut state = self.write();
+        let was_connected = state.connected;
+        state.held_out = true;
+        state.connected = false;
+        was_connected
+    }
+
+    /// End the hold-out. The slot stays disconnected until a connect
+    /// routine installs a session.
+    pub fn release(&self) {
+        self.write().held_out = false;
+    }
+
+    /// The lock one entry's connect routines and its disconnect take
+    /// turns on (see the field).
+    pub(super) const fn connecting(&self) -> &tokio::sync::Mutex<()> {
+        &self.connecting
     }
 
     /// Mark the session dead. The handle and its metadata are
@@ -186,9 +252,11 @@ impl<T: ?Sized, M: Default> DeviceSession<T, M> {
         Self {
             state: RwLock::new(SessionState {
                 connected: false,
+                held_out: false,
                 device: None,
                 metadata: M::default(),
             }),
+            connecting: tokio::sync::Mutex::const_new(()),
         }
     }
 }
@@ -208,6 +276,20 @@ impl<T: ?Sized + Device, M> DeviceSession<T, M> {
             return None;
         }
         state.device.as_deref().map(ListedIdentity::of)
+    }
+
+    /// [`Self::bound_identity`] beside [`Self::is_held_out`], read under
+    /// one guard, so a status report never shows an entry connected and
+    /// held out at once.
+    #[must_use]
+    pub fn bound_identity_and_hold_out(&self) -> (Option<ListedIdentity>, bool) {
+        let state = self.read();
+        let identity = if state.connected {
+            state.device.as_deref().map(ListedIdentity::of)
+        } else {
+            None
+        };
+        (identity, state.held_out)
     }
 }
 
@@ -244,6 +326,46 @@ mod tests {
         let session: DeviceSession<str> = DeviceSession::connected(Arc::from("handle"));
         assert!(session.is_connected());
         assert_eq!(session.device().as_deref(), Some("handle"));
+    }
+
+    #[test]
+    fn a_held_out_slot_reads_disconnected_and_hands_out_no_handle() {
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::from("live"));
+        assert!(
+            session.hold_out(),
+            "the session was live until the hold-out"
+        );
+        assert!(!session.is_connected());
+        assert!(session.is_held_out());
+        assert!(session.device().is_none());
+        assert!(session.snapshot().is_none());
+        assert_eq!(session.kept_device().as_deref(), Some("live"));
+    }
+
+    /// An install that lands while the slot is held out, from a connect
+    /// routine that began before the hold-out, keeps its pair for the
+    /// disconnect without going live.
+    #[test]
+    fn an_install_while_held_out_keeps_the_pair_without_going_live() {
+        let session: DeviceSession<str, u32> = DeviceSession::disconnected();
+        assert!(!session.hold_out());
+        assert!(!session.install(Arc::from("fresh"), 7));
+        assert!(!session.is_connected());
+        assert!(session.device().is_none());
+        assert_eq!(session.kept_device().as_deref(), Some("fresh"));
+        assert_eq!(session.metadata(), 7);
+    }
+
+    #[test]
+    fn a_released_slot_stays_disconnected_until_an_install() {
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::from("old"));
+        session.hold_out();
+        session.release();
+        assert!(!session.is_held_out());
+        assert!(!session.is_connected());
+        assert_eq!(session.device().as_deref(), Some("old"));
+        assert!(session.install(Arc::from("new"), ()));
+        assert!(session.is_connected());
     }
 
     #[test]

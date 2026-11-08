@@ -155,6 +155,12 @@ pub const UNGATED: &[&str] = &[
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",
+    // power: a dawn document cuts power whatever the weather, and a
+    // dusk document checks the sky before it powers anything up
+    "disconnect_device",
+    "connect_device",
+    "get_switch",
+    "set_switch",
 ];
 
 /// The built-in class of a catalog tool.

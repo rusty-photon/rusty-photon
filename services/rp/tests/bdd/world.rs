@@ -16,8 +16,8 @@ use bdd_infra::rp_harness::{
     AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, DomeConfig, FacadeCameraStub,
     FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub, McpTestClient, MountConfig,
     ObservingConditionsConfig, OmniSimHandle, OpticalTrainConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    SwitchConfig, ToolProviderStub, WebhookReceiver,
+    PlateSolverStub, PowerBoxStub, ReceivedEvent, RotatorConfig, RpConfigBuilder,
+    SafetyMonitorConfig, SseClient, SwitchConfig, ToolProviderStub, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -133,6 +133,9 @@ pub struct RpWorld {
     /// downstream device service the scenario can stop and bring back
     /// on the same port with its `Connected` state gone.
     pub alpaca_stub: Option<AlpacaDeviceStub>,
+    /// Stub power box (power-switching scenarios): one Alpaca `Switch`
+    /// with named outputs whose writes the scenario observes.
+    pub power_box: Option<PowerBoxStub>,
     /// Override rp's `cooling` timing knobs; the camera-cooling
     /// scenarios pin these short so a cooldown pass completes in
     /// test time (`camera_cooling.feature`).

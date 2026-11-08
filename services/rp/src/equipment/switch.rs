@@ -83,6 +83,7 @@ mod tests {
             device_number,
             unique_id: None,
             auth: None,
+            outputs: Vec::new(),
         }
     }
 

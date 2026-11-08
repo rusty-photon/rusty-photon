@@ -1013,9 +1013,9 @@ mod tests {
         assert_eq!(
             status["cameras"],
             serde_json::json!([
-                {"id": "guide", "connected": true,
+                {"id": "guide", "connected": true, "held_out": false,
                  "device_name": "QHY5III678M", "unique_id": "QHY5III678M-guide"},
-                {"id": "imaging", "connected": false,
+                {"id": "imaging", "connected": false, "held_out": false,
                  "device_name": null, "unique_id": null}
             ])
         );

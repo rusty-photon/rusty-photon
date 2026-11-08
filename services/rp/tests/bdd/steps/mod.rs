@@ -39,6 +39,7 @@ pub mod operation_event_steps;
 pub mod optical_trains_steps;
 pub mod plan_schema_validation_steps;
 pub mod plate_solve_steps;
+pub mod power_switching_steps;
 pub mod retired_config_steps;
 pub mod rotator_steps;
 pub mod safety_steps;
