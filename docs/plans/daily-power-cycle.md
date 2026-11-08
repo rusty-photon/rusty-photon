@@ -98,22 +98,27 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
   start limit, so a boot or an upgrade while a device is off loops until the
   device has power (rig2, 2026-09-06: 608 starts in 69 minutes). Once
   running, the shared transport's supervisor retries a lost link every 5 s
-  and never gives up, with a warning at each failed attempt. The transport
-  stays open for the service's lifetime, so it retries whether or not a
-  client is connected.
+  and never gives up. It warns once when the link is lost, logs each failed
+  retry at `debug!`, and logs at `INFO` when the link comes back. The
+  transport stays open for the service's lifetime, so it retries whether or
+  not a client is connected.
 - **rp's reconnect supervisor** retries every configured device every
   `equipment.reconnect_interval` (30 s by default) and never gives up. A
-  placeholder's refusal costs one attempt, logged at `debug!`. Any other
-  failed connect is tried three times within the pass, with two `INFO`
-  lines, so every powered-off device that reads disconnected and is not a
-  placeholder logs twice every 30 s. rp never sends `Connected = false`, so
-  it takes every disconnect it sees for a fault and heals it on its next
-  pass: `Connected` is shared by every client and does not say who
-  disconnected or why.
-- **rp has no switch tools.** `switches[]` is roster membership and
-  connectivity only. `ppba-driver`, `upbv2-driver` and
-  `gemini-powerbox-adv3-driver` expose their outputs as ASCOM Switch ids,
-  each with an operator label.
+  device lost on a pass gets the connect routine's three attempts, one
+  already unreachable on the previous pass gets one, and a placeholder's
+  refusal costs one. The loss logs once at `INFO`, each later failed pass at
+  `debug!`. A device held out through `disconnect_device` is not tried at
+  all. rp sends `Connected = false` only for `disconnect_device`, which
+  holds the device out first. Any other disconnect it sees it takes for a
+  fault and heals on its next pass: `Connected` is shared by every client
+  and does not say who disconnected or why.
+- **rp's power map and power tools.** A `switches[]` entry lists its power
+  box's outputs, the devices each one feeds, and the ones that are
+  protected. `get_switch` and `set_switch` read and switch the outputs, and
+  `disconnect_device` and `connect_device` hold a device out of the
+  supervisor and give it back (rp.md § Power Switching). `ppba-driver`,
+  `upbv2-driver` and `gemini-powerbox-adv3-driver` expose their outputs as
+  ASCOM Switch ids, each with an operator label.
 - **doctor** fails `hardware.usb-device` for an enabled service whose
   device is absent from the bus.
 - **Linux serial device names follow enumeration order** (`/dev/ttyUSBn`,
@@ -408,9 +413,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2`, `pa-scops-oag` and `star-adventurer-gti` across a cut. Owed (Validation §Owed): rig2's other devices with their drivers across a cut | |
-| P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
+| P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | Not started | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | In review | `feature/power-cycle-p3-rp-tools` |
 | P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2 and P3 | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 

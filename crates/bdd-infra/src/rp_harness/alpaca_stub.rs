@@ -124,6 +124,10 @@ struct StubState {
     unique_id: String,
     /// `configureddevices` reads served by this incarnation.
     device_list_reads: AtomicU32,
+    /// `Connected = true` requests this incarnation has taken.
+    connect_requests: AtomicU32,
+    /// `Connected = false` requests this incarnation has taken.
+    disconnect_requests: AtomicU32,
 }
 
 /// In-process Alpaca device service that can be stopped and brought
@@ -280,6 +284,20 @@ impl AlpacaDeviceStub {
         self.state.device_list_reads.load(Ordering::SeqCst)
     }
 
+    /// How many `Connected = true` requests the current incarnation has
+    /// taken. Resets to zero on a restart.
+    #[must_use]
+    pub fn connect_requests(&self) -> u32 {
+        self.state.connect_requests.load(Ordering::SeqCst)
+    }
+
+    /// How many `Connected = false` requests the current incarnation has
+    /// taken. Resets to zero on a restart.
+    #[must_use]
+    pub fn disconnect_requests(&self) -> u32 {
+        self.state.disconnect_requests.load(Ordering::SeqCst)
+    }
+
     /// Set the reading the safety-monitor variant reports while
     /// connected.
     pub fn set_is_safe(&self, is_safe: bool) {
@@ -409,6 +427,8 @@ fn fresh_state(is_safe: bool, probe: FocuserProbe, unique_id: &str) -> Arc<StubS
         temperature_reads: AtomicU32::new(0),
         unique_id: unique_id.to_string(),
         device_list_reads: AtomicU32::new(0),
+        connect_requests: AtomicU32::new(0),
+        disconnect_requests: AtomicU32::new(0),
     })
 }
 
@@ -466,6 +486,12 @@ fn router(device: StubDevice, state: Arc<StubState>) -> Router {
                         .find(|(k, _)| k == "Connected")
                         .is_some_and(|(_, v)| v.eq_ignore_ascii_case("true"));
                     state.connected.store(requested, Ordering::SeqCst);
+                    let counter = if requested {
+                        &state.connect_requests
+                    } else {
+                        &state.disconnect_requests
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
                     Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
                 }
             }),

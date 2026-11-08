@@ -1223,7 +1223,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `dither_failed` | error | Dither or its settle failed |
 | `mount_motion_pending` | operation (`slew` \| `dither`) | A mount motion is queued behind the [mount motion gate](#mount-motion-gate) — in-flight imaging-train exposures (or an earlier queued motion) must finish first. Point event; the motion's own `*_started` triple follows once the gate is acquired |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
-| `equipment_changed` | kind, device, connected | A device session was re-established (`connected: true`, emitted on every successful re-establishment) or lost (`connected: false`, once per transition) by the reconnect supervisor (§ [Device Session Recovery](#device-session-recovery)). `kind` is the device type (`camera`, `mount`, …); `device` is the config id, `null` for the singular mount |
+| `equipment_changed` | kind, device, connected | A device session was re-established (`connected: true`, emitted on every successful re-establishment) or lost (`connected: false`, once per transition) by the reconnect supervisor (§ [Device Session Recovery](#device-session-recovery)), connected by `connect_device`, or ended by `disconnect_device` (`connected: false` when its session was live; § [Power Switching](#power-switching)). `kind` is the device type (`camera`, `mount`, …); `device` is the config id, `null` for the singular mount |
 | `provider_changed` | provider, connected | A tool provider's MCP session was re-established (`connected: true`) by the reconnect supervisor's provider lane, or lost (`connected: false`, once per transition — on the first failed proxied call or a failed health check). `provider` is the registration's `name` (§ [Plugin-Provided Tools](#plugin-provided-tools)) |
 | `temperature_changed` | sensor, value | A focuser's temperature probe moved by at least `equipment.temperature_event_delta_c` (default 0.5 °C) since the last emission for that focuser, or since the baseline its first reading after a (re)connect set silently (point event; see [Focuser Temperature Watch](#focuser-temperature-watch)). `sensor` is the focuser's config id, `value` the reading in °C |
 | `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
@@ -1837,6 +1837,15 @@ block is absent.
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `get_safety_status` | Ungated | — | overall, since, monitors: \[{id, state, since}\], gated | The safety state the gate acts on, for a client that does not consume SSE: `overall` (`safe` \| `unsafe`) with the time it last changed, every configured monitor's last reading (`safe` \| `unsafe` — a failed read counts as unsafe) with the time *it* last changed, and the effective gated tool list after `safety.gate` overrides. See § Safety → [In-Flight Tool Calls](#in-flight-tool-calls); `safety_changed` stays the push signal |
+
+**Power** (see [Power Switching](#power-switching))
+
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `disconnect_device` | Ungated | device_id (a roster id, or `mount`) | device_id, kind, close (`closed` \| `timed_out` \| `failed` \| `no_session`), error (when `failed`) | Hold the device out of the reconnect supervisor, then send its driver `Connected = false` within a 10 s deadline; the hold-out stands whatever the close does |
+| `connect_device` | Ungated | device_id (a roster id, or `mount`) | device_id, kind, connected | Release the hold-out and connect the device now with the full connect budget; a live session is confirmed and left as it is, never cycled |
+| `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
+| `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 
 **Compute (image analysis)**
 
@@ -4009,7 +4018,7 @@ Supported ASCOM device types:
 | FilterWheel | Filter selection by position |
 | SafetyMonitor | Safety state polling |
 | CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness); train-addressable as the first device of an optical train |
-| Switch | Roster membership and connectivity status only — no MCP tool integration yet |
+| Switch | Power-box outputs, read and switched through the power map (`get_switch`, `set_switch`; § [Power Switching](#power-switching)) |
 | Rotator | Absolute sky-angle move + position readback (`move_rotator`, `get_rotator_position`); train-addressable |
 | ObservingConditions | Roster membership and connectivity status only — no MCP tool integration yet |
 | Dome | Roster membership and connectivity status only — no MCP tool integration yet |
@@ -4235,6 +4244,11 @@ default `"30s"`; must be greater than zero — a zero interval would be
 a busy loop and is rejected at config load) it walks the configured
 devices:
 
+- **A held-out entry is not tried.** An entry `disconnect_device` holds
+  out (§ [Power Switching](#power-switching)) gets no health check and
+  no connect attempt, and logs nothing, until `connect_device` releases
+  it: its device may be switched off, or powering up, and its service
+  restarts before it is connected again.
 - **Health check.** For an entry whose session is marked live, read the
   Alpaca `Connected` property. `true` ⇒ healthy, nothing else happens,
   except that a pinned entry also has its pin re-checked against the
@@ -4361,8 +4375,12 @@ Consequences and constraints:
   attributes an answer to a particular session — the temperature
   watch's baseline is rp's one such caller — checks after the call
   that the session it read through is still the live one.
-- `rp` never issues `Connected = false`, so the supervisor cannot fight
-  an intentional disconnect — there is none.
+- `rp` issues `Connected = false` only for `disconnect_device`, which
+  holds the entry out of the supervisor first (§ [Power
+  Switching](#power-switching)), so the supervisor never fights an
+  intentional disconnect made through rp. One made through another
+  client is healed on the next pass, since `Connected` does not say who
+  turned it off or why.
 - `GET /api/equipment`'s `connected` flags reflect this live state, not
   the startup snapshot (see [Equipment](#equipment)).
 - The Sentinel watchdog's [Recovery Flow](#recovery-flow) ends with
@@ -4384,6 +4402,183 @@ at startup, and a live provider whose `tools/list` no longer matches
 them is logged at `warn!` naming what was added and removed — restart
 `rp` to pick the change up. A proxied call holding the old client
 keeps using it, as an in-flight device call keeps its handle.
+
+### Power Switching
+
+A workflow switches a power box's outputs through `rp`, and takes every
+device on an output out of `rp`'s hands before it cuts the output
+([daily power cycle plan](../plans/daily-power-cycle.md), decisions 3,
+8 and 11). Four tools carry it: `disconnect_device` and
+`connect_device`, which hold a device out of the reconnect supervisor
+and give it back, and `get_switch` and `set_switch`, which read and
+switch a power box's outputs through the power map.
+
+#### The power map
+
+A `switches[]` entry lists its power box's outputs under `outputs`:
+
+```json
+{
+  "id": "ppba",
+  "alpaca_url": "https://127.0.0.1:11112",
+  "device_number": 0,
+  "outputs": [
+    { "name": "Quad 12V Output", "devices": ["main-cam", "main-focuser", "mount"] },
+    { "name": "USB Hub", "devices": ["guide-cam"] },
+    { "name": "Dew Heater A" },
+    { "name": "Adjustable Output", "protected": "the host runs off it" }
+  ]
+}
+```
+
+- **`name`** is the name the box's driver reports for the output
+  (`GetSwitchName`). On `ppba-driver`, `upbv2-driver` and
+  `gemini-powerbox-adv3-driver` that is the operator's label where the
+  driver's `switch.labels` sets one and the built-in name otherwise, so
+  the map uses the names the driver's own page shows. Names match
+  exactly, and are unique within an entry.
+- **`devices`** are the roster ids of the devices the output feeds,
+  through their 12 V or through the USB that powers them, with `mount`
+  for the mount. A device may sit on several outputs: a camera's 12 V on
+  one, the hub its USB runs through on another. Empty by default.
+- **`protected`** says why the output is never switched off through
+  `rp`, in words the refusal quotes. An output is marked when it feeds
+  the host or its network link (a network switch or an access point),
+  the power box's own link (its serial bridge, the hub between it and
+  the host), a safety monitor, or another power box. Cutting the first
+  two leaves no remote way to switch the output back on. pier1's Pi runs
+  off its PPBA's Adjustable Output (the plan's Validation). A safety
+  monitor stays powered and connected because dusk waits for it to read
+  safe (decision 7).
+
+`rp` checks the map when it loads its configuration, and the setup
+page's save checks it with the same rules:
+
+- every id in `devices` names a roster entry;
+- an output that lists a safety monitor or a switch carries `protected`.
+  `rp` knows those kinds, so a map that leaves one unprotected is a
+  mistake it can name;
+- output names do not repeat within an entry.
+
+The map's ids are why roster ids are unique across every kind, map or
+no map, and why no entry may be called `mount`, the id that names the
+mount: an id in `devices` or in a `disconnect_device` call names one
+device. A device `rp` does not serve has no roster id and cannot be
+listed, so `rp` cannot hold it out. A guide camera that PHD2 drives and
+that sits on a switched output is served through `phd2-guider`'s camera
+facade for that reason, among others (decision 11).
+
+An output the map does not list is never switched through `rp`, on or
+off: `rp` cannot know what it feeds. `get_switch` still reads it.
+
+#### Holding a device out
+
+`disconnect_device {device_id}` takes a device out of `rp`'s hands until
+`connect_device` gives it back:
+
+1. The entry is held out at once. The reconnect supervisor no longer
+   health-checks or reconnects it (§ [Device Session
+   Recovery](#device-session-recovery)), and `set_switch` counts it as
+   disconnected.
+2. The entry reads disconnected, and `GET /api/equipment` reports it
+   with `held_out: true`. It hands out no device handle, so a tool that
+   needs the device answers that it is not connected, as for a device
+   `rp` never reached. A call already holding the handle keeps it. An
+   `equipment_changed` event with `connected: false` is emitted when the
+   session was live.
+3. `rp` sends `Connected = false` to the driver, within a fixed deadline
+   of 10 s. A connect the supervisor or a `connect_device` is running for
+   the device at that moment is waited out first, inside the deadline,
+   so the last request `rp` sends the driver is the disconnect. A close
+   that fails, or has not returned when the deadline passes, leaves the
+   device held out all the same. A wedged camera can hang its close
+   (decision 11), and nothing waits on it.
+
+The result is `{device_id, kind, close}`, where `close` is `closed`,
+`timed_out`, `failed` (with an `error`), or `no_session` when `rp`
+has never reached the device and holds no handle to send the request
+through. The tool succeeds in every case, since the hold-out is what a
+workflow needs before it cuts the output.
+
+`Connected` is device-wide, so the disconnect ends the device's session
+for every client, PHD2 included for a mount it reaches through Alpaca,
+and stops whatever the driver was doing for it, an exposure included. A
+held-out safety monitor reads unsafe, as an unreachable one does
+(§ [Safety](#safety)), and a held-out power box answers no `get_switch`
+or `set_switch`.
+
+`connect_device {device_id}` releases the hold-out and connects the
+device there and then, with the connect routine's full budget, before it
+returns:
+
+- **A session that reads connected** is checked through the driver's
+  `Connected` and, when that reads true, left as it is. A connect
+  through `rp` never cycles a session: the service restart that dusk
+  makes is what makes a session fresh (decision 3).
+- **Any other session** is established as the supervisor would establish
+  it: the identity pin, `Connected = true`, a fresh read of the
+  connect-time cache, and an `equipment_changed` event with
+  `connected: true`, the event a dusk document waits on.
+
+The result is `{device_id, kind, connected: true}`. A failure is a tool
+error that carries the reason. The hold-out is gone either way, so the
+supervisor goes on trying every pass. A `connect_device` and a
+supervisor pass never run the connect routine for one device at the same
+time.
+
+For both tools `device_id` is a roster id or `mount`, and an unknown id
+is a tool error. Both actuate nothing (tenet 3): `Connected = true`
+keeps the facade exception of § [Device Session
+Recovery](#device-session-recovery).
+
+A hold-out lives in `rp`'s memory. An `rp` restart drops it, and the
+supervisor then reconnects a held-out device that stayed on the bus. The
+restart of the device's service that dusk makes before connecting it is
+what makes its session fresh in that case too (decision 3).
+
+#### Reading and switching an output
+
+`get_switch {switch_id, output?}` reads a power box's outputs: the one
+named `output`, or every switch the box reports when `output` is
+omitted. Each comes back as `name`, `index` (its Alpaca switch id),
+`can_write`, `on` (`GetSwitch`) and `value` (`GetSwitchValue`), with
+the power map's view beside them: `mapped`, `protected` (the reason, or
+`null`), and `devices`, each `{device_id, kind, connected, held_out}`.
+Map outputs the box reports no switch for are listed under `unmatched`,
+so a name the driver no longer reports shows. A switch that is not
+connected, or an `output` the box reports no switch for, is a tool
+error.
+
+`set_switch {switch_id, output, on}` writes `SetSwitch` to the output's
+switch and returns `{switch_id, output, on}`, with `on` read back after
+the write. An output with more than two states is set to whatever its
+driver's `SetSwitch` makes of on or off (`ppba-driver`: its maximum or
+its minimum). It refuses, with a tool error that names the reason:
+
+- an output the power map does not list;
+- `on: false` on a protected output, quoting its `protected` text;
+- `on: false` while a device the map puts on the output is not held
+  out. Every one must have been through `disconnect_device` first
+  (decision 3), and the error names those still in `rp`'s hands. A
+  device `rp` cannot reach is no exception: unless it is held out, the
+  supervisor connects it as soon as the output is back on, possibly
+  while it is still powering up;
+- an output whose switch the box reports read-only (`CanWrite` false),
+  or one the box reports no switch for.
+
+Switching on is refused only for the first and the last reason. A
+`set_switch` and a `connect_device` do not interleave: the hold-out
+check and the write are one step against `connect_device`'s release, so
+no device can be connected between the two.
+
+All four tools are ungated (§ [In-Flight Tool
+Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
+weather, and a dusk document powers devices up only once `rp`'s safety
+monitors read safe with the roof open (decision 7), a check that belongs
+to the document. `set_switch` is the one tool here that actuates, and it
+does so only on a tool call: power is switched by a workflow or an
+operator, never by a connect path or the supervisor (decision 1,
+tenet 3).
 
 ### Optical Trains
 
@@ -7230,6 +7425,11 @@ nothing else — because nothing else was `rp`'s to keep.
   secures the equipment (§ Safety) before the listener serves, so an
   orchestrator that resumes against a fresh `rp` meets a gate that
   already reflects the sky.
+- **A hold-out** (`disconnect_device`, § [Power
+  Switching](#power-switching)) does not survive. The startup connect
+  reaches every device that answers, a held-out one that stayed on the
+  bus included, and the restart of its service that dusk makes before
+  connecting it is what makes the session fresh.
 
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
@@ -7633,7 +7833,8 @@ Then come the entry's fields, generated from its kind's type
 (`id`, `name`, `alpaca_url` and `device_number` first, then the rest: a
 camera's `gain`, …), with a field
 the form cannot render named as edited in the file (a filter wheel's
-`filters`, a focuser's `backlash`, the mount's `guiding`), its `unique_id`
+`filters`, a focuser's `backlash`, a switch's `outputs`, the mount's
+`guiding`), its `unique_id`
 pin under a collapsed **Identity** disclosure (D2), its credential, and a
 **Remove** box. Below each kind's rows an **Add** block offers a blank
 entry of that kind, its fields at their defaults; the mount's is offered
@@ -7716,8 +7917,9 @@ refuse it (D5).
 ### What stays in the file
 
 The optical trains, the plugins, `site`, `plate_solver`, `planner`, a
-filter wheel's filters, a focuser's backlash and the mount's guiding block
-are named on the page and edited in the file. rp has no other config
+filter wheel's filters, a focuser's backlash, a switch's power map
+(`outputs`) and the mount's guiding block are named on the page and
+edited in the file. rp has no other config
 route: the page is where its configuration is edited, and the file.
 
 ## API Layer
@@ -7743,10 +7945,14 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   response mirrors the config's equipment shape: ten fixed keys
   (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`,
   `safety_monitors`, `switches`, `rotators`, `observing_conditions`,
-  `domes` — arrays of `{ "id", "connected", "device_name", "unique_id" }`
-  — and `mount`, a `{ "connected", "device_name", "unique_id" }` object
-  or `null`). The `id` is the operator-supplied config id; the mount is
-  singular and has none. `device_name` and `unique_id` identify the
+  `domes` — arrays of
+  `{ "id", "connected", "held_out", "device_name", "unique_id" }` — and
+  `mount`, a `{ "connected", "held_out", "device_name", "unique_id" }`
+  object or `null`). The `id` is the operator-supplied config id; the
+  mount is singular and has none. `held_out` is true while
+  `disconnect_device` holds the entry out of the reconnect supervisor
+  (§ [Power Switching](#power-switching)), which is why such an entry
+  stays disconnected. `device_name` and `unique_id` identify the
   device the live session was bound to, as its Alpaca server listed it
   in `configureddevices` when the session was established. Both are
   `null` while the entry is disconnected. A pinned entry is re-checked
@@ -7761,9 +7967,9 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
 - Runtime device connect/disconnect is **not** a REST route: the registry is
   built once at startup, sessions are kept alive by the reconnect supervisor
   (§ [Device Session Recovery](#device-session-recovery)) — so `connected`
-  reflects the live session state, not the startup snapshot — and if an
-  operator-facing connect/disconnect is ever exposed it lands as an MCP
-  tool, not a REST endpoint (Tenet 8).
+  reflects the live session state, not the startup snapshot — and the
+  operator's connect and disconnect are the MCP tools `connect_device` and
+  `disconnect_device` (§ [Power Switching](#power-switching), Tenet 8).
 
 #### Setup page
 - `GET /setup` — rp's configuration as a page: its own sections, the
@@ -8136,7 +8342,12 @@ return a structured "site not configured" error.
         "id": "ppba",
         "name": "Pegasus PPBA",
         "alpaca_url": "http://localhost:11112",
-        "device_number": 0
+        "device_number": 0,
+        "outputs": [
+          { "name": "Quad 12V Output", "devices": ["main-cam", "main-fw", "main-focuser", "mount"] },
+          { "name": "USB Hub", "devices": ["guide-cam", "guide-focuser"] },
+          { "name": "Adjustable Output", "protected": "the host runs off it" }
+        ]
       }
     ],
     "rotators": [
@@ -8319,7 +8530,17 @@ services/rp/src/
     mod.rs              EquipmentRegistry: per-device entries, status
     supervisor.rs       Reconnect supervisor (§ Device Session Recovery):
                         per-interval health check + session re-establish,
-                        plus the tool-provider lane (mcp/providers.rs)
+                        skipping held-out entries, plus the tool-provider
+                        lane (mcp/providers.rs); also the one-entry
+                        connect and the hold-out disconnect behind
+                        connect_device / disconnect_device
+    session.rs          The per-entry session slot: handle, connected
+                        flag, connect-time metadata, the hold-out, and
+                        the lock one entry's connects and disconnect
+                        take turns on
+    power.rs            The power map at run time (§ Power Switching):
+                        an output's name resolved to the box's switch id,
+                        the set_switch refusals, the get_switch reads
     alpaca.rs           Generic Alpaca client (reqwest-based)
     binding.rs          The connect routine shared by every kind:
                         locate the entry's device in configureddevices,
@@ -8469,6 +8690,10 @@ services/rp/src/
                           IsMoving poll on moves, the
                           rotate-while-guiding ladder around
                           guiding-train moves).
+      power.rs          DeviceIdParams, GetSwitchParams,
+                          SetSwitchParams + disconnect_device,
+                          connect_device, get_switch, set_switch
+                          (§ Power Switching).
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
                           tool.
       guider.rs         6 guider param structs + the 6 guiding tools

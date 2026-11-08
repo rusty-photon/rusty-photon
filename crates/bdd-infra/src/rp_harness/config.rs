@@ -116,6 +116,9 @@ pub struct SwitchConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
+    /// The power map's `outputs` entries, passed through as written;
+    /// left out of the config when empty.
+    pub outputs: Vec<Value>,
 }
 
 /// Rotator equipment entry.
@@ -626,7 +629,7 @@ impl RpConfigBuilder {
                 "filter_wheels": self.filter_wheels_value(),
                 "cover_calibrators": self.cover_calibrators_value(),
                 "safety_monitors": device_list(self.safety_monitors.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
-                "switches": device_list(self.switches.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "switches": self.switches_value(),
                 "rotators": device_list(self.rotators.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "observing_conditions": device_list(self.observing_conditions.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "domes": device_list(self.domes.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number)))
@@ -693,6 +696,23 @@ impl RpConfigBuilder {
         }
 
         config
+    }
+
+    fn switches_value(&self) -> Vec<Value> {
+        self.switches
+            .iter()
+            .map(|d| {
+                let mut entry = serde_json::json!({
+                    "id": d.id,
+                    "alpaca_url": d.alpaca_url,
+                    "device_number": d.device_number,
+                });
+                if !d.outputs.is_empty() {
+                    set_key(&mut entry, "outputs", Value::Array(d.outputs.clone()));
+                }
+                entry
+            })
+            .collect()
     }
 
     fn cameras_value(&self) -> Vec<Value> {

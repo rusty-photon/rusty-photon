@@ -314,7 +314,127 @@ impl EquipmentConfig {
         errors.sort_by(|a, b| a.path.cmp(&b.path));
         errors
     }
+
+    /// Every roster entry as `(kind key, index, id)`, kind by kind in the
+    /// file's order. The mount has no entry here: it has no `id`.
+    fn roster(&self) -> Vec<(&'static str, usize, &str)> {
+        macro_rules! ids {
+            ($key:literal, $entries:expr) => {
+                $entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, e)| ($key, index, e.id.as_str()))
+            };
+        }
+        ids!("cameras", self.cameras)
+            .chain(ids!("filter_wheels", self.filter_wheels))
+            .chain(ids!("cover_calibrators", self.cover_calibrators))
+            .chain(ids!("focusers", self.focusers))
+            .chain(ids!("safety_monitors", self.safety_monitors))
+            .chain(ids!("switches", self.switches))
+            .chain(ids!("rotators", self.rotators))
+            .chain(ids!("observing_conditions", self.observing_conditions))
+            .chain(ids!("domes", self.domes))
+            .collect()
+    }
+
+    /// Roster ids name one device each (rp.md § Power Switching): an id
+    /// may not repeat, within a kind or across kinds, and no entry may be
+    /// called `mount`, the id that names the mount. A power map's
+    /// `devices` and a `disconnect_device` call address a device by its
+    /// id alone. The error sits on every entry after the first that
+    /// takes an id.
+    #[must_use]
+    pub fn roster_id_errors(&self) -> Vec<FieldError> {
+        let mut first: std::collections::HashMap<&str, (&str, usize)> =
+            std::collections::HashMap::new();
+        let mut errors = Vec::new();
+        for (key, index, id) in self.roster() {
+            let path = format!("equipment.{key}.{index}.id");
+            if id == MOUNT_ID {
+                errors.push(FieldError {
+                    path,
+                    msg: format!(
+                        "'{MOUNT_ID}' is the id that names the mount; give this entry another id"
+                    ),
+                });
+            } else if let Some((other_key, other_index)) = first.get(id) {
+                errors.push(FieldError {
+                    path,
+                    msg: format!(
+                        "id '{id}' is already the id of equipment.{other_key}.{other_index}; \
+                         roster ids are unique across every kind"
+                    ),
+                });
+            } else {
+                first.insert(id, (key, index));
+            }
+        }
+        errors
+    }
+
+    /// The power map's rules that reach past its own entry (rp.md
+    /// § Power Switching): every id an output's `devices` lists names a
+    /// roster entry (`mount` only while a mount is configured), and an
+    /// output that lists a safety monitor or a switch is protected.
+    #[must_use]
+    pub fn power_map_errors(&self) -> Vec<FieldError> {
+        let kinds: std::collections::HashMap<&str, &str> = self
+            .roster()
+            .into_iter()
+            .map(|(key, _, id)| (id, key))
+            .collect();
+        let mut errors = Vec::new();
+        for (i, switch) in self.switches.iter().enumerate() {
+            for (j, output) in switch.outputs.iter().enumerate() {
+                for (k, device) in output.devices.iter().enumerate() {
+                    let known = if device == MOUNT_ID {
+                        self.mount.is_some()
+                    } else {
+                        kinds.contains_key(device.as_str())
+                    };
+                    if !known {
+                        errors.push(FieldError {
+                            path: format!("equipment.switches.{i}.outputs.{j}.devices.{k}"),
+                            msg: format!(
+                                "'{device}' names no roster entry (switch '{}', output '{}')",
+                                switch.id, output.name
+                            ),
+                        });
+                    }
+                }
+                if output.protected.is_some() {
+                    continue;
+                }
+                let needs_protection =
+                    output
+                        .devices
+                        .iter()
+                        .find_map(|device| match kinds.get(device.as_str()) {
+                            Some(&"safety_monitors") => Some(("safety monitor", device)),
+                            Some(&"switches") => Some(("power box", device)),
+                            _ => None,
+                        });
+                if let Some((kind, device)) = needs_protection {
+                    errors.push(FieldError {
+                        path: format!("equipment.switches.{i}.outputs.{j}.protected"),
+                        msg: format!(
+                            "output '{}' feeds {kind} '{device}', so it must be protected: \
+                             say why it is never switched off (switch '{}')",
+                            output.name, switch.id
+                        ),
+                    });
+                }
+            }
+        }
+        errors
+    }
 }
+
+/// The id that names the singular mount wherever the roster's ids are
+/// used: in a power map's `devices`, and in `disconnect_device` and
+/// `connect_device`. No roster entry may take it.
+pub const MOUNT_ID: &str = "mount";
 
 /// The server an `alpaca_url` names, spelled one way: parsed and
 /// re-serialized, so a trailing slash, the host's case or an explicit
@@ -372,6 +492,125 @@ mod tests {
 
     use crate::config::load_config;
     use crate::config::test_support::MINIMAL_CONFIG_JSON;
+
+    fn equipment(value: serde_json::Value) -> super::EquipmentConfig {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn paths(errors: &[rusty_photon_config::driver::FieldError]) -> Vec<&str> {
+        errors.iter().map(|e| e.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_roster_id_repeated_across_kinds_is_rejected_on_the_later_entry() {
+        let config = equipment(serde_json::json!({
+            "cameras": [{"id": "ppba", "alpaca_url": "http://127.0.0.1:11121"}],
+            "switches": [{"id": "ppba", "alpaca_url": "http://127.0.0.1:11112"}],
+            "observing_conditions": [{"id": "ppba-weather", "alpaca_url": "http://127.0.0.1:11112"}]
+        }));
+
+        let errors = config.roster_id_errors();
+
+        assert_eq!(paths(&errors), vec!["equipment.switches.0.id"]);
+        assert!(
+            errors[0].msg.contains("equipment.cameras.0"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn an_entry_called_mount_is_rejected() {
+        let config = equipment(serde_json::json!({
+            "focusers": [{"id": "mount", "alpaca_url": "http://127.0.0.1:11113"}]
+        }));
+
+        let errors = config.roster_id_errors();
+
+        assert_eq!(paths(&errors), vec!["equipment.focusers.0.id"]);
+        assert!(
+            errors[0].msg.contains("names the mount"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn a_power_map_device_must_name_a_roster_entry() {
+        let config = equipment(serde_json::json!({
+            "cameras": [{"id": "main-cam", "alpaca_url": "http://127.0.0.1:11121"}],
+            "switches": [{
+                "id": "ppba", "alpaca_url": "http://127.0.0.1:11112",
+                "outputs": [{"name": "Quad 12V Output", "devices": ["main-cam", "mian-cam", "mount"]}]
+            }]
+        }));
+
+        let errors = config.power_map_errors();
+
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.switches.0.outputs.0.devices.1",
+                "equipment.switches.0.outputs.0.devices.2"
+            ]
+        );
+        assert!(
+            errors[0].msg.contains("'mian-cam' names no roster entry"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn mount_names_the_mount_in_a_power_map_once_one_is_configured() {
+        let config = equipment(serde_json::json!({
+            "mount": {"alpaca_url": "http://127.0.0.1:11117"},
+            "switches": [{
+                "id": "ppba", "alpaca_url": "http://127.0.0.1:11112",
+                "outputs": [{"name": "Quad 12V Output", "devices": ["mount"]}]
+            }]
+        }));
+
+        assert_eq!(config.power_map_errors(), Vec::new());
+    }
+
+    #[test]
+    fn an_output_feeding_a_safety_monitor_or_a_power_box_must_be_protected() {
+        let config = equipment(serde_json::json!({
+            "safety_monitors": [{"id": "roof", "alpaca_url": "http://127.0.0.1:11114"}],
+            "switches": [
+                {
+                    "id": "ppba", "alpaca_url": "http://127.0.0.1:11112",
+                    "outputs": [
+                        {"name": "Quad 12V Output", "devices": ["roof"]},
+                        {"name": "USB Hub", "devices": ["upb"]},
+                        {"name": "Adjustable Output", "devices": ["roof"], "protected": "the roof sensor runs off it"}
+                    ]
+                },
+                {"id": "upb", "alpaca_url": "http://127.0.0.1:11116"}
+            ]
+        }));
+
+        let errors = config.power_map_errors();
+
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.switches.0.outputs.0.protected",
+                "equipment.switches.0.outputs.1.protected"
+            ]
+        );
+        assert!(
+            errors[0].msg.contains("safety monitor 'roof'"),
+            "{}",
+            errors[0].msg
+        );
+        assert!(
+            errors[1].msg.contains("power box 'upb'"),
+            "{}",
+            errors[1].msg
+        );
+    }
 
     #[test]
     fn equipment_config_rejects_unknown_field() {

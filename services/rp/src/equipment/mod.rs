@@ -12,9 +12,14 @@
 //! reconnect supervisor that heals dead sessions (rp.md § Device
 //! Session Recovery) in [`supervisor`].
 //!
-//! `switch`, `rotator`, `observing_conditions`, and `dome` cover roster
-//! membership and connectivity status only (rp.md § Equipment Integration)
-//! — no MCP tool integration, unlike the other six kinds.
+//! `rotator` has its own tools, and `switch` its power tools through the
+//! power map ([`power`]); `observing_conditions` and `dome` cover roster
+//! membership and connectivity status only (rp.md § Equipment
+//! Integration).
+//!
+//! [`EntryRef`] names one entry of any kind, for the code that acts on
+//! an entry by its id alone: the reconnect supervisor's walk,
+//! `disconnect_device` and `connect_device`, and the power map.
 //!
 //! Every kind's connect routine is the shared one in [`binding`]:
 //! locate the device in the server's `configureddevices` list, hold it
@@ -34,6 +39,7 @@ pub mod filter_wheel;
 pub mod focuser;
 pub mod mount;
 pub mod observing_conditions;
+pub mod power;
 pub mod rotator;
 pub mod safety_monitor;
 pub mod session;
@@ -68,6 +74,14 @@ use crate::error::RpError;
 
 #[derive(Default)]
 pub struct EquipmentRegistry {
+    /// The observatory CA every device's Alpaca client trusts, for a
+    /// connect made after startup (`connect_device`).
+    pub ca_cert_path: Option<std::path::PathBuf>,
+    /// Taken by `set_switch` across its hold-out check and its write,
+    /// and by `connect_device` while it releases a hold-out, so no
+    /// device is connected between the check and the cut (rp.md § Power
+    /// Switching).
+    pub power: tokio::sync::Mutex<()>,
     pub cameras: Vec<CameraEntry>,
     pub filter_wheels: Vec<FilterWheelEntry>,
     pub cover_calibrators: Vec<CoverCalibratorEntry>,
@@ -99,6 +113,9 @@ pub struct EquipmentStatus {
 pub struct DeviceStatus {
     pub id: String,
     pub connected: bool,
+    /// Whether `disconnect_device` holds the entry out of the reconnect
+    /// supervisor (rp.md § Power Switching).
+    pub held_out: bool,
     /// The bound device's `DeviceName` as listed when the session was
     /// established; `None` while disconnected. A pinned entry's is
     /// re-checked every reconnect pass, an unpinned one's is not.
@@ -115,12 +132,14 @@ impl DeviceStatus {
     fn of<T: Device + ?Sized, M>(id: &str, session: &DeviceSession<T, M>) -> Self {
         let MountStatus {
             connected,
+            held_out,
             device_name,
             unique_id,
         } = MountStatus::of(session);
         Self {
             id: id.to_string(),
             connected,
+            held_out,
             device_name,
             unique_id,
         }
@@ -131,6 +150,9 @@ impl DeviceStatus {
 #[derive(Serialize)]
 pub struct MountStatus {
     pub connected: bool,
+    /// Whether `disconnect_device` holds the mount out of the reconnect
+    /// supervisor.
+    pub held_out: bool,
     /// The bound device's listed `DeviceName`; `None` while disconnected.
     pub device_name: Option<String>,
     /// The bound device's listed `UniqueID`; `None` while disconnected.
@@ -141,11 +163,12 @@ impl MountStatus {
     /// The connected flag and the bound identity, from one read of the
     /// session (a live session always holds its handle).
     fn of<T: Device + ?Sized, M>(session: &DeviceSession<T, M>) -> Self {
-        let identity = session.bound_identity();
+        let (identity, held_out) = session.bound_identity_and_hold_out();
         let connected = identity.is_some();
         let (device_name, unique_id) = identity.map(|i| (i.name, i.unique_id)).unzip();
         Self {
             connected,
+            held_out,
             device_name,
             unique_id,
         }
@@ -227,6 +250,8 @@ impl EquipmentRegistry {
         };
 
         Self {
+            ca_cert_path: ca_cert_path.map(std::path::Path::to_path_buf),
+            power: tokio::sync::Mutex::new(()),
             cameras,
             filter_wheels,
             cover_calibrators,
@@ -238,6 +263,37 @@ impl EquipmentRegistry {
             domes,
             mount,
         }
+    }
+
+    /// Every entry, in the reconnect supervisor's order: the imaging
+    /// chain (cameras, filter wheels, cover calibrators, focusers, safety
+    /// monitors), then switches, rotators, observing-conditions devices,
+    /// domes and the mount.
+    pub fn entries(&self) -> impl Iterator<Item = EntryRef<'_>> {
+        self.cameras
+            .iter()
+            .map(EntryRef::Camera)
+            .chain(self.filter_wheels.iter().map(EntryRef::FilterWheel))
+            .chain(self.cover_calibrators.iter().map(EntryRef::CoverCalibrator))
+            .chain(self.focusers.iter().map(EntryRef::Focuser))
+            .chain(self.safety_monitors.iter().map(EntryRef::SafetyMonitor))
+            .chain(self.switches.iter().map(EntryRef::Switch))
+            .chain(self.rotators.iter().map(EntryRef::Rotator))
+            .chain(
+                self.observing_conditions
+                    .iter()
+                    .map(EntryRef::ObservingConditions),
+            )
+            .chain(self.domes.iter().map(EntryRef::Dome))
+            .chain(self.mount.iter().map(EntryRef::Mount))
+    }
+
+    /// The entry `id` names: a roster id, or [`config::MOUNT_ID`] for the
+    /// mount. Roster ids are unique across kinds and none is the mount's
+    /// (rp.md § Power Switching), so at most one entry matches.
+    #[must_use]
+    pub fn entry(&self, id: &str) -> Option<EntryRef<'_>> {
+        self.entries().find(|entry| entry.id() == id)
     }
 
     #[must_use]
@@ -423,5 +479,129 @@ impl EquipmentRegistry {
             "mount-side site validation: configured site agrees with mount"
         );
         Ok(())
+    }
+}
+
+/// One entry of the registry, of any kind (see the module docs).
+#[derive(Clone, Copy)]
+pub enum EntryRef<'a> {
+    Camera(&'a CameraEntry),
+    FilterWheel(&'a FilterWheelEntry),
+    CoverCalibrator(&'a CoverCalibratorEntry),
+    Focuser(&'a FocuserEntry),
+    SafetyMonitor(&'a SafetyMonitorEntry),
+    Switch(&'a SwitchEntry),
+    Rotator(&'a RotatorEntry),
+    ObservingConditions(&'a ObservingConditionsEntry),
+    Dome(&'a DomeEntry),
+    Mount(&'a MountEntry),
+}
+
+/// Run `$body` with `$session` bound to the entry's session slot,
+/// whatever its kind: the slot's methods are generic, so one body
+/// serves every arm.
+macro_rules! with_session {
+    ($entry:expr, $session:ident => $body:expr) => {
+        match $entry {
+            $crate::equipment::EntryRef::Camera(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::FilterWheel(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::CoverCalibrator(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::Focuser(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::SafetyMonitor(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::Switch(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::Rotator(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::ObservingConditions(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::Dome(e) => {
+                let $session = &e.session;
+                $body
+            }
+            $crate::equipment::EntryRef::Mount(e) => {
+                let $session = &e.session;
+                $body
+            }
+        }
+    };
+}
+pub(crate) use with_session;
+
+impl<'a> EntryRef<'a> {
+    /// The kind as the reconnect supervisor and `equipment_changed`
+    /// name it (`camera`, `filter_wheel`, …, `mount`).
+    #[must_use]
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::Camera(_) => "camera",
+            Self::FilterWheel(_) => "filter_wheel",
+            Self::CoverCalibrator(_) => "cover_calibrator",
+            Self::Focuser(_) => "focuser",
+            Self::SafetyMonitor(_) => "safety_monitor",
+            Self::Switch(_) => "switch",
+            Self::Rotator(_) => "rotator",
+            Self::ObservingConditions(_) => "observing_conditions",
+            Self::Dome(_) => "dome",
+            Self::Mount(_) => "mount",
+        }
+    }
+
+    /// The id that names the entry: its roster id, or
+    /// [`config::MOUNT_ID`] for the mount.
+    #[must_use]
+    pub fn id(self) -> &'a str {
+        match self {
+            Self::Camera(e) => &e.id,
+            Self::FilterWheel(e) => &e.id,
+            Self::CoverCalibrator(e) => &e.id,
+            Self::Focuser(e) => &e.id,
+            Self::SafetyMonitor(e) => &e.id,
+            Self::Switch(e) => &e.id,
+            Self::Rotator(e) => &e.id,
+            Self::ObservingConditions(e) => &e.id,
+            Self::Dome(e) => &e.id,
+            Self::Mount(_) => config::MOUNT_ID,
+        }
+    }
+
+    /// The id an `equipment_changed` event carries: the roster id, or
+    /// `None` for the mount, whose `device` is `null`.
+    #[must_use]
+    pub fn event_id(self) -> Option<&'a str> {
+        match self {
+            Self::Mount(_) => None,
+            other => Some(other.id()),
+        }
+    }
+
+    #[must_use]
+    pub fn is_connected(self) -> bool {
+        with_session!(self, session => session.is_connected())
+    }
+
+    #[must_use]
+    pub fn is_held_out(self) -> bool {
+        with_session!(self, session => session.is_held_out())
     }
 }
