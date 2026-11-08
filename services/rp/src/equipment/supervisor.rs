@@ -374,10 +374,13 @@ where
 /// does.
 ///
 /// A held-out entry is not tried at all (rp.md § Power Switching). The
-/// check runs again once the entry's connect lock is taken, and the
-/// routine holds that lock throughout, so a `disconnect_device` waits
-/// for it; a hold-out that lands while the routine runs keeps the new
-/// session out of the slot's live state ([`DeviceSession::install`]).
+/// check runs again once the entry's connect lock is taken, and once
+/// more after the health check, so a hold-out that lands while
+/// `Connected` is read stops the pass before it reconnects. The routine
+/// holds the lock throughout, so a `disconnect_device` waits for it,
+/// and a hold-out that lands while the establish routine runs keeps the
+/// new session out of the slot's live state
+/// ([`DeviceSession::install`]).
 ///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
@@ -455,6 +458,13 @@ where
         );
     }
 
+    // A disconnect_device can hold the entry out while the health check
+    // reads; it has emitted the loss itself, and the entry is not to be
+    // reconnected.
+    if session.is_held_out() {
+        return Supervised::HeldOut;
+    }
+
     // rp's own record of the previous pass decides the budget, so no
     // driver's error code has to be trusted: a session live until this
     // pass gets the full routine, whose retries ride out a stall, and an
@@ -491,12 +501,20 @@ where
             }
             // One line at default verbosity per transition to
             // unreachable: a device switched off for the day is no
-            // fault, and logs nothing more until it answers again.
-            if was_connected {
+            // fault, and logs nothing more until it answers again. An
+            // entry a disconnect_device held out while the routine ran is
+            // not tried again, so it says only that the routine failed;
+            // its loss is still announced here, since the hold-out found
+            // the session already marked dead and emitted nothing.
+            if session.is_held_out() {
+                debug!(kind, id, error = %e, "device held out while it connected; the connect failed and the entry is not tried again until connect_device");
+            } else if was_connected {
                 info!(kind, id, error = %e, "device session lost and re-establish failed; trying once every pass, logged at debug, until it answers");
-                emit(event_bus, kind, id, false);
             } else {
                 debug!(kind, id, error = %e, "device still unavailable");
+            }
+            if was_connected {
+                emit(event_bus, kind, id, false);
             }
             Supervised::Failed(e.to_string())
         }
@@ -564,6 +582,11 @@ mod tests {
         /// When set, a `Connected = false` request parks forever: a
         /// driver whose close hangs, as a wedged camera's does.
         hang_disconnect: AtomicBool,
+        /// When set, the next `GET /connected` parks until the test
+        /// signals `release_probe`, then answers `connected` as it
+        /// stands by then. Counted in `hung_probes` while parked.
+        park_probe: AtomicBool,
+        release_probe: tokio::sync::Notify,
     }
 
     fn alpaca_ok(value: serde_json::Value) -> Json<serde_json::Value> {
@@ -622,6 +645,10 @@ mod tests {
                         if state.hang_connected.load(Ordering::SeqCst) {
                             state.hung_probes.fetch_add(1, Ordering::SeqCst);
                             std::future::pending::<()>().await;
+                        }
+                        if state.park_probe.swap(false, Ordering::SeqCst) {
+                            state.hung_probes.fetch_add(1, Ordering::SeqCst);
+                            state.release_probe.notified().await;
                         }
                         alpaca_ok(serde_json::json!(state.connected.load(Ordering::SeqCst)))
                     }
@@ -1228,10 +1255,6 @@ mod tests {
             .expect("supervisor task must not panic");
     }
 
-    /// One Alpaca server hosting every supported device kind at index
-    /// 0, each accepting `Connected = true`. The camera's invariant
-    /// property endpoints are deliberately absent — those reads degrade
-    /// to `None` per field, they never fail the session.
     /// A disconnect holds the entry out, closes the device, and from then
     /// on no pass health-checks or reconnects it.
     #[tokio::test]
@@ -1256,6 +1279,42 @@ mod tests {
         assert!(entry.is_held_out());
         assert!(!entry.is_connected());
         assert!(equipment.safety_monitors[0].device().is_none());
+    }
+
+    /// A hold-out that lands while the pass reads `Connected` stops the
+    /// pass from reconnecting the entry, even when the read then finds
+    /// the device disconnected: the only request the device gets is the
+    /// disconnect's own.
+    #[tokio::test]
+    async fn a_hold_out_during_a_health_check_stops_the_pass_reconnecting() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let calls = state.set_connected_calls.load(Ordering::SeqCst);
+        state.park_probe.store(true, Ordering::SeqCst);
+        let supervisor = supervisor_over(equipment.clone());
+        let pass = tokio::spawn(async move { supervisor.pass().await });
+        while state.hung_probes.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let held = equipment.clone();
+        let disconnect = tokio::spawn(async move {
+            let event_bus = EventBus::from_config(&[], None).unwrap();
+            let entry = held.entry("sm-under-test").unwrap();
+            disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await
+        });
+        while !equipment.entry("sm-under-test").unwrap().is_held_out() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        state.connected.store(false, Ordering::SeqCst);
+        state.release_probe.notify_one();
+        pass.await.unwrap();
+
+        assert_eq!(disconnect.await.unwrap(), Close::Closed);
+        assert_eq!(state.set_connected_calls.load(Ordering::SeqCst), calls + 1);
+        assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 1);
+        assert!(!state.connected.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1390,6 +1449,10 @@ mod tests {
         assert!(equipment.entry("unknown").is_none());
     }
 
+    /// One Alpaca server hosting every supported device kind at index
+    /// 0, each accepting `Connected = true`. The camera's invariant
+    /// property endpoints are deliberately absent — those reads degrade
+    /// to `None` per field, they never fail the session.
     fn all_kinds_router() -> Router {
         let kinds = [
             "Camera",
