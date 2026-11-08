@@ -63,16 +63,6 @@ async fn turn_cooler_on(world: &mut CameraWorld, _device: u32) {
     world.camera().set_cooler_on(true).await.unwrap();
 }
 
-#[when(regex = r"^I try to turn the cooler on for camera device (\d+)$")]
-async fn try_turn_cooler_on(world: &mut CameraWorld, _device: u32) {
-    world.last_error_code = world
-        .camera()
-        .set_cooler_on(true)
-        .await
-        .err()
-        .map(|e| e.code.raw());
-}
-
 /// The simulated cooler moves one step per `CCDTemperature` read, so the
 /// sensor is read until the TEC reports a drive — bounded, so a cooler that
 /// never engages fails here rather than hanging the scenario.

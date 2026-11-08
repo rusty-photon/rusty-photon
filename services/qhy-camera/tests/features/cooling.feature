@@ -11,11 +11,12 @@ Feature: Cooling
   A reading no sensor can have, below -273.15 or above 100 degrees Celsius
   or not a number, is a failed read and not a temperature: CCDTemperature
   answers INVALID_VALUE, as for a read the SDK refuses, and the camera stays
-  connected while it is still on the bus. SetCCDTemperature and CoolerOn,
-  which with no target set fall back to the reading, refuse it the same
-  way, leaving the cooler off (K2). The simulated QHY178M-Simulated camera
-  has a cooler, and while a temperature file the suite controls exists, its
-  sensor reads the number written in it.
+  connected while it is still on the bus. SetCCDTemperature, which with no
+  target set reads back the reading, refuses it the same way (K3). CoolerOn
+  with no target set takes the reading as its setpoint only within -100 to
+  80 degrees, and engages at 0 degrees for any other reading (K4). The
+  simulated QHY178M-Simulated camera has a cooler, and while a temperature
+  file the suite controls exists, its sensor reads the number written in it.
 
   Background:
     Given the qhy-camera service running with a simulated camera whose temperature reading the suite can set
@@ -82,8 +83,20 @@ Feature: Cooling
     And I try to read SetCCDTemperature from camera device 0
     Then the call is rejected with ASCOM INVALID_VALUE
 
-  Scenario: With no target set, a refused reading leaves the cooler off
-    When the sensor of camera device 0 reads -5005.8
-    And I try to turn the cooler on for camera device 0
-    Then the call is rejected with ASCOM INVALID_VALUE
-    And camera device 0 reports CoolerOn as false
+  Scenario Outline: With no target set, a reading that cannot be a setpoint engages the cooler at 0 degrees
+    When the sensor of camera device 0 reads <reading>
+    And I turn the cooler on for camera device 0
+    Then camera device 0 reports CoolerOn as true
+    And camera device 0 reports SetCCDTemperature as 0.0
+
+    Examples:
+      | reading |
+      | -5005.8 |
+      | -200.0  |
+      | 80.1    |
+
+  Scenario: With no target set, a reading on the edge of the setpoint band is the setpoint
+    When the sensor of camera device 0 reads -100.0
+    And I turn the cooler on for camera device 0
+    Then camera device 0 reports CoolerOn as true
+    And camera device 0 reports SetCCDTemperature as -100.0

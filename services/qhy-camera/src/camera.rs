@@ -2428,6 +2428,37 @@ fn sensor_temperature(handle: &dyn CameraHandle) -> ASCOMResult<f64> {
     Ok(celsius)
 }
 
+/// The readings `CoolerOn(true)` takes as its setpoint when no target has been
+/// set, in °C: a setpoint must be one `SetCCDTemperature` accepts (K3), and no
+/// thermoelectric cooler holds a sensor anywhere near −100 °C (K4).
+const READING_SETPOINT_C: RangeInclusive<f64> = -100.0..=80.0;
+
+/// The setpoint `CoolerOn(true)` engages at when no target has been set and the
+/// reading cannot be one (K4).
+const FALLBACK_SETPOINT_C: f64 = 0.0;
+
+/// The setpoint `CoolerOn(true)` engages at when no target has been set: the
+/// sensor's reading when it lies in [`READING_SETPOINT_C`], and
+/// [`FALLBACK_SETPOINT_C`] when the read fails or lands outside it (K4).
+///
+/// Refusing instead would fail a client that turns the cooler on before it
+/// sets a target, as `ConformU` does, and the reading is right far more often
+/// than not. A camera that has left the bus is still found out: the setpoint
+/// write that follows fails, and that failure asks C9's question.
+fn reading_setpoint(handle: &dyn CameraHandle) -> f64 {
+    match handle.current_temperature_celsius() {
+        Ok(celsius) if READING_SETPOINT_C.contains(&celsius) => celsius,
+        reading => {
+            warn!(
+                ?reading,
+                setpoint_c = FALLBACK_SETPOINT_C,
+                "no CCD temperature reading to engage the cooler at; engaging at the fallback setpoint"
+            );
+            FALLBACK_SETPOINT_C
+        }
+    }
+}
+
 /// This sensor's Bayer quad, or why it has none. Two SDK probes: colour at all,
 /// then which pattern.
 fn bayer_pattern(handle: &dyn CameraHandle) -> ASCOMResult<BayerPattern> {
@@ -3281,12 +3312,9 @@ impl Camera for QhyCameraDevice {
                     // the stored target — `set_manual_cooler_pwm`
                     // (`ControlType::ManualPWM`) instead pins a fixed duty cycle
                     // and does not regulate — falling back to the current CCD
-                    // temperature if SetCCDTemperature was never called, and
-                    // engaging nothing on a reading no sensor can have (K2).
-                    let target = match cached_target {
-                        Some(target) => target,
-                        None => sensor_temperature(h)?,
-                    };
+                    // temperature if SetCCDTemperature was never called, or to
+                    // a fixed setpoint when the reading cannot be one (K4).
+                    let target = cached_target.unwrap_or_else(|| reading_setpoint(h));
                     h.set_target_temperature_celsius(target)
                         .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
                     Ok(Some(target))
@@ -5644,20 +5672,59 @@ mod tests {
         );
     }
 
-    /// With no target commanded, `CoolerOn(true)` would regulate to the
-    /// reading (K4). A reading K2 refuses engages nothing: no setpoint reaches
-    /// the camera and the cooler reads off.
+    /// With no target commanded, `CoolerOn(true)` takes the reading as its
+    /// setpoint only inside [-100, 80] °C (K4). Any other reading — one K2
+    /// refuses, one a cooled sensor cannot read, or one the setter would
+    /// refuse — engages the cooler at 0 °C instead.
     #[tokio::test]
-    async fn cooler_on_without_a_target_engages_nothing_on_a_refused_reading() {
-        let mock = Arc::new(MockCameraHandle::default().with_param(ControlType::CurTemp, -5005.8));
+    async fn cooler_on_without_a_target_engages_at_0_c_when_the_reading_cannot_be_a_setpoint() {
+        for reading in [-5005.8, -200.0, -100.1, 80.1, 100.0, f64::NAN] {
+            let mock =
+                Arc::new(MockCameraHandle::default().with_param(ControlType::CurTemp, reading));
+            let device = QhyCameraDevice::new(mock.clone(), None);
+            device.set_connected(true).await.unwrap();
+
+            device.set_cooler_on(true).await.unwrap();
+
+            assert_eq!(mock.param(ControlType::Cooler), Some(0.0), "{reading}");
+            assert!(device.cooler_on().await.unwrap(), "{reading}");
+            assert_eq!(
+                device.set_ccd_temperature().await.unwrap(),
+                0.0,
+                "{reading}"
+            );
+        }
+    }
+
+    /// A read that fails leaves no reading to take, so the cooler engages at
+    /// 0 °C as well, and a camera still on the bus stays connected (K4).
+    #[tokio::test]
+    async fn cooler_on_without_a_target_engages_at_0_c_when_the_reading_fails() {
+        let mock = Arc::new(MockCameraHandle::default());
+        mock.fail_reads_of(ControlType::CurTemp);
         let device = QhyCameraDevice::new(mock.clone(), None);
         device.set_connected(true).await.unwrap();
 
-        let err = device.set_cooler_on(true).await.unwrap_err();
+        device.set_cooler_on(true).await.unwrap();
 
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-        assert_eq!(mock.param(ControlType::Cooler), None);
-        assert!(!device.cooler_on().await.unwrap());
+        assert_eq!(mock.param(ControlType::Cooler), Some(0.0));
+        assert!(device.connected().await.unwrap());
+    }
+
+    /// The band is inclusive: a reading on either edge is still taken as the
+    /// setpoint (K4).
+    #[tokio::test]
+    async fn the_edges_of_the_setpoint_band_are_taken_as_the_setpoint() {
+        for reading in [-100.0, 80.0] {
+            let mock =
+                Arc::new(MockCameraHandle::default().with_param(ControlType::CurTemp, reading));
+            let device = QhyCameraDevice::new(mock.clone(), None);
+            device.set_connected(true).await.unwrap();
+
+            device.set_cooler_on(true).await.unwrap();
+
+            assert_eq!(mock.param(ControlType::Cooler), Some(reading));
+        }
     }
 
     /// A commanded target needs no reading, so a refused one leaves both the
