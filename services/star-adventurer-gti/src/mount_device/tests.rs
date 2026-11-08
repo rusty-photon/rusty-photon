@@ -7381,7 +7381,7 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
     aborted.dismiss();
     d.slew_in_progress.clear();
     let _next = d.slew_in_progress.try_claim().unwrap();
-    let from = mock.lock().await.command_log.len();
+    let w = SpawnedWatcher::before_spawn(&d, &mock).await;
     spawn_slew_completion_watcher(
         SlewWatchCtx {
             state: Arc::clone(&d.state),
@@ -7397,9 +7397,9 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
     )
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    until_watcher_ends(&d, &w).await;
     assert_eq!(
-        setter_frames_since(&*mock.lock().await, from),
+        setter_frames_since(&*mock.lock().await, w.from),
         Vec::<String>::new(),
         "the aborted slew's watcher moved the mount"
     );
@@ -7602,10 +7602,30 @@ async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
     assert!(!d.at_park().await.unwrap());
 }
 
+/// A watcher spawned on a device, as what stood just before the spawn.
+struct SpawnedWatcher {
+    /// Where the mock's log stood.
+    from: usize,
+    /// How many holders the device's session slot had; see
+    /// [`watcher_ended`].
+    idle_holders: usize,
+}
+
+impl SpawnedWatcher {
+    /// What stands on `d` and `mock` now, taken just before a watcher is
+    /// spawned on `d`.
+    async fn before_spawn(d: &MountDevice, mock: &SharedMock) -> Self {
+        Self {
+            from: mock.lock().await.command_log.len(),
+            idle_holders: Arc::strong_count(&d.session),
+        }
+    }
+}
+
 /// A slew watcher on `d` with its target far from the stopped axes, so
 /// that once `MIN_SLEW_DWELL` has passed on the wall clock it starts a
-/// pickup. Returns where the mock's log stood before it was spawned.
-async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize {
+/// pickup.
+async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> SpawnedWatcher {
     let lst = d.sidereal_time().await.unwrap();
     {
         let mut s = d.state.write().await;
@@ -7613,18 +7633,41 @@ async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize
         s.target_dec_degrees = Some(30.0);
         s.target_pier_side = Some(PierSide::West);
     }
-    let from = mock.lock().await.command_log.len();
+    let w = SpawnedWatcher::before_spawn(d, mock).await;
     spawn_claimed_slew_watcher(d).await;
-    from
+    w
 }
 
-/// Wait until the watcher's first pickup iteration after `from` has
+/// Whether the watcher `w` on `d` has ended. It holds clones of the
+/// device's session slot until it returns, after its last frame, so the
+/// slot is back to the holders it had before the spawn: the device, and
+/// the tracking guard and power watch that hold clones of it until a
+/// disconnect, which these tests do not make. Not the slew slot:
+/// `AbortSlew` empties that while the watcher runs on.
+fn watcher_ended(d: &MountDevice, w: &SpawnedWatcher) -> bool {
+    Arc::strong_count(&d.session) <= w.idle_holders
+}
+
+/// Wait until the watcher `w` on `d` has ended (see [`watcher_ended`]).
+/// Fails the test after thirty seconds rather than hanging; the bound
+/// only guards a hang.
+async fn until_watcher_ends(d: &MountDevice, w: &SpawnedWatcher) {
+    let ended = async {
+        while !watcher_ended(d, w) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let found = tokio::time::timeout(Duration::from_secs(30), ended).await;
+    assert!(found.is_ok(), "the watcher was still running after 30 s");
+}
+
+/// Wait until the first pickup iteration of the watcher `w` on `d` has
 /// sent all its frames: the next iteration's `:K1` is logged, or the
-/// watcher has ended (emptying the slew slot is its last act). Fails
-/// the test after thirty seconds rather than hanging when neither
-/// comes; the bound only guards a hang, so it is far above the dwell
-/// and the dozen exchanges an iteration takes.
-async fn until_first_pickup_ends(d: &MountDevice, mock: &SharedMock, from: usize) {
+/// watcher has ended (see [`watcher_ended`]). Fails the test after
+/// thirty seconds rather than hanging when neither comes; the bound
+/// only guards a hang, so it is far above the dwell and the dozen
+/// exchanges an iteration takes.
+async fn until_first_pickup_ends(d: &MountDevice, mock: &SharedMock, w: &SpawnedWatcher) {
     let ended = async {
         loop {
             let stops = mock
@@ -7632,10 +7675,10 @@ async fn until_first_pickup_ends(d: &MountDevice, mock: &SharedMock, from: usize
                 .await
                 .command_log
                 .iter()
-                .skip(from)
+                .skip(w.from)
                 .filter(|f| f.starts_with(b":K1"))
                 .count();
-            if stops >= 2 || !d.slew_in_progress.is_held() {
+            if stops >= 2 || watcher_ended(d, w) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -7651,11 +7694,11 @@ async fn an_abort_while_a_pickup_stops_its_axes_starts_no_pickup() {
     // The abort lands on the pickup's first stop, inside its stop waits
     // and before the starts take the axes.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    until_logged(&mock, from, b":K1").await;
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_logged(&mock, w.from, b":K1").await;
     d.abort_slew().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    until_watcher_ends(&d, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     assert!(
         !frames.iter().any(|f| f.starts_with(":G")),
         "a pickup started after the abort: {frames:?}"
@@ -7671,9 +7714,9 @@ async fn a_pickup_starts_no_goto_on_an_axis_it_could_not_stop() {
         letter: b'K',
         fault: Fault::MountError(2),
     });
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    until_first_pickup_ends(&d, &mock, from).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_first_pickup_ends(&d, &mock, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     // The first pickup iteration, up to the next one's `:K1`; the next
     // retries RA, as it should.
     let next = frames
@@ -7816,15 +7859,15 @@ async fn a_pickup_ends_the_slew_when_an_axis_restarts_during_its_stops() {
     // on its Dec stop: no pickup goto may go out against it, and the
     // watcher must not wait on an axis that tracks on.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    until_logged(&mock, from, b":K2").await;
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_logged(&mock, w.from, b":K2").await;
     {
         let mut m = mock.lock().await;
         m.ra.mode = skywatcher_motor_protocol::ModeKind::Tracking;
         m.ra.running = true;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    until_watcher_ends(&d, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     assert!(
         !frames.iter().any(|f| f.starts_with(":G")),
         "a pickup goto went out against a running axis: {frames:?}"
