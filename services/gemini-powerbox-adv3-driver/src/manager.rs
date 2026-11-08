@@ -273,8 +273,11 @@ fn build_hooks(
 }
 
 /// Whether a failed `>H#` is one the retry covers: no `*H` reply inside the
-/// timeout, or only frames without the prefix. A port that errored or a
-/// frame that will not decode is not.
+/// timeout, or only frames without the prefix. A port that errored is not.
+/// A frame that does not decode never ends `>H#`: the codec has it skipped
+/// like a frame without the prefix ([`GeminiCodec::skip_undecodable`]), so
+/// a garbled reply comes out here as the timeout or the exhausted budget
+/// that follows it.
 const fn is_no_identity_reply(err: &SessionError<GeminiCodecError>) -> bool {
     matches!(
         err,
@@ -614,6 +617,27 @@ mod tests {
             started.elapsed() >= IDENTITY_RETRY_DELAY,
             "the retry waits the vendor's 2 s: elapsed {:?}",
             started.elapsed()
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_garbled_identity_reply_and_then_silence_is_asked_once_more() {
+        // The garbled frame is skipped, the request reads on into the
+        // silence, and the timeout draws the retry as silence alone does.
+        let factory = Arc::new(
+            MockGeminiTransportFactory::default()
+                .with_line_noise(b"*H\xffGeminiPowerBoxPlusAdv3#")
+                .with_ignored_first_identity(),
+        );
+        let manager = make_manager_with(dyn_factory(&factory));
+
+        let session = manager.transport().acquire().await.unwrap();
+
+        assert_eq!(
+            factory.sent_commands().await,
+            [">H#", ">H#", ">V#", ">G#"],
+            "one retry, then the rest of the handshake"
         );
         session.close().await.unwrap();
     }

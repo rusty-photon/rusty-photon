@@ -298,6 +298,14 @@ observation; the drivers' claims it confirms or contradicts are named.
   Manual on a unit nobody has changed — from the moment the hub powers up
   until some client changes it.** That is a property of the hub, not of
   this driver, and the operator needs to know it.
+- **A frame that is not text, once.** At the driver's first start on
+  2026-11-03, with the hub streaming since an earlier session, a chunk
+  read while the first `>H#` waited carried a byte that is not UTF-8 at
+  its third position. Its bytes were not logged; a start a moment later,
+  on the same port with nothing else holding it, read every reply clean.
+  Line noise as the port opens and a streamed frame the open garbled are
+  the candidates, and neither has been reproduced deliberately. The
+  handshake skips such a frame ([Handshake](#handshake)).
 
 ### Sources
 
@@ -556,6 +564,16 @@ state; the driver reports it and changes nothing.
    with the skipped frames in the `wire recv` trace log. The guard matters
    because every Gemini CH340 device enumerates identically
    ([Device identity](#device-identity)).
+   A frame that does not decode while `>H#` waits — a byte after its `*`
+   that is not text, or a `*G` frame that does not parse — is skipped
+   the same way, its bytes and the decode error in a `debug!` event.
+   This is the first request after the port opens, so line noise as it
+   opens, or a streamed frame the open garbled, lands here
+   ([observed once](#what-the-wire-actually-does)). Skipping the frame
+   lets the request read on to a reply behind it, and costs nothing when
+   the garbled frame was the reply itself: the request then times out,
+   and the timeout draws the retry below, as silence does. A frame that
+   decodes as another device's identity is still refused by name.
    If no `*H` reply arrives within `serial.timeout`, the driver waits 2 s
    and sends `>H#` once more before failing — the vendor driver's flat 2 s
    post-open sleep, spent only when needed. The dev box's unit answers at
@@ -602,14 +620,22 @@ that was mid-flight when the buffer was cleared (it does not start with
 discard, and a frame the hub cut short to answer, which arrives glued to
 the reply in one chunk ([measured](#what-the-wire-actually-does)). The
 codec takes the reply from the last `*` in the chunk and sorts it by its
-letter. `*G`, `*H` and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
-of sequence, a wrong digit count, a bad number — is a `ParseError`: the
-request fails at once, the cache is untouched, and nothing reconnects,
-because the shared crate treats a codec error as the device's answer, not
-as a lost link. Anything else — a frame without a leading `*`, or a `*`
-with another letter — decodes into an `Unrelated` response rather than an
-error, and `matches` rejects `Unrelated` and any `*G` frame when the
-request was not for one, so the request loop skips it. `max_skip` is 2.
+letter. Only the reply is read as text: the bytes ahead of that `*` — a
+cut frame, or noise as the port opens — are never decoded, so a byte
+there that is not text costs nothing. `*G`, `*H` and `*V` are parsed. A
+reply with a byte after its `*` that is not text is an
+`InvalidResponse`, and a `*G` frame that fails to parse — a tag out of
+sequence, a wrong digit count, a bad number — is a `ParseError`. Either
+way the request fails at once, the cache is untouched, and nothing
+reconnects, because the shared crate treats a codec error as the
+device's answer, not as a lost link. The one exception is `>H#`, which
+skips such a frame instead ([Handshake](#handshake)): the codec names it
+through `Codec::skip_undecodable`, whose default, off, every other
+request keeps. Anything else — a frame without a leading `*`, whatever
+its bytes, or a `*` with another letter — decodes into an `Unrelated`
+response rather than an error, and `matches` rejects `Unrelated` and any
+`*G` frame when the request was not for one, so the request loop skips
+it. `max_skip` is 2.
 A malformed reply therefore costs one failed request, never a 3 s wait
 for the next periodic frame and the reconnect that a 2 s timeout would
 bring.
@@ -835,10 +861,12 @@ its first start.
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
+| A frame that does not decode while `>H#` waits — a byte after its `*` that is not text, or a `*G` frame that does not parse | Skipped under the skip budget (2), its bytes and the decode error in a `debug!` event; the request reads on to its `*H` reply, or times out into the retry above. |
+| A reply with a byte after its `*` that is not text while `>V#`, `>G#` or a set waits | `InvalidResponse`; the request fails at once, as a `*G` frame that does not parse does. |
 | `>V#` below 308 | Connect refused, naming the version and the vendor's `FirmwareUpgradeTool`. |
 | `>V#` is 308 | Connects; a `debug!` notes that 309 fixes DS18B20 detection. |
 | `*G` frame with a tag out of sequence, a wrong digit count, or an unparseable number | `ParseError` naming the field; cache untouched; the request fails and the poll goes on. |
-| Frame not starting with `*` (a discarded frame's tail) or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
+| Frame not starting with `*` (a discarded frame's tail, or noise as the port opens), whatever its bytes, or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
 | Skip budget exhausted | The request fails as a communication error; the cache is untouched. |
 | `>G#` unanswered within `serial.timeout` | Transport timeout; the shared supervisor reconnects with the read-only handshake. |
 | Write to `DC1` | `NOT_IMPLEMENTED` (CanWrite false). |
@@ -888,7 +916,7 @@ binary spawned with `--features mock`, unit tests inline in `src/`.
 
 | Design section | Feature file | Covers |
 |----------------|--------------|--------|
-| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry |
+| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry; line noise during `>H#` — bytes that are not text glued to the reply or framed on their own, a streamed frame that is not text or does not parse — leaves the start unharmed |
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
 | Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; a readback that predates the set, rescued by the second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
@@ -936,6 +964,7 @@ Knobs reaching state the driver cannot set:
 | `GEMINI_MOCK_STREAMING_AT_START` | `1`: the hub is streaming when the port opens, as a unit left armed by an earlier session is |
 | `GEMINI_MOCK_CUT_FRAMES` | `1`: once armed, every reply arrives glued to a periodic frame cut short after 63 bytes, as measured |
 | `GEMINI_MOCK_PRE_WRITE_FRAME` | `1`: every set is answered first by the frame the hub started before acting on it, then by the post-set frame — the second look's rescue |
+| `GEMINI_MOCK_LINE_NOISE` | bytes on the line ahead of the hub's first reply, `%XX` for a byte given in hex — noise as the port opens, or a streamed frame the open garbled. They are framed at each `#` as the serial transport frames them, so bytes after the last `#` arrive glued to the front of the reply |
 
 Each is read once at mock construction; the in-process `with_…` builders
 are the unit-test equivalents. The knobs fix the sensor flags for the run,

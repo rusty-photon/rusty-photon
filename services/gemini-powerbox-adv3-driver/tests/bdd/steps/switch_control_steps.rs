@@ -22,6 +22,7 @@ const ENV_STUCK_OUTPUT: &str = "GEMINI_MOCK_STUCK_OUTPUT";
 const ENV_PRE_WRITE_FRAME: &str = "GEMINI_MOCK_PRE_WRITE_FRAME";
 const ENV_STREAMING_AT_START: &str = "GEMINI_MOCK_STREAMING_AT_START";
 const ENV_CUT_FRAMES: &str = "GEMINI_MOCK_CUT_FRAMES";
+const ENV_LINE_NOISE: &str = "GEMINI_MOCK_LINE_NOISE";
 
 /// Resolve a feature file's wording for a hub preset to the mock's
 /// environment (testing.md §3.4): the feature says what the hub is like,
@@ -34,6 +35,14 @@ const ENV_CUT_FRAMES: &str = "GEMINI_MOCK_CUT_FRAMES";
 pub fn preset_env(phrase: &str) -> Vec<(&'static str, String)> {
     if let Some(firmware) = phrase.strip_prefix("firmware ") {
         return vec![(ENV_FIRMWARE, firmware.to_string())];
+    }
+    // `"<bytes>" on the line ahead of the identity reply`, the bytes as the
+    // mock's knob spells them: `%XX` for a byte that is not text.
+    if let Some(noise) = phrase
+        .strip_suffix("\" on the line ahead of the identity reply")
+        .and_then(|quoted| quoted.strip_prefix('"'))
+    {
+        return vec![(ENV_LINE_NOISE, noise.to_string())];
     }
     if phrase == "a hub still streaming from an earlier session and cutting frames short to answer"
     {
