@@ -4,6 +4,7 @@ use ascom_alpaca::api::camera::SensorType;
 use ascom_alpaca::api::Camera;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -196,8 +197,9 @@ pub(crate) fn optional_read<T, E: std::fmt::Display>(
 pub(super) async fn establish_camera(
     config: &config::CameraConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<(Arc<dyn Camera>, CameraInvariants), EstablishError> {
-    let cam = establish_listed(config, ca_cert_path).await?;
+    let cam = establish_listed(config, ca_cert_path, budget).await?;
 
     // The Alpaca device is now Connected — the driver name and the
     // camera-model properties below are invariant for the life of the
@@ -241,7 +243,7 @@ pub(super) async fn connect_camera(
 ) -> CameraEntry {
     debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
 
-    match establish_camera(config, ca_cert_path).await {
+    match establish_camera(config, ca_cert_path, ConnectBudget::Full).await {
         Ok((cam, invariants)) => {
             debug!(
                 camera_id = %config.id,
@@ -771,7 +773,9 @@ mod tests {
             attempts.clone(),
         ))
         .await;
-        let Err(error) = establish_camera(&camera_config_for(&stub.url()), None).await else {
+        let Err(error) =
+            establish_camera(&camera_config_for(&stub.url()), None, ConnectBudget::Full).await
+        else {
             panic!("a placeholder connected");
         };
         assert!(!error.is_identity_refusal(), "{error}");
