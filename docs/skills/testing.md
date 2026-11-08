@@ -676,6 +676,19 @@ submitted and read as a browser would (`dom::textarea`), so a driver whose
 page edits a list of lines — `qhy-camera`'s wheel pages, its filter names —
 drives it with its own steps on the same submit.
 
+**Restart on request (the `setup-pages` feature too)** — the shared steps
+behind every ASCOM driver's `restart.feature`
+([rusty-photon-service-lifecycle.md § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)):
+`ServiceRestartState` + `ServiceRestartWorld` + `service_restart_steps!` in
+`bdd_infra::service_restart`. The World embeds the state, implements the
+trait (the state and the running service's `ServiceHandle`), and invokes
+the macro in its `restart_steps.rs`; the feature starts the service with the
+suite's own steps, asks it to restart, and checks the `202` naming its own
+process and the exit with code 75, read through
+`ServiceHandle::wait_exit`. No service manager runs under test, so nothing
+starts the service again. `ppba-driver`'s suite is the reference.
+
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or
 `:bdd-infra_rp_harness_tls_auth` when the suite also spawns rp.

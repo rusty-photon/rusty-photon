@@ -62,6 +62,7 @@ pub struct Upbv2World {
 
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
     /// The TLS + auth fixture the setup-page credential scenario starts
     /// the service through.
     pub tls_auth: TlsAuthState,
@@ -80,6 +81,16 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for Upbv2World {
 impl SetupPagesWorld for Upbv2World {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for Upbv2World {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.upbv2.as_mut().expect("the service was not started")
     }
 }
 

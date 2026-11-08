@@ -604,4 +604,28 @@ impl<'a> EntryRef<'a> {
     pub fn is_held_out(self) -> bool {
         with_session!(self, session => session.is_held_out())
     }
+
+    /// The `alpaca_url` of the service that serves the entry's device.
+    #[must_use]
+    pub fn alpaca_url(self) -> &'a str {
+        self.address().alpaca_url
+    }
+
+    /// What the entry's config says about its device: its server, its
+    /// number there and its credential.
+    fn address(self) -> binding::RosterAddress<'a> {
+        use binding::RosterEntry;
+        match self {
+            Self::Camera(e) => e.config.address(),
+            Self::FilterWheel(e) => e.config.address(),
+            Self::CoverCalibrator(e) => e.config.address(),
+            Self::Focuser(e) => e.config.address(),
+            Self::SafetyMonitor(e) => e.config.address(),
+            Self::Switch(e) => e.config.address(),
+            Self::Rotator(e) => e.config.address(),
+            Self::ObservingConditions(e) => e.config.address(),
+            Self::Dome(e) => e.config.address(),
+            Self::Mount(e) => e.config.address(),
+        }
+    }
 }

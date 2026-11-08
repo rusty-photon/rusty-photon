@@ -547,6 +547,13 @@ outputs at dusk and dawn through rp's switch tools. This driver
 that belongs in a session-runner document, not in any connect or
 supervisory path here (tenet 3).
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## What the wire actually does
 
 Answered by a read-only probe of rig2's unit

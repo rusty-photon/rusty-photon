@@ -221,6 +221,20 @@ pub(super) fn build_alpaca_client(
     auth: Option<&ClientAuthConfig>,
     ca_cert_path: Option<&std::path::Path>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Client::new_with_client(
+        url,
+        http_client(auth, ca_cert_path)?,
+    )?)
+}
+
+/// The HTTP client behind every request `rp` sends a driver service: its
+/// user agent, the timeouts of [`build_alpaca_client`], the device's Basic
+/// Auth credential, and trust in the observatory CA. A driver's restart
+/// request (rp.md § Power Switching) goes through one too.
+pub(super) fn http_client(
+    auth: Option<&ClientAuthConfig>,
+    ca_cert_path: Option<&std::path::Path>,
+) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = rusty_photon_tls::client::client_builder(ca_cert_path)?
         .user_agent("rusty-photon-rp")
         .connect_timeout(ALPACA_CONNECT_TIMEOUT)
@@ -237,7 +251,7 @@ pub(super) fn build_alpaca_client(
         headers.insert("authorization", header_value);
         builder = builder.default_headers(headers);
     }
-    Ok(Client::new_with_client(url, builder.build()?)?)
+    Ok(builder.build()?)
 }
 
 #[cfg(test)]

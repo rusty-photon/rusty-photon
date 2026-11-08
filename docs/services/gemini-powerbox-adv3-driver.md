@@ -906,6 +906,13 @@ supervisory path here — the same boundary
 [`upbv2-driver`](upbv2-driver.md#relationship-to-the-daily-power-cycle-plan)
 draws.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## Testing
 
 Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:

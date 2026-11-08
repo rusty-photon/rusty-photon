@@ -1,10 +1,12 @@
 //! Power tool category: `disconnect_device`, `connect_device`,
-//! `get_switch`, `set_switch` (rp.md § Power Switching).
+//! `get_switch`, `set_switch`, `restart_service` (rp.md § Power
+//! Switching).
 //!
 //! The first two hold a device out of the reconnect supervisor and give
-//! it back ([`crate::equipment::supervisor`] does the work); the other
+//! it back ([`crate::equipment::supervisor`] does the work); the next
 //! two read and switch a power box's outputs through the power map on
-//! its `switches[]` entry ([`crate::equipment::power`]).
+//! its `switches[]` entry ([`crate::equipment::power`]); the last has a
+//! held-out device's driver service restart.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -237,6 +239,69 @@ impl McpHandler {
             "switch_id": params.switch_id,
             "output": params.output,
             "on": on,
+        }))
+    }
+
+    #[tool(
+        description = "Have the driver service that serves a device restart, so it meets the device in a fresh process. Every device rp has on the service (the device's alpaca_url scheme, host and port) must be held out by disconnect_device. Waits up to 60 s for the service's new process to answer. Returns device_id, service, devices and restart (restarted | timed_out)"
+    )]
+    pub(crate) async fn restart_service(
+        &self,
+        Parameters(params): Parameters<DeviceIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(entry) = self.equipment.entry(&params.device_id) else {
+            return Ok(tool_error!("device not found: {}", params.device_id));
+        };
+        let service = match power::service_of(entry.alpaca_url()) {
+            Ok(service) => service,
+            Err(e) => return Ok(tool_error!("device {}: {e}", entry.id())),
+        };
+        let on_service: Vec<EntryRef<'_>> = self
+            .equipment
+            .entries()
+            .filter(|e| power::service_of(e.alpaca_url()).is_ok_and(|s| s == service))
+            .collect();
+        let client = match power::restart_client(entry, self.equipment.ca_cert_path.as_deref()) {
+            Ok(client) => client,
+            Err(e) => return Ok(tool_error!("device {}: {e}", entry.id())),
+        };
+        let old = {
+            // Held from the hold-out check through the request, so no
+            // connect_device can give a device on the service back to rp
+            // in between (rp.md § Power Switching).
+            let _power = self.equipment.power.lock().await;
+            let in_hands: Vec<&str> = on_service
+                .iter()
+                .filter(|e| !e.is_held_out())
+                .map(|e| e.id())
+                .collect();
+            if !in_hands.is_empty() {
+                return Ok(tool_error!(
+                    "the service at {service} serves devices rp has not disconnected: {}; \
+                     disconnect each with disconnect_device before restarting it",
+                    in_hands.join(", ")
+                ));
+            }
+            match power::request_restart(&client, &service).await {
+                Ok(old) => old,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
+        };
+        let restart = power::await_restart(
+            &client,
+            &service,
+            &old,
+            power::RESTART_POLL,
+            power::RESTART_DEADLINE,
+        )
+        .await;
+        info!(%service, restart = restart.as_str(), "restarted a driver service");
+        let devices: Vec<&str> = on_service.iter().map(|e| e.id()).collect();
+        Ok(tool_success!({
+            "device_id": entry.id(),
+            "service": service,
+            "devices": devices,
+            "restart": restart.as_str(),
         }))
     }
 }

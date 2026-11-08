@@ -123,11 +123,13 @@ compile_error!(
 
 mod logging;
 mod reload;
+mod restart;
 mod runner;
 mod shutdown;
 
 pub use logging::{init_service_tracing, init_tracing, TracingGuard};
 pub use reload::ReloadSignal;
+pub use restart::{Restart, RESTART_CLOSE_DEADLINE, RESTART_EXIT_CODE};
 pub use runner::{
     is_scm_service, report_from_boxed, RunError, RunResult, ServiceResult, ServiceRunner,
 };

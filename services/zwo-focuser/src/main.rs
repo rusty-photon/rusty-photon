@@ -144,13 +144,15 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
 
                 let builder = ServerBuilder::new()
                     .with_config(config)
                     .with_config_source(config_path.clone(), overrides.clone())
-                    .with_reload_signal(reload.clone());
+                    .with_reload_signal(reload.clone())
+                    .with_restart(restart.clone());
 
                 #[cfg(feature = "simulation")]
                 let builder = builder

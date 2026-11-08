@@ -7,4 +7,5 @@ pub mod exposure_survey_steps;
 pub mod exposure_validation_steps;
 pub mod follow_mode_steps;
 pub mod pointing_api_steps;
+pub mod restart_steps;
 pub mod setup_pages_steps;

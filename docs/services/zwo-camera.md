@@ -2156,6 +2156,13 @@ fn main() -> ServiceResult {
 `info!("Service started successfully …")` only after the bind succeeds; everything
 else is `debug!` (CLAUDE.md Rule 9).
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ---
 
 ## Testing

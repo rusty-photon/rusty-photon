@@ -337,6 +337,13 @@ The CoverCalibrator is the only device this server registers, so the
 refcount tops out at `1` in normal use. The pattern is preserved so the
 service can later expose a Switch device (heater control) without redesign.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## Configuration
 
 ```jsonc

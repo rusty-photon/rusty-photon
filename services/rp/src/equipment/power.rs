@@ -5,10 +5,163 @@
 //! reading the names of its switches, and the refusals `set_switch`
 //! makes come from the map and the registry's hold-outs alone. The MCP
 //! tools in `mcp/built_in/power.rs` put the two together.
+//!
+//! A driver service's restart (`restart_service`) is here too: the
+//! service a device's `alpaca_url` names, the request, and the wait for
+//! the service's next process
+//! (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
+
+use std::time::Duration;
 
 use ascom_alpaca::api::Switch;
+use reqwest::StatusCode;
+use serde::Deserialize;
 
+use super::EntryRef;
 use crate::config::{OutputConfig, SwitchConfig};
+
+/// The path a driver service takes a restart request on.
+const RESTART_PATH: &str = "/service/v1/restart";
+
+/// The path that names the process serving a driver service.
+const INSTANCE_PATH: &str = "/service/v1/instance";
+
+/// How often `restart_service` asks the service which process answers.
+pub const RESTART_POLL: Duration = Duration::from_millis(500);
+
+/// How long `restart_service` waits for the service's next process.
+///
+/// It covers the service manager's restart delay (up to 10 s), the old
+/// process's close deadline (10 s), and the new process's start, a serial
+/// driver's eager handshake included.
+pub const RESTART_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long one read of the serving process may take, so a stalled
+/// connection to a process on its way out costs one poll, not the wait.
+const INSTANCE_READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What a driver service's restart routes answer with.
+#[derive(Debug, Deserialize)]
+struct Instance {
+    instance: String,
+}
+
+/// How a restart ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restarted {
+    /// Another process answers.
+    Restarted,
+    /// No other process answered before the deadline.
+    TimedOut,
+}
+
+impl Restarted {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Restarted => "restarted",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+/// The service that serves a device: the scheme, host and port of its
+/// `alpaca_url`.
+///
+/// # Errors
+///
+/// A message naming the URL when it does not parse or names no host.
+pub fn service_of(alpaca_url: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(alpaca_url)
+        .map_err(|e| format!("alpaca_url {alpaca_url:?} does not parse: {e}"))?;
+    let origin = url.origin();
+    if !origin.is_tuple() {
+        return Err(format!("alpaca_url {alpaca_url:?} names no host"));
+    }
+    Ok(origin.ascii_serialization())
+}
+
+/// The HTTP client a restart request to `entry`'s service goes through:
+/// the entry's credential and the observatory CA.
+///
+/// # Errors
+///
+/// The reason as text, when the CA file cannot be read.
+pub fn restart_client(
+    entry: EntryRef<'_>,
+    ca_cert_path: Option<&std::path::Path>,
+) -> Result<reqwest::Client, String> {
+    super::alpaca::http_client(entry.address().auth, ca_cert_path).map_err(|e| e.to_string())
+}
+
+/// Ask `service` to restart, returning the id of the process that
+/// restarts.
+///
+/// # Errors
+///
+/// A message naming the service when it does not answer, takes no
+/// restart requests, or refuses this one.
+pub async fn request_restart(client: &reqwest::Client, service: &str) -> Result<String, String> {
+    let response = client
+        .post(format!("{service}{RESTART_PATH}"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| format!("the service at {service} did not answer the restart request: {e}"))?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+        return Err(format!(
+            "the service at {service} takes no restart requests (it answers {status})"
+        ));
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "the service at {service} refused the restart request: {status} {body}"
+        ));
+    }
+    let instance = response.json::<Instance>().await.map_err(|e| {
+        format!(
+            "the service at {service} took the restart request, but its answer does not read: {e}"
+        )
+    })?;
+    Ok(instance.instance)
+}
+
+/// Wait for a process other than `old` to answer for `service`, asking
+/// every `poll`, for at most `deadline`. A read that fails, as it does
+/// while no process listens, counts as no answer.
+pub async fn await_restart(
+    client: &reqwest::Client,
+    service: &str,
+    old: &str,
+    poll: Duration,
+    deadline: Duration,
+) -> Restarted {
+    let url = format!("{service}{INSTANCE_PATH}");
+    let wait = async {
+        loop {
+            tokio::time::sleep(poll).await;
+            let answer = client
+                .get(&url)
+                .timeout(INSTANCE_READ_TIMEOUT)
+                .send()
+                .await
+                .ok()
+                .filter(|response| response.status().is_success());
+            let Some(response) = answer else { continue };
+            if let Ok(instance) = response.json::<Instance>().await {
+                if instance.instance != old {
+                    return;
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(deadline, wait).await {
+        Ok(()) => Restarted::Restarted,
+        Err(_) => Restarted::TimedOut,
+    }
+}
 
 /// One switch of a power box, as `get_switch` reports it.
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +366,113 @@ mod tests {
     fn switching_on_ignores_the_devices_still_connected() {
         let config = power_box();
         assert!(switchable(&config, "Quad 12V Output", true, |_| false).is_ok());
+    }
+
+    #[test]
+    fn a_service_is_the_scheme_host_and_port_of_its_url() {
+        assert_eq!(
+            service_of("https://pier1.example:11112/").unwrap(),
+            "https://pier1.example:11112"
+        );
+        assert_eq!(
+            service_of("http://127.0.0.1:11121").unwrap(),
+            service_of("http://127.0.0.1:11121/api").unwrap()
+        );
+        assert!(service_of("not a url").is_err());
+        assert!(service_of("file:///tmp/x").is_err());
+    }
+
+    /// A stub driver service that answers a restart request with
+    /// `restart_status`, and whose `GET /service/v1/instance` names `old`
+    /// until `flip_after` reads have been served, then `new` (never, for
+    /// `None`).
+    async fn restart_stub(
+        restart_status: axum::http::StatusCode,
+        flip_after: Option<usize>,
+    ) -> crate::equipment::test_support::AlpacaStub {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use axum::routing::{get, post};
+        use axum::{Json, Router};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                RESTART_PATH,
+                post(move || async move {
+                    (
+                        restart_status,
+                        Json(serde_json::json!({ "instance": "old" })),
+                    )
+                }),
+            )
+            .route(
+                INSTANCE_PATH,
+                get(move || {
+                    let reads = Arc::clone(&reads);
+                    async move {
+                        let served = reads.fetch_add(1, Ordering::SeqCst);
+                        let flipped = flip_after.is_some_and(|after| served >= after);
+                        Json(serde_json::json!({ "instance": if flipped { "new" } else { "old" } }))
+                    }
+                }),
+            );
+        crate::equipment::test_support::spawn_stub(app).await
+    }
+
+    #[tokio::test]
+    async fn a_restart_request_returns_the_process_that_restarts() {
+        let stub = restart_stub(axum::http::StatusCode::ACCEPTED, None).await;
+        let client = reqwest::Client::new();
+        assert_eq!(request_restart(&client, &stub.url()).await.unwrap(), "old");
+    }
+
+    #[tokio::test]
+    async fn a_service_without_the_restart_route_is_reported() {
+        let stub = crate::equipment::test_support::spawn_stub(axum::Router::new()).await;
+        let client = reqwest::Client::new();
+        let err = request_restart(&client, &stub.url()).await.unwrap_err();
+        assert!(err.contains("takes no restart requests"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_restart_request_is_reported_with_its_status() {
+        let stub = restart_stub(axum::http::StatusCode::UNAUTHORIZED, None).await;
+        let client = reqwest::Client::new();
+        let err = request_restart(&client, &stub.url()).await.unwrap_err();
+        assert!(err.contains("401"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_wait_ends_when_another_process_answers() {
+        let stub = restart_stub(axum::http::StatusCode::ACCEPTED, Some(2)).await;
+        let client = reqwest::Client::new();
+        let restarted = await_restart(
+            &client,
+            &stub.url(),
+            "old",
+            Duration::from_millis(10),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(restarted, Restarted::Restarted);
+    }
+
+    #[tokio::test]
+    async fn the_wait_times_out_while_the_old_process_answers() {
+        let stub = restart_stub(axum::http::StatusCode::ACCEPTED, None).await;
+        let client = reqwest::Client::new();
+        let restarted = await_restart(
+            &client,
+            &stub.url(),
+            "old",
+            Duration::from_millis(10),
+            Duration::from_millis(200),
+        )
+        .await;
+        assert_eq!(restarted, Restarted::TimedOut);
+        assert_eq!(restarted.as_str(), "timed_out");
     }
 
     #[test]

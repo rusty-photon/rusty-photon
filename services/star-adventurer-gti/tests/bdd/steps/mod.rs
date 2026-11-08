@@ -11,6 +11,7 @@ pub mod park_steps;
 pub mod pier_side_selection_steps;
 pub mod power_cut_steps;
 pub mod pulse_guide_steps;
+pub mod restart_steps;
 pub mod setup_pages_steps;
 pub mod side_of_pier_steps;
 pub mod slew_steps;

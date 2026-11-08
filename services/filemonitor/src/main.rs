@@ -103,6 +103,6 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
-            run_server_loop(&config_path, shutdown.token(), reload).await
+            run_server_loop(&config_path, shutdown.token(), reload, shutdown.restart()).await
         })
 }

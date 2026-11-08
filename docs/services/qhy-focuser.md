@@ -320,6 +320,13 @@ cadence — the device does not wedge on a transient failure
 path, etc.). This bug class is now eliminated structurally by the
 shared crate (issue #258 closes for qhy-focuser with this migration).
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## References
 
 - **INDI QHY Focuser Driver** (reference implementation used for protocol reverse-engineering): [qhy_focuser.cpp](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.cpp), [qhy_focuser.h](https://github.com/indilib/indi-3rdparty/blob/master/indi-qhy/qhy_focuser.h)

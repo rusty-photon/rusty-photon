@@ -1,6 +1,8 @@
 use std::future::Future;
+use std::sync::Arc;
 
-use crate::{ReloadSignal, Shutdown};
+use crate::restart::exit_once;
+use crate::{ReloadSignal, Restart, Shutdown, RESTART_CLOSE_DEADLINE, RESTART_EXIT_CODE};
 
 /// Result type every service binary's `main` returns.
 ///
@@ -295,12 +297,14 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
-    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
-    rt.block_on(async move {
+    let restart = console_restart(name, token.clone());
+    let shutdown = Shutdown::new(token.clone(), restart.clone());
+    let installed = spawn_shutdown_watcher(&rt, name, token);
+    let result = rt.block_on(async move {
         let _ = installed.await;
-        run_fn(Shutdown::from_token(token)).await
-    })
-    .map_err(report_from_boxed)
+        run_fn(shutdown).await
+    });
+    finish_console(name, &restart, result)
 }
 
 fn run_console_with_reload<F, Fut>(name: &'static str, run_fn: F) -> ServiceResult
@@ -310,15 +314,46 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
+    let restart = console_restart(name, token.clone());
+    let shutdown = Shutdown::new(token.clone(), restart.clone());
     let reload = ReloadSignal::new();
-    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
+    let installed = spawn_shutdown_watcher(&rt, name, token);
     #[cfg(unix)]
     rt.spawn(watch_reload_signal(reload.clone()));
-    rt.block_on(async move {
+    let result = rt.block_on(async move {
         let _ = installed.await;
-        run_fn(Shutdown::from_token(token), reload).await
-    })
-    .map_err(report_from_boxed)
+        run_fn(shutdown, reload).await
+    });
+    finish_console(name, &restart, result)
+}
+
+/// The console-mode restart: its exit ends the process with the restart
+/// code.
+fn console_restart(name: &'static str, token: tokio_util::sync::CancellationToken) -> Restart {
+    Restart::with_exit(
+        token,
+        RESTART_CLOSE_DEADLINE,
+        Arc::new(move || exit_for_restart(name)),
+    )
+}
+
+/// Return the closure's outcome to `main`, or, after a restart request,
+/// exit with the restart code without returning, so the runtime is never
+/// dropped and a blocking task a hung driver call holds cannot hold the
+/// exit.
+fn finish_console(name: &'static str, restart: &Restart, result: RunResult) -> ServiceResult {
+    if restart.is_requested() {
+        if let Err(e) = &result {
+            tracing::warn!("{name}: the run ended with an error while restarting: {e}");
+        }
+        exit_for_restart(name);
+    }
+    result.map_err(report_from_boxed)
+}
+
+fn exit_for_restart(name: &'static str) -> ! {
+    tracing::info!("{name}: exiting with code {RESTART_EXIT_CODE} to restart");
+    exit_once(RESTART_EXIT_CODE)
 }
 
 /// The platform's "stop this process" event, for the shutdown log line.
@@ -496,16 +531,20 @@ mod scm {
     //! `Box<dyn FnOnce(...)>` and stashed in a `OnceLock` so the
     //! `extern "system" fn` SCM entry point can reach it.
     use super::{
-        report_from_boxed, Future, ReloadSignal, RunError, RunResult, ServiceResult, Shutdown,
+        report_from_boxed, Future, ReloadSignal, Restart, RunError, RunResult, ServiceResult,
+        Shutdown, RESTART_CLOSE_DEADLINE, RESTART_EXIT_CODE,
     };
+    use crate::restart::claim_exit_or_wait;
     use std::ffi::OsString;
     use std::pin::Pin;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
         ServiceType,
     };
-    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
 
     type PlainFn = Box<dyn FnOnce(Shutdown) -> Pin<Box<dyn Future<Output = RunResult>>> + Send>;
     type WithReloadFn =
@@ -626,11 +665,37 @@ mod scm {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let shutdown = Shutdown::from_token(token);
+        let name = cfg.name;
+        // The deadline passed with the close still running: report the
+        // restart's stop and end the process from the watchdog's thread.
+        let restart = Restart::with_exit(
+            token.clone(),
+            RESTART_CLOSE_DEADLINE,
+            Arc::new(move || {
+                claim_exit_or_wait();
+                report_restart_stop(status_handle, name);
+                std::process::exit(RESTART_EXIT_CODE);
+            }),
+        );
+        let shutdown = Shutdown::new(token, restart.clone());
         let result = match run_fn {
             BoxedRunFn::Plain(f) => rt.block_on(f(shutdown)),
             BoxedRunFn::WithReload(f) => rt.block_on(f(shutdown, reload)),
         };
+
+        // A requested restart stops with the restart code, so the failure
+        // actions start the service again and the stop record names the
+        // cause. The runtime is shut down without waiting for its blocking
+        // tasks, which a hung driver call may hold.
+        if restart.is_requested() {
+            claim_exit_or_wait();
+            if let Err(e) = &result {
+                tracing::warn!("{name}: the run ended with an error while restarting: {e}");
+            }
+            rt.shutdown_background();
+            report_restart_stop(status_handle, name);
+            return Ok(());
+        }
 
         // Surface the closure's outcome to SCM. This is the failure-visibility
         // mechanism ADR-015 / windows-packaging W1 pins: on Err we still
@@ -674,6 +739,24 @@ mod scm {
             })? = Some(e);
         }
         Ok(())
+    }
+
+    /// Report `SERVICE_STOPPED` with the restart code as the service-specific
+    /// exit code.
+    fn report_restart_stop(status_handle: ServiceStatusHandle, name: &'static str) {
+        tracing::info!("{name}: stopping with code {RESTART_EXIT_CODE} to restart");
+        let stopped = status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::ServiceSpecific(RESTART_EXIT_CODE.unsigned_abs()),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::default(),
+            process_id: None,
+        });
+        if let Err(e) = stopped {
+            tracing::error!("{name}: could not report the restart's stop to the SCM: {e}");
+        }
     }
 }
 

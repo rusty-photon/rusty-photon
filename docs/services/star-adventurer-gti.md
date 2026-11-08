@@ -4075,6 +4075,13 @@ transport shuts down. On the wire the retire sends only stop-class
 commands: the last-disconnect `:L1`, `:L2`, `:K1` when the driver held
 the last session, which the shutdown hook repeats a moment later.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## MVP Scope
 
 ### Phase status

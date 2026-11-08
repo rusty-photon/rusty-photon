@@ -144,6 +144,7 @@ pub struct StarAdventurerWorld {
     /// State for the shared setup-page steps (`setup_pages.feature`, and
     /// the reloads `connection_lifecycle.feature` drives through a save).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`), and
     /// the fixture the setup-page credential scenario starts the service
@@ -175,6 +176,18 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
 impl SetupPagesWorld for StarAdventurerWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for StarAdventurerWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.service_handle
+            .as_mut()
+            .expect("the service was not started")
     }
 }
 
