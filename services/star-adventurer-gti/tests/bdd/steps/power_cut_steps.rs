@@ -194,6 +194,16 @@ async fn record_at_rest_at(world: &mut StarAdventurerWorld, ra: i64, dec: i64) {
     .await;
 }
 
+#[then(
+    expr = "the mount state record should say awaiting the power-up check at RA {int} and Dec {int} ticks"
+)]
+async fn record_awaiting_check_at(world: &mut StarAdventurerWorld, ra: i64, dec: i64) {
+    wait_for_record(world, |r| {
+        r["state"] == "awaiting_check" && r["ra_ticks"] == ra && r["dec_ticks"] == dec
+    })
+    .await;
+}
+
 #[then(expr = "the mount state record should say at rest away from RA {int} and Dec {int} ticks")]
 async fn record_at_rest_away_from(world: &mut StarAdventurerWorld, ra: i64, dec: i64) {
     wait_for_record(world, |r| {

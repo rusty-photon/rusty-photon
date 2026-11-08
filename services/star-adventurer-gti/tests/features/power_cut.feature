@@ -21,13 +21,18 @@ Feature: A power cut while serving
 
   Beside its config file the driver keeps a mount state record, named
   after that file: config.json's is config.mount-state.json. The record
-  holds one of three states: at rest with its ticks, moving, or lost. It
-  is written when that state changes while a client is connected. Every
-  connect reads it, so a lost position stays lost across a reload or a
-  restart of the service. After a restart, a power-up connect seeds the
-  configured pose only when the record says the mount came to rest
-  there. A record that says moving, lost or at rest elsewhere loses the
-  position instead.
+  holds one of four states: at rest with its ticks, moving, awaiting the
+  power-up check with the ticks the mount came to rest at, or lost. It
+  is written when that state changes while a client is connected. The
+  handshake that finds the controller restarted writes it too, whether
+  or not a client is connected: awaiting the check after a long cut of
+  a mount the record says came to rest, and lost after any other long
+  cut or a cut while the mount moved. Every connect reads it, so a lost
+  position stays lost, and a pending power-up check waits for the next
+  connect, across a reload or a restart of the service. After a
+  restart, a power-up connect seeds the configured pose only when the
+  record says the mount came to rest there. A record that says moving,
+  lost or at rest elsewhere loses the position instead.
 
   Scenario: A cut while the mount is at rest writes its position back
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
@@ -106,6 +111,47 @@ Feature: A power cut while serving
     When I try to slew asynchronously to RA 6.5 hours and Dec 30.0 degrees
     Then the operation should fail with invalid-operation
     And the error message should mention "position is lost"
+
+  Scenario: A power-up check left pending with no client connected outlives a reload and seeds a mount at rest at its power-up pose
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
+    When I connect the device
+    Then the mount state record should say at rest at RA -907200 and Dec 725760 ticks
+    When I disconnect the device
+    And the mount loses power for longer than a blip and comes back
+    Then the mount state record should say awaiting the power-up check at RA -907200 and Dec 725760 ticks
+    When the mount's setup page saves the description "Reloaded after the cut"
+    And the reloaded service serves mount description "Reloaded after the cut"
+    And I connect the device
+    Then the mount should have received an encoder seed on both axes
+    And the mount state record should say at rest at RA -907200 and Dec 725760 ticks
+    When I enable tracking
+    Then Tracking should be true
+
+  Scenario: A power-up check left pending with no client connected outlives a reload and loses a mount at rest away from its power-up pose
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
+    When I connect the device
+    And I sync to RA 6.0 hours and Dec 30.0 degrees
+    Then the mount state record should say at rest away from RA -907200 and Dec 725760 ticks
+    When I disconnect the device
+    And the mount loses power for longer than a blip and comes back
+    Then the mount state record should say "awaiting_check"
+    When the mount's setup page saves the description "Reloaded after the cut"
+    And the reloaded service serves mount description "Reloaded after the cut"
+    And I connect the device
+    Then the mount should not have received an encoder-seed command
+    And the mount state record should say "lost"
+    When I try to slew asynchronously to RA 6.5 hours and Dec 30.0 degrees
+    Then the operation should fail with invalid-operation
+    And the error message should mention "position is lost"
+
+  Scenario: A cut while the mount moves with no client connected writes lost to the mount state record
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
+    When I connect the device
+    Then the mount state record should say at rest at RA -907200 and Dec 725760 ticks
+    When I disconnect the device
+    And the mount is slewing
+    And the mount loses power and comes back
+    Then the mount state record should say "lost"
 
   Scenario: A link that drops without a power cut writes nothing back
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"

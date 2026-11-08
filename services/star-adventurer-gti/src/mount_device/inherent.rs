@@ -47,10 +47,10 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 use crate::manager::{AxisSnapshot, MountParameters, MountSnapshot};
+use crate::mount_state::{power_up_verdict, MountStateRecord, PowerUpVerdict, ReadRecord};
 use crate::power::Position;
 use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
-use super::mount_state::{self, power_up_verdict, MountStateRecord, PowerUpVerdict, ReadRecord};
 use super::park_persistence::{read_connect_fields, MountConnectFields};
 use super::slew::{
     check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, halt_after_failed_start,
@@ -836,15 +836,21 @@ impl MountDevice {
     ///   mount has already been slewed or synced this power cycle —
     ///   re-seeding would clobber it. The tolerance absorbs the
     ///   Sky-Watcher firmware's 1-tick fresh-power-up artifact
-    ///   (observed `dec = −1` on the validation `GTi`, ~0.4″).
+    ///   (observed `dec = −1` on the validation `GTi`, ~0.4″). A pending
+    ///   power-up check skips this test: the encoders hold the estimate
+    ///   the restore wrote back.
     ///
     /// - The position is lost, in memory or by the mount state record
     ///   beside the config file, which every connect reads.
-    /// - On a fresh power-up, the record says the mount did not come to
-    ///   rest at the configured pose: it came to rest elsewhere, it was
-    ///   moving, or the record does not parse. The position is then lost
-    ///   instead (design doc §The mount state record). No record
-    ///   seeds.
+    /// - On a fresh power-up, or for a power-up check pending in memory or
+    ///   in the record, the record says the mount did not come to rest at
+    ///   the configured pose: it came to rest elsewhere, it was moving, or
+    ///   the record does not parse. The position is then lost instead
+    ///   (design doc §The mount state record). No record seeds, except
+    ///   for a pending check.
+    ///
+    /// A pending check settles only once its outcome is in the record
+    /// ([`Self::settle_pending_power_up_check`]).
     ///
     /// Documented operator assumption: when `unpark_from_ap_position`
     /// is one of `ap_park_1..ap_park_5`, the operator powers up the
@@ -857,21 +863,9 @@ impl MountDevice {
         session: &Session<SkywatcherCodec>,
         unpark_from_ap_position: ApPark,
     ) -> ASCOMResult<()> {
-        // The record outlives a reload and a restart of the service, so
-        // every connect reads it: a lost position stays lost until ground
-        // truth clears it, whatever the encoders now read.
         let power = self.manager.power();
         let record = self.read_mount_state_record().await;
-        if matches!(record, Some(ReadRecord::Record(MountStateRecord::Lost)))
-            && power.position() != Position::Lost
-        {
-            power.mark_position_lost();
-            warn!(
-                "the mount state record says the mount's position is lost: slews, tracking \
-                 and guiding stay refused until a plate-solve sync or the recovery from a \
-                 named park on the mount's setup page"
-            );
-        }
+        self.adopt_mount_state_record(record.as_ref());
         // A lost position is never seeded: neither the encoders nor the
         // operator's power-up assertion say where the mount is.
         if power.position() == Position::Lost {
@@ -887,7 +881,7 @@ impl MountDevice {
             unpark_from_ap_position.codebase_dec_encoder_degrees(self.config.site_latitude_deg),
         ) else {
             if power.position() == Position::AwaitingCheck {
-                power.settle_power_up_check(false);
+                self.settle_pending_power_up_check(None).await?;
                 warn!(
                     "the mount's controller restarted after a long cut, and ap_park_0 names \
                      no power-up pose to check: the position is lost until a plate-solve \
@@ -938,7 +932,11 @@ impl MountDevice {
                 FRESH_POWER_UP_TICK_TOLERANCE,
                 awaiting_check,
             ) {
-                power.mark_position_lost();
+                if awaiting_check {
+                    self.settle_pending_power_up_check(None).await?;
+                } else {
+                    power.mark_position_lost();
+                }
                 warn!(
                     %reason,
                     unpark_from_ap_position = ?unpark_from_ap_position,
@@ -951,7 +949,10 @@ impl MountDevice {
         }
         self.reset_mount_encoders(session, ra_ticks, dec_ticks)
             .await?;
-        power.settle_power_up_check(true);
+        if awaiting_check {
+            self.settle_pending_power_up_check(Some((ra_ticks, dec_ticks)))
+                .await?;
+        }
         info!(
             seeded_ra_ticks = ra_ticks,
             seeded_dec_ticks = dec_ticks,
@@ -961,15 +962,79 @@ impl MountDevice {
         Ok(())
     }
 
+    /// Take on what the mount state record says that outlives a reload and
+    /// a restart of the service, so every connect honours it whatever the
+    /// encoders now read: a lost position stays lost until ground truth
+    /// clears it, and a power-up check a long cut left pending stays
+    /// pending until this connect runs it.
+    fn adopt_mount_state_record(&self, record: Option<&ReadRecord>) {
+        let power = self.manager.power();
+        match record {
+            Some(ReadRecord::Record(MountStateRecord::Lost))
+                if power.position() != Position::Lost =>
+            {
+                power.mark_position_lost();
+                warn!(
+                    "the mount state record says the mount's position is lost: slews, \
+                     tracking and guiding stay refused until a plate-solve sync or the \
+                     recovery from a named park on the mount's setup page"
+                );
+            }
+            Some(ReadRecord::Record(MountStateRecord::AwaitingCheck { .. }))
+                if power.position() == Position::Known =>
+            {
+                power.await_power_up_check();
+                info!(
+                    "the mount state record holds a power-up check no connect has run: the \
+                     record decides whether the power-up pose is seeded"
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// The mount state record beside the config file, or `None` when the
-    /// device has no config file to keep it beside (unit tests).
+    /// driver has no config file to keep it beside (unit tests).
     async fn read_mount_state_record(&self) -> Option<ReadRecord> {
-        let path = mount_state::record_path(self.config_file_path.as_deref()?);
-        Some(
-            tokio::task::spawn_blocking(move || mount_state::read(&path))
-                .await
-                .unwrap_or_else(|e| ReadRecord::Unreadable(format!("read did not finish: {e}"))),
-        )
+        let store = self.manager.power().record()?;
+        Some(store.lock().await.read().await)
+    }
+
+    /// Settle a pending power-up check as seeded at these ticks
+    /// (`Some`) or lost (`None`). The outcome goes to the mount state
+    /// record first, so the record never says `awaiting_check` once the
+    /// mount can move again.
+    ///
+    /// # Errors
+    ///
+    /// `INVALID_OPERATION` when the outcome cannot be written: the check
+    /// stays pending.
+    async fn settle_pending_power_up_check(&self, seeded: Option<(i32, i32)>) -> ASCOMResult<()> {
+        let power = self.manager.power();
+        let Some(store) = power.record() else {
+            power.settle_power_up_check(seeded.is_some());
+            return Ok(());
+        };
+        let outcome = seeded.map_or(MountStateRecord::Lost, |(ra_ticks, dec_ticks)| {
+            MountStateRecord::AtRest {
+                ra_ticks,
+                dec_ticks,
+            }
+        });
+        let record = store.lock().await;
+        record.write(outcome).await.map_err(|e| {
+            ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                format!(
+                    "the power-up check could not write its outcome to the mount state \
+                     record, so the check stays pending: {e}"
+                ),
+            )
+        })?;
+        power.settle_power_up_check(seeded.is_some());
+        drop(record);
+        debug!(?outcome, "pending power-up check settled");
+        Ok(())
     }
 
     /// Execute a slew to `target`, landing on the pier side `side` asks

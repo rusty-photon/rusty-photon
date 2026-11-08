@@ -411,26 +411,25 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | Not started | |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
-| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2, P3 and `star-adventurer-gti` keeping a pending power-up check across a restart ([#1722](https://github.com/rusty-photon/rusty-photon/issues/1722)) | |
+| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2 and P3 | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
-P0, P1 and P2 depend on nothing else, P4 needs P2, P3 and the GTi driver's
-kept check, and P5 needs P3's power map.
+P0, P1 and P2 depend on nothing else, P4 needs P2 and P3, and P5 needs
+P3's power map.
 
-`gemini-powerbox-adv3-driver` has a start bug of its own: one reply that
-does not decode as UTF-8 during its handshake fails the start. It was seen
-once, on the dev box's first start on 2026-11-03, the retry 5 s later was
-clean, and it is filed as
-[#1700](https://github.com/rusty-photon/rusty-photon/issues/1700) and
-fixed by [#1728](https://github.com/rusty-photon/rusty-photon/pull/1728):
-the handshake skips a frame that does not decode while `>H#` waits.
+`gemini-powerbox-adv3-driver` had a start bug of its own: one reply that
+did not decode as UTF-8 during its handshake failed the start. It was seen
+once, on the dev box's first start on 2026-11-03, and the retry 5 s later
+was clean. The handshake now skips a frame that does not decode while
+`>H#` waits ([#1700](https://github.com/rusty-photon/rusty-photon/issues/1700),
+fixed by [#1728](https://github.com/rusty-photon/rusty-photon/pull/1728)).
 
-`star-adventurer-gti` keeps a pending power-up check only in memory today:
-on pier1 on 2026-11-07 the restart decision 5 makes took the check with
-it, and the restarted process trusted the written-back estimate
-(Validation). Keeping it in the mount state record, as decision 3 needs,
-is filed as
-[#1722](https://github.com/rusty-photon/rusty-photon/issues/1722).
+`star-adventurer-gti` kept a pending power-up check only in memory: on
+pier1 on 2026-11-07 the restart decision 5 makes took the check with it,
+and the restarted process trusted the written-back estimate (Validation).
+The driver now keeps the check in its mount state record, as decision 3
+needs ([#1722](https://github.com/rusty-photon/rusty-photon/issues/1722)),
+and the restart that dusk makes runs it at the dusk connect.
 
 ## Validation
 
@@ -576,6 +575,9 @@ record said so, and nothing commanded it to move.
 ### Owed
 
 - rig2's other devices.
+- pier1's dawn and dusk by hand again, with `star-adventurer-gti` keeping
+  its pending power-up check in the mount state record: the restarted
+  process should run the check from the record at the dusk connect.
 - An output that may feed the host or the power box's own serial bridge is
   not cut remotely at all: on pier1 the PPBA is reachable only through
   `ppba-driver` on the Pi, so once either is down no host can switch the

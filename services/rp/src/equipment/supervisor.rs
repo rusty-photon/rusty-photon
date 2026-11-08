@@ -32,6 +32,7 @@ use ascom_alpaca::api::Device;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{check_pin, EstablishError, PinCheck, RosterEntry};
 use super::session::DeviceSession;
 use super::{
@@ -124,7 +125,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || camera::establish_camera(&entry.config, ca),
+                |budget| camera::establish_camera(&entry.config, ca, budget),
             )
             .await;
         }
@@ -135,7 +136,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || filter_wheel::establish_filter_wheel(&entry.config, ca),
+                |budget| filter_wheel::establish_filter_wheel(&entry.config, ca, budget),
             )
             .await;
         }
@@ -146,7 +147,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || cover_calibrator::establish_cover_calibrator(&entry.config, ca),
+                |budget| cover_calibrator::establish_cover_calibrator(&entry.config, ca, budget),
             )
             .await;
         }
@@ -157,7 +158,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || focuser::establish_focuser(&entry.config, ca),
+                |budget| focuser::establish_focuser(&entry.config, ca, budget),
             )
             .await;
         }
@@ -168,7 +169,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || safety_monitor::establish_safety_monitor(&entry.config, ca),
+                |budget| safety_monitor::establish_safety_monitor(&entry.config, ca, budget),
             )
             .await;
         }
@@ -184,7 +185,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || switch::establish_switch(&entry.config, ca),
+                |budget| switch::establish_switch(&entry.config, ca, budget),
             )
             .await;
         }
@@ -195,7 +196,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || rotator::establish_rotator(&entry.config, ca),
+                |budget| rotator::establish_rotator(&entry.config, ca, budget),
             )
             .await;
         }
@@ -206,7 +207,9 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || observing_conditions::establish_observing_conditions(&entry.config, ca),
+                |budget| {
+                    observing_conditions::establish_observing_conditions(&entry.config, ca, budget)
+                },
             )
             .await;
         }
@@ -217,7 +220,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || dome::establish_dome(&entry.config, ca),
+                |budget| dome::establish_dome(&entry.config, ca, budget),
             )
             .await;
         }
@@ -228,7 +231,7 @@ impl ReconnectSupervisor {
                 ca,
                 &entry.session,
                 &self.event_bus,
-                || mount::establish_mount(&entry.config, ca),
+                |budget| mount::establish_mount(&entry.config, ca, budget),
             )
             .await;
         }
@@ -249,11 +252,11 @@ async fn supervise<C, F, Fut>(
     reestablish: F,
 ) where
     C: RosterEntry,
-    F: FnOnce() -> Fut,
+    F: FnOnce(ConnectBudget) -> Fut,
     Fut: Future<Output = Result<Arc<C::Device>, EstablishError>>,
 {
-    supervise_with_metadata(kind, config, ca, session, event_bus, || async {
-        reestablish().await.map(|device| (device, ()))
+    supervise_with_metadata(kind, config, ca, session, event_bus, |budget| async move {
+        reestablish(budget).await.map(|device| (device, ()))
     })
     .await;
 }
@@ -284,13 +287,19 @@ async fn supervise<C, F, Fut>(
 /// separate accessors still straddles this install; that is what
 /// `snapshot` is for.
 ///
+/// `reestablish` is handed the attempts it may make: the full budget for
+/// a session that was live until this pass, a single attempt for an
+/// entry that was already disconnected (rp.md § Device Session
+/// Recovery).
+///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
 /// that bounced between two passes drew no `connected: false` event,
 /// but the session was still re-established and the operator should
 /// see it. On failure the entry stays disconnected, with the
-/// `connected: false` event emitted once per transition — not once per
-/// attempt.
+/// `connected: false` event and an `info!` line emitted once per
+/// transition — not once per attempt — and each later failed pass
+/// logged at `debug!`.
 ///
 /// A session that reads healthy is then held to the entry's identity
 /// pin by [`check_pin`] (rp.md § Device Identity Pin), which this runs
@@ -311,7 +320,7 @@ async fn supervise_with_metadata<C, M, F, Fut>(
 ) where
     C: RosterEntry,
     M: Default + Send + Sync,
-    F: FnOnce() -> Fut,
+    F: FnOnce(ConnectBudget) -> Fut,
     Fut: Future<Output = Result<(Arc<C::Device>, M), EstablishError>>,
 {
     let address = config.address();
@@ -350,9 +359,18 @@ async fn supervise_with_metadata<C, M, F, Fut>(
         );
     }
 
+    // rp's own record of the previous pass decides the budget, so no
+    // driver's error code has to be trusted: a session live until this
+    // pass gets the full routine, whose retries ride out a stall, and an
+    // entry that was already disconnected gets one attempt.
     let was_connected = session.is_connected();
+    let budget = if was_connected {
+        ConnectBudget::Full
+    } else {
+        ConnectBudget::Single
+    };
     session.mark_disconnected();
-    match reestablish().await {
+    match reestablish(budget).await {
         Ok((device, metadata)) => {
             session.install(device, metadata);
             // The establish routine has just logged the bound device at
@@ -364,8 +382,11 @@ async fn supervise_with_metadata<C, M, F, Fut>(
             if e.is_identity_refusal() {
                 session.retire();
             }
+            // One line at default verbosity per transition to
+            // unreachable: a device switched off for the day is no
+            // fault, and logs nothing more until it answers again.
             if was_connected {
-                warn!(kind, id, error = %e, "device session lost and re-establish failed; retrying every pass");
+                info!(kind, id, error = %e, "device session lost and re-establish failed; trying once every pass, logged at debug, until it answers");
                 emit(event_bus, kind, id, false);
             } else {
                 debug!(kind, id, error = %e, "device still unavailable");
@@ -423,6 +444,12 @@ mod tests {
         listing_unreadable: AtomicBool,
         /// `configureddevices` reads served.
         listing_reads: AtomicU32,
+        /// When set, the driver answers but its device is switched off:
+        /// `Connected = true` fails with an Alpaca error, a transient
+        /// failure for the connect routine, while the listing keeps
+        /// answering. Each refused request is still counted in
+        /// `set_connected_calls`.
+        device_off: AtomicBool,
     }
 
     fn alpaca_ok(value: serde_json::Value) -> Json<serde_json::Value> {
@@ -489,6 +516,11 @@ mod tests {
                     let state = put_state.clone();
                     async move {
                         state.set_connected_calls.fetch_add(1, Ordering::SeqCst);
+                        if state.device_off.load(Ordering::SeqCst) {
+                            return Json(serde_json::json!({
+                                "ErrorNumber": 1031, "ErrorMessage": "the device does not answer"
+                            }));
+                        }
                         state.connected.store(true, Ordering::SeqCst);
                         Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
                     }
@@ -700,16 +732,22 @@ mod tests {
 
         let event_bus = EventBus::from_config(&[], None).unwrap();
         let connected_during_establish = AtomicBool::new(true);
+        let probe = &connected_during_establish;
+        let watched = &entry;
         supervise(
             "safety_monitor",
             &entry.config,
             None,
             &entry.session,
             &event_bus,
-            || async {
-                connected_during_establish.store(entry.is_connected(), Ordering::SeqCst);
-                crate::equipment::safety_monitor::establish_safety_monitor(&entry.config, None)
-                    .await
+            |budget| async move {
+                probe.store(watched.is_connected(), Ordering::SeqCst);
+                crate::equipment::safety_monitor::establish_safety_monitor(
+                    &watched.config,
+                    None,
+                    budget,
+                )
+                .await
             },
         )
         .await;
@@ -815,6 +853,67 @@ mod tests {
         assert!(
             events.try_recv().is_err(),
             "a still-down device must not emit again"
+        );
+    }
+
+    /// A session that was live until this pass and is now lost (its
+    /// service restarted with the device switched off) gets the full
+    /// connect routine on its first failing pass: the retries ride out a
+    /// stall, and a lost session is the case they exist for.
+    #[tokio::test]
+    async fn a_session_lost_on_this_pass_gets_every_connect_attempt() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1,
+            "fixture: the startup connect is the only one so far"
+        );
+        state.connected.store(false, Ordering::SeqCst);
+        state.device_off.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1 + crate::equipment::alpaca::CONNECT_ATTEMPTS,
+            "a session lost on this pass must get every attempt of the routine"
+        );
+        assert!(!supervisor.equipment.safety_monitors[0].is_connected());
+        let event = events.try_recv().expect("the loss must emit");
+        assert_eq!(event.payload["connected"], false);
+    }
+
+    /// An entry rp's own record already holds disconnected — its session
+    /// was lost on an earlier pass, and its device is still switched off
+    /// — gets one attempt a pass: the pass walks the devices one after
+    /// another, so backoff for it would delay every other device's check.
+    #[tokio::test]
+    async fn an_entry_disconnected_before_the_pass_gets_one_connect_attempt() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        entry.session.mark_disconnected();
+        state.connected.store(false, Ordering::SeqCst);
+        state.device_off.store(true, Ordering::SeqCst);
+        let before = state.set_connected_calls.load(Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst) - before,
+            1,
+            "an entry already disconnected must get one attempt, not the full routine"
+        );
+        assert!(!supervisor.equipment.safety_monitors[0].is_connected());
+        assert!(
+            events.try_recv().is_err(),
+            "no transition, so nothing is emitted"
         );
     }
 

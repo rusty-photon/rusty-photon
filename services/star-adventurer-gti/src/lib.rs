@@ -44,6 +44,7 @@ pub mod doctor;
 pub mod error;
 pub mod manager;
 pub mod mount_device;
+mod mount_state;
 pub mod power;
 pub mod setup;
 pub mod transport;
@@ -342,7 +343,11 @@ impl ServerBuilder {
             },
         };
 
-        let manager = MountManager::new(&self.config, factory);
+        let manager = MountManager::with_config_file_path(
+            &self.config,
+            factory,
+            self.config_file_path.as_deref(),
+        );
 
         // Eager hardware validation at startup: opens the port and
         // runs the handshake (which includes the wrong-device

@@ -7,8 +7,9 @@
 //! initialised. On a restart while serving, the handshake writes the last
 //! known position back ([`position_to_restore`]) and marks the position
 //! lost when the mount was moving too fast for that position to be
-//! trusted. See `docs/services/star-adventurer-gti.md` §Power cut while
-//! serving.
+//! trusted. A position the restore does not trust goes to the mount state
+//! record too, so a reload or a restart of the service keeps it. See
+//! `docs/services/star-adventurer-gti.md` §Power cut while serving.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -17,9 +18,11 @@ use std::time::Duration;
 use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
 use tokio::sync::watch;
 use tokio::time::Instant;
+use tracing::warn;
 
 use crate::coordinates::SIDEREAL_DEG_PER_SEC;
 use crate::manager::{AxisSnapshot, MountParameters, MountSnapshot};
+use crate::mount_state::{self, HeldRecord, MountStateRecord, MountStateStore, ReadRecord};
 
 /// The fastest tracking-mode rate whose sample is still trusted across a
 /// cut, as a multiple of the axis' sidereal rate. Tracking and a guide
@@ -63,16 +66,15 @@ pub struct PowerWatch {
     /// Bumped once per restart the handshake finds while serving; the
     /// connected device watches it to drop what the cut ended.
     restarts: watch::Sender<u64>,
+    /// The mount state record, which keeps a position the driver does not
+    /// trust across a reload and a restart of the service. `None` with no
+    /// config file to keep it beside.
+    record: Option<MountStateStore>,
 }
 
 impl Default for PowerWatch {
     fn default() -> Self {
-        Self {
-            position: Mutex::new(Position::Known),
-            restart_pending: AtomicBool::new(false),
-            first_failed_request: Mutex::new(None),
-            restarts: watch::Sender::new(0),
-        }
+        Self::with_record(None)
     }
 }
 
@@ -83,6 +85,23 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl PowerWatch {
+    /// A watch that keeps the mount state record in `record`.
+    pub(crate) fn with_record(record: Option<MountStateStore>) -> Self {
+        Self {
+            position: Mutex::new(Position::Known),
+            restart_pending: AtomicBool::new(false),
+            first_failed_request: Mutex::new(None),
+            restarts: watch::Sender::new(0),
+            record,
+        }
+    }
+
+    /// The mount state record, when there is a config file to keep it
+    /// beside.
+    pub(crate) const fn record(&self) -> Option<&MountStateStore> {
+        self.record.as_ref()
+    }
+
     /// What the driver knows about the mount's position.
     pub fn position(&self) -> Position {
         *lock(&self.position)
@@ -163,6 +182,74 @@ impl PowerWatch {
     /// Watch the restarts found while serving.
     pub fn subscribe_restarts(&self) -> watch::Receiver<u64> {
         self.restarts.subscribe()
+    }
+
+    /// The restore found the mount moving: lose the position, and say so
+    /// in the record.
+    pub(crate) async fn lose_position_after_restart(&self) {
+        let Some(store) = &self.record else {
+            self.mark_position_lost();
+            return;
+        };
+        let record = store.lock().await;
+        self.mark_position_lost();
+        write_lost(&record).await;
+    }
+
+    /// After a long cut, hold the position for the power-up check, or lose
+    /// it now when the record already decides the check. A record that
+    /// says at rest becomes `awaiting_check` at its ticks, so the check
+    /// outlives a reload and a restart of the service. Any other record,
+    /// or a position already lost, loses the position, and the record says
+    /// lost: the error says why.
+    ///
+    /// Without a record the check is held in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the position is lost.
+    pub(crate) async fn await_check_after_long_cut(&self) -> Result<(), String> {
+        let Some(store) = &self.record else {
+            self.await_power_up_check();
+            return Ok(());
+        };
+        let record = store.lock().await;
+        let read = record.read().await;
+        let pending = if self.position() == Position::Lost {
+            Err("the mount's position was already lost".to_string())
+        } else {
+            mount_state::after_long_cut(&read)
+        };
+        match pending {
+            Ok(pending) => {
+                self.await_power_up_check();
+                if read != ReadRecord::Record(pending) {
+                    if let Err(e) = record.write(pending).await {
+                        warn!(
+                            "the mount state record does not hold the pending power-up \
+                             check, so a reload or a restart of the service before the next \
+                             connect forgets it: {e}"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Err(reason) => {
+                self.mark_position_lost();
+                write_lost(&record).await;
+                Err(reason)
+            }
+        }
+    }
+}
+
+/// Write `lost` to the held record, warning when the write does not land.
+async fn write_lost(record: &HeldRecord<'_>) {
+    if let Err(e) = record.write(MountStateRecord::Lost).await {
+        warn!(
+            "the mount state record does not say the position is lost, so a reload or a \
+             restart of the service before the next connect forgets it: {e}"
+        );
     }
 }
 
@@ -509,6 +596,121 @@ mod tests {
         watch.await_power_up_check();
         watch.settle_power_up_check(false);
         assert_eq!(watch.position(), Position::Lost);
+    }
+
+    fn watch_with_record(dir: &std::path::Path) -> PowerWatch {
+        PowerWatch::with_record(Some(MountStateStore::beside(&dir.join("config.json"))))
+    }
+
+    async fn record_of(watch: &PowerWatch) -> ReadRecord {
+        watch.record().unwrap().lock().await.read().await
+    }
+
+    async fn put_record(watch: &PowerWatch, record: MountStateRecord) {
+        watch
+            .record()
+            .unwrap()
+            .lock()
+            .await
+            .write(record)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_long_cut_of_a_mount_at_rest_holds_the_check_in_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_with_record(dir.path());
+        put_record(
+            &watch,
+            MountStateRecord::AtRest {
+                ra_ticks: 1_000,
+                dec_ticks: 2_000,
+            },
+        )
+        .await;
+        watch.await_check_after_long_cut().await.unwrap();
+        assert_eq!(watch.position(), Position::AwaitingCheck);
+        assert_eq!(
+            record_of(&watch).await,
+            ReadRecord::Record(MountStateRecord::AwaitingCheck {
+                ra_ticks: 1_000,
+                dec_ticks: 2_000
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_cut_with_no_record_loses_the_position_in_the_record_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_with_record(dir.path());
+        watch.await_check_after_long_cut().await.unwrap_err();
+        assert_eq!(watch.position(), Position::Lost);
+        assert_eq!(
+            record_of(&watch).await,
+            ReadRecord::Record(MountStateRecord::Lost)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_cut_of_a_mount_the_record_saw_moving_loses_the_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_with_record(dir.path());
+        put_record(&watch, MountStateRecord::Moving).await;
+        watch.await_check_after_long_cut().await.unwrap_err();
+        assert_eq!(watch.position(), Position::Lost);
+        assert_eq!(
+            record_of(&watch).await,
+            ReadRecord::Record(MountStateRecord::Lost)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_cut_after_the_position_was_lost_records_lost_whatever_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_with_record(dir.path());
+        put_record(
+            &watch,
+            MountStateRecord::AtRest {
+                ra_ticks: 1_000,
+                dec_ticks: 2_000,
+            },
+        )
+        .await;
+        watch.mark_position_lost();
+        watch.await_check_after_long_cut().await.unwrap_err();
+        assert_eq!(watch.position(), Position::Lost);
+        assert_eq!(
+            record_of(&watch).await,
+            ReadRecord::Record(MountStateRecord::Lost)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_cut_without_a_record_holds_the_check_in_memory() {
+        let watch = PowerWatch::default();
+        watch.await_check_after_long_cut().await.unwrap();
+        assert_eq!(watch.position(), Position::AwaitingCheck);
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_loses_the_position_says_so_in_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_with_record(dir.path());
+        put_record(
+            &watch,
+            MountStateRecord::AtRest {
+                ra_ticks: 1_000,
+                dec_ticks: 2_000,
+            },
+        )
+        .await;
+        watch.lose_position_after_restart().await;
+        assert_eq!(watch.position(), Position::Lost);
+        assert_eq!(
+            record_of(&watch).await,
+            ReadRecord::Record(MountStateRecord::Lost)
+        );
     }
 
     #[test]

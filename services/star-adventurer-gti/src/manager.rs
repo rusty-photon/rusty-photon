@@ -19,6 +19,7 @@
 //!   and [`MountManager::snapshot_now`], which projects the poll sample
 //!   forward to the read instant at that commanded rate (issue #1334).
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,7 @@ use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
 use crate::coordinates::sidereal_step_period;
 use crate::error::{Result, StarAdvError};
+use crate::mount_state::MountStateStore;
 use crate::power::{position_to_restore, PowerWatch, MAX_TRUSTED_OUTAGE};
 use crate::units::{sat_round_i32, Cpr};
 
@@ -464,11 +466,24 @@ pub struct MountManager {
 
 impl MountManager {
     pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+        Self::with_config_file_path(config, factory, None)
+    }
+
+    /// Construct with an optional config-file path. `Some(path)` keeps the
+    /// mount state record beside it (design doc §The mount state record);
+    /// `None` keeps no record.
+    pub fn with_config_file_path(
+        config: &Config,
+        factory: Arc<dyn TransportFactory>,
+        config_file_path: Option<&Path>,
+    ) -> Arc<Self> {
         let parameters = Arc::new(RwLock::new(None));
         let snapshot = Arc::new(RwLock::new(MountSnapshot::default()));
         let step_periods = Arc::new(CommandedStepPeriods::default());
         let poll_pause_depth = Arc::new(AtomicU32::new(0));
-        let power = Arc::new(PowerWatch::default());
+        let power = Arc::new(PowerWatch::with_record(
+            config_file_path.map(MountStateStore::beside),
+        ));
         let (polling_interval, command_timeout) = match &config.transport {
             TransportConfig::Usb(usb) => (usb.polling_interval, usb.command_timeout),
             TransportConfig::Udp(udp) => (udp.polling_interval, udp.command_timeout),
@@ -1139,7 +1154,9 @@ type AxisSample = (i32, Instant);
 /// longer one, or one nothing dates, someone may have moved the mount by
 /// hand: the estimate is still written back, so a sync reads the pier side
 /// from it, but the position awaits the power-up check against the mount
-/// state record.
+/// state record, or is lost at once when the record already decides that
+/// check. Either way the record says so before the transport serves again,
+/// whether or not a client is connected.
 async fn restore_after_restart(
     conn: &Connection<SkywatcherCodec>,
     previous: &MountSnapshot,
@@ -1162,7 +1179,7 @@ async fn restore_after_restart(
     // outage: no record written before that motion can say where it
     // stopped. Only a trusted sample goes on to the outage test.
     if restore.lost {
-        power.mark_position_lost();
+        power.lose_position_after_restart().await;
         warn!(
             ?outage,
             read_ra_ticks = read_ra,
@@ -1175,17 +1192,31 @@ async fn restore_after_restart(
              mount's setup page"
         );
     } else if outage.is_none_or(|outage| outage > MAX_TRUSTED_OUTAGE) {
-        power.await_power_up_check();
-        info!(
-            ?outage,
-            read_ra_ticks = read_ra,
-            read_dec_ticks = read_dec,
-            written_ra_ticks = ra.0,
-            written_dec_ticks = dec.0,
-            "the mount's controller restarted after a cut too long to trust its last \
-             position: that position is written back as an estimate, and the mount \
-             state record decides whether the power-up pose is seeded"
-        );
+        match power.await_check_after_long_cut().await {
+            Ok(()) => info!(
+                ?outage,
+                read_ra_ticks = read_ra,
+                read_dec_ticks = read_dec,
+                written_ra_ticks = ra.0,
+                written_dec_ticks = dec.0,
+                "the mount's controller restarted after a cut too long to trust its last \
+                 position: that position is written back as an estimate, and the mount \
+                 state record decides whether the power-up pose is seeded"
+            ),
+            Err(reason) => warn!(
+                ?outage,
+                %reason,
+                read_ra_ticks = read_ra,
+                read_dec_ticks = read_dec,
+                written_ra_ticks = ra.0,
+                written_dec_ticks = dec.0,
+                "the mount's controller restarted after a cut too long to trust its last \
+                 position, and the mount state record does not place the mount at rest: \
+                 that position is written back as an estimate, and the position is lost \
+                 until a plate-solve sync or the recovery from a named park on the \
+                 mount's setup page"
+            ),
+        }
     } else {
         info!(
             read_ra_ticks = read_ra,
@@ -3035,9 +3066,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_long_cut_of_a_moving_mount_loses_the_position_whatever_the_record() {
+        use crate::mount_state::{MountStateRecord, ReadRecord};
+
         let factory = CapturingMockFactory::new();
         let mock = Arc::clone(&factory.state);
-        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let dir = tempfile::tempdir().unwrap();
+        let m = MountManager::with_config_file_path(
+            &Config::default(),
+            Arc::new(factory),
+            Some(&dir.path().join("config.json")),
+        );
+        let record = m.power().record().unwrap();
+        record
+            .lock()
+            .await
+            .write(MountStateRecord::AtRest {
+                ra_ticks: 0,
+                dec_ticks: 0,
+            })
+            .await
+            .unwrap();
         let session = m.transport().acquire().await.unwrap();
         {
             // A goto in flight: the poll sees RA running in goto mode.
@@ -3061,6 +3109,11 @@ mod tests {
         tokio::time::advance(MAX_TRUSTED_OUTAGE + Duration::from_secs(1)).await;
         let session = m.transport().acquire().await.unwrap();
         assert_eq!(m.power().position(), crate::power::Position::Lost);
+        assert_eq!(
+            record.lock().await.read().await,
+            ReadRecord::Record(MountStateRecord::Lost),
+            "the restore says lost in the record before the transport serves again"
+        );
         session.close().await.unwrap();
     }
 
