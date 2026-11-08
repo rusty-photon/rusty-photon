@@ -11,8 +11,8 @@ use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, warn};
 
-use super::mount_state::{self, MountStateRecord};
 use super::{MountDevice, PulseGuiding};
+use crate::mount_state::MountStateRecord;
 use crate::power::Position;
 
 impl MountDevice {
@@ -76,10 +76,6 @@ impl MountDevice {
 /// Spawn the task for one connection. It ends when the device's session
 /// closes.
 pub(super) fn spawn_power_watch(device: MountDevice, polling_interval: Duration) {
-    let record_path = device
-        .config_file_path
-        .as_deref()
-        .map(mount_state::record_path);
     let mut restarts = device.manager.power().subscribe_restarts();
     // A restart found before this connection is no concern of its own:
     // the connect read the lost flag, and a disconnected device holds no
@@ -97,6 +93,9 @@ pub(super) fn spawn_power_watch(device: MountDevice, polling_interval: Duration)
                     if changed.is_err() {
                         return;
                     }
+                    // The restore has written the record behind this
+                    // writer's back.
+                    written = None;
                     device.drop_what_the_cut_ended().await;
                     if device.manager.power().position() == Position::AwaitingCheck {
                         device.check_power_up_while_connected().await;
@@ -108,27 +107,31 @@ pub(super) fn spawn_power_watch(device: MountDevice, polling_interval: Duration)
                 debug!("power watch: session closed, exiting");
                 return;
             }
-            let Some(path) = record_path.as_ref() else {
+            let power = device.manager.power();
+            let Some(store) = power.record() else {
                 continue;
             };
             // While the transport reconnects the snapshot is stale.
             if !device.manager.is_available() {
                 continue;
             }
-            let Some(record) = MountStateRecord::of(
-                &device.manager.snapshot().await,
-                device.manager.power().position(),
-            ) else {
+            let position = power.position();
+            let Some(record) = MountStateRecord::of(&device.manager.snapshot().await, position)
+            else {
                 continue;
             };
             if written == Some(record) {
                 continue;
             }
-            let target = path.clone();
-            let result = tokio::task::spawn_blocking(move || mount_state::write(&target, record))
-                .await
-                .map_err(|e| format!("the write did not finish: {e}"))
-                .and_then(|written| written.map_err(|e| e.to_string()));
+            let held = store.lock().await;
+            // The restore or the power-up check may have moved the
+            // position, and written the record, since `record` was
+            // derived: write only what still holds.
+            if power.position() != position {
+                continue;
+            }
+            let result = held.write(record).await;
+            drop(held);
             match result {
                 Ok(()) => {
                     debug!(?record, "mount state record written");

@@ -313,7 +313,7 @@ pub(super) fn write_mount_fields_to_config(
 /// # Errors
 ///
 /// Returns [`StarAdvError::Config`] naming the step that failed.
-pub(super) fn write_atomically(path: &Path, contents: &str) -> crate::error::Result<()> {
+pub fn write_atomically(path: &Path, contents: &str) -> crate::error::Result<()> {
     use std::io::Write;
 
     // Temp file must live in the **same directory** as the destination

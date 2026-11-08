@@ -29,6 +29,7 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
+use crate::mount_state::{MountStateRecord, ReadRecord};
 use crate::transport::mock::{
     AxisSimState, CapturingMockFactory, Fault, MockMountState, MockTransportFactory, ScriptedFault,
     StopCoast,
@@ -2426,6 +2427,177 @@ async fn the_cut_reaction_leaves_at_park_to_a_pending_power_up_check() {
     );
     assert!(!s.frame_anchored);
     assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+}
+
+// ---- A pending power-up check across a restart of the service ----
+
+/// One lifecycle of the service: a manager and its device over the mock
+/// mount `mock`, keeping the mount state record beside `config_path`. The
+/// mount on the other end of the wire outlives the lifecycle, as a
+/// powered controller outlives a restart of the service.
+fn lifecycle(mock: &Arc<tokio::sync::Mutex<MockMountState>>, config_path: &Path) -> MountDevice {
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = ApPark::ApPark3;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    std::fs::write(config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    let factory = CapturingMockFactory {
+        state: Arc::clone(mock),
+    };
+    let manager = MountManager::with_config_file_path(&cfg, Arc::new(factory), Some(config_path));
+    MountDevice::with_config_file_path(cfg.mount, manager, Some(config_path.to_path_buf()))
+}
+
+/// Wait for the writer that follows the mount to land a record `accept`
+/// takes; it writes from a task, a polling interval or so after a change.
+async fn wait_for_record(d: &MountDevice, accept: impl Fn(&ReadRecord) -> bool) -> ReadRecord {
+    let store = d.manager.power().record().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let read = store.lock().await.read().await;
+        if accept(&read) {
+            return read;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the mount state record never matched; last read {read:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Lifecycle one, with no client connected: the controller restarts
+/// after a cut no failed request dates, so its handshake writes the last
+/// position back and holds the power-up check. The device was connected
+/// before the cut and left the record at rest wherever `rest_at` put the
+/// mount. Answers the record the cut left.
+async fn restart_with_no_client_connected(
+    first: &MountDevice,
+    mock: &Arc<tokio::sync::Mutex<MockMountState>>,
+) -> ReadRecord {
+    first.set_connected(false).await.unwrap();
+    {
+        let mut s = mock.lock().await;
+        s.power_off();
+        s.power_on();
+    }
+    let session = first.manager.transport().acquire().await.unwrap();
+    session.close().await.unwrap();
+    first
+        .manager
+        .power()
+        .record()
+        .unwrap()
+        .lock()
+        .await
+        .read()
+        .await
+}
+
+#[tokio::test]
+async fn a_power_up_check_pending_across_a_restart_seeds_a_mount_at_its_power_up_pose() {
+    let mock = CapturingMockFactory::new().state;
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_path = dir.path().join("config.json");
+    let first = lifecycle(&mock, &config_path);
+    first.set_connected(true).await.unwrap();
+    let at_rest = wait_for_record(&first, |r| {
+        matches!(r, ReadRecord::Record(MountStateRecord::AtRest { .. }))
+    })
+    .await;
+    let ReadRecord::Record(MountStateRecord::AtRest {
+        ra_ticks,
+        dec_ticks,
+    }) = at_rest
+    else {
+        panic!("the wait answered {at_rest:?}, not a record at rest");
+    };
+    assert_eq!(
+        restart_with_no_client_connected(&first, &mock).await,
+        ReadRecord::Record(MountStateRecord::AwaitingCheck {
+            ra_ticks,
+            dec_ticks
+        })
+    );
+    drop(first);
+
+    let second = lifecycle(&mock, &config_path);
+    let mark = mock.lock().await.command_log.len();
+    second.set_connected(true).await.unwrap();
+    assert!(second.manager.power().position_known());
+    let after: Vec<Vec<u8>> = mock.lock().await.command_log[mark..].to_vec();
+    assert!(
+        after.iter().any(|c| c.starts_with(b":E1")) && after.iter().any(|c| c.starts_with(b":E2")),
+        "the check seeds the power-up pose; frames since the connect: {after:?}"
+    );
+    assert_eq!(
+        second
+            .manager
+            .power()
+            .record()
+            .unwrap()
+            .lock()
+            .await
+            .read()
+            .await,
+        ReadRecord::Record(MountStateRecord::AtRest {
+            ra_ticks,
+            dec_ticks
+        }),
+        "the check's outcome replaces the pending check before the connect completes"
+    );
+    second.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_power_up_check_pending_across_a_restart_loses_a_mount_at_rest_elsewhere() {
+    let mock = CapturingMockFactory::new().state;
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_path = dir.path().join("config.json");
+    let first = lifecycle(&mock, &config_path);
+    first.set_connected(true).await.unwrap();
+    // The mount comes to rest away from the power-up pose, as a sync or a
+    // slew leaves it.
+    mock.lock().await.ra.position_ticks = 100_000;
+    wait_for_record(&first, |r| {
+        matches!(
+            r,
+            ReadRecord::Record(MountStateRecord::AtRest {
+                ra_ticks: 100_000,
+                ..
+            })
+        )
+    })
+    .await;
+    assert!(matches!(
+        restart_with_no_client_connected(&first, &mock).await,
+        ReadRecord::Record(MountStateRecord::AwaitingCheck {
+            ra_ticks: 100_000,
+            ..
+        })
+    ));
+    drop(first);
+
+    let second = lifecycle(&mock, &config_path);
+    second.set_connected(true).await.unwrap();
+    assert_eq!(
+        second.manager.power().position(),
+        crate::power::Position::Lost,
+        "the restarted service checks the record instead of trusting the written-back estimate"
+    );
+    assert_eq!(
+        second
+            .manager
+            .power()
+            .record()
+            .unwrap()
+            .lock()
+            .await
+            .read()
+            .await,
+        ReadRecord::Record(MountStateRecord::Lost)
+    );
+    second.set_connected(false).await.unwrap();
 }
 
 #[tokio::test]
