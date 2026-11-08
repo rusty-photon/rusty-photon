@@ -172,18 +172,23 @@ Components:
   over it. `proxmox-runner-test.yml`'s Windows job asserts the ones known to
   matter before it builds — extend it whenever a workflow starts depending on
   something new from the image, and dispatch it after any template rebuild.
-* **The Windows runner needs an interactive desktop session.** The
+* **The Windows runner runs in an interactive desktop session.** The
   `gha-runner` task runs as `Administrator` with `LogonType=Interactive` and
   an **AtLogOn** trigger, and the template has autologon enabled
   (`AutoAdminLogon`/`DefaultUserName`/`DefaultPassword` under
   `HKLM\...\Winlogon`) so that session exists from boot. Running it as
-  SYSTEM instead puts the job in session 0, which has no desktop — and
-  OmniSim builds a **system tray icon** at startup, so it throws
+  SYSTEM instead puts the job in session 0, which has no desktop, and an
+  OmniSim that builds its **system tray icon** there throws
   `System.InvalidOperationException: TryCreate failed` and dies with exit
   code `0xe0434352`. Every BDD suite then fails or times out while `bazel
-  build` stays perfectly green, which is exactly how this stayed hidden until
-  the venue's first real job. GitHub's own hosted Windows images use the same
-  autologon arrangement.
+  build` stays perfectly green. The harness's `--multi-instance` instances
+  build no icon from fork release `v0.5.0-467.3`
+  ([omnisim.md § The Windows tray icon is machine-global too](../references/omnisim.md#the-windows-tray-icon-is-machine-global-too)),
+  so OmniSim no longer needs the desktop; whether anything else in the
+  Windows job does is unproven, and the template keeps the session until a
+  `proxmox-runner-test.yml` dispatch on a session-0 runner shows nothing
+  does. GitHub's own hosted Windows images use the same autologon
+  arrangement.
 
   **The credential tradeoff is deliberate and bounded.** Autologon stores the
   local administrator password in the registry in cleartext, which reads at
@@ -1496,14 +1501,11 @@ dangerous combination. The rule bifurcates by runner kind
     by hand before capture is optional tidiness, not the fix.
   * **Warm the template as the job account, in the console session — not
     through `qm guest exec`.** Guest-agent commands run as SYSTEM in session
-    0. There is no desktop there, so every OmniSim-backed BDD suite fails
-    exactly as it would under a SYSTEM runner (the interactive-session
-    bullet above), and Bazel puts its install base and repository cache
-    under SYSTEM's profile instead of
-    `C:\Users\Administrator\_bazel_Administrator`, where a job looks for
-    them. Drive the warmup through a one-shot scheduled task registered for
-    `Administrator` with `-LogonType Interactive`, which runs inside the
-    autologon session just as `gha-runner` does, and with
+    0, where Bazel puts its install base and repository cache under SYSTEM's
+    profile instead of `C:\Users\Administrator\_bazel_Administrator`, where a
+    job looks for them. Drive the warmup through a one-shot scheduled task
+    registered for `Administrator` with `-LogonType Interactive`, which runs
+    inside the autologon session just as `gha-runner` does, and with
     `New-ScheduledTaskSettingsSet -Priority 4` so it runs at the priorities a
     job gets (the priority bullet above says why). Have it write a log file,
     poll that with `qm guest exec`, and unregister the task before capture.

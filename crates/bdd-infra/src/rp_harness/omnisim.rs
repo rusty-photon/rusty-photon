@@ -13,10 +13,17 @@
 //! contending for one simulator. This is what lets Bazel run the
 //! OmniSim-backed suites in parallel and shard `rp:bdd` (issue #467).
 //!
+//! The flag also skips the Windows tray icon (fork release `v0.5.0-467.3`,
+//! the version floor), whose identity is just as machine-global: the icon
+//! library keys it on the binary's path, and each instance's startup
+//! deletes, re-adds and re-versions that one icon. Two instances starting
+//! together interleave those calls, and the loser dies of an unhandled .NET
+//! exception (exit code `0xe0434352`) before it serves anything.
+//!
 //! The settings dir is passed via `OMNISIM_SETTINGS_DIR` (fork release
-//! `v0.5.0-467.2`, the version floor), NOT `XDG_CONFIG_HOME`: .NET honors
-//! XDG only on non-macOS Unix, so on macOS `OmniSim`'s profile store defaults
-//! to the shared `~/Library/Application Support` (and on Windows to
+//! `v0.5.0-467.2`), NOT `XDG_CONFIG_HOME`: .NET honors XDG only on
+//! non-macOS Unix, so on macOS `OmniSim`'s profile store defaults to the
+//! shared `~/Library/Application Support` (and on Windows to
 //! `%USERPROFILE%\.ASCOM`), neither redirectable by any environment
 //! variable. Concurrent instances sharing one profile store race their
 //! startup write-backs and leak persisted *settings* across suites — on
@@ -147,11 +154,12 @@ impl OmniSimHandle {
     /// 3. `ascom.alpaca.simulators` on `PATH`
     ///
     /// The binary must support `--multi-instance` and `OMNISIM_SETTINGS_DIR`
-    /// (fork release `v0.5.0-467.2` or newer). An older binary either exits
+    /// (fork release `v0.5.0-467.3` or newer). An older binary either exits
     /// immediately when another instance is running (pre-467.1, surfaces
-    /// here as a spawn failure naming the flag) or silently ignores the
+    /// here as a spawn failure naming the flag), silently ignores the
     /// settings-dir override and shares the platform-default profile store
-    /// with every other instance (467.1 on macOS/Windows).
+    /// with every other instance (467.1 on macOS/Windows), or builds the
+    /// Windows tray icon that concurrent instances crash on (467.2).
     pub async fn start() -> Self {
         let process = OMNISIM
             .get_or_init(|| async { OmniSimProcess::get_or_spawn().await })
@@ -1042,9 +1050,11 @@ impl OmniSimProcess {
             "failed to start OmniSim binary '{binary}' after {SPAWN_ATTEMPTS} attempts: {last_failure}. \
              Note: bdd-infra spawns OmniSim with --multi-instance and \
              OMNISIM_SETTINGS_DIR, which need the patched fork \
-             (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.2 or \
+             (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.3 or \
              newer) — an older binary exits at startup when any other \
-             OmniSim instance is running on the host. `bazel run \
+             OmniSim instance is running on the host, or on Windows can \
+             crash building its tray icon when another instance starts \
+             at the same time. `bazel run \
              //.github/actions:install -- omnisim` installs the release CI \
              pins."
         );
@@ -1631,6 +1641,10 @@ impl OmniSimProcess {
     /// pre-`--multi-instance` binary deferring to another running
     /// instance, a startup crash) fails fast with its exit status instead
     /// of burning the full 30-second health window.
+    ///
+    /// The exit status alone does not tell those apart, so the failure
+    /// points at the child's stderr (see [`Self::open_log_files`]), where
+    /// a crash leaves its exception and stack trace.
     async fn wait_healthy(
         child: &mut std::process::Child,
         bound_port: std::sync::mpsc::Receiver<u16>,
@@ -1640,8 +1654,9 @@ impl OmniSimProcess {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!(
-                    "OmniSim exited during startup ({status}) — the binary may not \
-                     support --multi-instance"
+                    "OmniSim exited during startup ({status}) — its stderr names the \
+                     cause; an unhandled .NET exception (exit code 0xe0434352 on \
+                     Windows) prints its stack trace there"
                 ));
             }
             if port.is_none() {
@@ -2390,7 +2405,7 @@ mod tests {
     #[tokio::test]
     async fn wait_healthy_fails_fast_when_the_child_exits() {
         // Portable quick-exit child: the health wait must report the exit
-        // (with the --multi-instance hint) instead of burning the full
+        // (pointing at the child's stderr) instead of burning the full
         // 30-second window waiting for a port it will never report.
         let mut child = if cfg!(windows) {
             std::process::Command::new("cmd")
@@ -2408,7 +2423,7 @@ mod tests {
             .await
             .expect_err("an exited child must fail the health wait");
         assert!(err.contains("exited during startup"), "{err}");
-        assert!(err.contains("--multi-instance"), "{err}");
+        assert!(err.contains("its stderr names the cause"), "{err}");
     }
 
     /// A child that stays alive for about `seconds`, then exits: the
@@ -2867,7 +2882,7 @@ mod tests {
             message.contains(&format!("after {SPAWN_ATTEMPTS} attempts")),
             "{message}"
         );
-        assert!(message.contains("v0.5.0-467.2"), "{message}");
+        assert!(message.contains("v0.5.0-467.3"), "{message}");
     }
 
     #[test]

@@ -1653,8 +1653,8 @@ RA you asked for, and the size of the miss is a wall-clock artefact of
 the runner. A scenario that syncs to an RA and then asserts the mount
 reports that same RA back is asserting on how fast the machine is.
 
-The mechanism, measured against the pinned OmniSim release
-(`v0.5.0-467.2`):
+The mechanism, measured against the fork's `v0.5.0-467.2` release (the
+pinned `467.3` carries its telescope code unchanged):
 
 - `MountFunctions.ConvertRaDecToAxes` builds the mount axis from the
   **cached** `TelescopeHardware.SiderealTime`, which is refreshed only
