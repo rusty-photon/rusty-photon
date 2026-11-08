@@ -1,12 +1,36 @@
-//! Cooling steps.
+//! Cooling steps, and the sensor reading the suite sets on the simulated
+//! camera (K2).
 
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 
 use crate::world::CameraWorld;
+
+#[given("the qhy-camera service running with a simulated camera whose temperature reading the suite can set")]
+async fn service_with_a_settable_reading(world: &mut CameraWorld) {
+    world.temperature_file = Some(world.scratch_dir().join("temperature"));
+    world.start().await;
+}
+
+/// Writes the reading verbatim, so a scenario can hand the sensor a number
+/// no camera can report, `NaN` included.
+#[when(regex = r"^the sensor of camera device (\d+) reads (\S+)$")]
+async fn sensor_reads(world: &mut CameraWorld, _device: u32, reading: String) {
+    let file = world
+        .temperature_file
+        .as_ref()
+        .expect("the service was not started with a temperature file");
+    std::fs::write(file, reading).expect("write the temperature file");
+}
 
 #[then(regex = r"^camera device (\d+) reports a finite CCDTemperature$")]
 async fn finite_ccd_temperature(world: &mut CameraWorld, _device: u32) {
     assert!(world.camera().ccd_temperature().await.unwrap().is_finite());
+}
+
+#[then(regex = r"^camera device (\d+) reports CCDTemperature as (-?[0-9.]+)$")]
+async fn reports_ccd_temperature(world: &mut CameraWorld, _device: u32, expected: f64) {
+    let actual = world.camera().ccd_temperature().await.unwrap();
+    assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
 }
 
 #[when(regex = r"^I set the target CCD temperature to (-?[0-9.]+) on camera device (\d+)$")]

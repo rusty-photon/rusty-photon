@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queries after each open answer `false`, as a real plug query occasionally
   misses a wheel. A new `cfw_plug_misses` field, with the same struct literal
   note as `departure_file`. Simulation only.
+- `SimulatedCameraConfig::with_temperature_file(path)`: while `path` exists, a
+  `CurTemp` read answers the number written in it, as a real camera's reading
+  can go bad, and fails with `QHYError::GetParameter` when the file holds no
+  number. Checked on every read, like the departure file. A new
+  `temperature_file` field, with the same struct literal note as
+  `departure_file`. Simulation only.
 - `examples/enumerate.rs`, a hand-run probe that prints each camera's id and
   model without opening one (`GetQHYCCDModel` takes the id, so no
   `OpenQHYCCD` precedes it).
