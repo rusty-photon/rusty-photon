@@ -360,7 +360,10 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       other service.
 11. **Dusk checks each camera for a wedge** (settled 2026-11-07). After the
     connect, the dusk document takes one short test exposure per camera. A
-    frame late by more than a fixed margin, or all zero, counts as a wedge.
+    frame that fails, comes late by more than a fixed margin, or reads all
+    zero counts as a wedge: a wedged camera reads out for a minute or more,
+    longer than `phd2-guider`'s camera facade waits for a frame, so through
+    the facade a wedge fails the exposure.
     The document then disconnects through rp every device on the camera's
     outputs, the camera and its wheel among them (decision 3), cuts the
     outputs, switches them back on, waits for the devices to settle
