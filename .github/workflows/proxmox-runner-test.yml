@@ -22,8 +22,8 @@
 # The test steps pass --cache_test_results=no. This workflow exists to prove
 # the guest can run the suites, and a cached result proves nothing about the
 # guest: with the remote cache warm, a dispatch reports every test passed
-# without starting OmniSim once, so a template that cannot run it (a runner
-# in session 0 on Windows, a missing SDK) would still come back green.
+# without starting OmniSim once, so a template that cannot run it (a missing
+# OmniSim or SDK) would still come back green.
 permissions:
   contents: read
 on:

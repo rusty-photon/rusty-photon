@@ -4,8 +4,9 @@
 //
 // The SHA-256 values are pinned against the OmniSim release assets named
 // below. They point at the patched fork ivonnyssen/ASCOM.Alpaca.Simulators
-// (REPO), tag v0.5.0-467.2 = v0.5.0-326.4 + --multi-instance +
-// OMNISIM_SETTINGS_DIR.
+// (REPO), tag v0.5.0-467.3 = v0.5.0-326.4 + --multi-instance +
+// OMNISIM_SETTINGS_DIR, with --multi-instance also skipping the Windows
+// tray icon.
 //
 // 467.x (rusty-photon #467) enables one private OmniSim per test process
 // — the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
@@ -15,9 +16,13 @@
 // store — the default location is not redirectable on Windows or macOS,
 // where concurrent instances otherwise share one store and leak
 // persisted settings across suites; that took down 4 of 8 rp:bdd shards
-// on macOS CI). bdd-infra ALWAYS passes both now, so this pin is a hard
+// on macOS CI); 467.3 makes --multi-instance skip the Windows tray icon
+// too, whose identity (a hash of the binary's path) is as machine-global
+// as the mutex: instances starting together fight over it, and the loser
+// dies of an unhandled .NET exception (exit code 0xe0434352) before it
+// serves anything. bdd-infra ALWAYS passes both, so this pin is a hard
 // floor: an older binary exits at startup whenever another instance is
-// running, or silently shares the profile store.
+// running, silently shares the profile store, or crashes on the icon.
 //
 // The carried 326.x series fixes TelescopeHardware slew bugs behind the
 // center_on_target hang/flake (rusty-photon/rusty-photon #326, #319):
@@ -52,29 +57,29 @@ import {
 
 /** The GitHub repo, and its release, whose assets ASSETS pins. */
 export const REPO = 'ivonnyssen/ASCOM.Alpaca.Simulators';
-export const VERSION = 'v0.5.0-467.2';
+export const VERSION = 'v0.5.0-467.3';
 
 /** Each runner's release asset and its SHA-256. */
 export const ASSETS = {
   'Linux-X64': {
     name: 'ascom.alpaca.simulators.linux-x64.tar.xz',
-    sha256: '238cc7aa301b2d6cb3ad3ea07de8e55fa190007b086d49291eccd608741f834b',
+    sha256: '3063f9d6476b64c31a6f849d89972c5f0282ce72154338f4e1cf7c6d1f52c5a2',
   },
   'Linux-ARM64': {
     name: 'ascom.alpaca.simulators.linux-aarch64.tar.xz',
-    sha256: '22706e0f52d3ac46ab2c8612c4f231bb6e8c01a9eb814b3325f350ed5239ff49',
+    sha256: '395e82e341fd625d6f69bf1c37f63a70cbab422da61a3db8f7cafa8f80c4df35',
   },
   'macOS-ARM64': {
     name: 'ascom.alpaca.simulators.macos-arm64.zip',
-    sha256: '8abc316ae14b9f40e860ff2423b377c32e6b348cd8d8b12dee4f4b37654aa4c3',
+    sha256: '878e49a1727d6ae8bc38cc3a74678a5cd296dfe12ebd2f4355531fac1ff7bc9d',
   },
   'macOS-X64': {
     name: 'ascom.alpaca.simulators.macos-x64.zip',
-    sha256: '9f08339510ac72c14c073fc7e1d5cb7b14133d83564a5bbd1a95d7c3838d33e0',
+    sha256: '06ebd4295090a22008e2532bd487675d94c8f406832b57068b86bb0d87d8cc0f',
   },
   'Windows-X64': {
     name: 'ascom.alpaca.simulators.windows-x64.zip',
-    sha256: 'dc5dc71c7149b66ad9b5cc728d3a3c384d0b12587dc6f3b3d405f28fcf5f46ba',
+    sha256: '6b8e5859e882f033368966877fbcbf1caae66219e24d83f1a348861cfd4686ea',
   },
 };
 

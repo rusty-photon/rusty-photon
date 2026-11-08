@@ -8640,9 +8640,12 @@ and exports `OMNISIM_PATH`.
 
 **CI pins a patched fork**, not upstream: `REPO` and `VERSION` in
 `.github/actions/install-omnisim/omnisim.mjs` name
-[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.2`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.2).
+[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.3`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.3).
 The `467.x` releases (issue #467) add the `--multi-instance` flag (467.1,
-skips upstream's machine-global single-instance mutex) and the
+skips upstream's machine-global single-instance mutex; 467.3, also skips
+the Windows tray icon, whose identity is just as machine-global and which
+instances starting together crash on — `docs/references/omnisim.md`
+§ "The Windows tray icon is machine-global too") and the
 `OMNISIM_SETTINGS_DIR` env var (467.2, re-roots the profile store per
 instance on every platform — the default store is not redirectable on
 Windows or macOS). The harness always spawns OmniSim with both, so **the

@@ -241,7 +241,7 @@ test('installAt installs into a new directory and gives OMNISIM_PATH, exporting 
     });
     assert.equal(readFileSync(join(dir, BINARY), 'utf8'), 'the simulators');
     if (process.platform !== 'win32') assert.equal(statSync(join(dir, BINARY)).mode & 0o777, 0o755);
-    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'OmniSim v0.5.0-467.2, omnisim.tar.gz\n');
+    assert.equal(readFileSync(join(dir, INSTALLED), 'utf8'), 'OmniSim v0.5.0-467.3, omnisim.tar.gz\n');
     assert.deepEqual(readdirSync(join(parent, 'opt')), ['omnisim']);
     assert.equal(out.env, '');
     assert.equal(out.path, '');
