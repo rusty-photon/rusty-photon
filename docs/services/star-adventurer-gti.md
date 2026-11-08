@@ -2789,7 +2789,10 @@ firmware encoder reading is within `FRESH_POWER_UP_TICK_TOLERANCE`
 (currently 10 ticks, ~4″) of `(0, 0)`. When the configured value is
 `ap_park_0` the seed is unconditionally skipped — the operator has
 asserted that they will ground-truth the position themselves and the
-driver does not touch the encoder.
+driver does not touch the encoder. A connect that runs a pending power-up
+check ([§Power cut while serving](#power-cut-while-serving)) skips the
+encoder test: the encoders hold the estimate the restore wrote back, and
+the [mount state record](#the-mount-state-record) alone decides.
 
 The tolerance exists because the Sky-Watcher firmware does not always
 read exactly `(0, 0)` after a power-cycle — empirically the
@@ -2875,24 +2878,36 @@ doing:
   still reads true. But the position is **lost**.
 
 A lost position does not depend on the outage: no record written before
-that motion can say where the mount stopped.
+that motion can say where the mount stopped. The restore writes `lost` to
+the [mount state record](#the-mount-state-record).
 
 **A long outage** of a mount that was stopped or tracking writes the
 estimate back too, but trusts nothing. Past 30 s, or with no failed
 request to date the outage, the cut is not a blip: it may be a planned
 one, and someone may have moved the mount by hand while it was off.
 The encoders hold the written-back estimate, so a sync still reads the
-pier side from it, and the position **awaits the power-up check**. That check is the one a power-up connect makes
-against the [mount state record](#the-mount-state-record): it seeds the
-configured pose when the record says the mount came to rest there, and
-otherwise loses the position. A missing record loses it too, because
-after a restart the driver saw, it cannot mean a first install.
-`ap_park_0` names no pose to check against, so its position is lost. A
-mount that was parked stays parked when the check seeds its park pose.
-The check runs at once when a client is connected, and at the next
-connect when none is. Thirty seconds holds a
-blip and the transport's 5 s retry. A WiFi GTi whose access point takes
-longer to come back gets the check instead of the restore.
+pier side from it, and the position **awaits the power-up check**. That
+check is the one a power-up connect makes against the
+[mount state record](#the-mount-state-record): it seeds the configured
+pose when the record says the mount came to rest there, and otherwise
+loses the position. Only a record that says at rest leaves the outcome
+to the configured pose, so the restore settles every other record itself
+and loses the position at once:
+
+- no record, which after a restart the driver saw cannot mean a first
+  install;
+- a record that says moving or lost, or one that does not parse.
+
+For a record that says at rest, or already awaits the check, the restore
+leaves `awaiting_check` with the same ticks, and the check stays pending
+until a connect runs it: at once when a client is connected, and otherwise at the
+next connect, in this process or a later one. The record holds the check,
+not the process, so a reload or a restart of the service before that
+connect does not drop it. `ap_park_0` names no pose to check against, so
+its position is lost. A mount that was parked stays parked when the check
+seeds its park pose. Thirty seconds holds a blip and the transport's 5 s
+retry. A WiFi GTi whose access point takes longer to come back gets the
+check instead of the restore.
 
 An encoder write is not actuation: nothing moves, and the restarted
 firmware holds every axis still. The driver does not restart tracking:
@@ -2949,35 +2964,59 @@ record beside its config file, named after it:
 |---|---|---|
 | `{"state":"at_rest","ra_ticks":…,"dec_ticks":…}` | both axes stopped at these ticks | the mount comes to rest, or the ticks of a mount at rest change (a sync, the recovery, the seed) |
 | `{"state":"moving"}` | an axis is running | an axis starts from rest |
+| `{"state":"awaiting_check","ra_ticks":…,"dec_ticks":…}` | the mount came to rest at these ticks, its controller has restarted since after a long cut, and no connect has run the power-up check yet | the restore after a long cut finds a record that says at rest ([§Power cut while serving](#power-cut-while-serving)) |
 | `{"state":"lost"}` | the position is lost | the driver loses the position |
 
 The record is written only when its state changes, never on each poll or
-pulse. A write that fails is retried on every tick until it lands, with
-one `warn!`, because an older record left on disk can mislead the next
-power-up. A night of imaging writes it about twice: at the first slew and
-at the dawn park. The writer runs only while a client is connected,
-because that is the only time anything can move the mount. It derives
-the state from the snapshot the poll refreshes. It skips while the
-transport is reconnecting, while an axis has no status since the last
-handshake, and while a power-up check is pending, because the record is
-that check's evidence. The write is atomic: a temp file in the same
-directory, `fsync`'d and renamed, like `SetPark`'s.
+pulse. A night of imaging writes it about twice: at the first slew and
+at the dawn park. Three writers keep it:
+
+- **The writer that follows the mount** runs only while a client is
+  connected, because that is the only time anything can move the mount.
+  It derives at rest, moving or lost from the snapshot the poll
+  refreshes. It skips while the transport is reconnecting, while an axis
+  has no status since the last handshake, and while a power-up check is
+  pending, because the record is that check's evidence. A write that
+  fails is retried on every tick until it lands, with one `warn!`,
+  because an older record left on disk can mislead the next power-up.
+- **The restore** writes it whether or not a client is connected,
+  because a controller restart is the one change that comes without one:
+  `awaiting_check` or `lost` after a long cut, and `lost` when the mount
+  was moving. It writes before the transport serves again. A write that
+  fails is logged at `warn!` and not retried: the process still holds
+  the check or the lost position, but a reload or a restart before the
+  next connect drops it.
+- **The power-up check** writes its outcome when it settles a pending
+  check: at rest at the seeded pose, or lost. It writes before the
+  position settles, so the record never says `awaiting_check` once the
+  mount can move again. If the outcome cannot be written, the check
+  fails: a connect fails and leaves the check pending for the next one,
+  and a check that runs while a client is connected loses the position,
+  as any failed check does.
+
+One lock orders every read and write of the record, so a write the
+writer that follows the mount decided before a cut cannot land after the
+restore's. Every write is atomic: a temp file in the same directory,
+`fsync`'d and renamed, like `SetPark`'s.
 
 Every connect reads the record. A record that says lost keeps the
 position lost, whatever the encoders read: the in-memory state does not
 survive a reload, nor a restart of the service while the controller
 keeps its power and the estimate written back. A lost position is never
-seeded.
+seeded. A record that says `awaiting_check` holds a power-up check that
+no connect has run, for the same reason: the connect runs it, whatever
+the encoders read.
 
-On a fresh-power-up connect with a named `unpark_from_ap_position`, the
-seed also checks the record against the configured pose:
+On a fresh-power-up connect with a named `unpark_from_ap_position`, or a
+connect that runs a pending power-up check, the seed also checks the
+record against the configured pose:
 
 - **No record** (a first install): the seed runs, as the operator's
-  assertion says. Not after a restart the driver saw while serving:
-  there, a missing record loses the position.
-- **At rest at the seed pose**, within the fresh-power-up tolerance of
-  that pose's ticks: the seed runs. This is the dawn park that the
-  daily power-cycle plan requires.
+  assertion says. Not for a pending check, which follows a restart the
+  driver saw while serving: there, a missing record loses the position.
+- **At rest at the seed pose** (`at_rest` or `awaiting_check`), within
+  the fresh-power-up tolerance of that pose's ticks: the seed runs. This
+  is the dawn park that the daily power-cycle plan requires.
 - **At rest elsewhere, moving or lost, or a record that does not
   parse:** no seed, and the position is lost.
 
@@ -3261,7 +3300,9 @@ src/
                            projects a sample to the read instant).
                            Handshake + poll loop +
                            on-last-disconnect / shutdown teardown live
-                           in `Hooks` closures.
+                           in `Hooks` closures. Holds the mount state
+                           record's store, which the handshake's restore
+                           writes after a controller restart.
   power.rs               — `PowerWatch` (the lost flag, the first failed
                            poll, the restarts found while serving) and
                            `position_to_restore`, what a restarted
@@ -3313,7 +3354,9 @@ src/
                            (read-as-`Value` + atomic-rename pattern)
                            and the boot-time writability probe
     mount_state.rs       — the mount state record beside the config
-                           file, and what a power-up connect makes of it
+                           file, the store whose lock orders every read
+                           and write of it, what a long cut makes of it,
+                           and what a power-up connect makes of it
     power_watch.rs       — per-connection task: drops what a power cut
                            ended and keeps the mount state record current
     tests.rs             — `#[cfg(test, feature = "mock")]` unit tests
@@ -3898,7 +3941,8 @@ init handshake:
   :g1, :g2          (high-speed ratio)     → cache
   :j1, :j2          (initial positions)    → cache + snapshot
   :E1, :E2          (restarted while serving only: the last
-                     known position written back)
+                     known position written back; after a long cut
+                     or a move, the mount state record too)
    ↓
 safety stop:
   :L1, :L2, :K1     (halt both axes, stop tracking) — the same
@@ -3919,7 +3963,9 @@ Connected = true   → acquire a session (refcount bump; the transport is
                      then the post-acquire hooks run in order:
   1. seed_after_connect — if unpark_from_ap_position ∈ ap_park_1..ap_park_5
        AND the firmware encoder is within FRESH_POWER_UP_TICK_TOLERANCE of
-       (0, 0):  :E1, :E2  (seed encoder to the AP pose's codebase convention)
+       (0, 0), or a power-up check is pending (in memory, or as the mount
+       state record's awaiting_check), and the mount state record allows
+       it:  :E1, :E2  (seed encoder to the AP pose's codebase convention)
   2. load_park_target_after_connect — resolve the in-memory park ticks:
        raw config override per axis, else preferred_ap_park pose ticks when
        the frame is anchored (named unpark_from_ap_position), else no target
