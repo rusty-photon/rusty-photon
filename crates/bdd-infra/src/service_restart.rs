@@ -107,13 +107,20 @@ pub fn assert_accepted(state: &ServiceRestartState, status: u16) {
     );
 }
 
-/// Wait for the service to exit by itself, and assert its exit code.
+/// What the runner logs when a service asked to restart has closed in
+/// order and exits; an exit at the close deadline never logs it
+/// (`rusty-photon-service-lifecycle`'s `finish_console`).
+pub const CLOSED_IN_ORDER: &str = "closed after the restart request; exiting with code";
+
+/// Wait for the service to exit by itself, and assert it closed in order
+/// before exiting with `code`, rather than reaching the close deadline,
+/// whose exit has the same code.
 ///
 /// # Panics
 ///
-/// Panics when it is still running after the budget, or exits with
-/// another code.
-pub async fn assert_exits_with(service: &mut ServiceHandle, code: i32) {
+/// Panics when it is still running after the budget, exits with another
+/// code, or exits without having closed.
+pub async fn assert_closes_and_exits_with(service: &mut ServiceHandle, code: i32) {
     let status = service.wait_exit(EXIT_BUDGET).await.unwrap_or_else(|| {
         panic!("the service was still running {EXIT_BUDGET:?} after the restart request")
     });
@@ -121,6 +128,20 @@ pub async fn assert_exits_with(service: &mut ServiceHandle, code: i32) {
         status.code(),
         Some(code),
         "the service's exit status: {status}"
+    );
+    let lines = service.stderr_lines();
+    assert!(
+        lines.iter().any(|line| line.contains(CLOSED_IN_ORDER)),
+        "the service exited without logging that it closed after the restart request; its \
+         close reached the deadline, or the line changed. Its last lines:\n{}",
+        lines
+            .iter()
+            .rev()
+            .take(10)
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -150,10 +171,11 @@ macro_rules! service_restart_steps {
             $crate::service_restart::assert_accepted(world.service_restart(), status);
         }
 
-        #[::cucumber::then(expr = "the service exits with code {int}")]
+        #[::cucumber::then(expr = "the service closes, then exits with code {int}")]
         async fn service_restart_exits(world: &mut $world, code: i32) {
             use $crate::service_restart::ServiceRestartWorld as _;
-            $crate::service_restart::assert_exits_with(world.restarted_service(), code).await;
+            $crate::service_restart::assert_closes_and_exits_with(world.restarted_service(), code)
+                .await;
         }
     };
 }

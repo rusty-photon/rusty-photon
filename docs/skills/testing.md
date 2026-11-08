@@ -686,8 +686,10 @@ trait (the state and the running service's `ServiceHandle`), and invokes
 the macro in its `restart_steps.rs`; the feature starts the service with the
 suite's own steps, asks it to restart, and checks the `202` naming its own
 process and the exit with code 75, read through
-`ServiceHandle::wait_exit`. No service manager runs under test, so nothing
-starts the service again. `ppba-driver`'s suite is the reference.
+`ServiceHandle::wait_exit`. The close deadline's exit has the same code, so
+the step also requires the line the runner logs only when the service has
+closed in order. No service manager runs under test, so nothing starts the
+service again. `ppba-driver`'s suite is the reference.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or

@@ -297,7 +297,7 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
-    let restart = console_restart(name, token.clone());
+    let restart = console_restart(token.clone());
     let shutdown = Shutdown::new(token.clone(), restart.clone());
     let installed = spawn_shutdown_watcher(&rt, name, token);
     let result = rt.block_on(async move {
@@ -314,7 +314,7 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
-    let restart = console_restart(name, token.clone());
+    let restart = console_restart(token.clone());
     let shutdown = Shutdown::new(token.clone(), restart.clone());
     let reload = ReloadSignal::new();
     let installed = spawn_shutdown_watcher(&rt, name, token);
@@ -329,11 +329,14 @@ where
 
 /// The console-mode restart: its exit ends the process with the restart
 /// code.
-fn console_restart(name: &'static str, token: tokio_util::sync::CancellationToken) -> Restart {
+///
+/// Its watchdog has logged that the close did not finish, so the exit says
+/// nothing more.
+fn console_restart(token: tokio_util::sync::CancellationToken) -> Restart {
     Restart::with_exit(
         token,
         RESTART_CLOSE_DEADLINE,
-        Arc::new(move || exit_for_restart(name)),
+        Arc::new(|| exit_once(RESTART_EXIT_CODE)),
     )
 }
 
@@ -341,19 +344,21 @@ fn console_restart(name: &'static str, token: tokio_util::sync::CancellationToke
 /// exit with the restart code without returning, so the runtime is never
 /// dropped and a blocking task a hung driver call holds cannot hold the
 /// exit.
+///
+/// The line it logs on the way out says the service closed in order, which
+/// an exit at the close deadline never logs: each driver's restart scenario
+/// tells the two apart by it.
 fn finish_console(name: &'static str, restart: &Restart, result: RunResult) -> ServiceResult {
     if restart.is_requested() {
         if let Err(e) = &result {
             tracing::warn!("{name}: the run ended with an error while restarting: {e}");
         }
-        exit_for_restart(name);
+        tracing::info!(
+            "{name}: closed after the restart request; exiting with code {RESTART_EXIT_CODE}"
+        );
+        exit_once(RESTART_EXIT_CODE);
     }
     result.map_err(report_from_boxed)
-}
-
-fn exit_for_restart(name: &'static str) -> ! {
-    tracing::info!("{name}: exiting with code {RESTART_EXIT_CODE} to restart");
-    exit_once(RESTART_EXIT_CODE)
 }
 
 /// The platform's "stop this process" event, for the shutdown log line.

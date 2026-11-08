@@ -12,4 +12,4 @@ Feature: Restart on request
     When I start the PPBA server
     And a client asks the service to restart
     Then the service accepts the restart request with status 202, naming its own process
-    And the service exits with code 75
+    And the service closes, then exits with code 75
