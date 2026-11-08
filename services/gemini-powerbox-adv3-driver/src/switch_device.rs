@@ -262,9 +262,9 @@ impl GeminiSwitchDevice {
         let set = self.command_for(session, switch_id, value).await?;
 
         debug!(id, value, command = %set.wire(), "sending switch write");
-        let frame = self.manager.send_set(session, set).await?;
-        if frame.confirms(&set) {
-            self.manager.store_status(&frame).await;
+        let readback = self.manager.send_set(session, set).await?;
+        if readback.frame.confirms(&set) {
+            self.manager.store_status(&readback).await;
             drop(guard);
             return Ok(());
         }
@@ -273,7 +273,7 @@ impl GeminiSwitchDevice {
         // it and is read first; one more look tells that from a refusal.
         debug!(
             id,
-            reported = frame.reported(&set),
+            reported = readback.frame.reported(&set),
             "readback does not show the write; asking once more"
         );
         let frame = self.manager.refresh_status(session).await?;

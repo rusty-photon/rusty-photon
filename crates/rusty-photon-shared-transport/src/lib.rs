@@ -26,6 +26,11 @@
 //! returns when the exchange crossed the host's side of the wire
 //! ([`WireTiming`]).
 //!
+//! A caller stores what its request brought back after its turn on the
+//! wire ends, so stores can land out of wire order — a poll's after a
+//! write's. A cache that more than one task writes keeps each value with
+//! the instant it was read and refuses an older one: [`ReadStamp`].
+//!
 //! There are two lifecycles. In `LazyAcquire` the conduit follows the
 //! clients: the first `acquire` opens it and runs the handshake, the
 //! last release closes it. In `ServiceLifetime` — what a driver gets
@@ -76,6 +81,7 @@
 pub mod codec;
 pub mod connection;
 pub mod error;
+pub mod read_stamp;
 pub mod session;
 pub mod shared;
 pub mod transport;
@@ -83,6 +89,7 @@ pub mod transport;
 pub use codec::Codec;
 pub use connection::{Connection, WireTiming};
 pub use error::{SessionError, TransportError};
+pub use read_stamp::ReadStamp;
 pub use session::{Hooks, Session, StateAssertion, WhileOpen};
 pub use shared::SharedTransport;
 pub use transport::{

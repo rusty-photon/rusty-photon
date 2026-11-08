@@ -11,28 +11,36 @@
 //!   and detects move completion.
 //! * The cached state the ASCOM `Focuser` properties read (`position`,
 //!   `is_moving`, `temperature`, …).
+//!
+//! Each reading is stored with the instant it was read off the wire, and
+//! the cache keeps the reading taken last ([`ReadStamp`]). Requests take
+//! turns on the wire, but each stores its reading after its turn ends, so
+//! a poll's position can land after the one `is_moving`'s refresh read at
+//! the target; the poll's is then the older one and is dropped.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
-    WhileOpen,
+    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::{debug, warn};
 
 use crate::codec::{QhyCodec, QhyCodecError, QhyResponse};
 use crate::config::Config;
 use crate::error::{QhyFocuserError, Result};
-use crate::protocol::Command;
+use crate::protocol::{Command, TemperatureResponse};
 
 /// Cached state from the QHY Q-Focuser device.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
     /// Current focuser position.
     pub position: Option<i64>,
+    /// When [`position`](Self::position) was read off the wire.
+    pub position_read: ReadStamp,
     /// Target position for the in-flight move.
     pub target_position: Option<i64>,
     /// True between move start and the poll that observes target reached
@@ -44,6 +52,8 @@ pub struct CachedState {
     pub chip_temp: Option<f64>,
     /// Input voltage (V).
     pub voltage: Option<f64>,
+    /// When the temperatures and the voltage were read off the wire.
+    pub temperature_read: ReadStamp,
     /// Firmware version reported by the handshake.
     pub firmware_version: Option<String>,
     /// Board version reported by the handshake.
@@ -155,8 +165,8 @@ impl FocuserManager {
     /// skip budget), or [`QhyFocuserError::InvalidResponse`] if the reply is
     /// not a position frame.
     pub async fn refresh_position(&self, session: &Session<QhyCodec>) -> Result<()> {
-        let resp = session
-            .request(Command::GetPosition)
+        let (resp, timing) = session
+            .request_timed(Command::GetPosition)
             .await
             .map_err(QhyFocuserError::from)?;
         let position = match resp {
@@ -168,7 +178,7 @@ impl FocuserManager {
             }
         };
         let mut state = self.cached_state.write().await;
-        apply_position(&mut state, position);
+        apply_position(&mut state, position, timing.received_at);
         Ok(())
     }
 }
@@ -220,9 +230,9 @@ async fn handshake(
     conn.request(Command::SetSpeed { speed }).await?;
     debug!(speed, "Q-Focuser handshake: speed set");
 
-    let position = match conn.request(Command::GetPosition).await? {
-        QhyResponse::Position(p) => p,
-        other => {
+    let (position, position_read_at) = match conn.request_timed(Command::GetPosition).await? {
+        (QhyResponse::Position(p), timing) => (p, timing.received_at),
+        (other, _) => {
             return Err(QhyCodecError::InvalidResponse(format!(
                 "GetPosition returned non-Position frame: {other:?}"
             )));
@@ -233,9 +243,9 @@ async fn handshake(
         "Q-Focuser handshake: position"
     );
 
-    let temp = match conn.request(Command::ReadTemperature).await? {
-        QhyResponse::Temperature(t) => t,
-        other => {
+    let (temp, temp_read_at) = match conn.request_timed(Command::ReadTemperature).await? {
+        (QhyResponse::Temperature(t), timing) => (t, timing.received_at),
+        (other, _) => {
             return Err(QhyCodecError::InvalidResponse(format!(
                 "ReadTemperature returned non-Temperature frame: {other:?}"
             )));
@@ -250,10 +260,7 @@ async fn handshake(
     let mut state = cached_state.write().await;
     state.firmware_version = Some(version.firmware_version);
     state.board_version = Some(version.board_version);
-    state.position = Some(position.position);
-    state.outer_temp = Some(temp.outer_temp);
-    state.chip_temp = Some(temp.chip_temp);
-    state.voltage = Some(temp.voltage);
+    apply_temperature(&mut state, &temp, temp_read_at);
     // Reset move state on every new session: a previous session may
     // have disconnected mid-move, leaving the cache claiming
     // `is_moving = true, target = Some(X)`. Without this reset, the
@@ -265,6 +272,7 @@ async fn handshake(
     // regardless of `is_moving`.
     state.is_moving = false;
     state.target_position = None;
+    apply_position(&mut state, position.position, position_read_at);
     drop(state);
     Ok(())
 }
@@ -287,23 +295,21 @@ async fn poll_loop(
             }
         }
 
-        match ctx.request(Command::GetPosition).await {
-            Ok(QhyResponse::Position(p)) => {
+        match ctx.request_timed(Command::GetPosition).await {
+            Ok((QhyResponse::Position(p), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_position(&mut state, p.position);
+                apply_position(&mut state, p.position, timing.received_at);
             }
-            Ok(other) => warn!("poll: GetPosition returned unexpected variant: {other:?}"),
+            Ok((other, _)) => warn!("poll: GetPosition returned unexpected variant: {other:?}"),
             Err(e) => session_err_to_warn("GetPosition", &e),
         }
 
-        match ctx.request(Command::ReadTemperature).await {
-            Ok(QhyResponse::Temperature(t)) => {
+        match ctx.request_timed(Command::ReadTemperature).await {
+            Ok((QhyResponse::Temperature(t), timing)) => {
                 let mut state = cached_state.write().await;
-                state.outer_temp = Some(t.outer_temp);
-                state.chip_temp = Some(t.chip_temp);
-                state.voltage = Some(t.voltage);
+                apply_temperature(&mut state, &t, timing.received_at);
             }
-            Ok(other) => warn!("poll: ReadTemperature returned unexpected variant: {other:?}"),
+            Ok((other, _)) => warn!("poll: ReadTemperature returned unexpected variant: {other:?}"),
             Err(e) => session_err_to_warn("ReadTemperature", &e),
         }
     }
@@ -332,7 +338,16 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
 /// Update the cached position and clear `is_moving` if the target was
 /// reached. Kept in one place so `refresh_position` and the poll loop
 /// stay in lockstep on move-completion semantics.
-fn apply_position(state: &mut CachedState, position: i64) {
+///
+/// A position read before the cached one is dropped: stored, a poll's
+/// reading taken on the way to the target would replace the one
+/// `is_moving`'s refresh took at the target, and the focuser would report
+/// that it stopped short of where it says it arrived.
+fn apply_position(state: &mut CachedState, position: i64, read_at: Instant) {
+    if !state.position_read.admit(read_at) {
+        debug!(position, "dropping a position read before the cached one");
+        return;
+    }
     state.position = Some(position);
     if state.is_moving {
         if let Some(target) = state.target_position {
@@ -342,6 +357,18 @@ fn apply_position(state: &mut CachedState, position: i64) {
                 state.target_position = None;
             }
         }
+    }
+}
+
+/// Store the temperatures and the voltage read at `read_at`, unless the
+/// cache holds a reading taken after them.
+fn apply_temperature(state: &mut CachedState, temp: &TemperatureResponse, read_at: Instant) {
+    if state.temperature_read.admit(read_at) {
+        state.outer_temp = Some(temp.outer_temp);
+        state.chip_temp = Some(temp.chip_temp);
+        state.voltage = Some(temp.voltage);
+    } else {
+        debug!("dropping a temperature reading taken before the cached one");
     }
 }
 
@@ -489,7 +516,9 @@ mod tests {
     // ========================================================================
 
     use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use rusty_photon_shared_transport::{
+        Codec as _, FrameTransport, TransportError, TransportFactory,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Wraps the canonical mock factory but gates `send_frame` behind a
@@ -538,6 +567,139 @@ mod tests {
         ) -> std::result::Result<(), TransportError> {
             self.inner.recv_frame(buf).await
         }
+    }
+
+    // ---- a poll against a refresh ---------------------------------------
+
+    /// How long a test waits for a request to reach its held reply before
+    /// declaring the poll loop dead: a failure deadline, not a duration.
+    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
+
+    /// Wraps the canonical mock and, once armed with a command, holds the
+    /// reply to the next send of it: `recv_frame` says it has been reached
+    /// and waits to be let go. The device has the command by then, so the
+    /// held reply is already decided.
+    #[derive(Default, Clone)]
+    struct HoldingFactory {
+        inner: MockQhyTransportFactory,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[derive(Default)]
+    struct ReplyHold {
+        /// The command whose reply is held next, as it goes on the wire.
+        armed: std::sync::Mutex<Option<Vec<u8>>>,
+        holding: AtomicBool,
+        reached: tokio::sync::Notify,
+        released: tokio::sync::Notify,
+    }
+
+    impl HoldingFactory {
+        fn hold_next_reply_to(&self, command: &Command) {
+            *self.hold.armed.lock().unwrap() = Some(QhyCodec.encode(command));
+        }
+
+        /// Wait until the armed command's reply is held, or fail at
+        /// [`HOLD_DEADLINE`].
+        async fn reply_held(&self) {
+            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
+                .await
+                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
+        }
+
+        fn release_reply(&self) {
+            self.hold.released.notify_one();
+        }
+    }
+
+    #[async_trait]
+    impl TransportFactory for HoldingFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let inner = self.inner.open().await?;
+            Ok(Box::new(HoldingTransport {
+                inner,
+                hold: Arc::clone(&self.hold),
+            }))
+        }
+    }
+
+    struct HoldingTransport {
+        inner: Box<dyn FrameTransport>,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[async_trait]
+    impl FrameTransport for HoldingTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            let armed_command = self
+                .hold
+                .armed
+                .lock()
+                .unwrap()
+                .take_if(|command| bytes.starts_with(command));
+            if armed_command.is_some() {
+                self.hold.holding.store(true, Ordering::SeqCst);
+            }
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(
+            &mut self,
+            buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            if self.hold.holding.swap(false, Ordering::SeqCst) {
+                self.hold.reached.notify_one();
+                self.hold.released.notified().await;
+            }
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_short_of_the_target_does_not_replace_the_refreshed_arrival() {
+        let factory = Arc::new(HoldingFactory::default());
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_millis(20);
+        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory>::clone(&factory);
+        let manager = FocuserManager::new(&config, dyn_factory);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // The mock steps 1000 per position read: the poll's read lands at
+        // 1000, short of the target.
+        manager.move_absolute(&session, 1500).await.unwrap();
+        factory.hold_next_reply_to(&Command::GetPosition);
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads 1000 and cannot store it;
+        // `is_moving`'s refresh goes on the wire behind it, reads the
+        // target and lands first — what a poll task slow to run again on a
+        // loaded host does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        let (refreshed, timing) = session.request_timed(Command::GetPosition).await.unwrap();
+        let QhyResponse::Position(refreshed) = refreshed else {
+            panic!("GetPosition answered by {refreshed:?}");
+        };
+        assert_eq!(refreshed.position, 1500, "the refresh read the target");
+        apply_position(&mut cache, refreshed.position, timing.received_at);
+        assert!(!cache.is_moving, "the refresh saw the move complete");
+
+        // The poll stores next, and its next position read is the sign it
+        // has.
+        factory.hold_next_reply_to(&Command::GetPosition);
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert_eq!(
+            state.position,
+            Some(1500),
+            "a poll's position read before the refresh replaced the one at the target"
+        );
+        assert!(!state.is_moving);
+
+        factory.release_reply();
+        session.close().await.unwrap();
     }
 
     /// Build a manager whose poll loop is effectively disabled (300s

@@ -9,6 +9,12 @@
 //! * The 5s poll loop body that refreshes PA + PS into the cache.
 //! * The cached state both devices share (status, power stats, USB hub
 //!   tracking, sensor sliding-window means).
+//!
+//! Each frame is stored with the instant it was read off the wire, and the
+//! cache keeps the frame read last ([`ReadStamp`]). Requests take turns on
+//! the wire, but each stores its frame after its turn ends, so a poll's
+//! store can land after the refresh that follows a write; the poll's frame
+//! is then the older one and is dropped.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,11 +22,11 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
-    WhileOpen,
+    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::{debug, warn};
 
 use crate::codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
@@ -33,7 +39,11 @@ use crate::protocol::{PpbaCommand, PpbaPowerStats, PpbaStatus};
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
     pub status: Option<PpbaStatus>,
+    /// When [`status`](Self::status) was read off the wire.
+    pub status_read: ReadStamp,
     pub power_stats: Option<PpbaPowerStats>,
+    /// When [`power_stats`](Self::power_stats) was read off the wire.
+    pub power_stats_read: ReadStamp,
     /// USB hub state — not part of the PA reply, tracked separately.
     pub usb_hub_enabled: bool,
     pub temp_mean: SensorMean,
@@ -181,8 +191,8 @@ impl PpbaManager {
     /// wrong variant is consumed by the skip budget rather than returned.
     /// The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<PpbaCodec>) -> Result<()> {
-        let resp = session
-            .request(PpbaCommand::Status)
+        let (resp, timing) = session
+            .request_timed(PpbaCommand::Status)
             .await
             .map_err(PpbaError::from)?;
         let PpbaResponse::Status(status) = resp else {
@@ -191,7 +201,7 @@ impl PpbaManager {
             ));
         };
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, &status);
+        apply_status(&mut state, &status, timing.received_at);
         Ok(())
     }
 }
@@ -232,14 +242,14 @@ async fn handshake(
         ));
     }
 
-    let status_resp = conn.request(PpbaCommand::Status).await?;
+    let (status_resp, status_timing) = conn.request_timed(PpbaCommand::Status).await?;
     let PpbaResponse::Status(status) = status_resp else {
         return Err(PpbaCodecError::InvalidResponse(
             "handshake PA returned non-status frame".to_string(),
         ));
     };
 
-    let power_resp = conn.request(PpbaCommand::PowerStats).await?;
+    let (power_resp, power_timing) = conn.request_timed(PpbaCommand::PowerStats).await?;
     let PpbaResponse::PowerStats(power_stats) = power_resp else {
         return Err(PpbaCodecError::InvalidResponse(
             "handshake PS returned non-power-stats frame".to_string(),
@@ -247,8 +257,8 @@ async fn handshake(
     };
 
     let mut state = cached_state.write().await;
-    apply_status(&mut state, &status);
-    state.power_stats = Some(power_stats);
+    apply_status(&mut state, &status, status_timing.received_at);
+    apply_power_stats(&mut state, power_stats, power_timing.received_at);
     drop(state);
     Ok(())
 }
@@ -272,21 +282,21 @@ async fn poll_loop(
             }
         }
 
-        match ctx.request(PpbaCommand::Status).await {
-            Ok(PpbaResponse::Status(status)) => {
+        match ctx.request_timed(PpbaCommand::Status).await {
+            Ok((PpbaResponse::Status(status), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, &status);
+                apply_status(&mut state, &status, timing.received_at);
             }
-            Ok(other) => warn!("ppba poll: PA returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("ppba poll: PA returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PA", &e),
         }
 
-        match ctx.request(PpbaCommand::PowerStats).await {
-            Ok(PpbaResponse::PowerStats(power_stats)) => {
+        match ctx.request_timed(PpbaCommand::PowerStats).await {
+            Ok((PpbaResponse::PowerStats(power_stats), timing)) => {
                 let mut state = cached_state.write().await;
-                state.power_stats = Some(power_stats);
+                apply_power_stats(&mut state, power_stats, timing.received_at);
             }
-            Ok(other) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PS", &e),
         }
     }
@@ -296,11 +306,28 @@ fn session_err_to_warn(op: &str, err: &SessionError<PpbaCodecError>) {
     warn!(op, error = %err, "ppba poll request failed");
 }
 
-fn apply_status(state: &mut CachedState, status: &PpbaStatus) {
+/// Store a PA frame read at `read_at` and feed the sensor windows, unless
+/// the cache holds one read after it: that one is newer, and stored, this
+/// one would put a switch the box has since changed back to its old value.
+fn apply_status(state: &mut CachedState, status: &PpbaStatus, read_at: Instant) {
+    if !state.status_read.admit(read_at) {
+        debug!("dropping a PA frame read before the cached one");
+        return;
+    }
     state.status = Some(status.clone());
     state.temp_mean.add_sample(status.temperature);
     state.humidity_mean.add_sample(status.humidity);
     state.dewpoint_mean.add_sample(status.dewpoint);
+}
+
+/// Store a PS frame read at `read_at`, unless the cache holds one read
+/// after it.
+fn apply_power_stats(state: &mut CachedState, power_stats: PpbaPowerStats, read_at: Instant) {
+    if state.power_stats_read.admit(read_at) {
+        state.power_stats = Some(power_stats);
+    } else {
+        debug!("dropping a PS frame read before the cached one");
+    }
 }
 
 #[cfg(test)]
@@ -584,6 +611,136 @@ mod tests {
             "expected Communication, got {err:?}"
         );
 
+        session.close().await.unwrap();
+    }
+
+    // ---- a poll against a write -----------------------------------------
+
+    /// How long a test waits for a request to reach its held reply before
+    /// declaring the poll loop dead: a failure deadline, not a duration.
+    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
+
+    /// Wraps the canonical mock and, once armed with a command, holds the
+    /// reply to the next send of it: `recv_frame` says it has been reached
+    /// and waits to be let go. The device has the command by then, so the
+    /// held reply is already decided.
+    #[derive(Default, Clone)]
+    struct HoldingFactory {
+        inner: MockPpbaTransportFactory,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[derive(Default)]
+    struct ReplyHold {
+        /// The command whose reply is held next, as it goes on the wire.
+        armed: std::sync::Mutex<Option<&'static [u8]>>,
+        holding: AtomicBool,
+        reached: tokio::sync::Notify,
+        released: tokio::sync::Notify,
+    }
+
+    impl HoldingFactory {
+        fn hold_next_reply_to(&self, command: &'static [u8]) {
+            *self.hold.armed.lock().unwrap() = Some(command);
+        }
+
+        /// Wait until the armed command's reply is held, or fail at
+        /// [`HOLD_DEADLINE`].
+        async fn reply_held(&self) {
+            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
+                .await
+                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
+        }
+
+        fn release_reply(&self) {
+            self.hold.released.notify_one();
+        }
+    }
+
+    #[async_trait]
+    impl TransportFactory for HoldingFactory {
+        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
+            let inner = self.inner.open().await?;
+            Ok(Box::new(HoldingTransport {
+                inner,
+                hold: Arc::clone(&self.hold),
+            }))
+        }
+    }
+
+    struct HoldingTransport {
+        inner: Box<dyn FrameTransport>,
+        hold: Arc<ReplyHold>,
+    }
+
+    #[async_trait]
+    impl FrameTransport for HoldingTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+            let armed_command = self
+                .hold
+                .armed
+                .lock()
+                .unwrap()
+                .take_if(|command| bytes.starts_with(command));
+            if armed_command.is_some() {
+                self.hold.holding.store(true, Ordering::SeqCst);
+            }
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(
+            &mut self,
+            buf: &mut Vec<u8>,
+        ) -> std::result::Result<(), TransportError> {
+            if self.hold.holding.swap(false, Ordering::SeqCst) {
+                self.hold.reached.notify_one();
+                self.hold.released.notified().await;
+            }
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_write_does_not_replace_the_refreshed_status() {
+        let factory = Arc::new(HoldingFactory::default());
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_millis(20);
+        let manager = PpbaManager::new(&config, Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // A poll's PA is on the wire: the box has it, the quad still on.
+        factory.hold_next_reply_to(b"PA");
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads its frame and cannot store
+        // it; the write and its refresh go on the wire behind it, and the
+        // refreshed frame lands first — what a poll task slow to run again
+        // on a loaded host does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        manager
+            .send_command(&session, PpbaCommand::SetQuad12V(false))
+            .await
+            .unwrap();
+        let (refreshed, timing) = session.request_timed(PpbaCommand::Status).await.unwrap();
+        let PpbaResponse::Status(refreshed) = refreshed else {
+            panic!("PA answered by {refreshed:?}");
+        };
+        assert!(!refreshed.switches.quad_12v, "the write took");
+        apply_status(&mut cache, &refreshed, timing.received_at);
+
+        // The poll stores next, and its next PA is the sign it has.
+        factory.hold_next_reply_to(b"PA");
+        drop(cache);
+        factory.reply_held().await;
+
+        let status = manager.get_cached_state().await.status.unwrap();
+        assert!(
+            !status.switches.quad_12v,
+            "a poll's frame read before the write replaced the refreshed one"
+        );
+
+        factory.release_reply();
         session.close().await.unwrap();
     }
 
