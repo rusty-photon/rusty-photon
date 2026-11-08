@@ -421,7 +421,9 @@ kept check, and P5 needs P3's power map.
 does not decode as UTF-8 during its handshake fails the start. It was seen
 once, on the dev box's first start on 2026-11-03, the retry 5 s later was
 clean, and it is filed as
-[#1700](https://github.com/rusty-photon/rusty-photon/issues/1700).
+[#1700](https://github.com/rusty-photon/rusty-photon/issues/1700) and
+fixed by [#1728](https://github.com/rusty-photon/rusty-photon/pull/1728):
+the handshake skips a frame that does not decode while `>H#` waits.
 
 `star-adventurer-gti` keeps a pending power-up check only in memory today:
 on pier1 on 2026-11-07 the restart decision 5 makes took the check with

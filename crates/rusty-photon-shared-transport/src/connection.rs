@@ -992,8 +992,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_default_codec_never_asks_for_a_discard() {
-        // Every codec that predates the hook keeps its behaviour: the
-        // default answers false for every command.
+        // A codec that does not override the hook never has the input
+        // discarded: the default answers false for every command.
         let journal = Arc::new(Journal::default());
         let conn = Connection::new(
             Box::new(JournalledEcho {
@@ -1169,8 +1169,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_default_codec_never_skips_a_frame_that_does_not_decode() {
-        // Every codec that predates the hook keeps its behaviour: the
-        // first frame that does not decode ends the request.
+        // A codec that does not override the hook has the first frame that
+        // does not decode end the request, whatever its skip budget.
         let conn = Connection::new(Box::new(scripted(&[b"garbled", b"ok"])), NeverDecodes);
 
         let err = conn.request(b"ask".to_vec()).await.unwrap_err();
