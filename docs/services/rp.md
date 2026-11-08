@@ -4614,6 +4614,11 @@ that answers it with an error (`404` from a driver that takes no
 restart requests) are tool errors. The devices stay held out whatever
 the outcome; the next step is `connect_device` for each.
 
+One call restarts the service for every device on it, and a second call
+restarts the new process again. A document that has power-cycled
+several devices on one service restarts that service once: the first
+call's `devices` names every device the restart covered.
+
 `restart_service` actuates nothing (tenet 3): the restarted service's
 start runs the handshake every start runs, and its devices stay held
 out of `rp` until `connect_device`.

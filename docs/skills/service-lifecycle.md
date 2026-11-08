@@ -212,9 +212,8 @@ clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
 Every ASCOM driver service restarts when a client asks it to
 ([crate design § Restart on
 request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
-Take the restart handle from the runner's `Shutdown` once, hand it to
-the server on every build, and merge the driver crate's routes into the
-router before the auth layer wraps it:
+Take the restart handle from the runner's `Shutdown` once, and hand it
+to the server on every build:
 
 ```rust
 .run_with_reload(move |shutdown, reload| async move {
@@ -225,11 +224,29 @@ router before the auth layer wraps it:
             // ...
 ```
 
+The builder keeps it as an `Option`, so a test that builds the server
+without one gets a server without the routes:
+
 ```rust
-let router = axum::Router::new()
-    .merge(rusty_photon_driver::restart::routes(restart))
+pub struct ServerBuilder {
+    // ...
+    restart: Option<Restart>,
+}
+
+#[must_use]
+pub fn with_restart(mut self, restart: Restart) -> Self {
+    self.restart = Some(restart);
+    self
+}
+```
+
+`build()` puts the Alpaca service behind the driver crate's restart
+router, as its fallback, before the auth layer wraps the whole:
+
+```rust
+let router = rusty_photon_driver::restart::router(self.restart.clone())
     .fallback_service(server.into_service());
-let router = match &auth {
+let router = match &self.config.server.auth {
     Some(auth) => rp_auth::layer(router, auth),
     None => router,
 };
