@@ -351,10 +351,13 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     unit or a launch agent, listening on a local socket the service account
     may reach. A PHD2 the RPC leaves running is ended however it was
     started: the agent runs as the operator, and on Windows the service may
-    end any process. Once the restarted PHD2 answers, `phd2-guider`
-    connects its equipment through the RPC, as part of the restart the
-    workflow asked for (decision 1): PHD2 starts with nothing connected, and
-    the camera facade connects only while PHD2's camera is. The start needs
+    end any process. The dusk document asks for PHD2's restart after the
+    driver services its equipment uses (the mount's, which PHD2 reaches
+    through Alpaca) have restarted and answer. Once the restarted PHD2
+    answers, `phd2-guider` connects its equipment through the RPC, as part
+    of the restart the workflow asked for (decision 1): PHD2 starts with
+    nothing connected, and the camera facade connects only while PHD2's
+    camera is. The start needs
     the operator's session logged on, as PHD2 itself does; without one it
     fails and dusk reports the guider unavailable.
     - **Not `phd2-guider` in the operator's session.** Run at logon instead
@@ -364,12 +367,13 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       other service.
 11. **Dusk checks each camera for a wedge** (settled 2026-11-07). After the
     connect, the dusk document takes one short test exposure per camera. A
-    frame that starts and then fails, comes late by more than a fixed
-    margin, or reads all zero counts as a wedge: a wedged camera reads out
-    for a minute or more, longer than `phd2-guider`'s camera facade waits
-    for a frame by default, so through the facade a wedge usually fails the
-    exposure. A frame that cannot start (the camera's service or PHD2 not
-    answering) is no wedge, and dusk reports the camera unavailable.
+    frame that comes late by more than a fixed margin, never comes, or
+    reads all zero counts as a wedge: a wedged camera reads out for a
+    minute or more, longer than `phd2-guider`'s camera facade waits for a
+    frame by default, so through the facade a wedge usually ends with the
+    facade giving the frame up. A frame that fails any other way, or cannot
+    start (the camera's service or PHD2 not answering), is no wedge, and
+    dusk reports the camera unavailable.
     The document then disconnects through rp every device on the camera's
     outputs, the camera and its wheel among them (decision 3), cuts the
     outputs, switches them back on, waits for the devices to settle
@@ -407,7 +411,7 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Not started | |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | Not started | |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Not started | |
-| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off (PHD2 included), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2, P3 and `star-adventurer-gti` keeping a pending power-up check across a restart ([#1722](https://github.com/rusty-photon/rusty-photon/issues/1722)) | |
+| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2, P3 and `star-adventurer-gti` keeping a pending power-up check across a restart ([#1722](https://github.com/rusty-photon/rusty-photon/issues/1722)) | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
 P0, P1 and P2 depend on nothing else, P4 needs P2, P3 and the GTi driver's
