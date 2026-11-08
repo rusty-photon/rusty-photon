@@ -2496,8 +2496,10 @@ which a list replaces with the declaration.
   and counts a refusal as an issue. The fallback is 0 °C, not the ambient
   temperature, because the driver has no ambient reading: the QHY SDK reports
   the sensor, the FPGA board, and the chamber's humidity and pressure, but
-  nothing ambient. A camera that has left the bus is still found out, by the
-  setpoint write, which fails and asks C9's question. `CoolerOn` reports the
+  nothing ambient. A camera that has left the bus is found out before its
+  reading is taken: the `Cooler` probe that comes first goes unanswered for a
+  departed camera (the C9 records), and that failure asks C9's question.
+  `CoolerOn` reports the
   last-commanded on/off state (tracked
   independently of the PWM readback, since neither real hardware nor the
   simulation backend updates `CurPWM` synchronously when the cooler target is

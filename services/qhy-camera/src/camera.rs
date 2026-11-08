@@ -2443,8 +2443,9 @@ const FALLBACK_SETPOINT_C: f64 = 0.0;
 ///
 /// Refusing instead would fail a client that turns the cooler on before it
 /// sets a target, as `ConformU` does, and the reading is right far more often
-/// than not. A camera that has left the bus is still found out: the setpoint
-/// write that follows fails, and that failure asks C9's question.
+/// than not. A camera that has left the bus is found out before the reading
+/// is taken: the `Cooler` probe in front of it goes unanswered for a departed
+/// camera, and that failure asks C9's question.
 fn reading_setpoint(handle: &dyn CameraHandle) -> f64 {
     match handle.current_temperature_celsius() {
         Ok(celsius) if READING_SETPOINT_C.contains(&celsius) => celsius,
@@ -5709,6 +5710,28 @@ mod tests {
 
         assert_eq!(mock.param(ControlType::Cooler), Some(0.0));
         assert!(device.connected().await.unwrap());
+    }
+
+    /// A departed camera is found out before its reading is taken, even one
+    /// whose `CurTemp` still answers, as the SDK's did at −722.2 °C: the
+    /// `Cooler` probe in front of it fails, the question finds the camera
+    /// gone, and no setpoint is sent (K4, C9). The mock's two probes go
+    /// unanswered, as the C9 records found the SDK's, while its `CurTemp`
+    /// still reads and a setpoint write would still land.
+    #[tokio::test]
+    async fn cooler_on_without_a_target_on_a_departed_camera_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(
+            MockCameraHandle::default().with_param(ControlType::CurTemp, -722.2),
+        )
+        .await;
+        handle.remove_control(ControlType::Cooler);
+        handle.remove_control(ControlType::CamSingleFrameMode);
+
+        let err = device.set_cooler_on(true).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert_eq!(handle.param(ControlType::Cooler), None);
+        assert!(!device.connected().await.unwrap());
     }
 
     /// The band is inclusive: a reading on either edge is still taken as the
