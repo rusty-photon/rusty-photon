@@ -7618,6 +7618,33 @@ async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize
     from
 }
 
+/// Wait until the watcher's first pickup iteration after `from` has
+/// sent all its frames: the next iteration's `:K1` is logged, or the
+/// watcher has ended (emptying the slew slot is its last act). Fails
+/// the test after thirty seconds rather than hanging when neither
+/// comes; the bound only guards a hang, so it is far above the dwell
+/// and the dozen exchanges an iteration takes.
+async fn until_first_pickup_ends(d: &MountDevice, mock: &SharedMock, from: usize) {
+    let ended = async {
+        loop {
+            let stops = mock
+                .lock()
+                .await
+                .command_log
+                .iter()
+                .skip(from)
+                .filter(|f| f.starts_with(b":K1"))
+                .count();
+            if stops >= 2 || !d.slew_in_progress.is_held() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let found = tokio::time::timeout(Duration::from_secs(30), ended).await;
+    assert!(found.is_ok(), "the first pickup did not end within 30 s");
+}
+
 #[tokio::test]
 async fn an_abort_while_a_pickup_stops_its_axes_starts_no_pickup() {
     // Real time: the pickup waits for MIN_SLEW_DWELL on the wall clock.
@@ -7645,7 +7672,7 @@ async fn a_pickup_starts_no_goto_on_an_axis_it_could_not_stop() {
         fault: Fault::MountError(2),
     });
     let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    until_first_pickup_ends(&d, &mock, from).await;
     let frames = setter_frames_since(&*mock.lock().await, from);
     // The first pickup iteration, up to the next one's `:K1`; the next
     // retries RA, as it should.
