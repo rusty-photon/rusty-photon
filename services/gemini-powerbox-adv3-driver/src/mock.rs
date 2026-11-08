@@ -19,10 +19,11 @@
 //! State the driver cannot set is preset from the environment, which is the
 //! only channel a BDD harness has into a binary it launches as a subprocess:
 //! the firmware and identity replies, which sensors are attached, the dew
-//! modes at start, the input voltage, and the three behaviours the fault
-//! scenarios need — the stale frames, an ignored first `>H#`, and an output
-//! the hub refuses to switch. Each is read once at construction; the
-//! `with_…` builders are the in-process equivalents.
+//! modes at start, the input voltage, and the four behaviours the fault
+//! scenarios need — the stale frames, an ignored first `>H#`, an output
+//! the hub refuses to switch, and noise on the line ahead of the first
+//! reply. Each is read once at construction; the `with_…` builders are the
+//! in-process equivalents.
 
 // `#[cfg(any(feature = "mock", test))]`-gated test-helper infrastructure
 // that never ships in production builds. Excluded from coverage so the
@@ -74,6 +75,13 @@ pub const ENV_CUT_FRAMES: &str = "GEMINI_MOCK_CUT_FRAMES";
 /// acting on it, then by the post-set frame — the periodic frame that
 /// starts during the set, which only the second look sees past.
 pub const ENV_PRE_WRITE_FRAME: &str = "GEMINI_MOCK_PRE_WRITE_FRAME";
+/// Bytes on the line ahead of the hub's first reply, `%XX` for a byte
+/// given in hex.
+///
+/// Noise as the port opens, or a streamed frame the open garbled. The
+/// bytes are framed at each `#`, as the serial transport frames them, so
+/// bytes after the last `#` arrive glued to the front of the reply.
+pub const ENV_LINE_NOISE: &str = "GEMINI_MOCK_LINE_NOISE";
 
 /// How often the armed hub streams a frame: measured 3.000 s.
 pub const STREAM_PERIOD: Duration = Duration::from_secs(3);
@@ -119,6 +127,11 @@ struct MockDeviceState {
     /// How many `>H#` the hub still ignores.
     ignore_identity: u32,
     stuck_output: Option<u8>,
+    /// Bytes on the line the host has yet to read, ahead of whatever the
+    /// hub sends next: every frame in them is put on the line at the next
+    /// command, and the bytes after their last `#` go out glued to the
+    /// front of the next reply.
+    line_noise: Vec<u8>,
 }
 
 /// The behaviours a fault scenario turns on, each the twin of an
@@ -188,6 +201,9 @@ impl Default for MockDeviceState {
             },
             ignore_identity: u32::from(env_flag(ENV_IGNORE_FIRST_IDENTITY)),
             stuck_output: env_stuck_output(),
+            line_noise: std::env::var(ENV_LINE_NOISE)
+                .map(|raw| percent_decode(&raw))
+                .unwrap_or_default(),
         }
     }
 }
@@ -224,6 +240,29 @@ fn env_stuck_output() -> Option<u8> {
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
         .filter(|n| (2..=5).contains(n))
+}
+
+/// `raw` with every `%XX` replaced by the byte `XX` in hex, so that an
+/// environment variable can carry a byte that is not text. A `%` that two
+/// hex digits do not follow stands for itself.
+fn percent_decode(raw: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut rest = raw.as_bytes();
+    while let Some((&first, tail)) = rest.split_first() {
+        let escaped = tail
+            .get(..2)
+            .filter(|hex| first == b'%' && hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        if let Some(byte) = escaped {
+            decoded.push(byte);
+            rest = tail.get(2..).unwrap_or_default();
+        } else {
+            decoded.push(first);
+            rest = tail;
+        }
+    }
+    decoded
 }
 
 /// Two `0`/`1` characters. A typo yields `None`, and the caller falls back
@@ -441,6 +480,21 @@ impl MockState {
         }
     }
 
+    /// Put `bytes` on the line behind the line noise still pending, framed
+    /// at each `#` as the serial transport frames them. Bytes after the
+    /// last `#` stay pending: no terminator has ended them yet.
+    fn send_on_line(&mut self, bytes: &[u8]) {
+        let mut line = std::mem::take(&mut self.device.line_noise);
+        line.extend_from_slice(bytes);
+        for piece in line.split_inclusive(|byte| *byte == b'#') {
+            if piece.ends_with(b"#") {
+                self.queue.push_back(piece.to_vec());
+            } else {
+                self.device.line_noise = piece.to_vec();
+            }
+        }
+    }
+
     fn reply(&mut self, frame: &str) {
         let mut chunk = Vec::new();
         if self.device.quirks.cut_frames_before_reply && self.armed_at.is_some() {
@@ -450,7 +504,7 @@ impl MockState {
             chunk.extend_from_slice(cut.get(..CUT_FRAME_BYTES).unwrap_or(&cut));
         }
         chunk.extend_from_slice(frame.as_bytes());
-        self.queue.push_back(chunk);
+        self.send_on_line(&chunk);
         if self.device.quirks.stale_frames_before_reply && self.armed_at.is_some() {
             for _ in 0..STALE_FRAMES_PER_REPLY {
                 self.queue.push_back(self.device.frame().into_bytes());
@@ -460,6 +514,9 @@ impl MockState {
 
     fn process(&mut self, command: &str) {
         self.commands.push(command.to_string());
+        // Noise already on the line reaches the host ahead of anything the
+        // hub sends for this command, or ahead of its silence.
+        self.send_on_line(&[]);
         match command {
             ">H#" => {
                 if self.device.ignore_identity > 0 {
@@ -530,7 +587,10 @@ impl FrameTransport for MockFrameTransport {
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         let mut state = self.state.lock().await;
-        if std::mem::take(&mut state.answer_with_timeout) {
+        // What was already on the line arrives before the silence of an
+        // ignored request times out.
+        if state.answer_with_timeout && state.queue.is_empty() {
+            state.answer_with_timeout = false;
             return Err(TransportError::Timeout(IGNORED_REQUEST_TIMEOUT));
         }
         state.stream_due_frames();
@@ -701,6 +761,15 @@ impl MockGeminiTransportFactory {
         self.map_device(|d| d.quirks.readback = Readback::PreSetFirst)
     }
 
+    /// `noise` on the line ahead of the hub's first reply: the twin of
+    /// [`ENV_LINE_NOISE`], with the bytes as they are rather than
+    /// `%`-escaped.
+    #[must_use]
+    pub fn with_line_noise(self, noise: &[u8]) -> Self {
+        let noise = noise.to_vec();
+        self.map_device(|d| d.line_noise = noise)
+    }
+
     /// Change which sensors are attached on the running hub, as unplugging
     /// one would.
     pub async fn set_sensors(&self, ambient: bool, probe: bool) {
@@ -774,9 +843,13 @@ mod tests {
     }
 
     async fn recv(transport: &mut Box<dyn FrameTransport>) -> String {
+        String::from_utf8(recv_bytes(transport).await).unwrap()
+    }
+
+    async fn recv_bytes(transport: &mut Box<dyn FrameTransport>) -> Vec<u8> {
         let mut buf = Vec::new();
         transport.recv_frame(&mut buf).await.unwrap();
-        String::from_utf8(buf).unwrap()
+        buf
     }
 
     async fn exchange(transport: &mut Box<dyn FrameTransport>, command: &str) -> String {
@@ -794,6 +867,46 @@ mod tests {
         );
         assert_eq!(exchange(&mut transport, ">V#").await, "*V308#");
         assert_eq!(exchange(&mut transport, ">G#").await, CAPTURED_FRAME);
+    }
+
+    #[test]
+    fn a_percent_escape_carries_a_byte_that_is_not_text_and_a_bare_percent_is_itself() {
+        assert_eq!(percent_decode("%FF%fe*G#"), [0xff, 0xfe, b'*', b'G', b'#']);
+        assert_eq!(percent_decode("50%"), b"50%");
+        assert_eq!(percent_decode("%G1%+F%4"), b"%G1%+F%4");
+    }
+
+    #[tokio::test]
+    async fn line_noise_is_framed_at_each_terminator_and_its_rest_glued_to_the_first_reply() {
+        let factory = MockGeminiTransportFactory::default().with_line_noise(b"\xff#*G1\xfe");
+        let mut transport = open(&factory).await;
+
+        send(&mut transport, ">H#").await;
+
+        assert_eq!(recv_bytes(&mut transport).await, b"\xff#");
+        assert_eq!(
+            recv_bytes(&mut transport).await,
+            b"*G1\xfe*HGeminiPowerBoxPlusAdv3#"
+        );
+        assert_eq!(
+            exchange(&mut transport, ">V#").await,
+            "*V308#",
+            "the noise is on the line once"
+        );
+    }
+
+    #[tokio::test]
+    async fn line_noise_ahead_of_an_ignored_request_arrives_before_its_timeout() {
+        let factory = MockGeminiTransportFactory::default()
+            .with_line_noise(b"*H\xffGemini#")
+            .with_ignored_first_identity();
+        let mut transport = open(&factory).await;
+
+        send(&mut transport, ">H#").await;
+
+        assert_eq!(recv_bytes(&mut transport).await, b"*H\xffGemini#");
+        let err = transport.recv_frame(&mut Vec::new()).await.unwrap_err();
+        assert!(matches!(err, TransportError::Timeout(_)), "{err:?}");
     }
 
     #[tokio::test]

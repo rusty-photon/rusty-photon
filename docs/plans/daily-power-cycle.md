@@ -417,11 +417,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 P0, P1 and P2 depend on nothing else, P4 needs P2 and P3, and P5 needs
 P3's power map.
 
-`gemini-powerbox-adv3-driver` has a start bug of its own: one reply that
-does not decode as UTF-8 during its handshake fails the start. It was seen
-once, on the dev box's first start on 2026-11-03, the retry 5 s later was
-clean, and it is filed as
-[#1700](https://github.com/rusty-photon/rusty-photon/issues/1700).
+`gemini-powerbox-adv3-driver` had a start bug of its own: one reply that
+did not decode as UTF-8 during its handshake failed the start. It was seen
+once, on the dev box's first start on 2026-11-03, and the retry 5 s later
+was clean. The handshake now skips a frame that does not decode while
+`>H#` waits ([#1700](https://github.com/rusty-photon/rusty-photon/issues/1700),
+fixed by [#1728](https://github.com/rusty-photon/rusty-photon/pull/1728)).
 
 `star-adventurer-gti` kept a pending power-up check only in memory: on
 pier1 on 2026-11-07 the restart decision 5 makes took the check with it,

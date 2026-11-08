@@ -3,10 +3,11 @@
 //! [`GeminiCodec`] is the zero-sized adapter that plugs into
 //! [`rusty_photon_shared_transport::SharedTransport`]. It owns the
 //! bytes↔typed translation, the [`matches`](Codec::matches) predicate that
-//! keeps a streamed frame from answering the wrong request, and the two
-//! knobs this device needs from the shared crate: a skip budget of 2, and a
+//! keeps a streamed frame from answering the wrong request, and the three
+//! knobs this device needs from the shared crate: a skip budget of 2, a
 //! discard of the input buffer before every command the hub's unsolicited
-//! `*G` stream could otherwise answer.
+//! `*G` stream could otherwise answer, and a skip of a frame that does not
+//! decode while the identity request waits.
 //!
 //! Wire shape:
 //!
@@ -21,10 +22,13 @@
 //!   the dev box's unit at the first connect after a session that had left
 //!   it streaming. No reply carries a `*` of its own, so the last one is
 //!   where the answer begins and everything before it is the cut frame.
+//!   Only the reply is read as text: a byte ahead of it that is not text —
+//!   noise as the port opens — is never decoded, so it fails nothing.
 //! * From there, frames are sorted by their letter: `H`, `V` and `G` are
 //!   parsed; a chunk with no `*` at all — the tail of a frame a discard
 //!   cut — or a `*` with another letter is [`GeminiResponse::Unrelated`],
-//!   which no request accepts and the skip budget absorbs.
+//!   whatever its bytes, which no request accepts and the skip budget
+//!   absorbs.
 
 use std::str::Utf8Error;
 
@@ -89,15 +93,14 @@ impl From<SessionError<Self>> for GeminiCodecError {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GeminiCodec;
 
-/// The reply in a received chunk: its letter and the text between that and
-/// the terminator. The reply begins at the chunk's last `*` — anything
-/// before it is a periodic frame the hub cut short to answer. `None` when
-/// the chunk holds no `*` at all.
-fn payload(text: &str) -> Option<(u8, &str)> {
-    let (_, rest) = text.rsplit_once('*')?;
-    let letter = rest.bytes().next()?;
-    let body = rest.get(1..)?;
-    Some((letter, body.strip_suffix('#').unwrap_or(body)))
+/// The reply in a received chunk: its letter and the bytes between that
+/// and the terminator. The reply begins at the chunk's last `*` — anything
+/// before it is a periodic frame the hub cut short to answer, or noise, and
+/// is not looked at. `None` when the chunk holds no `*` at all.
+fn payload(bytes: &[u8]) -> Option<(u8, &[u8])> {
+    let star = bytes.iter().rposition(|byte| *byte == b'*')?;
+    let (&letter, body) = bytes.get(star.checked_add(1)?..)?.split_first()?;
+    Some((letter, body.strip_suffix(b"#").unwrap_or(body)))
 }
 
 impl Codec for GeminiCodec {
@@ -112,16 +115,17 @@ impl Codec for GeminiCodec {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
-        let text = std::str::from_utf8(bytes)?;
-        let Some((letter, body)) = payload(text) else {
+        let Some((letter, body)) = payload(bytes) else {
             return Ok(GeminiResponse::Unrelated);
         };
         match letter {
-            b'H' => Ok(GeminiResponse::Identity(body.to_string())),
-            b'V' => parse_firmware(body)
+            b'H' => Ok(GeminiResponse::Identity(
+                std::str::from_utf8(body)?.to_string(),
+            )),
+            b'V' => parse_firmware(std::str::from_utf8(body)?)
                 .map(GeminiResponse::Firmware)
                 .map_err(|e| GeminiCodecError::Parse(e.to_string())),
-            b'G' => body
+            b'G' => std::str::from_utf8(body)?
                 .parse::<StatusFrame>()
                 .map(GeminiResponse::Status)
                 .map_err(|e| GeminiCodecError::Parse(e.to_string())),
@@ -151,6 +155,19 @@ impl Codec for GeminiCodec {
     /// streamed frame, and the skip budget covers one that arrives first.
     fn discard_before_send(&self, cmd: &Self::Command) -> bool {
         matches!(cmd, GeminiCommand::Status | GeminiCommand::Set(_))
+    }
+
+    /// `>H#` only: the first request after the port opens, which line noise
+    /// as it opens, or a streamed frame the open garbled, lands on. A
+    /// skipped frame costs it nothing even when it was the reply itself:
+    /// the request then times out, and the handshake asks once more, as it
+    /// does after silence. Every other request takes a frame that does not
+    /// decode as its reply, garbled, and fails at once: a poll or a write
+    /// would otherwise wait out its timeout for a reply that has come, and
+    /// `>V#` would trade the parse error that quotes a firmware reply it
+    /// cannot read for a timeout that names nothing.
+    fn skip_undecodable(&self, cmd: &Self::Command) -> bool {
+        matches!(cmd, GeminiCommand::Identity)
     }
 }
 
@@ -282,9 +299,46 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_invalid_utf8() {
-        let err = GeminiCodec.decode(&[0x2a, 0x47, 0xff, 0xfe]).unwrap_err();
-        assert!(matches!(err, GeminiCodecError::Utf8(_)), "{err:?}");
+    fn a_reply_with_a_byte_after_its_star_that_is_not_text_is_a_utf8_error() {
+        for reply in [
+            b"*G\xff\xfe#".as_slice(),
+            b"*H\xffGeminiPowerBoxPlusAdv3#",
+            b"*V3\xff8#",
+        ] {
+            let err = GeminiCodec.decode(reply).unwrap_err();
+            assert!(
+                matches!(err, GeminiCodecError::Utf8(_)),
+                "{reply:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_ahead_of_the_reply_that_are_not_text_are_never_read() {
+        // Noise as the port opens, glued to the front of the reply.
+        let resp = GeminiCodec
+            .decode(b"\xff\xfe*HGeminiPowerBoxPlusAdv3#")
+            .unwrap();
+        assert_eq!(
+            resp,
+            GeminiResponse::Identity("GeminiPowerBoxPlusAdv3".to_string())
+        );
+        // A cut frame with a garbled byte, then the whole answer.
+        let resp = GeminiCodec.decode(b"*G11\xff1D*V308#").unwrap();
+        assert_eq!(resp, GeminiResponse::Firmware(308));
+    }
+
+    #[test]
+    fn a_chunk_with_no_star_is_unrelated_whatever_its_bytes() {
+        assert_eq!(
+            GeminiCodec.decode(b"\xff\xfe#").unwrap(),
+            GeminiResponse::Unrelated
+        );
+        assert_eq!(
+            GeminiCodec.decode(b"*\xff#").unwrap(),
+            GeminiResponse::Unrelated,
+            "a letter that is not text is not one of the three"
+        );
     }
 
     // ---- matches ---------------------------------------------------------
@@ -330,6 +384,16 @@ mod tests {
     #[test]
     fn the_skip_budget_is_two() {
         assert_eq!(GeminiCodec.max_skip(), 2);
+    }
+
+    #[test]
+    fn only_the_identity_request_skips_a_frame_that_does_not_decode() {
+        assert!(GeminiCodec.skip_undecodable(&GeminiCommand::Identity));
+        assert!(!GeminiCodec.skip_undecodable(&GeminiCommand::Firmware));
+        assert!(!GeminiCodec.skip_undecodable(&GeminiCommand::Status));
+        assert!(
+            !GeminiCodec.skip_undecodable(&GeminiCommand::Set(SetCommand::Dc(DcOutput::Dc2, true)))
+        );
     }
 
     #[test]
