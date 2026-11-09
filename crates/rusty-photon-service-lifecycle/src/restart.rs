@@ -159,28 +159,33 @@ fn start_watchdog(deadline: Duration, exit: ExitFn) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
 
     use super::*;
 
-    fn counting(deadline: Duration) -> (Restart, CancellationToken, Arc<AtomicUsize>) {
+    /// How long a test watches for an exit that must not come. It is a
+    /// window, not a nap: the watch returns, and the test fails, the moment
+    /// an exit arrives inside it (testing.md §6.9).
+    const NO_EXIT_WINDOW: Duration = Duration::from_millis(500);
+
+    /// A runner-style restart whose exit reports on a channel, with the
+    /// token it cancels.
+    fn reporting(deadline: Duration) -> (Restart, CancellationToken, mpsc::Receiver<()>) {
         let token = CancellationToken::new();
-        let exits = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&exits);
+        let (tx, rx) = mpsc::channel();
         let restart = Restart::with_exit(
             token.clone(),
             deadline,
             Arc::new(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = tx.send(());
             }),
         );
-        (restart, token, exits)
+        (restart, token, rx)
     }
 
     #[test]
     fn a_request_cancels_the_shutdown_token_and_marks_the_restart() {
-        let (restart, token, _) = counting(Duration::from_secs(3600));
+        let (restart, token, _exits) = reporting(Duration::from_secs(3600));
         assert!(!restart.is_requested());
         restart.request();
         assert!(token.is_cancelled());
@@ -189,27 +194,28 @@ mod tests {
 
     #[test]
     fn the_deadline_runs_the_exit_once_it_passes() {
-        let token = CancellationToken::new();
-        let (tx, rx) = mpsc::channel();
-        let restart = Restart::with_exit(
-            token,
-            Duration::from_millis(20),
-            Arc::new(move || {
-                let _ = tx.send(());
-            }),
-        );
+        let (restart, _, exits) = reporting(Duration::from_millis(20));
         restart.request();
-        rx.recv_timeout(Duration::from_secs(10))
+        exits
+            .recv_timeout(Duration::from_secs(10))
             .expect("the watchdog must run the exit once the deadline passes");
     }
 
+    /// Two watchdogs would both run their exit one deadline after the
+    /// requests, so a second one shows inside the window that follows the
+    /// first exit.
     #[test]
     fn a_second_request_starts_no_second_watchdog() {
-        let (restart, _, exits) = counting(Duration::from_millis(20));
+        let (restart, _, exits) = reporting(Duration::from_millis(20));
         restart.request();
         restart.request();
-        std::thread::sleep(Duration::from_millis(500));
-        assert_eq!(exits.load(Ordering::SeqCst), 1);
+        exits
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the first request's watchdog must run the exit");
+        assert!(
+            exits.recv_timeout(NO_EXIT_WINDOW).is_err(),
+            "a second request started a second watchdog"
+        );
     }
 
     #[test]
@@ -224,9 +230,11 @@ mod tests {
 
     #[test]
     fn no_request_starts_no_watchdog() {
-        let (restart, token, exits) = counting(Duration::from_millis(1));
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(exits.load(Ordering::SeqCst), 0);
+        let (restart, token, exits) = reporting(Duration::from_millis(1));
+        assert!(
+            exits.recv_timeout(NO_EXIT_WINDOW).is_err(),
+            "a watchdog ran its exit without a request"
+        );
         assert!(!token.is_cancelled());
         assert!(format!("{restart:?}").contains("requested: false"));
     }
