@@ -338,7 +338,12 @@ however the service takes requests (a driver service's HTTP route,
   did not finish and exits with the restart code, after reporting
   `SERVICE_STOPPED` with it under the SCM. A thread rather than a task:
   a close that blocks a runtime worker, or the thread that polls the
-  closure, cannot hold it.
+  closure, cannot hold it. Under systemd, an exit that itself hangs (a
+  vendor SDK's exit handler waiting on the wedged call) is sentinel's to
+  end: the process no longer answers its health probes, and the restart
+  sentinel then makes has systemd kill it once the unit's stop timeout
+  passes, minutes later rather than seconds ([sentinel.md § Service
+  Health Supervision](../services/sentinel.md#service-health-supervision)).
 
 #### A driver service takes the request over HTTP
 
