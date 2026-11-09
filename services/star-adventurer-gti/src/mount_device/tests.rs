@@ -1771,16 +1771,39 @@ async fn sync_exclusion_survives_a_concurrent_abort() {
 
 #[tokio::test]
 async fn sync_to_coordinates_writes_the_encoder() {
-    let d = connected_device().await;
-    // After a sync to (RA=lst, Dec=0), the RA encoder should be at
-    // mechanical-HA=0 → encoder ticks=0, and Dec encoder=0.
-    let lst = d.sidereal_time().await.unwrap();
-    d.sync_to_coordinates(lst, 0.0).await.unwrap();
-    // Wait for the polling task to refresh the snapshot.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    // The synced position should round-trip back through the read path.
-    let dec = d.declination().await.unwrap();
-    assert!(dec.abs() < 0.5, "Dec after sync should be ~0, got {dec}");
+    // The mock's encoders start at 0, which is RA = LST and Dec 0, so the
+    // sync goes elsewhere: a write that is missing or wrong then shows.
+    let (d, mock) = capturing_connected_device().await;
+    let before = d.sidereal_time().await.unwrap();
+    let ra = (before - 1.0).rem_euclid(24.0);
+    d.sync_to_coordinates(ra, 30.0).await.unwrap();
+    let after = d.sidereal_time().await.unwrap();
+    let m = mock.lock().await;
+    let want = |lst: f64| {
+        target_encoder_normal(
+            Ra::new(ra),
+            Dec::new(30.0),
+            Lst::new(lst),
+            Cpr::new(m.cpr_ra),
+            Cpr::new(m.cpr_dec),
+        )
+    };
+    let (ra_before, dec_want) = want(before);
+    let (ra_after, _) = want(after);
+    assert_eq!(
+        m.dec.position_ticks,
+        dec_want.value(),
+        "the sync did not write Dec's count"
+    );
+    // RA's count moves with LST, which the sync read between `before`
+    // and `after`, so the count it wrote lies between theirs.
+    let (ra_before, ra_after) = (ra_before.value(), ra_after.value());
+    let written = ra_before.min(ra_after)..=ra_before.max(ra_after);
+    assert!(
+        written.contains(&m.ra.position_ticks),
+        "the sync wrote RA's count {}, outside {written:?}",
+        m.ra.position_ticks
+    );
 }
 
 #[tokio::test]
