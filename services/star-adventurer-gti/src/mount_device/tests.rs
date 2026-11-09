@@ -1810,25 +1810,32 @@ async fn sync_to_coordinates_writes_the_encoder() {
 async fn sync_publishes_position_without_waiting_for_poll() {
     // ConformU reads `RightAscension` ~2 ms after `SyncToCoordinates`
     // returns. The cached snapshot must reflect the synced position
-    // immediately rather than holding the prior poll value.
+    // immediately rather than holding the prior poll value. The target
+    // is away from the mock's start (RA = LST, Dec 0), where the
+    // snapshot already is, and polling is paused, so only the sync can
+    // have moved the snapshot there.
     let d = fast_settle_connected().await;
+    let _paused = d.manager.pause_background_polling();
     let lst = d.sidereal_time().await.unwrap();
-    d.sync_to_coordinates(lst, 0.0).await.unwrap();
+    let target = (lst - 1.0).rem_euclid(24.0);
+    d.sync_to_coordinates(target, 30.0).await.unwrap();
     // No sleep: read straight after sync.
     let dec = d.declination().await.unwrap();
     assert!(
-        dec.abs() < 0.5,
+        (dec - 30.0).abs() < 0.5,
         "Dec must reflect the sync immediately, got {dec}"
     );
     let ra = d.right_ascension().await.unwrap();
-    // The synced RA equals the LST snapshot used by sync to compute
-    // mech_HA=0; tiny LST drift between the sync and the read can
-    // push this by up to a few arcseconds, well under 1 arc-minute.
-    let ra_drift_arcsec =
-        (ra - lst).rem_euclid(24.0).min((lst - ra).rem_euclid(24.0)) * 3600.0 * 15.0;
+    // A stopped mount's RA drifts with LST, by a few arcseconds between
+    // the sync and this read: well under 1 arc-minute.
+    let ra_drift_arcsec = (ra - target)
+        .rem_euclid(24.0)
+        .min((target - ra).rem_euclid(24.0))
+        * 3600.0
+        * 15.0;
     assert!(
         ra_drift_arcsec < 60.0,
-        "RA must reflect the sync immediately, got drift={ra_drift_arcsec}\" (ra={ra}, lst={lst})"
+        "RA must reflect the sync immediately, got drift={ra_drift_arcsec}\" (ra={ra}, target={target})"
     );
 }
 
