@@ -2958,7 +2958,9 @@ rests on the operator's assertion that the mount powered up at
 assertion against what the driver last knew, the driver keeps a small
 record beside its config file, named after it:
 `star-adventurer-gti.mount-state.json` next to
-`star-adventurer-gti.json`.
+`star-adventurer-gti.json`. The service's `pkg/doctor.toml` declares it
+as its `state_file`, so doctor counts it as the service's own file and
+never suggests renaming or removing it as a misnamed config.
 
 | Record | Meaning | Written when |
 |---|---|---|

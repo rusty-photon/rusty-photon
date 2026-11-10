@@ -299,9 +299,11 @@ fn inventory(ctx: &Context) -> Vec<Check> {
             (false, false) => {}
         }
     }
+    // A service's state file is its own, not a misnamed config: the
+    // remedy below would destroy the state it holds.
     let known: Vec<String> = catalog::catalog()
         .iter()
-        .map(super::catalog::CatalogEntry::config_file)
+        .flat_map(|entry| std::iter::once(entry.config_file()).chain(entry.state_file.clone()))
         .collect();
     for name in unknown_config_files(&ctx.config_dir, &known) {
         checks.push(Check::warn(
