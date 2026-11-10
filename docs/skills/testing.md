@@ -694,8 +694,10 @@ the step also requires the line the runner logs only when the service has
 closed in order. No service manager runs under test, so nothing starts the
 service again. The macro also generates the steps of one scenario in the
 suite's `auth.feature`: started with TLS and auth, the service refuses
-both routes without the credentials with `401`, and once stopped its log
-shows no restart request. `ppba-driver`'s suite is the reference.
+both routes without the credentials, and the restart route with a wrong
+password, with `401`, and once stopped its log shows no restart request.
+The restart scenario requires that log line, so its text cannot change
+without failing there. `ppba-driver`'s suite is the reference.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or

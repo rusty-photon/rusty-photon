@@ -115,9 +115,12 @@ pub fn assert_accepted(state: &ServiceRestartState, status: u16) {
     );
 }
 
+/// Assert the restart route refuses a request without valid credentials.
+///
 /// Wait until the service started with TLS and auth names its process to a
-/// client with the credentials, then post a restart request without them,
-/// and assert it is refused with 401.
+/// client with the credentials, then post a restart request with no
+/// credentials and one with a wrong password, and assert both are refused
+/// with 401.
 ///
 /// The instance route answering 200 first shows that the service's routes
 /// sit behind the credentials, so the 401 is theirs: the auth layer answers
@@ -126,7 +129,7 @@ pub fn assert_accepted(state: &ServiceRestartState, status: u16) {
 /// # Panics
 ///
 /// Panics when the instance route never answers 200 with the credentials,
-/// or the restart route answers anything but 401 without them.
+/// or the restart route answers anything but 401 without valid ones.
 pub async fn assert_restart_needs_credentials(port: u16, pki: &PkiFixture) {
     let client = pki.https_client();
     let base_url = format!("https://127.0.0.1:{port}");
@@ -137,17 +140,24 @@ pub async fn assert_restart_needs_credentials(port: u16, pki: &PkiFixture) {
         pki.password(),
     )
     .await;
-    let response = client
-        .post(format!("{base_url}{RESTART_PATH}"))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .expect("the restart route answers");
-    assert_eq!(
-        response.status().as_u16(),
-        401,
-        "a restart request without credentials"
-    );
+    let wrong_password = format!("not-{}", pki.password());
+    for (credentials, what) in [
+        (None, "no credentials"),
+        (Some(wrong_password.as_str()), "a wrong password"),
+    ] {
+        let mut request = client
+            .post(format!("{base_url}{RESTART_PATH}"))
+            .json(&serde_json::json!({}));
+        if let Some(password) = credentials {
+            request = request.basic_auth(pki.username(), Some(password));
+        }
+        let response = request.send().await.expect("the restart route answers");
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "a restart request with {what}"
+        );
+    }
 }
 
 /// Ask the service started with TLS and auth which process serves,
@@ -172,14 +182,18 @@ pub async fn assert_instance_needs_credentials(port: u16, pki: &PkiFixture) {
 
 /// What the lifecycle crate's `Restart::request` logs the moment a restart
 /// is requested, before the request's answer is written.
+///
+/// Each driver's restart scenario requires it, so a change to the line
+/// fails there rather than leaving [`assert_no_restart_requested`] unable
+/// to fail.
 pub const RESTART_REQUESTED: &str = "restart requested:";
 
 /// Stop the service, then assert its whole log carries no restart request.
 ///
-/// A request logs [`RESTART_REQUESTED`] before its answer is written, and
-/// [`ServiceHandle::stop`] returns only once the log has been read to its
-/// end, so the check waits on no timing: a restart requested by any
-/// request the service answered is in the log.
+/// A request logs [`RESTART_REQUESTED`] before its answer is written, well
+/// before the stop, and [`ServiceHandle::stop`] returns once the service
+/// has exited and the log's reader has reached the end of the log, or
+/// after 1 s more.
 ///
 /// # Panics
 ///
@@ -202,14 +216,14 @@ pub async fn assert_no_restart_requested(service: &mut ServiceHandle) {
 /// (`rusty-photon-service-lifecycle`'s `finish_console`).
 pub const CLOSED_IN_ORDER: &str = "closed after the restart request; exiting with code";
 
-/// Wait for the service to exit by itself, and assert it closed in order
-/// before exiting with `code`, rather than reaching the close deadline,
-/// whose exit has the same code.
+/// Wait for the service to exit by itself, and assert it logged the
+/// restart request and closed in order before exiting with `code`, rather
+/// than reaching the close deadline, whose exit has the same code.
 ///
 /// # Panics
 ///
 /// Panics when it is still running after the budget, exits with another
-/// code, or exits without having closed.
+/// code, or exits without having logged the request or closed.
 pub async fn assert_closes_and_exits_with(service: &mut ServiceHandle, code: i32) {
     let status = service.wait_exit(EXIT_BUDGET).await.unwrap_or_else(|| {
         panic!("the service was still running {EXIT_BUDGET:?} after the restart request")
@@ -221,18 +235,29 @@ pub async fn assert_closes_and_exits_with(service: &mut ServiceHandle, code: i32
     );
     let lines = service.stderr_lines();
     assert!(
+        lines.iter().any(|line| line.contains(RESTART_REQUESTED)),
+        "the service restarted without logging {RESTART_REQUESTED:?}; the line changed, and \
+         the auth scenario's check for it can no longer fail. Its last lines:\n{}",
+        last_lines(&lines)
+    );
+    assert!(
         lines.iter().any(|line| line.contains(CLOSED_IN_ORDER)),
         "the service exited without logging that it closed after the restart request; its \
          close reached the deadline, or the line changed. Its last lines:\n{}",
-        lines
-            .iter()
-            .rev()
-            .take(10)
-            .rev()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
+        last_lines(&lines)
     );
+}
+
+/// The last ten of `lines`, for a panic message.
+fn last_lines(lines: &[String]) -> String {
+    lines
+        .iter()
+        .rev()
+        .take(10)
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Generate the steps of `restart.feature`, and the restart steps of
@@ -268,7 +293,7 @@ macro_rules! service_restart_steps {
                 .await;
         }
 
-        #[::cucumber::then("the service refuses a restart request without credentials with 401")]
+        #[::cucumber::then("the service refuses a restart request without valid credentials with 401")]
         async fn service_restart_needs_credentials(world: &mut $world) {
             use $crate::service_restart::ServiceRestartWorld as _;
             let (port, pki) = world.service_behind_auth();

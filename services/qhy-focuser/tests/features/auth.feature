@@ -31,10 +31,10 @@ Feature: qhy-focuser HTTP Basic Auth
     When qhy-focuser is started without auth
     Then the Alpaca management endpoint should respond without credentials
 
-  Scenario: Without credentials the restart routes answer 401, and no restart starts
+  Scenario: Without valid credentials the restart routes answer 401, and no restart starts
     Given generated TLS certificates for qhy-focuser
     And qhy-focuser is configured with TLS and auth enabled and mock serial
     When qhy-focuser is started with TLS and auth
-    Then the service refuses a restart request without credentials with 401
+    Then the service refuses a restart request without valid credentials with 401
     And the service refuses an instance request without credentials with 401
     And the service's log shows no restart request once it is stopped
