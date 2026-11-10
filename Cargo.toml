@@ -52,25 +52,22 @@ members = [
   "services/upbv2-driver",
   "services/zwo-camera",
   "services/zwo-focuser",
-  # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs
-  # (ADR-010 / docs/plans/vendor-zwo-rs.md). libzwo-sys is nested under zwo-rs to
-  # preserve its upstream `path = "libzwo-sys"` dep verbatim.
+  # First-party, dual-homed ZWO FFI crates. libzwo-sys is nested under zwo-rs
+  # so that the `path = "libzwo-sys"` dependency in zwo-rs's published
+  # manifest holds here too.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
-  # First-party, dual-homed SVBony FFI crates (docs/plans/archive/svbony-camera.md
-  # Phase A/B) — vendored first-party from day one, no external-repo detour
-  # (unlike zwo-rs's original history). libsvbony-sys is nested under
-  # svbony-rs, mirroring the zwo-rs/libzwo-sys and qhyccd-rs/libqhyccd-sys
-  # layout. Still NOT added to [workspace.dependencies] (Rule 10): Phase C
-  # added its first consumer (services/svbony-camera), but Rule 10's
-  # promotion threshold is a SECOND consumer — svbony-camera wires it as a
-  # direct `path` dependency in its own Cargo.toml instead.
+  # First-party, dual-homed SVBony FFI crates. libsvbony-sys is nested under
+  # svbony-rs, the zwo-rs/libzwo-sys and qhyccd-rs/libqhyccd-sys layout. Not
+  # in [workspace.dependencies]: AGENTS.md rule 10 promotes a dependency at
+  # its second consumer, and services/svbony-camera is the only one, so it
+  # names the crate by `path` in its own Cargo.toml.
   "crates/svbony-rs",
   "crates/svbony-rs/libsvbony-sys",
   # End-to-end harness (tests only): real rp + real sentinel exercising the
   # operation watchdog + corrective ladder. See docs/services/sentinel.md.
   "tests/operation-watchdog-e2e",
-  # The developer tools (ADR-022), run as `cargo ci <tool>`.
+  # The developer tools, run as `cargo ci <tool>` (docs/skills/ci-logic.md).
   "tools/rusty-photon-ci",
 ]
 resolver = "2"
@@ -253,8 +250,8 @@ tokio-serial = "5.4.5"
 rand = "0.10.1"
 rayon = "1.10"
 # QHYCCD camera SDK FFI. Vendored first-party at `crates/qhyccd-rs` (with its
-# `libqhyccd-sys` sub-crate nested inside) per ADR-009 — the crate is authored by
-# us, so we develop it in-tree and dual-home it to crates.io. `libqhyccd-sys`
+# `libqhyccd-sys` sub-crate nested inside): the crate is authored by us, so we
+# develop it in-tree and dual-home it to crates.io. `libqhyccd-sys`
 # (transitively) links the proprietary static `qhyccd` lib + `libusb-1.0` — see
 # `docs/services/qhy-camera.md` "Native dependency & build gating". Only
 # `qhy-camera` depends on it today; declared at workspace level so the
@@ -282,12 +279,12 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
 # ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
 # `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
-# first-party + dual-homed at crates/zwo-rs (ADR-010): the monorepo is the
-# canonical development home, edits are in-tree (no git-rev bump), and the
-# crates.io releases for outside consumers come from the vendored subdir.
-# default-features = false: the device SDKs link per feature (ADR-014), and
-# each service enables only its own device (`camera` / `focuser`) so its binary
-# links — and its package ships — only the SDK blob it talks to.
+# first-party + dual-homed at crates/zwo-rs: the monorepo is the canonical
+# development home, edits are in-tree (no git-rev bump), and the crates.io
+# releases for outside consumers come from the vendored subdir.
+# default-features = false: the device SDKs link per feature, and each service
+# enables only its own device (`camera` / `focuser`) so its binary links — and
+# its package ships — only the SDK blob it talks to.
 zwo-rs = { path = "crates/zwo-rs", default-features = false }
 axum = "0.8"
 tower = "0.5"
@@ -314,11 +311,11 @@ erfars = "0.2"
 tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
-# rp-auth's verification memo (ADR-003 § Verification memo and KDF admission
-# control). All three are already in the graph — blake2 through argon2,
-# subtle through digest, zeroize through rustls — so these add edges, not
-# crates. blake2 0.10 is part of the digest 0.10 chain that the rust-embed
-# hold below protects: bump it to 0.11 together with argon2 0.6, not alone.
+# rp-auth's verification memo. All three are already in the graph — blake2
+# through argon2, subtle through digest, zeroize through rustls — so these add
+# edges, not crates. blake2 0.10 is part of the digest 0.10 chain that the
+# rust-embed hold below protects: bump it to 0.11 together with argon2 0.6, not
+# alone.
 blake2 = { version = "0.11", default-features = false }
 subtle = "2"
 zeroize = "1"
