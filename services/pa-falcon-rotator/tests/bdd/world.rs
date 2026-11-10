@@ -81,8 +81,10 @@ pub struct FalconRotatorWorld {
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
-    /// The service as a spawned process, for the setup-page scenarios: a
-    /// save reloads the process, which the in-process server cannot do.
+    /// The service as a spawned process, for the setup-page, restart and
+    /// auth scenarios: a save reloads the process, and the restart routes
+    /// exist only where the binary's `main` wires them, neither of which
+    /// the in-process server can do.
     pub process: Option<ServiceHandle>,
     /// The spawned process's config directory, alive for the scenario.
     pub process_dir: Option<TempDir>,

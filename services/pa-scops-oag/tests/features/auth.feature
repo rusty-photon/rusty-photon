@@ -31,8 +31,10 @@ Feature: pa-scops-oag HTTP Basic Auth
     When pa-scops-oag is started without auth
     Then the Alpaca management endpoint should respond without credentials
 
-  Scenario: A restart request without credentials is refused with 401
+  Scenario: Without credentials the restart routes answer 401, and no restart starts
     Given generated TLS certificates for pa-scops-oag
     And pa-scops-oag is configured with TLS and auth enabled and mock serial
     When pa-scops-oag is started with TLS and auth
     Then the service refuses a restart request without credentials with 401
+    And the service refuses an instance request without credentials with 401
+    And the service's log shows no restart request once it is stopped

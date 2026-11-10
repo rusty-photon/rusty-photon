@@ -488,7 +488,9 @@ fn dialled_scheme(url: &str) -> String {
 /// the invisible group a `ty` metavariable is wrapped in.
 ///
 /// The generated steps match this scenario (service-neutral wording, so the
-/// feature file is identical across services):
+/// scenario reads the same in every service). A driver service's
+/// `auth.feature` also carries the restart scenario whose steps
+/// [`service_restart_steps!`](crate::service_restart_steps) generates:
 ///
 /// ```gherkin
 /// Given generated TLS certificates for the service

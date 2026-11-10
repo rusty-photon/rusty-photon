@@ -8,9 +8,10 @@
 //! and When steps start the service. The request goes to the service's
 //! announced address over plain HTTP, and the exit is read from the
 //! service's own process: no service manager runs under test to start it
-//! again. One more step goes in the suite's `auth.feature`, after the
-//! suite's own steps start the service with TLS and auth: the restart
-//! route refuses a request without the credentials.
+//! again. Three more steps go in the suite's `auth.feature`, after the
+//! suite's own steps start the service with TLS and auth: both routes
+//! refuse a request without the credentials, and the refused restart
+//! request started no restart.
 //!
 //! [`docs/crates/rusty-photon-service-lifecycle.md`]: ../../../docs/crates/rusty-photon-service-lifecycle.md
 
@@ -149,6 +150,53 @@ pub async fn assert_restart_needs_credentials(port: u16, pki: &PkiFixture) {
     );
 }
 
+/// Ask the service started with TLS and auth which process serves,
+/// without the credentials, and assert it is refused with 401.
+///
+/// # Panics
+///
+/// Panics when the instance route answers anything but 401.
+pub async fn assert_instance_needs_credentials(port: u16, pki: &PkiFixture) {
+    let response = pki
+        .https_client()
+        .get(format!("https://127.0.0.1:{port}{INSTANCE_PATH}"))
+        .send()
+        .await
+        .expect("the instance route answers");
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "an instance request without credentials"
+    );
+}
+
+/// What the lifecycle crate's `Restart::request` logs the moment a restart
+/// is requested, before the request's answer is written.
+pub const RESTART_REQUESTED: &str = "restart requested:";
+
+/// Stop the service, then assert its whole log carries no restart request.
+///
+/// A request logs [`RESTART_REQUESTED`] before its answer is written, and
+/// [`ServiceHandle::stop`] returns only once the log has been read to its
+/// end, so the check waits on no timing: a restart requested by any
+/// request the service answered is in the log.
+///
+/// # Panics
+///
+/// Panics when the log shows a restart request.
+pub async fn assert_no_restart_requested(service: &mut ServiceHandle) {
+    service.stop().await;
+    let lines = service.stderr_lines();
+    let requested: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains(RESTART_REQUESTED))
+        .collect();
+    assert!(
+        requested.is_empty(),
+        "a request without credentials started a restart: {requested:?}"
+    );
+}
+
 /// What the runner logs when a service asked to restart has closed in
 /// order and exits; an exit at the close deadline never logs it
 /// (`rusty-photon-service-lifecycle`'s `finish_console`).
@@ -187,7 +235,7 @@ pub async fn assert_closes_and_exits_with(service: &mut ServiceHandle, code: i32
     );
 }
 
-/// Generate the steps of `restart.feature`, and the restart step of
+/// Generate the steps of `restart.feature`, and the restart steps of
 /// `auth.feature`, for `$world`, which implements [`ServiceRestartWorld`].
 ///
 /// ```rust,ignore
@@ -225,6 +273,19 @@ macro_rules! service_restart_steps {
             use $crate::service_restart::ServiceRestartWorld as _;
             let (port, pki) = world.service_behind_auth();
             $crate::service_restart::assert_restart_needs_credentials(port, pki).await;
+        }
+
+        #[::cucumber::then("the service refuses an instance request without credentials with 401")]
+        async fn service_restart_instance_needs_credentials(world: &mut $world) {
+            use $crate::service_restart::ServiceRestartWorld as _;
+            let (port, pki) = world.service_behind_auth();
+            $crate::service_restart::assert_instance_needs_credentials(port, pki).await;
+        }
+
+        #[::cucumber::then("the service's log shows no restart request once it is stopped")]
+        async fn service_restart_none_requested(world: &mut $world) {
+            use $crate::service_restart::ServiceRestartWorld as _;
+            $crate::service_restart::assert_no_restart_requested(world.restarted_service()).await;
         }
     };
 }
