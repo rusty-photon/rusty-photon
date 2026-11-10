@@ -163,11 +163,17 @@ async fn malformed_wcs_maps_to_malformed_wcs_error() {
 
 /// A child that answers the graceful signal at the deadline is a
 /// `TimedOutTerminated` — the `(terminated)` the HTTP contract reports.
+///
+/// The child can answer only once it has finished starting: on Windows a
+/// `CTRL_BREAK_EVENT` that reaches it still starting up is held until its
+/// start-up ends, and a start-up longer than deadline plus grace reads as
+/// `TimedOutKilled`. A contended Windows runner can take longer than the
+/// 2.1 s a 100 ms deadline leaves, so the deadline is 3 s, leaving 5 s.
 #[tokio::test]
 async fn hang_maps_to_timed_out_terminated() {
     let (runner, dir) = runner("hang");
     let mut request = req(dir.path().join("test.fits"));
-    request.timeout = Duration::from_millis(100);
+    request.timeout = Duration::from_secs(3);
 
     let err = runner.solve(request).await.unwrap_err();
     assert!(
