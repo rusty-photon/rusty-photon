@@ -53,8 +53,8 @@ members = [
   "services/zwo-camera",
   "services/zwo-focuser",
   # First-party, dual-homed ZWO FFI crates. libzwo-sys is nested under zwo-rs
-  # so that the `path = "libzwo-sys"` dependency in zwo-rs's published
-  # manifest holds here too.
+  # because zwo-rs's manifest names it by that relative path
+  # (`path = "libzwo-sys"`), so the manifest needs no monorepo-specific one.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
   # First-party, dual-homed SVBony FFI crates. libsvbony-sys is nested under
@@ -311,11 +311,11 @@ erfars = "0.2"
 tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
-# rp-auth's verification memo. All three are already in the graph — blake2
-# through argon2, subtle through digest, zeroize through rustls — so these add
-# edges, not crates. blake2 0.10 is part of the digest 0.10 chain that the
-# rust-embed hold below protects: bump it to 0.11 together with argon2 0.6, not
-# alone.
+# rp-auth's verification memo. subtle and zeroize are already in the graph
+# (through digest and rustls), so those two add edges, not crates. blake2 is
+# not: argon2 0.5 brings blake2 0.10 on the digest 0.10 chain, this entry is
+# blake2 0.11 on digest 0.11, and the lock carries both until argon2 moves to
+# 0.6, which depends on blake2 ^0.11 and collapses the pair.
 blake2 = { version = "0.11", default-features = false }
 subtle = "2"
 zeroize = "1"
@@ -357,16 +357,13 @@ fluent-syntax = "0.12"
 # a sandbox path that does not exist at runtime. We always want translations
 # embedded, never lazy-loaded.
 #
-# Held at exactly 8.11.0: from 8.12 `rust-embed-utils` pulls in `sha2`/`digest
-# 0.11`, landing next to the `digest 0.10` chain `argon2`/`blake2` already
-# bring in. ppba-driver is the only service with a *direct* `rust-embed`
-# dependency (the `fl!` macro reads the consumer crate's own manifest), so it is
-# the only package whose graph gets that duplicate — and its two largest test
-# targets then fail `rustc` E0463 "can't find crate" under
-# `bazel / windows-latest`, deterministically. `rust-embed-impl` /
-# `rust-embed-utils` are transitive, so this `=` cannot hold them; they are
-# held in `Cargo.lock` instead — see "Holding a transitive dependency back" in
-# docs/workspace.md. Revisit once `argon2`/`blake2` ship on `digest 0.11`.
+# The three Fluent services (ppba-driver, upbv2-driver, gemini-powerbox-adv3)
+# depend on it directly, because the `fl!` macro reads the consumer crate's own
+# manifest. The `=` holds nothing the lock does not: `rust-embed-impl` and
+# `rust-embed-utils` are transitive and follow the lock, and the `digest 0.11`
+# chain that `rust-embed-utils` brings in through `sha2` is in those services'
+# graphs regardless, beside argon2's `digest 0.10` chain, through the
+# workspace's own `sha2 0.11` and `blake2 0.11`.
 rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
 # Pinned to 0.13 until the rest of the Fluent stack moves off `unic-langid`.
 # 0.14.0 swapped `LanguageIdentifier` from `unic-langid` to `icu-locid`, but
