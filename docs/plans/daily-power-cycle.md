@@ -555,7 +555,7 @@ of the service or not, a connect, and an exposure.
 | QHY178M after three days with DC3 off, its USB on, and no process holding it | The first exposure of a fresh `qhy-camera`, started 30 s after DC3 came on, wedged. It was ready only after 96.7 s, with every pixel 0, and then `CCDTemperature` read −5005.8 °C and the wheel could not report its slot count. Cutting both outputs and restarting the service cleared it. The same sequence after 40 minutes with DC3 off gave a good first exposure |
 | A QHY session held across a 10 s cut of both outputs, camera and wheel connected | Both read `Connected == true` once power was back. The camera's first call failed `NOT_CONNECTED`, and then both devices read disconnected. A reconnect of the camera alone was refused until the wheel was disconnected too (`qhy-camera`'s C9). Then both connected and the camera exposed normally |
 
-### pier1 (2026-11-04, 2026-11-06 and 2026-11-07)
+### pier1 (2026-11-04, 2026-11-06, 2026-11-07 and 2026-11-09)
 
 pier1 is a Raspberry Pi 5 on Raspberry Pi OS, with a Pegasus PPBA Gen2
 switching the rig and the nightly packages of 2026-10-31 installed. The
@@ -571,7 +571,10 @@ and each cut went through `ppba-driver`'s Alpaca API. On 2026-11-07 the
 nightly packages of that day were installed, with `star-adventurer-gti`'s
 restore, and the mount's tests ran with every driver serving. The mount sat
 at rest at its `ap_park_3` seed pose (hour angle −6 h, Dec 90°), its state
-record said so, and nothing commanded it to move.
+record said so, and nothing commanded it to move. On 2026-11-09 the nightly
+packages of that day were installed, whose `star-adventurer-gti` keeps a
+pending power-up check in the mount state record, and the dawn and dusk by
+hand ran again.
 
 | Question | Result |
 |---|---|
@@ -583,13 +586,11 @@ record said so, and nothing commanded it to move.
 | The quad output cut for 5 s, rp connected to every device (2026-11-07) | The driver logged the controller's restart and wrote the last position back: encoders read `(0, 0)`, written `(−907200, 725760)`. After the cut the mount read the same hour angle and Dec 90°, its record stayed at rest at the seed pose, and the position was not lost |
 | The quad output cut for 40 s, rp connected (2026-11-07) | Through the cut the mount read `Connected == false` and its reads failed `NOT_CONNECTED`, and the transport warned at each 5 s retry, eight times. Once the controller answered, the driver wrote the last position back as an estimate (an outage of 43 s), ran the power-up check at once against the record, and seeded `ap_park_3`. The mount read the same hour angle and Dec as before |
 | The plan's dawn and dusk by hand, with a 40 s cut (2026-11-07): sentinel and rp stopped, the mount, the FP2 and the Falcon disconnected, the quad cut, their three services restarted, rp started | The driver, serving with no client connected, saw the controller restart once it answered and wrote the last position back as an estimate (an outage of 43 s), leaving its power-up check for the next connect. The restart ended that process, and the check with it. The restarted process found the controller initialised and its encoders at the written-back `(−907200, 725760)`, so rp's connect seeded nothing and checked no record. The mount read the same pose, the one it rested at. The FP2 and the Falcon reconnected on rp's connect |
+| The plan's dawn and dusk by hand again, with a 40 s cut (2026-11-09) | Serving with no client connected, the driver saw the controller restart once it answered, wrote the last position back as an estimate (an outage of 43 s), and wrote the pending power-up check into the mount state record (`awaiting_check`). The restart ended that process. At rp's first connect the restarted process found the check in the record, ran it, and seeded `ap_park_3` at the written-back `(−907200, 725760)`. The record went back to at rest at the seed pose, the mount read the same hour angle and Dec 90°, and the FP2 and the Falcon reconnected on rp's connect |
 
 ### Owed
 
 - rig2's other devices.
-- pier1's dawn and dusk by hand again, with `star-adventurer-gti` keeping
-  its pending power-up check in the mount state record: the restarted
-  process should run the check from the record at the dusk connect.
 - An output that may feed the host or the power box's own serial bridge is
   not cut remotely at all: on pier1 the PPBA is reachable only through
   `ppba-driver` on the Pi, so once either is down no host can switch the
