@@ -111,9 +111,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 #     NOT exempt — they are ordinary lib code and held to production standard.
 #
 # The same two attribute carriers also hold the curated test-scope allow list
-# for the pedantic/nursery rung (docs/plans/archive/workspace-lints.md §L6b): the lints
-# whose test-side findings are inherent to test-code shape (cucumber step
-# signatures, fixture math, exact-value asserts) rather than fixable defects.
+# for the pedantic/nursery rung: the lints whose test-side findings are
+# inherent to test-code shape (cucumber step signatures, fixture math,
+# exact-value asserts) rather than fixable defects (the census behind the
+# list: docs/plans/archive/workspace-lints.md §L6b).
 # One canonical list, verbatim in every crate root's `#![cfg_attr(test,
 # allow(...))]` and every `tests/` entry file's `#![allow(...)]`:
 #
@@ -133,8 +134,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # Everything else in pedantic/nursery stays enforced on test code. A toolchain
 # bump that makes a new lint fire on these shapes either fixes the test code or
 # grows this list — grow all carriers together, they are one list.
-#
-# docs/plans/archive/workspace-lints.md tracks the ladder that widens this set.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -145,23 +144,16 @@ unimplemented = "deny"
 panic_in_result_fn = "deny"
 unchecked_time_subtraction = "deny"
 string_slice = "deny"
-# The L5 ladder's three: zeroed rung by rung across every inheriting crate
-# (docs/plans/archive/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
-# full-workspace --all-targets --all-features census read zero outside the
-# dual-homed FFI crates (then outside the [lints] mechanism; they inherit this
-# table with `[lints] workspace = true` now, like every other member).
+# The three costly ones are denied like the rest: every member, the dual-homed
+# FFI crates included, inherits this table with `[lints] workspace = true`.
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
-# The pedantic and nursery groups, zeroed slice by slice across the workspace
-# (docs/plans/archive/workspace-lints.md §L6b) and flipped to deny 2026-08-24 after a
-# three-pass census (all-targets/all-features, lib/bins all-features, lib/bins
-# default features) read zero in scope, plus a per-crate windows cross-clippy
-# sweep and a hand audit of the remaining OS-cfg'd code. priority -1 keeps the
-# per-lint entries above (and any future per-lint override) ranked over the
-# group level. New stable toolchains add lints to both groups: the beta /
-# clippy census is the ~6-week early warning, and toolchain-bump PRs absorb
-# new sites — fix them, or grow the curated test-scope list above.
+# The pedantic and nursery groups, denied across the workspace. priority -1
+# keeps the per-lint entries above (and any future per-lint override) ranked
+# over the group level. New stable toolchains add lints to both groups: the
+# beta / clippy census is the ~6-week early warning, and toolchain-bump PRs
+# absorb new sites — fix them, or grow the curated test-scope list above.
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 
@@ -182,18 +174,18 @@ libc = "0.2"
 regex = "1.12.4"
 directories = "6"
 async-trait = "0.1.89"
-# 2.1 is the current minor, not a hard floor: the workspace uses only the
-# `Debug` and `Display` derives, both of which exist in 2.0, and none of the
-# dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
-# depends on derive_more at all.
+# `2.1` is not a floor the workspace needs: it uses only the `Debug` and
+# `Display` derives, both of which exist in 2.0, and none of the dual-homed
+# FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims) depends on
+# derive_more at all.
 #
 # `display` is enabled here rather than per-member. A whole-workspace build
-# unifies features and enables it anyway, so a member that uses
-# `derive_more::Display` without declaring `features = ["display"]` still
-# compiles everywhere except `cargo build -p <member>` — which only the nightly
+# unifies features and enables it anyway, so without this line a member that
+# uses `derive_more::Display` without declaring `features = ["display"]` would
+# compile everywhere except `cargo build -p <member>` — which only the nightly
 # `cargo hack --feature-powerset` job runs. Enabling it workspace-wide costs no
 # packages (`convert_case` + `unicode-segmentation` are proc-macro-only and
-# already in the lock) and removes that green-PR/red-nightly gap.
+# already in the lock) and closes that green-PR/red-nightly gap.
 derive_more = { version = "2.1", features = ["debug", "display"] }
 # Variant iteration / count / discriminant-conversion derives (`VariantArray`,
 # `EnumCount`, `FromRepr`), allocation-free `&'static str` variant constants,
@@ -205,8 +197,9 @@ derive_more = { version = "2.1", features = ["debug", "display"] }
 # Keep this pinned to the same minor `jsonschema` requires (it depends on strum
 # with `features = ["derive"]`, so strum + strum_macros are already in the graph
 # and this entry adds zero packages). Bumping ahead of jsonschema resolves a
-# SECOND strum + strum_macros into Cargo.lock — the duplicate-dependency debt
-# PR #715 was cleaning up.
+# SECOND strum + strum_macros into Cargo.lock — a duplicate transitive version
+# of the workspace's own making, on top of the ones docs/workspace.md
+# § Duplicate transitive versions says it cannot collapse.
 strum = { version = "0.28.0", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -282,18 +275,16 @@ qhyccd-rs = { path = "crates/qhyccd-rs" }
 # request, so no page can take a setting; and an unknown device number or
 # method name answers 404 where the API Reference's examples give 400. The fork
 # routes both specification paths for GET and POST through request-taking
-# hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
-# and answers the statuses the specifications give (see
-# `docs/plans/archive/driver-setup-pages.md` D10; not offered upstream yet). Drop
-# the fork and go back to upstream `main` once both are merged there; see
-# `docs/workspace.md` "Build Notes".
+# hooks (`Device::setup_request`, `Server::setup`), redirects upstream's path,
+# and answers the statuses the specifications give; this fix is not offered
+# upstream yet. Drop the fork and go back to upstream `main` once both are
+# merged there; see `docs/workspace.md` "Build Notes".
 ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
 # ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
 # `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
-# first-party + dual-homed at crates/zwo-rs (ADR-010 /
-# docs/plans/vendor-zwo-rs.md) — the monorepo is now the canonical development
-# home; edits are in-tree (no git-rev bump). Still published to crates.io from
-# the vendored subdir for outside consumers.
+# first-party + dual-homed at crates/zwo-rs (ADR-010): the monorepo is the
+# canonical development home, edits are in-tree (no git-rev bump), and the
+# crates.io releases for outside consumers come from the vendored subdir.
 # default-features = false: the device SDKs link per feature (ADR-014), and
 # each service enables only its own device (`camera` / `focuser`) so its binary
 # links — and its package ships — only the SDK blob it talks to.
@@ -324,7 +315,7 @@ tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
 # rp-auth's verification memo (ADR-003 § Verification memo and KDF admission
-# control). All three were already in the graph — blake2 through argon2,
+# control). All three are already in the graph — blake2 through argon2,
 # subtle through digest, zeroize through rustls — so these add edges, not
 # crates. blake2 0.10 is part of the digest 0.10 chain that the rust-embed
 # hold below protects: bump it to 0.11 together with argon2 0.6, not alone.

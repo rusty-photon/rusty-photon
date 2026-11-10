@@ -49,7 +49,8 @@ use crate::repo_root;
 ///
 /// Each row is a file, a number its comments name as written, and how often
 /// they name it. Delete a row, or lower its count, once the file names the
-/// number less often; never add one.
+/// number less often; never add one. A row follows its file when the file
+/// moves.
 const PENDING: &[(&str, &str, usize)] = &[
     (".bazelrc", "#342", 2),
     (".bazelrc", "#452", 1),
@@ -70,7 +71,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     (".github/workflows/plate-solver-smoke.yml", "#234", 1),
     (".github/workflows/plate-solver-smoke.yml", "#236", 1),
     (".github/workflows/ui-browser-nightly.yml", "#494", 1),
-    ("Cargo.toml", "#715", 1),
     ("MODULE.bazel", "#3490", 1),
     ("MODULE.bazel", "#3808", 1),
     ("MODULE.bazel", "#587", 2),
