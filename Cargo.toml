@@ -357,13 +357,14 @@ fluent-syntax = "0.12"
 # a sandbox path that does not exist at runtime. We always want translations
 # embedded, never lazy-loaded.
 #
-# The three Fluent services (ppba-driver, upbv2-driver, gemini-powerbox-adv3)
-# depend on it directly, because the `fl!` macro reads the consumer crate's own
-# manifest. The `=` holds nothing the lock does not: `rust-embed-impl` and
-# `rust-embed-utils` are transitive and follow the lock, and the `digest 0.11`
-# chain that `rust-embed-utils` brings in through `sha2` is in those services'
-# graphs regardless, beside argon2's `digest 0.10` chain, through the
-# workspace's own `sha2 0.11` and `blake2 0.11`.
+# The three Fluent services (ppba-driver, upbv2-driver and
+# gemini-powerbox-adv3-driver) depend on it directly, because the `fl!` macro
+# reads the consumer crate's own manifest. The `=` holds rust-embed at 8.13.0
+# across `cargo update`, and nothing more: `rust-embed-impl` and
+# `rust-embed-utils` are transitive and move with the lock, and the
+# `digest 0.11` chain that `rust-embed-utils` brings in through `sha2` is in
+# those services' graphs regardless, through rp-auth's `blake2 0.11`, beside
+# argon2's `digest 0.10` chain.
 rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
 # Pinned to 0.13 until the rest of the Fluent stack moves off `unic-langid`.
 # 0.14.0 swapped `LanguageIdentifier` from `unic-langid` to `icu-locid`, but
