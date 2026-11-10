@@ -4899,6 +4899,7 @@ version = "0.1.0"
 dependencies = [
  "ascom-alpaca",
  "async-trait",
+ "axum",
  "http",
  "maud",
  "rusty-photon-config",
@@ -4912,6 +4913,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

@@ -460,6 +460,13 @@ services/pa-falcon-rotator/
 7. `set_connected(false)` takes the slot lock, calls `session.close().await`, and propagates any teardown error. On the 1→0 transition `SharedTransport` runs the (no-op for Falcon) teardown hook and drops the `FrameTransport`, closing the underlying serial port.
 8. Once the transport reports `is_available() == false`, the driver-side `sync_offset` is reset to `0.0`, `target_position` is cleared, and the `last_limit_detected` edge tracker is reset by `FalconManager::clear_session_state`. None of these is persisted across reconnects.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## Move Lifecycle
 
 For each of `Move(delta)`, `MoveAbsolute(skyDeg)`, `MoveMechanical(mechDeg)`:

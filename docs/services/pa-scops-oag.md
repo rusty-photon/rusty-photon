@@ -310,6 +310,13 @@ device).
 the `Reconnecting` state and the supervisor re-opens + re-handshakes; live
 sessions resume on the new connection on their next request.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## Testing
 
 - **Unit tests** (`#[cfg(test)]` in `src/`): command serialization, `A`-report

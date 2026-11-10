@@ -38,7 +38,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server, SetupRequest
 use rusty_photon_config::driver::ConfigurableDriver;
 use rusty_photon_config::ConfigFile;
 pub use rusty_photon_server_config::AlpacaServerConfig;
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart as RestartHandle};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use rusty_photon_tls::server::Draining;
@@ -472,6 +472,9 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     /// Reload trigger a setup-page save fires after its response flushes.
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<RestartHandle>,
 }
 
 impl ServerBuilder {
@@ -481,6 +484,7 @@ impl ServerBuilder {
             config,
             config_path: None,
             reload: None,
+            restart: None,
         }
     }
 
@@ -498,6 +502,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: RestartHandle) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -565,7 +578,8 @@ impl ServerBuilder {
         );
         info!("Monitoring file: {:?}", self.config.file.path);
 
-        let router = axum::Router::new().fallback_service(server.into_service());
+        let router = rusty_photon_driver::restart::router(self.restart.clone())
+            .fallback_service(server.into_service());
 
         // Layer authentication if configured
         let router = match &self.config.server.auth {
@@ -735,6 +749,8 @@ struct Reloading<'a> {
     config_path: &'a Path,
     shutdown: CancellationToken,
     reload: ReloadSignal,
+    /// The runner's restart handle every rebuilt server serves.
+    restart: RestartHandle,
     /// The configuration the server answers with now.
     config: Config,
     /// The router every connection answers with.
@@ -754,6 +770,7 @@ impl Reloading<'_> {
         ServerBuilder::new(config)
             .with_config_source(self.config_path.to_path_buf())
             .with_reload_signal(self.reload.clone())
+            .with_restart(self.restart.clone())
     }
 
     /// Answer each reload that keeps the address and the TLS setting by
@@ -836,12 +853,13 @@ pub async fn run_server_loop(
     config_path: &Path,
     shutdown: CancellationToken,
     reload: ReloadSignal,
+    restart: RestartHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = load_config(config_path)?;
     info!("Starting filemonitor server on port {}", config.server.port);
     let listener =
         rusty_photon_tls::server::bind_dual_stack_tokio(config.server.socket_addr()).await?;
-    serve_reloading(config_path, config, listener, shutdown, reload).await
+    serve_reloading(config_path, config, listener, shutdown, reload, restart).await
 }
 
 /// [`run_server_loop`] from its first config, on a listener already bound
@@ -852,17 +870,20 @@ async fn serve_reloading(
     mut listener: TcpListener,
     shutdown: CancellationToken,
     reload: ReloadSignal,
+    restart: RestartHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut local_addr = listener.local_addr()?;
     let built = ServerBuilder::new(config.clone())
         .with_config_source(config_path.to_path_buf())
         .with_reload_signal(reload.clone())
+        .with_restart(restart.clone())
         .build_for(local_addr)
         .await?;
     let mut reloading = Reloading {
         config_path,
         shutdown,
         reload,
+        restart,
         config,
         routes: Routes::new(built.router),
         device: built.device,
@@ -1131,7 +1152,10 @@ mod reload_tests {
                 let config = config.clone();
                 let shutdown = shutdown.clone();
                 let reload = reload.clone();
-                async move { serve_reloading(&config_path, config, listener, shutdown, reload).await }
+                let restart = RestartHandle::new(shutdown.clone());
+                async move {
+                    serve_reloading(&config_path, config, listener, shutdown, reload, restart).await
+                }
             });
             Self {
                 port,

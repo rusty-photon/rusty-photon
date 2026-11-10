@@ -1,12 +1,14 @@
 //! BDD step definitions for power switching (rp.md § Power Switching):
 //! the power map on a `switches[]` entry, `disconnect_device` and
 //! `connect_device` holding a device out of the reconnect supervisor
-//! and giving it back, and `get_switch` / `set_switch` reading and
-//! switching a power box's outputs.
+//! and giving it back, `get_switch` / `set_switch` reading and
+//! switching a power box's outputs, and `restart_service` restarting a
+//! held-out device's service.
 //!
 //! The power box is [`PowerBoxStub`] and the device on its output is
 //! [`AlpacaDeviceStub`]'s camera, so a disconnect reaches no device
-//! another scenario shares.
+//! another scenario shares. The camera's stub takes restart requests and
+//! plays the restart as a new process; the power box's does not.
 
 use std::time::Duration;
 
@@ -125,6 +127,31 @@ fn stub_camera_not_cycled(world: &mut RpWorld) {
         (stub.connect_requests(), stub.disconnect_requests()),
         (1, 0),
         "expected one Connected=true and no Connected=false (true, false)"
+    );
+}
+
+#[then(expr = "the stub camera's service should have been asked to restart {int} time(s)")]
+fn stub_camera_restart_requests(world: &mut RpWorld, times: u32) {
+    assert_eq!(
+        camera_stub(world).restart_requests(),
+        times,
+        "restart requests the stub camera's service took"
+    );
+}
+
+#[then("the tool result at \"/service\" should be the stub camera's service address")]
+fn result_service_is_camera_stub(world: &mut RpWorld) {
+    let expected = camera_stub(world).url();
+    let result = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool was called")
+        .as_ref()
+        .unwrap_or_else(|e| panic!("the tool call failed: {e}"));
+    assert_eq!(
+        result["service"],
+        json!(expected),
+        "the restarted service: {result}"
     );
 }
 

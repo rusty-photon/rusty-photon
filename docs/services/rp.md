@@ -1846,6 +1846,7 @@ block is absent.
 | `connect_device` | Ungated | device_id (a roster id, or `mount`) | device_id, kind, connected | Release the hold-out and connect the device now with the full connect budget; a live session is confirmed and left as it is, never cycled |
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
+| `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
 
 **Compute (image analysis)**
 
@@ -4408,10 +4409,11 @@ keeps using it, as an in-flight device call keeps its handle.
 A workflow switches a power box's outputs through `rp`, and takes every
 device on an output out of `rp`'s hands before it cuts the output
 ([daily power cycle plan](../plans/daily-power-cycle.md), decisions 3,
-8 and 11). Four tools carry it: `disconnect_device` and
+8 and 11). Five tools carry it: `disconnect_device` and
 `connect_device`, which hold a device out of the reconnect supervisor
-and give it back, and `get_switch` and `set_switch`, which read and
-switch a power box's outputs through the power map.
+and give it back, `get_switch` and `set_switch`, which read and switch
+a power box's outputs through the power map, and `restart_service`,
+which has a held-out device's driver service restart (decision 5).
 
 #### The power map
 
@@ -4505,7 +4507,10 @@ for every client, PHD2 included for a mount it reaches through Alpaca,
 and stops whatever the driver was doing for it, an exposure included. A
 held-out safety monitor reads unsafe, as an unreachable one does
 (§ [Safety](#safety)), and a held-out power box answers no `get_switch`
-or `set_switch`.
+or `set_switch`. A held-out mount is not parked by the unsafe
+transition: `rp` holds no handle to send the park through, and logs a
+warning that it skipped the mount. A workflow parks the mount before it
+holds it out, as dawn does (decision 3).
 
 `connect_device {device_id}` releases the hold-out and connects the
 device there and then, with the connect routine's full budget, before it
@@ -4571,7 +4576,54 @@ Switching on is refused only for the first and the last reason. A
 check and the write are one step against `connect_device`'s release, so
 no device can be connected between the two.
 
-All four tools are ungated (§ [In-Flight Tool
+#### Restarting a device's service
+
+`restart_service {device_id}` has the driver service that serves the
+device restart, so the service meets its device in a fresh process
+(decision 5). The dusk document asks for it once the device's output is
+back on and the device has settled, before `connect_device`, and its
+wedge retry asks for it again after the second cut (decision 11).
+
+- **The service is the device's `alpaca_url`**: its scheme, host and
+  port. Every roster entry whose `alpaca_url` has the same three is a
+  device on the service.
+- **Every device `rp` has on the service must be held out**, or the
+  call is refused with a tool error that names those still in `rp`'s
+  hands. A restart ends every client's session with every device the
+  service serves, so each must have been through `disconnect_device`
+  first. The check and the request are one step against
+  `connect_device`'s release, as for `set_switch`.
+- **`rp` sends the service `POST /service/v1/restart`**, with the
+  device's credential and the observatory CA ([lifecycle § Restart on
+  request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+  The service answers with the id of the process that is restarting,
+  closes its devices within its own fixed deadline, and exits, and its
+  service manager starts it again.
+- **`rp` then waits for the new process.** It reads
+  `GET /service/v1/instance` every 500 ms until another process's id
+  answers, for at most 60 s: the service manager's restart delay (5 s
+  under systemd and the SCM, up to 10 s under launchd), the old
+  process's close deadline (10 s), and the new process's start, a
+  serial driver's eager handshake included.
+
+The result is `{device_id, service, devices, restart}`: `service` is the
+service's scheme, host and port, `devices` the roster ids on it, and
+`restart` is `restarted`, or `timed_out` when no new process answered in
+time. A refusal, a service that does not answer the request, and one
+that answers it with an error (`404` from a driver that takes no
+restart requests) are tool errors. The devices stay held out whatever
+the outcome; the next step is `connect_device` for each.
+
+One call restarts the service for every device on it, and a second call
+restarts the new process again. A document that has power-cycled
+several devices on one service restarts that service once: the first
+call's `devices` names every device the restart covered.
+
+`restart_service` actuates nothing (tenet 3): the restarted service's
+start runs the handshake every start runs, and its devices stay held
+out of `rp` until `connect_device`.
+
+All five tools are ungated (§ [In-Flight Tool
 Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
 weather, and a dusk document powers devices up only once `rp`'s safety
 monitors read safe with the roof open (decision 7), a check that belongs
@@ -7530,7 +7582,8 @@ On the overall safe → unsafe transition:
 5. Park the mount (best-effort, fire-and-forget: the Alpaca `Park`
    is issued and logged, but `rp` does not block on `AtPark` —
    Sentinel's watchdog owns escalation if the mount never gets
-   there).
+   there). A mount held out through `disconnect_device` is skipped
+   with a warning (§ [Power Switching](#power-switching)).
 
 The hardware steps run in that order deliberately: the mount must not
 move under a sky frame or an active guide loop, and a cancelled body's
@@ -8540,7 +8593,9 @@ services/rp/src/
                         take turns on
     power.rs            The power map at run time (§ Power Switching):
                         an output's name resolved to the box's switch id,
-                        the set_switch refusals, the get_switch reads
+                        the set_switch refusals, the get_switch reads,
+                        and a driver service's restart request and the
+                        wait for its new process
     alpaca.rs           Generic Alpaca client (reqwest-based)
     binding.rs          The connect routine shared by every kind:
                         locate the entry's device in configureddevices,
@@ -8692,8 +8747,8 @@ services/rp/src/
                           guiding-train moves).
       power.rs          DeviceIdParams, GetSwitchParams,
                           SetSwitchParams + disconnect_device,
-                          connect_device, get_switch, set_switch
-                          (§ Power Switching).
+                          connect_device, get_switch, set_switch,
+                          restart_service (§ Power Switching).
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
                           tool.
       guider.rs         6 guider param structs + the 6 guiding tools

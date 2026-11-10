@@ -75,7 +75,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
@@ -167,6 +167,9 @@ pub struct ServerBuilder {
     /// In-process reload trigger a setup-page save fires after its response
     /// has flushed. `Some` (with `config_file_path`) enables the setup pages.
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
     /// Which fields the command-line flags pin: the setup pages show them
     /// as the running service has them and never persist them.
     overrides: CliOverrides,
@@ -213,6 +216,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -391,7 +403,7 @@ impl ServerBuilder {
             // in `async {}` (borrow) form like the other services'
             // build()s.
             let router: axum::Router = {
-                let r = axum::Router::new();
+                let r = rusty_photon_driver::restart::router(self.restart.clone());
                 #[cfg(feature = "mock")]
                 let r = match &self.debug_mock_state {
                     Some(state) => r.merge(debug_mock_router(Arc::clone(state))),

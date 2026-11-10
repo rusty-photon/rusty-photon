@@ -119,6 +119,13 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
   supervisor and give it back (rp.md § Power Switching). `ppba-driver`,
   `upbv2-driver` and `gemini-powerbox-adv3-driver` expose their outputs as
   ASCOM Switch ids, each with an operator label.
+- **Every ASCOM driver service restarts on request.** Asked on its own
+  API (`POST /service/v1/restart`), it stops as on a shutdown, closes its
+  devices within 10 s, and exits with code 75, which systemd, the SCM and
+  launchd restart it on. rp's `restart_service` sends the request once
+  every device rp has on the service is held out, and waits for the new
+  process to answer (rusty-photon-service-lifecycle.md § Restart on
+  request, rp.md § Power Switching). PHD2 has no such path yet.
 - **doctor** fails `hardware.usb-device` for an enabled service whose
   device is absent from the bus.
 - **Linux serial device names follow enumeration order** (`/dev/ttyUSBn`,
@@ -414,9 +421,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 |-------|-------------|--------|-------------|
 | P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2`, `pa-scops-oag` and `star-adventurer-gti` across a cut. Owed (Validation §Owed): rig2's other devices with their drivers across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
-| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | Not started | |
-| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | In review | `feature/power-cycle-p3-rp-tools` |
-| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2 and P3 | |
+| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | In progress: the driver services' restart and rp's `restart_service` are in review; PHD2's restart through `phd2-guider`'s launcher is not started | `feature/power-cycle-p2a-driver-restart` |
+| P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
+| P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, once per service however many of its devices were off (`restart_service` returns the service and every device on it), PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2 and P3 | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
 P0, P1 and P2 depend on nothing else, P4 needs P2 and P3, and P5 needs
@@ -548,7 +555,7 @@ of the service or not, a connect, and an exposure.
 | QHY178M after three days with DC3 off, its USB on, and no process holding it | The first exposure of a fresh `qhy-camera`, started 30 s after DC3 came on, wedged. It was ready only after 96.7 s, with every pixel 0, and then `CCDTemperature` read −5005.8 °C and the wheel could not report its slot count. Cutting both outputs and restarting the service cleared it. The same sequence after 40 minutes with DC3 off gave a good first exposure |
 | A QHY session held across a 10 s cut of both outputs, camera and wheel connected | Both read `Connected == true` once power was back. The camera's first call failed `NOT_CONNECTED`, and then both devices read disconnected. A reconnect of the camera alone was refused until the wheel was disconnected too (`qhy-camera`'s C9). Then both connected and the camera exposed normally |
 
-### pier1 (2026-11-04, 2026-11-06 and 2026-11-07)
+### pier1 (2026-11-04, 2026-11-06, 2026-11-07 and 2026-11-09)
 
 pier1 is a Raspberry Pi 5 on Raspberry Pi OS, with a Pegasus PPBA Gen2
 switching the rig and the nightly packages of 2026-10-31 installed. The
@@ -564,7 +571,10 @@ and each cut went through `ppba-driver`'s Alpaca API. On 2026-11-07 the
 nightly packages of that day were installed, with `star-adventurer-gti`'s
 restore, and the mount's tests ran with every driver serving. The mount sat
 at rest at its `ap_park_3` seed pose (hour angle −6 h, Dec 90°), its state
-record said so, and nothing commanded it to move.
+record said so, and nothing commanded it to move. On 2026-11-09 the nightly
+packages of that day were installed, whose `star-adventurer-gti` keeps a
+pending power-up check in the mount state record, and the dawn and dusk by
+hand ran again.
 
 | Question | Result |
 |---|---|
@@ -576,13 +586,11 @@ record said so, and nothing commanded it to move.
 | The quad output cut for 5 s, rp connected to every device (2026-11-07) | The driver logged the controller's restart and wrote the last position back: encoders read `(0, 0)`, written `(−907200, 725760)`. After the cut the mount read the same hour angle and Dec 90°, its record stayed at rest at the seed pose, and the position was not lost |
 | The quad output cut for 40 s, rp connected (2026-11-07) | Through the cut the mount read `Connected == false` and its reads failed `NOT_CONNECTED`, and the transport warned at each 5 s retry, eight times. Once the controller answered, the driver wrote the last position back as an estimate (an outage of 43 s), ran the power-up check at once against the record, and seeded `ap_park_3`. The mount read the same hour angle and Dec as before |
 | The plan's dawn and dusk by hand, with a 40 s cut (2026-11-07): sentinel and rp stopped, the mount, the FP2 and the Falcon disconnected, the quad cut, their three services restarted, rp started | The driver, serving with no client connected, saw the controller restart once it answered and wrote the last position back as an estimate (an outage of 43 s), leaving its power-up check for the next connect. The restart ended that process, and the check with it. The restarted process found the controller initialised and its encoders at the written-back `(−907200, 725760)`, so rp's connect seeded nothing and checked no record. The mount read the same pose, the one it rested at. The FP2 and the Falcon reconnected on rp's connect |
+| The plan's dawn and dusk by hand again, with a 40 s cut (2026-11-09) | Serving with no client connected, the driver saw the controller restart once it answered, wrote the last position back as an estimate (an outage of 43 s), and wrote the pending power-up check into the mount state record (`awaiting_check`). The restart ended that process. At rp's first connect the restarted process found the check in the record, ran it, and seeded `ap_park_3` at the written-back `(−907200, 725760)`. The record went back to at rest at the seed pose, the mount read the same hour angle and Dec 90°, and the FP2 and the Falcon reconnected on rp's connect |
 
 ### Owed
 
 - rig2's other devices.
-- pier1's dawn and dusk by hand again, with `star-adventurer-gti` keeping
-  its pending power-up check in the mount state record: the restarted
-  process should run the check from the record at the dusk connect.
 - An output that may feed the host or the power box's own serial bridge is
   not cut remotely at all: on pier1 the PPBA is reachable only through
   `ppba-driver` on the Pi, so once either is down no host can switch the

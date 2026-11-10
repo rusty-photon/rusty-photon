@@ -128,6 +128,11 @@ struct StubState {
     connect_requests: AtomicU32,
     /// `Connected = false` requests this incarnation has taken.
     disconnect_requests: AtomicU32,
+    /// The process the restart routes name: a restart request replaces it
+    /// once the stub has played its restart.
+    instance: RwLock<String>,
+    /// Restart requests this incarnation has taken.
+    restart_requests: AtomicU32,
 }
 
 /// In-process Alpaca device service that can be stopped and brought
@@ -298,6 +303,13 @@ impl AlpacaDeviceStub {
         self.state.disconnect_requests.load(Ordering::SeqCst)
     }
 
+    /// How many restart requests (`POST /service/v1/restart`) the stub has
+    /// taken.
+    #[must_use]
+    pub fn restart_requests(&self) -> u32 {
+        self.state.restart_requests.load(Ordering::SeqCst)
+    }
+
     /// Set the reading the safety-monitor variant reports while
     /// connected.
     pub fn set_is_safe(&self, is_safe: bool) {
@@ -429,8 +441,20 @@ fn fresh_state(is_safe: bool, probe: FocuserProbe, unique_id: &str) -> Arc<StubS
         device_list_reads: AtomicU32::new(0),
         connect_requests: AtomicU32::new(0),
         disconnect_requests: AtomicU32::new(0),
+        instance: RwLock::new(next_instance()),
+        restart_requests: AtomicU32::new(0),
     })
 }
+
+/// A process id no stub process has named before.
+fn next_instance() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    format!("stub-process-{}", NEXT.fetch_add(1, Ordering::SeqCst))
+}
+
+/// How long a stub asked to restart takes to come back as a new process:
+/// long enough that a client sees the old process first.
+const STUB_RESTART_DELAY: Duration = Duration::from_millis(300);
 
 /// Bind a loopback listener on an OS-assigned port — once per stub;
 /// the socket is never released and rebound.
@@ -497,11 +521,48 @@ fn router(device: StubDevice, state: Arc<StubState>) -> Router {
             }),
         );
 
+    let app = restart_routes(app, &state);
     match device {
         StubDevice::SafetyMonitor => safety_monitor_routes(app, state),
         StubDevice::Camera => camera_routes(app, &state),
         StubDevice::Focuser => focuser_routes(app, state),
     }
+}
+
+/// A driver service's restart routes
+/// (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
+/// A request is answered with the current process, which the stub
+/// replaces [`STUB_RESTART_DELAY`] later with a new one whose device is
+/// disconnected, as a restarted service's is.
+fn restart_routes(app: Router, state: &Arc<StubState>) -> Router {
+    let instance_state = Arc::clone(state);
+    let restart_state = Arc::clone(state);
+    app.route(
+        "/service/v1/instance",
+        get(move || {
+            let state = Arc::clone(&instance_state);
+            async move { Json(json!({ "instance": *state.instance.read().expect("stub instance lock poisoned") })) }
+        }),
+    )
+    .route(
+        "/service/v1/restart",
+        axum::routing::post(move |_: Json<serde_json::Value>| {
+            let state = Arc::clone(&restart_state);
+            async move {
+                state.restart_requests.fetch_add(1, Ordering::SeqCst);
+                let current = state.instance.read().expect("stub instance lock poisoned").clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(STUB_RESTART_DELAY).await;
+                    state.connected.store(false, Ordering::SeqCst);
+                    *state.instance.write().expect("stub instance lock poisoned") = next_instance();
+                });
+                (
+                    axum::http::StatusCode::ACCEPTED,
+                    Json(json!({ "instance": current })),
+                )
+            }
+        }),
+    )
 }
 
 /// `IsSafe`, gated on `Connected`.

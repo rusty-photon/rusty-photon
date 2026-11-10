@@ -43,6 +43,7 @@ pub struct FocuserWorld {
 
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
@@ -61,6 +62,16 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for FocuserWorld {
 impl SetupPagesWorld for FocuserWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for FocuserWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.handle.as_mut().expect("the service was not started")
     }
 }
 

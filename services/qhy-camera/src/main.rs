@@ -203,6 +203,7 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             // Windows real-SDK builds delay-load qhyccd.dll (see build.rs):
             // resolve it BEFORE any SDK call and keep it resident, or fail
             // with the one distinctive, actionable error (PF1–PF4). This
@@ -231,7 +232,8 @@ fn main() -> ServiceResult {
                     let builder = ServerBuilder::new()
                         .with_config(config)
                         .with_config_source(config_path.clone(), overrides.clone())
-                        .with_reload_signal(reload.clone());
+                        .with_reload_signal(reload.clone())
+                        .with_restart(restart.clone());
                     #[cfg(feature = "simulation")]
                     let builder = {
                         let builder = builder.with_usb_source(usb_source.clone());

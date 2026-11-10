@@ -2401,6 +2401,13 @@ honours it before that rebuild: the stop ends the service, and the reload
 rebuilds from the file, once. A stop always wins: one that lands with a
 reload ends the service without building another server first.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ---
 
 ## Testing

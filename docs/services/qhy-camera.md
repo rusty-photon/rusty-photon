@@ -2878,6 +2878,13 @@ resolution* below; `--devices` lists the cameras by USB port and prints the
 `usb_devices` block to paste instead (U8). Running with no subcommand starts
 the driver exactly as before.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ---
 
 ## Windows: qhyccd.dll resolution (delay-load · preflight · doctor)

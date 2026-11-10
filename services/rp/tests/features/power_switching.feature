@@ -15,6 +15,11 @@ Feature: Power switching
   switch off a protected output, and refuses to switch off an output
   while a device on it is not held out.
 
+  restart_service has the driver service that serves a device restart,
+  once every device rp has on the service is held out, and waits for the
+  service's next process to answer. A service that takes no restart
+  requests is reported, not waited on.
+
   Background:
     Given a stub power box with the outputs "Camera Power", "Dew Heater", "Host Power" and "Spare Output", all on
     And a stub Alpaca service hosting a camera
@@ -103,3 +108,26 @@ Feature: Power switching
     When the MCP client calls "disconnect_device" with the JSON {"device_id": "no-such-device"}
     Then the tool call should return an error
     And the error message should contain "no-such-device"
+
+  Scenario: A service restarts only once every device rp has on it is held out
+    When the MCP client calls "restart_service" with the JSON {"device_id": "main-cam"}
+    Then the tool call should return an error
+    And the error message should contain "main-cam"
+    And the stub camera's service should have been asked to restart 0 times
+
+  Scenario: A held-out device's service restarts and rp waits for its next process
+    When the MCP client calls "disconnect_device" with the JSON {"device_id": "main-cam"}
+    And the MCP client calls "restart_service" with the JSON {"device_id": "main-cam"}
+    Then the tool result at "/restart" should be the JSON "restarted"
+    And the tool result at "/devices" should be the JSON ["main-cam"]
+    And the tool result at "/service" should be the stub camera's service address
+    And the stub camera's service should have been asked to restart 1 time
+    When the MCP client calls "connect_device" with the JSON {"device_id": "main-cam"}
+    Then the tool result at "/connected" should be the JSON true
+    And the stub camera should read connected
+
+  Scenario: A service that takes no restart requests is reported
+    When the MCP client calls "disconnect_device" with the JSON {"device_id": "power-box"}
+    And the MCP client calls "restart_service" with the JSON {"device_id": "power-box"}
+    Then the tool call should return an error
+    And the error message should contain "takes no restart requests"
