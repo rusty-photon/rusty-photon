@@ -30,3 +30,9 @@ Feature: upbv2-driver HTTP Basic Auth
     Given upbv2-driver is configured without auth and with mock serial
     When upbv2-driver is started without auth
     Then the Alpaca management endpoint should respond without credentials
+
+  Scenario: A restart request without credentials is refused with 401
+    Given generated TLS certificates for upbv2-driver
+    And upbv2-driver is configured with TLS and auth enabled and mock serial
+    When upbv2-driver is started with TLS and auth
+    Then the service refuses a restart request without credentials with 401

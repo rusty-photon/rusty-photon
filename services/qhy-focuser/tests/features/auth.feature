@@ -30,3 +30,9 @@ Feature: qhy-focuser HTTP Basic Auth
     Given qhy-focuser is configured without auth and with mock serial
     When qhy-focuser is started without auth
     Then the Alpaca management endpoint should respond without credentials
+
+  Scenario: A restart request without credentials is refused with 401
+    Given generated TLS certificates for qhy-focuser
+    And qhy-focuser is configured with TLS and auth enabled and mock serial
+    When qhy-focuser is started with TLS and auth
+    Then the service refuses a restart request without credentials with 401

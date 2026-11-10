@@ -8,12 +8,15 @@
 //! and When steps start the service. The request goes to the service's
 //! announced address over plain HTTP, and the exit is read from the
 //! service's own process: no service manager runs under test to start it
-//! again.
+//! again. One more step goes in the suite's `auth.feature`, after the
+//! suite's own steps start the service with TLS and auth: the restart
+//! route refuses a request without the credentials.
 //!
 //! [`docs/crates/rusty-photon-service-lifecycle.md`]: ../../../docs/crates/rusty-photon-service-lifecycle.md
 
 use std::time::Duration;
 
+use crate::tls_auth::PkiFixture;
 use crate::ServiceHandle;
 
 /// The path a driver service takes a restart request on.
@@ -46,6 +49,10 @@ pub trait ServiceRestartWorld {
 
     /// The running service.
     fn restarted_service(&mut self) -> &mut ServiceHandle;
+
+    /// The port and PKI of the service as the suite's auth scenarios start
+    /// it, with TLS and auth.
+    fn service_behind_auth(&self) -> (u16, &PkiFixture);
 }
 
 fn client() -> reqwest::Client {
@@ -107,6 +114,41 @@ pub fn assert_accepted(state: &ServiceRestartState, status: u16) {
     );
 }
 
+/// Wait until the service started with TLS and auth names its process to a
+/// client with the credentials, then post a restart request without them,
+/// and assert it is refused with 401.
+///
+/// The instance route answering 200 first shows that the service's routes
+/// sit behind the credentials, so the 401 is theirs: the auth layer answers
+/// a path no route serves with 401 too.
+///
+/// # Panics
+///
+/// Panics when the instance route never answers 200 with the credentials,
+/// or the restart route answers anything but 401 without them.
+pub async fn assert_restart_needs_credentials(port: u16, pki: &PkiFixture) {
+    let client = pki.https_client();
+    let base_url = format!("https://127.0.0.1:{port}");
+    crate::tls_auth::wait_until_ready(
+        &client,
+        &format!("{base_url}{INSTANCE_PATH}"),
+        pki.username(),
+        pki.password(),
+    )
+    .await;
+    let response = client
+        .post(format!("{base_url}{RESTART_PATH}"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("the restart route answers");
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "a restart request without credentials"
+    );
+}
+
 /// What the runner logs when a service asked to restart has closed in
 /// order and exits; an exit at the close deadline never logs it
 /// (`rusty-photon-service-lifecycle`'s `finish_console`).
@@ -145,8 +187,8 @@ pub async fn assert_closes_and_exits_with(service: &mut ServiceHandle, code: i32
     );
 }
 
-/// Generate the steps of `restart.feature` for `$world`, which implements
-/// [`ServiceRestartWorld`].
+/// Generate the steps of `restart.feature`, and the restart step of
+/// `auth.feature`, for `$world`, which implements [`ServiceRestartWorld`].
 ///
 /// ```rust,ignore
 /// use crate::world::MyWorld;
@@ -176,6 +218,13 @@ macro_rules! service_restart_steps {
             use $crate::service_restart::ServiceRestartWorld as _;
             $crate::service_restart::assert_closes_and_exits_with(world.restarted_service(), code)
                 .await;
+        }
+
+        #[::cucumber::then("the service refuses a restart request without credentials with 401")]
+        async fn service_restart_needs_credentials(world: &mut $world) {
+            use $crate::service_restart::ServiceRestartWorld as _;
+            let (port, pki) = world.service_behind_auth();
+            $crate::service_restart::assert_restart_needs_credentials(port, pki).await;
         }
     };
 }

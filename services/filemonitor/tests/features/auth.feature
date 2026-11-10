@@ -35,3 +35,10 @@ Feature: filemonitor HTTP Basic Auth
     And filemonitor is configured without auth and a contains rule "SAFE" as safe
     When filemonitor is started without auth
     Then the Alpaca management endpoint should respond without credentials
+
+  Scenario: A restart request without credentials is refused with 401
+    Given generated TLS certificates for filemonitor
+    And a monitored file containing "SAFE"
+    And filemonitor is configured with TLS and auth enabled and a contains rule "SAFE" as safe
+    When filemonitor is started with TLS and auth
+    Then the service refuses a restart request without credentials with 401

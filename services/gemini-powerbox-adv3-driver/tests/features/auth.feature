@@ -30,3 +30,9 @@ Feature: gemini-powerbox-adv3-driver HTTP Basic Auth
     Given gemini-powerbox-adv3-driver is configured without auth and with mock serial
     When gemini-powerbox-adv3-driver is started without auth
     Then the Alpaca management endpoint should respond without credentials
+
+  Scenario: A restart request without credentials is refused with 401
+    Given generated TLS certificates for gemini-powerbox-adv3-driver
+    And gemini-powerbox-adv3-driver is configured with TLS and auth enabled and mock serial
+    When gemini-powerbox-adv3-driver is started with TLS and auth
+    Then the service refuses a restart request without credentials with 401

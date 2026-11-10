@@ -13,3 +13,9 @@ Feature: TLS and HTTP Basic Auth smoke
     When the service is started with TLS and auth
     Then the service rejects requests without credentials with 401
     And the service responds 200 to requests with valid credentials
+
+  Scenario: A restart request without credentials is refused with 401
+    Given generated TLS certificates for the service
+    And the service is configured with TLS and auth enabled
+    When the service is started with TLS and auth
+    Then the service refuses a restart request without credentials with 401
