@@ -76,6 +76,12 @@ port = 11113      # default port when the config file or server block is absent
 # expected `FileAbsent` state (§TLS and auth).
 config_gated = false
 
+# Optional: a file the service writes beside its config, holding runtime
+# state rather than configuration — star-adventurer-gti's mount state
+# record. `inventory.unknown-config` counts it as the service's own file
+# instead of a misnamed config. A bare file name.
+state_file = "star-adventurer-gti.mount-state.json"
+
 # Optional hardware identity (§Hardware checks) — present only on services
 # that talk to a device.
 serial_pointer = "/serial/port"       # config JSON pointer holding the device path
@@ -118,8 +124,10 @@ Three guards keep the catalog honest:
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
    constants. The five config-gated services (below) assert `config_gated`
-   is `true` in the same test. A drifted copy fails that service's tests,
-   not doctor's.
+   is `true` in the same test. `star-adventurer-gti` asserts its declared
+   `state_file` is the name of the mount state record it writes beside its
+   packaged config. A drifted copy fails that service's tests, not
+   doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
    the embedded set parses, ports are unique, and the table matches the files.
    That test is load-bearing rather than belt-and-braces: at runtime the
@@ -132,7 +140,9 @@ Three guards keep the catalog honest:
    A third doctor unit test pins `config_gated` against the known set
    (`calibrator-flats`, `focus-model`, `plate-solver`, `polar-align`,
    `session-runner`, `sky-survey-camera`) — unlike `usb_vendor`, this one
-   is not measured from hardware, so a plain assertion is enough.
+   is not measured from hardware, so a plain assertion is enough. Another
+   pins the declared `state_file`s the same way: `star-adventurer-gti`'s
+   mount state record is the only one.
    Three further doctor unit tests pin every declared `usb_model` against a
    table of descriptors transcribed from the fleet's own buses (the Pi rig's
    sysfs `product`, rig2's bus-reported device description): each model must
@@ -684,7 +694,7 @@ report groups naturally.
 |---|---|---|
 | `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. For a self-defaulting service that has never started (it self-creates config on first run) — or its state directory is wrong; for a `config_gated` service (§The derived catalog) it hard-requires a hand-written file and cannot start without one. The remedy names the actual `ConditionPathExists=` gate on Linux, else falls back to the catalog's `config_gated` flag (the only portable signal — Windows/macOS carry no equivalent fact) so the suggestion never wrongly claims a gated service self-creates. |
 | `inventory.config-without-unit` | warn | `<svc>.json` exists for a catalog service whose unit is not installed. Leftover from a removed package, or a hand-copied file. |
-| `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. |
+| `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service, no service's declared `state_file` (`star-adventurer-gti.mount-state.json`), and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. A state file is never flagged: the remedy, renaming or removing the file, would destroy the state the service keeps there. |
 | `inventory.unit-and-config` | ok | Unit installed and config present — the healthy pairing, reported so an empty report is never mistaken for a clean one. |
 
 ### Config parsing

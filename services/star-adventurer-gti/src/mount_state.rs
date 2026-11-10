@@ -287,6 +287,22 @@ mod tests {
         );
     }
 
+    /// `pkg/doctor.toml` declares the record as this service's state file,
+    /// so doctor never flags it as a misnamed config (docs/services/doctor.md
+    /// §The derived catalog); the name must be the one the driver writes
+    /// beside its packaged config.
+    #[test]
+    fn the_doctor_catalog_declares_the_record_as_the_state_file() {
+        let meta =
+            rusty_photon_server_config::doctor_toml::parse(include_str!("../pkg/doctor.toml"))
+                .unwrap();
+        let record = record_path(Path::new("star-adventurer-gti.json"));
+        assert_eq!(
+            meta.state_file.as_deref(),
+            record.file_name().and_then(|name| name.to_str())
+        );
+    }
+
     #[test]
     fn a_stopped_mount_records_its_ticks() {
         let snap = MountSnapshot {
