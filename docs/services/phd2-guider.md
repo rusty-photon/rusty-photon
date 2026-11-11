@@ -995,24 +995,29 @@ mutex, so guiding requests wait for it.
 
 1. **Refusals.**
    - `restart_unsupported` (501) where nothing would start PHD2 again:
-     `phd2.managed` is `false`, or on Linux `rusty-photon-phd2` is not
-     active or `phd2.host` is not a loopback address, or the host is
-     macOS.
+     `phd2.managed` is `false`, `phd2.host` is neither `localhost` nor a
+     loopback address, on Linux `rusty-photon-phd2` is not active, or the
+     host is macOS.
    - `camera_connected` (409) while a client has the camera facade's
      camera connected: the restart ends PHD2's camera connection under
      it, so the camera is disconnected first (rp's `disconnect_device`).
    - `camera_busy` (409) while a facade frame is in flight or a sweep
      lease is held.
-   - `guiding_active` (409) unless PHD2's state is `Stopped` or
-     `Selected`, the states the facade's capture also allows: a restart
-     ends no guiding, calibration, loop or pause as a side effect.
-     `POST /api/v1/guiding/stop` comes first.
-2. **Stop.** If PHD2 answers, the service sends `stop_capture` and waits
-   up to `stop_timeout` for `Stopped`, then sends `set_connected(false)`
-   and `shutdown`. PHD2 saves its profile on that clean exit. A PHD2 that
-   has not exited 30 s later, or that does not answer at all, is ended:
-   on Linux by `SIGTERM` and, 5 s later, `SIGKILL`; on Windows by
-   `TerminateProcess`.
+   - `guiding_active` (409) when PHD2 answers with a state other than
+     `Stopped`, the one state the facade's capture also allows (a
+     `Selected` PHD2 may be looping): a restart ends no guiding,
+     calibration, loop or pause as a side effect.
+     `POST /api/v1/guiding/stop` comes first. A PHD2 that does not answer
+     within `command_timeout` is not refused: it goes straight to being
+     ended in step 2, which is the case a restart after a power cycle
+     exists for.
+2. **Stop.** If PHD2 answers, the service sends `set_connected(false)`
+   and `shutdown`. PHD2 saves its profile on that clean exit. Each call
+   is best effort: one that fails or times out moves straight on to the
+   exit wait, so a camera whose close hangs cannot hold the restart. A
+   PHD2 that has not exited 30 s after `shutdown`, or that does not
+   answer at all, is ended: on Linux by `SIGTERM` and, 5 s later,
+   `SIGKILL`; on Windows by `TerminateProcess`.
 3. **Start.** On Linux, PHD2's unit starts it again. On Windows, the
    service opens PHD2's session if it is missing and starts PHD2 there.
 4. **Answer.** The service waits for PHD2's event server to accept a
@@ -1155,7 +1160,7 @@ omitted from the wire when there is nothing to attach):
 | `phd2_unreachable` | 502 | No PHD2 connection, or the RPC failed to send. |
 | `restart_failed` | 502 | `phd2/restart`: PHD2 did not exit, start, answer or connect its equipment within `phd2.restart_timeout`, or a step failed. `message` names the step. |
 | `restart_unsupported` | 501 | `phd2/restart` where nothing would start PHD2 again: `phd2.managed` is `false`, on Linux the `rusty-photon-phd2` unit is not active or `phd2.host` is not loopback, or the host is macOS. |
-| `guiding_active` | 409 | `phd2/restart` while PHD2's state is neither `Stopped` nor `Selected`. |
+| `guiding_active` | 409 | `phd2/restart` while PHD2 answers with a state other than `Stopped`. |
 | `internal` | 500 | Unexpected service failure. |
 
 ### Supervision and recovery
@@ -1236,7 +1241,9 @@ The package installs two units, disabled until the switch:
   PHD2 through an SSH tunnel.
 - **`rusty-photon-phd2`** runs PHD2 as `rusty-photon` on that display,
   with its home at `/var/lib/rusty-photon/phd2`, where PHD2 keeps its
-  profile (`.PHDGuidingV2`). It binds to the display unit (`BindsTo=` and
+  profile (`.PHDGuidingV2`). The package creates that directory, so the
+  switch-over can write the VNC password there before either unit has
+  run. It binds to the display unit (`BindsTo=` and
   `After=`), so a display that stops takes PHD2 with it and its restart
   brings PHD2 back. It starts only where `/usr/bin/phd2` exists, the path
   PHD2's own build installs to.
@@ -1300,7 +1307,10 @@ account's session logged on and disconnected:
 3. **Starting PHD2.** It starts `phd2.executable_path` (default
    `C:\Program Files (x86)\PHDGuiding2\phd2.exe`) in the session as the
    account (`WTSQueryUserToken`, `CreateProcessAsUser`, desktop
-   `winsta0\default`). A PHD2 already running in the session, started by
+   `winsta0\default`). It starts it only from beneath `%ProgramFiles%` or
+   `%ProgramFiles(x86)%`, where only administrators can write, so a
+   setup-page save cannot have the service run another program as the
+   account. A PHD2 already running in the session, started by
    an earlier run of the service, is adopted instead. PHD2 keeps its
    profile in that account's registry.
 4. **Keeping it running.** It starts PHD2 again 2 s after it exits, as
@@ -1313,13 +1323,15 @@ disconnects the operator's own session, as any second logon does on
 Windows Pro. From another host, RDP has to be allowed through the
 firewall, which the MSI leaves as it found it.
 
-With the camera facade enabled and `camera.image_dir` the default,
-`%PROGRAMDATA%\rusty-photon\phd2-images`, the service creates that
-directory and grants the PHD2 account the right to modify files in it at
-its start, so PHD2 can write the frames the service reads. It grants
-nothing on any other directory, so a setup-page save cannot hand the
-account a system directory. An operator who points `image_dir` elsewhere
-grants the PHD2 account access there.
+The MSI creates `%PROGRAMDATA%\rusty-photon\phd2-images`, the directory
+a switched-over host's camera facade uses. When the facade is enabled and
+`camera.image_dir` names that directory, compared as Windows compares
+paths (case aside, as a full path), the service grants the PHD2 account
+the right to modify files in it at its start, so PHD2 can write the
+frames the service reads. It grants nothing on any other directory, so a
+setup-page save cannot hand the account a system directory. An operator
+who points `image_dir` elsewhere grants the PHD2 account access there,
+and the service logs a warning that it granted nothing.
 
 ### macOS
 
@@ -1963,8 +1975,8 @@ loopback-only and off by default.
 
 Once a host is switched over to PHD2 under the service manager (Phase
 12), PHD2 and the service share an account on Linux, and on Windows the
-service grants the PHD2 account what it needs on the default `image_dir`:
-see
+service grants the PHD2 account what it needs on the directory the MSI
+creates for the frames: see
 [PHD2 under the service manager](#phd2-under-the-service-manager). Until
 then PHD2 runs as the operator, under their desktop or VNC session. The
 packaged service runs as `rusty-photon` (Linux) or `LocalSystem`
