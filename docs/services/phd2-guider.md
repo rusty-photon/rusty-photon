@@ -1003,9 +1003,10 @@ mutex, so guiding requests wait for it.
      it, so the camera is disconnected first (rp's `disconnect_device`).
    - `camera_busy` (409) while a facade frame is in flight or a sweep
      lease is held.
-   - `guiding_active` (409) while PHD2 is guiding or looping: a restart
-     does not stop guiding as a side effect. `POST /api/v1/guiding/stop`
-     comes first.
+   - `guiding_active` (409) unless PHD2's state is `Stopped` or
+     `Selected`, the states the facade's capture also allows: a restart
+     ends no guiding, calibration, loop or pause as a side effect.
+     `POST /api/v1/guiding/stop` comes first.
 2. **Stop.** If PHD2 answers, the service sends `stop_capture` and waits
    up to `stop_timeout` for `Stopped`, then sends `set_connected(false)`
    and `shutdown`. PHD2 saves its profile on that clean exit. A PHD2 that
@@ -1154,7 +1155,7 @@ omitted from the wire when there is nothing to attach):
 | `phd2_unreachable` | 502 | No PHD2 connection, or the RPC failed to send. |
 | `restart_failed` | 502 | `phd2/restart`: PHD2 did not exit, start, answer or connect its equipment within `phd2.restart_timeout`, or a step failed. `message` names the step. |
 | `restart_unsupported` | 501 | `phd2/restart` where nothing would start PHD2 again: `phd2.managed` is `false`, on Linux the `rusty-photon-phd2` unit is not active or `phd2.host` is not loopback, or the host is macOS. |
-| `guiding_active` | 409 | `phd2/restart` while PHD2 is guiding or looping. |
+| `guiding_active` | 409 | `phd2/restart` while PHD2's state is neither `Stopped` nor `Selected`. |
 | `internal` | 500 | Unexpected service failure. |
 
 ### Supervision and recovery
@@ -1188,28 +1189,36 @@ profile with that account.
 
 A host runs PHD2 this way only once the operator switches it over, by
 setting `phd2.managed` to `true`. Until then the service connects to a
-PHD2 that someone started, as it always has, keeps nothing running, and
-refuses a restart with `restart_unsupported`. The switch is made once, in
-this order:
+PHD2 that someone started, keeps nothing running, and refuses a restart
+with `restart_unsupported`. The switch is made once, in this order:
 
-1. **Retire the operator's PHD2.** Quit it cleanly, so it saves its
-   profile, and stop whatever started it: the operator's TigerVNC session
-   on Linux, or their own logon on Windows. Two PHD2s cannot share the
-   event server's port or the guide camera.
-2. **Move its profile.** Export it from the operator's PHD2 with PHD2's
-   own profile export, and import it into the PHD2 account's PHD2. A new
-   profile means a new calibration and dark library, and the wizard until
-   someone completes it.
+1. **Export the profile** from the operator's PHD2, with PHD2's own
+   profile export, while it still runs. A new profile means a new
+   calibration and dark library, and the wizard until someone completes
+   it.
+2. **Retire the operator's PHD2.** Quit it cleanly and stop whatever
+   started it: the operator's TigerVNC session on Linux, or their own
+   logon on Windows. Two PHD2s cannot share the event server's port or
+   the guide camera.
 3. **Linux: hand the guide camera over.** Remove the camera facade
    recipe's port rule
    (`/etc/udev/rules.d/91-rusty-photon-phd2-guide-camera.rules`), which
-   gives the guide camera's port to the operator's group. Without it the
+   gives the guide camera's port to the operator's group, and apply the
+   change to the camera already plugged in: `udevadm control --reload`,
+   then `udevadm trigger --action=change` for its port, as the recipe
+   does, or unplug it and plug it in again. A reload alone leaves the
+   existing device node with the operator's group. Without the rule, the
    camera packages' own rules give the camera to `rusty-photon`, the
    account PHD2 now runs as.
-4. **Linux: enable the units** (`systemctl enable --now
-   rusty-photon-phd2`).
-5. **Set `phd2.managed: true`**, on the setup page or in the config file.
-   On Windows the service then opens the session and starts PHD2 there.
+4. **Linux: set the VNC password and enable the units.**
+   `sudo -u rusty-photon tigervncpasswd /var/lib/rusty-photon/phd2/vncpasswd`,
+   then `systemctl enable --now rusty-photon-phd2`.
+5. **Set `phd2.managed: true`**, on the setup page or in the config file,
+   and restart the service, as for any field that waits for the next
+   start. On Windows the service then opens the session and starts PHD2
+   there.
+6. **Import the profile** into the PHD2 account's PHD2, over VNC on Linux
+   or over RDP as the PHD2 account on Windows.
 
 ### Linux
 
@@ -1304,9 +1313,13 @@ disconnects the operator's own session, as any second logon does on
 Windows Pro. From another host, RDP has to be allowed through the
 firewall, which the MSI leaves as it found it.
 
-With the camera facade enabled, the service grants the PHD2 account the
-right to modify files in `camera.image_dir` at its start, wherever that
-directory is, so PHD2 can write the frames the service reads.
+With the camera facade enabled and `camera.image_dir` the default,
+`%PROGRAMDATA%\rusty-photon\phd2-images`, the service creates that
+directory and grants the PHD2 account the right to modify files in it at
+its start, so PHD2 can write the frames the service reads. It grants
+nothing on any other directory, so a setup-page save cannot hand the
+account a system directory. An operator who points `image_dir` elsewhere
+grants the PHD2 account access there.
 
 ### macOS
 
@@ -1399,9 +1412,12 @@ These are deployment rules. The facade checks the ones it can at load.
 - **PHD2's account must be able to open the guide camera** (Linux). Each
   camera package's udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's
   id, which its cameras share), gives its vendor's whole USB id to the
-  `rusty-photon` group, so PHD2, running as the operator, finds no
-  camera. A udev rule keyed on the guide camera's port gives that port to
-  the operator's group
+  `rusty-photon` group. On a host switched over to [PHD2 under the
+  service manager](#phd2-under-the-service-manager), PHD2 runs as
+  `rusty-photon` and needs nothing more, and a port rule for the operator
+  takes the camera from it. Where PHD2 runs as the operator, it finds no
+  camera, and a udev rule keyed on the guide camera's port gives that
+  port to the operator's group
   ([packaging.md](../packaging.md#phd2-guider-the-camera-facade), step 1).
   PHD2's QHY support does not look for cameras again after finding none,
   so PHD2 starts after the rule is in place. Found and fixed on the field
@@ -1947,7 +1963,8 @@ loopback-only and off by default.
 
 Once a host is switched over to PHD2 under the service manager (Phase
 12), PHD2 and the service share an account on Linux, and on Windows the
-service grants the PHD2 account what it needs on `camera.image_dir`: see
+service grants the PHD2 account what it needs on the default `image_dir`:
+see
 [PHD2 under the service manager](#phd2-under-the-service-manager). Until
 then PHD2 runs as the operator, under their desktop or VNC session. The
 packaged service runs as `rusty-photon` (Linux) or `LocalSystem`

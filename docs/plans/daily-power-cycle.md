@@ -397,11 +397,12 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     - **macOS** has no unattended path yet. `phd2-guider` there connects to
       a PHD2 that someone started, and refuses a restart.
     - **Switching over.** A host already runs PHD2 as the operator, so it
-      switches over once: the operator retires their own PHD2, moves its
-      profile to the PHD2 account with PHD2's own export and import, and
-      sets `phd2-guider`'s `phd2.managed`. On Linux they also remove the
-      camera facade recipe's port rule, which gives the guide camera to the
-      operator's group, and enable the units. Until then `phd2-guider`
+      switches over once: the operator exports their PHD2's profile with
+      PHD2's own export, retires that PHD2, sets `phd2-guider`'s
+      `phd2.managed`, and imports the profile into the PHD2 account's
+      PHD2. On Linux they also remove the camera facade recipe's port rule,
+      which gives the guide camera to the operator's group, apply that to
+      the camera already plugged in, and enable the units. Until then `phd2-guider`
       only connects to PHD2, as before, and refuses a restart, and it
       refuses one on Linux too while the unit is not running PHD2: only a
       PHD2 that something starts again is ever stopped.

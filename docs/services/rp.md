@@ -4652,8 +4652,9 @@ refusals and failures are tool errors that carry its `error` and
   session with (decision 3). The guider service checks this, since it
   knows its facade and `rp` cannot tell a held-out camera is one.
 - `camera_busy`: a facade frame is in flight, or a sweep lease is held.
-- `guiding_active`: PHD2 is guiding or looping. A restart never stops
-  guiding as a side effect, so `stop_guiding` comes first.
+- `guiding_active`: PHD2 is guiding, calibrating, looping or paused. A
+  restart never ends those as a side effect, so `stop_guiding` comes
+  first.
 - `restart_failed`: a step of the restart failed or ran out of time, named
   in `message`. Asking again is safe.
 - `restart_unsupported`: nothing would start PHD2 again on that host. It
