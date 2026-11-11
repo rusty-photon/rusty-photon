@@ -80,7 +80,7 @@ use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
 use rusty_photon_doctor_checks::UsbScan;
 use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served, ServedWheel};
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, error, info, warn};
@@ -107,6 +107,9 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     overrides: CliOverrides,
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
     /// SDK injected by `main` (the only use is the test-only simulation
     /// backends); when `None`, `build()` opens the SDK with `Sdk::try_new()`,
     /// waiting in `Sdk::new()` only while a re-scan's try holds one.
@@ -145,6 +148,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -214,7 +226,8 @@ impl ServerBuilder {
         }
 
         let tls = self.config.server.tls.clone();
-        let router = axum::Router::new().fallback_service(server.into_service());
+        let router = rusty_photon_driver::restart::router(self.restart.clone())
+            .fallback_service(server.into_service());
 
         // HTTP Basic Auth (config `server.auth`); absent means unauthenticated.
         let router = match &self.config.server.auth {
@@ -998,7 +1011,7 @@ mod list_tests {
             reason.starts_with("no working camera is enumerated on p9"),
             "{reason}"
         );
-        assert!(reason.contains("reload or restart qhy-camera"), "{reason}");
+        assert!(reason.contains("fixed, restart qhy-camera"), "{reason}");
     }
 
     fn enumerated(id: &str, model: &str) -> claims::Enumerated {

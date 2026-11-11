@@ -566,6 +566,13 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
   -d "Id=2&Value=128"
 ```
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ## Architecture
 
 ### Module Structure
@@ -677,6 +684,7 @@ The driver caches device state to minimize serial communication overhead:
 - **CanWrite() queries**: Use cached state (may be up to `polling_interval` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
 - **SetSwitch() / SetSwitchValue() for dew heaters**: Refreshes state (`PA`) immediately before the auto-dew check (always validates against current device state)
 - **After successful writes**: State is refreshed immediately to reflect the change
+- **Store order**: Every `PA` and `PS` frame is stored with the instant it was read off the wire, and a frame read before the cached one is dropped, sensor samples included. A poll whose `PA` was read just before a write therefore cannot land after the write's refresh and put the switch back to its old value ([the shared pattern](../workspace.md#serial-based-services-ppba-driver-qhy-focuser))
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
 
 For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1s) increase serial communication overhead.

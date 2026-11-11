@@ -55,6 +55,30 @@ every Bazel shard of `rp:bdd`) a private simulator. The `@serial` feature
 tag still serializes scenarios *within* one test process, which share that
 process's instance.
 
+### The Windows tray icon is machine-global too
+
+On Windows 10 and later, OmniSim puts an icon in the notification area
+through H.NotifyIcon 2.3.1. The library keys a tray icon's identity on a
+hash of the process path (`TrayIcon.CreateUniqueGuidForProcessPath`), so
+every OmniSim started from one binary shares one icon GUID, as
+machine-wide as the mutex. Each instance's startup runs
+`TrayIcon.Create()`, which deletes any icon with that GUID, adds its own
+and then sets its version. Two instances starting together interleave
+those calls, and the loser throws `System.InvalidOperationException:
+TryCreate failed.` or `TrySetMostRecentVersion failed.`
+`TrayIconWithContextMenu.Create()` runs that on a thread of its own, so
+OmniSim's try/catch around the call never sees the exception: the process
+dies with exit code `0xe0434352` (an unhandled .NET exception) before it
+serves anything. A process with no desktop (session 0, where services and
+SSH logins run) fails `TryCreate` every time.
+
+The fork's `--multi-instance` skips the icon from `v0.5.0-467.3`, so the
+harness's instances start in any session, and any number of them can
+start at once. On a Windows 11 guest over SSH, `467.2` exits `0xe0434352`
+with `TryCreate failed`, and twelve `467.3` instances started together all
+serve. An OmniSim started without the flag still builds the icon, and
+needs a desktop session.
+
 ## Binding port
 
 OmniSim is an ASP.NET Core app. Default port is **32323**. Override via either:
@@ -169,7 +193,7 @@ From `readme.md`:
 | `--local-address` | Print the URL of the running instance (when invoked as a second instance) |
 | `--show-browser` | Open the web UI in a browser (when invoked as a second instance) |
 | `--urls <url>` | ASP.NET Core convention; override the bind URL |
-| `--multi-instance` | **Fork-only** (`v0.5.0-467.1+`): skip the single-instance mutex + named-pipe server so several OmniSims can run concurrently (pair with distinct `--urls` and settings stores) |
+| `--multi-instance` | **Fork-only** (`v0.5.0-467.1+`): skip the single-instance mutex + named-pipe server, and from `v0.5.0-467.3` the Windows tray icon, so several OmniSims can run concurrently (pair with distinct `--urls` and settings stores) |
 | `OMNISIM_SETTINGS_DIR` (env var) | **Fork-only** (`v0.5.0-467.2+`): re-root the profile store to the given directory (XMLProfile layout underneath), on every platform |
 
 `--reset` only takes effect at startup. To reset state in a *running* instance, use the OmniSim-only HTTP API.
@@ -245,7 +269,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 - **Implication for BDD scenarios:** with the per-scenario reset
   wired into `before(scenario)` (issue #149), the focuser is set
   back to 25000 before every scenario. Test target positions in
-  `services/rp/tests/features/{focuser,auto_focus}.feature` are
+  `services/rp/tests/features/focuser.feature` are
   anchored near 25000 (typically `25000`, `24500`, `25500`, plus
   bounds like `24900..25100`) so each `move_focuser` call slews ≤
   ~500 steps and completes in ~1 s. Without that anchoring the rp

@@ -1,6 +1,7 @@
 //! Shared BDD infrastructure helpers for the session-runner suite: the
-//! three-process topology (`OmniSim` + rp + session-runner, in that
-//! order — session-runner's config names rp's MCP endpoint) and the run
+//! process topology (`OmniSim`, focus-model for the deep-sky document,
+//! rp, then session-runner, in that order — focus-model's and
+//! session-runner's configs name rp's MCP endpoint) and the run
 //! request every scenario posts, reused by every feature's step
 //! definitions.
 
@@ -177,6 +178,29 @@ pub fn stage_run(world: &mut SessionRunnerWorld, workflow: &str, parameters: Opt
         "workflow": workflow,
         "params": parameters.unwrap_or_else(|| serde_json::json!({})),
     }));
+}
+
+/// Start the real focus-model and register it with rp, before rp
+/// starts: the deep-sky document names `focus_train`, and a run's
+/// catalog check needs it in rp's catalog even on paths that never call
+/// it. rp's port is reserved first so the provider's config can name
+/// rp's MCP URL; `start_rp_service` then starts rp on it. An rp restart
+/// keeps the provider and its registration.
+pub async fn ensure_focus_model(world: &mut SessionRunnerWorld) {
+    if world.focus_model.is_some() {
+        return;
+    }
+    if world.rp_port.is_none() {
+        world.rp_port = Some(bdd_infra::reserved_test_port_async().await);
+    }
+    let rp_port = world.rp_port.expect("rp's port was reserved above");
+    let provider = bdd_infra::rp_harness::FocusModelProvider::start(
+        &format!("http://127.0.0.1:{rp_port}/mcp"),
+        serde_json::json!({ "main": bdd_infra::rp_harness::starless_focus_train() }),
+    )
+    .await;
+    world.plugin_configs.push(provider.registration);
+    world.focus_model = Some(provider.handle);
 }
 
 /// Start rp (or restart it after a kill, on the port it first bound —

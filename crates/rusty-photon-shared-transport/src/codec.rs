@@ -21,7 +21,9 @@
 //! recognise the right response, and [`Codec::max_skip`] bounds how many
 //! unsolicited frames the connection will tolerate before giving up.
 //! Both have defaults that match the common "every request gets exactly
-//! one matching response" case.
+//! one matching response" case. [`Codec::skip_undecodable`] extends the
+//! skip to a frame that fails to decode, for the commands a codec names;
+//! by default such a frame is the device's answer and ends the request.
 
 /// Translation between typed commands/responses and on-wire frames.
 ///
@@ -116,6 +118,25 @@ pub trait Codec: Send + Sync + Clone + 'static {
     /// Measured on the hub, a periodic frame that starts about 65 ms
     /// after a set went out can still show the state before it.
     fn discard_before_send(&self, cmd: &Self::Command) -> bool {
+        let _ = cmd;
+        false
+    }
+
+    /// Whether a frame that fails [`Self::decode`] while `cmd` waits for
+    /// its reply is skipped under [`Self::max_skip`], as a frame that does
+    /// not match is, rather than ending the request with the codec's
+    /// error.
+    ///
+    /// Default: `false`. A frame that does not decode is taken as the
+    /// device's answer, garbled, and the request fails at once instead of
+    /// waiting out its timeout for a reply that has already come. A codec
+    /// answers `true` for a command whose request is better left to read
+    /// on: one that line noise as the port opens can land on, say, whose
+    /// timeout its caller follows with a retry, so that a garbled frame
+    /// costs it nothing more than silence would. The connection logs each
+    /// frame it skips this way in a `debug!` event, with the decode error
+    /// and the frame's bytes.
+    fn skip_undecodable(&self, cmd: &Self::Command) -> bool {
         let _ = cmd;
         false
     }

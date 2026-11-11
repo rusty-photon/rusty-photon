@@ -5,7 +5,7 @@
 - When scaffolding a new long-running service binary
 - When touching a service's `main.rs` or top-level shutdown handling
 - When wiring a new entry point that needs SIGINT/SIGTERM, SIGHUP-on-reload,
-  or Windows Service Control Manager dispatch
+  a restart on request, or Windows Service Control Manager dispatch
 - When you see a hand-rolled `tokio::signal::ctrl_c` / `signal(SignalKind::terminate())`
   pair in a service and wonder whether it should be there
 
@@ -204,6 +204,59 @@ arrives, and the reload makes the rebuilt server's router current after
 connecting its device, when the old one was connected
 ([rusty-photon-setup § A reload that keeps its
 clients](../crates/rusty-photon-setup.md#a-reload-that-keeps-its-clients)).
+
+---
+
+## Restart on request (driver services)
+
+Every ASCOM driver service restarts when a client asks it to
+([crate design § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+Take the restart handle from the runner's `Shutdown` once, and hand it
+to the server on every build:
+
+```rust
+.run_with_reload(move |shutdown, reload| async move {
+    let restart = shutdown.restart();
+    loop {
+        let bound = ServerBuilder::new(config)
+            .with_restart(restart.clone())
+            // ...
+```
+
+The builder keeps it as an `Option`, so a test that builds the server
+without one gets a server without the routes:
+
+```rust
+pub struct ServerBuilder {
+    // ...
+    restart: Option<Restart>,
+}
+
+#[must_use]
+pub fn with_restart(mut self, restart: Restart) -> Self {
+    self.restart = Some(restart);
+    self
+}
+```
+
+`build()` puts the Alpaca service behind the driver crate's restart
+router, as its fallback, before the auth layer wraps the whole:
+
+```rust
+let router = rusty_photon_driver::restart::router(self.restart.clone())
+    .fallback_service(server.into_service());
+let router = match &self.config.server.auth {
+    Some(auth) => rp_auth::layer(router, auth),
+    None => router,
+};
+```
+
+Nothing else changes. The request cancels the token a shutdown signal
+cancels, so the stop path the service already has stops serving and
+closes its devices, and the runner turns the closure's return into the
+restart's exit code. A close that hangs past the deadline is the
+runner's to end, not the service's.
 
 ---
 

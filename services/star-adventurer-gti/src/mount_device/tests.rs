@@ -29,6 +29,7 @@ use crate::coordinates::{
 };
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
+use crate::mount_state::{MountStateRecord, ReadRecord};
 use crate::transport::mock::{
     AxisSimState, CapturingMockFactory, Fault, MockMountState, MockTransportFactory, ScriptedFault,
     StopCoast,
@@ -1770,41 +1771,71 @@ async fn sync_exclusion_survives_a_concurrent_abort() {
 
 #[tokio::test]
 async fn sync_to_coordinates_writes_the_encoder() {
-    let d = connected_device().await;
-    // After a sync to (RA=lst, Dec=0), the RA encoder should be at
-    // mechanical-HA=0 → encoder ticks=0, and Dec encoder=0.
-    let lst = d.sidereal_time().await.unwrap();
-    d.sync_to_coordinates(lst, 0.0).await.unwrap();
-    // Wait for the polling task to refresh the snapshot.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    // The synced position should round-trip back through the read path.
-    let dec = d.declination().await.unwrap();
-    assert!(dec.abs() < 0.5, "Dec after sync should be ~0, got {dec}");
+    // The mock's encoders start at 0, which is RA = LST and Dec 0, so the
+    // sync goes elsewhere: a write that is missing or wrong then shows.
+    let (d, mock) = capturing_connected_device().await;
+    let before = d.sidereal_time().await.unwrap();
+    let ra = (before - 1.0).rem_euclid(24.0);
+    d.sync_to_coordinates(ra, 30.0).await.unwrap();
+    let after = d.sidereal_time().await.unwrap();
+    let m = mock.lock().await;
+    let want = |lst: f64| {
+        target_encoder_normal(
+            Ra::new(ra),
+            Dec::new(30.0),
+            Lst::new(lst),
+            Cpr::new(m.cpr_ra),
+            Cpr::new(m.cpr_dec),
+        )
+    };
+    let (ra_before, dec_want) = want(before);
+    let (ra_after, _) = want(after);
+    assert_eq!(
+        m.dec.position_ticks,
+        dec_want.value(),
+        "the sync did not write Dec's count"
+    );
+    // RA's count moves with LST, which the sync read between `before`
+    // and `after`, so the count it wrote lies between theirs.
+    let (ra_before, ra_after) = (ra_before.value(), ra_after.value());
+    let written = ra_before.min(ra_after)..=ra_before.max(ra_after);
+    assert!(
+        written.contains(&m.ra.position_ticks),
+        "the sync wrote RA's count {}, outside {written:?}",
+        m.ra.position_ticks
+    );
 }
 
 #[tokio::test]
 async fn sync_publishes_position_without_waiting_for_poll() {
     // ConformU reads `RightAscension` ~2 ms after `SyncToCoordinates`
     // returns. The cached snapshot must reflect the synced position
-    // immediately rather than holding the prior poll value.
+    // immediately rather than holding the prior poll value. The target
+    // is away from the mock's start (RA = LST, Dec 0), where the
+    // snapshot already is, and polling is paused, so only the sync can
+    // have moved the snapshot there.
     let d = fast_settle_connected().await;
+    let _paused = d.manager.pause_background_polling();
     let lst = d.sidereal_time().await.unwrap();
-    d.sync_to_coordinates(lst, 0.0).await.unwrap();
+    let target = (lst - 1.0).rem_euclid(24.0);
+    d.sync_to_coordinates(target, 30.0).await.unwrap();
     // No sleep: read straight after sync.
     let dec = d.declination().await.unwrap();
     assert!(
-        dec.abs() < 0.5,
+        (dec - 30.0).abs() < 0.5,
         "Dec must reflect the sync immediately, got {dec}"
     );
     let ra = d.right_ascension().await.unwrap();
-    // The synced RA equals the LST snapshot used by sync to compute
-    // mech_HA=0; tiny LST drift between the sync and the read can
-    // push this by up to a few arcseconds, well under 1 arc-minute.
-    let ra_drift_arcsec =
-        (ra - lst).rem_euclid(24.0).min((lst - ra).rem_euclid(24.0)) * 3600.0 * 15.0;
+    // A stopped mount's RA drifts with LST, by a few arcseconds between
+    // the sync and this read: well under 1 arc-minute.
+    let ra_drift_arcsec = (ra - target)
+        .rem_euclid(24.0)
+        .min((target - ra).rem_euclid(24.0))
+        * 3600.0
+        * 15.0;
     assert!(
         ra_drift_arcsec < 60.0,
-        "RA must reflect the sync immediately, got drift={ra_drift_arcsec}\" (ra={ra}, lst={lst})"
+        "RA must reflect the sync immediately, got drift={ra_drift_arcsec}\" (ra={ra}, target={target})"
     );
 }
 
@@ -2292,6 +2323,314 @@ async fn park_with_unanchored_frame_stops_in_place_without_goto() {
 }
 
 #[tokio::test]
+async fn park_parks_in_place_while_the_position_is_lost_though_targets_are_armed() {
+    // The handshake marks a position lost before the connected device has
+    // dropped the park targets it holds. `Park()` reads the flag itself,
+    // so the window between the two never lets a park slew to a target
+    // the encoders no longer locate — not even a raw config override.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    cfg.mount.park_ra_ticks = Some(100_000);
+    cfg.mount.park_dec_ticks = Some(200_000);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    assert_eq!(
+        d.state.read().await.park_ra_ticks,
+        Some(100_000),
+        "precondition: the raw override arms RA"
+    );
+    d.manager.power().mark_position_lost();
+    d.park().await.unwrap();
+    let log: Vec<String> = mock
+        .lock()
+        .await
+        .command_log
+        .iter()
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect();
+    assert!(
+        !log.iter().any(|c| c.starts_with(":S")),
+        "expected no :S goto targets on the wire, log: {log:?}"
+    );
+    wait_for_at_park(&d).await;
+}
+
+#[tokio::test]
+async fn a_connect_while_the_position_is_lost_arms_no_park_target_and_clears_at_park() {
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    cfg.mount.park_ra_ticks = Some(100_000);
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager).with_retained(RetainedState {
+        at_park: true,
+        slew_settle_time: None,
+    });
+    d.manager.power().mark_position_lost();
+    d.set_connected(true).await.unwrap();
+    let s = d.state.read().await;
+    assert!(!s.frame_anchored, "a lost position is unanchored");
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+    assert!(!s.at_park, "a lost position is not parked");
+}
+
+#[tokio::test]
+async fn pulse_guide_is_refused_while_the_position_is_lost() {
+    let d = connected_device().await;
+    d.manager.power().mark_position_lost();
+    let err = d
+        .pulse_guide(GuideDirection::East, Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("position is lost"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_ends_tracking_pulses_and_the_slew_and_unanchors_a_lost_frame() {
+    let d = connected_device().await;
+    {
+        let mut s = d.state.write().await;
+        s.tracking_requested = true;
+        s.at_park = true;
+        s.frame_anchored = true;
+        s.park_ra_ticks = Some(1);
+        s.park_dec_ticks = Some(2);
+        s.pulse_guiding.set(Axis::Ra, Some(PulseId(7)));
+    }
+    let token = d.slew_in_progress.try_claim().unwrap();
+    d.manager.power().mark_position_lost();
+    d.drop_what_the_cut_ended().await;
+    assert!(!d.slew_in_progress.holds(token), "the slew's claim lapsed");
+    let s = d.state.read().await;
+    assert!(!s.tracking_requested);
+    assert!(!s.pulse_guiding.is_active());
+    assert!(!s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+    assert!(!s.at_park);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_keeps_a_restored_mount_parked_and_anchored() {
+    let d = connected_device().await;
+    {
+        let mut s = d.state.write().await;
+        s.tracking_requested = true;
+        s.at_park = true;
+        s.frame_anchored = true;
+        s.park_ra_ticks = Some(1);
+        s.park_dec_ticks = Some(2);
+    }
+    d.drop_what_the_cut_ended().await;
+    let s = d.state.read().await;
+    assert!(!s.tracking_requested, "the cut stopped tracking");
+    assert!(s.at_park, "the position was written back exactly");
+    assert!(s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (Some(1), Some(2)));
+}
+
+#[tokio::test]
+async fn a_pending_power_up_check_on_ap_park_0_loses_the_position() {
+    // `ap_park_0` names no power-up pose: after a long cut there is
+    // nothing to check the record against, and the encoders' (0, 0) is
+    // not where the cut left the mount.
+    let d = device();
+    d.manager.power().await_power_up_check();
+    d.set_connected(true).await.unwrap();
+    assert_eq!(d.manager.power().position(), crate::power::Position::Lost);
+}
+
+#[tokio::test]
+async fn the_cut_reaction_leaves_at_park_to_a_pending_power_up_check() {
+    let d = connected_device().await;
+    d.state.write().await.at_park = true;
+    d.manager.power().await_power_up_check();
+    d.drop_what_the_cut_ended().await;
+    let s = d.state.read().await;
+    assert!(
+        s.at_park,
+        "the check decides whether the mount is still parked"
+    );
+    assert!(!s.frame_anchored);
+    assert_eq!((s.park_ra_ticks, s.park_dec_ticks), (None, None));
+}
+
+// ---- A pending power-up check across a restart of the service ----
+
+/// One lifecycle of the service: a manager and its device over the mock
+/// mount `mock`, keeping the mount state record beside `config_path`. The
+/// mount on the other end of the wire outlives the lifecycle, as a
+/// powered controller outlives a restart of the service.
+fn lifecycle(mock: &Arc<tokio::sync::Mutex<MockMountState>>, config_path: &Path) -> MountDevice {
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = ApPark::ApPark3;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    std::fs::write(config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    let factory = CapturingMockFactory {
+        state: Arc::clone(mock),
+    };
+    let manager = MountManager::with_config_file_path(&cfg, Arc::new(factory), Some(config_path));
+    MountDevice::with_config_file_path(cfg.mount, manager, Some(config_path.to_path_buf()))
+}
+
+/// Wait for the writer that follows the mount to land a record `accept`
+/// takes; it writes from a task, a polling interval or so after a change.
+async fn wait_for_record(d: &MountDevice, accept: impl Fn(&ReadRecord) -> bool) -> ReadRecord {
+    let store = d.manager.power().record().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let read = store.lock().await.read().await;
+        if accept(&read) {
+            return read;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the mount state record never matched; last read {read:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Lifecycle one, with no client connected: the controller restarts
+/// after a cut no failed request dates, so its handshake writes the last
+/// position back and holds the power-up check. The device was connected
+/// before the cut and left the record at rest wherever `rest_at` put the
+/// mount. Answers the record the cut left.
+async fn restart_with_no_client_connected(
+    first: &MountDevice,
+    mock: &Arc<tokio::sync::Mutex<MockMountState>>,
+) -> ReadRecord {
+    first.set_connected(false).await.unwrap();
+    {
+        let mut s = mock.lock().await;
+        s.power_off();
+        s.power_on();
+    }
+    let session = first.manager.transport().acquire().await.unwrap();
+    session.close().await.unwrap();
+    first
+        .manager
+        .power()
+        .record()
+        .unwrap()
+        .lock()
+        .await
+        .read()
+        .await
+}
+
+#[tokio::test]
+async fn a_power_up_check_pending_across_a_restart_seeds_a_mount_at_its_power_up_pose() {
+    let mock = CapturingMockFactory::new().state;
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_path = dir.path().join("config.json");
+    let first = lifecycle(&mock, &config_path);
+    first.set_connected(true).await.unwrap();
+    let at_rest = wait_for_record(&first, |r| {
+        matches!(r, ReadRecord::Record(MountStateRecord::AtRest { .. }))
+    })
+    .await;
+    let ReadRecord::Record(MountStateRecord::AtRest {
+        ra_ticks,
+        dec_ticks,
+    }) = at_rest
+    else {
+        panic!("the wait answered {at_rest:?}, not a record at rest");
+    };
+    assert_eq!(
+        restart_with_no_client_connected(&first, &mock).await,
+        ReadRecord::Record(MountStateRecord::AwaitingCheck {
+            ra_ticks,
+            dec_ticks
+        })
+    );
+    drop(first);
+
+    let second = lifecycle(&mock, &config_path);
+    let mark = mock.lock().await.command_log.len();
+    second.set_connected(true).await.unwrap();
+    assert!(second.manager.power().position_known());
+    let after: Vec<Vec<u8>> = mock.lock().await.command_log[mark..].to_vec();
+    assert!(
+        after.iter().any(|c| c.starts_with(b":E1")) && after.iter().any(|c| c.starts_with(b":E2")),
+        "the check seeds the power-up pose; frames since the connect: {after:?}"
+    );
+    assert_eq!(
+        second
+            .manager
+            .power()
+            .record()
+            .unwrap()
+            .lock()
+            .await
+            .read()
+            .await,
+        ReadRecord::Record(MountStateRecord::AtRest {
+            ra_ticks,
+            dec_ticks
+        }),
+        "the check's outcome replaces the pending check before the connect completes"
+    );
+    second.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_power_up_check_pending_across_a_restart_loses_a_mount_at_rest_elsewhere() {
+    let mock = CapturingMockFactory::new().state;
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_path = dir.path().join("config.json");
+    let first = lifecycle(&mock, &config_path);
+    first.set_connected(true).await.unwrap();
+    // The mount comes to rest away from the power-up pose, as a sync or a
+    // slew leaves it.
+    mock.lock().await.ra.position_ticks = 100_000;
+    wait_for_record(&first, |r| {
+        matches!(
+            r,
+            ReadRecord::Record(MountStateRecord::AtRest {
+                ra_ticks: 100_000,
+                ..
+            })
+        )
+    })
+    .await;
+    assert!(matches!(
+        restart_with_no_client_connected(&first, &mock).await,
+        ReadRecord::Record(MountStateRecord::AwaitingCheck {
+            ra_ticks: 100_000,
+            ..
+        })
+    ));
+    drop(first);
+
+    let second = lifecycle(&mock, &config_path);
+    second.set_connected(true).await.unwrap();
+    assert_eq!(
+        second.manager.power().position(),
+        crate::power::Position::Lost,
+        "the restarted service checks the record instead of trusting the written-back estimate"
+    );
+    assert_eq!(
+        second
+            .manager
+            .power()
+            .record()
+            .unwrap()
+            .lock()
+            .await
+            .read()
+            .await,
+        ReadRecord::Record(MountStateRecord::Lost)
+    );
+    second.set_connected(false).await.unwrap();
+}
+
+#[tokio::test]
 async fn debug_impl_includes_config_file_path() {
     // Pins the `derive_more::Debug` derive — adding a new field
     // that should appear in Debug requires keeping it un-`#[debug(skip)]`
@@ -2610,6 +2949,38 @@ async fn sync_anchors_the_frame_and_arms_the_park_target() {
     assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
     assert_eq!(s.park_dec_ticks, Some(725_760));
+}
+
+#[tokio::test]
+async fn a_sync_that_clears_a_lost_position_arms_the_raw_park_override_again() {
+    // The lost position dropped the operator's raw park override with the
+    // rest; the sync that clears it arms the override first, as a connect
+    // would, not the preferred AP park.
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.park_ra_ticks = Some(100_000);
+    cfg.mount.park_dec_ticks = Some(200_000);
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.manager.power().mark_position_lost();
+    d.drop_what_the_cut_ended().await;
+    {
+        let s = d.state.read().await;
+        assert_eq!(
+            (s.park_ra_ticks, s.park_dec_ticks),
+            (None, None),
+            "precondition: the lost position dropped the targets"
+        );
+    }
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    assert!(d.manager.power().position_known());
+    let s = d.state.read().await;
+    assert_eq!(
+        (s.park_ra_ticks, s.park_dec_ticks),
+        (Some(100_000), Some(200_000))
+    );
 }
 
 #[tokio::test]
@@ -7040,7 +7411,7 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
     aborted.dismiss();
     d.slew_in_progress.clear();
     let _next = d.slew_in_progress.try_claim().unwrap();
-    let from = mock.lock().await.command_log.len();
+    let w = SpawnedWatcher::before_spawn(&d, &mock).await;
     spawn_slew_completion_watcher(
         SlewWatchCtx {
             state: Arc::clone(&d.state),
@@ -7056,9 +7427,9 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
     )
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    until_watcher_ends(&d, &w).await;
     assert_eq!(
-        setter_frames_since(&*mock.lock().await, from),
+        setter_frames_since(&*mock.lock().await, w.from),
         Vec::<String>::new(),
         "the aborted slew's watcher moved the mount"
     );
@@ -7261,10 +7632,30 @@ async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
     assert!(!d.at_park().await.unwrap());
 }
 
+/// A watcher spawned on a device, as what stood just before the spawn.
+struct SpawnedWatcher {
+    /// Where the mock's log stood.
+    from: usize,
+    /// How many holders the device's session slot had; see
+    /// [`watcher_ended`].
+    idle_holders: usize,
+}
+
+impl SpawnedWatcher {
+    /// What stands on `d` and `mock` now, taken just before a watcher is
+    /// spawned on `d`.
+    async fn before_spawn(d: &MountDevice, mock: &SharedMock) -> Self {
+        Self {
+            from: mock.lock().await.command_log.len(),
+            idle_holders: Arc::strong_count(&d.session),
+        }
+    }
+}
+
 /// A slew watcher on `d` with its target far from the stopped axes, so
 /// that once `MIN_SLEW_DWELL` has passed on the wall clock it starts a
-/// pickup. Returns where the mock's log stood before it was spawned.
-async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize {
+/// pickup.
+async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> SpawnedWatcher {
     let lst = d.sidereal_time().await.unwrap();
     {
         let mut s = d.state.write().await;
@@ -7272,9 +7663,59 @@ async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize
         s.target_dec_degrees = Some(30.0);
         s.target_pier_side = Some(PierSide::West);
     }
-    let from = mock.lock().await.command_log.len();
+    let w = SpawnedWatcher::before_spawn(d, mock).await;
     spawn_claimed_slew_watcher(d).await;
-    from
+    w
+}
+
+/// Whether the watcher `w` on `d` has ended. It holds clones of the
+/// device's session slot until it returns, after its last frame, so the
+/// slot is back to the holders it had before the spawn: the device, and
+/// the tracking guard and power watch that hold clones of it until a
+/// disconnect, which these tests do not make. Not the slew slot:
+/// `AbortSlew` empties that while the watcher runs on.
+fn watcher_ended(d: &MountDevice, w: &SpawnedWatcher) -> bool {
+    Arc::strong_count(&d.session) <= w.idle_holders
+}
+
+/// Wait until the watcher `w` on `d` has ended (see [`watcher_ended`]).
+/// Fails the test after thirty seconds rather than hanging; the bound
+/// only guards a hang.
+async fn until_watcher_ends(d: &MountDevice, w: &SpawnedWatcher) {
+    let ended = async {
+        while !watcher_ended(d, w) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let found = tokio::time::timeout(Duration::from_secs(30), ended).await;
+    assert!(found.is_ok(), "the watcher was still running after 30 s");
+}
+
+/// Wait until the first pickup iteration of the watcher `w` on `d` has
+/// sent all its frames: the next iteration's `:K1` is logged, or the
+/// watcher has ended (see [`watcher_ended`]). Fails the test after
+/// thirty seconds rather than hanging when neither comes; the bound
+/// only guards a hang, so it is far above the dwell and the dozen
+/// exchanges an iteration takes.
+async fn until_first_pickup_ends(d: &MountDevice, mock: &SharedMock, w: &SpawnedWatcher) {
+    let ended = async {
+        loop {
+            let stops = mock
+                .lock()
+                .await
+                .command_log
+                .iter()
+                .skip(w.from)
+                .filter(|f| f.starts_with(b":K1"))
+                .count();
+            if stops >= 2 || watcher_ended(d, w) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let found = tokio::time::timeout(Duration::from_secs(30), ended).await;
+    assert!(found.is_ok(), "the first pickup did not end within 30 s");
 }
 
 #[tokio::test]
@@ -7283,11 +7724,11 @@ async fn an_abort_while_a_pickup_stops_its_axes_starts_no_pickup() {
     // The abort lands on the pickup's first stop, inside its stop waits
     // and before the starts take the axes.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    until_logged(&mock, from, b":K1").await;
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_logged(&mock, w.from, b":K1").await;
     d.abort_slew().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    until_watcher_ends(&d, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     assert!(
         !frames.iter().any(|f| f.starts_with(":G")),
         "a pickup started after the abort: {frames:?}"
@@ -7303,9 +7744,9 @@ async fn a_pickup_starts_no_goto_on_an_axis_it_could_not_stop() {
         letter: b'K',
         fault: Fault::MountError(2),
     });
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_first_pickup_ends(&d, &mock, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     // The first pickup iteration, up to the next one's `:K1`; the next
     // retries RA, as it should.
     let next = frames
@@ -7448,15 +7889,15 @@ async fn a_pickup_ends_the_slew_when_an_axis_restarts_during_its_stops() {
     // on its Dec stop: no pickup goto may go out against it, and the
     // watcher must not wait on an axis that tracks on.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
-    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    until_logged(&mock, from, b":K2").await;
+    let w = spawn_watcher_due_a_pickup(&d, &mock).await;
+    until_logged(&mock, w.from, b":K2").await;
     {
         let mut m = mock.lock().await;
         m.ra.mode = skywatcher_motor_protocol::ModeKind::Tracking;
         m.ra.running = true;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    until_watcher_ends(&d, &w).await;
+    let frames = setter_frames_since(&*mock.lock().await, w.from);
     assert!(
         !frames.iter().any(|f| f.starts_with(":G")),
         "a pickup goto went out against a running axis: {frames:?}"

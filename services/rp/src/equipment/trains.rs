@@ -70,9 +70,10 @@ pub struct Train {
     /// resolves (rp.md § Target Store → Position angle).
     pub default_position_angle_degrees: Option<f64>,
     pub devices: Vec<TrainDevice>,
-    /// The train's V-curve sweep parameters
+    /// The guiding train's metric-sweep parameters
     /// (`optical_trains[].auto_focus`), carried through for the
-    /// train-addressed `auto_focus` fallback and `refocus_train`.
+    /// `auto_focus` fallback. `None` on every imaging train, which
+    /// validation refuses a block on.
     pub auto_focus: Option<crate::config::TrainAutoFocusConfig>,
 }
 
@@ -246,67 +247,74 @@ fn validate_purpose(
     }
 }
 
-/// Per-purpose `auto_focus` block fields (rp.md § Optical Trains): the
-/// capture fields (the sparse gate included) are required or allowed
-/// on imaging trains and rejected on the guiding train (its sweep is
-/// metric-based); `frames_per_step` the other way around.
+/// The `auto_focus` block rules (rp.md § Optical Trains): only the
+/// guiding train carries one, holding the metric sweep's fields. An
+/// imaging train's block is refused whole, naming the train and
+/// `focus-model.json`, where its sweep settings belong; a guiding
+/// train's is refused field by field for anything the metric sweep does
+/// not take.
 fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<FieldError>) {
     let Some(block) = &train.auto_focus else {
         return;
     };
-    let block_path = |field: &str| train_path(i, &format!(".auto_focus.{field}"));
     match train.purpose {
-        TrainPurpose::Imaging => {
-            for (field, missing) in [
-                ("duration", block.duration.is_none()),
-                ("min_area", block.min_area.is_none()),
-                ("max_area", block.max_area.is_none()),
-            ] {
-                if missing {
-                    errors.push(FieldError {
-                        path: block_path(field),
-                        msg: format!(
-                            "auto_focus.{field} is required for an imaging \
-                             train's capture sweep (train '{}')",
-                            train.id
-                        ),
-                    });
-                }
-            }
-            if block.frames_per_step.is_some() {
+        TrainPurpose::Imaging => errors.push(FieldError {
+            path: train_path(i, ".auto_focus"),
+            msg: format!(
+                "imaging train '{id}' carries an auto_focus block, which only the guiding \
+                 train may have: the focus-model provider focuses an imaging train, from \
+                 trains.{id} in focus-model.json; remove the block",
+                id = train.id
+            ),
+        }),
+        TrainPurpose::Guiding => {
+            for field in block.other_fields.keys() {
                 errors.push(FieldError {
-                    path: block_path("frames_per_step"),
+                    path: train_path(i, &format!(".auto_focus.{field}")),
                     msg: format!(
-                        "auto_focus.frames_per_step only applies to the guiding \
-                         train's metric sweep (train '{}')",
+                        "auto_focus.{field} does not apply to the guiding train's metric \
+                         sweep, whose block takes step_size, half_width, frames_per_step, \
+                         min_fit_points and confirmation_tolerance (train '{}')",
                         train.id
                     ),
                 });
             }
         }
-        TrainPurpose::Guiding => {
-            for (field, present) in [
-                ("duration", block.duration.is_some()),
-                ("min_area", block.min_area.is_some()),
-                ("max_area", block.max_area.is_some()),
-                ("binning", block.binning.is_some()),
-                ("threshold_sigma", block.threshold_sigma.is_some()),
-                ("min_star_fraction", block.min_star_fraction.is_some()),
-                ("max_attempts", block.max_attempts.is_some()),
-            ] {
-                if present {
-                    errors.push(FieldError {
-                        path: block_path(field),
-                        msg: format!(
-                            "auto_focus.{field} does not apply to the guiding \
-                             train's metric sweep (train '{}')",
-                            train.id
-                        ),
-                    });
-                }
-            }
-        }
     }
+}
+
+/// An imaging train focuses its camera with one focuser (rp.md
+/// § Optical Trains): a second has no camera to focus it through on its
+/// own, since a focuser the guide path shares is focused through the
+/// imaging camera. Only the guiding train may hold more. Reported at
+/// the train's `devices`, naming every focuser it holds.
+fn imaging_focusers_error(
+    train: &OpticalTrainConfig,
+    i: usize,
+    devices: &[TrainDevice],
+) -> Option<FieldError> {
+    if train.purpose != TrainPurpose::Imaging {
+        return None;
+    }
+    let focusers: Vec<String> = devices
+        .iter()
+        .filter(|d| d.kind == TrainDeviceKind::Focuser)
+        .map(|d| format!("'{}'", d.id))
+        .collect();
+    let (last, rest) = focusers.split_last()?;
+    if rest.is_empty() {
+        return None;
+    }
+    Some(FieldError {
+        path: train_path(i, ".devices"),
+        msg: format!(
+            "imaging train '{}' holds focusers {} and {last}; an imaging train holds at \
+             most one, the focuser its camera is focused with, and only the guiding train \
+             may hold more",
+            train.id,
+            rest.join(", ")
+        ),
+    })
 }
 
 /// The cover-calibrator placement rules for entry `j` = `id` of
@@ -458,12 +466,14 @@ impl TrainModel {
     /// paths (`equipment.optical_trains.0.devices.2`), in train order,
     /// for `validate_config` to surface: duplicate train ids, the
     /// purpose rules (one guiding train, and only with a guider
-    /// configured), purpose-inconsistent `auto_focus` fields, an empty
-    /// device list, a device that repeats or is not a train-eligible
-    /// roster entry, a camera anywhere but last or a non-camera last, a
-    /// camera terminating two trains, a cover calibrator anywhere but
-    /// first or a second one in a train, and shared devices in
-    /// contradictory order across trains.
+    /// configured), an `auto_focus` block on an imaging train or a
+    /// field the guiding train's block does not take, an empty device
+    /// list, a device that repeats or is not a train-eligible roster
+    /// entry, a camera anywhere but last or a non-camera last, a camera
+    /// terminating two trains, a cover calibrator anywhere but first or
+    /// a second one in a train, an imaging train holding more than one
+    /// focuser, and shared devices in contradictory order across
+    /// trains.
     pub fn try_from_equipment(equipment: &EquipmentConfig) -> Result<Self, Vec<FieldError>> {
         let mut errors = Vec::new();
         let (kinds, other_kinds) = roster_kinds(equipment);
@@ -511,7 +521,7 @@ impl TrainModel {
                 continue;
             }
 
-            let (devices, train_ok) = validate_devices(
+            let (devices, mut train_ok) = validate_devices(
                 train,
                 i,
                 &kinds,
@@ -519,6 +529,10 @@ impl TrainModel {
                 &mut seen_terminal_cameras,
                 &mut errors,
             );
+            if let Some(error) = imaging_focusers_error(train, i, &devices) {
+                errors.push(error);
+                train_ok = false;
+            }
             if train_ok {
                 trains.push(Train {
                     id: train.id.clone(),
@@ -560,7 +574,6 @@ impl TrainModel {
                 ),
             });
         }
-        errors.extend(guide_focuser_followed(equipment, &trains));
 
         if errors.is_empty() {
             Ok(Self { trains })
@@ -651,34 +664,27 @@ impl TrainModel {
 
     /// The train `focuser_id`'s step runs in when `train` is refocused
     /// (rp.md § Optical Trains, the AF sequence row). A focuser an
-    /// imaging train holds is focused through an imaging camera alone,
-    /// the guide camera taken as parfocal with it: an imaging `train`
-    /// runs its own terminal focuser itself and a shared one in the
-    /// first imaging train where it is terminal, else itself; the
-    /// guiding train runs it in [`Self::imaging_train_focusing`]. Only a
+    /// imaging train holds is focused through that train's camera, the
+    /// guide camera taken as parfocal with it: an imaging `train` holds
+    /// one focuser and runs it itself, and the guiding train runs one an
+    /// imaging train holds in [`Self::imaging_train_focusing`]. Only a
     /// focuser no imaging train holds runs in the guiding train.
     fn run_train<'a>(&'a self, train: &'a Train, focuser_id: &str) -> &'a str {
-        let ends_in = |t: &&Train| t.terminal_focuser() == Some(focuser_id);
         let run = match train.purpose {
-            TrainPurpose::Imaging if ends_in(&train) => train,
-            TrainPurpose::Imaging => self.imaging_trains().find(ends_in).unwrap_or(train),
+            TrainPurpose::Imaging => train,
             TrainPurpose::Guiding => self.imaging_train_focusing(focuser_id).unwrap_or(train),
         };
         &run.id
     }
 
     /// The imaging train that focuses `focuser_id` through its camera:
-    /// the first where it is terminal, else the first that holds it.
-    /// `None` when no imaging train holds it — the guiding train's own
-    /// focuser, which the guide-train metric sweep moves.
+    /// the first that holds it, where it is the only focuser and so the
+    /// terminal one. `None` when no imaging train holds it — the guiding
+    /// train's own focuser, which the guide-train metric sweep moves.
     #[must_use]
     pub fn imaging_train_focusing(&self, focuser_id: &str) -> Option<&Train> {
         self.imaging_trains()
             .find(|t| t.terminal_focuser() == Some(focuser_id))
-            .or_else(|| {
-                self.imaging_trains()
-                    .find(|t| t.devices.iter().any(|d| d.id == focuser_id))
-            })
     }
 
     fn imaging_trains(&self) -> impl Iterator<Item = &Train> {
@@ -762,49 +768,6 @@ pub struct RefocusPlan {
     /// guiding train, so a walker pauses guide corrections around it.
     pub guide_coupled: bool,
     pub steps: Vec<PlanStep>,
-}
-
-/// The guiding train's terminal focuser followed by another focuser in
-/// an imaging train that holds it: that focuser moves the main camera's
-/// focus and not the guide camera's, so no camera could focus the
-/// shared one for both paths — a shared focuser is focused through the
-/// imaging camera, the guide camera taken as parfocal (rp.md § Optical
-/// Trains). One error per such imaging train, at the guiding train's
-/// entry for the shared focuser. Only clean trains contribute.
-fn guide_focuser_followed(equipment: &EquipmentConfig, trains: &[Train]) -> Vec<FieldError> {
-    let Some(guide) = trains.iter().find(|t| t.purpose == TrainPurpose::Guiding) else {
-        return Vec::new();
-    };
-    let Some(shared) = guide.terminal_focuser() else {
-        return Vec::new();
-    };
-    let i = equipment
-        .optical_trains
-        .iter()
-        .position(|t| t.id == guide.id)
-        .unwrap_or_default();
-    let j = guide
-        .devices
-        .iter()
-        .position(|d| d.id == shared)
-        .unwrap_or_default();
-    trains
-        .iter()
-        .filter(|t| t.purpose == TrainPurpose::Imaging)
-        .filter(|t| t.devices.iter().any(|d| d.id == shared))
-        .filter_map(|t| {
-            let follower = t.terminal_focuser().filter(|f| *f != shared)?;
-            Some(FieldError {
-                path: train_path(i, &format!(".devices.{j}")),
-                msg: format!(
-                    "guiding train '{}' ends in focuser '{shared}', which imaging train \
-                     '{}' follows with '{follower}': a shared focuser is focused through \
-                     the imaging camera, so the guide camera could not be parfocal with it",
-                    guide.id, t.id
-                ),
-            })
-        })
-        .collect()
 }
 
 /// Kahn's algorithm over the consecutive-pair order relation of the
@@ -907,44 +870,53 @@ mod tests {
         errors.iter().map(|e| e.path.as_str()).collect()
     }
 
+    /// A full capture-sweep block on an imaging train is refused whole,
+    /// at the block, naming the train and where its settings belong.
     #[test]
-    fn an_imaging_block_missing_the_capture_fields_reports_every_gap() {
-        let mut config = reference_rig();
-        // Only the geometry: duration, min_area, and max_area are all
-        // missing — every arm reports at once.
-        config.optical_trains[0].auto_focus =
-            serde_json::from_value(serde_json::json!({ "step_size": 10, "half_width": 50 }))
-                .unwrap();
-        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
-        assert_eq!(
-            paths(&errors),
-            vec![
-                "equipment.optical_trains.0.auto_focus.duration",
-                "equipment.optical_trains.0.auto_focus.min_area",
-                "equipment.optical_trains.0.auto_focus.max_area",
-            ]
-        );
-        assert!(errors[0].msg.contains("required for an imaging train"));
-    }
-
-    #[test]
-    fn an_imaging_block_rejects_frames_per_step() {
+    fn an_imaging_block_is_refused_naming_the_train_and_focus_model_json() {
         let mut config = reference_rig();
         config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
-            "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500, "frames_per_step": 3
+            "duration": "4s", "step_size": 100, "half_width": 1000,
+            "min_area": 6, "max_area": 5000, "threshold_sigma": 8.0
         }))
         .unwrap();
         let errors = TrainModel::try_from_equipment(&config).unwrap_err();
         assert_eq!(
             paths(&errors),
-            vec!["equipment.optical_trains.0.auto_focus.frames_per_step"]
+            vec!["equipment.optical_trains.0.auto_focus"]
         );
-        assert!(errors[0].msg.contains("only applies to the guiding train"));
+        assert!(
+            errors[0]
+                .msg
+                .contains("imaging train 'main' carries an auto_focus block"),
+            "{}",
+            errors[0].msg
+        );
+        assert!(
+            errors[0].msg.contains("trains.main in focus-model.json"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    /// An imaging block holding only the metric fields is refused all
+    /// the same: the train, not the fields, is what it cannot have.
+    #[test]
+    fn an_imaging_block_of_metric_fields_is_refused_too() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "step_size": 10, "half_width": 50, "frames_per_step": 3
+        }))
+        .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec!["equipment.optical_trains.0.auto_focus"]
+        );
     }
 
     #[test]
-    fn a_guiding_block_rejects_every_capture_field() {
+    fn a_guiding_block_refuses_every_field_the_metric_sweep_does_not_take() {
         let mut config = reference_rig();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
@@ -957,51 +929,106 @@ mod tests {
         assert_eq!(
             paths(&errors),
             vec![
-                "equipment.optical_trains.1.auto_focus.duration",
-                "equipment.optical_trains.1.auto_focus.min_area",
-                "equipment.optical_trains.1.auto_focus.max_area",
                 "equipment.optical_trains.1.auto_focus.binning",
-                "equipment.optical_trains.1.auto_focus.threshold_sigma",
-                "equipment.optical_trains.1.auto_focus.min_star_fraction",
+                "equipment.optical_trains.1.auto_focus.duration",
+                "equipment.optical_trains.1.auto_focus.max_area",
                 "equipment.optical_trains.1.auto_focus.max_attempts",
+                "equipment.optical_trains.1.auto_focus.min_area",
+                "equipment.optical_trains.1.auto_focus.min_star_fraction",
+                "equipment.optical_trains.1.auto_focus.threshold_sigma",
             ]
         );
-        assert!(errors[0]
-            .msg
-            .contains("does not apply to the guiding train"));
+        assert!(
+            errors[0]
+                .msg
+                .contains("auto_focus.binning does not apply to the guiding train's metric sweep"),
+            "{}",
+            errors[0].msg
+        );
+        assert!(
+            errors[0].msg.contains("(train 'guide')"),
+            "{}",
+            errors[0].msg
+        );
     }
 
     #[test]
-    fn a_purpose_appropriate_block_passes_on_both_train_kinds() {
+    fn a_guiding_block_of_metric_fields_passes_and_is_carried_onto_the_train() {
         let mut config = reference_rig();
-        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
-            "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500, "binning": "2x2",
-            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5,
-            "max_attempts": 3
-        }))
-        .unwrap();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
             "step_size": 10, "half_width": 50, "frames_per_step": 2,
-            "confirmation_tolerance": 0.3
-        }))
-        .unwrap();
-        TrainModel::try_from_equipment(&config).unwrap();
-    }
-
-    #[test]
-    fn auto_focus_block_is_carried_onto_the_validated_train() {
-        let mut config = reference_rig();
-        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
-            "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 5, "max_area": 2000
+            "min_fit_points": 4, "confirmation_tolerance": 0.3
         }))
         .unwrap();
         let model = TrainModel::try_from_equipment(&config).unwrap();
-        let block = model.train("main").unwrap().auto_focus.as_ref().unwrap();
+        let block = model.train("guide").unwrap().auto_focus.as_ref().unwrap();
         assert_eq!(block.step_size.value(), 10);
         assert_eq!(block.half_width.value(), 50);
-        assert!(model.train("guide").unwrap().auto_focus.is_none());
+        assert!(model.train("main").unwrap().auto_focus.is_none());
+    }
+
+    /// The topology no camera can focus: `helical` moves the main
+    /// camera's focus and not the guide camera's, and the main camera
+    /// is focused with one focuser.
+    #[test]
+    fn an_imaging_train_holding_two_focusers_is_refused_naming_them() {
+        let mut config = reference_rig();
+        config.focusers.push(
+            serde_json::from_value(serde_json::json!({"id": "helical", "alpaca_url": "http://x"}))
+                .unwrap(),
+        );
+        config.optical_trains[0].devices = vec![
+            "eaf".to_string(),
+            "helical".to_string(),
+            "main-cam".to_string(),
+        ];
+        config.optical_trains[1].devices = vec!["eaf".to_string(), "guide-cam".to_string()];
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(paths(&errors), vec!["equipment.optical_trains.0.devices"]);
+        assert!(
+            errors[0]
+                .msg
+                .contains("imaging train 'main' holds focusers 'eaf' and 'helical'"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn three_focusers_in_an_imaging_train_are_all_named() {
+        let mut config = reference_rig();
+        config.focusers.push(
+            serde_json::from_value(serde_json::json!({"id": "helical", "alpaca_url": "http://x"}))
+                .unwrap(),
+        );
+        config.optical_trains[0].devices = vec![
+            "eaf".to_string(),
+            "scops-focuser".to_string(),
+            "helical".to_string(),
+            "main-cam".to_string(),
+        ];
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "equipment.optical_trains.0.devices"
+                    && e.msg
+                        .contains("holds focusers 'eaf', 'scops-focuser' and 'helical'")),
+            "{errors:?}"
+        );
+    }
+
+    /// The guiding train may hold a focuser it shares ahead of its own.
+    #[test]
+    fn a_guiding_train_holding_two_focusers_loads() {
+        let model = TrainModel::try_from_equipment(&reference_rig()).unwrap();
+        assert_eq!(
+            model
+                .guiding_train()
+                .unwrap()
+                .ids_of_kind(TrainDeviceKind::Focuser),
+            vec!["eaf", "scops-focuser"]
+        );
     }
 
     #[test]
@@ -1410,13 +1437,13 @@ mod tests {
                 {"id": "cam-a", "alpaca_url": "http://x"},
                 {"id": "cam-b", "alpaca_url": "http://x"}
             ],
-            "focusers": [
-                {"id": "f1", "alpaca_url": "http://x"},
-                {"id": "f2", "alpaca_url": "http://x"}
+            "rotators": [
+                {"id": "r1", "alpaca_url": "http://x"},
+                {"id": "r2", "alpaca_url": "http://x"}
             ],
             "optical_trains": [
-                {"id": "one", "devices": ["f1", "f2", "cam-a"]},
-                {"id": "two", "devices": ["f2", "f1", "cam-b"]}
+                {"id": "one", "devices": ["r1", "r2", "cam-a"]},
+                {"id": "two", "devices": ["r2", "r1", "cam-b"]}
             ]
         }));
         let errors = TrainModel::try_from_equipment(&config).unwrap_err();
@@ -1426,7 +1453,7 @@ mod tests {
             "{}",
             errors[0].msg
         );
-        assert!(errors[0].msg.contains("f1") && errors[0].msg.contains("f2"));
+        assert!(errors[0].msg.contains("r1") && errors[0].msg.contains("r2"));
     }
 
     /// A non-adjacent contradiction still closes a cycle through the
@@ -1438,17 +1465,17 @@ mod tests {
                 {"id": "cam-a", "alpaca_url": "http://x"},
                 {"id": "cam-b", "alpaca_url": "http://x"}
             ],
-            "focusers": [
-                {"id": "f1", "alpaca_url": "http://x"},
-                {"id": "f2", "alpaca_url": "http://x"}
-            ],
             "rotators": [
                 {"id": "r1", "alpaca_url": "http://x"},
                 {"id": "r2", "alpaca_url": "http://x"}
             ],
+            "filter_wheels": [
+                {"id": "w1", "alpaca_url": "http://x"},
+                {"id": "w2", "alpaca_url": "http://x"}
+            ],
             "optical_trains": [
-                {"id": "one", "devices": ["f1", "r1", "f2", "cam-a"]},
-                {"id": "two", "devices": ["f2", "r2", "f1", "cam-b"]}
+                {"id": "one", "devices": ["r1", "w1", "r2", "cam-a"]},
+                {"id": "two", "devices": ["r2", "w2", "r1", "cam-b"]}
             ]
         }));
         let errors = TrainModel::try_from_equipment(&config).unwrap_err();
@@ -1575,38 +1602,36 @@ mod tests {
         );
     }
 
-    /// A shared focuser that is terminal nowhere falls back to running
-    /// in the triggering train.
+    /// Two imaging trains sharing their only focuser — two cameras
+    /// behind one focuser — each run it themselves, through their own
+    /// camera.
     #[test]
-    fn af_sequence_falls_back_to_the_triggering_train() {
+    fn imaging_trains_sharing_their_focuser_each_run_it_themselves() {
         let config = equipment(serde_json::json!({
             "cameras": [
                 {"id": "cam-a", "alpaca_url": "http://x"},
                 {"id": "cam-b", "alpaca_url": "http://x"}
             ],
-            "focusers": [
-                {"id": "shared", "alpaca_url": "http://x"},
-                {"id": "local-a", "alpaca_url": "http://x"},
-                {"id": "local-b", "alpaca_url": "http://x"}
-            ],
+            "focusers": [{"id": "shared", "alpaca_url": "http://x"}],
             "optical_trains": [
-                {"id": "a", "devices": ["shared", "local-a", "cam-a"]},
-                {"id": "b", "devices": ["shared", "local-b", "cam-b"]}
+                {"id": "a", "devices": ["shared", "cam-a"]},
+                {"id": "b", "devices": ["shared", "cam-b"]}
             ]
         }));
         let model = TrainModel::try_from_equipment(&config).unwrap();
         assert_eq!(
             model.af_sequence("a").unwrap(),
-            vec![
-                AfStep {
-                    focuser_id: "shared".to_string(),
-                    train_id: "a".to_string()
-                },
-                AfStep {
-                    focuser_id: "local-a".to_string(),
-                    train_id: "a".to_string()
-                },
-            ]
+            vec![AfStep {
+                focuser_id: "shared".to_string(),
+                train_id: "a".to_string()
+            }]
+        );
+        assert_eq!(
+            model.af_sequence("b").unwrap(),
+            vec![AfStep {
+                focuser_id: "shared".to_string(),
+                train_id: "b".to_string()
+            }]
         );
     }
 
@@ -1672,56 +1697,18 @@ mod tests {
         );
     }
 
-    /// A shared focuser terminal in no train is measured through an
-    /// imaging train that holds it, ahead of the guiding train's own
-    /// step, rather than as a second guide step.
+    /// The imaging train that focuses a focuser is the first that holds
+    /// it, where it is the terminal focuser, and a focuser no imaging
+    /// train holds has none.
     #[test]
-    fn a_shared_focuser_terminal_nowhere_runs_in_an_imaging_train_before_the_guide_step() {
-        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
-            {"id": "main", "devices": ["eaf", "helical", "main-cam"]},
-            {"id": "guide", "purpose": "guiding", "devices": ["eaf", "scops-focuser", "guide-cam"]}
-        ])))
-        .unwrap();
-
-        assert_eq!(
-            model.af_sequence("guide").unwrap(),
-            vec![step("eaf", "main"), step("scops-focuser", "guide")]
-        );
-        let metrics: Vec<StepMetric> = model
-            .refocus_plan("guide")
-            .unwrap()
-            .steps
-            .iter()
-            .map(|s| s.metric)
-            .collect();
-        assert_eq!(metrics, [StepMetric::Capture, StepMetric::Guide]);
-        assert_eq!(
-            model.af_sequence("main").unwrap(),
-            vec![step("eaf", "main"), step("helical", "main")]
-        );
-    }
-
-    /// The imaging train that focuses a focuser is one where it is
-    /// terminal before one that merely holds it, an imaging train runs
-    /// its own terminal focuser itself, and a focuser no imaging train
-    /// holds has none.
-    #[test]
-    fn the_imaging_train_focusing_a_focuser_is_one_it_ends_first() {
-        let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
-            {"id": "a", "devices": ["eaf", "helical", "main-cam"]},
-            {"id": "b", "devices": ["eaf", "guide-cam"]}
-        ])))
-        .unwrap();
-        assert_eq!(model.imaging_train_focusing("eaf").unwrap().id, "b");
-        assert_eq!(model.imaging_train_focusing("helical").unwrap().id, "a");
-        assert_eq!(model.af_sequence("a").unwrap()[0], step("eaf", "b"));
-
+    fn the_imaging_train_focusing_a_focuser_is_the_first_that_holds_it() {
         let model = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
             {"id": "a", "devices": ["eaf", "main-cam"]},
             {"id": "b", "devices": ["eaf", "guide-cam"]}
         ])))
         .unwrap();
-        assert_eq!(model.af_sequence("b").unwrap(), vec![step("eaf", "b")]);
+        assert_eq!(model.imaging_train_focusing("eaf").unwrap().id, "a");
+        assert!(model.imaging_train_focusing("helical").is_none());
 
         let model = TrainModel::try_from_equipment(&reference_rig()).unwrap();
         assert_eq!(model.imaging_train_focusing("eaf").unwrap().id, "main");
@@ -1730,20 +1717,22 @@ mod tests {
 
     /// A focuser after the guiding train's terminal focuser in an
     /// imaging train leaves no camera to focus the shared one for both
-    /// paths: rejected at the guiding train's entry for it.
+    /// paths. It puts two focusers in the imaging train, which is the
+    /// one error reported: the train is not clean, so no cross-train
+    /// rule reads it.
     #[test]
-    fn a_guiding_trains_focuser_followed_in_an_imaging_train_is_rejected() {
+    fn a_guiding_trains_focuser_followed_in_an_imaging_train_is_two_focusers_there() {
         let errors = TrainModel::try_from_equipment(&rig_with_trains(serde_json::json!([
             {"id": "main", "devices": ["eaf", "helical", "main-cam"]},
             {"id": "guide", "purpose": "guiding", "devices": ["main-fw", "eaf", "guide-cam"]}
         ])))
         .unwrap_err();
-        assert_eq!(paths(&errors), ["equipment.optical_trains.1.devices.1"]);
+        assert_eq!(paths(&errors), ["equipment.optical_trains.0.devices"]);
         assert_eq!(
             errors[0].msg,
-            "guiding train 'guide' ends in focuser 'eaf', which imaging train 'main' follows \
-             with 'helical': a shared focuser is focused through the imaging camera, so the \
-             guide camera could not be parfocal with it"
+            "imaging train 'main' holds focusers 'eaf' and 'helical'; an imaging train holds \
+             at most one, the focuser its camera is focused with, and only the guiding train \
+             may hold more"
         );
     }
 }

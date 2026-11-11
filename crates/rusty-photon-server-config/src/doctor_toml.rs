@@ -15,6 +15,9 @@
 //! # ConditionPathExists= on Linux, start type Manual on Windows). Defaults
 //! # to false — most services self-create their defaults on first start.
 //! config_gated = false
+//! # Optional: a file the service writes beside its config, holding
+//! # runtime state rather than configuration. A bare file name.
+//! state_file = "star-adventurer-gti.mount-state.json"
 //! # Optional hardware identity (docs/services/doctor.md §Hardware):
 //! serial_pointer = "/serial/port"
 //! serial_default_unix = "/dev/ttyUSB0"
@@ -75,6 +78,10 @@ pub struct DoctorToml {
     /// one (docs/packaging.md's "config-gated" services). Defaults to
     /// `false`.
     pub config_gated: bool,
+    /// A file the service writes beside its config, holding runtime state
+    /// rather than configuration (`star-adventurer-gti`'s mount state
+    /// record), so doctor never takes it for a misnamed config.
+    pub state_file: Option<String>,
     pub serial: Option<SerialMeta>,
     pub usb: Option<UsbMeta>,
 }
@@ -91,7 +98,8 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
     let mut class = None;
     let mut port = None;
     let mut config_gated = None;
-    let mut strings: [(&str, Option<String>); 8] = [
+    let mut strings: [(&str, Option<String>); 9] = [
+        ("state_file", None),
         ("serial_pointer", None),
         ("serial_default_unix", None),
         ("serial_default_windows", None),
@@ -177,10 +185,15 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
         take("serial_gate_value"),
     )?;
     let usb = build_usb(take("usb_vendor"), take("usb_product"), take("usb_model"))?;
+    let state_file = take("state_file");
+    if let Some(name) = &state_file {
+        require_file_name("state_file", name)?;
+    }
     Ok(DoctorToml {
         class: class.ok_or("missing key `class`")?,
         port: port.ok_or("missing key `port`")?,
         config_gated: config_gated.unwrap_or(false),
+        state_file,
         serial,
         usb,
     })
@@ -255,6 +268,17 @@ fn build_usb(
     }
 }
 
+/// A state file lives beside the config, so it is named, never pathed.
+fn require_file_name(key: &str, value: &str) -> Result<(), String> {
+    if value.contains('/') || value == "." || value == ".." {
+        Err(format!(
+            "{key} must be a bare file name beside the config, got {value:?}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn require_pointer(key: &str, value: &str) -> Result<(), String> {
     if value.starts_with('/') {
         Ok(())
@@ -325,8 +349,29 @@ mod tests {
         assert_eq!(meta.class, ServerClass::Alpaca);
         assert_eq!(meta.port, 11113);
         assert!(!meta.config_gated);
+        assert_eq!(meta.state_file, None);
         assert_eq!(meta.serial, None);
         assert_eq!(meta.usb, None);
+    }
+
+    #[test]
+    fn parses_a_state_file() {
+        let meta = parse(
+            "class = \"alpaca\"\nport = 11117\n\
+             state_file = \"star-adventurer-gti.mount-state.json\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            meta.state_file.as_deref(),
+            Some("star-adventurer-gti.mount-state.json")
+        );
+    }
+
+    #[test]
+    fn rejects_a_state_file_with_a_path() {
+        let err = parse("class = \"alpaca\"\nport = 11117\nstate_file = \"state/mount.json\"\n")
+            .unwrap_err();
+        assert!(err.contains("bare file name"), "{err}");
     }
 
     #[test]

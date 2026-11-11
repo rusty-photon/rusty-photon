@@ -1,0 +1,58 @@
+[
+  {
+    "tag_name": "v2.338.2",
+    "name": "v2.338.2",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-26T14:45:12Z"
+  },
+  {
+    "tag_name": "v2.338.1",
+    "name": "v2.338.1",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-22T14:14:46Z"
+  },
+  {
+    "tag_name": "v2.338.0",
+    "name": "v2.338.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-06T13:55:11Z"
+  },
+  {
+    "tag_name": "v2.337.0",
+    "name": "v2.337.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-26T14:33:29Z"
+  },
+  {
+    "tag_name": "v2.336.0",
+    "name": "v2.336.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-07-20T17:45:55Z"
+  },
+  {
+    "tag_name": "v2.335.1",
+    "name": "v2.335.1",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-09T01:32:05Z"
+  },
+  {
+    "tag_name": "v2.335.0",
+    "name": "v2.335.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-08T17:08:55Z"
+  },
+  {
+    "tag_name": "v2.334.0",
+    "name": "v2.334.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-04-21T18:54:03Z"
+  }
+]

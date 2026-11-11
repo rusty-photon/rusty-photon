@@ -62,9 +62,6 @@ pub(crate) trait ProgressEmitter: Send + Sync {
 /// Live progress sink: bundles the per-request `Peer<RoleServer>` and
 /// the client-supplied `ProgressToken` so a helper can emit
 /// `notifications/progress` without re-fetching either every tick.
-/// `Clone` so a multi-step compound (`refocus_train`) can hand each
-/// step its own copy against the same token.
-#[derive(Clone)]
 pub(crate) struct ProgressSink {
     peer: Peer<RoleServer>,
     token: ProgressToken,

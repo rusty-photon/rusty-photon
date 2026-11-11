@@ -74,8 +74,8 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    # `mcp/tests.rs` embeds the auto_focus V-curve fixtures via
-    # `include_bytes!("../../tests/fixtures/auto_focus/*.fits")`;
+    # `imaging/analysis/stars.rs` embeds a star-detection fixture via
+    # `include_bytes!("../../../tests/fixtures/star_detection/*.fits")`;
     # `compile_data` makes those files visible to rustc inside
     # Bazel's compilation sandbox. Only needed on the test-twin
     # because the embeds sit inside a `#[cfg(test)] mod tests`
@@ -97,34 +97,6 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
-        _RP_PLATE_SOLVER,
-        _RP_GUIDER,
-    ] + all_crate_deps(normal = True),
-)
-
-# Examples built by `cargo build --all-targets` (not executed in CI). Bazel
-# mirrors them as rust_binary targets for `bazel build //...` parity. Both pull
-# rp::imaging / rp::persistence from rp_lib; ndarray + tokio are normal deps, so
-# the dep list matches the `rp` binary above.
-rust_binary(
-    name = "check_autofocus_fixtures",
-    srcs = ["examples/check_autofocus_fixtures.rs"],
-    aliases = aliases(),
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
-        _RP_PLATE_SOLVER,
-        _RP_GUIDER,
-    ] + all_crate_deps(normal = True),
-)
-
-rust_binary(
-    name = "gen_autofocus_fixtures",
-    srcs = ["examples/gen_autofocus_fixtures.rs"],
-    aliases = aliases(),
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
         _RP_PLATE_SOLVER,
         _RP_GUIDER,

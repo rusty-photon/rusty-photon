@@ -29,7 +29,12 @@ service contributes the protocol-specific pieces:
   `Hooks { handshake, teardown, while_open }` that the shared transport
   runs across the connection lifecycle. The handshake seeds firmware,
   position, and temperature; the `while_open` poll loop refreshes
-  position + temperature on the configured interval. See `src/manager.rs`.
+  position + temperature on the configured interval. Each reading is
+  stored with the instant it was read off the wire, and one read before
+  the cached reading is dropped: a poll's position read on the way to a
+  target cannot replace the one `IsMoving`'s refresh read at the target,
+  which would report the focuser stopped short of where it says it
+  arrived. See `src/manager.rs`.
 - **Protocol layer**: JSON command serialization and value-level
   response parsers (`src/protocol.rs`).
 - **ASCOM device**: `QhyFocuserDevice` holds an
@@ -314,6 +319,13 @@ cadence — the device does not wedge on a transient failure
 (unplugged USB during handshake, slow-to-boot firmware, bad serial
 path, etc.). This bug class is now eliminated structurally by the
 shared crate (issue #258 closes for qhy-focuser with this migration).
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## References
 

@@ -690,7 +690,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   port order, and the CFW found on each (U11); with a `usb_devices` list, each
   entry at its number, opening nothing at startup at all (U1-U10). Zero
   registered cameras is **not** a hard failure — the service starts with no
-  Camera devices, logged at `warn!`; a later reload re-enumerates.
+  Camera devices, logged at `warn!`; a later restart re-enumerates, and on
+  Linux a reload does too (on Windows, see C9).
 
   **Enumerating opens nothing; finding the CFW opens each camera, but never
   initialises one.** The enumeration is `ScanQHYCCD` and `GetQHYCCDId` per
@@ -1067,13 +1068,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   SDK stops answering for it once the device has gone.
 
   **Only a failure asks (decided 2026-10-06).** A blank frame counts as one,
-  and QHY's capability probes, which answer live rather than from a cache, ask
-  whatever they answer. So the question is asked after any SDK call that
-  fails; after every capability probe, whose "absent" is an answer rather than
-  a failure, so the failure path alone would never ask it (E11); after a
-  capture that fails (E9); after an abort's SDK cancel that fails, the one
-  call a capture cancelled in its wait makes; and after a readout that comes
-  back **blank**. A camera that stops answering inside
+  as does a temperature no sensor can read (K2), and QHY's capability probes,
+  which answer live rather than from a cache, ask whatever they answer. So the
+  question is asked after any SDK call that fails; after every capability
+  probe, whose "absent" is an answer rather than a failure, so the failure path
+  alone would never ask it (E11); after a capture that fails (E9); after an
+  abort's SDK cancel that fails, the one call a capture cancelled in its wait
+  makes; after a readout that comes back **blank**; and after a
+  `CCDTemperature` or `SetCCDTemperature` read that K2 refuses. A camera that stops answering inside
   `GetQHYCCDSingleFrame` can make it report success with an all-zero frame.
   A frame from a camera the question finds gone is discarded, the capture
   fails, and nothing is published as `ImageReady`. A blank frame from a camera
@@ -1149,8 +1151,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera that had been unplugged and plugged back in, with no scan and no
   reload, although it came back as a new USB device: `OpenQHYCCD` finds it by
   its id. A camera that was absent when the service started is a different
-  case; finding it still needs a reload or a restart (C0), and hotplug
-  re-enumeration belongs to #1173.
+  case; finding it still needs a restart, or on Linux a reload (C0). On
+  Windows a reload's fresh SDK, made in the same process, did not enumerate
+  a camera that arrived after the process first initialised the SDK, while a
+  new process did (measured in a KVM guest and on bare metal:
+  [daily power cycle plan](../plans/daily-power-cycle.md#qhy-windows-bare-metal-2026-11-04)).
+  So the services start and reload with every camera powered
+  ([Linux](../packaging.md#start-the-services-with-every-device-powered) and
+  [Windows](../packaging-windows.md#start-the-services-with-every-device-powered)
+  packaging guides).
 
   **Measured on hardware** with SDK 26.06.04, on Linux (the
   [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))
@@ -1344,9 +1353,11 @@ which a list replaces with the declaration.
   (its identity needs an open): nothing here opens one. A placed camera that
   cannot be opened fails its client's connect (C2), as without a list.
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed scan's
-  is the exception: the service re-scans and rebuilds on its own (U6), so it
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. It names a restart because
+  that works on every platform: on Windows a reload does not find a camera
+  that was absent when the process started (C9). A failed scan's reason is
+  the exception: the service re-scans and rebuilds on its own (U6), so it
   says that, and sends nobody to restart anything. (The device-claims plan's
   D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
   signal the collectors do not read yet, so a camera that fell back to USB 2
@@ -1383,7 +1394,7 @@ which a list replaces with the declaration.
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the device is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
   is shared by every kind rp binds, so a placeholder wheel gets the same
   treatment. ConformU pointed at a placeholder fails its connect test —
   acceptable, since conformance runs use the simulation build with no list.
@@ -2444,15 +2455,52 @@ which a list replaces with the declaration.
 - **K1.** `CanSetCCDTemperature` / `CanGetCoolerPower` are `true` iff the `Cooler`
   control is available; otherwise the related getters return `NOT_IMPLEMENTED`.
 - **K2.** `CCDTemperature` returns the current sensor temperature when cooling is
-  supported.
+  supported. **A reading no sensor can give is a failed read, not a
+  temperature.** A `CurTemp` below absolute zero (−273.15 °C), above 100 °C or
+  not a number answers `INVALID_VALUE`, as a read the SDK refuses does. Like
+  any failure it asks C9's question first, so a camera that has left the bus
+  answers `NOT_CONNECTED` instead. The SDK returns such numbers as successes.
+  A QHY178M still on the bus whose first exposure had wedged read −5005.8 °C
+  ([2026-11-06](../plans/daily-power-cycle.md#zwo-and-qhy-linux-dawn-and-dusk-2026-11-06)),
+  and on Linux the open handle of one whose USB power was off read −722.2 °C
+  ([2026-11-03](../plans/daily-power-cycle.md#qhy-linux-2026-11-03)).
+  Served as a temperature, such a number would reach rp's cooling as a sample
+  and a frame's header as a measurement, and no client can tell it from one.
+  No sensor reads below absolute zero, and no working sensor reaches 100 °C.
+  The bounds stay that wide on purpose: a false failure blinds the cooling to
+  a camera that works, so only a number no working camera can report is
+  refused. A plausible number still passes: the Windows SDK read 0.0 °C on
+  the handle of that unpowered camera, and no bound tells that from a real
+  reading. `SetCCDTemperature`, which reads back the reading before any
+  target is set, follows the same rule (K3). `CoolerOn(true)` before any
+  target is set takes the reading as its setpoint only within a narrower band
+  (K4).
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
-  `SetCCDTemperature` reads it back.
+  `SetCCDTemperature` reads it back. Before any target is set it reads back the
+  current `CCDTemperature`, so a reading K2 refuses fails it the same way.
 - **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation via
   `handle.set_target_temperature_celsius(…)` (the `ControlType::Cooler` typed
-  accessor) at the stored `SetCCDTemperature` target (falling back to the
-  current `CCDTemperature` if no target has been set yet); `set_cooler_on(false)`
+  accessor) at the stored `SetCCDTemperature` target; `set_cooler_on(false)`
   calls `handle.set_manual_cooler_pwm(0.0)` (the `ControlType::ManualPWM`
-  accessor). `CoolerOn` reports the last-commanded on/off state (tracked
+  accessor). **With no target set, the setpoint comes from the reading.** The
+  QHY SDK has no switch that turns a cooler on: engaging it means sending a
+  target. So `CoolerOn(true)` before any `SetCCDTemperature` takes the current
+  `CurTemp` as that target when it lies within −100 to 80 °C. Any other
+  reading — one K2 refuses, one outside that band, or a read that fails —
+  engages the cooler at 0 °C instead and logs a warning, and
+  `SetCCDTemperature` then reads back the setpoint engaged. The band is
+  narrower than K2's because a setpoint is driven toward: it must be one the
+  setter accepts (K3), and no thermoelectric cooler holds a sensor anywhere
+  near −100 °C. The command does not refuse: the reading is right far more
+  often than not, and ConformU turns the cooler on before it sets any target
+  and counts a refusal as an issue. The fallback is 0 °C, not the ambient
+  temperature, because the driver has no ambient reading: the QHY SDK reports
+  the sensor, the FPGA board, and the chamber's humidity and pressure, but
+  nothing ambient. A camera that has left the bus is found out before its
+  reading is taken: the `Cooler` probe that comes first goes unanswered for a
+  departed camera (the C9 records), and that failure asks C9's question.
+  `CoolerOn` reports the
+  last-commanded on/off state (tracked
   independently of the PWM readback, since neither real hardware nor the
   simulation backend updates `CurPWM` synchronously when the cooler target is
   asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
@@ -2830,6 +2878,13 @@ resolution* below; `--devices` lists the cameras by USB port and prints the
 `usb_devices` block to paste instead (U8). Running with no subcommand starts
 the driver exactly as before.
 
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+
 ---
 
 ## Windows: qhyccd.dll resolution (delay-load · preflight · doctor)
@@ -3113,6 +3168,21 @@ Layered per [`testing.md`](../skills/testing.md).
   Windows (hypervisor detaches), for an idle camera and for one gone
   mid-exposure. The mock's blank frame from a readout its camera left is what
   the SDK was measured returning on Windows (C9).
+- **A temperature no sensor can read (K2)** — `cooling.feature` starts the
+  `simulation` binary with the hidden `--simulation-temperature-file <path>`
+  flag, which builds the default simulated camera
+  (`SimulatedCameraConfig::sdk_default()`) with `qhyccd-rs`'s temperature
+  file: while the file exists, a `CurTemp` read answers the number written in
+  it. The suite writes the file once the camera is connected, so the scenarios
+  run the shipped check end to end, on `CCDTemperature` and on the
+  `SetCCDTemperature` and `CoolerOn` fallbacks. Unit tests against
+  `MockCameraHandle`, whose `CurTemp` parameter a test sets, pin the question a
+  refused reading asks. A camera still on the bus stays connected. One the
+  question finds gone answers `NOT_CONNECTED`, which the simulator cannot show:
+  a departed simulated camera fails every read before its temperature file is
+  looked at. The unit tests also pin the infinities, a commanded target,
+  which needs no reading, and a `CurTemp` read that fails under `CoolerOn`,
+  which engages at 0 °C (K4).
 - **Device claims (U1-U12)** — `usb_devices.feature` drives the `simulation`
   binary with its staged scan (U7) and the hidden `--usb-inventory <file>`
   flag, through placement, placeholders, declared wheels, the failed scan's

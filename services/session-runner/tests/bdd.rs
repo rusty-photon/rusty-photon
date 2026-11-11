@@ -1,7 +1,8 @@
 //! BDD test entry point for the session-runner service.
 //!
-//! These tests spawn three processes — `OmniSim`, rp, and session-runner —
-//! and drive workflow documents end-to-end via rp's REST API.
+//! These tests spawn `OmniSim`, rp and session-runner, plus focus-model
+//! for the deep-sky document (it names `focus_train`), and drive workflow
+//! documents end-to-end via rp's REST API.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -72,6 +73,9 @@ bdd_infra::bdd_main! {
                     }
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
+                    }
+                    if let Some(provider) = world.focus_model.as_mut() {
+                        provider.stop().await;
                     }
                     // Put back OmniSim's telescope site when a deep-sky
                     // scenario overwrote it with a computed one. The

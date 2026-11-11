@@ -3,6 +3,7 @@ pub mod connection_steps;
 pub mod doctor_steps;
 pub mod infrastructure;
 pub mod oc_steps;
+pub mod restart_steps;
 pub mod server_steps;
 pub mod setup_pages_steps;
 pub mod switch_control_steps;

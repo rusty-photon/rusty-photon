@@ -11,6 +11,8 @@
 #    per-scenario spawn cost is irrelevant, so it is not split per-service.)
 #   The macOS job additionally denies rustc warnings, because no per-PR check
 #   does that for macOS any more — see its `env:` block.
+# - notify-macos-failure: a `macos-nightly` tracking issue when the scheduled
+#   run's macOS job fails
 #
 # Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
 # sole coverage source (combined report uploaded to Coveralls).
@@ -189,3 +191,46 @@ jobs:
           path: '**/bdd-infra-omnisim-logs/**'
           if-no-files-found: ignore
           retention-days: 14
+  notify-macos-failure:
+    # Open or update a tracking issue when the nightly macOS job fails. No PR
+    # builds or tests on macOS, so a macOS-only break lands on main, and
+    # without this nobody is told. Only the macOS job, and only on the
+    # schedule: Bazel builds and tests Linux and Windows on every PR, and a
+    # push-to-main failure is left to show on its commit.
+    #
+    # cancelled() alongside failure(): a job killed by timeout-minutes reports
+    # conclusion "cancelled", not "failure" — failure() alone silently misses
+    # it. Safe to OR in here: this workflow only triggers on push/schedule/
+    # workflow_dispatch (github.head_ref is always empty for those), so the
+    # concurrency group above always falls back to the per-run github.run_id
+    # and can never cancel one of this workflow's own runs via supersession —
+    # every "cancelled" conclusion this can see is a genuine timeout (or a
+    # human explicitly cancelling, which is worth surfacing too).
+    needs: macos
+    if: (failure() || cancelled()) && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly: test / macos-latest failing"
+          label: macos-nightly
+          body: |
+            The nightly test workflow's `macos-latest` job failed.
+
+            Likely causes: a test that fails on macOS alone, or a rustc warning
+            that fires on macOS alone (the job denies warnings through
+            `RUSTFLAGS=-Dwarnings`, which nothing on a PR does for macOS); or a
+            problem with the hosted macOS runner or a tool the job installs.
+            Inspect the failed job in the linked run.

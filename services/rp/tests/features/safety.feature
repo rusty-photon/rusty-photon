@@ -175,7 +175,7 @@ Feature: Safety enforcement
       | open_cover | {"calibrator_id": "flat-panel"} |
     And each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
       | tool       | arguments                                                                                             |
-      | auto_focus | {"camera_id": "main-cam", "focuser_id": "main-focuser", "duration": "100ms", "step_size": 100, "half_width": 2} |
+      | auto_focus | {"train_id": "guide", "step_size": 100, "half_width": 200} |
 
   # A rusty-photon safety monitor's reload keeps its clients
   # (rusty-photon-setup.md § A reload that keeps its clients): rp polls

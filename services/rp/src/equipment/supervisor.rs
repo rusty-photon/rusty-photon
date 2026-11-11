@@ -18,6 +18,10 @@
 //! contract, except phd2-guider's camera facade, whose connect may take
 //! a 1 ms frame (rp.md § Device Session Recovery).
 //!
+//! An entry `disconnect_device` holds out is skipped until
+//! `connect_device` releases it, and both of those tools live here too
+//! ([`disconnect_entry`], [`connect_entry`]; rp.md § Power Switching).
+//!
 //! The same loop carries the tool-provider lane
 //! ([`crate::mcp::providers::Providers::pass`]): a provider's MCP
 //! session is health-checked and re-dialed on the same cadence, with
@@ -32,11 +36,12 @@ use ascom_alpaca::api::Device;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{check_pin, EstablishError, PinCheck, RosterEntry};
 use super::session::DeviceSession;
 use super::{
     camera, cover_calibrator, dome, filter_wheel, focuser, mount, observing_conditions, rotator,
-    safety_monitor, switch, EquipmentRegistry,
+    safety_monitor, switch, with_session, EntryRef, EquipmentRegistry,
 };
 use crate::events::EventBus;
 
@@ -106,132 +111,202 @@ impl ReconnectSupervisor {
         }
     }
 
-    /// One supervision pass over every configured device, then every
-    /// tool provider.
+    /// One supervision pass over every configured device, in
+    /// [`EquipmentRegistry::entries`] order, then every tool provider.
     pub(crate) async fn pass(&self) {
-        self.pass_imaging_chain().await;
-        self.pass_roster().await;
+        let ca = self.ca_cert_path.as_deref();
+        for entry in self.equipment.entries() {
+            supervise_entry(entry, ca, &self.event_bus, None).await;
+        }
         self.providers.pass().await;
     }
+}
 
-    /// The imaging-chain device kinds (camera through safety monitor).
-    async fn pass_imaging_chain(&self) {
-        let ca = self.ca_cert_path.as_deref();
-        for entry in &self.equipment.cameras {
-            supervise_with_metadata(
-                "camera",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || camera::establish_camera(&entry.config, ca),
-            )
-            .await;
+/// What one supervision of an entry came to.
+#[derive(Debug)]
+pub(crate) enum Supervised {
+    /// The entry is held out, so nothing was tried.
+    HeldOut,
+    /// The live session read healthy (and its pin held), and was left
+    /// as it is.
+    Healthy,
+    /// A fresh session was established. `live` is false when the entry
+    /// was held out while it connected: the session was kept for the
+    /// disconnect, not installed live.
+    Reestablished { live: bool },
+    /// The session, or the attempt to establish one, failed; the entry
+    /// is disconnected. The reason as text.
+    Failed(String),
+}
+
+/// [`supervise_with_metadata`] for one entry of any kind, with that
+/// kind's establish routine. `forced` replaces the budget the entry's
+/// own record would pick (see [`supervise_with_metadata`]).
+async fn supervise_entry(
+    entry: EntryRef<'_>,
+    ca: Option<&Path>,
+    event_bus: &EventBus,
+    forced: Option<ConnectBudget>,
+) -> Supervised {
+    let kind = entry.kind();
+    match entry {
+        EntryRef::Camera(e) => {
+            supervise_with_metadata(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                camera::establish_camera(&e.config, ca, b)
+            })
+            .await
         }
-        for entry in &self.equipment.filter_wheels {
-            supervise_with_metadata(
-                "filter_wheel",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || filter_wheel::establish_filter_wheel(&entry.config, ca),
-            )
-            .await;
+        EntryRef::FilterWheel(e) => {
+            supervise_with_metadata(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                filter_wheel::establish_filter_wheel(&e.config, ca, b)
+            })
+            .await
         }
-        for entry in &self.equipment.cover_calibrators {
-            supervise(
-                "cover_calibrator",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || cover_calibrator::establish_cover_calibrator(&entry.config, ca),
-            )
-            .await;
+        EntryRef::CoverCalibrator(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                cover_calibrator::establish_cover_calibrator(&e.config, ca, b)
+            })
+            .await
         }
-        for entry in &self.equipment.focusers {
-            supervise_with_metadata(
-                "focuser",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || focuser::establish_focuser(&entry.config, ca),
-            )
-            .await;
+        EntryRef::Focuser(e) => {
+            supervise_with_metadata(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                focuser::establish_focuser(&e.config, ca, b)
+            })
+            .await
         }
-        for entry in &self.equipment.safety_monitors {
-            supervise(
-                "safety_monitor",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || safety_monitor::establish_safety_monitor(&entry.config, ca),
-            )
-            .await;
+        EntryRef::SafetyMonitor(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                safety_monitor::establish_safety_monitor(&e.config, ca, b)
+            })
+            .await
+        }
+        EntryRef::Switch(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                switch::establish_switch(&e.config, ca, b)
+            })
+            .await
+        }
+        EntryRef::Rotator(e) => {
+            supervise_with_metadata(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                rotator::establish_rotator(&e.config, ca, b)
+            })
+            .await
+        }
+        EntryRef::ObservingConditions(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                observing_conditions::establish_observing_conditions(&e.config, ca, b)
+            })
+            .await
+        }
+        EntryRef::Dome(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                dome::establish_dome(&e.config, ca, b)
+            })
+            .await
+        }
+        EntryRef::Mount(e) => {
+            supervise(kind, &e.config, ca, &e.session, event_bus, forced, |b| {
+                mount::establish_mount(&e.config, ca, b)
+            })
+            .await
         }
     }
+}
 
-    /// The roster-membership device kinds plus the singular mount.
-    async fn pass_roster(&self) {
-        let ca = self.ca_cert_path.as_deref();
-        for entry in &self.equipment.switches {
-            supervise(
-                "switch",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || switch::establish_switch(&entry.config, ca),
-            )
-            .await;
+/// `connect_device` (rp.md § Power Switching): release the entry's
+/// hold-out, then supervise it at once with the connect routine's full
+/// budget. A live session that reads healthy is left as it is; any
+/// other is established afresh. The release happens under the
+/// registry's power lock, so it cannot land between a `set_switch`'s
+/// hold-out check and its write.
+pub(crate) async fn connect_entry(
+    equipment: &EquipmentRegistry,
+    entry: EntryRef<'_>,
+    event_bus: &EventBus,
+) -> Supervised {
+    {
+        let _power = equipment.power.lock().await;
+        with_session!(entry, session => session.release());
+    }
+    debug!(
+        kind = entry.kind(),
+        id = entry.id(),
+        "hold-out released by connect_device"
+    );
+    supervise_entry(
+        entry,
+        equipment.ca_cert_path.as_deref(),
+        event_bus,
+        Some(ConnectBudget::Full),
+    )
+    .await
+}
+
+/// The deadline `disconnect_device` gives a driver's close (rp.md
+/// § Power Switching): a close takes well under a second, and a wedged
+/// camera can hang it outright.
+pub(crate) const DISCONNECT_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How a `disconnect_device`'s `Connected = false` ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Close {
+    /// The driver acknowledged it within the deadline.
+    Closed,
+    /// The deadline passed first.
+    TimedOut,
+    /// The driver, or the transport, failed it; the reason as text.
+    Failed(String),
+    /// rp has never reached the device and holds no handle to send it
+    /// through.
+    NoSession,
+}
+
+/// `disconnect_device` (rp.md § Power Switching): hold the entry out,
+/// which also marks it disconnected, emit `equipment_changed` with
+/// `connected: false` if its session was live, then send the driver
+/// `Connected = false` within `deadline`. A connect routine running for
+/// the entry is waited out first, inside the deadline, so the
+/// disconnect is the last request rp sends the driver. The entry stays
+/// held out however the close ends.
+pub(crate) async fn disconnect_entry(
+    entry: EntryRef<'_>,
+    event_bus: &EventBus,
+    deadline: Duration,
+) -> Close {
+    let kind = entry.kind();
+    let id = entry.id();
+    if with_session!(entry, session => session.hold_out()) {
+        emit(event_bus, kind, entry.event_id(), false);
+    }
+    let close = tokio::time::timeout(deadline, async {
+        with_session!(entry, session => close_session(session).await)
+    })
+    .await
+    .unwrap_or(Close::TimedOut);
+    match &close {
+        Close::Closed | Close::NoSession => {
+            info!(kind, id, "device disconnected through rp; held out of the reconnect supervisor until connect_device");
         }
-        for entry in &self.equipment.rotators {
-            supervise_with_metadata(
-                "rotator",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || rotator::establish_rotator(&entry.config, ca),
-            )
-            .await;
+        Close::TimedOut => {
+            warn!(kind, id, deadline = ?deadline, "the driver's close did not return within the deadline; the device is held out all the same");
         }
-        for entry in &self.equipment.observing_conditions {
-            supervise(
-                "observing_conditions",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || observing_conditions::establish_observing_conditions(&entry.config, ca),
-            )
-            .await;
+        Close::Failed(e) => {
+            warn!(kind, id, error = %e, "the driver's close failed; the device is held out all the same");
         }
-        for entry in &self.equipment.domes {
-            supervise(
-                "dome",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || dome::establish_dome(&entry.config, ca),
-            )
-            .await;
-        }
-        if let Some(entry) = self.equipment.mount.as_ref() {
-            supervise(
-                "mount",
-                &entry.config,
-                ca,
-                &entry.session,
-                &self.event_bus,
-                || mount::establish_mount(&entry.config, ca),
-            )
-            .await;
-        }
+    }
+    close
+}
+
+/// Send `Connected = false` through the handle the slot keeps, once any
+/// connect routine running for it has finished.
+async fn close_session<T: ?Sized + Device, M: Send + Sync>(session: &DeviceSession<T, M>) -> Close {
+    let _connecting = session.connecting().lock().await;
+    match session.kept_device() {
+        None => Close::NoSession,
+        Some(device) => match device.set_connected(false).await {
+            Ok(()) => Close::Closed,
+            Err(e) => Close::Failed(e.to_string()),
+        },
     }
 }
 
@@ -246,16 +321,24 @@ async fn supervise<C, F, Fut>(
     ca: Option<&Path>,
     session: &DeviceSession<C::Device>,
     event_bus: &EventBus,
+    forced: Option<ConnectBudget>,
     reestablish: F,
-) where
+) -> Supervised
+where
     C: RosterEntry,
-    F: FnOnce() -> Fut,
+    F: FnOnce(ConnectBudget) -> Fut,
     Fut: Future<Output = Result<Arc<C::Device>, EstablishError>>,
 {
-    supervise_with_metadata(kind, config, ca, session, event_bus, || async {
-        reestablish().await.map(|device| (device, ()))
-    })
-    .await;
+    supervise_with_metadata(
+        kind,
+        config,
+        ca,
+        session,
+        event_bus,
+        forced,
+        |budget| async move { reestablish(budget).await.map(|device| (device, ())) },
+    )
+    .await
 }
 
 /// Health-check one entry's session and re-establish it when dead.
@@ -284,13 +367,29 @@ async fn supervise<C, F, Fut>(
 /// separate accessors still straddles this install; that is what
 /// `snapshot` is for.
 ///
+/// `reestablish` is handed the attempts it may make: the full budget for
+/// a session that was live until this pass, a single attempt for an
+/// entry that was already disconnected (rp.md § Device Session
+/// Recovery), unless `forced` names the budget, as `connect_device`
+/// does.
+///
+/// A held-out entry is not tried at all (rp.md § Power Switching). The
+/// check runs again once the entry's connect lock is taken, and once
+/// more after the health check, so a hold-out that lands while
+/// `Connected` is read stops the pass before it reconnects. The routine
+/// holds the lock throughout, so a `disconnect_device` waits for it,
+/// and a hold-out that lands while the establish routine runs keeps the
+/// new session out of the slot's live state
+/// ([`DeviceSession::install`]).
+///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
 /// that bounced between two passes drew no `connected: false` event,
 /// but the session was still re-established and the operator should
 /// see it. On failure the entry stays disconnected, with the
-/// `connected: false` event emitted once per transition — not once per
-/// attempt.
+/// `connected: false` event and an `info!` line emitted once per
+/// transition — not once per attempt — and each later failed pass
+/// logged at `debug!`.
 ///
 /// A session that reads healthy is then held to the entry's identity
 /// pin by [`check_pin`] (rp.md § Device Identity Pin), which this runs
@@ -307,29 +406,38 @@ async fn supervise_with_metadata<C, M, F, Fut>(
     ca: Option<&Path>,
     session: &DeviceSession<C::Device, M>,
     event_bus: &EventBus,
+    forced: Option<ConnectBudget>,
     reestablish: F,
-) where
+) -> Supervised
+where
     C: RosterEntry,
     M: Default + Send + Sync,
-    F: FnOnce() -> Fut,
+    F: FnOnce(ConnectBudget) -> Fut,
     Fut: Future<Output = Result<(Arc<C::Device>, M), EstablishError>>,
 {
     let address = config.address();
     let id = address.id;
+    if session.is_held_out() {
+        return Supervised::HeldOut;
+    }
+    let _connecting = session.connecting().lock().await;
+    if session.is_held_out() {
+        return Supervised::HeldOut;
+    }
     if session.is_connected() {
         if let Some(device) = session.device() {
             match device.connected().await {
                 Ok(true) => match check_pin(config, ca).await {
-                    PinCheck::Holds => return,
+                    PinCheck::Holds => return Supervised::Healthy,
                     PinCheck::Unchecked(e) => {
                         debug!(kind, id, error = %e, "could not re-check the pinned UniqueID; keeping the session it was checked against at establish");
-                        return;
+                        return Supervised::Healthy;
                     }
                     PinCheck::Refused(e) => {
                         session.retire();
                         warn!(kind, id, error = %e, "the device at this entry's number no longer reports its pinned UniqueID; dropped the session and its handle");
                         emit(event_bus, kind, id, false);
-                        return;
+                        return Supervised::Failed(e);
                     }
                 },
                 Ok(false) => {
@@ -350,26 +458,65 @@ async fn supervise_with_metadata<C, M, F, Fut>(
         );
     }
 
+    // A disconnect_device can hold the entry out while the health check
+    // reads; it has emitted the loss itself, and the entry is not to be
+    // reconnected.
+    if session.is_held_out() {
+        return Supervised::HeldOut;
+    }
+
+    // rp's own record of the previous pass decides the budget, so no
+    // driver's error code has to be trusted: a session live until this
+    // pass gets the full routine, whose retries ride out a stall, and an
+    // entry that was already disconnected gets one attempt.
     let was_connected = session.is_connected();
+    let budget = forced.unwrap_or(if was_connected {
+        ConnectBudget::Full
+    } else {
+        ConnectBudget::Single
+    });
     session.mark_disconnected();
-    match reestablish().await {
+    match reestablish(budget).await {
         Ok((device, metadata)) => {
-            session.install(device, metadata);
-            // The establish routine has just logged the bound device at
-            // info; this line only marks the install.
-            debug!(kind, id, "device session re-established");
-            emit(event_bus, kind, id, true);
+            let live = session.install(device, metadata);
+            if live {
+                // The establish routine has just logged the bound device
+                // at info; this line only marks the install.
+                debug!(kind, id, "device session re-established");
+                emit(event_bus, kind, id, true);
+            } else {
+                // A disconnect_device held the entry out while the
+                // routine ran; it emitted nothing, since the session read
+                // disconnected by then, so the loss is announced here.
+                debug!(kind, id, "device held out while it connected; the session is kept for the disconnect, not installed live");
+                if was_connected {
+                    emit(event_bus, kind, id, false);
+                }
+            }
+            Supervised::Reestablished { live }
         }
         Err(e) => {
             if e.is_identity_refusal() {
                 session.retire();
             }
-            if was_connected {
-                warn!(kind, id, error = %e, "device session lost and re-establish failed; retrying every pass");
-                emit(event_bus, kind, id, false);
+            // One line at default verbosity per transition to
+            // unreachable: a device switched off for the day is no
+            // fault, and logs nothing more until it answers again. An
+            // entry a disconnect_device held out while the routine ran is
+            // not tried again, so it says only that the routine failed;
+            // its loss is still announced here, since the hold-out found
+            // the session already marked dead and emitted nothing.
+            if session.is_held_out() {
+                debug!(kind, id, error = %e, "device held out while it connected; the connect failed and the entry is not tried again until connect_device");
+            } else if was_connected {
+                info!(kind, id, error = %e, "device session lost and re-establish failed; trying once every pass, logged at debug, until it answers");
             } else {
                 debug!(kind, id, error = %e, "device still unavailable");
             }
+            if was_connected {
+                emit(event_bus, kind, id, false);
+            }
+            Supervised::Failed(e.to_string())
         }
     }
 }
@@ -423,6 +570,23 @@ mod tests {
         listing_unreadable: AtomicBool,
         /// `configureddevices` reads served.
         listing_reads: AtomicU32,
+        /// When set, the driver answers but its device is switched off:
+        /// `Connected = true` fails with an Alpaca error, a transient
+        /// failure for the connect routine, while the listing keeps
+        /// answering. Each refused request is still counted in
+        /// `set_connected_calls`.
+        device_off: AtomicBool,
+        /// `Connected = false` requests taken (also counted in
+        /// `set_connected_calls`).
+        disconnect_calls: AtomicU32,
+        /// When set, a `Connected = false` request parks forever: a
+        /// driver whose close hangs, as a wedged camera's does.
+        hang_disconnect: AtomicBool,
+        /// When set, the next `GET /connected` parks until the test
+        /// signals `release_probe`, then answers `connected` as it
+        /// stands by then. Counted in `hung_probes` while parked.
+        park_probe: AtomicBool,
+        release_probe: tokio::sync::Notify,
     }
 
     fn alpaca_ok(value: serde_json::Value) -> Json<serde_json::Value> {
@@ -482,14 +646,34 @@ mod tests {
                             state.hung_probes.fetch_add(1, Ordering::SeqCst);
                             std::future::pending::<()>().await;
                         }
+                        if state.park_probe.swap(false, Ordering::SeqCst) {
+                            state.hung_probes.fetch_add(1, Ordering::SeqCst);
+                            state.release_probe.notified().await;
+                        }
                         alpaca_ok(serde_json::json!(state.connected.load(Ordering::SeqCst)))
                     }
                 })
-                .put(move || {
+                .put(move |form: axum::Form<Vec<(String, String)>>| {
                     let state = put_state.clone();
                     async move {
                         state.set_connected_calls.fetch_add(1, Ordering::SeqCst);
-                        state.connected.store(true, Ordering::SeqCst);
+                        let requested = form
+                            .0
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("Connected"))
+                            .is_none_or(|(_, v)| v.eq_ignore_ascii_case("true"));
+                        if !requested {
+                            state.disconnect_calls.fetch_add(1, Ordering::SeqCst);
+                            if state.hang_disconnect.load(Ordering::SeqCst) {
+                                std::future::pending::<()>().await;
+                            }
+                        }
+                        if state.device_off.load(Ordering::SeqCst) {
+                            return Json(serde_json::json!({
+                                "ErrorNumber": 1031, "ErrorMessage": "the device does not answer"
+                            }));
+                        }
+                        state.connected.store(requested, Ordering::SeqCst);
                         Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
                     }
                 }),
@@ -700,16 +884,23 @@ mod tests {
 
         let event_bus = EventBus::from_config(&[], None).unwrap();
         let connected_during_establish = AtomicBool::new(true);
+        let probe = &connected_during_establish;
+        let watched = &entry;
         supervise(
             "safety_monitor",
             &entry.config,
             None,
             &entry.session,
             &event_bus,
-            || async {
-                connected_during_establish.store(entry.is_connected(), Ordering::SeqCst);
-                crate::equipment::safety_monitor::establish_safety_monitor(&entry.config, None)
-                    .await
+            None,
+            |budget| async move {
+                probe.store(watched.is_connected(), Ordering::SeqCst);
+                crate::equipment::safety_monitor::establish_safety_monitor(
+                    &watched.config,
+                    None,
+                    budget,
+                )
+                .await
             },
         )
         .await;
@@ -815,6 +1006,67 @@ mod tests {
         assert!(
             events.try_recv().is_err(),
             "a still-down device must not emit again"
+        );
+    }
+
+    /// A session that was live until this pass and is now lost (its
+    /// service restarted with the device switched off) gets the full
+    /// connect routine on its first failing pass: the retries ride out a
+    /// stall, and a lost session is the case they exist for.
+    #[tokio::test]
+    async fn a_session_lost_on_this_pass_gets_every_connect_attempt() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1,
+            "fixture: the startup connect is the only one so far"
+        );
+        state.connected.store(false, Ordering::SeqCst);
+        state.device_off.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1 + crate::equipment::alpaca::CONNECT_ATTEMPTS,
+            "a session lost on this pass must get every attempt of the routine"
+        );
+        assert!(!supervisor.equipment.safety_monitors[0].is_connected());
+        let event = events.try_recv().expect("the loss must emit");
+        assert_eq!(event.payload["connected"], false);
+    }
+
+    /// An entry rp's own record already holds disconnected — its session
+    /// was lost on an earlier pass, and its device is still switched off
+    /// — gets one attempt a pass: the pass walks the devices one after
+    /// another, so backoff for it would delay every other device's check.
+    #[tokio::test]
+    async fn an_entry_disconnected_before_the_pass_gets_one_connect_attempt() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        entry.session.mark_disconnected();
+        state.connected.store(false, Ordering::SeqCst);
+        state.device_off.store(true, Ordering::SeqCst);
+        let before = state.set_connected_calls.load(Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst) - before,
+            1,
+            "an entry already disconnected must get one attempt, not the full routine"
+        );
+        assert!(!supervisor.equipment.safety_monitors[0].is_connected());
+        assert!(
+            events.try_recv().is_err(),
+            "no transition, so nothing is emitted"
         );
     }
 
@@ -1003,6 +1255,200 @@ mod tests {
             .expect("supervisor task must not panic");
     }
 
+    /// A disconnect holds the entry out, closes the device, and from then
+    /// on no pass health-checks or reconnects it.
+    #[tokio::test]
+    async fn a_held_out_entry_is_neither_health_checked_nor_reconnected() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        let close = disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await;
+
+        assert_eq!(close, Close::Closed);
+        assert!(!state.connected.load(Ordering::SeqCst));
+        let calls = state.set_connected_calls.load(Ordering::SeqCst);
+        let supervisor = supervisor_over(equipment.clone());
+        supervisor.pass().await;
+        supervisor.pass().await;
+        assert_eq!(state.set_connected_calls.load(Ordering::SeqCst), calls);
+        assert!(!state.connected.load(Ordering::SeqCst));
+        let entry = equipment.entry("sm-under-test").unwrap();
+        assert!(entry.is_held_out());
+        assert!(!entry.is_connected());
+        assert!(equipment.safety_monitors[0].device().is_none());
+    }
+
+    /// A hold-out that lands while the pass reads `Connected` stops the
+    /// pass from reconnecting the entry, even when the read then finds
+    /// the device disconnected: the only request the device gets is the
+    /// disconnect's own.
+    #[tokio::test]
+    async fn a_hold_out_during_a_health_check_stops_the_pass_reconnecting() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let calls = state.set_connected_calls.load(Ordering::SeqCst);
+        state.park_probe.store(true, Ordering::SeqCst);
+        let supervisor = supervisor_over(equipment.clone());
+        let pass = tokio::spawn(async move { supervisor.pass().await });
+        while state.hung_probes.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let held = equipment.clone();
+        let disconnect = tokio::spawn(async move {
+            let event_bus = EventBus::from_config(&[], None).unwrap();
+            let entry = held.entry("sm-under-test").unwrap();
+            disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await
+        });
+        while !equipment.entry("sm-under-test").unwrap().is_held_out() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        state.connected.store(false, Ordering::SeqCst);
+        state.release_probe.notify_one();
+        pass.await.unwrap();
+
+        assert_eq!(disconnect.await.unwrap(), Close::Closed);
+        assert_eq!(state.set_connected_calls.load(Ordering::SeqCst), calls + 1);
+        assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 1);
+        assert!(!state.connected.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_close_past_the_deadline_leaves_the_entry_held_out() {
+        let state = Arc::new(StubState::default());
+        state.hang_disconnect.store(true, Ordering::SeqCst);
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        let close = disconnect_entry(entry, &event_bus, Duration::from_millis(200)).await;
+
+        assert_eq!(close, Close::TimedOut);
+        assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 1);
+        assert!(entry.is_held_out());
+        assert!(!entry.is_connected());
+    }
+
+    #[tokio::test]
+    async fn a_failed_close_leaves_the_entry_held_out() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        state.device_off.store(true, Ordering::SeqCst);
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        let close = disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await;
+
+        assert!(
+            matches!(&close, Close::Failed(e) if e.contains("the device does not answer")),
+            "{close:?}"
+        );
+        assert!(entry.is_held_out());
+    }
+
+    #[tokio::test]
+    async fn an_entry_rp_never_reached_has_no_session_to_close() {
+        let equipment = registry_with_monitor(SafetyMonitorEntry {
+            id: "sm-under-test".to_string(),
+            config: monitor_config("http://127.0.0.1:1"),
+            session: DeviceSession::disconnected(),
+        });
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        assert_eq!(
+            disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await,
+            Close::NoSession
+        );
+        assert!(entry.is_held_out());
+    }
+
+    /// A connect routine holds the entry's connect lock, so a disconnect
+    /// waits for it rather than racing its `Connected = true` to the
+    /// device; here the routine never ends, and the disconnect's
+    /// deadline passes without a request sent.
+    #[tokio::test]
+    async fn a_disconnect_waits_out_a_connect_routine_in_flight() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        state.hang_connected.store(true, Ordering::SeqCst);
+        let supervisor = supervisor_over(equipment.clone());
+        let pass = tokio::spawn(async move { supervisor.pass().await });
+        while state.hung_probes.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        let close = disconnect_entry(entry, &event_bus, Duration::from_millis(200)).await;
+
+        assert_eq!(close, Close::TimedOut);
+        assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 0);
+        assert!(entry.is_held_out());
+        pass.abort();
+    }
+
+    #[tokio::test]
+    async fn connect_entry_releases_the_hold_out_and_connects_at_once() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+        disconnect_entry(entry, &event_bus, DISCONNECT_DEADLINE).await;
+
+        let outcome = connect_entry(&equipment, entry, &event_bus).await;
+
+        assert!(
+            matches!(outcome, Supervised::Reestablished { live: true }),
+            "{outcome:?}"
+        );
+        assert!(!entry.is_held_out());
+        assert!(entry.is_connected());
+        assert!(state.connected.load(Ordering::SeqCst));
+    }
+
+    /// A connect through rp never cycles a session: a healthy one is
+    /// confirmed and left as it is.
+    #[tokio::test]
+    async fn connect_entry_leaves_a_healthy_session_as_it_is() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let equipment = registry_with_monitor(connected_entry(&stub.url()).await);
+        let calls = state.set_connected_calls.load(Ordering::SeqCst);
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let entry = equipment.entry("sm-under-test").unwrap();
+
+        let outcome = connect_entry(&equipment, entry, &event_bus).await;
+
+        assert!(matches!(outcome, Supervised::Healthy), "{outcome:?}");
+        assert_eq!(state.set_connected_calls.load(Ordering::SeqCst), calls);
+        assert_eq!(state.disconnect_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn entry_names_a_roster_entry_by_its_id_and_the_mount_by_mount() {
+        let equipment = registry_with_monitor(SafetyMonitorEntry {
+            id: "sm-under-test".to_string(),
+            config: monitor_config("http://127.0.0.1:1"),
+            session: DeviceSession::disconnected(),
+        });
+        let entry = equipment.entry("sm-under-test").unwrap();
+        assert_eq!(
+            (entry.kind(), entry.id()),
+            ("safety_monitor", "sm-under-test")
+        );
+        assert!(equipment.entry(config::MOUNT_ID).is_none());
+        assert!(equipment.entry("unknown").is_none());
+    }
+
     /// One Alpaca server hosting every supported device kind at index
     /// 0, each accepting `Connected = true`. The camera's invariant
     /// property endpoints are deliberately absent — those reads degrade
@@ -1153,6 +1599,7 @@ mod tests {
                     device_number: 0,
                     unique_id: None,
                     auth: None,
+                    outputs: Vec::new(),
                 },
                 session: DeviceSession::disconnected(),
             }],
@@ -1205,6 +1652,7 @@ mod tests {
                 },
                 session: DeviceSession::disconnected(),
             }),
+            ..EquipmentRegistry::default()
         });
 
         let supervisor = supervisor_over(equipment.clone());

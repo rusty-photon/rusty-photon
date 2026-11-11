@@ -330,7 +330,11 @@ explicitly. Therefore:
   construction.
 - The poll loop refreshes `PA` + `PC` + `PS` every `polling_interval`
   (default 5 s) into the shared cache. Reads are served from cache; a write
-  refreshes on demand.
+  refreshes on demand. Each frame is stored with the instant it was read
+  off the wire, and one read before the cached frame is dropped, so a
+  poll's `PA` or `PS` read just before a write cannot land after the
+  write's refresh and put an output or the variable-output setpoint back
+  ([the shared pattern](../workspace.md#serial-based-services-ppba-driver-qhy-focuser)).
 - A setup-page save never pushes output states to hardware.
 - The excluded `PE:`/`US:` boot-state commands would have been the one place
   a config-driven output state could leak onto the hardware. Their exclusion
@@ -512,7 +516,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops. Same behavior as the other serial drivers, and the same open design question — see [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers. Same behavior as the other serial drivers, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
@@ -535,15 +539,20 @@ poll loop, setup pages, TLS/auth, doctor, packaging, BDD and ConformU.
 master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the
 `XS:` external motor controller.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) names "UPBv2 unsupported" as one of the facts its design
-rests on, and lists `set_switch`/`get_switch` + UPBv2 as slice 2. This
-service is that slice's driver half. Note the tenet-3 boundary the issue
-already draws: this driver *exposes* the outputs; deciding to flip one at
-dusk is a workflow decision that belongs in a session-runner document, not
-in any connect or supervisory path here.
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn through rp's switch tools. This driver
+*exposes* the outputs; deciding to flip one at dusk is a workflow decision
+that belongs in a session-runner document, not in any connect or
+supervisory path here (tenet 3).
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## What the wire actually does
 

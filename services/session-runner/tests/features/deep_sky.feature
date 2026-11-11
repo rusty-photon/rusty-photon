@@ -13,11 +13,15 @@ Feature: Deep-sky workflow document
   camera back up in a finally (start_warmup). The document
   is train-addressed: it takes a single train_id (the imaging train)
   and rp resolves the camera, filter wheel, and focuser through the
-  train, with sweep geometry coming from the train's auto_focus config
-  block rather than parameters. rp's guide-focus-watch events name the
-  guiding train, and the document's triggers answer them: a guide-only
-  metric auto_focus on guide_focus_degraded, the full refocus_train on
-  guide_focus_escalation. Because the planner evaluates real ephemeris at
+  train. Every focus of the imaging train is focus-model's focus_train,
+  proxied by rp: the real provider runs beside rp in every scenario,
+  its sweep for the imaging train configured to read the simulator's
+  frames as starless. rp's guide-focus-watch events name the guiding
+  train, and the document's triggers answer them: a guide-only metric
+  auto_focus on guide_focus_degraded, and on guide_focus_escalation the
+  guiding train's refocus plan, walked by focus_train with shared set
+  when it holds a capture step and by the metric auto_focus when it
+  holds only the guide step. Because the planner evaluates real ephemeris at
   wall-clock now, every scenario computes its observing site to fit the
   clock: an equatorial site at the anti-solar longitude is always in
   deep astronomical night, and celestial-equator targets placed by hour
@@ -32,7 +36,7 @@ Feature: Deep-sky workflow document
 
   Exposure counts include every capture rp makes on the document's
   behalf: each center_on_target iteration captures one solving frame,
-  and each auto_focus sweep captures one frame per grid position, on
+  and each focus_train sweep captures one frame per grid position, on
   top of the light frames the capture loop takes.
 
   Scenario: A full night cycle runs start to finish and parks the mount
@@ -133,7 +137,7 @@ Feature: Deep-sky workflow document
     And at least 1 "exposure_complete" event should precede the second "slew_complete" on the stream
     And at least 1 "exposure_complete" event should follow the second "slew_complete" on the stream
 
-  Scenario: The refocus trigger re-runs auto_focus after the configured number of frames
+  Scenario: The refocus trigger re-runs focus_train after the configured number of frames
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
@@ -149,12 +153,12 @@ Feature: Deep-sky workflow document
     When a run is started
     Then the run ends within 180 seconds
     # One sweep at acquisition, one from the refocus-after-frames
-    # trigger after the second light frame — both train-addressed, the
-    # sweep geometry coming from the imaging train's auto_focus block.
-    # focus_started is emitted at sweep begin, so the count holds
-    # whether or not the V-curve fit succeeds against the simulator's
-    # images (the document try-wraps auto_focus and continues on a
-    # failed fit).
+    # trigger after the second light frame — both focus-model's
+    # focus_train on the imaging train, proxied by rp. rp's focus
+    # bracket emits focus_started before forwarding the call, so the
+    # count holds whether or not the fit succeeds against the
+    # simulator's starless frames (the document try-wraps focus_train
+    # and continues on a failed sweep).
     And the SSE stream should show exactly 2 "focus_started" events
 
   Scenario: A due meridian flip re-slews to the target between exposures, never during one
@@ -259,12 +263,46 @@ Feature: Deep-sky workflow document
     When a run is started
     Then the run ends within 240 seconds
     # guide_focus_degraded fires the document's guide-only metric
-    # auto_focus (focus_started proves the wiring); the episode stays
-    # degraded past the deadline, and guide_focus_escalation fires the
-    # full refocus_train (refocus_started proves it). Sweep success is
-    # deliberately not asserted — the stub's flat post-degradation HFD
-    # makes every fit fail, and the document try-wraps both calls.
+    # auto_focus (its focus_started proves the wiring); the episode
+    # stays degraded past the deadline, and guide_focus_escalation
+    # reads the guiding train's refocus plan. The guiding train shares
+    # no focuser, so the plan holds only the guide step and the
+    # escalation runs the metric auto_focus again: a focus_started
+    # after the escalation proves it. Sweep success is deliberately not
+    # asserted — the stub's flat post-degradation HFD makes every fit
+    # fail, and the document try-wraps every call.
     And the SSE stream should show at least 1 "guide_focus_degraded" events
     And the SSE stream should show at least 1 "focus_started" events
     And the SSE stream should show at least 1 "guide_focus_escalation" events
-    And the SSE stream should show at least 1 "refocus_started" events
+    And at least 1 "focus_started" event should follow the first "guide_focus_escalation" on the stream
+    # The degraded trigger can run late, after the escalation, so the
+    # count is what proves both fired: the watch degrades once (its
+    # cooldown is 10 minutes) and escalates once per episode.
+    And the SSE stream should show exactly 2 "focus_started" events
+
+  Scenario: An escalation on a guiding train that shares the imaging focuser walks the shared refocus
+    Given a running Alpaca simulator
+    And an observing site where it is astronomical night with one planner target
+    And the simulated mount matches the site and points at the first target
+    And a lifecycle stub guider with the HFD script "2.0,3.0"
+    And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
+    And a guiding train "guide" sharing the imaging train's focuser
+    And rp is running with a camera, a mount, a focuser, and session-runner running the "deep_sky" workflow with parameters:
+      | exposure_duration      | 2s    |
+      | max_frames     | 8     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | false |
+      | guide          | true  |
+    And an SSE client is watching rp's event stream
+    When a run is started
+    Then the run ends within 240 seconds
+    # The guiding train's only focuser is the imaging train's, so rp
+    # refuses the guide-only metric auto_focus on guide_focus_degraded
+    # (no sweep starts) and the plan the escalation reads starts with
+    # that focuser's capture step in the imaging train. The escalation
+    # therefore walks focus_train {shared: true}, whose rp focus
+    # bracket emits a focus_started. focus is off, so no acquisition
+    # sweep runs.
+    And the SSE stream should show at least 1 "guide_focus_escalation" events
+    And at least 1 "focus_started" event should follow the first "guide_focus_escalation" on the stream

@@ -53,6 +53,9 @@ pub struct CameraWorld {
     /// The file whose existence takes the simulated camera off the bus (C9);
     /// `None` starts a camera that never leaves.
     pub departure_file: Option<std::path::PathBuf>,
+    /// The file whose content the simulated camera's sensor reads while it
+    /// exists (K2); `None` starts a camera whose reading tracks its cooler.
+    pub temperature_file: Option<std::path::PathBuf>,
     /// The service is expected to register no camera although the backend has
     /// one (a camera its CFW probe cannot open, C0): startup then waits for the
     /// device list rather than for a camera.
@@ -80,6 +83,7 @@ pub struct CameraWorld {
 
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
@@ -98,6 +102,16 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for CameraWorld {
 impl SetupPagesWorld for CameraWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for CameraWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.handle.as_mut().expect("the service was not started")
     }
 }
 
@@ -176,6 +190,15 @@ impl CameraWorld {
         } else if let Some(departure) = &self.departure_file {
             args.push("--simulation-departure-file".to_string());
             args.push(departure.to_str().expect("utf8 departure path").to_string());
+        }
+        if let Some(temperature) = &self.temperature_file {
+            args.push("--simulation-temperature-file".to_string());
+            args.push(
+                temperature
+                    .to_str()
+                    .expect("utf8 temperature path")
+                    .to_string(),
+            );
         }
         if let Some(inventory) = &self.usb_inventory {
             args.push("--usb-inventory".to_string());

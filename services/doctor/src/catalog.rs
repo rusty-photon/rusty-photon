@@ -31,6 +31,10 @@ pub struct CatalogEntry {
     /// serves plain HTTP the way a self-defaulting service would
     /// (docs/services/doctor.md §TLS and auth).
     pub config_gated: bool,
+    /// A file the service writes beside its config, holding runtime state
+    /// rather than configuration: `inventory.unknown-config` counts it as
+    /// the service's own (docs/services/doctor.md §The derived catalog).
+    pub state_file: Option<String>,
     /// Where the config keeps its serial device path, for the six serial
     /// drivers (docs/services/doctor.md §Hardware).
     pub serial: Option<SerialMeta>,
@@ -154,6 +158,7 @@ static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
                 class: meta.class,
                 default_port: meta.port,
                 config_gated: meta.config_gated,
+                state_file: meta.state_file,
                 serial: meta.serial,
                 usb: meta.usb,
             })
@@ -266,6 +271,23 @@ mod tests {
     /// means `tls.absent`/`auth.absent` either wrongly nags a hard-gated
     /// service or wrongly stays silent about a self-defaulting one whose
     /// config was deleted.
+    /// Only `star-adventurer-gti` keeps a state file beside its config:
+    /// its mount state record. The name is not measured from anywhere, so a
+    /// plain assertion pins the declarations against edits.
+    #[test]
+    fn test_state_files_match_the_known_set() {
+        for entry in catalog() {
+            let expected = (entry.name == "star-adventurer-gti")
+                .then_some("star-adventurer-gti.mount-state.json");
+            assert_eq!(
+                entry.state_file.as_deref(),
+                expected,
+                "{}: state_file",
+                entry.name
+            );
+        }
+    }
+
     #[test]
     fn test_config_gated_matches_the_known_set() {
         const GATED: &[&str] = &[

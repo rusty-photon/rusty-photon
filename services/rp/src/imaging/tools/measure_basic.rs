@@ -13,6 +13,7 @@ use crate::error::{Result, RpError};
 use crate::imaging::analysis::aperture::{aggregate_hfr, measure_in_apertures};
 use crate::imaging::analysis::background::estimate_background;
 use crate::imaging::analysis::pixel::Pixel;
+use crate::imaging::analysis::saturation::saturation_level;
 use crate::imaging::analysis::stars::{detect, DetectionParams};
 
 /// Result of the basic image measurement. Field names match the JSON
@@ -24,8 +25,9 @@ pub struct MeasureBasicResult {
     pub hfr: Option<f64>,
     /// Stars measured, one per aperture.
     pub star_count: u32,
-    /// Number of those stars whose aperture holds a saturated pixel.
-    /// Always `0` when `max_adu` is unknown (e.g. bare `image_path` mode).
+    /// Number of those stars whose aperture holds a pixel at or above the
+    /// frame's saturation level: its own clip, or `max_adu`, the lower of
+    /// the two. A frame read with no `max_adu` still finds its clip.
     pub saturated_star_count: u32,
     pub background_mean: f64,
     pub background_stddev: f64,
@@ -36,8 +38,10 @@ pub struct MeasureBasicResult {
 ///
 /// `max_area` bounds a star's half-flux disc, not a component's area: a
 /// star the threshold keeps whole is one component, which may be larger
-/// than its half-flux disc. `max_adu` is for saturation flagging only;
-/// `None` skips the flag (see contract in `docs/services/rp.md`).
+/// than its half-flux disc. `max_adu` is the camera's, for saturation
+/// flagging only: a star is saturated at or above the frame's saturation
+/// level, its own clip or `max_adu`, the lower of the two (see contract in
+/// `docs/services/rp.md`).
 ///
 /// # Errors
 ///
@@ -58,15 +62,22 @@ pub fn measure_basic<T: Pixel>(
     let background = estimate_background(view)
         .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
 
+    let saturation_level = saturation_level(view, max_adu);
     let params = DetectionParams {
         threshold_sigma,
         smoothing_sigma: 1.0,
         min_area,
         max_area: usize::MAX,
-        max_adu,
+        saturation_level,
     };
     let detection = detect(view, &background, &params);
-    let stars = measure_in_apertures(view, &detection, background.mean, max_area, max_adu);
+    let stars = measure_in_apertures(
+        view,
+        &detection,
+        background.mean,
+        max_area,
+        saturation_level,
+    );
     let star_count = u32::try_from(stars.len()).unwrap_or(u32::MAX);
     let saturated_star_count =
         u32::try_from(stars.iter().filter(|s| s.saturated).count()).unwrap_or(u32::MAX);
@@ -172,17 +183,42 @@ mod tests {
         assert!(v["hfr"].is_null());
     }
 
+    /// A star whose core sits on one value, the frame's maximum, is
+    /// clipped there: it is saturated with no `max_adu` to say so.
     #[test]
-    fn no_max_adu_means_zero_saturated_stars() {
-        let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
-        for r in 30..35 {
-            for c in 30..35 {
-                arr[[r, c]] = 65535;
+    fn a_star_clipped_at_the_frames_maximum_is_saturated_without_a_max_adu() {
+        let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 20_000.0, 1000.0);
+        for r in 31..34 {
+            for c in 31..34 {
+                arr[[r, c]] = 15_000;
             }
         }
         let r = measure_basic(&arr.view(), 5.0, 5, 4096, None).unwrap();
         assert_eq!(r.star_count, 1);
+        assert_eq!(r.saturated_star_count, 1);
+    }
+
+    /// Without a clip in the frame or a `max_adu`, nothing is saturated.
+    #[test]
+    fn a_frame_without_a_clip_or_a_max_adu_has_no_saturated_star() {
+        let arr = make_gaussian(64, 64, 32.0, 32.0, 1.5, 20_000.0, 1000.0);
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, None).unwrap();
+        assert_eq!(r.star_count, 1);
         assert_eq!(r.saturated_star_count, 0);
+    }
+
+    /// A camera's `max_adu` above the frame's clip leaves the clip as the
+    /// level: the star is saturated though no pixel reaches `max_adu`.
+    #[test]
+    fn a_clip_below_max_adu_is_the_saturation_level() {
+        let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
+        for r in 30..35 {
+            for c in 30..35 {
+                arr[[r, c]] = 65534;
+            }
+        }
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        assert_eq!(r.saturated_star_count, 1);
     }
 
     /// HDR-amplitude i32 frame: peak > `u16::MAX`. Exercises the I32
@@ -220,16 +256,17 @@ mod tests {
         assert_eq!(r.pixel_count, 64 * 64);
     }
 
+    /// Two pixels at `max_adu` are too few for the frame to show a clip,
+    /// so only `max_adu` can flag the star.
     #[test]
-    fn saturation_is_flagged_when_max_adu_provided() {
-        let mut arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
-        for r in 30..35 {
-            for c in 30..35 {
-                arr[[r, c]] = 65535;
-            }
-        }
-        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
-        assert_eq!(r.star_count, 1);
-        assert_eq!(r.saturated_star_count, 1);
+    fn saturation_is_flagged_at_max_adu_where_the_frame_shows_no_clip() {
+        let mut arr = make_gaussian(64, 64, 32.0, 32.0, 1.5, 20_000.0, 1000.0);
+        arr[[32, 32]] = 65535;
+        arr[[32, 33]] = 65535;
+        let flagged = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        assert_eq!(flagged.star_count, 1);
+        assert_eq!(flagged.saturated_star_count, 1);
+        let unknown = measure_basic(&arr.view(), 5.0, 5, 4096, None).unwrap();
+        assert_eq!(unknown.saturated_star_count, 0);
     }
 }

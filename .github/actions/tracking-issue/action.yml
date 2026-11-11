@@ -4,7 +4,10 @@ description: >-
   stays open: the open issue labelled `label` and titled exactly `title`.
   A new issue carries `label` and ci-flake, and its body is `body`, the run's
   link and a note on how the issue works. Call it from a job that runs only
-  when a scheduled run failed. Plan item J7 in docs/plans/archive/ci-shell-to-code.md.
+  when a scheduled run failed. Given `job`, it files only if that job of this
+  run attempt failed, for a notifier that needs a whole matrix but watches
+  one leg; it needs `actions: read` then. Plan item J7 in
+  docs/plans/archive/ci-shell-to-code.md.
 inputs:
   title:
     description: >-
@@ -17,13 +20,22 @@ inputs:
   body:
     description: What failed and what to suspect, for a new issue's body.
     required: true
+  job:
+    description: >-
+      A job of this run, by its exact name as the run shows it (such as
+      `bazel / macos-latest`). When set, the action files only if that job
+      concluded failure, cancelled or timed_out, and otherwise says why and
+      succeeds. A name this run attempt has no job by fails the step, so a
+      renamed job cannot quietly turn the issue off.
+    required: false
+    default: ''
   token:
-    description: A token that can read and write the repository's issues.
+    description: A token that can read and write the repository's issues, and with `job` read its runs.
     required: false
     default: ${{ github.token }}
 outputs:
   number:
-    description: The issue's number.
+    description: The issue's number, or empty when `job` did not fail.
 runs:
   using: node24
   main: index.mjs

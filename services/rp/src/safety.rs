@@ -478,12 +478,23 @@ async fn stop_guiding(guider: Option<&Arc<dyn rp_guider::GuiderClient>>, event_b
 /// [`abort_exposures`]: the Alpaca `Park` is issued and logged, but
 /// the enforcer does not block on `AtPark` (Sentinel's watchdog owns
 /// escalation if the mount never gets there).
+///
+/// A mount held out through `disconnect_device` hands out no handle, so
+/// it is skipped with a warning: a workflow parks the mount before it
+/// holds it out (rp.md § Power Switching).
 async fn park_mount(equipment: &EquipmentRegistry) {
     let Some(mount) = &equipment.mount else {
         return;
     };
     let Some(device) = mount.device() else {
-        debug!("mount not connected; skipping park on unsafe transition");
+        if mount.session.is_held_out() {
+            warn!(
+                "the mount is held out of rp (disconnect_device), so the unsafe transition does \
+                 not park it"
+            );
+        } else {
+            debug!("mount not connected; skipping park on unsafe transition");
+        }
         return;
     };
     match device.park().await {
@@ -1061,10 +1072,13 @@ mod tests {
         assert!(enforcer.is_none());
     }
 
-    /// The unsafe transition parks a connected mount: a registry with
-    /// a real (stubbed-Alpaca) mount must receive `PUT park`.
-    #[tokio::test]
-    async fn unsafe_transition_parks_the_connected_mount() {
+    /// A registry whose mount is a stubbed Alpaca telescope that connects,
+    /// the flag its `PUT park` sets, and the stub, which serves while held.
+    async fn registry_with_a_parkable_mount() -> (
+        Arc<EquipmentRegistry>,
+        Arc<AtomicBool>,
+        crate::equipment::test_support::AlpacaStub,
+    ) {
         use axum::routing::{get, put};
         use axum::{Json, Router};
 
@@ -1124,6 +1138,14 @@ mod tests {
                 .is_some_and(crate::equipment::MountEntry::is_connected),
             "test setup: the stubbed mount must connect"
         );
+        (equipment, park_called, stub)
+    }
+
+    /// The unsafe transition parks a connected mount: a registry with
+    /// a real (stubbed-Alpaca) mount must receive `PUT park`.
+    #[tokio::test]
+    async fn unsafe_transition_parks_the_connected_mount() {
+        let (equipment, park_called, _stub) = registry_with_a_parkable_mount().await;
 
         let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         enforcer.equipment = equipment;
@@ -1134,6 +1156,32 @@ mod tests {
         assert!(
             park_called.load(Ordering::SeqCst),
             "the unsafe transition must command Park on the connected mount"
+        );
+    }
+
+    /// A mount held out through `disconnect_device` hands out no handle,
+    /// so the unsafe transition does not park it (rp.md § Power
+    /// Switching); the transition still gates.
+    #[tokio::test]
+    async fn unsafe_transition_skips_a_held_out_mount() {
+        let (equipment, park_called, _stub) = registry_with_a_parkable_mount().await;
+        equipment
+            .mount
+            .as_ref()
+            .expect("test setup: the mount is configured")
+            .session
+            .hold_out();
+
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.equipment = equipment;
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.status.is_safe());
+        assert!(
+            !park_called.load(Ordering::SeqCst),
+            "the unsafe transition must not park a held-out mount"
         );
     }
 

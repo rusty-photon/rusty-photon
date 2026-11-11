@@ -116,6 +116,9 @@ pub struct SwitchConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
+    /// The power map's `outputs` entries, passed through as written;
+    /// left out of the config when empty.
+    pub outputs: Vec<Value>,
 }
 
 /// Rotator equipment entry.
@@ -232,8 +235,9 @@ pub struct OpticalTrainConfig {
     /// angle). `None` ⇒ omit the field.
     pub default_position_angle_degrees: Option<f64>,
     pub devices: Vec<String>,
-    /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`).
-    /// `None` ⇒ omit the block.
+    /// The guiding train's metric-sweep parameters
+    /// (`optical_trains[].auto_focus`). `None` ⇒ omit the block, which
+    /// every imaging train does: rp refuses a block on one.
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 
@@ -253,40 +257,18 @@ pub struct OpticalTrainConfig {
 /// frame reads as starless on every platform.
 pub const STARLESS_THRESHOLD_SIGMA: f64 = 1000.0;
 
-/// The `optical_trains[].auto_focus` block (rp.md § Optical Trains).
+/// The guiding train's `optical_trains[].auto_focus` block (rp.md
+/// § Optical Trains).
 ///
-/// Which fields rp accepts depends on the train's purpose — imaging
-/// blocks carry the capture fields, the guiding train's block the
-/// metric-sweep ones — so everything but the geometry is optional
-/// here and `None` fields are omitted from the emitted JSON.
-/// The optional `min_fit_points` is omitted — scenarios that need it
-/// can grow this struct.
+/// Its metric sweep's geometry, and the fresh guide frames per position
+/// (`None` is omitted, leaving rp's default of 3). The optional
+/// `min_fit_points` and `confirmation_tolerance` are omitted —
+/// scenarios that need them can grow this struct.
 #[derive(Debug, Clone)]
 pub struct TrainAutoFocusConfig {
-    /// Per-frame exposure, humantime string (e.g. `"100ms"`).
-    /// Capture sweeps only.
-    pub duration: Option<String>,
     pub step_size: i64,
     pub half_width: i64,
-    /// Capture sweeps only.
-    pub min_area: Option<i64>,
-    /// Capture sweeps only.
-    pub max_area: Option<i64>,
-    /// Binning for every sweep frame, `"AxB"`. Capture sweeps only;
-    /// `None` leaves rp's default (`"1x1"`) in force.
-    pub binning: Option<String>,
-    /// Per-frame detection threshold in sigma units. Capture sweeps
-    /// only — rp refuses it on a guiding train's block, whose metric
-    /// sweep never measures stars — so a guiding block leaves it
-    /// `None`. A capture sweep that wants the simulator's frames to
-    /// read as starless pins [`STARLESS_THRESHOLD_SIGMA`]; `None`
-    /// leaves rp's default (5.0) in force.
-    pub threshold_sigma: Option<f64>,
-    /// Metric (guiding-train) sweeps only.
     pub frames_per_step: Option<i64>,
-    /// Sweeps a run may make before it errors. Capture sweeps only;
-    /// `None` leaves rp's default (2) in force.
-    pub max_attempts: Option<i64>,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -647,7 +629,7 @@ impl RpConfigBuilder {
                 "filter_wheels": self.filter_wheels_value(),
                 "cover_calibrators": self.cover_calibrators_value(),
                 "safety_monitors": device_list(self.safety_monitors.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
-                "switches": device_list(self.switches.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "switches": self.switches_value(),
                 "rotators": device_list(self.rotators.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "observing_conditions": device_list(self.observing_conditions.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "domes": device_list(self.domes.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number)))
@@ -714,6 +696,23 @@ impl RpConfigBuilder {
         }
 
         config
+    }
+
+    fn switches_value(&self) -> Vec<Value> {
+        self.switches
+            .iter()
+            .map(|d| {
+                let mut entry = serde_json::json!({
+                    "id": d.id,
+                    "alpaca_url": d.alpaca_url,
+                    "device_number": d.device_number,
+                });
+                if !d.outputs.is_empty() {
+                    set_key(&mut entry, "outputs", Value::Array(d.outputs.clone()));
+                }
+                entry
+            })
+            .collect()
     }
 
     fn cameras_value(&self) -> Vec<Value> {
@@ -868,26 +867,8 @@ impl RpConfigBuilder {
                         "step_size": af.step_size,
                         "half_width": af.half_width,
                     });
-                    if let Some(d) = &af.duration {
-                        set_key(&mut block, "duration", serde_json::json!(d));
-                    }
-                    if let Some(v) = af.min_area {
-                        set_key(&mut block, "min_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.max_area {
-                        set_key(&mut block, "max_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = &af.binning {
-                        set_key(&mut block, "binning", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.threshold_sigma {
-                        set_key(&mut block, "threshold_sigma", serde_json::json!(v));
-                    }
                     if let Some(v) = af.frames_per_step {
                         set_key(&mut block, "frames_per_step", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.max_attempts {
-                        set_key(&mut block, "max_attempts", serde_json::json!(v));
                     }
                     set_key(&mut obj, "auto_focus", block);
                 }
@@ -1183,17 +1164,7 @@ mod tests {
             focal_length_mm: Some(1000.0),
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
-            auto_focus: Some(TrainAutoFocusConfig {
-                duration: Some("100ms".to_string()),
-                step_size: 100,
-                half_width: 200,
-                min_area: Some(5),
-                max_area: Some(65_536),
-                binning: None,
-                threshold_sigma: Some(STARLESS_THRESHOLD_SIGMA),
-                frames_per_step: None,
-                max_attempts: Some(1),
-            }),
+            auto_focus: None,
         });
         b.add_optical_train(OpticalTrainConfig {
             telescope: None,
@@ -1204,7 +1175,11 @@ mod tests {
             focal_length_mm: None,
             default_position_angle_degrees: None,
             devices: vec!["guide-cam".to_string()],
-            auto_focus: None,
+            auto_focus: Some(TrainAutoFocusConfig {
+                step_size: 50,
+                half_width: 100,
+                frames_per_step: Some(2),
+            }),
         });
         let cfg = b.build();
         let trains = cfg["equipment"]["optical_trains"].as_array().unwrap();
@@ -1216,17 +1191,13 @@ mod tests {
             trains[0]["devices"],
             serde_json::json!(["main-focuser", "main-cam"])
         );
+        assert!(
+            trains[0].get("auto_focus").is_none(),
+            "a None auto_focus must omit the block"
+        );
         assert_eq!(
-            trains[0]["auto_focus"],
-            serde_json::json!({
-                "duration": "100ms",
-                "step_size": 100,
-                "half_width": 200,
-                "min_area": 5,
-                "max_area": 65_536,
-                "threshold_sigma": STARLESS_THRESHOLD_SIGMA,
-                "max_attempts": 1,
-            })
+            trains[1]["auto_focus"],
+            serde_json::json!({ "step_size": 50, "half_width": 100, "frames_per_step": 2 })
         );
         assert!(
             trains[1].get("purpose").is_none(),
@@ -1239,10 +1210,6 @@ mod tests {
         assert!(
             trains[1].get("obstruction_mm").is_none(),
             "a None obstruction must omit the field (unobstructed)"
-        );
-        assert!(
-            trains[1].get("auto_focus").is_none(),
-            "a None auto_focus must omit the block"
         );
     }
 

@@ -272,22 +272,24 @@ impl CoverCalibrator for DsdFp2Device {
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
 
-        session
-            .request(Command::SetBrightness(value))
+        let (reply, brightness_timing) = session
+            .request_timed(Command::SetBrightness(value))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
-        session
-            .request(Command::SetLight(true))
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
+        let (reply, light_timing) = session
+            .request_timed(Command::SetLight(true))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
         drop(slot);
 
+        // Dated by the panel's answers, so a poll that read the old values
+        // before these commands cannot store them over the new ones.
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
-        state.brightness = Some(value);
-        state.light_on = Some(true);
+        state.store_brightness(value, brightness_timing.received_at);
+        state.store_light_on(true, light_timing.received_at);
         drop(state);
         Ok(())
     }
@@ -295,16 +297,14 @@ impl CoverCalibrator for DsdFp2Device {
     async fn calibrator_off(&self) -> ASCOMResult<()> {
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-        session
-            .request(Command::SetLight(false))
+        let (reply, timing) = session
+            .request_timed(Command::SetLight(false))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
         drop(slot);
         let snap = self.manager.snapshot();
-        let mut state = snap.write().await;
-        state.light_on = Some(false);
-        drop(state);
+        snap.write().await.store_light_on(false, timing.received_at);
         Ok(())
     }
 }
@@ -319,17 +319,21 @@ async fn execute_move(device: &DsdFp2Device, angle: u16) -> ASCOMResult<()> {
         .await
         .map_err(DsdFp2Error::from)?
         .parse_ok()?;
-    session
-        .request(Command::StartMove)
+    let (reply, timing) = session
+        .request_timed(Command::StartMove)
         .await
-        .map_err(DsdFp2Error::from)?
-        .parse_ok()?;
+        .map_err(DsdFp2Error::from)?;
+    reply.parse_ok()?;
     drop(slot);
 
     // Mark motor as running locally so `cover_state` reports `Moving`
-    // immediately, before the next poll observes it.
+    // immediately, before the next poll observes it. Dated by the panel's
+    // answer, so a poll that read the motor idle before the move cannot
+    // store that over it.
     let snap = device.manager.snapshot();
-    snap.write().await.motor_running = Some(true);
+    snap.write()
+        .await
+        .store_motor_running(true, timing.received_at);
     Ok(())
 }
 

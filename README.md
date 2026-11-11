@@ -194,7 +194,7 @@ bazel test //...
 bazel test //services/filemonitor/...
 
 # The BDD suites need OmniSim and OMNISIM_PATH: our patched fork, release
-# v0.5.0-467.2 or newer, since the harness spawns it with the fork-only
+# v0.5.0-467.3 or newer, since the harness spawns it with the fork-only
 # --multi-instance flag + OMNISIM_SETTINGS_DIR. This installs the release CI
 # pins into ~/.local/opt/omnisim and prints the OMNISIM_PATH to export:
 bazel run //.github/actions:install -- omnisim

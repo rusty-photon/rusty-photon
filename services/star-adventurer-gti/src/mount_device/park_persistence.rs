@@ -279,8 +279,6 @@ pub(super) fn write_mount_fields_to_config(
     config_path: &Path,
     updates: &[(&str, serde_json::Value)],
 ) -> crate::error::Result<()> {
-    use std::io::Write;
-
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
     let mut root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
@@ -305,29 +303,40 @@ pub(super) fn write_mount_fields_to_config(
     // operators editing the file later don't trip POSIX "no newline at
     // end of file" warnings in diffs.
     pretty.push('\n');
+    write_atomically(config_path, &pretty)
+}
+
+/// Replace `path` with `contents` atomically and durably: a temp file in
+/// the same directory, `fsync`'d, renamed over `path`, then (on unix) the
+/// directory `fsync`'d so the rename itself survives a crash.
+///
+/// # Errors
+///
+/// Returns [`StarAdvError::Config`] naming the step that failed.
+pub fn write_atomically(path: &Path, contents: &str) -> crate::error::Result<()> {
+    use std::io::Write;
 
     // Temp file must live in the **same directory** as the destination
     // so `persist` can use POSIX `rename` (atomic on the same
     // filesystem) rather than copy-and-delete. Fall back to the
     // current dir if the path has no parent (e.g. a bare filename),
     // which is what Path::parent returns Some("") for — coerce to ".".
-    let parent = config_path
+    let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
         StarAdvError::Config(format!("create temp file in {}: {e}", parent.display()))
     })?;
-    tmp.write_all(pretty.as_bytes())
+    tmp.write_all(contents.as_bytes())
         .map_err(|e| StarAdvError::Config(format!("write temp file: {e}")))?;
     // fsync the file data so a crash after rename cannot surface a
     // renamed-but-zero-length sidecar.
     tmp.as_file()
         .sync_all()
         .map_err(|e| StarAdvError::Config(format!("fsync temp file: {e}")))?;
-    tmp.persist(config_path).map_err(|e| {
-        StarAdvError::Config(format!("atomic rename to {}: {e}", config_path.display()))
-    })?;
+    tmp.persist(path)
+        .map_err(|e| StarAdvError::Config(format!("atomic rename to {}: {e}", path.display())))?;
     // fsync the parent directory so the rename itself is durable.
     // Windows can't open a directory as a regular file handle, so this
     // is unix-only. Mirrors `services/rp/src/persistence/document.rs`.

@@ -40,12 +40,15 @@ anything except through `rp`'s tools. The decision record is the
    optimisation: focus is reached without it.
 3. **Retry with the same parameters; shift, never widen.** A failed fit
    is repeated up to `max_attempts` times, the way N.I.N.A. and Ekos
-   retry, the grid shifted half a width whenever the samples say focus
+   retry, the grid shifted toward focus whenever the samples say it
    lies past one end of them — a monotonic curve that lost no frames
    past the end its lowest sample sits nearer, or stars that ran out on
    one side only while the samples that kept them fall strictly toward
-   the other ([The sweep](#the-sweep)). No attempt halves or doubles
-   the step.
+   the other ([The sweep](#the-sweep)). The shift centres the next grid
+   on the vertex the fit extrapolated past that end, at most three half
+   widths from the centre that failed, and moves it half a width when
+   the fit placed no such vertex. No attempt halves or doubles the
+   step.
 4. **Put things back.** A sweep that fails after every attempt, a
    cancelled sweep and an equipment error all end with the focuser
    moved back to where it was before the call — the position read at
@@ -228,12 +231,13 @@ so a walk started on a filterless guiding train may still name the
 filter its imaging step focuses through. A plan whose only step is the
 guide step is refused before anything actuates: its result has nowhere
 to go without a capture step to report. So is a plan with a capture
-step whose focuser is not its run train's terminal focuser, which
-`rp` plans for a shared focuser terminal in no train: a sweep moves
-its train's terminal focuser and is recorded on that train, so it
-cannot measure that step, and the walk reads each run train's
-`get_train_info` before anything moves to tell. `rp`'s own
-`refocus_train` sweeps the step's focuser and runs such a plan. A failed step stops the
+step whose focuser is not its run train's terminal focuser: a sweep
+moves its train's terminal focuser and is recorded on that train, so
+it cannot measure that step, and the walk reads each run train's
+`get_train_info` before anything moves to tell. No config `rp` loads
+plans such a step, since an imaging train holds at most one focuser
+([rp.md § Optical Trains](rp.md#optical-trains)); the check keeps the
+walk from moving a focuser it cannot measure should a plan hold one. A failed step stops the
 sequence and puts back only that step's focuser; completed steps are
 good positions. The guide step is `rp`'s tool and keeps `rp`'s
 put-back rule ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)):
@@ -267,7 +271,9 @@ Result:
   "confirmed": true, "fit_r_squared": 0.97, "samples_used": 8,
   "attempts": 1, "wing_slope": 3.9,
   "attempts_log": [],                      // one entry per attempt that failed before this one
-  "confirmation": { "document_id": "…", "hfr": 1.04, "star_count": 231, "accepted": true },
+  "reference": { "position": 29771, "document_id": "…", "listed": 236 },
+  "confirmation": { "document_id": "…", "hfr": 1.04, "star_count": 231, "accepted": true,
+                    "rejected": null },     // "starless", "sparse" or "worse" when not accepted
   "curve_points": [ { "position": 29663, "hfr": 4.1, "star_count": 240,
                       "document_id": "…", "rejected": null } ],
   "temperature_c": 12.4,
@@ -289,6 +295,10 @@ replaced it) or `unrecorded` — the sweep found focus and the store
 would not take the run, which is reported in `recorded.error` rather
 than raised as a failure, because the focuser is at focus and a
 document that retried it would sweep a train that is already there.
+`reference` is the reference frame of the attempt that produced the
+result — where it was taken and how many stars it listed for the
+sweep to measure ([The sweep](#the-sweep), step 2); `star_count` in
+`confirmation` and `curve_points` counts those listed stars measured.
 `attempts_log` is the account of the attempts that failed before the
 one that produced the result ([The sweep](#the-sweep), the attempts
 log), empty when the first fit held; `curve_points` carries every
@@ -298,10 +308,12 @@ its own. `steps` appears with `shared: true`, one
 completed step. `rp` reads the seven event fields off the top level.
 
 Progress: one `notifications/progress` tick per measured position —
-a position is `frames_per_step` frames, one by default — `progress`
-counting them, `total` the positions this sweep will walk (the grid
-after the focuser's bounds have clamped it) plus the confirmation
-frame, message naming the position and the measured HFR.
+a position is `frames_per_step` frames, one by default — and one for
+the reference frame, `progress` counting them, `total` the positions
+this sweep will walk (the grid after the focuser's bounds have clamped
+it) plus the reference frame and the confirmation frame, message
+naming the position and the measured HFR, or for the reference frame
+the stars it listed.
 A retry pushes `progress` past `total`, which is what a caller sees
 when a sweep is repeated.
 
@@ -510,8 +522,10 @@ sweep carries the outcome in full (`confirmed`, `fallback`,
 points; `get_focus_runs` is where a sweep is read in detail.
 `differences` is what each median was taken over, so an operator can
 see a spread the median hid. `restored` is where the call left the
-rig. `model` is as `focus_train` reports it, the first sweep having
-reset a stale record.
+rig. `model` is as `focus_train` reports it for the call's first
+sweep: `empty` when the train had no record before the call, `reset:
+…` when that sweep replaced a stale one, otherwise how the record reads
+once the offsets are written.
 
 Progress: one tick per sweep, `total` the sweeps the procedure will run
 (`rounds` × `filters`), message naming the round, the filter and what
@@ -697,15 +711,16 @@ PHD2-metric `auto_focus`. An imaging train's run takes no lease.
 - **The size.** The lease asks for the time the run needs:
 
   ```
-  frames       = attempts × (points × frames_per_step + 1)
-  moves        = attempts × (points + 1) + 2
+  frames       = attempts × (points × frames_per_step + 2)
+  moves        = attempts × (points + 2) + 2
   estimate     = frames × (duration + 2 s) + moves × 2 s
   max_duration = min(1.5 × estimate, 10 min), rounded up to a whole second
   ```
 
   `attempts` is `max_attempts`, and `points` is the grid the sweep
   plan holds before the focuser's bounds clamp it. Each attempt adds a
-  confirmation frame, and a move to each sample and to the vertex; the
+  reference frame and a confirmation frame, and a move to its centre,
+  to each sample and to the vertex; the
   run adds the move to the predicted start and the put-back. A frame
   costs 2 s beyond its exposure and a move 2 s, the constants the
   hardware check below measures. The half again on top covers what
@@ -714,9 +729,9 @@ PHD2-metric `auto_focus`. An imaging train's run takes no lease.
   the longest lease `rp` grants, is refused before anything moves and
   recorded, naming the numbers, so a configuration that cannot finish
   inside a lease fails at once and says why: *"a training run on
-  guiding train 'guide' needs about 10m 52s under rp's train lease,
+  guiding train 'guide' needs about 11m 19s under rp's train lease,
   longer than the 10m a lease may last: 3 attempts of 9 points × 3
-  frames + 1 at 5s + 2s a frame, and 32 moves at 2s; lower
+  frames + 2 at 5s + 2s a frame, and 35 moves at 2s; lower
   max_attempts, frames_per_step or duration in trains.guide"*.
 - **Calls under the lease.** Every `capture`, `move_focuser` and
   `set_filter` of the run carries the lease's id, the put-back's move
@@ -810,11 +825,11 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
-| `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'; rp's refocus_train runs that plan` |
+| `shared: true` on a plan with a capture step whose focuser is not its run train's terminal focuser | `train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'` |
 | A `temperature_sensor` on a train whose own focuser reports a temperature (`focus_train`, each sweep of `determine_filter_offsets`, and `set_focus_offsets` and `reset_focus_model` before they write) | `train 'main' names temperature_sensor 'oag-focuser', but its own focuser 'main-focuser' reports a temperature (11.5 °C): a session refocuses on that focuser's readings, so a stand-in would put its baseline on another sensor; remove trains.main.temperature_sensor from focus-model.json` |
 | A `temperature_sensor` that names a focuser `rp` does not know (the same calls) | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
-| A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
+| A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 11m 19s under rp's train lease, longer than the 10m a lease may last: …` |
 | `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
 | The train lease ended mid-run | the refused call's error, which carries `lease '<id>' is not held: <why>`, after the put-back |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
@@ -867,9 +882,10 @@ reports `guiding: true`, the body calls `pause_guiding` (corrections
 only, `full: false`) before the first move and `resume_guiding` after
 the confirmation frame, on the failure path and on cancellation too.
 A stats read that fails, or reports not guiding, skips the handshake
-rather than blocking the sweep; a failed resume is an error, as it is
-for `rp`'s `refocus_train`, and a sweep whose run was otherwise good is
-recorded before that error surfaces. The plan read is the one that
+rather than blocking the sweep; a failed resume is an error, since a
+night with guiding silently left paused must not look like success,
+and a sweep whose run was otherwise good is recorded before that error
+surfaces. The plan read is the one that
 does not skip: it is the only thing that says whether the guiding
 train shares this focuser, so a plan `rp` cannot answer fails the call
 before anything moves. A `shared: true` walk holds its pause until a
@@ -934,6 +950,17 @@ slope far from the predicted one means a wrong value for an input of
 the `slope` line — `microns_per_step`, the focal length or aperture
 behind `N`, the pixel size, or the obstruction behind `c` — and
 `get_sweep_plan` reports both side by side.
+
+**Real-hardware validation.** 2026-11-04, on `rig2` (Windows 11, a
+530 mm f/5 refractor, a QHY600M with its wheel and a FocusLynx), at
+`00b87c77`: the derived sweep, a predicted start and a hand-entered
+offset on a filter change, under a real sky. The check above caught a
+wrong input there. `rp` took `microns_per_step` from the FocusLynx
+server's `StepSize`, 1.06985 µm, and the runs measured a wing slope
+about 2.1× the predicted one, so the sweep's ends sat at 5.0–8.1× the
+focused HFR.
+With 2.1 µm configured, the ends sat at 2.9–3.5×
+([record](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
 
 ## The predicted start
 
@@ -1030,14 +1057,11 @@ sensor every sweep refuses.
 
 ## The sweep
 
-The V-curve with the semantics `rp`'s capture sweep has today
-([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)), through
-`rp`'s primitives — except for the curve it fits (step 4), which is the
-hyperbola where `rp`'s capture sweep fits a parabola, and where the
-retry goes (step 6): `rp`'s sweep
-makes no shift after a sweep whose stars ran out on one side, and
-reads the `monotonic_curve` side against the grid's centre. The capture
-sweep retires at the plan's S7, and the rules live here:
+The V-curve, driven through `rp`'s primitives: `move_focuser`,
+`capture` and `measure_stars`. `rp` has no capture sweep of its own —
+its `auto_focus` is the guiding train's PHD2-metric sweep
+([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)) — so an
+imaging train's sweep follows these rules:
 
 1. The grid is `centre ± half_width` in `step_size` increments, clamped
    to the focuser's bounds (points outside are dropped, not coerced),
@@ -1047,24 +1071,52 @@ sweep retires at the plan's S7, and the rules live here:
    around the centre the sweep will use, before the move to the
    predicted start — and so is one spanning more than 1000 positions,
    counted before the bounds clamp anything.
-2. Per point: `move_focuser`, then `capture` on the train and
-   `measure_stars` on the document, `frames_per_step` times. The
-   point's position is the one `move_focuser` reports reaching, which
-   is the target unless the focuser settled idle short of it
-   ([rp.md § Focuser Tool Details](rp.md#focuser-tool-details)). A point's
-   HFR is the median of its frames' `hfr` over the frames with stars —
-   the aggregate `measure_stars` reports, the median aperture HFR of a
-   frame's 20 brightest stars
-   ([rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) —
-   its `star_count` the median of theirs, its `document_id` the last
-   frame's; a point with no stars, or a non-finite HFR, is
-   recorded with `hfr: null` and enters nothing.
-3. The sparse gate: a point whose `star_count` is below
-   `min_star_fraction` of the sweep's largest count is
-   `rejected: "sparse"`. Fewer than `min_fit_points` accepted points is
-   `not_enough_stars`.
+2. The star list. Before it walks its grid, each attempt takes a
+   reference frame at its centre — the first attempt where the
+   prediction left the focuser, a retry after a move to its own centre
+   — with `capture` on the train and `measure_stars` on the document,
+   detecting with the train's `min_area`, `max_area` and
+   `threshold_sigma`. The list is the stars of that frame whose `hfr`
+   lies within half the frame's median `hfr` of it, as `{x, y,
+   radius}`: CCDciel's filter, which leaves out the saturated cores of a
+   frame at focus, reading large, and hot pixels and artefacts, reading
+   small. Every frame of the attempt then measures those stars and no
+   others ([rp.md § `measure_stars` Contract](rp.md#measure_stars-contract),
+   the `stars` input), and the array each call returns is the list the
+   next one passes, so each star is looked for where it was last seen
+   and the drift of a sweep is followed. A star list is what makes a
+   sample's star count mean something: detection loses the faint stars
+   as the blur spreads their light (on rig2 the count falls as
+   HFR^−1.7 to HFR^−2.5), while an aperture placed on a star already
+   known keeps it, so the count says how many of the same stars were
+   measurable at that focus, not how bright the field looked there
+   (the [sample-gating plan](../plans/auto-focus-sample-gating.md)'s
+   G3c). A reference frame with no stars leaves the list empty: the
+   attempt still walks its grid and records each frame, every point
+   starless, and ends `not_enough_stars`, and its retry takes a new
+   reference frame.
+3. Per point: `move_focuser`, then `capture` on the train and
+   `measure_stars` on the document with the list, `frames_per_step`
+   times. The point's position is the one `move_focuser` reports
+   reaching, which is the target unless the focuser settled idle short
+   of it ([rp.md § Focuser Tool Details](rp.md#focuser-tool-details)). A
+   frame's HFR is the median aperture HFR over the listed stars it
+   measured and its star count how many it measured; a point's HFR is
+   the median of its frames' HFRs over the frames that measured any,
+   its `star_count` the median of their counts, its `document_id` the
+   last frame's. A point with no listed star measured, or a non-finite
+   HFR, is recorded with `hfr: null` and enters nothing; a point with
+   one is `rejected: "sparse"`, because one star's HFR is that star's
+   and not the focus's (Hocus Focus's floor). Fewer than
+   `min_fit_points` accepted points is `not_enough_stars`. A frame
+   whose stars are about as large as `max_area` allows is measured by
+   the listed stars under the cap and reads low, but it measures few of
+   them, and the fit weighs it by that count: on rig2's 2026-09-08 fine
+   sweep at `max_area` 500, the frame at 14.6 px reads 12.3 px on 5
+   stars against its neighbours' 800, and the vertex holds.
 4. The fit: the hyperbola `hfr = a·√(1 + ((x − x₀)/b)²)` in HFR
-   against position, weighted by star count, with `fit_r_squared` its
+   against position, weighted by star count — the listed stars each
+   point measured — with `fit_r_squared` its
    weighted coefficient of determination over the accepted samples,
    clamped to `[0, 1]`. The hyperbola is the defocus curve itself, not
    a shape chosen to fit one rig: a defocused star is a cone of
@@ -1098,22 +1150,30 @@ sweep retires at the plan's S7, and the rules live here:
    Unset, the quality is reported and never enforced, because how clean
    a real sweep looks is a property of the rig. A train's own runs
    are what justify a number for that train (the plan's D13).
-5. Confirmation: move to the vertex, one more frame; accepted when it
-   has stars, passes the gate, and measures at most
-   `(1 + confirmation_tolerance)` times the lowest accepted sample.
-   Rejected → the focuser moves to that lowest sample's position and
-   the result says `confirmed: false`; a fallback move that settles
-   short takes one more frame, so the reported position and HFR are
-   always a pair that was measured together, and a frame with no stars
-   there fails the run rather than reporting another position's focus
-   quality.
+5. Confirmation: move to the vertex, one more frame, measured with the
+   list; accepted when it measures at least two listed stars and at
+   most `(1 + confirmation_tolerance)` times the lowest accepted
+   sample. `confirmation.rejected` says why it was not: `starless` (no
+   listed star measured), `sparse` (one) or `worse` (above the
+   tolerance), `null` when accepted. Measuring the list here is what
+   makes the comparison fair: the frame is held against samples of the
+   same stars, so a frame at focus that detection would find nearly
+   empty — on rig2, `min_area` 40 drops the compact stars at focus,
+   and the 2026-09-26 sizing sweep's confirmation frame detects 2 —
+   still measures its six listed stars, at 0.93 px against the lowest
+   sample's 1.03. Rejected → the focuser moves to that lowest sample's
+   position and the result says `confirmed: false`; a fallback move
+   that settles short takes one more frame, measured with the list, so
+   the reported position and HFR are always a pair that was measured
+   together, and a frame with no listed star measured there fails the
+   run rather than reporting another position's focus quality.
 6. Retry: a failed fit is repeated while attempts remain, up to
    `max_attempts`, and where the next grid sits depends on what the
    failed one said about focus:
-   - After `monotonic_curve` the centre moves by `half_width` toward
-     whichever end of the accepted samples the lowest one sits nearer:
-     the curve fell toward that end, so focus lies past it. The ends
-     are the samples', never the grid's centre: a grid a bound clipped,
+   - After `monotonic_curve` the grid shifts toward whichever end of
+     the accepted samples the lowest one sits nearer: the curve fell
+     toward that end, so focus lies past it. The ends are the
+     samples', never the grid's centre: a grid a bound clipped,
      or one whose frames on one side of the centre all lost their stars
      to a passing cloud, holds every accepted sample on one side of a
      centre they were never measured around, and a comparison with the
@@ -1124,10 +1184,38 @@ sweep retires at the plan's S7, and the rules live here:
      any accepted sample, so the sky took its stars, not the far wing
      leaving the detector's band, and the frames that would place
      focus are ones the grid already walks. With focus near the lowest
-     sample, as a good prediction leaves it, a shift would start the
-     next grid at focus and a curve fitted through its one wing would
-     put its centre past the samples again, where the same grid under a
-     cleared sky fits.
+     sample, as a good prediction leaves it, a shift gains nothing: half
+     a width would start the next grid at focus, where a curve fitted
+     through its one wing puts its centre past the samples again, and
+     the vertex the remaining wing extrapolates would at best recentre
+     the grid on positions it already walks. The same grid, under a
+     cleared sky, fits.
+
+     How far the grid shifts is the fit's to say. A hyperbola that
+     fitted the samples with its vertex past that end centres the next
+     grid on the vertex, but at most three half widths from the centre
+     that failed. The wing a sweep walks fixes the slope the defocus
+     curve falls along, so the extrapolation lands near focus: the
+     focused HFR the wing never sees moves the vertex by less than that
+     HFR over the slope, about 22 steps on rig2, and the scatter of the
+     wing's samples adds to that — rig2's R sweeps of 2026-11-05,
+     started 149–201 steps from focus at a half width of 86,
+     extrapolated vertices within 36 steps of the 29572 a sweep around
+     focus confirmed that night. Three half widths put the next grid a
+     grid's width past the end of the one that failed, and further out
+     than that the fit is guessing; the grid walked there reaches focus
+     about another half width out, so one retry reaches about four half
+     widths from the centre that failed — for R on rig2, 326 steps
+     above it and 344 below, since its grid ends 18 steps short of its
+     half width above its centre. The cap is measured from the centre,
+     not from the samples' end, so that the reach either way differs by
+     no more than that shortfall. When the fit placed no vertex — the
+     samples sit at fewer than three positions, their squared HFRs do
+     not turn upward, or the curve flattened — or placed it past the
+     other end, which the lowest sample contradicts, the centre moves
+     by `half_width`. Half
+     a width alone reaches focus on the next attempt only while focus
+     lies within about two half widths of the centre that failed.
    - After `not_enough_stars` the grid is the same one, unless the
      attempt's points — ordered by position, sparse and starless
      points alike counted as not accepted — say focus lies past one
@@ -1166,8 +1254,9 @@ sweep retires at the plan's S7, and the rules live here:
    order they were measured.
 7. The attempts log: every attempt that fails to fit is logged at
    `warn` — its outcome, the grid it walked and the one that comes
-   next or why none does, and its accepted, sparse and starless
-   counts — and becomes one `attempts_log` entry. The result carries
+   next or why none does, its accepted, sparse and starless counts,
+   and how many stars its reference frame listed — and becomes one
+   `attempts_log` entry. The result carries
    the log, the error of a run that failed to fit carries it, and the
    recorded run carries it whatever ended the run — a device error or a
    cancellation keeps its log in the record only, its error being the
@@ -1176,9 +1265,12 @@ sweep retires at the plan's S7, and the rules live here:
    ```jsonc
    { "attempt": 1, "outcome": "not_enough_stars",
      "error": "not enough stars: only 3 of 5 required samples are accepted (non-null HFR, past the sparse gate)",
-     "centre": 30200, "points": 9, "accepted": 3, "sparse": 4, "starless": 2,
+     "centre": 30200, "listed": 41, "points": 9, "accepted": 3, "sparse": 4, "starless": 2,
      "retry": "shift", "next_centre": 29800 }
    ```
+
+   `listed` is 0 when the reference frame showed no stars, which is
+   what made every point of that attempt starless.
 
    `outcome` is `not_enough_stars`, `monotonic_curve` or `poor_fit`,
    and `error` the failure in words — for `poor_fit`, the R² and the
@@ -1245,7 +1337,7 @@ file written by a newer build.
 - **A run.** `{at, filter, outcome, error, position, hfr, best_position,
   best_hfr, fit_r_squared, samples_used, attempts, wing_slope,
   temperature_c, step_size, half_width, sweep_source, prediction,
-  attempts_log, curve_points}`. `outcome` is `confirmed`, `fallback`,
+  attempts_log, reference, curve_points}`. `outcome` is `confirmed`, `fallback`,
   `not_enough_stars`, `monotonic_curve`, `poor_fit`, `cancelled` or
   `error` (the text in `error`); a failed run is null where it
   measured nothing, and a `poor_fit` run carries the `fit_r_squared`
@@ -1254,6 +1346,12 @@ file written by a newer build.
   for every attempt that failed to fit, why it failed and what the
   sweep did next ([The sweep](#the-sweep), step 7) — empty for a run
   whose first fit held, and on a run recorded before the log existed.
+  `reference` is the result's `{position, document_id, listed}` for the
+  attempt that ended the run. It is null when that attempt took none —
+  a run stopped before its first reference frame, or a retry whose
+  reference frame a device error or a cancellation stopped, the earlier
+  attempts' `centre` and `listed` being in `attempts_log` — and on a
+  run recorded before the star list existed.
   The curve points are `{position, hfr, star_count, document_id,
   rejected}` as the sweep measured them — every attempt's, and the
   partial walk of a run a device error or a cancellation stopped; the
@@ -1352,8 +1450,8 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
     "imaging": {
       "duration": "3s", "min_area": 4, "max_area": 500,
       "threshold_sigma": null, "frames_per_step": 1,
-      "min_fit_points": 5, "min_star_fraction": 0.1,
-      "min_fit_r_squared": null, "temperature_sensor": null,
+      "min_fit_points": 5, "min_fit_r_squared": null,
+      "temperature_sensor": null,
       "confirmation_tolerance": 0.25, "max_attempts": 2,
       "step_size": null, "half_width": null
     }
@@ -1376,11 +1474,10 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `sweep.points` | int | 9 | Samples the derived step aims for across the sweep; at least 3. The critical-focus-zone floor on the step can leave the grid with fewer, which is what the plan's `points` reports |
 | `sweep.seeing_fwhm_arcsec` | float | 2.5 | The focused HFR's stand-in until a filter has a last good focus; positive |
 | `trains.<id>.duration` | humantime | `"3s"` | Per-frame exposure |
-| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars`; `max_area` also bounds the stars it measures, whose half-flux disc must fit in it (an HFR of at most 12.6 px at 500 — [rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) |
+| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` for the reference frame ([The sweep](#the-sweep), step 2); `max_area` also bounds the stars it measures, whose half-flux disc must fit in it (an HFR of at most 12.6 px at 500 — [rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) |
 | `trains.<id>.threshold_sigma` | float or null | null | Detection threshold; null leaves `rp`'s default |
 | `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; 1 to 20 |
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |
-| `trains.<id>.min_star_fraction` | float | 0.1 | The sparse gate, in `[0, 1)`; 0 disables it |
 | `trains.<id>.min_fit_r_squared` | float or null | null | The fit-quality floor, in `[0, 1]`: a fit whose R² is below it fails as `poor_fit` ([The sweep](#the-sweep), step 4). Null reports the R² and enforces nothing. The ends are legal and mean what they say: 0 accepts every fit, the same as null but written down, and 1 accepts only an exact one |
 | `trains.<id>.temperature_sensor` | string or null | null | The id of another focuser in `rp` whose temperature probe stands in for the train's own focuser, which has none ([The temperature source](#the-temperature-source)). The operator asserts that the reading represents this train's thermal path. A train whose own focuser reports a temperature refuses every sweep while this is set, and so does an id `rp` does not know. Part of the record's identity. Not empty, and not padded with spaces |
 | `trains.<id>.confirmation_tolerance` | float | 0.25 | How much worse than the lowest sample the confirmation frame may measure; at least 0 |
@@ -1398,7 +1495,11 @@ every default and must have complete optics. Every bound above is
 checked at load (parse-don't-validate): a bad value fails startup
 naming the field. `--port` / `--bind-address` override `server.port` /
 `server.bind_address` from the command line. Unknown keys fail the
-load (`deny_unknown_fields`).
+load (`deny_unknown_fields`). That includes `trains.<id>.min_star_fraction`:
+the sweep has no relative star-count gate, because its fixed star list
+measures the same stars at every point ([The sweep](#the-sweep), step
+2), so a config that sets it fails at load naming the field, and
+deleting the line is the whole fix.
 
 `focus-model doctor [--config <file>] [--json]` diagnoses the config
 read-only through the same load path — [doctor.md § Per-service
@@ -1455,7 +1556,7 @@ services/focus-model/src/
   sizing.rs          The sweep derivation from the optics (D9) and the sweep plan
   lease.rs           A training run's train lease: its id, its size, the not-held refusal
   prediction.rs      The predicted start (D4)
-  sweep.rs           Grid, gate, the fit's bound and threshold, confirmation, retry — the V-curve;
+  sweep.rs           Grid, star list, gate, the fit's bound and threshold, confirmation, retry — the V-curve;
                      the hyperbola itself is rp-focus-curve's
   offsets.rs         The offsets procedure: rounds, differences, medians
   calibration.rs     The temperature fit: the candidate runs, the least squares, the write
@@ -1484,7 +1585,8 @@ tools appear in the catalog ungated; `get_sweep_plan` derives the
 worked example's numbers from the optics, the obstructed train's
 narrower sweep among them, takes the focuser's `StepSize`
 when the config sets none, reports `mixed` and `configured` for
-overrides, and names the missing fact; `focus_train` walks the grid,
+overrides, and names the missing fact; `focus_train` takes a reference
+frame, which lists no star, walks the grid all the same,
 persists a frame per point, retries once on the same grid — a starless
 sweep says nothing about a side — restores the starting position,
 records the run with its curve points, its prediction and an attempts
@@ -1556,19 +1658,25 @@ credential — and that `tools/list` answers with no `rp` running.
 - Prediction: each term present and absent, the same-filter fallback,
   the half-CFZ and bounds skips, rounding.
 - Sweep, over synthetic and recorded curves: the grid and its clamp,
-  the gate, the fit and its failure modes — the centre outside the
+  the star list — the reference frame's filter, the list each frame
+  passes on to the next, an empty list's starless walk — the two-star
+  gate, the fit and its failure modes — the centre outside the
   samples whatever the R², and `poor_fit` below a configured
   threshold, recorded with its R² and retried on the same grid while
   an R² at the threshold passes — the hyperbola placing focus on
   curves generated across a spread of focal ratios,
   `microns_per_step` values and seeing floors and sized as the
-  provider sizes them, the rig's two recorded sweeps of
-  [#1187](https://github.com/rusty-photon/rusty-photon/issues/1187),
-  the fine one placed within two steps of its lowest sample and the
-  coarse one refused at the defaults and fitted as the nearest V when
-  three samples may fit, the confirmation
-  verdict, the retry centre — the shift after a sweep starved on one
-  side, and each way the samples can fail to agree on a side — the
+  provider sizes them, the rig's recorded sweeps as the star list
+  measures them — the two of
+  [#1187](https://github.com/rusty-photon/rusty-photon/issues/1187)
+  and the 2026-09-26 sized ones, each placed where the G3c replay
+  placed it — the confirmation
+  verdict and its reason, the 2026-09-26 sizing sweep's confirmation
+  frame accepted on its listed stars, the retry centre — the shift onto a monotonic curve's
+  extrapolated vertex and its cap, rig2's 2026-11-05 sweeps started off
+  focus each centring the next grid on focus, the shift after a sweep
+  starved on one side, and each way the samples can fail to agree on a
+  side — the
   attempts log of a run that shifted, repeated, ran out of attempts or
   of grid, the wing slope.
 - Workflow, against a `mockall` rig: the resolution errors, the filter

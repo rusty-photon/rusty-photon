@@ -34,7 +34,16 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   shutdown, while_open }` the shared transport runs across the connection
   lifecycle. The handshake verifies the `#` → `OK_SCOPS` identity and seeds the
   cache from one `A` status report; the `while_open` poll loop refreshes
-  position + moving state from `A` on the configured interval. See `src/manager.rs`.
+  position + moving state from `A` on the configured interval. Each report
+  is stored with the instant it was read off the wire, and one read before
+  the cached state is dropped. While a move command is unanswered, a report
+  updates the position only: read before the move reached the device, its
+  idle flag would clear the move, and `IsMoving`, which re-reads the device
+  only while the cache says moving, would answer false for a focuser that
+  is moving. A move stops counting as unanswered however its request ends,
+  a caller that hangs up mid-request included, so it cannot hold `is_moving`
+  up. The move and `Halt` date the cache by their answers. See
+  `src/manager.rs`.
 - **Protocol layer**: ASCII command serialization and the `A`-report parser
   (`src/protocol.rs`).
 - **ASCOM device**: `ScopsFocuserDevice` holds an
@@ -289,8 +298,9 @@ device).
    (fast refcount-bump; the port is already open).
 3. Background polling refreshes position + is_moving from `A`.
 4. Move: `move_(pos)` validates `0..=max_step`, sets cache `is_moving = true`
-   optimistically, sends `M:<pos>`. The next poll (or a force-refresh from
-   `is_moving()`) updates `is_moving`/position from the device's `A` report.
+   optimistically, sends `M:<pos>`. The next report read after the move's
+   echo (a poll's, or a force-refresh from `is_moving()`) updates
+   `is_moving`/position from the device's `A` report.
 5. Halt: `halt()` sends `H` and clears the cached move state.
 6. On `set_connected(false)` the session is released (refcount-bump down; the
    port stays open in `ServiceLifetime` mode). On process shutdown,
@@ -299,6 +309,13 @@ device).
 **Failure recovery.** Mid-stream transport errors flip the shared transport into
 the `Reconnecting` state and the supervisor re-opens + re-handshakes; live
 sessions resume on the new connection on their next request.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Testing
 

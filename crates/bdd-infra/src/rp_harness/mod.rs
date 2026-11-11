@@ -16,8 +16,12 @@
 //! - [`McpTestClient`] — persistent rmcp client for calling rp's MCP tools.
 //! - [`ToolProviderStub`] — restartable in-process tool-provider MCP
 //!   server (`echo`, `slow_echo`) for rp's aggregation scenarios.
+//! - [`PowerBoxStub`] — a power box's `Switch` with named on/off outputs,
+//!   for rp's power-switching scenarios.
 //! - [`FacadeCameraStub`] — `phd2-guider`'s camera facade as far as rp's
 //!   train lease reaches it: the three sweep-lease Actions, scripted.
+//! - [`FocusModelProvider`] — the real `focus-model` tool provider, started
+//!   before rp for documents that call `focus_train`, with its registration.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
@@ -28,11 +32,13 @@ mod basic_auth;
 mod computed_sky;
 mod config;
 mod facade_stub;
+mod focus_model_provider;
 mod guider_stub;
 mod launcher;
 mod mcp_client;
 mod omnisim;
 mod plate_solver_stub;
+mod power_box_stub;
 mod scratch;
 mod sse;
 mod tool_provider_stub;
@@ -51,11 +57,16 @@ pub use config::{
     STARLESS_THRESHOLD_SIGMA,
 };
 pub use facade_stub::{FacadeCall, FacadeCameraStub, SWEEP_LEASE_ACTIONS};
+pub use focus_model_provider::{
+    starless_focus_train, FocusModelProvider, FOCUS_MODEL_PROVIDER_NAME,
+    FOCUS_MODEL_REQUIRED_RP_TOOLS, FOCUS_MODEL_TOOLS,
+};
 pub use guider_stub::{CannedGuiding, CannedTotals, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use plate_solver_stub::{CannedWcs, CannedWcsMatrix, PlateSolverStub, StubBehavior};
+pub use power_box_stub::PowerBoxStub;
 pub use sse::{SseClient, SseFrame};
 pub use tool_provider_stub::ToolProviderStub;
 pub use webhook::{ReceivedEvent, WebhookReceiver};

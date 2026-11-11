@@ -72,10 +72,11 @@ rust_test(
     ),
 )
 
-# BDD cucumber suite. Drives workflow documents end-to-end through three
+# BDD cucumber suite. Drives workflow documents end-to-end through four
 # spawned processes: OmniSim (via OMNISIM_PATH, forwarded by the CI
-# `build:ci --test_env`), rp (RP_BINARY), and session-runner itself
-# (SESSION_RUNNER_BINARY). Uses bdd-infra's rp-harness variant — the same
+# `build:ci --test_env`), focus-model (FOCUS_MODEL_BINARY, for the
+# deep-sky document's focus_train), rp (RP_BINARY), and session-runner
+# itself (SESSION_RUNNER_BINARY). Uses bdd-infra's rp-harness variant — the same
 # shared harness the rp and calibrator-flats suites use; the scenarios
 # drive the shipped workflows/*.json documents and the suite's fixture
 # documents end-to-end. A local
@@ -83,7 +84,7 @@ rust_test(
 # OMNISIM_PATH set, like any rp_harness BDD target.
 rust_test(
     name = "bdd",
-    # Spawns three processes per scenario; generous timeout. The deep-sky
+    # Spawns three or four processes per scenario; generous timeout. The deep-sky
     # scenarios drive real-speed OmniSim slews, so the suite is ~6 min of
     # mostly-@serial wall clock in one process.
     size = "large",
@@ -96,6 +97,7 @@ rust_test(
     data = [
         "Cargo.toml",
         ":session-runner",
+        "//services/focus-model",
         "//services/rp",
     ] + glob([
         "tests/features/**",
@@ -106,8 +108,9 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/session-runner",
         "SESSION_RUNNER_BINARY": "$(rootpath :session-runner)",
+        "FOCUS_MODEL_BINARY": "$(rootpath //services/focus-model:focus-model)",
         "RP_BINARY": "$(rootpath //services/rp:rp)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :session-runner):$(rootpath //services/rp:rp)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :session-runner):$(rootpath //services/rp:rp):$(rootpath //services/focus-model:focus-model)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

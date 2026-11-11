@@ -321,7 +321,13 @@ re-description of the shared-transport contract.
    refreshing `[GMOV]`, `[GOPS]`, `[GLON]`, `[GLBR]`, `[GHTT]` into the
    cached state. The task uses `tokio::select!` against
    `ctx.cancelled()` so cancellation at teardown returns within one
-   tick.
+   tick. Each field is stored with the instant it was brought up to date
+   — its own read, or the answer to the command that set it
+   (`CalibratorOn`'s `[SLBR]` and `[SLON1]`, `CalibratorOff`'s `[SLON0]`,
+   a cover move's `[SMOV]`) — and a value older than the cached one is
+   dropped. The poll's five reads are five turns on the wire and a
+   command can go between them, so without this a light turned on after
+   the poll read it off would read off again until the next poll.
 4. **`Connected = false`** calls `session.close().await`, which on the
    1→0 transition cancels the while-open task, awaits it (5 s timeout
    then abort), runs the teardown hook, and drops the slot's
@@ -330,6 +336,13 @@ re-description of the shared-transport contract.
 The CoverCalibrator is the only device this server registers, so the
 refcount tops out at `1` in normal use. The pattern is preserved so the
 service can later expose a Switch device (heater control) without redesign.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Configuration
 

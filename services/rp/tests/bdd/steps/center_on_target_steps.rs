@@ -18,8 +18,10 @@
 //! - `a stub plate solver returning error code {string} with message {string}`
 //! - `rp is running with a camera and a mount on the simulator`
 //!
-//! Shared FITS / sidecar inspection steps live in `auto_focus_steps.rs`:
+//! The FITS / sidecar inspection steps over the pinned data directory
+//! live here:
 //! - `{int} FITS files should exist in the pinned data directory`
+//! - `every sidecar JSON in the pinned data directory should report binning {string}`
 //! - `every sidecar JSON in the pinned data directory should contain an {string} section`
 //!
 //! `rp's data_directory is pinned to a fresh tempdir` is in
@@ -86,7 +88,7 @@ async fn stub_plate_solver_sequence(world: &mut RpWorld, step: &Step) {
 async fn rp_with_unreachable_camera_and_mount(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     // Reserved port 1 is reliably unbound on Linux dev hosts /
-    // CI runners — same pattern as auto_focus's `unreachable_camera`.
+    // CI runners.
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: "http://127.0.0.1:1".to_string(),
@@ -310,4 +312,103 @@ async fn call_center_on_target(world: &mut RpWorld, args: Map<String, Value>) {
         Err(_) => world.last_center_on_target_result = None,
     }
     world.last_tool_result = Some(result);
+}
+
+// --- FITS / sidecar inspection over the pinned data directory ---
+
+#[then(expr = "{int} FITS files should exist in the pinned data directory")]
+async fn fits_files_in_pinned_dir(world: &mut RpWorld, expected: usize) {
+    let dir = world
+        .pinned_data_directory
+        .as_ref()
+        .expect("data_directory not pinned — add the 'pinned to a fresh tempdir' step");
+    let count = count_extension(dir, "fits").await;
+    assert_eq!(
+        count, expected,
+        "expected {expected} FITS files in {dir}, found {count}"
+    );
+}
+
+#[then(expr = "every sidecar JSON in the pinned data directory should report binning {string}")]
+async fn every_sidecar_reports_binning(world: &mut RpWorld, expected: String) {
+    let dir = world
+        .pinned_data_directory
+        .as_ref()
+        .expect("data_directory not pinned");
+    let sidecars = read_sidecars(dir).await;
+    assert!(
+        !sidecars.is_empty(),
+        "no .json sidecars in {dir} — sweep did not run"
+    );
+    for (path, body) in &sidecars {
+        let binning = body
+            .get("binning")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("sidecar {} has no binning, body: {body:?}", path.display()));
+        assert_eq!(
+            binning,
+            expected,
+            "sidecar {} was captured at the wrong binning",
+            path.display()
+        );
+    }
+}
+
+#[then(expr = "every sidecar JSON in the pinned data directory should contain an {string} section")]
+async fn every_sidecar_has_section(world: &mut RpWorld, section_name: String) {
+    let dir = world
+        .pinned_data_directory
+        .as_ref()
+        .expect("data_directory not pinned");
+    let sidecars = read_sidecars(dir).await;
+    assert!(
+        !sidecars.is_empty(),
+        "no .json sidecars in {dir} — sweep did not run"
+    );
+    for (path, body) in &sidecars {
+        let sections = body.get("sections").unwrap_or_else(|| {
+            panic!(
+                "sidecar {} has no 'sections' field, body: {body:?}",
+                path.display()
+            )
+        });
+        assert!(
+            sections.get(&section_name).is_some(),
+            "sidecar {} missing '{section_name}' section, sections: {sections:?}",
+            path.display()
+        );
+    }
+}
+
+async fn count_extension(dir: &str, ext: &str) -> usize {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .unwrap_or_else(|e| panic!("failed to read pinned data directory {dir:?}: {e}"));
+    let mut count = 0usize;
+    while let Some(entry) = entries.next_entry().await.expect("read_dir entry") {
+        if entry.path().extension().and_then(|s| s.to_str()) == Some(ext) {
+            count += 1;
+        }
+    }
+    count
+}
+
+async fn read_sidecars(dir: &str) -> Vec<(std::path::PathBuf, Value)> {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .unwrap_or_else(|e| panic!("failed to read pinned data directory {dir:?}: {e}"));
+    let mut out = Vec::new();
+    while let Some(entry) = entries.next_entry().await.expect("read_dir entry") {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = tokio::fs::read(&path)
+            .await
+            .unwrap_or_else(|e| panic!("failed to read sidecar {}: {e}", path.display()));
+        let body: Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("failed to parse sidecar {}: {e}", path.display()));
+        out.push((path, body));
+    }
+    out
 }

@@ -49,7 +49,8 @@ use crate::repo_root;
 ///
 /// Each row is a file, a number its comments name as written, and how often
 /// they name it. Delete a row, or lower its count, once the file names the
-/// number less often; never add one.
+/// number less often; never add one. A row follows its file when the file
+/// moves.
 const PENDING: &[(&str, &str, usize)] = &[
     (".bazelrc", "#342", 2),
     (".bazelrc", "#452", 1),
@@ -70,7 +71,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     (".github/workflows/plate-solver-smoke.yml", "#234", 1),
     (".github/workflows/plate-solver-smoke.yml", "#236", 1),
     (".github/workflows/ui-browser-nightly.yml", "#494", 1),
-    ("Cargo.toml", "#715", 1),
     ("MODULE.bazel", "#3490", 1),
     ("MODULE.bazel", "#3808", 1),
     ("MODULE.bazel", "#587", 2),
@@ -256,7 +256,6 @@ const PENDING: &[(&str, &str, usize)] = &[
         1,
     ),
     ("services/dsd-fp2/src/mock.rs", "#423", 1),
-    ("services/focus-model/src/sweep.rs", "#1187", 2),
     ("services/pa-falcon-rotator/src/manager.rs", "#280", 1),
     ("services/pa-falcon-rotator/src/manager.rs", "#949", 1),
     (
@@ -307,7 +306,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("services/rp/src/equipment/supervisor.rs", "#1138", 1),
     ("services/rp/src/equipment/test_support.rs", "#111", 1),
     ("services/rp/src/events.rs", "#800", 1),
-    ("services/rp/src/imaging/tools/auto_focus.rs", "#174", 1),
     (
         "services/rp/src/imaging/tools/center_on_target.rs",
         "#319",
@@ -317,7 +315,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("services/rp/src/lib.rs", "#792", 1),
     ("services/rp/src/mcp/internals.rs", "#319", 1),
     ("services/rp/src/mcp/tests.rs", "#1163", 1),
-    ("services/rp/src/mcp/tests.rs", "#174", 1),
     ("services/rp/src/mcp/tests.rs", "#175", 1),
     ("services/rp/src/mcp/tests.rs", "#319", 2),
     ("services/rp/tests/bdd.rs", "#143", 1),

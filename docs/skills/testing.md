@@ -676,6 +676,21 @@ submitted and read as a browser would (`dom::textarea`), so a driver whose
 page edits a list of lines — `qhy-camera`'s wheel pages, its filter names —
 drives it with its own steps on the same submit.
 
+**Restart on request (the `setup-pages` feature too)** — the shared steps
+behind every ASCOM driver's `restart.feature`
+([rusty-photon-service-lifecycle.md § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)):
+`ServiceRestartState` + `ServiceRestartWorld` + `service_restart_steps!` in
+`bdd_infra::service_restart`. The World embeds the state, implements the
+trait (the state and the running service's `ServiceHandle`), and invokes
+the macro in its `restart_steps.rs`; the feature starts the service with the
+suite's own steps, asks it to restart, and checks the `202` naming its own
+process and the exit with code 75, read through
+`ServiceHandle::wait_exit`. The close deadline's exit has the same code, so
+the step also requires the line the runner logs only when the service has
+closed in order. No service manager runs under test, so nothing starts the
+service again. `ppba-driver`'s suite is the reference.
+
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or
 `:bdd-infra_rp_harness_tls_auth` when the suite also spawns rp.
@@ -1632,9 +1647,10 @@ stars, and at the exposures the suites use that is a coin flip:
 **The rule.** A capture sweep that wants starless frames says so, with
 `threshold_sigma` pinned to `bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA`
 — a threshold no frame can clear, so the premise holds on every platform
-and at any timing. Pin it wherever the sweep's parameters are set: the
-train's `auto_focus` block (`TrainAutoFocusConfig::threshold_sigma`), the
-`auto_focus` tool call's arguments, or focus-model's per-train block.
+and at any timing. Pin it where the sweep's parameters are set,
+focus-model's per-train block
+(`bdd_infra::rp_harness::starless_focus_train()` builds one, and
+session-runner's deep-sky scenarios register the provider with it).
 Never leave it to the default and hope.
 
 Two limits are worth knowing. rp **refuses** `threshold_sigma` on a
@@ -1652,8 +1668,8 @@ RA you asked for, and the size of the miss is a wall-clock artefact of
 the runner. A scenario that syncs to an RA and then asserts the mount
 reports that same RA back is asserting on how fast the machine is.
 
-The mechanism, measured against the pinned OmniSim release
-(`v0.5.0-467.2`):
+The mechanism, measured against the fork's `v0.5.0-467.2` release (the
+pinned `467.3` carries its telescope code unchanged):
 
 - `MountFunctions.ConvertRaDecToAxes` builds the mount axis from the
   **cached** `TelescopeHardware.SiderealTime`, which is refreshed only
@@ -2290,6 +2306,20 @@ Put the deadline on tokio's clock and the test on paused time:
   a "queued request never joins the in-flight check" bug reintroduced, the
   rp-auth test caught it in 63 of 100 runs without the yield and in 100 of
   100 with it.
+- **Keep real sockets out of a paused-time test whose verdict needs their
+  replies.** When the runtime parks, the paused clock polls I/O once
+  without waiting. If nothing is ready it jumps to the next timer, so a
+  loopback reply the kernel has not reported yet loses to whatever timeout
+  is pending. Linux has usually reported it by then; the macOS runners
+  often have not. Run `wait_until_ready`'s loop on paused time against a
+  canned 503 on loopback, and it makes 60 attempts on Linux but between 4
+  and 22 on macOS, the rest lost to its 10 s attempt timeout in virtual
+  time. A peer that answers 2 ms late from another thread gives the same
+  loss on Linux: 3 attempts. Split the timed loop from the I/O, test the
+  loop against a probe that opens no socket (`retry_until_ready` in
+  `crates/bdd-infra/src/tls_auth.rs`), and test the I/O on real time. A
+  paused-time test whose peer is meant to stay silent is fine: there the
+  jump to the timeout is the behaviour under test.
 
 A CPU hog does not reproduce this class of flake, because the scheduler still
 runs a waking thread promptly: forty busy loops on the test's CPU gave 0

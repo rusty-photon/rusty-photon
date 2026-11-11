@@ -297,7 +297,7 @@ which cannot live in a single field's type:
   refused with an error naming the deferral rather than ever
   capturing through the guide camera. *(Historical: T4 has landed,
   the refusal is gone, and the metric sweep is the shipped behaviour
-  — rp.md § Guide-train sweep.)*
+  — rp.md § `auto_focus` Contract.)*
 - New `refocus_train {train_id, reason}`: expands one trigger into the
   dependency-ordered AF runs of Decision 7, including the pause/resume
   handshake when the guiding train is involved. Emits the existing
@@ -354,7 +354,7 @@ treat `StarLost` as a bracket edge. If HFD does not stream in the chosen
 pause mode, fall back to `get_star_image` polling. Trigger thresholds
 (HFD-trend window, escalation deadline) are T4 design-pass parameters.
 
-Settled in the T4 design pass (contracts in rp.md § Guide-train sweep,
+Settled in the T4 design pass (contracts in rp.md § `auto_focus` Contract,
 § Guide Focus Watch, § Rotator Tool Details; endpoints in phd2-guider.md):
 
 - **The trigger and escalation are events, not rp-initiated actions.**

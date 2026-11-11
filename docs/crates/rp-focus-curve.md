@@ -4,7 +4,7 @@ The V-curve a star traces through focus, and its weighted fit. Two sweeps
 fit it: the `focus-model` provider's capture sweep
 ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 4)
 and `rp`'s guide-train sweep, which measures PHD2's HFD instead of
-capturing ([rp.md § Guide-train sweep](../services/rp.md#guide-train-sweep-phd2-metric-variant)).
+capturing ([rp.md § `auto_focus` Contract](../services/rp.md#auto_focus-contract)).
 One fit in one place means the two sweeps cannot drift apart in how they
 find focus.
 
@@ -159,12 +159,11 @@ did with the parabola. `rp` relays the message as it stands.
 - `focus-model` (`sweep.rs`): gates, fits, refuses a centre outside the
   accepted samples as `monotonic_curve`, then applies
   `trains.<id>.min_fit_r_squared` as `poor_fit`.
-- `rp` (the guide-train branch of `auto_focus`): fits, refuses a centre
-  outside the positions that produced an HFD as `monotonic_curve`, and
-  reports the R² with no threshold.
+- `rp` (`auto_focus`, the guiding train's sweep): fits, refuses a
+  centre outside the positions that produced an HFD as
+  `monotonic_curve`, and reports the R² with no threshold.
 
-`rp`'s capture sweep keeps its own parabola until the focus-model plan's
-S7 retires it.
+These are the only two sweeps: `rp` has no capture sweep of its own.
 
 ## Testing
 

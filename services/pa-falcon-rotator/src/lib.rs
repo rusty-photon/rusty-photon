@@ -79,7 +79,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::TransportFactory;
 use rusty_photon_tls::config::TlsConfig;
@@ -102,6 +102,9 @@ pub struct ServerBuilder {
     config_source: Option<(PathBuf, CliOverrides)>,
     /// Reload trigger the pages fire after a save's response has flushed.
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
 }
 
 impl Default for ServerBuilder {
@@ -112,6 +115,7 @@ impl Default for ServerBuilder {
             factory: Arc::new(factory),
             config_source: None,
             reload: None,
+            restart: None,
         }
     }
 }
@@ -154,6 +158,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -241,7 +254,8 @@ impl ServerBuilder {
             info!("Serial port: {}", self.config.serial.port);
 
             let tls = self.config.server.tls.clone();
-            let router = axum::Router::new().fallback_service(server.into_service());
+            let router = rusty_photon_driver::restart::router(self.restart.clone())
+                .fallback_service(server.into_service());
 
             let router = match &self.config.server.auth {
                 Some(auth) => {

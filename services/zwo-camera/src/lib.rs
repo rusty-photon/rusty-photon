@@ -86,7 +86,7 @@ use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
 use rusty_photon_doctor_checks::UsbScan;
 use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served};
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tokio::net::TcpListener;
@@ -117,6 +117,9 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     overrides: CliOverrides,
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
     /// Register no cameras (the test-only zero-camera startup path, C0). With
     /// a `usb_devices` list it empties only the SDK's side of the join.
     force_empty: bool,
@@ -164,6 +167,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -295,7 +307,8 @@ impl ServerBuilder {
                 .map_err(|e| ZwoCameraError::Discovery(e.to_string()))?;
 
         let tls = self.config.server.tls.clone();
-        let app = axum::Router::new().fallback_service(server.into_service());
+        let app = rusty_photon_driver::restart::router(self.restart.clone())
+            .fallback_service(server.into_service());
 
         // HTTP Basic Auth (config `server.auth`); absent means unauthenticated.
         let app = match &self.config.server.auth {
@@ -1148,7 +1161,7 @@ mod list_tests {
             ),
             "{reason}"
         );
-        assert!(reason.contains("reload or restart zwo-camera"), "{reason}");
+        assert!(reason.contains("fixed, restart zwo-camera"), "{reason}");
         assert_eq!(resolved[1].1.as_ref().unwrap().index, 1);
     }
 

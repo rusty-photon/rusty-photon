@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use super::background::estimate_background;
 use super::pixel::Pixel;
+use super::saturation::saturation_level;
 use super::stars::{detect_stars, DetectionParams, Star};
 use crate::error::{Result, RpError};
 
@@ -67,8 +68,8 @@ pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f6
     Some((signal, noise, signal / noise))
 }
 
-/// Run the SNR pipeline. `max_adu` is for saturation flagging inside
-/// `detect_stars`; this tool does not gate on it.
+/// Run the SNR pipeline. `max_adu` is the camera's, for the frame's
+/// saturation level inside `detect_stars`; this tool does not gate on it.
 ///
 /// # Errors
 ///
@@ -89,7 +90,7 @@ pub fn compute_snr<T: Pixel>(
         smoothing_sigma: 1.0,
         min_area,
         max_area,
-        max_adu,
+        saturation_level: saturation_level(view, max_adu),
     };
     let stars = detect_stars(view, &background, &detection);
     let star_count = u32::try_from(stars.len()).unwrap_or(u32::MAX);

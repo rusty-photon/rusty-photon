@@ -298,6 +298,14 @@ observation; the drivers' claims it confirms or contradicts are named.
   Manual on a unit nobody has changed — from the moment the hub powers up
   until some client changes it.** That is a property of the hub, not of
   this driver, and the operator needs to know it.
+- **A frame that is not text, once.** At the driver's first start on
+  2026-11-03, with the hub streaming since an earlier session, a chunk
+  read while the first `>H#` waited carried a byte that is not UTF-8 at
+  its third position. Its bytes were not logged; a start a moment later,
+  on the same port with nothing else holding it, read every reply clean.
+  Line noise as the port opens and a streamed frame the open garbled are
+  the candidates, and neither has been reproduced deliberately. The
+  handshake skips such a frame ([Handshake](#handshake)).
 
 ### Sources
 
@@ -556,6 +564,16 @@ state; the driver reports it and changes nothing.
    with the skipped frames in the `wire recv` trace log. The guard matters
    because every Gemini CH340 device enumerates identically
    ([Device identity](#device-identity)).
+   A frame that does not decode while `>H#` waits — a byte after its `*`
+   that is not text, or a `*G` frame that does not parse — is skipped
+   the same way, its bytes and the decode error in a `debug!` event.
+   This is the first request after the port opens, so line noise as it
+   opens, or a streamed frame the open garbled, lands here
+   ([observed once](#what-the-wire-actually-does)). Skipping the frame
+   lets the request read on to a reply behind it, and costs nothing when
+   the garbled frame was the reply itself: the request then times out,
+   and the timeout draws the retry below, as silence does. A frame that
+   decodes as another device's identity is still refused by name.
    If no `*H` reply arrives within `serial.timeout`, the driver waits 2 s
    and sends `>H#` once more before failing — the vendor driver's flat 2 s
    post-open sleep, spent only when needed. The dev box's unit answers at
@@ -602,14 +620,22 @@ that was mid-flight when the buffer was cleared (it does not start with
 discard, and a frame the hub cut short to answer, which arrives glued to
 the reply in one chunk ([measured](#what-the-wire-actually-does)). The
 codec takes the reply from the last `*` in the chunk and sorts it by its
-letter. `*G`, `*H` and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
-of sequence, a wrong digit count, a bad number — is a `ParseError`: the
-request fails at once, the cache is untouched, and nothing reconnects,
-because the shared crate treats a codec error as the device's answer, not
-as a lost link. Anything else — a frame without a leading `*`, or a `*`
-with another letter — decodes into an `Unrelated` response rather than an
-error, and `matches` rejects `Unrelated` and any `*G` frame when the
-request was not for one, so the request loop skips it. `max_skip` is 2.
+letter. Only the reply is read as text: the bytes ahead of that `*` — a
+cut frame, or noise as the port opens — are never decoded, so a byte
+there that is not text costs nothing. `*G`, `*H` and `*V` are parsed. A
+reply with a byte after its `*` that is not text is an
+`InvalidResponse`, and a `*G` frame that fails to parse — a tag out of
+sequence, a wrong digit count, a bad number — is a `ParseError`. Either
+way the request fails at once, the cache is untouched, and nothing
+reconnects, because the shared crate treats a codec error as the
+device's answer, not as a lost link. The one exception is `>H#`, which
+skips such a frame instead ([Handshake](#handshake)): the codec names it
+through `Codec::skip_undecodable`, whose default, off, every other
+request keeps. Anything else — a frame without a leading `*`, whatever
+its bytes, or a `*` with another letter — decodes into an `Unrelated`
+response rather than an error, and `matches` rejects `Unrelated` and any
+`*G` frame when the request was not for one, so the request loop skips
+it. `max_skip` is 2.
 A malformed reply therefore costs one failed request, never a 3 s wait
 for the next periodic frame and the reconnect that a 2 s timeout would
 bring.
@@ -619,6 +645,23 @@ discard, `>G#`, parse, store in the shared `CachedState`. Reads are served
 from the cache; a poll that fails to parse leaves the cache untouched and
 logs at `debug!`; a poll that times out is a transport error and the
 shared crate's supervisor reconnects (re-running the read-only handshake).
+
+### The cache keeps the frame read last
+
+Every frame is stored with the instant it was read off the wire (the
+shared crate's `WireTiming::received_at`), and a frame read before the one
+the cache holds is dropped, sensor samples included (the shared crate's
+`ReadStamp`). Requests take turns
+on the wire, so read order is the order the hub produced the frames in.
+Store order is not: each request stores its frame after its turn ends, and
+a poll whose task is slow to run again — a loaded host — can store the
+frame it read just before a write after the write's confirmed frame. That
+frame shows the written switch at its old value, and stored, it would
+make a read straight after a confirmed write report the old value until
+the next poll. Only a strictly earlier read is dropped, so frames read at
+one instant (every frame on a paused test clock) are stored in turn. The
+handshake, the poll, a write's readback and its second look all store
+through this one rule.
 
 ### Writes are confirmed against a fresh frame
 
@@ -630,7 +673,9 @@ produced after acting on the set, and the driver compares the field the
 write addressed with what it asked for:
 
 - a match stores the frame in the cache and the write succeeds — so a read
-  straight after a write reflects the device, as in the siblings;
+  straight after a write reflects the device, as in the siblings, and a
+  poll that read its frame before the write cannot put the old value back
+  ([The cache keeps the frame read last](#the-cache-keeps-the-frame-read-last));
 - a mismatch is asked once more (discard, `>G#`) before it is believed,
   because a periodic frame the hub starts after the set went out can
   still predate it and is then the first whole frame read. Measured on
@@ -811,15 +856,17 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers — the siblings' behaviour, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
 | The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not yet with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
+| A frame that does not decode while `>H#` waits — a byte after its `*` that is not text, or a `*G` frame that does not parse | Skipped under the skip budget (2), its bytes and the decode error in a `debug!` event; the request reads on to its `*H` reply, or times out into the retry above. |
+| A reply with a byte after its `*` that is not text while `>V#`, `>G#` or a set waits | `InvalidResponse`; the request fails at once, as a `*G` frame that does not parse does. |
 | `>V#` below 308 | Connect refused, naming the version and the vendor's `FirmwareUpgradeTool`. |
 | `>V#` is 308 | Connects; a `debug!` notes that 309 fixes DS18B20 detection. |
 | `*G` frame with a tag out of sequence, a wrong digit count, or an unparseable number | `ParseError` naming the field; cache untouched; the request fails and the poll goes on. |
-| Frame not starting with `*` (a discarded frame's tail) or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
+| Frame not starting with `*` (a discarded frame's tail, or noise as the port opens), whatever its bytes, or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
 | Skip budget exhausted | The request fails as a communication error; the cache is untouched. |
 | `>G#` unanswered within `serial.timeout` | Transport timeout; the shared supervisor reconnects with the read-only handshake. |
 | Write to `DC1` | `NOT_IMPLEMENTED` (CanWrite false). |
@@ -850,14 +897,21 @@ transport lock across the 3 s cadence and delay writes — not worth it while
 a `>G#` draws its whole frame in about 50 ms, measured on the dev box's
 unit); any persistence of dew modes.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) wants a Switch to flip outputs at dusk and dawn. This
-driver exposes the outputs; the decision to flip one belongs to a
-session-runner document, never to any connect or supervisory path here —
-the same boundary [`upbv2-driver`](upbv2-driver.md#relationship-to-issue-1173)
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn. This driver exposes the outputs; the decision to
+flip one belongs to a session-runner document, never to any connect or
+supervisory path here — the same boundary
+[`upbv2-driver`](upbv2-driver.md#relationship-to-the-daily-power-cycle-plan)
 draws.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Testing
 
@@ -869,7 +923,7 @@ binary spawned with `--features mock`, unit tests inline in `src/`.
 
 | Design section | Feature file | Covers |
 |----------------|--------------|--------|
-| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry |
+| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry; line noise during `>H#` — bytes that are not text glued to the reply or framed on their own, a streamed frame that is not text or does not parse — leaves the start unharmed |
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
 | Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; a readback that predates the set, rescued by the second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
@@ -917,12 +971,21 @@ Knobs reaching state the driver cannot set:
 | `GEMINI_MOCK_STREAMING_AT_START` | `1`: the hub is streaming when the port opens, as a unit left armed by an earlier session is |
 | `GEMINI_MOCK_CUT_FRAMES` | `1`: once armed, every reply arrives glued to a periodic frame cut short after 63 bytes, as measured |
 | `GEMINI_MOCK_PRE_WRITE_FRAME` | `1`: every set is answered first by the frame the hub started before acting on it, then by the post-set frame — the second look's rescue |
+| `GEMINI_MOCK_LINE_NOISE` | bytes on the line ahead of the hub's first reply, `%XX` for a byte given in hex — noise as the port opens, or a streamed frame the open garbled. They are framed at each `#` as the serial transport frames them, so bytes after the last `#` arrive glued to the front of the reply |
 
 Each is read once at mock construction; the in-process `with_…` builders
 are the unit-test equivalents. The knobs fix the sensor flags for the run,
 so the mid-session unplug — a full window, then a frame with the AHT20
 flag at `0`, then `VALUE_NOT_SET` at once — is a unit test on the poll
 loop over a scripted mock, not a scenario.
+
+A poll's store landing after a write's is a unit test on the poll loop
+too, because the gap it needs lies after the poll's turn on the wire,
+inside the driver, where no knob on a subprocess's mock reaches: the
+test transport holds a poll's reply, the test holds the cache while it
+lets the reply go and writes behind it, stores the write's frame first,
+and then reads the cache once the poll's next request shows the poll has
+stored.
 
 ### ConformU
 

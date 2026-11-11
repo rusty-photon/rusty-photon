@@ -1340,6 +1340,36 @@ mod tests {
         assert_eq!(cameras[1]["device_number"], 1);
     }
 
+    /// A switch's power map is a list the form cannot render: the row
+    /// names it as edited in the file, and a save of the row's own
+    /// fields leaves it as the file has it.
+    #[test]
+    fn a_save_keeps_a_switchs_power_map_as_the_file_has_it() {
+        let outputs = json!([
+            { "name": "Quad 12V Output", "devices": ["main-cam"] },
+            { "name": "Adjustable Output", "protected": "the Pi runs off it" }
+        ]);
+        let mut config = json!({ "equipment": { "switches": [
+            { "id": "ppba", "alpaca_url": "http://127.0.0.1:1", "device_number": 0,
+              "outputs": outputs }
+        ] } });
+        let html = render(&section(json!({}), &[]), &config, None, None);
+        assert!(html.contains("outputs"), "{html}");
+
+        let submitted = form(&[
+            ("origin:equipment.switches.0", "file:0:ppba"),
+            ("equipment.switches.0.id", "ppba"),
+            ("equipment.switches.0.alpaca_url", "http://127.0.0.1:2"),
+            ("equipment.switches.0.device_number", "0"),
+        ]);
+        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        let switch = &config["equipment"]["switches"][0];
+        assert_eq!(switch["alpaca_url"], "http://127.0.0.1:2");
+        assert_eq!(switch["outputs"], outputs);
+    }
+
     #[test]
     fn a_rejected_value_is_named_by_its_entrys_place_after_the_removal() {
         let mut config = two_cameras();

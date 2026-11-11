@@ -107,7 +107,6 @@ pub const UNGATED: &[&str] = &[
     "abort_slew",
     // auto-focus
     "auto_focus",
-    "refocus_train",
     // rotator
     "move_rotator",
     "get_rotator_position",
@@ -156,6 +155,13 @@ pub const UNGATED: &[&str] = &[
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",
+    // power: a dawn document cuts power whatever the weather, and a
+    // dusk document checks the sky before it powers anything up
+    "disconnect_device",
+    "connect_device",
+    "get_switch",
+    "set_switch",
+    "restart_service",
 ];
 
 /// The built-in class of a catalog tool.

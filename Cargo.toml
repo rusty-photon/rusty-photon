@@ -52,25 +52,12 @@ members = [
   "services/upbv2-driver",
   "services/zwo-camera",
   "services/zwo-focuser",
-  # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs
-  # (ADR-010 / docs/plans/vendor-zwo-rs.md). libzwo-sys is nested under zwo-rs to
-  # preserve its upstream `path = "libzwo-sys"` dep verbatim.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
-  # First-party, dual-homed SVBony FFI crates (docs/plans/archive/svbony-camera.md
-  # Phase A/B) — vendored first-party from day one, no external-repo detour
-  # (unlike zwo-rs's original history). libsvbony-sys is nested under
-  # svbony-rs, mirroring the zwo-rs/libzwo-sys and qhyccd-rs/libqhyccd-sys
-  # layout. Still NOT added to [workspace.dependencies] (Rule 10): Phase C
-  # added its first consumer (services/svbony-camera), but Rule 10's
-  # promotion threshold is a SECOND consumer — svbony-camera wires it as a
-  # direct `path` dependency in its own Cargo.toml instead.
   "crates/svbony-rs",
   "crates/svbony-rs/libsvbony-sys",
-  # End-to-end harness (tests only): real rp + real sentinel exercising the
-  # operation watchdog + corrective ladder. See docs/services/sentinel.md.
+  # Test-only end-to-end harness: real rp + real sentinel (docs/services/sentinel.md).
   "tests/operation-watchdog-e2e",
-  # The developer tools (ADR-022), run as `cargo ci <tool>`.
   "tools/rusty-photon-ci",
 ]
 resolver = "2"
@@ -89,32 +76,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 # Panic-free production code: deny the routes by which an otherwise-recoverable
 # situation aborts the process instead. A driver that panics at 2am ends the
-# night's imaging (docs/workspace.md § Project Tenets, tenet 2).
+# night's imaging (docs/workspace.md § Project Tenets, tenet 2). Test code is
+# exempt where the panic is the point, through `clippy.toml` and the carriers
+# below (docs/workspace.md § Lints).
 #
-# Test code is exempt where the panic is the point, but the exemption lives in
-# `clippy.toml` at the repo root rather than in per-module attributes: it turns
-# `unwrap_used`, `expect_used`, `panic` and `indexing_slicing` off in test scope
-# only, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its own.
-#
-# Three gaps still need a scoped attribute, and all are deliberate:
-#   - `unreachable`, `string_slice`, `arithmetic_side_effects` and
-#     `as_conversions` have no `clippy.toml` knob.
-#   - Clippy treats `#[cfg(test)]` modules and `#[test]` functions as test code,
-#     but not cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
-#     are plain functions in a test crate. `tests/bdd/` entry files therefore
-#     keep a file-level `#![allow(...)]`; submodules pulled in via `#[path] mod`
-#     inherit it.
-#   - For the knobless lints in `#[cfg(test)]` mods inside `src/`, the crate
-#     root carries `#![cfg_attr(test, allow(...))]`: active only in the
-#     test-profile compilation, so every production line is still linted in the
-#     non-test compilation of the same target. Feature-gated mock modules are
-#     NOT exempt — they are ordinary lib code and held to production standard.
-#
-# The same two attribute carriers also hold the curated test-scope allow list
-# for the pedantic/nursery rung (docs/plans/archive/workspace-lints.md §L6b): the lints
-# whose test-side findings are inherent to test-code shape (cucumber step
-# signatures, fixture math, exact-value asserts) rather than fixable defects.
-# One canonical list, verbatim in every crate root's `#![cfg_attr(test,
+# The test-scope allow list for the pedantic and nursery groups: the lints whose
+# test-side findings are inherent to test-code shape rather than fixable
+# defects. One list, verbatim in every crate root's `#![cfg_attr(test,
 # allow(...))]` and every `tests/` entry file's `#![allow(...)]`:
 #
 #   needless_pass_by_ref_mut, needless_pass_by_value, unused_async,
@@ -132,9 +100,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 #
 # Everything else in pedantic/nursery stays enforced on test code. A toolchain
 # bump that makes a new lint fire on these shapes either fixes the test code or
-# grows this list — grow all carriers together, they are one list.
-#
-# docs/plans/archive/workspace-lints.md tracks the ladder that widens this set.
+# grows this list — in every carrier at once, they are one list.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -145,23 +111,9 @@ unimplemented = "deny"
 panic_in_result_fn = "deny"
 unchecked_time_subtraction = "deny"
 string_slice = "deny"
-# The L5 ladder's three: zeroed rung by rung across every inheriting crate
-# (docs/plans/archive/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
-# full-workspace --all-targets --all-features census read zero outside the
-# dual-homed FFI crates (then outside the [lints] mechanism; they inherit this
-# table with `[lints] workspace = true` now, like every other member).
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
-# The pedantic and nursery groups, zeroed slice by slice across the workspace
-# (docs/plans/archive/workspace-lints.md §L6b) and flipped to deny 2026-08-24 after a
-# three-pass census (all-targets/all-features, lib/bins all-features, lib/bins
-# default features) read zero in scope, plus a per-crate windows cross-clippy
-# sweep and a hand audit of the remaining OS-cfg'd code. priority -1 keeps the
-# per-lint entries above (and any future per-lint override) ranked over the
-# group level. New stable toolchains add lints to both groups: the beta /
-# clippy census is the ~6-week early warning, and toolchain-bump PRs absorb
-# new sites — fix them, or grow the curated test-scope list above.
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 
@@ -182,31 +134,12 @@ libc = "0.2"
 regex = "1.12.4"
 directories = "6"
 async-trait = "0.1.89"
-# 2.1 is the current minor, not a hard floor: the workspace uses only the
-# `Debug` and `Display` derives, both of which exist in 2.0, and none of the
-# dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
-# depends on derive_more at all.
-#
-# `display` is enabled here rather than per-member. A whole-workspace build
-# unifies features and enables it anyway, so a member that uses
-# `derive_more::Display` without declaring `features = ["display"]` still
-# compiles everywhere except `cargo build -p <member>` — which only the nightly
-# `cargo hack --feature-powerset` job runs. Enabling it workspace-wide costs no
-# packages (`convert_case` + `unicode-segmentation` are proc-macro-only and
-# already in the lock) and removes that green-PR/red-nightly gap.
-derive_more = { version = "2.1", features = ["debug", "display"] }
-# Variant iteration / count / discriminant-conversion derives (`VariantArray`,
-# `EnumCount`, `FromRepr`), allocation-free `&'static str` variant constants,
-# and the one `Display` case `derive_more` cannot cover: a string that must
-# round-trip back through `FromStr`, which `Display` + `EnumString` pin to a
-# single attribute. Plain `Display` is `derive_more`'s; see docs/workspace.md
-# § Enum derives: which crate to reach for.
-#
-# Keep this pinned to the same minor `jsonschema` requires (it depends on strum
-# with `features = ["derive"]`, so strum + strum_macros are already in the graph
-# and this entry adds zero packages). Bumping ahead of jsonschema resolves a
-# SECOND strum + strum_macros into Cargo.lock — the duplicate-dependency debt
-# PR #715 was cleaning up.
+# `display` is a workspace-level feature so that `cargo build -p <member>`
+# resolves it the way a whole-workspace build does (docs/workspace.md § Enum
+# derives).
+derive_more = { version = "2", features = ["debug", "display"] }
+# The same minor as jsonschema's strum requirement: a bump ahead of it puts a
+# second strum + strum_macros into the lock.
 strum = { version = "0.28.0", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -228,12 +161,10 @@ saphyr-parser = { version = "=0.3.3", default-features = false }
 # channel manifests. Reading only: no `display`, which writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 # SHA-256, for rusty-photon-ci's brew-formulas, which stamps each Homebrew formula
-# with its tarball's. The 0.11 release Cargo.lock already carries.
+# with its tarball's.
 sha2 = "0.11.1"
 base64 = "0.23.0"
 mockall = "0.15.0"
-# The Servo html5ever/selectors stack: CSS-selector assertions on rendered
-# pages, in ui-htmx's suite and in bdd-infra's shared setup-page steps.
 scraper = "0.29"
 parking_lot = "0.13.0"
 # Single-file embedded stores: rp-targets (the imaging plan),
@@ -243,68 +174,28 @@ parking_lot = "0.13.0"
 # `Database::upgrade()` step, distinct from each store's own `schema_version`
 # (docs/crates/rp-targets.md "Schema migration").
 redb = "4"
-# Non-loopback interface enumeration for the MCP `Host` allowlist on a
-# wildcard bind (rp's /mcp, calibrator-flats' and focus-model's derive it the
-# same way).
 if-addrs = "0.15"
 tokio-serial = "5.4.5"
-# Simulation-backend deps shared by the vendored, dual-homed camera crates
-# (`rand` by `zwo-rs`, `qhyccd-rs` and `svbony-rs`; `rayon` by the first two),
-# each behind its own `simulation` feature. Pinned once
-# here so the shared version can't drift (Rule 10); the `optional` flag stays
-# crate-local. `cargo publish` flattens the inherited version into a concrete one,
-# so dual-home standalone releases are unaffected.
-# Floor is 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom`
-# as a `dep:`-only dependency (no implicit feature), so a direct-minimal-versions
-# build of the dual-homed sim crates fails to resolve it (fixed in 0.10.1).
+# 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom` as a
+# `dep:`-only dependency with no implicit feature, so a direct-minimal-versions
+# build of the dual-homed simulation crates fails to resolve it.
 rand = "0.10.1"
 rayon = "1.10"
-# QHYCCD camera SDK FFI. Vendored first-party at `crates/qhyccd-rs` (with its
-# `libqhyccd-sys` sub-crate nested inside) per ADR-009 — the crate is authored by
-# us, so we develop it in-tree and dual-home it to crates.io. `libqhyccd-sys`
-# (transitively) links the proprietary static `qhyccd` lib + `libusb-1.0` — see
-# `docs/services/qhy-camera.md` "Native dependency & build gating". Only
-# `qhy-camera` depends on it today; declared at workspace level so the
-# native-link policy rationale lives in one place.
+# `libqhyccd-sys` links the proprietary static `qhyccd` lib and `libusb-1.0`:
+# docs/services/qhy-camera.md "Native dependency & build gating".
 qhyccd-rs = { path = "crates/qhyccd-rs" }
-# Pinned to our fork for two server-side fixes, stacked on one branch.
-# `Connecting`: upstream tracks in-flight Platform 7 `Connect` / `Disconnect`
-# operations in a set keyed by device, so several outstanding at once collapse
-# to one entry and the first to finish reports `Connecting == false` on behalf
-# of the rest; a client that polls `Connecting` then reads a device whose
-# connect handshake is still running — which is what ConformU's
-# `alpacaprotocol` casing sweep does to qhy-camera (see
-# `docs/services/qhy-camera.md` "Connect is asynchronous"). The fork counts
-# the operations instead; that fix is offered upstream.
-# The setup pages: upstream serves the device setup page at
-# `/api/v1/{type}/{n}/setup`, a path no specification defines, and 404s the
-# Management API's `/setup/v1/{type}/{n}/setup`; its setup hook sees no
-# request, so no page can take a setting; and an unknown device number or
-# method name answers 404 where the API Reference's examples give 400. The fork
-# routes both specification paths for GET and POST through request-taking
-# hooks (`Device::setup_request`, `Server::setup`), redirects the old path,
-# and answers the statuses the specifications give (see
-# `docs/plans/archive/driver-setup-pages.md` D10; not offered upstream yet). Drop
-# the fork and go back to upstream `main` once both are merged there; see
-# `docs/workspace.md` "Build Notes".
+# Our fork of RReverser/ascom-alpaca-rs, with two server-side fixes: `Connecting`
+# counts in-flight operations, and the setup pages sit on the specification's
+# paths. Drop the fork for upstream once both are merged there
+# (docs/workspace.md "Build Notes").
 ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
-# ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
-# `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
-# first-party + dual-homed at crates/zwo-rs (ADR-010 /
-# docs/plans/vendor-zwo-rs.md) — the monorepo is now the canonical development
-# home; edits are in-tree (no git-rev bump). Still published to crates.io from
-# the vendored subdir for outside consumers.
-# default-features = false: the device SDKs link per feature (ADR-014), and
-# each service enables only its own device (`camera` / `focuser`) so its binary
-# links — and its package ships — only the SDK blob it talks to.
+# default-features = false: the device SDKs link per feature, and each service
+# enables only its own device (`camera` / `focuser`) so its binary links — and
+# its package ships — only the SDK blob it talks to.
 zwo-rs = { path = "crates/zwo-rs", default-features = false }
 axum = "0.8"
 tower = "0.5"
-# The HTTP vocabulary (`Method`, `StatusCode`, `HeaderMap`) the setup pages
-# speak without depending on a server framework.
 http = "1"
-# Compile-time HTML templates: the setup pages every service serves and the
-# BFF's own pages. `ui-htmx` adds the `axum` feature for its responders.
 maud = "0.27"
 reqwest = { version = "0.13.4", features = ["form", "json", "query"] }
 rp-auth = { path = "crates/rp-auth" }
@@ -323,11 +214,6 @@ erfars = "0.2"
 tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
-# rp-auth's verification memo (ADR-003 § Verification memo and KDF admission
-# control). All three were already in the graph — blake2 through argon2,
-# subtle through digest, zeroize through rustls — so these add edges, not
-# crates. blake2 0.10 is part of the digest 0.10 chain that the rust-embed
-# hold below protects: bump it to 0.11 together with argon2 0.6, not alone.
 blake2 = { version = "0.11", default-features = false }
 subtle = "2"
 zeroize = "1"
@@ -368,18 +254,7 @@ fluent-syntax = "0.12"
 # stays the source tree) but broken under Bazel, whose CARGO_MANIFEST_DIR is
 # a sandbox path that does not exist at runtime. We always want translations
 # embedded, never lazy-loaded.
-#
-# Held at exactly 8.11.0: from 8.12 `rust-embed-utils` pulls in `sha2`/`digest
-# 0.11`, landing next to the `digest 0.10` chain `argon2`/`blake2` already
-# bring in. ppba-driver is the only service with a *direct* `rust-embed`
-# dependency (the `fl!` macro reads the consumer crate's own manifest), so it is
-# the only package whose graph gets that duplicate — and its two largest test
-# targets then fail `rustc` E0463 "can't find crate" under
-# `bazel / windows-latest`, deterministically. `rust-embed-impl` /
-# `rust-embed-utils` are transitive, so this `=` cannot hold them; they are
-# held in `Cargo.lock` instead — see "Holding a transitive dependency back" in
-# docs/workspace.md. Revisit once `argon2`/`blake2` ship on `digest 0.11`.
-rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
+rust-embed = { version = "8.13.0", features = ["debug-embed"] }
 # Pinned to 0.13 until the rest of the Fluent stack moves off `unic-langid`.
 # 0.14.0 swapped `LanguageIdentifier` from `unic-langid` to `icu-locid`, but
 # `i18n-embed` 0.16, `i18n-embed-fl` 0.10, and `fluent-bundle` 0.16 still

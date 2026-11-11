@@ -1,6 +1,6 @@
 // The GitHub REST API, for the actions that call it (tracking-issue,
 // refresh-astap, uncovered-diff-lines, install-conformu, beta-clippy,
-// commit-repin, packages): the run's context, a request that says what failed
+// commit-repin, packages, runner-version): the run's context, a request that says what failed
 // with GitHub's own answer, every page of a list, the open issues with a
 // label, and an issue that a failure comments on or opens. Conventions:
 // docs/skills/ci-logic.md.
@@ -71,14 +71,17 @@ function nextPage(link) {
 
 /**
  * Every item of a list the GitHub API pages, from `url` on, following each
- * answer's Link header. A next page on another origin than `url`'s is
- * refused, since the token goes with each request.
+ * answer's Link header. With `key`, each answer is an object that holds the
+ * page under that name, as a run's jobs come (`{ total_count, jobs }`). A
+ * next page on another origin than `url`'s is refused, since the token goes
+ * with each request.
  */
-export async function everyPage(what, url, { token, ...options }) {
+export async function everyPage(what, url, { token, key, ...options }) {
   const items = [];
   for (let next = url; next; ) {
     const response = await github(what, next, { token, ...options });
-    items.push(...(await response.json()));
+    const answer = await response.json();
+    items.push(...(key === undefined ? answer : answer[key]));
     next = nextPage(response.headers.get('link'));
     if (next && new URL(next).origin !== new URL(url).origin) {
       throw new Error(`${what} failed: the next page is on ${new URL(next).origin}, not the API's origin`);

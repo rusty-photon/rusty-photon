@@ -1158,8 +1158,8 @@ on its own (U5).
   6. the camera placed on the port could not be opened for its identity — the
      SDK's error (U5).
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
   (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
@@ -1195,7 +1195,7 @@ on its own (U5).
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the camera is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)).
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)).
   ConformU pointed at a placeholder fails its connect test — acceptable,
   since conformance runs use the simulation build with no list.
 - **U5. A listed camera is the camera, with its entry's display names.** The
@@ -1900,9 +1900,11 @@ in its **Device** column with no renumbering note, and closed with
   and at exposures from 1 s to 15 s, with ~98 000 pixels piled on 65528 and
   nothing above it. ASCOM defines this property as *"the maximum ADU value the
   camera can produce"*, and a client that tests saturation as
-  `pixel >= MaxADU`, as rp does, finds no saturated pixel under an unreachable
+  `pixel >= MaxADU` finds no saturated pixel under an unreachable
   ceiling: it does not merely round badly, it can make saturation
-  **undetectable**. Measured through the driver before the margin existed, a
+  **undetectable**. (`rp` also reads the frame's own clip and takes the lower
+  of the two — [rp.md](rp.md), `measure_basic` contract, the saturation level —
+  but a client that trusts `MaxADU` alone does not.) Measured through the driver before the margin existed, a
   comprehensively blown-out frame gave `pixels >= MaxADU` = 0 while 13 655
   pixels sat at the sensor's real ceiling; with it, the same frame reports
   6 709 saturated pixels.
@@ -2153,6 +2155,13 @@ fn main() -> ServiceResult {
 
 `info!("Service started successfully …")` only after the bind succeeds; everything
 else is `debug!` (CLAUDE.md Rule 9).
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ---
 

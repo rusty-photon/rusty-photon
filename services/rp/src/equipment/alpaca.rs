@@ -10,15 +10,43 @@ use base64::Engine;
 use rp_auth::config::ClientAuthConfig;
 use tracing::{debug, info};
 
-/// Maximum attempts each `connect_*` makes for the get-devices +
-/// set-connected pair. Backoff between attempts is 1 s, then 2 s
-/// (see [`retry_connect_attempt`]), so the worst-case wait per device
-/// before giving up is 3 s of sleep plus up to 3 ×
+/// Attempts a connect routine on the [`ConnectBudget::Full`] budget makes
+/// for the get-devices + set-connected pair. Backoff between attempts is
+/// 1 s, then 2 s (see [`retry_connect_attempt`]), so the worst-case wait
+/// per device before giving up is 3 s of sleep plus up to 3 ×
 /// [`GET_DEVICES_TIMEOUT`] of in-flight HTTP. Three attempts is
 /// enough to ride out a transient `OmniSim` stall (e.g. a long .NET
 /// full GC) without making BDD scenarios that intentionally point at
 /// unreachable URLs pay too high a wall-clock cost.
 pub(super) const CONNECT_ATTEMPTS: u32 = 3;
+
+/// How many attempts a connect routine makes before it gives up (rp.md
+/// § Device Session Recovery).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConnectBudget {
+    /// [`CONNECT_ATTEMPTS`] attempts, with backoff between them: rp's
+    /// startup connect, and the reconnect supervisor's re-establish of a
+    /// session that was live until this pass. A stall the retries ride
+    /// out is likely there, and the routine is the device's only try
+    /// until the next pass.
+    Full,
+    /// One attempt and no backoff: the reconnect supervisor's re-establish
+    /// of an entry that was already disconnected before this pass, such as
+    /// a device switched off for the day. The pass walks the devices one
+    /// after another, so backoff for a device that stays off would delay
+    /// every other device's check, and the next pass is the retry.
+    Single,
+}
+
+impl ConnectBudget {
+    /// The attempts this budget allows.
+    pub(super) const fn attempts(self) -> u32 {
+        match self {
+            Self::Full => CONNECT_ATTEMPTS,
+            Self::Single => 1,
+        }
+    }
+}
 
 /// Per-call timeout on `client.get_devices()`. Short enough that a stuck
 /// Alpaca server falls into the retry loop instead of hanging the whole
@@ -55,10 +83,11 @@ pub(super) enum AttemptOutcome<T, P = String> {
 ///
 /// A device-claims placeholder's refusal — its error code, from a device whose
 /// `UniqueID` has the placeholder form, standing in for a device its driver
-/// cannot serve until it reloads — is permanent for the pass, as "device not
-/// found" is: retrying with backoff cannot help, and the next pass picks the
-/// device up once the driver serves it (rp.md § Device Session Recovery). The
-/// code alone is not enough: the driver range is every Alpaca driver's to use.
+/// cannot serve until it restarts or reloads — is permanent for the pass, as
+/// "device not found" is: retrying with backoff cannot help, and the next pass
+/// picks the device up once the driver serves it (rp.md § Device Session
+/// Recovery). The code alone is not enough: the driver range is every Alpaca
+/// driver's to use.
 /// Any other refusal may pass.
 pub(super) fn connect_refused<T, P: From<String>>(
     label: &str,
@@ -74,14 +103,14 @@ pub(super) fn connect_refused<T, P: From<String>>(
             "the driver holds this number with a placeholder; not retrying this pass"
         );
         return AttemptOutcome::Permanent(P::from(format!(
-            "set_connected: the driver serves a placeholder at this number until it reloads: \
-             {error}"
+            "set_connected: the driver serves a placeholder at this number until it restarts \
+             or reloads: {error}"
         )));
     }
     AttemptOutcome::Transient(format!("set_connected: {error}"))
 }
 
-/// Drive `operation` up to [`CONNECT_ATTEMPTS`] times with exponential
+/// Drive `operation` up to `budget.attempts()` times with exponential
 /// backoff between attempts: 1 s, then 2 s. Returns the first `Ok`
 /// result, or the last transient error wrapped with attempt count (as a
 /// `P`) if every attempt returned `Transient`. Returns `Permanent`'s
@@ -89,14 +118,19 @@ pub(super) fn connect_refused<T, P: From<String>>(
 ///
 /// `label` is used purely for log lines so the operator can see which
 /// device is retrying — e.g. `"camera main-cam"`.
-pub(super) async fn retry_connect_attempt<T, P, F, Fut>(label: &str, operation: F) -> Result<T, P>
+pub(super) async fn retry_connect_attempt<T, P, F, Fut>(
+    label: &str,
+    budget: ConnectBudget,
+    operation: F,
+) -> Result<T, P>
 where
     F: Fn(u32) -> Fut,
     Fut: Future<Output = AttemptOutcome<T, P>>,
     P: From<String>,
 {
+    let attempts = budget.attempts();
     let mut last_transient = String::from("no attempts made");
-    for attempt in 1..=CONNECT_ATTEMPTS {
+    for attempt in 1..=attempts {
         match operation(attempt).await {
             AttemptOutcome::Ok(value) => {
                 if attempt > 1 {
@@ -109,20 +143,18 @@ where
             AttemptOutcome::Permanent(failure) => return Err(failure),
             AttemptOutcome::Transient(msg) => {
                 last_transient = msg;
-                if attempt < CONNECT_ATTEMPTS {
+                if attempt < attempts {
                     // 1 s, then 2 s — bounded total backoff of 3 s per
                     // device keeps unreachable-URL BDD scenarios fast
                     // while still smoothing over a transient stall.
                     let delay = Duration::from_secs(1u64 << attempt.saturating_sub(1));
-                    // Each retry is at info level: a transient
-                    // connect failure that the system is recovering
-                    // from is something the operator should see in
-                    // default-verbosity logs without having to enable
-                    // debug.
-                    info!(
+                    // At debug: the caller logs the routine's outcome
+                    // once, and a device that is off would otherwise
+                    // log a line per retry.
+                    debug!(
                         label,
                         attempt,
-                        max = CONNECT_ATTEMPTS,
+                        max = attempts,
                         ?delay,
                         error = %last_transient,
                         "transient connect failure, retrying after backoff"
@@ -132,8 +164,13 @@ where
             }
         }
     }
+    let tried = if attempts == 1 {
+        "1 attempt".to_owned()
+    } else {
+        format!("{attempts} attempts")
+    };
     Err(P::from(format!(
-        "gave up after {CONNECT_ATTEMPTS} attempts (last error: {last_transient})"
+        "gave up after {tried} (last error: {last_transient})"
     )))
 }
 
@@ -184,6 +221,20 @@ pub(super) fn build_alpaca_client(
     auth: Option<&ClientAuthConfig>,
     ca_cert_path: Option<&std::path::Path>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Client::new_with_client(
+        url,
+        http_client(auth, ca_cert_path)?,
+    )?)
+}
+
+/// The HTTP client behind every request `rp` sends a driver service: its
+/// user agent, the timeouts of [`build_alpaca_client`], the device's Basic
+/// Auth credential, and trust in the observatory CA. A driver's restart
+/// request (rp.md § Power Switching) goes through one too.
+pub(super) fn http_client(
+    auth: Option<&ClientAuthConfig>,
+    ca_cert_path: Option<&std::path::Path>,
+) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = rusty_photon_tls::client::client_builder(ca_cert_path)?
         .user_agent("rusty-photon-rp")
         .connect_timeout(ALPACA_CONNECT_TIMEOUT)
@@ -200,7 +251,7 @@ pub(super) fn build_alpaca_client(
         headers.insert("authorization", header_value);
         builder = builder.default_headers(headers);
     }
-    Ok(Client::new_with_client(url, builder.build()?)?)
+    Ok(builder.build()?)
 }
 
 #[cfg(test)]
@@ -301,14 +352,15 @@ mod tests {
     async fn retry_connect_attempt_returns_immediately_on_permanent() {
         let calls = Arc::new(AtomicU32::new(0));
         let calls_for_closure = calls.clone();
-        let result: Result<u32, String> = retry_connect_attempt("test", |_attempt| {
-            let calls = calls_for_closure.clone();
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                AttemptOutcome::Permanent("config bad".to_string())
-            }
-        })
-        .await;
+        let result: Result<u32, String> =
+            retry_connect_attempt("test", ConnectBudget::Full, |_attempt| {
+                let calls = calls_for_closure.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    AttemptOutcome::Permanent("config bad".to_string())
+                }
+            })
+            .await;
         let err = result.expect_err("Permanent should propagate as Err");
         assert_eq!(err, "config bad");
         assert_eq!(
@@ -322,18 +374,19 @@ mod tests {
     async fn retry_connect_attempt_succeeds_after_transient_failures() {
         let attempts = Arc::new(AtomicU32::new(0));
         let attempts_for_closure = attempts.clone();
-        let result: Result<&'static str, String> = retry_connect_attempt("test", |attempt| {
-            let attempts = attempts_for_closure.clone();
-            async move {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                if attempt < CONNECT_ATTEMPTS {
-                    AttemptOutcome::Transient(format!("attempt {attempt} flake"))
-                } else {
-                    AttemptOutcome::Ok("ok")
+        let result: Result<&'static str, String> =
+            retry_connect_attempt("test", ConnectBudget::Full, |attempt| {
+                let attempts = attempts_for_closure.clone();
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt < CONNECT_ATTEMPTS {
+                        AttemptOutcome::Transient(format!("attempt {attempt} flake"))
+                    } else {
+                        AttemptOutcome::Ok("ok")
+                    }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
         assert_eq!(result.unwrap(), "ok");
         assert_eq!(attempts.load(Ordering::SeqCst), CONNECT_ATTEMPTS);
     }
@@ -342,14 +395,15 @@ mod tests {
     async fn retry_connect_attempt_gives_up_after_all_transient() {
         let attempts = Arc::new(AtomicU32::new(0));
         let attempts_for_closure = attempts.clone();
-        let result: Result<u32, String> = retry_connect_attempt("test", |_| {
-            let attempts = attempts_for_closure.clone();
-            async move {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                AttemptOutcome::Transient("always fails".to_string())
-            }
-        })
-        .await;
+        let result: Result<u32, String> =
+            retry_connect_attempt("test", ConnectBudget::Full, |_| {
+                let attempts = attempts_for_closure.clone();
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    AttemptOutcome::Transient("always fails".to_string())
+                }
+            })
+            .await;
         let err = result.expect_err("all-Transient must give up with Err");
         assert!(
             err.contains(&format!("gave up after {CONNECT_ATTEMPTS} attempts")),
@@ -372,16 +426,61 @@ mod tests {
         // backoff branch when the first attempt succeeds.
         let attempts = Arc::new(AtomicU32::new(0));
         let attempts_for_closure = attempts.clone();
-        let result: Result<u32, String> = retry_connect_attempt("test", |_| {
-            let attempts = attempts_for_closure.clone();
-            async move {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                AttemptOutcome::Ok(42)
-            }
-        })
-        .await;
+        let result: Result<u32, String> =
+            retry_connect_attempt("test", ConnectBudget::Full, |_| {
+                let attempts = attempts_for_closure.clone();
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    AttemptOutcome::Ok(42)
+                }
+            })
+            .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    /// The full budget backs off 1 s, then 2 s: the virtual clock moves
+    /// only through the helper's sleeps, so it reads exactly their sum.
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_on_the_full_budget_backs_off_between_its_attempts() {
+        let started = tokio::time::Instant::now();
+        let result: Result<u32, String> =
+            retry_connect_attempt("test", ConnectBudget::Full, |_| async {
+                AttemptOutcome::Transient("device off".to_string())
+            })
+            .await;
+        result.expect_err("every attempt failed");
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+    }
+
+    /// A device already unreachable before the pass gets one attempt, and
+    /// the helper does not sleep after it: the next device's check waits
+    /// on nothing.
+    #[tokio::test(start_paused = true)]
+    async fn retry_connect_attempt_on_a_single_budget_tries_once_without_backoff() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_for_closure = attempts.clone();
+        let started = tokio::time::Instant::now();
+        let result: Result<u32, String> =
+            retry_connect_attempt("test", ConnectBudget::Single, |_| {
+                let attempts = attempts_for_closure.clone();
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    AttemptOutcome::Transient("device off".to_string())
+                }
+            })
+            .await;
+        let err = result.expect_err("the one attempt failed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "one attempt, not three");
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "a single attempt must not back off"
+        );
+        assert!(
+            err.contains("gave up after 1 attempt (last error: device off)"),
+            "{err}"
+        );
     }
 
     // ----- per-request timeout (the #319 root-cause regression) -------

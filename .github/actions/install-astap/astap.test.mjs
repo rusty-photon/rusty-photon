@@ -170,8 +170,8 @@ test('resolve keys each cache on its archive and pin, so moving a pin misses the
 
 test('the database download re-rolls a crawling mirror the way the curl flags did', () => {
   // --retry 4 --retry-all-errors, --retry-delay 5, --speed-limit 100000
-  // --speed-time 30. The time limits are twice curl's --max-time 300 and
-  // --retry-max-time 600, for D20's 400 MB where curl fetched D05's 100 MB.
+  // --speed-time 30. The time limits, 600 s an attempt and 1,200 s in all,
+  // are sized for D20's 400 MB.
   assert.deepEqual(DATABASE_DOWNLOAD, {
     attempts: 5,
     delayMs: 5_000,

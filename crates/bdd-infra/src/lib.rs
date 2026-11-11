@@ -257,6 +257,9 @@ pub mod tls_auth;
 #[cfg(feature = "setup-pages")]
 pub mod setup_pages;
 
+#[cfg(feature = "setup-pages")]
+pub mod service_restart;
+
 /// The band [`reserved_test_port`] draws from: below every platform's
 /// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the
 /// OS can never assign one of these to a `bind(0)` caller, and clear of
@@ -882,6 +885,25 @@ impl ServiceHandle {
         if let Some(handle) = self.stderr_forward.take() {
             join_or_abort(handle).await;
         }
+    }
+
+    /// Wait up to `timeout` for the service to exit by itself, and return
+    /// its exit status; `None` while it still runs. Once it has exited the
+    /// handle is spent: [`stop`](Self::stop) only joins the drains.
+    pub async fn wait_exit(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let child = self.child.as_mut()?;
+        let status = tokio::time::timeout(timeout, child.wait())
+            .await
+            .ok()?
+            .ok()?;
+        self.child = None;
+        if let Some(handle) = self.stdout_drain.take() {
+            join_or_abort(handle).await;
+        }
+        if let Some(handle) = self.stderr_forward.take() {
+            join_or_abort(handle).await;
+        }
+        Some(status)
     }
 
     /// Kill the service immediately and forcibly (SIGKILL on Unix,

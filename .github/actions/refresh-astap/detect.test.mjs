@@ -202,8 +202,8 @@ test('without verify, a rotated archive is compared and nothing more', async (t)
   assert.deepEqual(runs, []);
 });
 
-// A SourceForge that serves nothing, as a folder upstream no longer files the
-// archive in answers.
+// A SourceForge that serves nothing, as a folder that does not hold the
+// archive answers.
 async function emptySite() {
   const server = await serve((req, res) => {
     res.statusCode = 404;

@@ -108,6 +108,7 @@ fn configure_on_simulator(world: &mut RpWorld, kind: &Kind) {
             id,
             alpaca_url: url,
             device_number: 0,
+            outputs: Vec::new(),
         }),
         "rotators" => world.rotators.push(RotatorConfig {
             id,
@@ -296,6 +297,7 @@ async fn pinned_device_refused(world: &mut RpWorld, name: String) {
         .unwrap_or_else(|| panic!("{} {} missing from GET /api/equipment", kind.key, kind.id));
     let mut expected = serde_json::json!({
         "connected": false,
+        "held_out": false,
         "device_name": null,
         "unique_id": null,
     });

@@ -48,8 +48,9 @@ tell a clean V from a guess.
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
 | G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
-| G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-g3b-aperture-hfr` |
-| G3c | Sweep rules, both capture sweeps: the two-star minimum folded into the sparse gate, and the confirmation's rejection reason — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Not started; follows G3b | |
+| G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686) |
+| G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) |
+| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, at most three half widths from the centre that failed, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-retry-on-vertex` |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -166,18 +167,152 @@ sweep's V rises along. The issue's "26–30 px across" for those stars
 was wrong: a radial profile puts the disc's edge 45 px from its
 centre.
 
-*Open, for the owner — not part of G3.* The relative gate was built to
-reject wing samples that were wrong, and with honest measurement it
-now rejects some that are right. One star per aperture also lowers
-the wing counts,
-since a fragmented donut now counts once: on the coarse sweep at
-`threshold_sigma 10`, the sample 400 steps inside focus measures 31
-stars at 19.4 px against a gate of 37. And at `threshold_sigma 8` and
-`min_area 6` the frame at focus counts thousands of faint compact
-stars the wings never show — 2,104 on the 2026-09-08 fine sweep — so a
-10% gate leaves three samples. Whether `min_star_fraction`'s default
-should fall, or the gate should count only the stars a sweep's every
-frame could show, is a decision for after G3c, from these frames.
+The relative gate was built to reject wing samples that were wrong,
+and with honest measurement it rejects some that are right, which
+G3b left for the owner:
+
+**Decided 2026-11-01** (owner, after G3b merged). G3c replaces the
+sparse gate with a fixed star list in `focus-model`'s sweep: CCDciel's
+list, measured at every step, with Hocus Focus's two-star floor per
+point in place of CCDciel's rule that a single empty step cancels the
+run.
+
+1. **Each attempt measures one list of stars.** Before it walks its
+   grid, an attempt takes a reference frame at its centre and keeps the
+   stars `measure_stars` finds there whose HFR is within half the
+   frame's median HFR of it. That is CCDciel's filter: it drops the
+   saturated cores of a frame at focus, which read large, and hot
+   pixels and artefacts, which read small. Decision 1 is about a
+   frame's aggregate and still holds there; the list is a choice of
+   stars. Every sample and the confirmation frame then measure those
+   stars and no others, through `measure_stars`' `stars` input: each
+   aperture starts at the star's last centre and radius and follows the
+   star as in G3b, and a star whose aperture does not settle, or settles
+   at an SNR of 3 or less, is not measured in that frame. A sample's HFR
+   is the median over the listed stars measured, and its `star_count`
+   is how many.
+2. **The floor is the gate.** A sample with fewer than two listed stars
+   measured is `sparse`, and one with none is starless (`hfr: null`),
+   which carries decision 3's two-star minimum over without its
+   relative part: `min_star_fraction` retires from `focus-model`. The
+   fit is weighted by the listed stars measured.
+3. **The confirmation frame measures the list too**, and decision 2
+   holds: with fewer than two listed stars measured it is rejected as
+   `sparse`, with the fallback, and `confirmation.rejected` says why.
+4. **G3c is `focus-model`'s.** `rp`'s capture sweep keeps its relative
+   gate unchanged until the focus-model plan's S7 retires it; decision
+   3's "both sweeps" goes with it.
+5. **Coarse sweeps are not a target.** `focus-model` sizes its sweep to
+   the optics, ending it at `sweep.end_ratio`, 4× the focused HFR, and
+   this plan declines a coarse-then-fine sweep (Deferred). The #1187
+   coarse frames are test data, not a sweep G3c has to win.
+
+*Measured for G3c*, replaying the 79 frames through G3b's measurement:
+
+- Star counts fall as a power of the HFR, because defocus spreads each
+  star's light over an area that grows with HFR² and the faint stars
+  drop under the threshold: HFR^−1.7 to HFR^−2.5 across the 2026-09
+  sweeps at `threshold_sigma 8` / `min_area 6`. A gate at a fraction of
+  the densest frame's count is therefore an HFR ceiling — 2.5–4× the
+  densest frame's HFR at 10%, where `focus-model` ends its sweep. At
+  `min_area 40` the count peaks away from focus: the 2026-09-26 sizing
+  sweep's frame at focus holds 7 stars against 35 fifty steps out.
+- Listed stars stay measurable where detection loses them. On the
+  2026-09-08 fine sweep at `threshold_sigma 8`, 365–497 of its 523
+  listed stars measure at every step, where detection finds 44–2,104;
+  on the coarse sweep, 148 of 205 still measure 700 steps inside focus,
+  where detection finds 10, and 3 measure 1000 steps inside, where it
+  finds none (measured by G3c's implementation).
+- On the sized sweeps, the 2026-09-26 ±100/25 and ±80/20, every rule
+  tried fits at every setting — today's gate, the two-star floor alone,
+  Hocus Focus's rules, CCDciel's and the list — with vertices at
+  29740–29747, inside the critical focus zone. They differ on the
+  confirmation frame. At `threshold_sigma 10` / `min_area 40`, the
+  settings the rig ran, the sizing sweep's confirmation frame at 29744
+  detects 2 stars, so today's gate rejects it as sparse and the floor
+  alone as worse (1.66 px against the lowest sample's 1.05); its six
+  listed stars measure 0.93 px, and it confirms.
+- On the wider grids, the list keeps every sweep that brackets focus
+  fitting at `max_area` 5000. At 500, frames whose stars are larger than
+  the cap leave 1–4 sub-pixel artefacts, which the floor alone lets in
+  (the 2026-09-08 fine sweep's R² falls to 0.918) and Hocus Focus's
+  spread weights favour (its fit moves to 29396, at R² 0.589); the list
+  measures none of them, and refuses the #1187 coarse sweep, whose
+  wings all lie past the cap, rather than fit it.
+  CCDciel's own rule, which cancels a run at its first step with no
+  measurable listed star, ends the #1187 coarse sweep, and at
+  `max_area` 500 four of the six sweeps that bracket focus.
+- No package surveyed gates a sample on its star count relative to the
+  sweep (read in their source). N.I.N.A. keeps a starless point with a
+  huge error bar and weights by the spread of the stars' HFRs; Hocus
+  Focus rejects a point with fewer than two stars and floors that
+  spread at 0.2× the sweep's median; KStars recaptures a starless frame;
+  CCDciel picks a star list on its first frame and measures it at every
+  step, keeping a star above SNR 3.
+
+*Replayed through G3c's implementation* (2026-11-03): each sweep's list
+taken on its centre frame by `measure_stars`, every frame then measured
+with the list carried, the sweep's own gate and fit. At the rig's
+settings (`threshold_sigma 10`, `min_area 40`, `max_area` 5000) every
+sweep that brackets focus fits — the 2026-09-08 coarse at 29772 and fine
+at 29770, the 2026-09-26 wide at 29747 and 29751, sizing at 29747 and
+sized at 29739 — and all three confirmation frames are accepted, the
+sizing sweep's on six stars at 0.93 px; the sweeps that walk one wing
+end `monotonic_curve`, which shifts. At `threshold_sigma 8` /
+`min_area 6` the vertices move by at most 4 steps. At `focus-model`'s
+defaults (`threshold_sigma` 5, `min_area` 4, `max_area` 500) the
+same sweeps fit within 4 steps of those, but the coarse one, whose wings
+lie past the cap, is refused, and the only sub-pixel readings are of
+single stars (0.32 and 0.83 px), which the floor rejects. A frame whose
+stars straddle the cap is measured by the ones under it and reads low —
+the fine sweep's frame at 14.6 px reads 12.3 px on 5 of its 800 stars —
+but weighs 5 against the 800 its neighbours measure, and the vertex
+holds.
+
+The corpus holds no sized sweep started far from focus, which is the
+case the list is for; a deliberately mis-started sized sweep on the
+next clear night validates it (Validation).
+
+*Measured on rig2, 2026-11-05*, on the nightly that carries G3c: an L
+control at the prediction and three R sweeps started off focus by a
+hand-entered offset (R step 22, half width 86, 8 points;
+`max_attempts` 2). Every sample of every attempt measured the stars
+its reference frame listed at counts within 2 % of the list, every
+curve is smooth from 1.2 to 12.9 px, and no fit landed on a sub-pixel
+artefact: the list holds. The retry does not reach the plan's range:
+
+| Start (from focus) | Attempt 1 grid | Its extrapolated vertex | Half-width shift to | Outcome |
+|-------------------:|:---------------|------------------------:|--------------------:|---------|
+| 29770 (+198) | 29684–29838 | 29572 | 29684 | `monotonic_curve` twice, focus outside the second grid too |
+| 29371 (−201) | 29285–29439 | 29536 | 29457 | `monotonic_curve` twice, focus outside the second grid too |
+| 29721 (+149) | 29635–29789 | 29584 | 29635 | confirmed on attempt 2 at 29572, R² 0.996 |
+
+R's focus was 29572, 17 steps above L's 29555. A shift of half a
+width reaches focus on the second attempt only for a miss up to about
+two half widths, 163 steps here, while each first attempt had already
+extrapolated a vertex within 36 steps of focus and correctly refused
+to report it, since it lay outside the samples. Centred on those
+vertices, the second grids would have been 29486–29640, 29450–29604
+and 29498–29652, each holding 29572. The frames (66, with their
+sidecars) join the corpus.
+
+**Decided 2026-11-06** (owner): G3d. A monotonic curve's retry centres
+on the vertex the fit extrapolated, capped against a wild
+extrapolation, and half a width remains the shift only where the fit
+placed no vertex there. `max_attempts` keeps its default of 2, where
+more attempts of half a width would each cost a whole grid of
+exposures.
+
+*Settled in G3d.* The cap holds the next centre at three half widths
+from the one that failed, a grid's width past that grid's end, rather
+than dropping a vertex further out back to half a width: a vertex far
+out still says focus lies that way. One retry then reaches about four
+half widths from the centre that failed (326 steps above it and 344
+below for R on rig2), past the plan's 300 either way. The cap is
+measured from the failed centre rather than as the samples' span past
+their end: rig2's R grid ends 18 steps short of its half width above
+its centre, so a span past the samples would reach only 290 steps
+above it, and a sweep started 300 below focus would fail.
 
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
@@ -204,7 +339,11 @@ update (rp.md, session-runner.md) first, BDD second, code third.
    stay in `curve_points` with a `rejected` reason and do not count
    toward `samples_used` or `min_fit_points`. Capture sweeps only: the
    guide-train sweep's per-position frame count is nearly constant and
-   carries no such signal.
+   carries no such signal. *Superseded in `focus-model` by G3c
+   (decided 2026-11-01):* a sample there is `sparse` below two measured
+   stars of the attempt's star list, with no relative part; `rp`'s
+   capture sweep keeps this gate until the focus-model plan's S7
+   retires it.
 2. **Report fit quality, do not enforce it yet.** The result carries
    `fit_r_squared`, the weighted coefficient of determination over the
    accepted samples. A threshold waits for G2.
@@ -212,7 +351,8 @@ update (rp.md, session-runner.md) first, BDD second, code third.
    move to `best_position` the tool takes one more frame (one more
    guide sample set on the guiding train) and measures it. The
    confirmation is accepted when the frame has stars, its star count
-   passes the same gate as the sweep, and its HFR is at most
+   passes the same gate as the sweep (in `focus-model` since G3c: two
+   of the attempt's listed stars measured), and its HFR is at most
    `(1 + confirmation_tolerance)` times the lowest accepted sweep
    sample. Default tolerance 0.25: a good fit measures within a few
    percent of the best sample plus seeing jitter; the #1187 failure
@@ -258,12 +398,23 @@ update (rp.md, session-runner.md) first, BDD second, code third.
   one step of focus or says it did not, and the orchestrator runs the
   fine pass.
 - Outlier rejection on fit residuals (Hocus Focus's Grubbs test) and
-  per-point error bars from the HFR spread across stars. Both need the
-  measurement layer (G3) to produce honest spreads first.
-- Aggregating over the N brightest stars instead of the median over
-  every detection. Part of G3; G3b takes the 20 brightest.
+  per-point error bars from the HFR spread across stars. G3b's
+  apertures give honest per-star HFRs now, but G3c weights by the
+  listed stars measured: on the replay that held out the sub-pixel
+  artefacts of frames past the size cap, which spread weights favoured.
+- A detection fallback for a starless reference frame. An attempt
+  whose reference frame shows no stars has an empty list, measures
+  every sample as starless and retries on the same grid. Detection at
+  every frame could still see stars at one end of the grid and shift
+  toward them (focus-model.md, The sweep, step 6), but only when the
+  centre lies beyond where any star can be detected — on rig2 between
+  700 and 1000 steps from focus (the #1187 coarse sweep detects 10
+  stars 700 steps inside focus and none 1000 steps inside), against a
+  sized half width of 108. That is a
+  broken prediction, and a failed run with the focuser put back is the
+  safe answer to it.
 
-## What NINA and Hocus Focus do (for reference)
+## What NINA, Hocus Focus and CCDciel do (for reference)
 
 - NINA's sweep is adaptive: it starts near focus and extends each side
   until it has four trend-line points there. A frame with no stars stays
@@ -274,10 +425,20 @@ update (rp.md, session-runner.md) first, BDD second, code third.
   failed cleanly rather than moved.
 - NINA weights points by the HFR spread across stars, which a few
   near-identical fragments would turn into a huge weight. Hocus Focus
-  floors that spread at a fraction of the median spread for exactly this
-  reason, requires more than one usable star per point, rejects
-  outliers with a Grubbs test on weighted residuals, and validates the
-  final position with a fresh measurement against the initial HFR.
+  floors that spread at 0.2× the sweep's median spread for exactly this
+  reason, requires more than one usable star per point, offers a Grubbs
+  test on weighted residuals (off by default: its maximum number of
+  rejections defaults to 0), and validates the final position with a
+  fresh measurement against the initial HFR.
+- CCDciel picks a star list on the frame at its starting position,
+  dropping stars whose HFD is more than half the median's away from
+  it, and measures those positions at every step, following drift; a
+  star counts when its SNR, `flux / √(flux + π r² σ²)`, exceeds 3
+  (the default). A point is the median HFD of the stars that count, and
+  a step where none does cancels the run.
+- KStars weights each point by the inverse variance of its stars' HFRs,
+  recaptures a starless frame up to three times, and offers an outlier
+  pass (Peirce's criterion) and a check of wing points that drop.
 
 ## Validation
 
@@ -293,3 +454,20 @@ which the 21-step replay of decision 1 sits well inside — with
 `confirmed: true`, or fall back to the lowest accepted sample and say
 so. A fine ±400/100 sweep must
 still confirm at the defaults.
+
+G3c is validated in two steps. Offline, the 79 rig2 frames replay
+through the implementation itself — the reference frame at each
+sweep's centre, the list measured at every step — and must reproduce
+the replay above: every sized sweep fitting, with the vertices it
+found, and the 2026-09-26 sizing sweep's confirmation frame accepted at
+`threshold_sigma 10` / `min_area 40`. Done 2026-11-03 (*Replayed
+through G3c's implementation*, above); the unit tests carry the
+recorded sweeps as the list measured them. On the next clear night, a sized
+sweep started 150–300 steps from focus, deliberately, must either fit
+or shift toward focus and fit on its second attempt, and must never
+fit on sub-pixel artefacts; the frames join the corpus. Run on rig2 on
+2026-11-05 (*Measured on rig2*, above): the list and the floor passed,
+150 steps passed, and 200 failed on either side through the
+half-width retry, which G3d replaces. G3d is validated the same way:
+on the next clear night the ±200 mis-starts, and ±300 ones, must fit
+on their second attempt.

@@ -7,7 +7,8 @@
 //! setup page connected or not, serves no action, as a camera serves none,
 //! and answers every camera member `NOT_CONNECTED`. It never
 //! re-scans: the reason is the one the last start or reload found, and only a
-//! reload turns the number back into a camera.
+//! restart, or a reload that finds the camera, turns the number back into a
+//! camera.
 
 use std::fmt;
 use std::future::Future;

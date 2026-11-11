@@ -30,7 +30,7 @@ use tracing::{debug, info};
 use ascom_alpaca::Client;
 
 use super::alpaca::{
-    build_alpaca_client, connect_refused, retry_connect_attempt, AttemptOutcome, CONNECT_ATTEMPTS,
+    build_alpaca_client, connect_refused, retry_connect_attempt, AttemptOutcome, ConnectBudget,
     GET_DEVICES_TIMEOUT,
 };
 use crate::config::{self, UniqueIdPin};
@@ -69,8 +69,9 @@ impl RosterAddress<'_> {
             )),
             Refusal::Placeholder { found } => EstablishError::Failed(format!(
                 "{kind} at device_number {number} is {:?}, a placeholder (UniqueID {:?}) \
-                 its driver serves until it reloads, not a device: its Description says \
-                 why, and the next pass checks the pinned unique_id {pin:?} again",
+                 its driver serves until it restarts or reloads, not a device: its \
+                 Description says why, and the next pass checks the pinned unique_id \
+                 {pin:?} again",
                 found.name, found.unique_id
             )),
             Refusal::Unverifiable { found_name } => EstablishError::IdentityRefused(format!(
@@ -286,8 +287,9 @@ enum Refusal {
     },
     /// The device there is a driver's placeholder: its `UniqueID` has the
     /// device-claims placeholder form, and it holds the number for a
-    /// device its driver cannot serve until it reloads. That is no device
-    /// at all rather than another one, so it is not an identity refusal.
+    /// device its driver cannot serve until it restarts or reloads. That is
+    /// no device at all rather than another one, so it is not an identity
+    /// refusal.
     Placeholder { found: ListedIdentity },
 }
 
@@ -382,6 +384,7 @@ pub(super) fn reported_name(id: &str, read: ascom_alpaca::ASCOMResult<String>) -
 /// every kind's startup connect and the reconnect supervisor's
 /// re-establish.
 ///
+/// `budget` is how many attempts the routine makes ([`ConnectBudget`]).
 /// A device that is not listed, that lists another `UniqueID` than the
 /// pin, or that is a driver's placeholder refusing `Connected = true`
 /// ([`connect_refused`]), is a permanent outcome for this routine: no
@@ -396,6 +399,7 @@ pub(super) fn reported_name(id: &str, read: ascom_alpaca::ASCOMResult<String>) -
 pub(super) async fn establish_listed<C: RosterEntry>(
     config: &C,
     ca_cert_path: Option<&Path>,
+    budget: ConnectBudget,
 ) -> Result<Arc<C::Device>, EstablishError> {
     let address = config.address();
     let client = build_alpaca_client(address.alpaca_url, address.auth, ca_cert_path)
@@ -404,7 +408,7 @@ pub(super) async fn establish_listed<C: RosterEntry>(
 
     let label = address.label();
     let blank_listings = AtomicU32::new(0);
-    let established = retry_connect_attempt(&label, |_attempt| async {
+    let established = retry_connect_attempt(&label, budget, |_attempt| async {
         let listed = match list_of_kind::<C>(&client).await {
             Ok(listed) => listed,
             Err(e) => return AttemptOutcome::Transient(e),
@@ -430,7 +434,7 @@ pub(super) async fn establish_listed<C: RosterEntry>(
         // UniqueID blank: the pin cannot be checked, so it is an identity
         // refusal, not a plain failure.
         Err(EstablishError::Failed(message))
-            if blank_listings.load(Ordering::SeqCst) == CONNECT_ATTEMPTS =>
+            if blank_listings.load(Ordering::SeqCst) == budget.attempts() =>
         {
             return Err(EstablishError::IdentityRefused(message));
         }
@@ -513,6 +517,7 @@ mod tests {
     use axum::{Json, Router};
 
     use super::*;
+    use crate::equipment::alpaca::CONNECT_ATTEMPTS;
     use crate::equipment::test_support::spawn_stub;
 
     fn listed(entries: &[(&str, &str)]) -> Vec<ListedIdentity> {
@@ -716,9 +721,9 @@ mod tests {
             camera_address(Some(&expected)).refusal(&refusal),
             EstablishError::Failed(
                 "camera at device_number 0 is \"Main\", a placeholder (UniqueID \
-                 \"placeholder:svbony-camera:p9\") its driver serves until it reloads, not a \
-                 device: its Description says why, and the next pass checks the pinned \
-                 unique_id \"SVBONY:SV605CC:noserial-0\" again"
+                 \"placeholder:svbony-camera:p9\") its driver serves until it restarts or \
+                 reloads, not a device: its Description says why, and the next pass checks \
+                 the pinned unique_id \"SVBONY:SV605CC:noserial-0\" again"
                     .to_string()
             )
         );
@@ -890,7 +895,9 @@ mod tests {
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
         let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let err = establish_listed(&config, None).await.unwrap_err();
+        let err = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap_err();
 
         assert!(err.is_identity_refusal(), "{err:?}");
         let msg = err.to_string();
@@ -939,7 +946,9 @@ mod tests {
         let stub = spawn_stub(app).await;
         let config = camera_config("main", &stub.url(), 0, Some("SVBONY:SV605CC:noserial-0"));
 
-        let err = establish_listed(&config, None).await.unwrap_err();
+        let err = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap_err();
 
         assert!(!err.is_identity_refusal(), "{err:?}");
         assert!(err.to_string().contains("a placeholder"), "{err}");
@@ -956,7 +965,9 @@ mod tests {
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
         let config = camera_config("qhy600m", &stub.url(), 1, Some("QHY600M-imaging"));
 
-        let camera = establish_listed(&config, None).await.unwrap();
+        let camera = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap();
 
         assert_eq!(
             ListedIdentity::of(camera.as_ref()).unique_id,
@@ -974,7 +985,9 @@ mod tests {
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
         let config = camera_config("qhy600m", &stub.url(), 0, None);
 
-        let camera = establish_listed(&config, None).await.unwrap();
+        let camera = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap();
 
         assert_eq!(ListedIdentity::of(camera.as_ref()).name, "QHY5III678M");
         assert_eq!(connects.load(Ordering::SeqCst), 1);
@@ -1000,9 +1013,9 @@ mod tests {
         assert_eq!(
             status["cameras"],
             serde_json::json!([
-                {"id": "guide", "connected": true,
+                {"id": "guide", "connected": true, "held_out": false,
                  "device_name": "QHY5III678M", "unique_id": "QHY5III678M-guide"},
-                {"id": "imaging", "connected": false,
+                {"id": "imaging", "connected": false, "held_out": false,
                  "device_name": null, "unique_id": null}
             ])
         );
@@ -1014,7 +1027,9 @@ mod tests {
     async fn a_dead_session_reports_no_bound_identity() {
         let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
         let config = camera_config("qhy600m", &stub.url(), 1, None);
-        let camera = establish_listed(&config, None).await.unwrap();
+        let camera = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap();
         let session: crate::equipment::DeviceSession<dyn Camera> =
             crate::equipment::DeviceSession::connected(camera);
         assert_eq!(
@@ -1051,7 +1066,9 @@ mod tests {
         let stub = spawn_stub(app).await;
         let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let err = establish_listed(&config, None).await.unwrap_err();
+        let err = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap_err();
 
         assert!(err.is_identity_refusal(), "{err:?}");
         assert_eq!(reads.load(Ordering::SeqCst), 1);
@@ -1160,7 +1177,9 @@ mod tests {
         let stub = filling_in_server(1, Arc::clone(&reads), Arc::clone(&connects)).await;
         let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let camera = establish_listed(&config, None).await.unwrap();
+        let camera = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap();
 
         assert_eq!(
             ListedIdentity::of(camera.as_ref()).unique_id,
@@ -1180,7 +1199,9 @@ mod tests {
         let stub = filling_in_server(u32::MAX, Arc::clone(&reads), Arc::clone(&connects)).await;
         let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let err = establish_listed(&config, None).await.unwrap_err();
+        let err = establish_listed(&config, None, ConnectBudget::Full)
+            .await
+            .unwrap_err();
 
         assert!(err.is_identity_refusal(), "{err:?}");
         assert!(err.to_string().contains("empty UniqueID"), "{err}");
@@ -1190,6 +1211,25 @@ mod tests {
             0,
             "a device whose pin cannot be checked must never be switched on"
         );
+    }
+
+    /// On a single attempt the one blank read is every attempt the
+    /// routine makes, so it is refused as unverifiable after that read,
+    /// as the full budget is after its last.
+    #[tokio::test]
+    async fn a_unique_id_listed_blank_on_a_single_attempt_is_an_identity_refusal() {
+        let reads = Arc::new(AtomicU32::new(0));
+        let connects = Arc::new(AtomicU32::new(0));
+        let stub = filling_in_server(u32::MAX, Arc::clone(&reads), Arc::clone(&connects)).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+
+        let err = establish_listed(&config, None, ConnectBudget::Single)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_identity_refusal(), "{err:?}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
     }
 
     /// An unpinned entry is never checked: pointed at a server that

@@ -1293,8 +1293,10 @@ one core at load average 65, see "Real-hardware validation").
   failing, or reconnecting — could otherwise leave the index stale, failing
   the open or opening a different camera. A camera
   absent when the service started is another matter; finding it still needs a
-  reload or a restart (C0), and hotplug re-enumeration belongs to
-  [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
+  reload or a restart (C0), which is why the services start with every
+  camera powered ([Linux](../packaging.md#start-the-services-with-every-device-powered)
+  and [Windows](../packaging-windows.md#start-the-services-with-every-device-powered)
+  packaging guides).
 
   **A departure between two failures goes unseen.** A camera unplugged and
   plugged back with nothing failing on it meanwhile enumerates exactly as
@@ -1521,8 +1523,8 @@ and what `doctor --devices` can say about a camera without opening it — is
      message adds how many and points at doctor's `hardware.usb-fault`.
      Another vendor's fault is that vendor's device, and is not offered.
 
-  Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. The failed
+  Every reason ends with the way back: once the camera is fixed, restart the
+  service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
   (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
@@ -1558,7 +1560,7 @@ and what `doctor --devices` can say about a camera without opening it — is
 
   rp treats `0x540` from `Connected = true` as permanent for its pass: one
   attempt, logged at `debug!`, and the camera is picked up on the first pass
-  after a reload serves it ([rp.md](rp.md#device-session-recovery)).
+  after a restart or reload serves it ([rp.md](rp.md#device-session-recovery)).
   ConformU pointed at a placeholder fails its connect test — acceptable,
   since conformance runs use the simulation build with no list.
 - **U5. A listed camera is the camera, with its entry's display names.** It
@@ -2398,6 +2400,13 @@ the re-scanned server drains has no stop future left to see it, so the loop
 honours it before that rebuild: the stop ends the service, and the reload
 rebuilds from the file, once. A stop always wins: one that lands with a
 reload ends the service without building another server first.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ---
 

@@ -111,13 +111,6 @@ bounded!(
     also: Eq
 );
 bounded!(
-    /// The sparse gate fraction; 0 disables the gate.
-    MinStarFraction(f64 as "f64"),
-    "min_star_fraction",
-    |v| v.is_finite() && (0.0..1.0).contains(&v),
-    "a finite number in [0, 1)"
-);
-bounded!(
     /// The fit-quality floor: a fit whose R² falls below it is
     /// `poor_fit`.
     ///
@@ -255,8 +248,6 @@ pub struct TrainConfig {
     pub frames_per_step: FramesPerStep,
     #[serde(default = "default_min_fit_points")]
     pub min_fit_points: MinFitPoints,
-    #[serde(default = "default_min_star_fraction")]
-    pub min_star_fraction: MinStarFraction,
     /// The fit-quality floor; `None` reports the R² and enforces
     /// nothing.
     #[serde(default)]
@@ -286,7 +277,6 @@ impl Default for TrainConfig {
             threshold_sigma: None,
             frames_per_step: default_frames_per_step(),
             min_fit_points: default_min_fit_points(),
-            min_star_fraction: default_min_star_fraction(),
             min_fit_r_squared: None,
             temperature_sensor: None,
             confirmation_tolerance: default_confirmation_tolerance(),
@@ -457,10 +447,6 @@ const fn default_min_fit_points() -> MinFitPoints {
     MinFitPoints(5)
 }
 
-const fn default_min_star_fraction() -> MinStarFraction {
-    MinStarFraction(0.1)
-}
-
 const fn default_confirmation_tolerance() -> ConfirmationTolerance {
     ConfirmationTolerance(0.25)
 }
@@ -576,7 +562,6 @@ mod tests {
         assert_eq!(train.threshold_sigma, None);
         assert_eq!(train.frames_per_step.get(), 1);
         assert_eq!(train.min_fit_points.get(), 5);
-        assert_eq!(train.min_star_fraction.get(), 0.1);
         assert_eq!(train.min_fit_r_squared, None);
         assert_eq!(train.temperature_sensor, None);
         assert_eq!(train.confirmation_tolerance.get(), 0.25);
@@ -603,7 +588,7 @@ mod tests {
                 "imaging": {
                     "duration": "2s", "min_area": 6, "max_area": 800,
                     "threshold_sigma": 4.0, "frames_per_step": 2,
-                    "min_fit_points": 6, "min_star_fraction": 0.2,
+                    "min_fit_points": 6,
                     "min_fit_r_squared": 0.6, "temperature_sensor": "oag-focuser",
                     "confirmation_tolerance": 0.5, "max_attempts": 3,
                     "step_size": 25, "half_width": 100
@@ -632,7 +617,6 @@ mod tests {
         assert_eq!(train.threshold_sigma, Some(4.0));
         assert_eq!(train.frames_per_step.get(), 2);
         assert_eq!(train.min_fit_points.get(), 6);
-        assert_eq!(train.min_star_fraction.get(), 0.2);
         assert_eq!(train.min_fit_r_squared.map(MinFitRSquared::get), Some(0.6));
         assert_eq!(
             train
@@ -659,7 +643,7 @@ mod tests {
     /// the field in the error.
     #[test]
     fn every_bound_is_checked_at_load_naming_the_field() {
-        let cases: [(&str, &str); 18] = [
+        let cases: [(&str, &str); 17] = [
             (r#""sweep": { "end_ratio": 1.0 }"#, "sweep.end_ratio"),
             (r#""sweep": { "points": 2 }"#, "sweep.points"),
             (
@@ -673,10 +657,6 @@ mod tests {
             (
                 r#""trains": { "t": { "min_fit_points": 2 } }"#,
                 "min_fit_points",
-            ),
-            (
-                r#""trains": { "t": { "min_star_fraction": 1.0 } }"#,
-                "min_star_fraction",
             ),
             (
                 r#""trains": { "t": { "min_fit_r_squared": 1.01 } }"#,
@@ -770,6 +750,14 @@ mod tests {
         let sweep = r#"{ "mcp_server_url": "http://x/mcp", "sweep": { "width": 3 } }"#;
         let err = parse_config(sweep, "test").unwrap_err();
         assert!(err.to_string().contains("width"), "{err}");
+    }
+
+    #[test]
+    fn a_min_star_fraction_fails_the_load_naming_it() {
+        let json = r#"{ "mcp_server_url": "http://x/mcp",
+                        "trains": { "t": { "min_star_fraction": 0.1 } } }"#;
+        let err = parse_config(json, "test").unwrap_err();
+        assert!(err.to_string().contains("min_star_fraction"), "{err}");
     }
 
     #[test]

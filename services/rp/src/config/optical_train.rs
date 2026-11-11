@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use rusty_photon_config::driver::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -336,83 +334,10 @@ impl TryFrom<i64> for FramesPerStep {
     }
 }
 
-/// The binning of a capture sweep (`auto_focus.binning`), rendered
-/// `"AxB"`.
-///
-/// [`rp_vocabulary::Binning`] is the wire vocabulary and takes any
-/// `u8 × u8`, zero included — it is the quota key a goal is written
-/// with, not a device setting. A sweep binning *is* a device setting,
-/// so a zero factor is rejected at load rather than at the first frame
-/// of a sweep that has already moved the focuser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(try_from = "String", into = "String")]
-pub struct SweepBinning(rp_vocabulary::Binning);
-
-impl SweepBinning {
-    #[must_use]
-    pub const fn value(self) -> rp_vocabulary::Binning {
-        self.0
-    }
-}
-
-impl From<SweepBinning> for String {
-    fn from(binning: SweepBinning) -> Self {
-        binning.0.to_string()
-    }
-}
-
-impl TryFrom<String> for SweepBinning {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let binning = value
-            .parse::<rp_vocabulary::Binning>()
-            .map_err(|e| format!("auto_focus.binning {e}"))?;
-        if binning.x == 0 || binning.y == 0 {
-            return Err(format!(
-                "auto_focus.binning factors must both be at least 1, got {value}"
-            ));
-        }
-        Ok(Self(binning))
-    }
-}
-
-/// The sparse-sample gate of a capture sweep
-/// (`auto_focus.min_star_fraction`).
-///
-/// A sweep sample whose star count is below this fraction of the
-/// sweep's largest count is rejected before the fit. Finite, in
-/// `[0, 1)`; `0` disables the gate. Validated at load like
-/// [`FocalLengthMm`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(try_from = "f64")]
-pub struct MinStarFraction(f64);
-
-impl MinStarFraction {
-    #[must_use]
-    pub const fn value(self) -> f64 {
-        self.0
-    }
-}
-
-impl TryFrom<f64> for MinStarFraction {
-    type Error = String;
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        if crate::imaging::tools::auto_focus::valid_min_star_fraction(value) {
-            Ok(Self(value))
-        } else {
-            Err(format!(
-                "auto_focus.min_star_fraction must be a finite number in [0, 1), got {value}"
-            ))
-        }
-    }
-}
-
-/// The confirmation tolerance of a sweep
+/// The confirmation tolerance of the metric sweep
 /// (`auto_focus.confirmation_tolerance`).
 ///
-/// How much worse than the lowest accepted sweep sample the
+/// How much worse than the lowest valid sweep sample the
 /// confirmation measurement may be, as a fraction, before the fitted
 /// position is rejected in favour of that sample's position. Finite,
 /// non-negative.
@@ -442,104 +367,40 @@ impl TryFrom<f64> for ConfirmationTolerance {
     }
 }
 
-/// The sweep budget of a capture sweep (`auto_focus.max_attempts`).
+/// The guiding train's metric-sweep parameters
+/// (`optical_trains[].auto_focus`, rp.md § Optical Trains).
 ///
-/// How many sweeps a run may make before it errors, `1..=5`: a failed
-/// fit is retried with the same parameters while attempts remain.
-/// Validated at load like [`FramesPerStep`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(try_from = "i64")]
-pub struct MaxAttempts(u32);
-
-impl MaxAttempts {
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-}
-
-impl TryFrom<i64> for MaxAttempts {
-    type Error = String;
-
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match u32::try_from(value) {
-            Ok(v) if crate::imaging::tools::auto_focus::valid_max_attempts(v) => Ok(Self(v)),
-            _ => Err(format!(
-                "auto_focus.max_attempts must be an integer from 1 to {}, got {value}",
-                crate::imaging::tools::auto_focus::MAX_ATTEMPTS_CAP
-            )),
-        }
-    }
-}
-
-/// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
-/// rp.md § Optical Trains).
-///
-/// Which fields apply depends on the train's
-/// purpose — imaging trains run the capture sweep (`duration`,
-/// `min_area`, `max_area` required, `binning`, `threshold_sigma`,
-/// `min_star_fraction` and `max_attempts` optional), the guiding train
-/// the PHD2-metric sweep (`frames_per_step` optional; the capture
-/// fields rejected);
-/// `confirmation_tolerance` applies to both — enforced with dotted-path errors in
-/// [`crate::equipment::trains::TrainModel::try_from_equipment`], so
-/// everything purpose-dependent is `Option` at the serde level. Backs
-/// train-addressed `auto_focus` calls (per-call parameters override
-/// field by field) and is required on every train a `refocus_train`
-/// expansion runs in.
+/// Only the guiding train carries the block. An imaging train is
+/// focused by the focus-model provider, from its own
+/// `focus-model.json`, and
+/// [`crate::equipment::trains::TrainModel::try_from_equipment`] refuses
+/// a block on one, naming the train and that file. The block backs
+/// `auto_focus` on the guiding train: per-call parameters override it
+/// field by field.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct TrainAutoFocusConfig {
-    /// Per-frame exposure for every point of a capture sweep.
-    #[serde(
-        default,
-        with = "humantime_serde::option",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "Option<String>")]
-    pub duration: Option<Duration>,
     pub step_size: SweepStepSize,
     pub half_width: SweepHalfWidth,
-    /// Binning for every frame of a capture sweep, `"AxB"`. Omitted →
-    /// `1x1`. Focus measurement compares frames of one sweep with each
-    /// other, so it wants them alike rather than fine — binning is a
-    /// property of this light path and its sensor, which is why it
-    /// lives here rather than in the tool call (rp.md § Optical
-    /// Trains).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binning: Option<SweepBinning>,
-    /// Minimum component pixel area for the per-frame `measure_basic`
-    /// (capture sweeps).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_area: Option<usize>,
-    /// The largest star the per-frame `measure_basic` measures, as the
-    /// area in pixels of its half-flux disc (capture sweeps).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_area: Option<usize>,
-    /// Per-frame `measure_basic` threshold in sigma units (capture
-    /// sweeps). Omitted → the tool default (5.0).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub threshold_sigma: Option<f64>,
-    /// Minimum valid samples for the parabolic fit. Omitted → the
-    /// tool default (5). Applies to both sweep variants.
+    /// Minimum valid samples for the fit. Omitted → the tool default
+    /// (5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_fit_points: Option<usize>,
-    /// Fresh guide frames per metric-sweep position (guiding train
-    /// only). Omitted → the default (3).
+    /// Fresh guide frames per sweep position. Omitted → the default
+    /// (3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_per_step: Option<FramesPerStep>,
-    /// Sparse-sample gate of the capture sweep (imaging trains only).
-    /// Omitted → the tool default (0.1).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_star_fraction: Option<MinStarFraction>,
     /// Confirmation tolerance of the fitted position. Omitted → the
-    /// tool default (0.25). Applies to both sweep variants.
+    /// tool default (0.25).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation_tolerance: Option<ConfirmationTolerance>,
-    /// Sweeps a run may make before it errors (imaging trains only).
-    /// Omitted → the tool default (2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_attempts: Option<MaxAttempts>,
+    /// Every other field the block carries: a capture sweep's
+    /// (`duration`, `min_area`, `max_area`, `binning`, …), on a block
+    /// written for an imaging train, among them. They parse here so the
+    /// load refuses each by name, with the train it belongs to, where an
+    /// unknown-field parse error would stop at the first and could not
+    /// say that an imaging train's block belongs in `focus-model.json`.
+    #[serde(flatten)]
+    pub other_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
@@ -590,10 +451,9 @@ pub struct OpticalTrainConfig {
     /// Roster device ids, objective side first. The last entry must be
     /// a camera; the rest are focusers, rotators, and filter wheels.
     pub devices: Vec<String>,
-    /// V-curve sweep parameters for focusing this train. Omitted → the
-    /// train cannot be auto-focused by `refocus_train`, and
-    /// train-addressed `auto_focus` calls must pass every sweep
-    /// parameter per call.
+    /// The guiding train's metric-sweep parameters. Omitted → an
+    /// `auto_focus` call on the guiding train passes the sweep geometry
+    /// per call. An imaging train carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
@@ -976,19 +836,22 @@ mod tests {
     }
 
     #[test]
-    fn optical_train_auto_focus_block_round_trips() {
+    fn auto_focus_block_round_trips_the_metric_sweep_fields() {
         let (_dir, path) = write_config(
             r#"{
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {
                     "cameras": [
-                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                        {"id": "guide-cam", "alpaca_url": "http://localhost:11120"}
                     ],
+                    "mount": {
+                        "alpaca_url": "http://localhost:11121",
+                        "guiding": {"url": "http://localhost:11130"}
+                    },
                     "optical_trains": [
-                        {"id": "main", "devices": ["main-cam"],
-                         "auto_focus": {"duration": "3s", "step_size": 100,
-                                        "half_width": 1000, "min_area": 4,
-                                        "max_area": 500, "binning": "2x2"}}
+                        {"id": "guide", "purpose": "guiding", "devices": ["guide-cam"],
+                         "auto_focus": {"step_size": 50, "half_width": 500,
+                                        "frames_per_step": 3}}
                     ]
                 },
                 "server": { "port": 0 }
@@ -1000,33 +863,35 @@ mod tests {
             .auto_focus
             .as_ref()
             .unwrap();
-        assert_eq!(block.duration, Some(Duration::from_secs(3)));
-        assert_eq!(block.step_size.value(), 100);
-        assert_eq!(block.half_width.value(), 1000);
-        assert_eq!(block.min_area, Some(4));
-        assert_eq!(block.max_area, Some(500));
-        assert_eq!(
-            block.binning.map(SweepBinning::value),
-            Some(rp_vocabulary::Binning { x: 2, y: 2 })
-        );
-        assert!(block.threshold_sigma.is_none());
+        assert_eq!(block.step_size.value(), 50);
+        assert_eq!(block.half_width.value(), 500);
+        assert_eq!(block.frames_per_step.map(FramesPerStep::value), Some(3));
         assert!(block.min_fit_points.is_none());
-        assert!(block.frames_per_step.is_none());
-        assert!(block.max_attempts.is_none());
+        assert!(block.confirmation_tolerance.is_none());
+        assert!(block.other_fields.is_empty(), "{:?}", block.other_fields);
 
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(
-            value.pointer("/equipment/optical_trains/0/auto_focus/duration"),
-            Some(&serde_json::json!("3s"))
+            value.pointer("/equipment/optical_trains/0/auto_focus"),
+            Some(&serde_json::json!({"step_size": 50, "half_width": 500, "frames_per_step": 3}))
         );
+    }
+
+    /// A capture sweep's fields parse, so the train model can refuse
+    /// them by name (an imaging train's whole block, a guiding train's
+    /// field by field), and are written back as they were.
+    #[test]
+    fn auto_focus_block_keeps_every_other_field_for_the_load_to_refuse() {
+        let json = serde_json::json!({
+            "duration": "3s", "step_size": 100, "half_width": 1000,
+            "min_area": 4, "max_area": 500, "binning": "2x2"
+        });
+        let block: TrainAutoFocusConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(
-            value.pointer("/equipment/optical_trains/0/auto_focus/step_size"),
-            Some(&serde_json::json!(100))
+            block.other_fields.keys().collect::<Vec<_>>(),
+            ["binning", "duration", "max_area", "min_area"]
         );
-        assert_eq!(
-            value.pointer("/equipment/optical_trains/0/auto_focus/binning"),
-            Some(&serde_json::json!("2x2"))
-        );
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
     }
 
     #[test]
@@ -1042,25 +907,13 @@ mod tests {
                 serde_json::json!(-5),
                 "auto_focus.half_width must be a positive integer",
             ),
-            (
-                "binning",
-                serde_json::json!("0x0"),
-                "auto_focus.binning factors must both be at least 1",
-            ),
-            (
-                "binning",
-                serde_json::json!("half"),
-                "auto_focus.binning invalid binning",
-            ),
         ] {
             let mut config = serde_json::json!({
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {
                     "optical_trains": [
-                        {"id": "main", "devices": ["main-cam"],
-                         "auto_focus": {"duration": "3s", "step_size": 100,
-                                        "half_width": 1000, "min_area": 4,
-                                        "max_area": 500}}
+                        {"id": "guide", "devices": ["guide-cam"],
+                         "auto_focus": {"step_size": 50, "half_width": 500}}
                     ]
                 },
                 "server": { "port": 0 }
@@ -1071,27 +924,6 @@ mod tests {
             let err = load_config(&path).unwrap_err().to_string();
             assert!(err.contains(named), "{field}: {err}");
         }
-    }
-
-    #[test]
-    fn auto_focus_block_rejects_unknown_field() {
-        let (_dir, path) = write_config(
-            r#"{
-                "session": {"data_directory": "/tmp/rp-test"},
-                "equipment": {
-                    "optical_trains": [
-                        {"id": "main", "devices": ["main-cam"],
-                         "auto_focus": {"duration": "3s", "step_size": 100,
-                                        "half_width": 1000, "min_area": 4,
-                                        "max_area": 500, "sweep_mode": "fast"}}
-                    ]
-                },
-                "server": { "port": 0 }
-            }"#,
-        );
-
-        let err = load_config(&path).unwrap_err().to_string();
-        assert!(err.contains("sweep_mode"), "{err}");
     }
 
     #[test]
@@ -1130,49 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn min_star_fraction_newtype_validation_boundaries() {
-        assert_eq!(MinStarFraction::try_from(0.0).unwrap().value(), 0.0);
-        assert_eq!(MinStarFraction::try_from(0.999).unwrap().value(), 0.999);
-        assert!(MinStarFraction::try_from(1.0)
-            .unwrap_err()
-            .contains("min_star_fraction must be a finite number in [0, 1)"));
-        assert!(MinStarFraction::try_from(-0.1).is_err());
-        assert!(MinStarFraction::try_from(f64::NAN).is_err());
-    }
-
-    #[test]
-    fn max_attempts_newtype_accepts_the_budget_range_and_names_a_bad_one() {
-        assert_eq!(MaxAttempts::try_from(1).unwrap().value(), 1);
-        assert_eq!(MaxAttempts::try_from(5).unwrap().value(), 5);
-        for bad in [0_i64, 6, -1, i64::from(u32::MAX) + 1] {
-            let err = MaxAttempts::try_from(bad).unwrap_err();
-            assert!(
-                err.contains("auto_focus.max_attempts must be an integer from 1 to 5"),
-                "{bad}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn auto_focus_block_parses_max_attempts_and_names_a_bad_one() {
-        let block: TrainAutoFocusConfig = serde_json::from_value(serde_json::json!({
-            "step_size": 10, "half_width": 50, "max_attempts": 3
-        }))
-        .unwrap();
-        assert_eq!(block.max_attempts.map(MaxAttempts::value), Some(3));
-
-        let err = serde_json::from_value::<TrainAutoFocusConfig>(serde_json::json!({
-            "step_size": 10, "half_width": 50, "max_attempts": 0
-        }))
-        .unwrap_err()
-        .to_string();
-        assert!(
-            err.contains("auto_focus.max_attempts must be an integer from 1 to 5, got 0"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn confirmation_tolerance_newtype_validation_boundaries() {
         assert_eq!(ConfirmationTolerance::try_from(0.0).unwrap().value(), 0.0);
         assert_eq!(ConfirmationTolerance::try_from(0.25).unwrap().value(), 0.25);
@@ -1183,16 +972,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_focus_block_parses_the_gate_and_tolerance_and_names_a_bad_one() {
+    fn auto_focus_block_parses_the_tolerance_and_names_a_bad_one() {
         let block: TrainAutoFocusConfig = serde_json::from_value(serde_json::json!({
-            "step_size": 10, "half_width": 50,
-            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5
+            "step_size": 10, "half_width": 50, "confirmation_tolerance": 0.5
         }))
         .unwrap();
-        assert_eq!(
-            block.min_star_fraction.map(MinStarFraction::value),
-            Some(0.2)
-        );
         assert_eq!(
             block
                 .confirmation_tolerance
@@ -1201,12 +985,12 @@ mod tests {
         );
 
         let err = serde_json::from_value::<TrainAutoFocusConfig>(serde_json::json!({
-            "step_size": 10, "half_width": 50, "min_star_fraction": 1.5
+            "step_size": 10, "half_width": 50, "confirmation_tolerance": -0.5
         }))
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("auto_focus.min_star_fraction must be a finite number in [0, 1)"),
+            err.contains("auto_focus.confirmation_tolerance must be a finite number of at least 0"),
             "{err}"
         );
     }

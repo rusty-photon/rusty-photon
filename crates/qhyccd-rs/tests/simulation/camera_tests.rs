@@ -2159,3 +2159,46 @@ fn a_failed_close_keeps_the_handle_and_a_reopen_is_a_no_op_on_it() {
     camera.close().unwrap();
     assert!(!camera.is_open().unwrap());
 }
+
+#[test]
+fn a_temperature_file_is_the_reading_while_it_exists() {
+    let file = departure_file("temperature_reading");
+    let camera = Camera::new_simulated(
+        SimulatedCameraConfig::default()
+            .with_cooler()
+            .with_temperature_file(&file),
+    );
+    camera.open().unwrap();
+    let ambient = camera.current_temperature_celsius().unwrap();
+
+    std::fs::write(&file, b"-5005.8\n").unwrap();
+    assert_eq!(camera.current_temperature_celsius().unwrap(), -5005.8);
+
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(camera.current_temperature_celsius().unwrap(), ambient);
+}
+
+#[test]
+fn a_temperature_file_that_holds_no_number_fails_the_read() {
+    let file = departure_file("temperature_not_a_number");
+    let camera = Camera::new_simulated(
+        SimulatedCameraConfig::default()
+            .with_cooler()
+            .with_temperature_file(&file),
+    );
+    camera.open().unwrap();
+    std::fs::write(&file, b"warm").unwrap();
+
+    let error = camera.current_temperature_celsius().unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            QHYError::GetParameter {
+                control: ControlType::CurTemp
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    std::fs::remove_file(&file).unwrap();
+}

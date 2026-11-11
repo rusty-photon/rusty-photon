@@ -11,7 +11,9 @@ Feature: Connection lifecycle
   read and the vendor's upgrade tool; 3.0.8 and later connect. A hub left
   streaming by an earlier session cuts a frame short to answer, and the
   reply arrives glued to that frame; the driver reads the reply all the
-  same.
+  same. Line noise while the identity request waits, whether bytes that
+  are not text or a streamed frame garbled past parsing, is skipped like
+  any frame that is not the reply, and the start goes on.
 
   Each ASCOM device starts disconnected, connects and disconnects
   idempotently, and survives repeated cycles.
@@ -133,3 +135,14 @@ Feature: Connection lifecycle
     And switch 17 value should be 12.2
     When I set switch 2 boolean to false
     Then switch 2 boolean should be false
+
+  Scenario Outline: Line noise while the identity request waits leaves the start unharmed: <noise>
+    Given a running Gemini hub server with "<bytes>" on the line ahead of the identity reply and the switch connected
+    Then the switch device should report connected
+
+    Examples:
+      | noise                                         | bytes        |
+      | bytes that are not text, glued to the reply   | %FF%FE       |
+      | bytes that are not text, framed on their own  | %FF%FE#      |
+      | a streamed frame with a byte that is not text | *G1111D%FF1# |
+      | a streamed frame that does not parse          | *G11X1D#     |
