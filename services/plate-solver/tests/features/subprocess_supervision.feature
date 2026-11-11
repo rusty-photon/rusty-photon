@@ -29,7 +29,9 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
   timeout plus grace is force-killed. A contended Windows runner can take
   longer than 2.1 s to start mock_astap, which is all a 100 ms timeout
   leaves it. The scenario that expects "(terminated)" therefore gives its
-  child a 3 s timeout, leaving start-up 5 s.
+  child a 3 s timeout, leaving start-up 5 s. The one that expects
+  "(killed)" needs its child's ignoring handler installed before the
+  signal is handled, so its 5 s timeout leaves start-up the same 5 s.
 
   Background:
     Given the wrapper is running with mock_astap as its solver
@@ -42,22 +44,21 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
     And the response field "error" is "solve_timeout"
     And the response field "message" contains "(terminated)"
 
-  # @unix-only: Windows cannot reliably demonstrate the ignore-graceful-
-  # signal precondition (the mock's SetConsoleCtrlHandler vs the wrapper's
-  # CTRL_BREAK_EVENT is subject to console-attach quirks), so the child
-  # dies before the 2s grace elapses -- the wrapper then reports
-  # "(terminated)" and both assertions below fail. Mirrors the
-  # #[cfg(unix)] gate on the equivalent test in runner_integration.rs;
-  # the wrapper's force-kill contract holds on both platforms regardless.
-  @unix
+  # mock_astap ignores the graceful signal only once its `main` has
+  # installed its handler (SIG_IGN on Unix, a console control handler on
+  # Windows). A signal handled before that meets the default handler,
+  # which exits, and reads as "(terminated)" — on Windows that includes a
+  # CTRL_BREAK held through a start-up that outlasts the timeout. Hence the
+  # 5 s timeout, and the floor of timeout plus grace: an answer that comes
+  # sooner did not wait out the grace.
   Scenario: Hung child ignoring graceful signal is force-killed after grace
     Given mock_astap is configured for "ignore_sigterm" mode
     And a writable FITS path
-    When I POST to /api/v1/solve with that fits_path and timeout "100ms"
+    When I POST to /api/v1/solve with that fits_path and timeout "5s"
     Then the response status is 504
     And the response field "error" is "solve_timeout"
     And the response field "message" contains "(killed)"
-    And the response time is at least 2000 milliseconds
+    And the response time is at least 7000 milliseconds
 
   # The scenario fixes the order of the two solves instead of racing them,
   # and each step waits on something the wrapper or mock_astap produced, so

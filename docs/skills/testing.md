@@ -1469,8 +1469,9 @@ Two questions retire that whole class:
   load-proof and a strictly stronger check than the ceiling ever was.
 
 Note the asymmetry with a *floor*, which stays sound: contention can only
-make a request take longer, so `at least 2000 milliseconds` still proves
-the grace period elapsed. Do not add a ceiling back for symmetry. And a
+make a request take longer, so a floor of timeout plus grace (`at least
+7000 milliseconds` against the scenario's 5 s timeout) still proves the
+grace period elapsed. Do not add a ceiling back for symmetry. And a
 ceiling never was the hang bound people assume it is — it is evaluated
 only once the response has arrived, which is precisely the case where
 nothing hung. What bounds a hang is a timeout on the shared client
