@@ -28,9 +28,10 @@ files the guard does not read are clean too; every passage of history
 that lived inside a living document is a record in
 `docs/plans/archive/`, opening with the line that says what it is and
 where it came from; and the knowledge the
-bare numbers used to stand for is stated where the code and the docs
-need it, with a link to a record only where the text would otherwise be
-disbelieved.
+bare numbers used to stand for is stated once, where a reader would
+otherwise get it wrong, with a link to a record only where the text
+would otherwise be disbelieved — and a comment or passage whose only
+content was history is gone, not reworded.
 
 ## Census
 
@@ -49,12 +50,23 @@ which the scan reports apart.
 | Bare numbers in living Markdown | 41 files; the heaviest are `docs/services/star-adventurer-gti.md` (72), `docs/services/doctor.md` (55), `docs/services/svbony-camera.md` (29), `docs/skills/testing.md` (26), `docs/services/rp.md` (17) | 293 occurrences: 64 of them are the text of a link to a record (`[#607](url)`, `[PR #1298](url)`; 4 of the 64 point at another project, `[nodejs/undici#5360](url)`), which the guard's definition counts as bare too; 4 are workspace.md's quoted examples; 3 are the `#` of one upstream URL, cited three times in `crates/qhyccd-rs/README.md`, which no batch rewrites and the final scan excepts; 1 is the stderr label `[sentinel#12]` that testing.md shows. The 286 the batches take equal the `PENDING` total by coincidence |
 | Bare numbers in records | archived plans, active plans, ADRs, validation records, changelogs | 1136 occurrences, 103 files — **not touched** |
 | Full-URL citations of this repository's issues and pull requests in living documents and comments | 24 files; 20 in `docs/services/doctor.md` — three of them section banners, the rest inline citations and the labels of its MVP-scope list | 68 |
+| Record links the matcher does not see: ADR ids (`ADR-019`) and paths to plans (`docs/plans/archive/svbony-camera.md`), in comments and in living Markdown | scanned 2026-11-11 on `main` at `7b660137`; the heaviest are `docs/workspace.md` (44 ADR ids and 22 plan paths, most of them its Decisions and Plans index rows, which stay), `docs/services/zwo-camera.md` (24 and 14), `docs/services/svbony-camera.md` (20 and 18), `docs/services/rp.md` (11 and 28) | ADR ids: 231 in comments the guard reads (138 files), 13 in code files it does not, 337 in living Markdown (49 files). Plan paths: 116 in comments the guard reads (93 files), 3 in code files it does not, 210 in living Markdown (50 files). Not in the batch counts below: a batch counts its own when it starts |
 | Lines whose wording suggests narration ("used to", "previously", "no longer", "the old …", "retired", "legacy", "Copilot", "before this" …) | 261 files; the heaviest are `star-adventurer-gti.md` (41), `rp.md` (34), `qhy-camera.md` (28), `svbony-camera.md` (23), `services/qhy-camera/src/camera.rs` (20) | 857 candidate lines; about one in six is narration, by a sample of 45 Rust comment lines |
 
 The narration count is a ceiling for triage, not a target: "retired" and
 "legacy" name things the code handles today as often as they explain a
-change, and "used to" is mostly purpose. Each batch reads its candidates
-by hand and is never gated on the grep.
+change, and "used to" is mostly purpose. It is a floor for reading, not
+a scope: in the root `Cargo.toml` the grep flagged three lines and
+reading every comment found a dozen more, the first of them indented
+under the member list where a `^#` grep never looks. Each batch reads
+every comment in its files by hand and is never gated on the grep.
+
+By 2026-11-11 the `PENDING` table holds 281 occurrences in 198 rows and
+117 files: one row went with the trial slice of B9 (the root
+`Cargo.toml`, in the status table), three rows and four occurrences
+with work on `services/rp` and `services/focus-model` under the rule,
+which is how every batch is expected to shrink before it starts. A
+batch counts from the table as it stands.
 
 ### Records inside living documents
 
@@ -91,6 +103,11 @@ list; the census found:
 - `docs/services/doctor.md` § MVP scope, written as a list of delivered
   issues, and `docs/services/rp.md`'s account of the OmniSim fork's
   `467.x` releases under § BDD Tests.
+- `docs/services/zwo-focuser.md` § Real-hardware validation, one dated
+  run (2026-07-14) that no record in `docs/validation/` holds — the
+  focuser's departure run of 2026-10-07 has one, this run does not. The
+  file is in no subsystem batch, so B9 takes it with the other files no
+  batch names.
 
 ## Method
 
@@ -104,7 +121,25 @@ applied at scale.
    both is one pull request where the doc is small and two where it is
    not; the doc's pull request goes first.
 
-2. **Each bare number is one of five things.**
+2. **Is the comment needed at all?** Before a number is classified or a
+   sentence reworded, the batch asks of every comment and every passage
+   in its files — not only the lines the grep flagged — what question
+   it answers that a reader of the line, or of the section, would
+   otherwise get wrong. For a manifest line that is an exact or
+   held-back version, a non-default feature set, a git source, a floor
+   a reader would lower, a profile knob; for code, why it is not the
+   obvious thing. The batch keeps that answer, as short as it gets, and
+   deletes the rest. A comment whose only content was how a setting was
+   reached has nothing left to say once the history goes: deleting it is
+   the fix, and rewording it into the present tense only restates the
+   line beneath it or justifies a non-decision. What a thing is for goes
+   when its name and its documentation say it. Mechanism and process
+   knowledge — how the lint groups are ordered, what a toolchain bump
+   does to them, how a dual-homed crate inherits its versions — lives
+   once, in the design doc or in workspace.md, and the comment points
+   there only where the line looks wrong without it.
+
+3. **Each citation is one of five things.**
    - *Noise* — `(issue #595)` after a sentence that is complete without
      it. Delete it.
    - *A pointer that carries the knowledge* — "the probe rejects the
@@ -129,7 +164,15 @@ applied at scale.
      project's `[nodejs/undici#5360](url)`, which becomes
      `[undici issue 5360](url)`.
 
-3. **Narration becomes a fact or a counterfactual.** "Used to",
+   An ADR id and a `docs/` path to a plan, archived or live, are record
+   links too ([workspace.md § Comments](../workspace.md#comments)) and
+   take the same test: most are noise beside a sentence that stands
+   without them, or a pointer whose knowledge belongs in the design
+   doc; one that is kept is written as its `docs/decisions/` or
+   `docs/plans/` path. The Decisions and Plans index rows in
+   workspace.md stay (decision 5).
+
+4. **Narration becomes a fact or a counterfactual.** "Used to",
    "previously", "before #N", "the old …" frame the code against a past
    the reader does not have. Where the old behaviour is why a safeguard
    exists, say so in the counterfactual form — "without the manifest
@@ -137,9 +180,11 @@ applied at scale.
    turns a fixed bug into a live claim. Where it is not, state the
    constraint alone. "Retired" and "legacy" stay when they name what the
    code handles today (a retired config key `doctor` reports) and go
-   when they explain a change.
+   when they explain a change. A claim that is true today and dated by
+   its wording — "the current minor", "still compiles" — is made durable
+   or deleted.
 
-4. **A record inside a living document moves out whole.** The passage
+5. **A record inside a living document moves out whole.** The passage
    becomes a new file in `docs/plans/archive/` that opens the way the
    two non-plan records already there do
    ([`code-review-record-2026-10.md`](archive/code-review-record-2026-10.md),
@@ -156,53 +201,70 @@ applied at scale.
    otherwise be disbelieved. Validation runs that are already in
    `docs/validation/` are linked there, not duplicated.
 
-5. **A copied comment is fixed in every copy, in one batch.** The
+6. **A copied comment is fixed in every copy, in one batch.** The
    OmniSim comments the services' `tests/bdd.rs` files copied — the
    loud-reset diagnostic in `rp` and `calibrator-flats`, the exit-code
    rule of testing.md § 2.7 in `pa-falcon-rotator` and `qhy-camera` —
    and the `acquire()` comments the serial drivers copied from the
    shared transport are the known cases; a batch that finds another
-   fixes all of it.
+   fixes all of it. Before knowledge moves between a comment and a
+   document, the batch greps for what names its present home: the
+   test-scope allow list in the root `Cargo.toml` has 153 Rust files —
+   crate roots, `tests/` entry files and three `src/bin/` tools — saying
+   it is documented there, so it stays there until a change of its own
+   moves it and every pointer. A slice of a batch cut by file names, in
+   its pull request, the copies and pointers it leaves to the rest of
+   the batch.
 
-6. **Tests are named for what they pin.** A test named for a review
+7. **Tests are named for what they pin.** A test named for a review
    comment or a pull request — `// Regression test for the Copilot
    review on PR #221` — is renamed for the failure shape, this input and
    that wrong output, and its comment describes that shape. Feature
    files are the contract: a scenario title or description that names an
    issue is reworded, never exempted.
 
-7. **Dual-homed crates cite by URL.** `qhyccd-rs`, `zwo-rs` and
+8. **Dual-homed crates cite by URL.** `qhyccd-rs`, `zwo-rs` and
    `svbony-rs` are dual-homed: their crate tarballs carry no `docs/`,
    and docs.rs renders their doc comments without it, so a doc comment
-   there that needs a citation uses the full URL.
+   there links anything in this repository — a record it cites, a
+   design-doc section it points at — by full URL.
 
-8. **Stale status is fixed on the way.** A sentence that says a thing is
+9. **Stale status is fixed on the way.** A sentence that says a thing is
    pending, deferred or planned when the code has it is as wrong as a
    narrated past. The Services table in workspace.md has had such rows;
-   the batch fixes what it finds in its files.
+   the batch fixes what it finds in its files. A comment that defends a
+   value the line does not need — an exact pin that holds nothing, a
+   floor nothing in the workspace requires — is that value's own case
+   against it: the value changes and the comment goes, with the owner's
+   word where the value is a dependency requirement. A claim about a
+   version, the dependency graph or a crate's consumers is checked
+   against the lock (`cargo tree -i <crate>`) before it is kept, and so
+   is its rewrite.
 
-9. **The guard's rows go.** The batch deletes every `PENDING` row its
-   files no longer bear out; `cargo test -p rusty-photon-ci bare_refs`
-   names the rows it reached. A row is never added, and a number the
-   batch cannot clear is reworded, not re-listed. The first batch to
-   touch `bare_refs.rs` adds to `PENDING`'s doc comment that a row
-   follows its file when the file moves.
+10. **The guard's rows go.** The batch deletes every `PENDING` row its
+    files no longer bear out; `cargo test -p rusty-photon-ci bare_refs`
+    names the rows it reached. A row is never added, a number the batch
+    cannot clear is reworded, not re-listed, and a row follows its file
+    when the file moves.
 
-10. **Local checks.** The AGENTS.md rule 4 gate, and for a crate whose
+11. **Local checks.** The AGENTS.md rule 4 gate, and for a crate whose
     doc comments changed `cargo doc --no-deps -p <crate>` with
     `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links"`: a doc comment
     that loses a link definition (`[issue #254][issue]`) breaks every
     reference that used it. A batch that extracts a record checks the
     moved text's own links, now one directory deeper, and every link
-    that pointed into it, as archiving-plans.md steps 4 and 5 do.
+    that pointed into it, as archiving-plans.md steps 4 and 5 do. Any
+    change to a `Cargo.toml`, comments included, stales
+    `MODULE.bazel.lock` (AGENTS.md rule 10): `cargo ci repin-bazel-lock`
+    before the commit, and the lock in the same commit.
 
-11. **Pull request and review.** The pull request description lists the
+12. **Pull request and review.** The pull request description lists the
     records the batch created and what each living document now says in
     their place; the review (AGENTS.md rule 14) rates a remaining breach
     in text the batch adds `likely · medium · fix`
     ([code-review.md](../skills/code-review.md)). The batch's row below
-    gets its pull request, and the plan's row in workspace.md's Plans
-    index its new status.
+    gets its pull request — a slice of a batch, a row of its own — and
+    the plan's row in workspace.md's Plans index its new status.
 
 ## Batches
 
@@ -210,19 +272,22 @@ Nine batches, each a subsystem whose code and docs share their numbers.
 Code counts are bare-number occurrences in the guard's table plus the
 files it does not read; doc counts are occurrences in living Markdown.
 Both are the census of 2026-11-02, so a batch starts by re-running the
-guard and the scan.
+guard and the scan. B9's count leaves out the root `Cargo.toml`, done as
+the method's trial slice (the status table below), so the Code column
+sums to 296: 285 of the table's 286 and the 11 in files the guard does
+not read.
 
 | Batch | Scope | Code | Docs | Knowledge homes and records to extract |
 |-------|-------|-----:|-----:|----------------------------------------|
 | B1 | `services/star-adventurer-gti` (61), `crates/skywatcher-motor-protocol` (4); `docs/services/star-adventurer-gti.md` (72), `docs/references/skywatcher-motor-controller-command-set.md` (1), `docs/skills/hardware-validation.md` (1) | 65 | 74 | § Initialisation sequence holds why `:e1` is first; § Connection Lifecycle the startup gate and the moving-mount refusal; § PulseGuide lifecycle the send instant and the carried-forward sample; § Side-of-pier the selector; § Configuration the retired `dec_limits` and `flip_range_hours`. Records out: § Phase status with its Phase 4 findings; the dated probe log under § Real-hardware validation. The heading "Shared transport (Phase E of issue #257)" names the section. hardware-validation.md's sentence that the design docs "narrate what was learned" goes with the probe log: the record holds the run, the design doc states what the hardware does, and a first run on a platform is linked under § Real-hardware validation as the skill asks |
-| B2 | `services/doctor` (37), `services/ui-htmx` (12, nine of them axum's SSE shutdown bug, cited once by URL and linked from the rest), `installer/Package.wxs` (1); `docs/services/doctor.md` (55, of which 20 are the link texts of its URL citations), `docs/services/ui-htmx.md` (2), `docs/packaging-windows.md` (3), `installer/README.md` (1) | 50 | 61 | doctor.md § Client-target joins, § ACME convergence and § TLS and auth hold the join rules; their banners lose their issue links. ui-htmx.md states the drivers map the service creates for itself, which doctor, the installer and packaging-windows.md all describe against its history. Record out: doctor.md § MVP scope as a list of delivered issues; the present-tense scope stays |
+| B2 | `services/doctor` (37), `services/ui-htmx` (12, nine of them axum's SSE shutdown bug, cited once by URL and linked from the rest), `installer/Package.wxs` (1); `docs/services/doctor.md` (55, of which 20 are the link texts of its URL citations), `docs/services/ui-htmx.md` (2), `docs/packaging-windows.md` (3), `installer/README.md` (1) | 50 | 61 | doctor.md § Client-target joins, § TLS and auth and § ACME convergence hold the join rules; the banners of § Client-target joins, § ACME convergence and § The flip orchestrator lose their issue links. ui-htmx.md states the drivers map the service creates for itself, which doctor, the installer and packaging-windows.md all describe against its history. Record out: doctor.md § MVP scope as a list of delivered issues; the present-tense scope stays |
 | B3 | `services/rp` (21), `crates/rp-guider` (5), `crates/rp-plate-solver` (5); `docs/services/rp.md` (17), `services/rp/tests/fixtures/star_detection/README.md` (1) | 31 | 18 | rp.md § `center_on_target` Contract holds the stalled-read timeout and the progress emission; § Equipment Integration the shared `ca_cert` and the per-client `auth`; the per-frame acquisition facts their own — today a bold paragraph under § Core Fields, which gets a heading if a comment is to link it. The two client crates' `BUILD.bazel` and `lib.rs` comments say what the field is for, not which issue added it. Record out: the OmniSim fork's `467.x` release account under § BDD Tests, whose present-tense half (what the fork adds and why) joins `docs/references/omnisim.md` |
 | B4 | `crates/bdd-infra` (20), the OmniSim comments copied into `tests/bdd.rs` of `rp`, `calibrator-flats`, `pa-falcon-rotator` and `qhy-camera` (5: the loud reset, the exit-code rule, the park hang), `.github/actions/install-omnisim/omnisim.mjs` (4), the OmniSim lines of `.bazelrc`, `bazel.yml` and `services/rp/BUILD.bazel` (3); `docs/skills/testing.md` (26), `docs/references/omnisim.md` (9) | 32 | 35 | testing.md § 2.7 and § 5 and omnisim.md already hold the knowledge — the exit-code rule, the loud reset, serialised restarts, one private simulator per test process, `ServiceHandle`'s health read — so the comments link the sections and the sections drop the numbers; the flake families testing.md cites by URL are judged one by one; the stderr-label example `[sentinel#12]` names no issue, and B4 writes it with a one-digit sequence number so the final scan reads it as the label it is |
-| B5 | `crates/rusty-photon-shared-transport` (17), `services/pa-falcon-rotator` (9), `services/qhy-focuser` (3), `services/dsd-fp2`, `services/pa-scops-oag`, `services/ppba-driver` (1 each); `docs/services/upbv2-driver.md` (4), `docs/services/gemini-powerbox-adv3-driver.md` (4), `docs/services/dsd-fp2.md` (4), `docs/services/ppba-driver.md` (2), `docs/services/falcon-rotator.md`, `docs/services/qhy-focuser.md`, `README.md` (1 each) | 32 | 17 | The shared transport has no design doc: the startup gate, the moving-mount refusal, the command lock's run-to-completion and the reconnect ownership live in `shared.rs` comments that cite issues. B5 writes `docs/crates/rusty-photon-shared-transport.md`, shrinks the Shared Crates row to point at it, and makes the adopters' copied `acquire()` comments link it. The "Relationship to issue #1173" sections in upbv2 and gemini state the open design question as a question; dsd-fp2.md's ConformU citation gets a worded link text (step 2) |
-| B6 | `crates/zwo-rs` (6), `crates/svbony-rs` (2), `crates/qhyccd-rs` (1, the `Audit #11` internal numbering), `services/zwo-camera`, `services/qhy-camera`, `services/svbony-camera` (1 each), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2); `docs/services/svbony-camera.md` (29), `docs/services/zwo-camera.md` (6), `docs/services/qhy-camera.md` (4), `docs/services/sky-survey-camera.md` (1), `docs/svbony-camera-windows-install.md` (1) | 14 | 41 | zwo-camera.md holds the per-sensor `MaxADU` and the departure measurements (`docs/validation/2026-10-06-zwo-camera-departure-linux/`, `docs/validation/2026-10-07-zwo-camera-departure-windows/`), svbony-camera.md the udev rule and the readout ladder. Records out: svbony-camera.md's banner stack and its dated validation subsections (the runs are in `docs/validation/`); svbony-camera.md's § Delivery phasing, which its archived plan holds, and zwo-camera.md's, which its live plan ([zwo-driver.md](zwo-driver.md)) holds, so one present-tense sentence replaces each — for zwo after the section's *Remaining* items are checked against the code (step 8) and the plan carries what is still open; qhy-camera.md's § Delivery phasing and § Implementation notes, which no plan holds, so both move out whole. The Windows install guide says what the MSI ships today. Dual-homed crates cite by URL |
+| B5 | `crates/rusty-photon-shared-transport` (17), `services/pa-falcon-rotator` (9), `services/qhy-focuser` (3), `services/dsd-fp2`, `services/pa-scops-oag`, `services/ppba-driver` (1 each); `docs/services/upbv2-driver.md` (4), `docs/services/gemini-powerbox-adv3-driver.md` (4), `docs/services/dsd-fp2.md` (4), `docs/services/ppba-driver.md` (2), `docs/services/falcon-rotator.md`, `docs/services/qhy-focuser.md`, `README.md` (1 each) | 32 | 17 | The shared transport has no design doc: the startup gate, the moving-mount refusal, the command lock's run-to-completion and the reconnect ownership live in `shared.rs` comments that cite issues. B5 writes `docs/crates/rusty-photon-shared-transport.md`, shrinks the Shared Crates row to point at it, and makes the adopters' copied `acquire()` comments link it. The "Relationship to issue #1173" sections in upbv2 and gemini state the open design question as a question; dsd-fp2.md's ConformU citation gets a worded link text (step 3) |
+| B6 | `crates/zwo-rs` (6), `crates/svbony-rs` (2), `crates/qhyccd-rs` (1, the `Audit #11` internal numbering), `services/zwo-camera`, `services/qhy-camera`, `services/svbony-camera` (1 each), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2); `docs/services/svbony-camera.md` (29), `docs/services/zwo-camera.md` (6), `docs/services/qhy-camera.md` (4), `docs/services/sky-survey-camera.md` (1), `docs/svbony-camera-windows-install.md` (1) | 14 | 41 | zwo-camera.md holds the per-sensor `MaxADU` and the departure measurements (`docs/validation/2026-10-06-zwo-camera-departure-linux/`, `docs/validation/2026-10-07-zwo-camera-departure-windows/`), svbony-camera.md the udev rule and the readout ladder. Records out: svbony-camera.md's banner stack and its dated validation subsections (the runs are in `docs/validation/`); svbony-camera.md's § Delivery phasing, which its archived plan holds, and zwo-camera.md's, which its live plan ([zwo-driver.md](zwo-driver.md)) holds, so one present-tense sentence replaces each — for zwo after the section's *Remaining* items are checked against the code (step 9) and the plan carries what is still open; qhy-camera.md's § Delivery phasing and § Implementation notes, which no plan holds, so both move out whole. The Windows install guide says what the MSI ships today. Dual-homed crates cite by URL |
 | B7 | `services/phd2-guider` (7), `services/plate-solver` (6) with `plate-solver-smoke.yml` (2), `services/sentinel` (6), `crates/rusty-photon-tls` (4), `crates/rusty-photon-service-lifecycle` (2), `crates/rusty-photon-driver` (1); `docs/skills/service-lifecycle.md` (5), `docs/crates/rusty-photon-service-lifecycle.md` (4), `docs/services/plate-solver.md` (4), `docs/packaging.md` (2), `docs/crates/rusty-photon-setup.md`, `docs/services/phd2-guider.md`, `docs/services/sentinel.md` (1 each) | 28 | 18 | The lifecycle docs say what one `Shutdown` handle guarantees, in the counterfactual form, not what twelve services did before it. sentinel.md holds the degraded-answer rule, plate-solver.md the smoke test's pinned fixture and its timing guard. Record out: phd2-guider.md § Implementation Phases |
 | B8 | `crates/rp-catalog` (3) with its `scripts/*.py` (6), `services/session-runner` (3), `services/focus-model` (2), `crates/rp-focus-curve` (1); `docs/services/planetarium-bridge.md` (4), `docs/services/session-runner.md` (4), `docs/services/focus-model.md` (3), `docs/crates/rp-focus-curve.md` (2) | 15 | 13 | planetarium-bridge.md and the catalog scripts describe the catalog as it is (Messier, NGC, IC, the star layer, the corrected coordinates), not as what one issue widened it to; session-runner.md states the planner contract its three `rp` issues delivered; the focus docs cite the coarse-sweep measurement by its fixture README. Records out: planetarium-bridge.md's two spike appendices |
-| B9 | `MODULE.bazel` (10), `.bazelrc` (7), `Cargo.toml` (1), `check.yml` (6), `bazel.yml` (1), `ui-browser-nightly.yml` (1), `.github/actions/lib/install.mjs` and its test (2), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1); `docs/skills/raspberry-pi-runner.md` (3), `docs/skills/proxmox-runner-pool.md` (2), `docs/skills/babysitting-prs.md`, `docs/skills/ci-logic.md`, `tools/bazel-cache-worker/README.md` (1 each), the upstream link text in workspace.md's ascom-alpaca fork notes (1), plus `docs/skills/coverage.md` § History and the archive links in workspace.md's living tables | 30 | 9 | The Windows file-system rationale in `MODULE.bazel` and `.bazelrc` stays as rationale with its upstream URLs; the comments in `check.yml` and the pre-commit hook that explain the two clippy passes link [pre-push.md](../skills/pre-push.md), which already holds the reason. Record out: coverage.md's Codecov era. B9 also closes the plan: the guard's doc comment and workspace.md § Comments say `PENDING` is empty and a new number is reworded |
+| B9 | `MODULE.bazel` (10), `.bazelrc` (7), `check.yml` (6), `bazel.yml` (1), `ui-browser-nightly.yml` (1), `.github/actions/lib/install.mjs` and its test (2), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1); `docs/skills/raspberry-pi-runner.md` (3), `docs/skills/proxmox-runner-pool.md` (2), `docs/skills/babysitting-prs.md`, `docs/skills/ci-logic.md`, `tools/bazel-cache-worker/README.md` (1 each), the upstream link text in workspace.md's ascom-alpaca fork notes (1), plus `docs/skills/coverage.md` § History, the archive links in workspace.md's living tables, and the narration candidates in the files no subsystem batch names (104 files and 240 candidate lines on 2026-11-11, `docs/references/qhyccd-sdk-manual.md` the heaviest, `docs/services/zwo-focuser.md` among them) | 29 | 9 | The Windows file-system rationale in `MODULE.bazel` and `.bazelrc` stays as rationale with its upstream URLs; the comments in `check.yml` and the pre-commit hook that explain the two clippy passes link [pre-push.md](../skills/pre-push.md), which already holds the reason. workspace.md's own history goes: § Holding a transitive dependency back describes a rust-embed hold at 8.11.0 that the lock does not have, and `.bazelrc`'s two E0463 root-cause notes rest on it; § Lints says how the lint groups were widened; the fork sentence under Build Notes says "the old path". Records out: coverage.md's Codecov era and zwo-focuser.md's dated run. B9 also closes the plan: the guard's doc comment and workspace.md § Comments say `PENDING` is empty and a new number is reworded |
 
 B9 is last because it ends with the empty table; B1–B8 are independent
 and run in any order, one at a time so that the guard's table has one
@@ -234,7 +299,8 @@ it.
 ## Decisions
 
 Settled before this plan was written, in the rule's pull request and
-the guard's; they hold for every batch.
+the guard's, and one in the method's trial slice; they hold for every
+batch.
 
 1. **A convention and an AGENTS.md rule, not a tenet and not an ADR.**
    The tenets say what the system does at night; the rule's record is
@@ -256,6 +322,12 @@ the guard's; they hold for every batch.
    record in the making, and may name the archived plan it grew out of.
 6. **The guard's table only shrinks.** A number no row holds is a new
    breach, fixed in the comment.
+7. **A comment is kept for what it answers, not reworded for how it
+   reads.** The first pass over the root `Cargo.toml` kept all 27 of
+   its comments and reworded them, and with the history gone the result
+   read worse than before; the merged pass asks method step 2's question
+   first and leaves 85 comment lines of 196, ten comments gone whole,
+   ten shrunk, seven as they were.
 
 ## Open decisions
 
@@ -302,7 +374,7 @@ For the owner, before the batch that needs them.
   the other batches run; the cost is a second table of some 230 rows
   and Bazel `data` for every living Markdown file. Or it can come last,
   as an issue filed when B9 merges, with the review rating (method step
-  11) the only guard for docs until then and B9's final scan catching
+  12) the only guard for docs until then and B9's final scan catching
   what slipped past it. Recommended: last, since the rating already
   rates a breach in added text a fix; first if the batches are expected
   to run long.
@@ -310,8 +382,8 @@ For the owner, before the batch that needs them.
 ## Definition of done
 
 - `PENDING` in `tools/rusty-photon-ci/src/bare_refs.rs` is `&[]`, and
-  its doc comment, workspace.md § Comments and ci-logic.md describe the
-  guard as holding an empty table.
+  its doc comment and workspace.md § Comments describe the guard as
+  holding an empty table.
 - A scan of every living Markdown file with the guard's matcher — a
   link's text included, a `#` inside a URL excepted — finds the four
   quoted examples in workspace.md (§ Living documents and records and
@@ -319,8 +391,12 @@ For the owner, before the batch that needs them.
   read are clean.
 - Every passage listed under *Records inside living documents*, and
   every one a batch found, is a file in `docs/plans/archive/` opening
-  with the record line of method step 4, and the living document it
+  with the record line of method step 5 — except a mirror of a plan
+  that exists (svbony-camera.md's and zwo-camera.md's § Delivery
+  phasing), which the plan already holds — and the living document it
   came from holds one present-tense paragraph in its place.
+- Every ADR id and plan path left in a comment or a living document
+  passes method step 3's test, or is an index row of workspace.md.
 - `docs/crates/rusty-photon-shared-transport.md` exists and the Shared
   Crates row points at it.
 - Every batch row in the status table names its merged pull request(s),
@@ -329,8 +405,19 @@ For the owner, before the batch that needs them.
 ## Out of scope
 
 - Records: nothing in `docs/plans/`, `docs/plans/archive/`,
-  `docs/decisions/`, `docs/validation/` or a `CHANGELOG.md` is edited
-  except the one Status line an ADR gains when superseded in full.
+  `docs/decisions/`, `docs/validation/` or a `CHANGELOG.md` is edited,
+  except the one Status line an ADR gains when superseded in full and
+  the target of a link from a record into a passage a batch moved,
+  which follows the passage — where the link points changes, what the
+  record says does not.
+- Moving the test-scope allow list out of the root `Cargo.toml`, where
+  153 Rust files say it is documented: to workspace.md § Lints with
+  every pointer updated, or into a `rusty-photon-ci` check that holds
+  the one list. A change of its own.
+- Dependency changes a batch surfaces — the `argon2` bump that would
+  collapse the duplicate `blake2` and `digest` chains, a pin or a floor
+  whose own comment says it does nothing (method step 9). Each is the
+  owner's decision, taken in that batch's pull request or outside it.
 - Extending the guard to Markdown, Python, shell or `.wxs` files (O5).
 - Rewriting rationale that is already present-tense and number-free
   because it is long: the Windows flake blocks in `MODULE.bazel` and
@@ -350,3 +437,4 @@ For the owner, before the batch that needs them.
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
 | B8 — catalog, planner, focus | Not started | — |
 | B9 — build, CI, runners; the empty table | Not started | — |
+| B9 — the root `Cargo.toml`, a trial slice of the method | Merged 2026-11-11 | [trial slice](https://github.com/rusty-photon/rusty-photon/pull/1744) |
