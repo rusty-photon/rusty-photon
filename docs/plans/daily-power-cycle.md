@@ -19,8 +19,9 @@ device was off restarts at dusk (decision 5). A powered-off device is
 logged once (decision 6), dusk starts at civil twilight once the roof is
 open (decision 7), rp's power-box entries map each output to its devices
 (decision 8), doctor reads a device's output before it reports the device
-absent (decision 9), `phd2-guider` starts PHD2 in the operator's session
-(decision 10), and dusk checks each camera for a wedge (decision 11).
+absent (decision 9), PHD2 runs under the service manager with nobody
+logged on (decision 10), and dusk checks each camera for a wedge (decision
+11).
 What this plan builds is
 everything around those: a survey of what each device does across a power
 cut, quiet logging while a device is off, services that restart on request,
@@ -126,6 +127,10 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
   every device rp has on the service is held out, and waits for the new
   process to answer (rusty-photon-service-lifecycle.md § Restart on
   request, rp.md § Power Switching). PHD2 has no such path yet.
+- **PHD2 runs in a desktop session that someone starts.** On Linux the
+  packaging guide runs it as the operator's TigerVNC session, and on
+  Windows it runs in the operator's own session. `phd2-guider` connects to
+  it and never starts it.
 - **doctor** fails `hardware.usb-device` for an enabled service whose
   device is absent from the bus.
 - **Linux serial device names follow enumeration order** (`/dev/ttyUSBn`,
@@ -349,29 +354,66 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
      again until dusk.
    - **Not a daytime window.** A device that dies during the day would go
      unreported until dusk.
-10. **`phd2-guider` starts PHD2 in the operator's session** (settled
-    2026-11-07). PHD2 runs as the operator, in their desktop or VNC
-    session, and the `phd2-guider` service runs as `rusty-photon` or
-    `LocalSystem`, which cannot open a window there. `phd2-guider` stops
-    PHD2 through its RPC (guiding stopped, equipment disconnected,
-    `shutdown`) and starts it through a launcher in the operator's session,
-    which the packaging installs. On Windows the launcher is a Task
-    Scheduler task that runs only while the operator is logged on, which
-    the service, as `LocalSystem`, may run. On Linux and macOS the service
-    account cannot drive the operator's own service manager, so the
-    launcher is a small agent started at the operator's login, as a user
-    unit or a launch agent, listening on a local socket the service account
-    may reach. A PHD2 the RPC leaves running is ended however it was
-    started: the agent runs as the operator, and on Windows the service may
-    end any process. The dusk document asks for PHD2's restart after the
-    driver services its equipment uses (the mount's, which PHD2 reaches
-    through Alpaca) have restarted and answer. Once the restarted PHD2
-    answers, `phd2-guider` connects its equipment through the RPC, as part
-    of the restart the workflow asked for (decision 1): PHD2 starts with
-    nothing connected, and the camera facade connects only while PHD2's
-    camera is. The start needs
-    the operator's session logged on, as PHD2 itself does; without one it
-    fails and dusk reports the guider unavailable.
+10. **PHD2 runs under the service manager, with nobody logged on**
+    (settled 2026-11-07, revised 2026-11-11). rusty-photon runs a rig on its
+    own, so PHD2 starts after a boot or a power cut with nobody at the rig,
+    and `phd2-guider` restarts it at dusk. PHD2 has no headless mode: it
+    always shows its main window, and a new profile opens its wizard. So it
+    runs in a desktop session that the service manager keeps, which an
+    operator can look into to set up the profile or check on it.
+    - **Linux.** The phd2-guider package installs a second unit,
+      `rusty-photon-phd2`, that runs PHD2 as the service account on a
+      virtual display of its own (Xtigervnc), which an operator can view
+      over VNC on localhost. The unit starts PHD2 again whenever it exits.
+      `phd2-guider` restarts PHD2 by stopping it through its RPC (guiding
+      stopped, equipment disconnected, `shutdown`), and the unit starts it
+      again, as a driver service's exit restarts it (decision 5). A PHD2
+      that has not exited 30 s after `shutdown` is ended by a signal, which
+      `phd2-guider` may send because both run as the service account. A
+      unit of its own means restarting or upgrading `phd2-guider` never
+      ends PHD2 mid-guide.
+    - **Windows.** A person can see only an interactive session, so the
+      MSI creates a standard account, `rusty-photon-phd2`, with a random
+      password that only `LocalSystem` and administrators can read.
+      `phd2-guider`, as
+      `LocalSystem`, keeps that account's session logged on and
+      disconnected. When the session is missing (at the service's start,
+      so after every boot), it opens it with an RDP connection to the host
+      itself and then disconnects, which leaves the session running.
+      Windows' own RDP client refuses a connection to the host it runs on,
+      so the connection is made by IronRDP, a Rust RDP client that
+      `phd2-guider` builds in. Windows Pro allows one active session, so a
+      session that is active at that moment is disconnected first: its
+      programs keep running and its user reconnects. `phd2-guider` starts
+      PHD2 in the session as that account, starts it again when it exits,
+      and restarts it by stopping it through the RPC, ending it after 30 s
+      as on Linux. An operator looks at PHD2 by connecting over RDP as the
+      PHD2 account. The host must have RDP enabled (Validation, 2026-11-11).
+    - **macOS** has no unattended path yet. `phd2-guider` there connects to
+      a PHD2 that someone started, and refuses a restart.
+
+    The dusk document asks for PHD2's restart after the driver services its
+    equipment uses (the mount's, which PHD2 reaches through Alpaca) have
+    restarted and answer. Once the restarted PHD2 answers, `phd2-guider`
+    connects its equipment through the RPC, as part of the restart the
+    workflow asked for (decision 1): PHD2 starts with nothing connected, and
+    the camera facade connects only while PHD2's camera is. A restart is
+    refused while the camera facade's camera is connected, so the guide
+    camera behind it is disconnected through rp first, as decision 3 asks
+    of every device.
+    - **Not the operator's session** (settled 2026-11-07, dropped
+      2026-11-11). A launcher there, a scheduled task on Windows or an
+      agent at the operator's login elsewhere, could start PHD2 only while
+      someone was logged on.
+    - **Not autologon on Windows.** Signing an account in at boot gives the
+      same session without RDP, but Winlogon then holds the account's
+      password for every boot, and a session that logs off stays gone
+      unless `ForceAutoLogon` signs it in again.
+    - **Not session 0 on Windows.** PHD2 would run there unseen: services'
+      windows have had no viewer since Windows 10 1803, and the last
+      third-party one does not work from Windows 11 24H2. Nobody could set
+      up the profile, and a modal box from PHD2 or an ASCOM driver would
+      hang it with nobody able to see it.
     - **Not `phd2-guider` in the operator's session.** Run at logon instead
       of as a service, it could own PHD2 as its child, but nothing would
       reach it until someone logs on, the service manager would not restart
@@ -421,7 +463,7 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 |-------|-------------|--------|-------------|
 | P0 | Power-cut survey: for each device on the dev box, pier1 and rig2, disconnect it, cut its power the way the rig does (its 12 V, or its switched USB port), restore it, and connect it again, recording whether it stays on the bus, what stops working, how long it takes to settle, and whether the fresh connect leaves it working. Fills the table above, records whether each camera's first exposure after a power cycle wedges under a live SDK, and runs the dusk sequence itself (power up, settle, restart the service, expose soon after) to check that the restart prevents it | In progress. Measured (Validation): the QHY178M probed on Linux and in a Windows guest, rig2's QHY600M on bare-metal Windows, the dev box's ZWO cameras and QHY178M through dawn and dusk, and every pier1 device, with `dsd-fp2`, `pa-scops-oag` and `star-adventurer-gti` across a cut. Owed (Validation §Owed): rig2's other devices with their drivers across a cut | |
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
-| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; `phd2-guider` restarts PHD2 through a launcher in the operator's session, which the packaging installs, and connects its equipment (decision 10); rp's tool sends the request | In progress: the driver services' restart and rp's `restart_service` are in review; PHD2's restart through `phd2-guider`'s launcher is not started | `feature/power-cycle-p2a-driver-restart` |
+| P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; PHD2 runs under the service manager with nobody logged on, and `phd2-guider` restarts it and connects its equipment (decision 10); rp's tools send the requests | In progress: the driver services' restart and rp's `restart_service` are merged; PHD2's restart is designed (decision 10) and not built | [#1734](https://github.com/rusty-photon/rusty-photon/pull/1734) |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
 | P4 | `session-runner` dusk and dawn documents. Dusk, from an offset from civil twilight once the roof is open (decision 7): outputs on, wait for each device to settle, restart each service whose device was off, once per service however many of its devices were off (`restart_service` returns the service and every device on it), PHD2 after the services its equipment uses (decision 10), connect each device through rp, a test exposure per camera, the guide camera through `phd2-guider`'s camera facade, with one power-cycle retry on a wedge (decision 11), `start_cooldown`. Dawn, after a dusk that powered the devices: `start_warmup`, wait for `cooler_warmup_complete`, park and cover, check the mount's park target against its seed pose, disconnect through rp each device on an output it cuts (the safety monitors and the power boxes stay connected: their outputs are protected, decision 8), outputs off | Not started; needs P2 and P3 | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
@@ -588,6 +630,26 @@ hand ran again.
 | The plan's dawn and dusk by hand, with a 40 s cut (2026-11-07): sentinel and rp stopped, the mount, the FP2 and the Falcon disconnected, the quad cut, their three services restarted, rp started | The driver, serving with no client connected, saw the controller restart once it answered and wrote the last position back as an estimate (an outage of 43 s), leaving its power-up check for the next connect. The restart ended that process, and the check with it. The restarted process found the controller initialised and its encoders at the written-back `(−907200, 725760)`, so rp's connect seeded nothing and checked no record. The mount read the same pose, the one it rested at. The FP2 and the Falcon reconnected on rp's connect |
 | The plan's dawn and dusk by hand again, with a 40 s cut (2026-11-09) | Serving with no client connected, the driver saw the controller restart once it answered, wrote the last position back as an estimate (an outage of 43 s), and wrote the pending power-up check into the mount state record (`awaiting_check`). The restart ended that process. At rp's first connect the restarted process found the check in the record, ran it, and seeded `ap_park_3` at the written-back `(−907200, 725760)`. The record went back to at rest at the seed pose, the mount read the same hour angle and Dec 90°, and the FP2 and the Falcon reconnected on rp's connect |
 
+### Windows: a session for PHD2 with nobody logged on (2026-11-11)
+
+A Windows 11 Pro guest, build 26200 (rig2's), with RDP's network-level
+authentication on. Every client ran as `LocalSystem` in session 0, and the
+accounts were throwaway standard users in Remote Desktop Users.
+
+| Test | Result |
+|---|---|
+| Windows' own RDP client control (the one behind `mstsc`) connecting to the host's own LAN address | Refused by the client before it sent anything: event 1026, reason 1800. The host's RDP service logged no connection, so the block covers the host's LAN address as well as 127.0.0.1 |
+| IronRDP (Devolutions' `ironrdp-agent` 0.1.0) to the host's LAN address, then to 127.0.0.1 | The account's session was active within about 2 s both times |
+| The client disconnects and exits | The session stays logged on, disconnected |
+| `LocalSystem` starts a program in the disconnected session as its account (`WTSQueryUserToken`, `CreateProcessAsUser`) | The program ran in that session, owned by that account, and was still running 20 s later |
+| A second account's session connects, disconnects and logs off beside it | The first session and its program were untouched |
+| The client logs on while another account's session is active | The logon stops at "Another user is signed in. If you continue, they'll be disconnected. Do you want to sign in anyway?", with No focused. Unanswered, the host drops the client after about 30 s. Answered Yes, the other session is disconnected (not logged off) about 27 s later |
+| The same, with `LocalSystem` first disconnecting the active session (`tsdiscon`) | The logon completed in about 3 s with no prompt, and the other session stayed logged on, disconnected |
+| A new account's first logon | It shows Windows' per-user "Choose privacy settings for your device" screen, and a program started in the session runs regardless. The `DisablePrivacyExperience` policy skips the screen |
+
+Not yet run: PHD2 itself in such a session, a reboot, and rig2's own
+hardware.
+
 ### Owed
 
 - rig2's other devices.
@@ -597,3 +659,6 @@ hand ran again.
   output back on.
 - Why the QHY178M wedged after three days with only its 12 V off: whether
   the length of the outage decides it.
+- PHD2 in the session the service manager keeps (decision 10), on pier1
+  and on rig2: started after a reboot with nobody logged on, guiding with
+  its camera, and restarted through `phd2-guider`.
