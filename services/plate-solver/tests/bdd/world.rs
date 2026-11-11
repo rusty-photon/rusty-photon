@@ -296,11 +296,18 @@ impl PlateSolverWorld {
         let config_path = write_config(&dir, &mock_path, &db_dir, &extra_env);
         let config_str = config_path.to_string_lossy().into_owned();
         // The wrapper's own debug lines are part of what the supervision
-        // scenarios read (`ServiceHandle::stderr_lines`).
+        // scenarios read (`ServiceHandle::stderr_lines`). rusty_photon_process's
+        // say how a solve's deadline stop went (the child's pid, a signal that
+        // could not be sent, `Terminated` or `Killed`), which is what a failed
+        // supervision scenario's log needs to tell a slow child from a lost
+        // signal.
         let handle = ServiceHandle::start_with_env(
             env!("CARGO_PKG_NAME"),
             &["--config", &config_str],
-            &[("RUST_LOG", "info,plate_solver=debug")],
+            &[(
+                "RUST_LOG",
+                "info,plate_solver=debug,rusty_photon_process=debug",
+            )],
         )
         .await;
         self.service_handle = Some(handle);

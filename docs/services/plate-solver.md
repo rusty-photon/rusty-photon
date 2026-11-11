@@ -191,7 +191,12 @@ expiry is:
      The child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event
      reaches it without affecting the wrapper. A wrapper with no
      console to send it through (one running as a Windows service)
-     cannot deliver it, and goes straight to the force-kill stage.
+     cannot deliver it, and goes straight to the force-kill stage. A
+     child still starting up handles the event only once its start-up
+     ends, so one that takes longer to start than deadline plus grace is
+     force-killed
+     ([crate doc](../crates/rusty-photon-process.md#stopping-escalates-and-stops-the-whole-tree));
+     at real solve deadlines ASTAP is long past start-up.
 
    ASTAP normally responds cleanly within ~100 ms.
 2. **t = deadline + 2 s (force-kill stage):** whatever is left of the
@@ -520,7 +525,10 @@ rather than race them, and reads the wrapper's own account of what it did.
 The solve handler logs at `debug` — `solve request queued behind a running
 solve` when the semaphore refuses a request, `starting the solve` with the
 timeout it hands the runner, and `solve finished` before the permit drops —
-and the BDD world runs the wrapper with `RUST_LOG=info,plate_solver=debug`.
+and the BDD world runs the wrapper with
+`RUST_LOG=info,plate_solver=debug,rusty_photon_process=debug`, the second
+part so that a failed supervision scenario's log says how each deadline
+stop went.
 The scenario releases the first solve only after its child has recorded
 its start and the wrapper has logged the second request queueing, then
 holds it 500 ms more, longer than the second request's 100 ms timeout.

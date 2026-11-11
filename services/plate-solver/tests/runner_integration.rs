@@ -163,11 +163,17 @@ async fn malformed_wcs_maps_to_malformed_wcs_error() {
 
 /// A child that answers the graceful signal at the deadline is a
 /// `TimedOutTerminated` — the `(terminated)` the HTTP contract reports.
+///
+/// The child can answer only once it has finished starting: on Windows a
+/// `CTRL_BREAK_EVENT` that reaches it still starting up is held until its
+/// start-up ends, and a start-up longer than deadline plus grace reads as
+/// `TimedOutKilled`. A contended Windows runner can take longer than the
+/// 2.1 s a 100 ms deadline leaves, so the deadline is 3 s, leaving 5 s.
 #[tokio::test]
 async fn hang_maps_to_timed_out_terminated() {
     let (runner, dir) = runner("hang");
     let mut request = req(dir.path().join("test.fits"));
-    request.timeout = Duration::from_millis(100);
+    request.timeout = Duration::from_secs(3);
 
     let err = runner.solve(request).await.unwrap_err();
     assert!(
@@ -179,22 +185,22 @@ async fn hang_maps_to_timed_out_terminated() {
 /// A child that ignores the graceful signal is force-killed after the grace:
 /// `TimedOutKilled`.
 ///
-/// The mock ignores SIGTERM only once its `main` runs, so a signal that beat
-/// it there would find the default disposition, terminate it, and read as
-/// `TimedOutTerminated`. Nothing at this level can close that window — the
-/// runner builds the command, so no `pre_exec` can set the disposition before
-/// `exec` (the crate's own test of this escalation does exactly that). The
-/// deadline is sized against it instead: the start-up path measured ~5 ms on
-/// an idle host and ~19 ms with the CPU 4x oversubscribed, and 2 s is a
-/// hundred times the latter. Unix-only for the same reason as the BDD
-/// scenario: the Windows mock's console handler is subject to console-attach
-/// quirks.
-#[cfg(unix)]
+/// The mock ignores the signal only once its `main` has installed its
+/// handler (`SIG_IGN` on Unix, a console control handler on Windows), so a
+/// signal handled before that finds the default one, which exits, and reads
+/// as `TimedOutTerminated`. On Windows that includes a `CTRL_BREAK_EVENT`
+/// held through a start-up that outlasts the deadline. Nothing at this level
+/// can close that window — the runner builds the command, so no `pre_exec`
+/// can set the disposition before `exec` (the crate's own test of this
+/// escalation does exactly that). The deadline is sized against it instead:
+/// 5 s, the start-up budget the hang test leaves. On Linux the start-up path
+/// measured ~5 ms idle and ~19 ms with the CPU 4x oversubscribed; a
+/// contended Windows runner has taken over 2 s.
 #[tokio::test]
 async fn ignore_sigterm_maps_to_timed_out_killed() {
     let (runner, dir) = runner("ignore_sigterm");
     let mut request = req(dir.path().join("test.fits"));
-    request.timeout = Duration::from_secs(2);
+    request.timeout = Duration::from_secs(5);
 
     let err = runner.solve(request).await.unwrap_err();
     assert!(
