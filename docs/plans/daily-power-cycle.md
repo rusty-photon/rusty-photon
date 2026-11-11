@@ -364,7 +364,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     - **Linux.** The phd2-guider package installs a second unit,
       `rusty-photon-phd2`, that runs PHD2 as the service account on a
       virtual display of its own (Xtigervnc), which an operator can view
-      over VNC on localhost. The unit starts PHD2 again whenever it exits.
+      over VNC on localhost, with a password. The unit starts PHD2 again
+      whenever it exits, and the package never restarts it on upgrade.
       `phd2-guider` restarts PHD2 by stopping it through its RPC (guiding
       stopped, equipment disconnected, `shutdown`), and the unit starts it
       again, as a driver service's exit restarts it (decision 5). A PHD2
@@ -374,7 +375,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       ends PHD2 mid-guide.
     - **Windows.** A person can see only an interactive session, so the
       MSI creates a standard account, `rusty-photon-phd2`, with a random
-      password that only `LocalSystem` and administrators can read.
+      password that never expires and that only `LocalSystem` and
+      administrators can read. Upgrades keep the account and its profile.
       `phd2-guider`, as
       `LocalSystem`, keeps that account's session logged on and
       disconnected. When the session is missing (at the service's start,
@@ -384,13 +386,25 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       so the connection is made by IronRDP, a Rust RDP client that
       `phd2-guider` builds in. Windows Pro allows one active session, so a
       session that is active at that moment is disconnected first: its
-      programs keep running and its user reconnects. `phd2-guider` starts
-      PHD2 in the session as that account, starts it again when it exits,
-      and restarts it by stopping it through the RPC, ending it after 30 s
-      as on Linux. An operator looks at PHD2 by connecting over RDP as the
-      PHD2 account. The host must have RDP enabled (Validation, 2026-11-11).
+      programs keep running and its user reconnects. A session that will
+      not open is retried with a growing wait, and a rejected password is
+      not tried again, so the account cannot be locked out. `phd2-guider`
+      starts PHD2 in the session as that account, starts it again when it
+      exits, and restarts it by stopping it through the RPC, ending it
+      after 30 s as on Linux. An operator looks at PHD2 by connecting over
+      RDP as the PHD2 account. The host must have RDP enabled (Validation,
+      2026-11-11).
     - **macOS** has no unattended path yet. `phd2-guider` there connects to
       a PHD2 that someone started, and refuses a restart.
+    - **Switching over.** A host already runs PHD2 as the operator, so it
+      switches over once: the operator retires their own PHD2, moves its
+      profile to the PHD2 account with PHD2's own export and import, and
+      sets `phd2-guider`'s `phd2.managed`. On Linux they also remove the
+      camera facade recipe's port rule, which gives the guide camera to the
+      operator's group, and enable the units. Until then `phd2-guider`
+      only connects to PHD2, as before, and refuses a restart, and it
+      refuses one on Linux too while the unit is not running PHD2: only a
+      PHD2 that something starts again is ever stopped.
 
     The dusk document asks for PHD2's restart after the driver services its
     equipment uses (the mount's, which PHD2 reaches through Alpaca) have

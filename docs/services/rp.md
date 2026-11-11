@@ -1847,7 +1847,7 @@ block is absent.
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
-| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Have the guider service restart PHD2 and connect its equipment. Refused while the PHD2 camera facade's camera is connected or capturing; answers in up to 120 s |
+| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Have the guider service restart PHD2 and connect its equipment. Refused while PHD2 guides, while the PHD2 camera facade's camera is connected or capturing, and where nothing would start PHD2 again; answers in up to 120 s |
 
 **Compute (image analysis)**
 
@@ -4652,9 +4652,13 @@ refusals and failures are tool errors that carry its `error` and
   session with (decision 3). The guider service checks this, since it
   knows its facade and `rp` cannot tell a held-out camera is one.
 - `camera_busy`: a facade frame is in flight, or a sweep lease is held.
+- `guiding_active`: PHD2 is guiding or looping. A restart never stops
+  guiding as a side effect, so `stop_guiding` comes first.
 - `restart_failed`: a step of the restart failed or ran out of time, named
   in `message`. Asking again is safe.
-- `restart_unsupported`: nothing keeps PHD2 running on that host (macOS).
+- `restart_unsupported`: nothing would start PHD2 again on that host. It
+  is not switched over to PHD2 under the service manager, or it is macOS
+  ([phd2-guider.md § Switching over](phd2-guider.md#switching-over)).
 
 Without an `equipment.mount.guiding` block the tool is an error, as every
 guider tool is. PHD2 connects its equipment only on this request, a
