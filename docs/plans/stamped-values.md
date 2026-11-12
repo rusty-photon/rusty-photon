@@ -28,7 +28,8 @@ The outcome of this plan:
   is private to `Stamped<T>` and `offer` is the only way in: a store
   that skips the stamp does not compile.
 - [workspace.md § Values that carry their time](../workspace.md#values-that-carry-their-time)
-  states the whole rule, the type included.
+  states the rule for a cached reading with the type that keeps it, and
+  says that a reading's age is measured on the monotonic clock.
 - `SensorMean` reads no clock. A sample is dated by the instant its
   frame was read off the wire, age and the averaging window are measured
   on the monotonic clock, and the crate's tests pass instants and never
@@ -49,7 +50,7 @@ The census below finds five jobs. Only the first is the type's.
 | **Order** two writers of one cache: the value read last stays | Monotonic, `tokio::time::Instant` | A `ReadStamp` beside the value; `AxisSnapshot::sampled_at` | The six serial drivers; `star-adventurer-gti` |
 | **Age**: how old the reading is | Monotonic, the instant that orders it | The same instant | `AxisSnapshot::projected_to`; `SensorMean`, which uses the wall clock today |
 | **Record**: tell a person, a file or a client when | Wall clock, `DateTime<Utc>` or `SystemTime` | A field written where the record is made | ASCOM `LastExposureStartTime`; `sentinel`'s epoch milliseconds; `rp`'s `captured_at` |
-| **Deadline**: when something is due, or since when it runs | Monotonic, at every site but one the census names | An `Instant` with one owner | Move and capture deadlines, lease expiries, `next_restart_at`, `cooldown_until` |
+| **Deadline**: when something is due, or since when it runs | Monotonic; the census names those on the wall clock | An `Instant` with one owner | Move and capture deadlines, lease expiries, `next_restart_at`, `cooldown_until` |
 | **Number**: the source or the driver counts its events | None | A sequence number or a generation counter | `last_seq`, `Last-Event-ID`, the QHY wheel's `epoch` |
 
 ## The pattern
@@ -111,8 +112,8 @@ builds a cache by offering.
    The wall clock is for a time that leaves the process, and the
    conversion happens at that boundary. `SensorMean` is the one site
    that measures a reading's age on the wall clock today, and S4 fixes
-   it. The one deadline kept on the wall clock is `zwo-camera`'s guide
-   pulse, which the census names and the plan leaves as it is.
+   it. Some deadlines and running times are on the wall clock too; the
+   census names them, and the plan leaves each as it is.
 4. **Granularity.** The choice of `T`. A status frame is one `T`;
    `dsd-fp2`'s five reads are five; `qhy-focuser`'s two temperatures
    and voltage, read by one command, become one. A reading that can be
@@ -175,7 +176,7 @@ Thirteen value-and-stamp pairs in five drivers become `Stamped<T>`.
 | Site | What it holds | Verdict |
 |------|---------------|---------|
 | `qhy-camera`, `zwo-camera`, `svbony-camera`, `sky-survey-camera`, `phd2-guider`'s camera | The last exposure's start as `SystemTime`, for ASCOM `LastExposureStartTime` | **Leave as is** |
-| `rp` `mcp/internals.rs`, `events.rs`, `safety.rs`, the planner | `captured_at`, `exposure_started_at`, `started_at`, `since` and the planner's times as `DateTime<Utc>` | **Leave as is** |
+| `rp` `mcp/internals.rs`, `events.rs`, `safety.rs`, the planner | `captured_at`, `exposure_started_at`, `started_at`, `since` and the planner's times as `DateTime<Utc>`. An `ended` event's `elapsed_ms` is the wall-clock time since its `started_at` | **Leave as is** |
 | `session-runner` `runs.rs`; `polar-align` `workflow.rs` | `started_at` and `ended_at`; `measured_at` and `updated_at` | **Leave as is** |
 | `sentinel` `state.rs` | `last_poll_epoch_ms`, `last_change_epoch_ms`, `last_probe_epoch_ms`, `next_restart_epoch_ms` | **Leave as is.** The last is converted from an `Instant` as it is published |
 | `rp-targets` `WriteStamp` | `updated_at` and `updated_by`, supplied by the caller: who last wrote a target, and when | **Leave as is.** A record of a write, not an order between writers |
@@ -186,6 +187,9 @@ Thirteen value-and-stamp pairs in five drivers become `Stamped<T>`.
 |------|---------------|---------|
 | `rp` (`mcp/rig_state.rs`, `mcp/internals.rs`, `cooling.rs`, `guiding_watch.rs`, `train_lease.rs`), `phd2-guider` (`service/capture.rs`, `service/lease.rs`, `CaptureClaim::expires`), `star-adventurer-gti` (`mount_device/pulse.rs`, `mount_device/watchers.rs`, `power.rs`), `qhy-camera` `filterwheel.rs` (`sent_at`, `last_status_read`), `sentinel` `health.rs` (`next_restart_at`), `session-runner` (`grace_deadline`), `planetarium-bridge`, `rp-auth`'s memo, `rusty-photon-tls`, `rusty-photon-process`, shared-transport's `last_attempt` | An `Instant` something is due at or began at, with one owner | **Not applicable.** No reading, no second writer |
 | `zwo-camera` `camera.rs` `Pulse::until` | A guide pulse's end as `SystemTime`, which `IsPulseGuiding` compares with the wall clock | **Leave as is.** A deadline, not a cached reading, and the plan changes no deadline |
+| `zwo-camera` and `svbony-camera` `camera.rs`, `phd2-guider` `service/camera.rs` | `PercentCompleted` measures an exposure's running time on the wall clock, from the `SystemTime` start kept for `LastExposureStartTime` | **Leave as is.** A running time, not a cached reading |
+| `phd2-guider` `service/capture.rs` restart marker | `deadline_unix_ms`, a capture's deadline as wall-clock milliseconds, in a file the next process reads | **Leave as is.** It outlives the process (rule 3) |
+| `session-runner` `engine/exec.rs` trigger cooldown | The time since a trigger last fired, from the `last_fired` the blackboard records as a wall-clock time | **Leave as is.** It survives a resume (rule 3) |
 
 ### Number
 
@@ -268,11 +272,16 @@ order; S4 follows S2, since both change the three power boxes'
 `apply_status`.
 
 What S1–S3 must not change: a byte on the wire, an ASCOM answer, a
-feature file. Each driver's store-order tests, which hold a reply, let
-the other writer store first and then assert the cache, pass unchanged,
-and that is the evidence that behaviour did not move. Tenet 3 is checked
-in each review: the steps change how a value already read is stored,
-and nothing a connect, a handshake or a poll puts on the wire.
+feature file. Each driver's store-order tests hold a reply, let the
+other writer store first and then assert the cache. They keep their
+scenarios and the values they expect; the one edit a step makes to them
+is how an assertion reads the cache, through `get` or `value` where it
+reads a field today, and the compiler names every such line. That they
+pass is the evidence that behaviour did not move, and each step's pull
+request records that they fail with the order check taken out of
+`offer`. Tenet 3 is checked in each review: the steps change how a value
+already read is stored, and nothing a connect, a handshake or a poll
+puts on the wire.
 
 ### S1 — `Stamped<T>`, and `dsd-fp2`
 
@@ -332,8 +341,9 @@ and nothing a connect, a handshake or a poll puts on the wire.
   calls in `lib.rs` and `observing_conditions.rs` go, and "at least the
   time slept" assertions become equalities.
 - Documents: `docs/crates/rusty-photon-rolling-stats.md` (§ A sample
-  stamped in the future reports zero elapsed, and Testing); the age
-  sentence of workspace.md § Values that carry their time.
+  stamped in the future reports zero elapsed, and Testing); workspace.md
+  § Values that carry their time gains a sentence on age, measured on
+  the monotonic clock from the instant that dates the reading.
 
 ### S5 — one reply-holding test transport
 
@@ -390,8 +400,8 @@ Not filed, and not part of any step; each is the owner's call.
 
 - No driver holds a value field and a `ReadStamp` field for it side by
   side; `ReadStamp` appears outside its crate only in `pa-scops-oag`.
-- workspace.md § Values that carry their time states the whole rule,
-  with `Stamped<T>` and age on the monotonic clock.
+- workspace.md § Values that carry their time names `Stamped<T>` and
+  says that a reading's age is measured on the monotonic clock.
 - `rusty-photon-rolling-stats` names no `SystemTime`, and its tests no
   `sleep`.
 - `struct ReplyHold` appears once in the tree, in `transport-doubles`.
