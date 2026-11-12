@@ -201,9 +201,7 @@ impl Default for MockDeviceState {
             },
             ignore_identity: u32::from(env_flag(ENV_IGNORE_FIRST_IDENTITY)),
             stuck_output: env_stuck_output(),
-            line_noise: std::env::var(ENV_LINE_NOISE)
-                .map(|raw| percent_decode(&raw))
-                .unwrap_or_default(),
+            line_noise: std::env::var(ENV_LINE_NOISE).map_or_default(|raw| percent_decode(&raw)),
         }
     }
 }

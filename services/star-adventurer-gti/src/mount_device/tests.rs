@@ -1178,10 +1178,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
             .iter()
             .copied()
             .filter(|f| {
-                f.len() >= 3
-                    && f[0] == b':'
-                    && f[2] == axis_byte
-                    && matches!(f[1], b'G' | b'I' | b'H' | b'M' | b'J' | b'K' | b'L')
+                f.len() >= 3 && f[0] == b':' && f[2] == axis_byte && matches!(f[1], b'G'..=b'M')
             })
             .collect()
     };

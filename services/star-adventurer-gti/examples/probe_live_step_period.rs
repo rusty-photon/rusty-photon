@@ -468,7 +468,7 @@ fn offset_at(samples: &[Sample], from: f64, to: f64, rate: f64) -> Option<f64> {
         sum += rate.mul_add(-s.t, f64::from(s.ticks));
         n += 1.0;
     }
-    (n >= 20.0).then(|| sum / n)
+    (n >= 20.0).then_some(sum / n)
 }
 
 /// Least-squares slope (ticks per second) over the samples in `[from, to]`.
@@ -489,7 +489,7 @@ fn slope_in(samples: &[Sample], from: f64, to: f64) -> Option<f64> {
         sxy = dt.mul_add(f64::from(s.ticks) - mean_y, sxy);
         sxx = dt.mul_add(dt, sxx);
     }
-    (sxx > 0.0).then(|| sxy / sxx)
+    (sxx > 0.0).then_some(sxy / sxx)
 }
 
 fn within(value: Option<f64>, target: f64, tolerance: f64) -> bool {

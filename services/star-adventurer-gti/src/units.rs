@@ -647,7 +647,7 @@ mod tests {
     // ---- Property tests --------------------------------------------------
 
     proptest! {
-        /// RA ticks within one revolution survive a tick -> mech_HA -> tick
+        /// RA ticks within one revolution survive a tick -> `mech_HA` -> tick
         /// round trip exactly.
         #[test]
         fn ra_ticks_round_trip(t in -((GTI_CPR / 2).cast_signed())..((GTI_CPR / 2).cast_signed())) {
@@ -655,7 +655,7 @@ mod tests {
             prop_assert_eq!(back.value(), t);
         }
 
-        /// Dec ticks within one revolution survive a tick -> mech_dec -> tick
+        /// Dec ticks within one revolution survive a tick -> `mech_dec` -> tick
         /// round trip exactly.
         #[test]
         fn dec_ticks_round_trip(t in -((GTI_CPR / 2).cast_signed())..((GTI_CPR / 2).cast_signed())) {

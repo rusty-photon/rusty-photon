@@ -33,9 +33,25 @@ pub struct Instance {
 /// The body a restart request carries: an empty JSON object, so the
 /// request has to be JSON and a page on another site cannot submit it as a
 /// form.
+///
+/// It converts from a JSON map rather than deriving a field-less struct with
+/// `deny_unknown_fields`, whose derive expands to an empty enum that
+/// `clippy::empty_enums` denies.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RestartBody {}
+#[serde(try_from = "serde_json::Map<String, serde_json::Value>")]
+struct RestartBody;
+
+impl TryFrom<serde_json::Map<String, serde_json::Value>> for RestartBody {
+    type Error = &'static str;
+
+    fn try_from(fields: serde_json::Map<String, serde_json::Value>) -> Result<Self, Self::Error> {
+        if fields.is_empty() {
+            Ok(Self)
+        } else {
+            Err("a restart request carries no fields")
+        }
+    }
+}
 
 /// The two routes, answering for `restart`. Building them fixes the
 /// process's [`instance_id`], so it is fixed once the process serves.
@@ -72,7 +88,7 @@ pub fn instance_id() -> &'static str {
 
 async fn request_restart(
     State(restart): State<Restart>,
-    Json(RestartBody {}): Json<RestartBody>,
+    Json(RestartBody): Json<RestartBody>,
 ) -> (StatusCode, Json<Instance>) {
     debug!("restart requested over HTTP");
     restart.request();
@@ -142,6 +158,17 @@ mod tests {
         let restart = Restart::new(CancellationToken::new());
         let response = routes(restart.clone())
             .oneshot(post(r#"{"now": true}"#, "application/json"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(!restart.is_requested());
+    }
+
+    #[tokio::test]
+    async fn a_body_that_is_not_an_object_is_refused_and_requests_nothing() {
+        let restart = Restart::new(CancellationToken::new());
+        let response = routes(restart.clone())
+            .oneshot(post("[]", "application/json"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
