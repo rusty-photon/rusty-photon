@@ -37,8 +37,8 @@ The outcome of this plan:
   exists once, not once per driver.
 
 The plan fixes no defect. It removes a way to write one, and it takes
-the wall clock out of the one place where a step of it changes what a
-driver reports.
+the wall clock out of a reading's age and its averaging window, where a
+step of it changes what the three power boxes' drivers report.
 
 ## What a time on a value is for
 
@@ -110,7 +110,9 @@ builds a cache by offering.
    without a good clock) must not reorder two reads or age a sample.
    The wall clock is for a time that leaves the process, and the
    conversion happens at that boundary. `SensorMean` is the one site
-   that breaks this today, and S4 fixes it.
+   that measures a reading's age on the wall clock today, and S4 fixes
+   it. The one deadline kept on the wall clock is `zwo-camera`'s guide
+   pulse, which the census names and the plan leaves as it is.
 4. **Granularity.** The choice of `T`. A status frame is one `T`;
    `dsd-fp2`'s five reads are five; `qhy-focuser`'s two temperatures
    and voltage, read by one command, become one. A reading that can be
@@ -194,9 +196,9 @@ Thirteen value-and-stamp pairs in five drivers become `Stamped<T>`.
 
 ## Decisions
 
-Decisions 1–3 are the owner's, taken 2026-11-12 before the plan was
-written. Decisions 4–13 are the plan's proposals; merging the plan
-settles them.
+Decisions 1–3 and 13 are the owner's, taken 2026-11-12: 1–3 before
+the plan was written, 13 on the plan's proposal. Decisions 4–12 are the
+plan's proposals; merging the plan settles them.
 
 1. **A plan and a section of workspace.md, no ADR.** The pattern is a
    convention with a small type, and no contested alternative needs an
@@ -236,12 +238,12 @@ settles them.
     runtime included, and `tokio::time::Instant::into_std` is the whole
     conversion.
 13. **The shared test transport lives in a test-support crate of its
-    own, not behind shared-transport's `test-util` feature.** This is
-    the one point where the plan departs from the question as it was
-    put to the owner, which named the feature as the home. The build
-    files change the cost. Under Bazel the feature is a second library,
-    `rusty-photon-shared-transport_test_util`, with the crate name of
-    the first, and a driver's unit test is built with
+    own, `transport-doubles`, not behind shared-transport's `test-util`
+    feature.** The question first put to the owner named the feature as
+    the home; the plan proposed the crate, and the owner chose it. The
+    build files change the cost. Under Bazel the feature is a second
+    library, `rusty-photon-shared-transport_test_util`, with the crate
+    name of the first, and a driver's unit test is built with
     `crate = ":<driver>_lib"`, whose dependencies the test inherits. The
     test cannot add the feature's twin beside the plain crate its
     library already links: the comments in `services/rp/BUILD.bazel`
@@ -256,10 +258,7 @@ settles them.
     that depends only on the public `TransportFactory`, `FrameTransport`
     and `TransportError` costs each driver one dev-dependency line and
     one Bazel dependency, and is `testonly` in Bazel. `bdd-infra` is the
-    precedent for an unprefixed test-infrastructure crate; the name
-    proposed is `transport-doubles`. The feature remains available at
-    the cost above if the owner prefers it, and S5 follows whichever is
-    chosen.
+    precedent for an unprefixed test-infrastructure crate.
 
 ## Steps
 
@@ -348,10 +347,10 @@ and nothing a connect, a handshake or a poll puts on the wire.
 - The six copies of `HoldingFactory`, `ReplyHold` and `HoldingTransport`
   in the drivers' `manager.rs` test modules go, 67 to 80 lines each; a
   driver keeps at most a one-line adapter from its `Command` to bytes.
-- Home: decision 13.
-- Documents: a row in workspace.md's crate table if it is a crate, and
-  a short section in testing.md on constructing a store-order race with
-  it.
+- Home: a new crate, `transport-doubles` (decision 13), a
+  dev-dependency of the six drivers and `testonly` in Bazel.
+- Documents: the crate's row in workspace.md's crate table, and a short
+  section in testing.md on constructing a store-order race with it.
 
 ## Risks and what bounds them
 
@@ -366,10 +365,12 @@ and nothing a connect, a handshake or a poll puts on the wire.
   clock today, and the rigs do not suspend during a session. Against
   it: a wall-clock step no longer empties the averaging window or pins
   a sample in it.
-- **The shared decorator fits five drivers and not the sixth.** Three
-  copies arm with a `Command` and two with bytes; `gemini`'s holds any
-  reply. S5 moves the drivers one commit at a time and keeps a copy
-  that does not fit, saying why.
+- **A copy arms in a way the shared decorator lacks.** Three copies arm
+  with a `Command` and two with bytes, and `gemini`'s holds any reply;
+  S5's decorator has the two modes these come to, a frame's leading
+  bytes and any reply. S5 moves the drivers one commit at a time, so a
+  copy that does not fit stops at its own commit, and the decorator
+  gains what that copy needs. S5 is not done while a copy remains.
 
 No rig validation is owed: S1–S3 and S5 change nothing a device sees,
 and S4 changes the clock behind one reported duration.
@@ -383,7 +384,7 @@ Not filed, and not part of any step; each is the owner's call.
 - A second test decorator is copied six times: `InjectableFactory`,
   which fails the next send, in `gemini-powerbox-adv3-driver`,
   `pa-falcon-rotator`, `pa-scops-oag`, `ppba-driver`, `upbv2-driver`
-  and `qhy-focuser`. S5's home would hold it too.
+  and `qhy-focuser`. `transport-doubles` would hold it too.
 
 ## Definition of done
 
@@ -393,7 +394,7 @@ Not filed, and not part of any step; each is the owner's call.
   with `Stamped<T>` and age on the monotonic clock.
 - `rusty-photon-rolling-stats` names no `SystemTime`, and its tests no
   `sleep`.
-- `struct ReplyHold` appears once in the tree.
+- `struct ReplyHold` appears once in the tree, in `transport-doubles`.
 - Every row of the status table names its merged pull request, the
   issue is closed, and the plan is archived per
   [archiving-plans.md](../skills/archiving-plans.md).
