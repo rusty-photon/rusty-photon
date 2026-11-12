@@ -191,7 +191,10 @@ mount's `CanPulseGuide`. The poll only reads. `GET /api/v1/devices` and
 **At a request.** `loop`, `calibrate` and `guiding/start` read
 `Connected` afresh before anything else. A device that does not answer
 refuses the request with `device_unreachable`; one that answers and is
-not connected refuses it with `device_not_connected`.
+not connected refuses it with `device_not_connected`. When the poll has
+not yet read a connected device's static properties, the request reads
+them before it goes on, so no request runs on a property that is
+missing.
 
 **While `rp` is away.** The guider does not depend on `rp` being
 reachable. A run continues through a restart of `rp`.
@@ -432,7 +435,9 @@ the calibration, and so does a calibration longer than
 
 **Cross-checks.** Two checks run on the result. Each has a threshold
 that adds a warning to the record and a wider one that fails the
-calibration.
+calibration. A check that needs both axes is left out of a calibration
+with no Dec axis: the angle between them, and the ratio of the two
+rates for a mount that reports no guide rate.
 
 | Check | Warns above | Fails above |
 |---|---|---|
@@ -458,8 +463,9 @@ calibration stores nothing and leaves the slot as it was.
 - **A stored record is used** when the pier side is its slot's and the
   camera's pixel size, sensor size, effective binning, the configured
   focal length and the mount's two guide rates are the ones it was made
-  with. Anything else starts a calibration. A mount that reports no
-  guide rate is compared on the other values.
+  with, and it has a Dec axis unless `control.dec.mode` is `"off"`.
+  Anything else starts a calibration. A mount that reports no guide
+  rate is compared on the other values.
 - **What the guider cannot see**, it does not invalidate. A camera
   turned in its holder, a rotator that moved, or a meridian flip of a
   mount that reports no pier side changes the angles without changing
@@ -478,15 +484,16 @@ calibrated RA and Dec axes and subtracts the lock offset, which is zero
 until a dither moves it. The result is the error on each axis, in
 pixels.
 
-**RA.** The error is blended with the previous frame's blend and
-scaled:
+**RA.** The error is blended with the previous correction and scaled:
 
 ```
-blend      = (1 − hysteresis) × error + hysteresis × previous blend
-correction = aggression × blend
+correction = aggression × ((1 − hysteresis) × error + hysteresis × previous correction)
 ```
 
-with `control.ra.hysteresis` and `control.ra.aggression`.
+with `control.ra.hysteresis` and `control.ra.aggression`. The previous
+correction is the one the last guide step worked out, in pixels and
+before the pulse bounds. It is zero at a run's first step and after a
+step whose error was below the minimum move.
 
 **Dec.** The correction is `control.dec.aggression` times the error,
 and Dec holds its direction: a correction against the direction of the
@@ -528,12 +535,17 @@ point closer than half of `amount` to the current offset. So every
 dither moves the stars by at least half the amount, and no sequence of
 dithers takes them further than `amount` from home on either axis.
 With `ra_only`, only the RA component is drawn and the Dec component
-keeps its value. `dither` is valid only in `guiding`.
+keeps its value. The same holds whenever `control.dec.mode` is not
+`"auto"`: the controller cannot steer to a Dec point it may correct
+towards in one direction only, or not at all. `dither` is valid only in
+`guiding`.
 
 **Settling.** `guiding/start` and `dither` answer when the guiding has
 settled: the distance of the frame's offset from the lock has stayed
 below the settle tolerance for the settle `time` without a break. A
 frame above the tolerance or a star-lost frame starts the time again.
+With `control.dec.mode` `"off"` the distance is the RA error alone: the
+guider does not hold Dec.
 
 - A request that has not settled `timeout` after guiding began, or
   after the dither moved the lock, is answered with `settle_timeout`.
@@ -627,13 +639,12 @@ Starts the camera loop without guiding.
 { "state": "looping", "star_count": 5 }
 ```
 
-- From `idle`: writes the frame settings, takes the first frame,
-  selects guide stars on it and answers. A first frame with no star
-  still answers `looping`, with `star_count` 0, and the guider selects
-  again on each frame until one has stars.
+- From `idle`: clears the metrics window, writes the frame settings,
+  takes the first frame, selects guide stars on it and answers. A first
+  frame with no star still answers `looping`, with `star_count` 0, and
+  the guider selects again on each frame until one has stars.
 - In `looping`: answers with the current values and changes nothing.
 - In a run state: `not_idle`.
-- The metrics window is cleared.
 
 #### `POST /api/v1/calibrate`
 
@@ -674,8 +685,8 @@ no fields.
   counter-clockwise from the +x axis, in which a West pulse (`ra`) or a
   North pulse (`dec`) moves the stars. `ra.rate_px_per_s` is the rate
   at the equator. `guide_rates` and `expected` are `null` for a mount
-  that reports no guide rate, and `dec` is `null` when
-  `control.dec.mode` is `"off"`.
+  that reports no guide rate, and `dec` and `orthogonality_error_deg`
+  are `null` in a record made with `control.dec.mode` `"off"`.
 - `warnings` lists the cross-checks that passed their warning
   threshold, each as `{ "check", "value", "threshold" }`.
 - A calibration that fails answers `calibration_failed`; `details`
@@ -778,6 +789,8 @@ settled at the new lock and answers with the shape of `guiding/start`.
 
 - Valid only in `guiding`; `not_guiding` otherwise, `paused` and
   `star_lost` included.
+- `ra_only` is taken as `true` while `control.dec.mode` is not `"auto"`
+  ([Dither, settle and abort](#dither-settle-and-abort)).
 - `settle_timeout`, `guide_failed`, `dither_aborted` and `stopped` are
   its errors once accepted.
 
@@ -907,6 +920,7 @@ Acquires the [camera lease](#the-camera-lease).
 {
   "state": "guiding",
   "guiding": true,
+  "epoch": "0b9f6a0e-3c1d-4f6e-9a57-5d1c2e8f7a10",
   "frames": [
     { "frame": 41, "hfd": 2.31, "snr": 24.8, "star_mass": 5120.0, "star_count": 5, "star_lost": false },
     { "frame": 42, "hfd": null, "snr": null, "star_mass": null, "star_count": 0, "star_lost": true }
@@ -915,11 +929,15 @@ Acquires the [camera lease](#the-camera-lease).
 ```
 
 - The last 50 measured frames, oldest first, from every exposing state.
-- `frame` counts the frames measured since the service started. It only
-  grows while the service runs, so a client reads the window again and
-  again and keeps the entries above the highest number it has seen.
+- `frame` counts the frames measured since the service started, and
+  `epoch` names this run of the service: it is the `epoch` of the
+  [running totals](#statistics). Under one `epoch` the count only
+  grows, so a client reads the window again and again and keeps the
+  entries above the highest number it has seen. Under a new `epoch` the
+  count has started again, and the client forgets that number.
 - `hfd` is the half-flux diameter in pixels.
-- The window is cleared by every accepted `loop` and `guiding/start`.
+- The window is cleared by every `loop` that starts the loop from
+  `idle` and by every accepted `guiding/start`.
 
 #### `GET /api/v1/devices`
 
@@ -1003,11 +1021,12 @@ of its interval and subtracts.
   With `control.dec.mode` `"off"` there is no Dec axis and the Dec
   pair does not grow.
 - `star_lost` counts the star-lost frames of runs.
-- `interruptions` counts each time a run stops or is paused. With
+- `interruptions` counts each time a run stops, is paused or calibrates
+  again (`guiding/start` with `recalibrate: true` in a run state). With
   `guiding` true at both readings and the count unchanged, the run was
-  neither stopped nor paused in the interval. The frames in it that
-  had no usable star are the change in `star_lost`, and no correction
-  followed them.
+  not stopped, paused or calibrated again in the interval. The frames
+  in it that had no usable star are the change in `star_lost`, and no
+  correction followed them.
 
 Each axis's count and sum is a `SquareSums` from
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).

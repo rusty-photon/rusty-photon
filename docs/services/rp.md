@@ -5421,6 +5421,8 @@ service's HTTP API. This means workflow plugins (e.g., a meridian flip plugin) c
 control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
 service that implements the same HTTP endpoints.
+The native guider is no such swap: its endpoints are its own, and `rp`
+changes to speak them.
 
 Beyond the tools, rp consumes four more guider-service endpoints
 internally (phd2-guider.md § HTTP API): the per-frame **metrics**

@@ -139,15 +139,16 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
 
 - **Pros.** Guiding survives a restart of `rp`. The loop shares no
   process with `rp`'s other work. It takes `phd2-guider`'s place at a
-  seam `rp`'s design already names: "Swapping in a different guiding
-  backend requires only a different guider service that implements the
-  same HTTP endpoints". The guide camera is an ordinary camera on its
-  vendor driver. It runs wherever a rusty-photon service runs, with
-  nobody logged on. CI can close a guide loop against simulated devices.
-  It can be used without `rp`.
+  seam `rp`'s design already has: a guider service that `rp` reaches
+  over HTTP. The guide camera is an ordinary camera on its vendor
+  driver. It runs wherever a rusty-photon service runs, with nobody
+  logged on. CI can close a guide loop against simulated devices. It
+  can be used without `rp`.
 - **Cons.** A second Alpaca client of two devices. One more service to
-  package and supervise. The guider is this project's code, and so is
-  every failure of it: PHD2's field maturity has to be earned again.
+  package and supervise. Its endpoints are not `phd2-guider`'s, so `rp`
+  changes to speak them (decision 7). The guider is this project's
+  code, and so is every failure of it: PHD2's field maturity has to be
+  earned again.
 
 ## Decision
 
@@ -172,9 +173,12 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
    that are tool calls (auto-focus, centering) stay inside `rp`.
 
 4. **PHD2 is dropped, with no second backend.** `rp` gets no backend
-   selector and the guider no PHD2 compatibility layer. PHD2 keeps
-   guiding a rig, on the release that rig runs, until the native guider
-   takes over there, and no new work starts for PHD2 in the meantime.
+   selector and the guider no PHD2 compatibility layer. No new work
+   starts for PHD2. The plan's staging keeps PHD2 guiding a rig, on the
+   release that rig runs, until the native guider takes over there;
+   whether PHD2 comes off the rigs sooner, and when `rp` switches, are
+   open in the plan
+   ([decisions 11 and 12](../plans/native-guider.md#decisions-for-the-owner)).
    When `rp` moves to the native guider's contract, `phd2-guider`, its
    Camera facade, its mock and `rp`'s PHD2-specific paths leave the
    tree. Should the native guider fail, the fallback is the repository's
@@ -182,8 +186,10 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
 
 5. **The guider's authority over devices is fixed.**
    - On the Telescope it writes `PulseGuide` and nothing else.
-   - On the Camera it uses the exposure members, and only while `rp`
-     holds no lease on the camera (decision 6).
+   - On the Camera it uses the exposure members and writes the frame
+     settings they need: the binning, the region and, when its
+     configuration names them, the gain and the offset. It does so only
+     while `rp` holds no lease on the camera (decision 6).
    - It never changes `Connected` on either device: `rp` owns device
      connections.
    - It is idle after every start. It never calibrates, loops or guides
@@ -231,7 +237,9 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
   PHD2 today, so a restart of `phd2-guider` costs one in-flight request.
   The native guider holds the loop itself and starts idle (decision 5),
   so an upgrade, a restart after a config save or a sentinel restart of
-  the service during a run stops guiding, and `rp` starts it again.
+  the service during a run stops guiding. Nothing starts it again by
+  itself: that is the decision of the guider's client, and an exposure
+  that spans the restart records that guiding did not run throughout.
 - **The mount has a second client that commands it.** `rp`'s motion gate
   already exempts guide pulses for a guider that sends them directly;
   that model stays. What protects the mount from a guider that keeps
