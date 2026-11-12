@@ -11,7 +11,7 @@ PR #459); `deep_sky.json` PR #461 (planner gaps closed by rp PRs #466,
 `workflow-documents.md` authoring guide, the `rp.md` § Orchestration
 rewrite, `sky_flat.json`) together with rp-side startup recovery in the
 archiving PR #486. Deliberately deferred, recorded below and in
-`session-runner.md` § MVP Scope: Luau `script` nodes, container-scoped
+`session-runner.md` § Limits of format version 1: Luau `script` nodes, container-scoped
 triggers, parallel containers, sub-workflow imports, the `ui-htmx`
 editor, typed array-element declarations, and retiring the Rust
 `calibrator-flats` service (a separate decision after the port has

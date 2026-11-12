@@ -769,9 +769,9 @@ A training run keeps these rules:
 - **Ordering.** Focusing the guiding train after the imaging train is
   the caller's job: a training run focuses one train, and no
   `focus_train` call orders two trains that share no focuser. Only a
-  `shared: true` walk on a guiding train that shares a focuser with the
-  imaging train carries the order itself, its imaging capture step
-  before its guide step.
+  `shared: true` walk on a guiding train that has a focuser of its own
+  and shares another with the imaging train carries the order itself,
+  its imaging capture step before its guide step.
 
 **Real-hardware validation.** On the field rig (a Raspberry Pi 5; the
 guiding train `[zwo-eaf, scops-oag, guide camera]`, its camera the PHD2

@@ -77,7 +77,9 @@ a typo of `HD 227018` helps nobody.
 The normalization exists twice — `normalize` in `src/lib.rs` and `normalize`
 in `scripts/pack_catalog.py`, which builds the key table the Rust side
 searches — and the two must agree byte for byte. The
-`normalize_matches_packer` test pins a shared list of inputs.
+`embedded_matches_committed_*` tests hold them to that: each resolves the
+names in the committed CSVs through the Rust `normalize`, against keys the
+Python one wrote.
 
 ## Nearest-neighbor naming
 
@@ -155,18 +157,27 @@ the workspace.
 
 The per-catalog CSVs in `src/data/` are committed, as the reviewable input;
 the star layer is fetched into an uncommitted intermediate, and only its
-packed rows are committed. From the repository root:
+packed rows are committed. The scripts are in `crates/rp-catalog/scripts/`
+and write relative to their own location, so they run from any directory:
 
-| Script | Writes |
-|--------|--------|
-| `scripts/openngc_to_catalog.py` | `messier.csv`, `ngc.csv`, `ic.csv`, `aliases.csv` |
-| `scripts/fetch_dso_catalogs.py` | the SIMBAD and VizieR deep-sky CSVs and `aliases_simbad.csv` |
-| `scripts/fetch_iau_csn.py` | `named_stars.csv` |
-| `scripts/fetch_star_layer.py` | `scripts/build/stars_iv25.csv` (uncommitted) |
-| `scripts/pack_catalog.py` | `catalog.bin`, from all of the above |
+| Script | Argument | Writes |
+|--------|----------|--------|
+| `openngc_to_catalog.py` | the path of OpenNGC's `database_files/NGC.csv`, downloaded beforehand | `messier.csv`, `ngc.csv`, `ic.csv`, `aliases.csv` |
+| `fetch_dso_catalogs.py` | none | the SIMBAD and VizieR deep-sky CSVs and `aliases_simbad.csv` |
+| `fetch_iau_csn.py` | optional: a downloaded copy of the IAU list, which it otherwise fetches | `named_stars.csv` |
+| `fetch_star_layer.py` | none | `scripts/build/stars_iv25.csv` (uncommitted) |
+| `pack_catalog.py` | none | `catalog.bin`, from all of the above |
 
-The `embedded_matches_committed_csvs` test fails when the blob and the CSVs
-disagree, so a CSV edited without a re-pack does not reach `main`.
+Three tests read the committed CSVs against the blob:
+`embedded_matches_committed_csvs` (each deep-sky row's name, type, position,
+magnitude and size), `embedded_matches_committed_aliases` (each alias
+resolves) and `embedded_matches_committed_named_stars` (each IAU name
+resolves to its HD row). A row added to a CSV, or a deep-sky row changed in
+one, without a re-pack fails them. They read one way only, from the CSVs to
+the blob: a row deleted from a CSV, or an alias pointed at another object,
+stays in the blob as it was until the next pack, and the HD rows have no
+committed input to be read against. So every CSV edit is followed by a
+re-pack; the tests do not stand in for it.
 
 ## Dependencies
 
