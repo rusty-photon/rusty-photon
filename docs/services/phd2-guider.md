@@ -587,8 +587,6 @@ async fn stop_reconnection(&self);
     "executable_path": null,
     "connection_timeout": "10s",
     "command_timeout": "30s",
-    "restart_timeout": "120s",
-    "managed": false,
     "auto_start": false,
     "auto_connect_equipment": false,
     "reconnect": {
@@ -1011,9 +1009,12 @@ mutex, so guiding requests wait for it.
      `POST /api/v1/guiding/stop` comes first. A loop, a selected star or
      a capture is no refusal: decision 11's wedged guide camera leaves
      PHD2 reading out a frame for a minute or more, still answering, and
-     the restart exists to end that. A PHD2 that does not answer within
-     `command_timeout` is not refused either: it goes straight to being
-     ended in step 2.
+     the restart exists to end that. A PHD2 that accepts the connection
+     but does not answer within `command_timeout` is not refused either:
+     it goes straight to being ended in step 2. When the connection
+     cannot be made at all, PHD2 may be guiding behind a dropped link, so
+     the restart ends nothing and waits for the connection within its
+     bound, answering `restart_failed` if none comes.
 2. **Stop.** If PHD2 answers, the service sends `stop_capture`, which
    ends a loop or a capture, then `set_connected(false)` and `shutdown`.
    PHD2 saves its profile on that clean exit. Each call is best effort.
@@ -1021,8 +1022,8 @@ mutex, so guiding requests wait for it.
    straight on to the exit wait: PHD2's main thread is then hung, and a
    further call would hang too, so a camera whose close hangs cannot hold
    the restart. A PHD2 that has not exited 30 s after `shutdown`, or that
-   does not answer at all, is ended: on Linux by `SIGTERM` and, 5 s
-   later, `SIGKILL`; on Windows by `TerminateProcess`.
+   accepted the connection and did not answer, is ended: on Linux by
+   `SIGTERM` and, 5 s later, `SIGKILL`; on Windows by `TerminateProcess`.
 3. **Start.** On Linux, PHD2's unit starts it again. On Windows, the
    service opens PHD2's session if it is missing and starts PHD2 there.
 4. **Answer.** The service waits for PHD2's event server to accept a
@@ -1257,8 +1258,12 @@ The package installs two units, disabled until the switch:
 
 Both units start their process again 2 s after any exit
 (`Restart=always`), and neither has a start limit
-(`StartLimitIntervalSec=0`), so a crash loop never leaves them failed:
-the service account cannot start a failed unit. Neither has a private
+(`StartLimitIntervalSec=0`), so a crash loop never leaves them failed,
+since nothing would start a failed unit again. Sentinel's discovery skips
+both, as it skips `rusty-photon-renew`: PHD2's health is the guider
+service's to report, and PHD2's restart is the guider service's to make,
+so neither shows as a service with no health URL, and sentinel's restart
+button never ends PHD2 mid-guide. Neither has a private
 `/tmp`, since PHD2 reaches the display through `/tmp/.X11-unix`. The
 package restarts neither unit on upgrade, so upgrading `phd2-guider`, or
 restarting it, leaves PHD2 running, guiding included.
@@ -1318,9 +1323,10 @@ account's session logged on and disconnected:
    account (`WTSQueryUserToken`, `CreateProcessAsUser`, desktop
    `winsta0\default`). It starts it only from beneath `%ProgramFiles%` or
    `%ProgramFiles(x86)%`, judged on the path resolved to its final
-   location (no `..`, links or junctions), and only when the `Users` group
-   cannot write the file or its folder. So a setup-page save cannot have
-   the service run another program as the account. A PHD2 already running in the session, started by
+   location (no `..`, links or junctions), and only when nobody but
+   administrators, `SYSTEM` and `TrustedInstaller` can write the file or
+   its folder. So a setup-page save cannot have the service run another
+   program as the account. A PHD2 already running in the session, started by
    an earlier run of the service, is adopted instead. PHD2 keeps its
    profile in that account's registry.
 4. **Keeping it running.** It starts PHD2 again 2 s after it exits, as
@@ -1328,20 +1334,24 @@ account's session logged on and disconnected:
    stop. Stopping or upgrading the service leaves PHD2 running.
 
 An operator looks at PHD2 by connecting over RDP as `rusty-photon-phd2`,
-which takes the session over. Disconnecting leaves it running. The logon
-disconnects the operator's own session, as any second logon does on
-Windows Pro. From another host, RDP has to be allowed through the
+which takes the session over, and leaves by disconnecting, which leaves
+PHD2 running. They never sign out: signing out ends the session and PHD2
+with it, mid-guide if PHD2 is guiding, and the service then opens a new
+session, disconnecting whoever is active. The logon disconnects the
+operator's own session, as any second logon does on Windows Pro. From another host, RDP has to be allowed through the
 firewall, which the MSI leaves as it found it.
 
 The MSI creates `%PROGRAMDATA%\rusty-photon\phd2-images`, the directory
 a switched-over host's camera facade uses. When the facade is enabled and
-`camera.image_dir` names that directory, compared as Windows compares
-paths (case aside, as a full path), the service grants the PHD2 account
-the right to modify files in it at its start, so PHD2 can write the
-frames the service reads. It grants nothing on any other directory, so a
-setup-page save cannot hand the account a system directory. An operator
-who points `image_dir` elsewhere grants the PHD2 account access there,
-and the service logs a warning that it granted nothing.
+`camera.image_dir` names that directory, the service grants the PHD2
+account the right to modify files in it at its start, so PHD2 can write
+the frames the service reads. It compares the path resolved to its final
+location, as Windows compares paths (case aside), and grants nothing on a
+directory that is itself a link or junction, or on any other directory.
+So neither a setup-page save nor a junction put in the directory's place
+can hand the account a system directory. An operator who points
+`image_dir` elsewhere grants the PHD2 account access there, and the
+service logs a warning that it granted nothing.
 
 ### macOS
 
