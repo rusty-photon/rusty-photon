@@ -193,7 +193,7 @@ until 2026-10, (2) to that default and to a disabled CW exclusion
 zone, under which the selector never changes sides; (3), issue #1299,
 is fixed. The
 per-config issue counts are in the table under
-[§Running ConformU manually](../../services/star-adventurer-gti.md#running-conformu-manually).
+[§Running ConformU manually](#the-findings-and-the-counts-per-config).
 
 After (1) is worked around by disabling the CW exclusion zone
 for the mock test config (`"cw_exclusion_zone": null`), the report

@@ -3651,8 +3651,9 @@ about a quarter of an hour, against the step's 30-minute budget. On the
 shared runners the RA legs come about five minutes into the step, while
 two to four other suites are still running, and stay near the idle
 host's margin: none worse than 0.04 s against the 0.07 s tolerance. A
-leg can still miss when a pulse's restore runs late; one has, on
-Windows, by about half a second
+leg can still miss when a pulse's restore runs late: one has, on
+Windows, where a restore about half a second late put the leg 0.26 s
+off
 ([the runs behind these figures, and that leg](../plans/archive/star-adventurer-gti-conformu-findings-2026.md#the-dispatch-runs-and-the-leg-that-missed)).
 
 At 0.5× a leg can absorb about 0.13 s of lateness on either edge before

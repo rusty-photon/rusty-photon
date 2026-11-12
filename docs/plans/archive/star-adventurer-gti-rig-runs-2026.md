@@ -127,7 +127,7 @@ This list stood under
   no record, because it was not a two-suite ConformU pass.
 - **2026-05-16 — meridian flip, AP Park 1–5 traversal** (predates the
   record trail, no ConformU artefacts): see
-  [§Hardware validation](../../services/star-adventurer-gti.md#hardware-validation) under Meridian flip.
+  [§Hardware validation](#the-ap-park-traversal-of-2026-05-16) under Meridian flip.
 
 ## The AP park traversal of 2026-05-16
 
