@@ -2,10 +2,10 @@
 Feature: session-runner as an authenticated MCP client of rp
   session-runner reaches a TLS- and auth-enabled rp by presenting the
   observatory credential over verified HTTPS — the service_auth and
-  ca_cert config fields, built through the shared rp-mcp-client crate
-  (ADR-017). A credential is never sent over a connection the client
-  cannot verify: service_auth without ca_cert connects unauthenticated
-  with a loud warning.
+  ca_cert config fields, built through the shared rp-mcp-client crate.
+  A credential is never sent over a connection the client cannot
+  verify: service_auth without ca_cert connects unauthenticated with a
+  loud warning.
 
   Scenario: standalone validation reaches a TLS and auth enabled rp
     Given generated TLS certificates

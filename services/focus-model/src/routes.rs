@@ -17,8 +17,8 @@ use crate::tools::FocusHandler;
 /// Build the router. `mcp_extra_allowed_hosts` extends rmcp's loopback
 /// `Host` allowlist (see [`crate::additional_allowed_hosts`]).
 pub fn build_router(handler: FocusHandler, mcp_extra_allowed_hosts: Vec<String>) -> Router {
-    // Session-less, like rp's own transport (ADR-021): every request is
-    // served statelessly, which is what rp's client speaks.
+    // Session-less, like rp's own transport: every request is served
+    // statelessly, which is what rp's client speaks.
     let mut mcp_config = StreamableHttpServerConfig::default();
     mcp_config.legacy_session_mode = false;
     // A `tools/call` answers as plain JSON unless the body emits a

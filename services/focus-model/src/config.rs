@@ -291,20 +291,19 @@ impl Default for TrainConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The HTTP server for `/mcp` and `/health`. Files without a
-    /// `server` block keep loading via the default.
+    /// The HTTP server for `/mcp` and `/health`. A file without a
+    /// `server` block gets the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     /// `rp`'s MCP endpoint, dialed per tool call. Required: it has no
     /// sensible default.
     pub mcp_server_url: String,
     /// HTTP Basic credentials presented to `rp` on MCP calls. The
-    /// observatory credential; doctor `--fix` wires it (ADR-017).
+    /// observatory credential; doctor `--fix` wires it.
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
-    /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017
-    /// policy, `service_auth` is only sent when this is set and the URL
-    /// is https.
+    /// PEM CA path used to trust a TLS-enabled `rp`. `service_auth` is
+    /// only sent when this is set and the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
     #[serde(default)]
@@ -545,7 +544,7 @@ mod tests {
         assert!(config.store_path.is_none());
         assert!(config.service_auth.is_none());
         assert!(config.ca_cert.is_none());
-        // A file without a `server` block keeps loading via the default.
+        // A file without a `server` block gets the default.
         assert_eq!(config.server.port, 11173);
         assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert!(config.server.tls.is_none());

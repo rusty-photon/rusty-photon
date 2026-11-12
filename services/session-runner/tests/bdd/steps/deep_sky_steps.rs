@@ -42,8 +42,8 @@ use crate::steps::observation::{await_blackboard_counter, frame_budget, timeout_
 // ---------------------------------------------------------------------------
 
 /// A `desired_count` large enough that the scenario's frame budget is hit
-/// first: the store requires a finite goal, so a legacy count-less "plan
-/// drives the duration, but never exhausts" entry is emulated this way.
+/// first: the store requires a finite goal, so a plan that drives the
+/// duration but never exhausts is written this way.
 const NO_FINITE_GOAL: u32 = 1000;
 
 #[given("an observing site where it is astronomical night with one planner target")]

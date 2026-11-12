@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(to_icrs(AssumeEpoch::J2000, 14.0, -40.0, now), (14.0, -40.0));
     }
 
-    /// The P3a precession fingerprint: 14h00m / −40° read as `JNow` is
+    /// The precession fingerprint: 14h00m / −40° read as `JNow` is
     /// J2000 13h58m23s / −39°52′11″ ≈ (13.97306 h, −39.86972°). The band
     /// (within 5′ of the J2000 value, at least 15′ from the input) stays
     /// valid for years of accumulating precession.

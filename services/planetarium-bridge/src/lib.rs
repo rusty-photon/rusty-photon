@@ -286,8 +286,8 @@ fn setup_pages(
 }
 
 /// Remember the peer address of every Alpaca request — the import
-/// provenance's `client` field. Single-client in practice (P3a: one
-/// planetarium drives the device).
+/// provenance's `client` field. Single-client in practice: one
+/// planetarium drives the device.
 async fn remember_client(
     axum::extract::State(last): axum::extract::State<Arc<Mutex<Option<SocketAddr>>>>,
     request: axum::extract::Request,
@@ -353,7 +353,7 @@ impl BoundServer {
                 // The TLS accept path serves the router without
                 // per-connection info, so imports carry
                 // `client: "unknown"` — acceptable: planetarium
-                // clients speak plain HTTP (P3a).
+                // clients speak plain HTTP.
                 info!("planetarium-bridge started on {local_addr} (TLS)");
                 rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
                     .await

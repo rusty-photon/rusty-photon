@@ -67,8 +67,8 @@ pub struct SessionRunnerWorld {
     pub site: Option<(f64, f64)>,
     /// `add_target` argument objects (computed coordinates, optional
     /// altitude floor, optional goals) seeded into rp's redb store
-    /// post-boot by `start_rp_service` — the legacy `targets[]` config
-    /// array was retired, so planner targets are added via the MCP tool.
+    /// post-boot by `start_rp_service`: planner targets are added via the
+    /// MCP tool.
     pub pending_store_targets: Vec<Value>,
     /// The computed target coordinates behind `pending_store_targets`,
     /// kept for the mount-sync and plate-solver-echo steps.

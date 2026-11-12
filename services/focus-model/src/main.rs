@@ -95,7 +95,7 @@ fn main() -> ServiceResult {
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process
     // exit so the final lines flush on SCM Stop. Console mode logs to
-    // stderr as before.
+    // stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "focus-model",
         cli.log_level,

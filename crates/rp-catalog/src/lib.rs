@@ -86,7 +86,7 @@ pub struct ResolvedTarget {
     /// `DrkN`, etc.; documented at
     /// <https://github.com/mattiaverga/OpenNGC>). Stars are `"*"`.
     pub object_type: String,
-    /// J2000/ICRS pointing, validated by construction (ADR-019): one
+    /// J2000/ICRS pointing, validated by construction: one
     /// coordinate type spans catalog → store → planner, serialized as a
     /// nested `"coord": { "ra_hours", "dec_degrees" }` object (no
     /// `#[serde(flatten)]`).
@@ -630,9 +630,9 @@ impl Catalog {
     }
 
     /// Nearest catalog entry to `coord` under the class-tiered naming
-    /// contract (planetarium-bridge design, issue #767): the best
-    /// deep-sky hit within `tolerances.dso_arcmin` outranks any star hit
-    /// regardless of separation; otherwise the best star within
+    /// contract (`docs/crates/rp-catalog.md` § Nearest-neighbor naming):
+    /// the best deep-sky hit within `tolerances.dso_arcmin` outranks any
+    /// star hit regardless of separation; otherwise the best star within
     /// `tolerances.star_arcmin` wins. Separation orders hits within a
     /// class; exact ties fall back to catalog rank (M > NGC > IC >
     /// Sh2 > …) and then name, so entries at identical coordinates

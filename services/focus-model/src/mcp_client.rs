@@ -1,8 +1,8 @@
 //! The provider's client half: `rp`'s built-in tools, cancellable.
 //!
-//! Built on the standard `rp-mcp-client` crate (ADR-017 — CA-pinned
-//! TLS and the observatory credential over verified HTTPS only), with
-//! every call cancellable by the tool request's token.
+//! Built on the standard `rp-mcp-client` crate (CA-pinned TLS and the
+//! observatory credential over verified HTTPS only), with every call
+//! cancellable by the tool request's token.
 //!
 //! A cancelled call does not merely stop waiting: `notifications/cancelled`
 //! goes to `rp` for the in-flight request, so an exposure or a move in
@@ -70,8 +70,8 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl McpClient {
     /// Connect to `rp` at the configured `mcp_server_url`, presenting
-    /// `service_auth` per the ADR-017 credential policy. Calls made
-    /// through the returned client are cancelled when `cancel` fires.
+    /// `service_auth` only over verified HTTPS. Calls made through the
+    /// returned client are cancelled when `cancel` fires.
     ///
     /// The bootstrap itself watches that token and is bounded by
     /// [`CONNECT_TIMEOUT`]: a `focus_train` holds the provider's focus

@@ -73,7 +73,7 @@ pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIn
 }
 
 /// The subscription's HTTP client and the credential it may present —
-/// CA trust + credentials per ADR-017, the same policy the MCP legs
+/// CA trust + credentials by the same policy the MCP legs
 /// apply. A broken CA file must not wedge the start path, so that
 /// failure degrades to a default-trust client — but then the credential
 /// is **withheld**: the credential is only ever paired with the client

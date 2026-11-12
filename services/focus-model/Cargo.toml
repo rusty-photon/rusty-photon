@@ -23,7 +23,7 @@ thiserror = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
 # The MCP *server* half: the focus tools rp aggregates (rp.md § Plugin-
-# Provided Tools). The client half comes through rp-mcp-client (ADR-017).
+# Provided Tools). The client half comes through rp-mcp-client.
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = { workspace = true }
 # The request cancellation token rmcp hands a tool body (`RequestContext::ct`).

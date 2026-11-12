@@ -230,9 +230,9 @@ pub struct DeviceConfig {
     pub assume_epoch: AssumeEpoch,
     /// Reported-position altitude floor in degrees: while the virtual
     /// pointing's computed altitude is below this, `RightAscension` /
-    /// `Declination` report the zenith idle point instead (the P3a wedge
-    /// defense). Explicit `null` disables the policy and reports raw
-    /// virtual pointing.
+    /// `Declination` report the zenith idle point instead: a client can
+    /// refuse every slew while the scope reads below the horizon. Explicit
+    /// `null` disables the policy and reports raw virtual pointing.
     ///
     /// The schema spells it as an optional number, so the device's setup
     /// page renders a number input whose cleared submission persists the

@@ -24,9 +24,7 @@ pub struct Document {
     /// Declared run parameters, keyed by name.
     pub parameters: BTreeMap<String, ParameterDecl>,
     /// Advisory run-length estimates for the document's readers —
-    /// parsed and validated, enforced by nothing (the legacy `/invoke`
-    /// acknowledgment that returned them went with mcp-sessionless
-    /// slice 7).
+    /// parsed and validated, enforced by nothing.
     pub estimated_duration: Option<Duration>,
     pub max_duration: Option<Duration>,
     /// Document-global reactive rules.
@@ -55,8 +53,8 @@ pub enum ParameterType {
     Duration,
     /// An opaque JSON array. v1 declares no element shape — element
     /// errors surface as loud expression errors at run time (typed
-    /// element declarations are the deferred "array-parameter
-    /// ergonomics" in the design doc's MVP boundary).
+    /// element declarations are deferred: design § Limits of format
+    /// version 1).
     Array,
 }
 

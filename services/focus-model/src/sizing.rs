@@ -68,8 +68,8 @@ impl Optics {
     /// The obstruction ratio the blur constant is derived from: the
     /// reported one when it describes an annulus, else 0. A null ratio
     /// comes from a train without an aperture, which has no focal ratio
-    /// to size from either, or from an `rp` that predates the field,
-    /// whose trains were all taken as unobstructed.
+    /// to size from either, or from an `rp` build without the field,
+    /// where every train is taken as unobstructed.
     fn obstruction_ratio(&self) -> f64 {
         self.obstruction_ratio
             .filter(|ratio| ratio.is_finite() && (0.0..1.0).contains(ratio))
@@ -366,8 +366,8 @@ mod tests {
     }
 
     /// No ratio, or one no annulus has, sizes the train as unobstructed:
-    /// a null ratio is a train without an aperture or an `rp` from
-    /// before the field.
+    /// a null ratio is a train without an aperture or an `rp` build
+    /// without the field.
     #[test]
     fn a_missing_or_impossible_obstruction_ratio_is_sized_as_unobstructed() {
         let unobstructed =

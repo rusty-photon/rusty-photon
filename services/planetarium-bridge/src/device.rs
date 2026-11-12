@@ -7,7 +7,8 @@
 //! reported position interpolates — and never import. What
 //! `RightAscension`/`Declination` return is subject to the altitude floor:
 //! below it, the report snaps to the zenith idle point (RA = LST,
-//! Dec = site latitude), the P3a wedge defense.
+//! Dec = site latitude): a client can refuse every slew while the scope
+//! reads below the horizon (design § Reported-position policy).
 
 use std::net::SocketAddr;
 use std::sync::Mutex;
@@ -72,7 +73,7 @@ pub struct BridgeTelescope {
     floor_deg: Option<f64>,
     importer: Importer,
     /// Peer address of the most recent Alpaca request — the import
-    /// provenance's `client` field (single-client in practice; P3a).
+    /// provenance's `client` field (single-client in practice).
     last_client: Arc<Mutex<Option<SocketAddr>>>,
     /// The setup pages behind `/setup/v1/telescope/0/setup`: `Some` when the
     /// device was built with a config source (the normal path through

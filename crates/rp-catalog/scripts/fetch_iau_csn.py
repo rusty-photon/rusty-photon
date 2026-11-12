@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Convert the IAU Catalog of Star Names (WGSN) into the committed
 `named_stars.csv` (`name,hd,magnitude`): the ~450 stars whose proper
-name is the canonical catalog entry (decision on #767 — a tap-anchor
-import on Vega arrives as "Vega", not "HD 172167"). The CSN magnitude
+name is the canonical catalog entry, so that a tap-anchor import on
+Vega arrives as "Vega", not "HD 172167". The CSN magnitude
 rides along because Tycho-2 lacks VT for the very brightest stars, so
 the packer backfills named rows from it.
 

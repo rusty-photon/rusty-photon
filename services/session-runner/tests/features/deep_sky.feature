@@ -112,9 +112,7 @@ Feature: Deep-sky workflow document
     When a run is started
     # The planner sees a bright rising Sun and no viable target, so its
     # first answer is end_of_session and the document ends the session
-    # before slewing or capturing anything. Before rp #465 the reason
-    # was wait_for_twilight and the document's zero-frames heuristic
-    # read it as dusk — it would have waited forever.
+    # before slewing or capturing anything.
     Then the run ends within 30 seconds
     And the SSE stream should show exactly 0 "slew_complete" events
     And the SSE stream should show exactly 0 "exposure_complete" events

@@ -674,7 +674,8 @@ fn test_eval_errors_have_eval_kind_and_serialize() {
 #[test]
 fn test_number_precision_follows_f64() {
     // Numbers are f64 by contract: a u64 beyond 2^53 compares by its f64
-    // approximation. This is the documented trade-off of D3's f64-only pin.
+    // approximation. This is the documented trade-off of the f64-only pin
+    // (design § Expressions).
     let session = json!({"big": 9_007_199_254_740_993_u64});
     assert_eq!(
         eval_session("session.big == 9007199254740992", &session).unwrap(),

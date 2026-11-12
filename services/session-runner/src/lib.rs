@@ -10,14 +10,13 @@
 //! `session-runner` — generic imaging-workflow orchestrator (an `rp`
 //! orchestrator plugin).
 //!
-//! Design: `docs/services/session-runner.md`; delivery plan:
-//! `docs/plans/archive/workflow-dsl.md`. This crate ships the expression layer
-//! ([`expr`]), the document layer ([`document`]: model, validation layers
-//! 1–2, parameter binding), the engine ([`engine`] + [`blackboard`],
-//! triggers included), the SSE event client ([`events`]), the run
-//! lifecycle ([`runs`]: registry, manifest, supervisor), and the service
-//! wiring ([`mcp_client`], [`routes`], [`config`]) behind the two-phase
-//! [`ServerBuilder`].
+//! Design: `docs/services/session-runner.md`. This crate ships the
+//! expression layer ([`expr`]), the document layer ([`document`]: model,
+//! validation layers 1–2, parameter binding), the engine ([`engine`] +
+//! [`blackboard`], triggers included), the SSE event client ([`events`]),
+//! the run lifecycle ([`runs`]: registry, manifest, supervisor), and the
+//! service wiring ([`mcp_client`], [`routes`], [`config`]) behind the
+//! two-phase [`ServerBuilder`].
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
