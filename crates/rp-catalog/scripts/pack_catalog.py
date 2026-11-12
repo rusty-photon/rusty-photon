@@ -44,10 +44,11 @@ computable):
     pool      u8 length-prefixed byte strings
 
 `normalize()` below MUST stay byte-identical to the Rust
-`rp_catalog::normalize`. The `embedded_matches_committed_*` tests
-resolve the spellings the committed CSVs hold through the Rust function
-— a catalog or star name to its own row, an alias only to some row — and
-check nothing else, so a change to either is made to both.
+`rp_catalog::normalize`. The `embedded_matches_committed_*` tests hold
+the two together only for the spellings the committed CSVs hold, which
+they resolve through the Rust function — a catalog or star name to its
+own row, an alias only to some row — so a change to either is made to
+both.
 
 Usage::
 
