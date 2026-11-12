@@ -128,8 +128,8 @@ mod tests {
         );
     }
 
-    /// Round-trip through the spike-proven forward direction: converting a
-    /// `JNow` value back to ICRS then forward again must land on the input.
+    /// A `JNow` right ascension 36 s past 0h precesses back across the
+    /// wrap; the ICRS value comes out in [0, 24), not as a negative hour.
     #[test]
     fn jnow_conversion_is_consistent_under_ra_wrap() {
         let now = Utc.with_ymd_and_hms(2026, 7, 30, 6, 0, 0).unwrap();
