@@ -256,8 +256,11 @@ camera's frame depends on `SensorType`:
 - **Pixels** in this document, in the configuration and on the wire are
   pixels of the measured frame, after binning or summing.
 - **Saturation.** A star with a pixel at full scale is not chosen as a
-  guide star. Full scale is `MaxADU`, or four times `MaxADU` in a
-  summed frame.
+  guide star. Full scale is `MaxADU`. A pixel of a summed frame is at
+  full scale when any of the four camera pixels summed into it is at
+  `MaxADU`, which the guider judges on the camera's frame before it
+  sums: a star whose green pixels clip is saturated although its sums
+  stay below four times `MaxADU`.
 
 ### The camera lease
 
@@ -278,7 +281,10 @@ that the two never expose at once.
   with another token is refused with `camera_leased`.
 - **A lease lasts for its `ttl`** and is renewed by its holder. When it
   expires it ends without notice, so a holder that died does not keep
-  the guider from exposing.
+  the guider from exposing for longer than that. No request ends a
+  lease without its token, so the lease of a holder that died or
+  restarted ends only when its `ttl` runs out. A holder asks for a
+  short `ttl`, 60 s by default, and renews it.
 - **While a lease is held**, `loop`, `calibrate` and `guiding/start`
   are refused with `camera_leased`, and the guider sends the camera
   nothing but the reads of the device poll.
@@ -312,7 +318,10 @@ decision.
   In a full pause, with no frames, the check runs once per
   `camera.exposure`.
 - A mount that reports no pier side, or reports it unknown, gives the
-  run the side `unknown`, and the pier side is not checked.
+  run the side `unknown`, and the pier side is not checked. A meridian
+  flip of such a mount is one of the things the guider cannot see
+  ([Calibration](#calibration)): the client that flips it starts the
+  next run with `recalibrate: true`.
 - The check is the guider's because a driver's is not enough: the Star
   Adventurer GTi driver accepts a pulse while tracking is off
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
@@ -352,12 +361,15 @@ ratio. A detection is passed over when it is saturated, when it is
 closer to the frame's edge than `calibration.distance_px` plus
 `stars.search_region_px`, when it is too sharp to be a star (a hot
 pixel), or when another star is so close that the two would be
-confused. A frame that yields no guide star refuses the request with
-`no_stars`.
+confused. A frame that yields no guide star refuses `calibrate`,
+`guiding/start` and `star/reselect` with `no_stars`. `loop` is not
+refused: it answers with a `star_count` of 0, and the guider selects
+again on each frame of `looping` until one has stars.
 
-Selection happens on the first frame of `looping`, when a run begins
-from `idle` or `looping`, and on `star/reselect`. The guider never
-selects stars again on its own in the middle of a run.
+Selection happens on the first frame of `looping` and on each later one
+until a frame has stars, when a run begins from `idle` or `looping`,
+and on `star/reselect`. The guider never selects stars again on its own
+in the middle of a run.
 
 **Measurement.** In each later frame every guide star is looked for
 within `stars.search_region_px` of where it was last measured. A star
@@ -444,13 +456,15 @@ calibration stores nothing and leaves the slot as it was.
   A run multiplies it by the cosine of its own declination.
 - A slot is never worked out from the other side's record.
 - **A stored record is used** when the pier side is its slot's and the
-  camera's pixel size, sensor size, effective binning and the
-  configured focal length are the ones it was made with. Anything else
-  starts a calibration.
+  camera's pixel size, sensor size, effective binning, the configured
+  focal length and the mount's two guide rates are the ones it was made
+  with. Anything else starts a calibration. A mount that reports no
+  guide rate is compared on the other values.
 - **What the guider cannot see**, it does not invalidate. A camera
-  turned in its holder or a rotator that moved changes the angles
-  without changing any of those values. The client that knows clears
-  the store (`calibration/clear`) or starts with `recalibrate: true`.
+  turned in its holder, a rotator that moved, or a meridian flip of a
+  mount that reports no pier side changes the angles without changing
+  any of those values. The client that knows clears the store
+  (`calibration/clear`) or starts with `recalibrate: true`.
 - A `calibration.json` the guider cannot read is set aside under
   another name when the service starts, and the store starts empty.
 
@@ -636,6 +650,7 @@ no fields.
     "pixel_scale_arcsec": 2.99,
     "focal_length_mm": 200.0,
     "camera": { "pixel_size_um": 1.45, "width": 3840, "height": 2192, "binning": 2 },
+    "guide_rates": { "ra_deg_per_s": 0.002089, "dec_deg_per_s": 0.002089 },
     "ra": { "angle_deg": 87.3, "rate_px_per_s": 2.52, "steps": 12, "step": "850ms" },
     "dec": { "angle_deg": 177.1, "rate_px_per_s": 2.49, "steps": 12, "step": "850ms", "backlash": "310ms" },
     "orthogonality_error_deg": 0.2,
@@ -647,14 +662,19 @@ no fields.
 
 - Valid in `idle` and `looping`; `not_idle` in a run state. The guider
   returns to the state the request found it in, whether the calibration
-  passed or failed.
+  passed or failed. A stop of the guider's own during the calibration
+  is not a failed calibration: the guider goes to `idle` and the
+  request answers `guide_failed`
+  ([Stopping on its own](#stopping-on-its-own)).
 - From `idle` it selects guide stars on its first frame.
-- `camera` holds what a later run is compared with: the pixel size, the
-  sensor's size and the effective binning. `angle_deg` is the direction
-  on the sensor, counter-clockwise from the +x axis, in which a West
-  pulse (`ra`) or a North pulse (`dec`) moves the stars.
-  `ra.rate_px_per_s` is the rate at the equator. `expected` is `null`
-  for a mount that reports no guide rate, and `dec` is `null` when
+- `camera` and `guide_rates` hold what a later run is compared with:
+  the pixel size, the sensor's size and the effective binning, and the
+  mount's `GuideRateRightAscension` and `GuideRateDeclination` in
+  degrees per second. `angle_deg` is the direction on the sensor,
+  counter-clockwise from the +x axis, in which a West pulse (`ra`) or a
+  North pulse (`dec`) moves the stars. `ra.rate_px_per_s` is the rate
+  at the equator. `guide_rates` and `expected` are `null` for a mount
+  that reports no guide rate, and `dec` is `null` when
   `control.dec.mode` is `"off"`.
 - `warnings` lists the cross-checks that passed their warning
   threshold, each as `{ "check", "value", "threshold" }`.
@@ -940,12 +960,13 @@ The setup page, HTML for a browser: see [Setup page](#setup-page).
 
 #### `GET /health`
 
-`200 {"status": "ok"}` while both devices are configured, answer and
-are connected.
+`200 {"status": "ok"}` while the configuration names both devices and
+the focal length, and both devices answer and are connected.
 `503 {"status": "unavailable", "message": "..."}` otherwise, where
-`message` says what is missing: the configuration names no camera, the
-mount does not answer, the camera is not connected. The answer comes
-from the device poll, so a probe costs no device call.
+`message` says what is missing: the configuration names no camera or no
+focal length, the mount does not answer, the camera is not connected.
+The answer comes from the configuration and the device poll, so a probe
+costs no device call.
 
 The `503` means **alive but degraded**. Devices that are switched off
 or not connected are the normal daytime state and nothing a restart of
@@ -983,8 +1004,10 @@ of its interval and subtracts.
   pair does not grow.
 - `star_lost` counts the star-lost frames of runs.
 - `interruptions` counts each time a run stops or is paused. With
-  `guiding` true at both readings and the count unchanged, guiding ran
-  through the interval.
+  `guiding` true at both readings and the count unchanged, the run was
+  neither stopped nor paused in the interval. The frames in it that
+  had no usable star are the change in `star_lost`, and no correction
+  followed them.
 
 Each axis's count and sum is a `SquareSums` from
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
