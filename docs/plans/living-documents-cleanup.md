@@ -422,7 +422,7 @@ for every batch.
 
 | Batch | Status | Pull request |
 |-------|--------|--------------|
-| Plan | Open | — |
+| Plan | Merged 2026-11-12 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1696) |
 | B1 — Star Adventurer GTi | Not started | — |
 | B2 — doctor, ui-htmx, the installer | Not started | — |
 | B3 — rp and its client crates | Not started | — |
@@ -430,6 +430,6 @@ for every batch.
 | B5 — shared transport and the serial drivers | Not started | — |
 | B6 — cameras and SDK crates | Not started | — |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
-| B8 — catalog, planner, focus | Not started | — |
+| B8 — catalog, planner, focus | Design docs in review; the code comments and the guard rows follow in a second pull request | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758) |
 | B9 — build, CI, runners; the empty table | Not started | — |
 | B9 — the root `Cargo.toml`, a trial slice of the method | Merged 2026-11-11 | [trial slice](https://github.com/rusty-photon/rusty-photon/pull/1744) |
