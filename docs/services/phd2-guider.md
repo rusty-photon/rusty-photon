@@ -1021,7 +1021,8 @@ mutex, so guiding requests wait for it.
      the restart exists to end that. A PHD2 that accepts the connection
      but does not answer within `command_timeout` is not refused either:
      it goes straight to being ended in step 2. When the connection
-     cannot be made at all, the service waits for it while the process it
+     cannot be made at all (the service tries one of its own, since its
+     client may be between connections), it waits for it while the process it
      knows as PHD2 (the unit's main process on Linux, the one it started
      on Windows) has run for less than 60 s, PHD2's start. One that has
      run longer without accepting a connection hung before its event
@@ -2371,14 +2372,14 @@ starts disconnected, and `get_connected` reads it back. The fixed
 the RMS deterministic: `rms_ra_px = 0.3`, `rms_dec_px = 0.4`,
 `total_rms_px = 0.5`.
 
-`phd2_restart.feature`'s scenarios tagged `@unix` stand in for systemd
+`phd2_restart.feature`'s scenarios tagged `@linux` stand in for systemd
 (`tests/bdd/phd2_unit.rs`): the service starts with a `systemctl` script
 first on its `PATH`, which answers the one query the service makes from
 a state file the scenario keeps, and fails any other call. The mock PHD2
 is the unit's main process, on a port the scenario reserves first, and
 the scenario starts it again on that port 2 s after it exits, as
-`Restart=always` does, recording how each one ended. A Windows run skips
-those scenarios.
+`Restart=always` does, recording how each one ended. A run off Linux,
+where this build has no keeper of PHD2, skips those scenarios.
 
 ### Manual Testing
 - Test with real guiding session

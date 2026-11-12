@@ -158,7 +158,7 @@ async fn first_phd2_terminated(world: &mut GuiderWorld) {
         );
     }
     #[cfg(not(unix))]
-    panic!("a scenario that reads a signal is tagged @unix; the first PHD2 ended with {status}");
+    panic!("a scenario that reads a signal is tagged @linux; the first PHD2 ended with {status}");
 }
 
 #[then(expr = "the guider service should have logged {string}")]

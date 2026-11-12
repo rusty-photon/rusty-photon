@@ -22,8 +22,9 @@ Feature: Restarting PHD2
   get_connected reads true. The answer is
   {"phd2": "restarted", "equipment": "connected", "elapsed_ms": N}.
 
-  The scenarios tagged @unix stand in for systemd: the service finds on
-  its PATH a systemctl that reports the unit's ActiveState and MainPID,
+  The scenarios tagged @linux stand in for systemd, and run only on Linux,
+  the one platform where this build has a keeper of PHD2: the service
+  finds on its PATH a systemctl that reports the unit's ActiveState and MainPID,
   whose main process is the mock PHD2, and the scenario starts the mock
   again on its port 2 s after it exits, as the unit's Restart=always does.
   The suite's phd2.command_timeout is 5s and its phd2.restart_timeout 60s.
@@ -49,7 +50,7 @@ Feature: Restarting PHD2
     Then the response status should be 415
     And the mock PHD2 should not have received a "shutdown" request
 
-  @unix
+  @linux
   Scenario: A restart while the unit runs no PHD2 is refused
     Given the rusty-photon-phd2 unit is inactive
     And a mock PHD2 that settles successfully
@@ -59,7 +60,7 @@ Feature: Restarting PHD2
     And the response error should be "restart_unsupported" mentioning "rusty-photon-phd2 is inactive"
     And the mock PHD2 should not have received a "shutdown" request
 
-  @unix
+  @linux
   Scenario: A restart while PHD2 guides is refused with guiding_active
     Given the rusty-photon-phd2 unit keeps PHD2 running
     And a mock PHD2 that is guiding
@@ -70,7 +71,7 @@ Feature: Restarting PHD2
     And the mock PHD2 should not have received a "stop_capture" request
     And the mock PHD2 should not have received a "shutdown" request
 
-  @unix
+  @linux
   Scenario: A restart while the facade camera is connected is refused with camera_connected
     Given the rusty-photon-phd2 unit keeps PHD2 running
     And a mock PHD2 2.6.14 with an 8 x 6 camera
@@ -81,7 +82,7 @@ Feature: Restarting PHD2
     And the response error should be "camera_connected"
     And the mock PHD2 should not have received a "shutdown" request
 
-  @unix
+  @linux
   Scenario: PHD2 is stopped through its RPC, started again by its unit, and its equipment connected
     Given the rusty-photon-phd2 unit keeps PHD2 running
     And a mock PHD2 that settles successfully
@@ -101,7 +102,7 @@ Feature: Restarting PHD2
       | set_connected | true   |
       | get_connected |        |
 
-  @unix
+  @linux
   Scenario: A PHD2 that ignores shutdown is ended with SIGTERM 30 s later and started again
     Given the rusty-photon-phd2 unit keeps PHD2 running
     And a mock PHD2 that ignores shutdown
@@ -117,7 +118,7 @@ Feature: Restarting PHD2
       | set_connected | true   |
       | get_connected |        |
 
-  @unix
+  @linux
   Scenario: A PHD2 that accepts the connection and never answers is ended with SIGTERM and started again
     Given the rusty-photon-phd2 unit keeps PHD2 running
     And a mock PHD2 that accepts connections and never answers

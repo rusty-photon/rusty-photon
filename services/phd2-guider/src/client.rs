@@ -240,6 +240,19 @@ impl Phd2Client {
         self.shared.connection_count()
     }
 
+    /// Whether PHD2's event server accepts a connection now, tried apart
+    /// from this client's own connection, which may be between attempts.
+    /// The connection is dropped at once.
+    pub async fn accepts_connection(&self) -> bool {
+        let addr = format!("{}:{}", self.config.host, self.config.port);
+        tokio::time::timeout(
+            self.config.connection_timeout,
+            self.connection_factory.can_connect(&addr),
+        )
+        .await
+        .unwrap_or(false)
+    }
+
     /// Subscribe to PHD2 events
     pub fn subscribe(&self) -> broadcast::Receiver<Phd2Event> {
         self.shared.event_sender.subscribe()

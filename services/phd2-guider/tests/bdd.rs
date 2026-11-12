@@ -3,8 +3,9 @@
 //! The `@wip` filter follows `docs/skills/testing.md` §2.7: scenarios
 //! land before their implementation carry the tag and are skipped at
 //! runtime; the tag is removed in the commit that lands the
-//! implementation. Scenarios tagged `@unix` run only on Unix, where a
-//! shell script can stand in for `systemctl`. Both tag forms (with and
+//! implementation. Scenarios tagged `@linux` run only on Linux, the one
+//! platform with a keeper of PHD2, where a shell script stands in for
+//! `systemctl`. Both tag forms (with and
 //! without the leading `@`) are accepted, matching
 //! `services/rp/tests/bdd.rs`.
 
@@ -74,9 +75,10 @@ bdd_infra::bdd_main! {
                 let at = format!("@{tag}");
                 feat.tags.iter().chain(sc.tags.iter()).any(|t| t == tag || *t == at)
             };
-            // `@unix` scenarios stand in for systemd with a shell script on
-            // the service's PATH.
-            !tagged("wip") && (!tagged("unix") || cfg!(unix))
+            // `@linux` scenarios stand in for systemd with a shell script on
+            // the service's PATH, and expect a restart that only Linux has a
+            // keeper for (`service::keeper::system_keeper`).
+            !tagged("wip") && (!tagged("linux") || cfg!(target_os = "linux"))
         })
         .await;
 }

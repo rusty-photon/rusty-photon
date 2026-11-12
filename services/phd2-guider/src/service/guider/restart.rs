@@ -339,8 +339,16 @@ impl GuiderOps {
                     .await
                     .map_err(|e| Step::Refusals.failed(e))?
                 {
+                    // This service's client may be between connections; a
+                    // PHD2 that accepts one, guiding or not, is waited for.
                     Some(age) if age >= PHD2_START => {
-                        return Ok(Found::NeverAccepted(process));
+                        if !self.client.accepts_connection().await {
+                            return Ok(Found::NeverAccepted(process));
+                        }
+                        debug!(
+                            pid = process.pid,
+                            "PHD2 accepts a connection; waiting for this service's client to connect"
+                        );
                     }
                     Some(age) => debug!(
                         pid = process.pid,
@@ -525,6 +533,7 @@ mod tests {
     use super::*;
     use crate::client::Phd2Client;
     use crate::config::SettleParams;
+    use crate::io::{ConnectionFactory, ConnectionPair};
 
     /// A keeper whose PHD2 never accepts a connection: it runs `main`,
     /// which started `age_at_start` before the test began, and starts
@@ -608,12 +617,44 @@ mod tests {
         }
     }
 
+    /// A PHD2 port that never gives the client a connection, and accepts a
+    /// probe's connection when `accepts`.
+    struct Probed {
+        accepts: bool,
+    }
+
+    #[async_trait]
+    impl ConnectionFactory for Probed {
+        async fn connect(&self, addr: &str, _timeout: Duration) -> crate::Result<ConnectionPair> {
+            Err(Phd2Error::ConnectionFailed(format!(
+                "{addr}: no client connection here"
+            )))
+        }
+
+        async fn can_connect(&self, _addr: &str) -> bool {
+            self.accepts
+        }
+    }
+
     /// Guiding operations whose PHD2 client never connects, restarting
-    /// through `keeper`.
-    fn ops_with(keeper: Option<Arc<dyn Keeper>>, settings: RestartSettings) -> GuiderOps {
-        let client = Arc::new(Phd2Client::new(Phd2Config::default()));
+    /// through `keeper`, on a PHD2 port that accepts a probe's connection
+    /// when `accepts`.
+    fn ops_probed(
+        keeper: Option<Arc<dyn Keeper>>,
+        settings: RestartSettings,
+        accepts: bool,
+    ) -> GuiderOps {
+        let client = Arc::new(Phd2Client::with_connection_factory(
+            Phd2Config::default(),
+            Arc::new(Probed { accepts }),
+        ));
         GuiderOps::new(client, SettleParams::default(), Duration::from_secs(10))
             .with_restart(settings, keeper)
+    }
+
+    /// As [`ops_probed`], on a port that accepts no connection at all.
+    fn ops_with(keeper: Option<Arc<dyn Keeper>>, settings: RestartSettings) -> GuiderOps {
+        ops_probed(keeper, settings, false)
     }
 
     fn managed() -> RestartSettings {
@@ -778,6 +819,24 @@ mod tests {
         let ended = keeper.ended();
         assert_eq!(ended.len(), 1, "{ended:?}");
         assert_eq!(ended[0], (OLD, Duration::ZERO));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_phd2_that_accepts_a_connection_its_client_lacks_is_never_ended() {
+        // The client is between connections, but PHD2 itself accepts one:
+        // the restart waits for the client, and ends no PHD2 that may guide.
+        let keeper = Arc::new(FakeKeeper::new(
+            "active",
+            Duration::from_secs(61),
+            Some(NEW),
+        ));
+        let ops = ops_probed(Some(keeper.clone()), managed(), true);
+        let err = ops.restart_phd2().await.unwrap_err();
+        assert_eq!(keeper.ended(), Vec::new(), "PHD2 was ended");
+        match err {
+            ServiceError::RestartFailed { step, .. } => assert_eq!(step, "refusals"),
+            other => panic!("expected restart_failed, got {other:?}"),
+        }
     }
 
     #[tokio::test(start_paused = true)]
