@@ -697,8 +697,13 @@ motion gate's text about pulses names the guider, not PHD2.
 loses its rotator branch, and its calibration step changes: the guider
 refuses `calibration/clear` in a run state, so a rotation past the
 threshold stops guiding, clears the calibration and starts guiding
-again, which calibrates. Stage G6 designs these changes in `rp.md` and
-then makes them (§ Staging).
+again, which calibrates. A rotation of the guiding train while guiding
+is not active has to clear the calibration as well: the guider keeps
+its record from run to run and cannot see the field turn. The guider's
+devices and `rp`'s guiding train are configured apart, and a lease on a
+camera that is not the train's protects nothing, so `rp` needs a way to
+tell that both name the same camera and mount. Stage G6 designs these
+changes in `rp.md` and then makes them (§ Staging).
 
 **Joining the workspace.** A service that is not an Alpaca device joins
 sentinel's `NON_ALPACA_SERVICES` list and about ten other hand-kept
@@ -745,8 +750,15 @@ started for it (decision 12).
 | **G3** | Replay: collect frames and guide logs on pier1 while PHD2 guides; compare measurements | Native and PHD2 offsets agree frame by frame within a stated tolerance | Not started |
 | **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. The new contract's types join `crates/rp-guider` beside the ones `rp` and `phd2-guider` use until G6 | BDD green against `guide-simulator`'s devices; ConformU is not applicable | Not started |
 | **G5** | pier1 on sky, the guider driven over its HTTP API without `rp`: calibrate, guide, dither, alternate with PHD2 | The acceptance list in § 9 | Not started |
-| **G6** | `rp` moves to the new contract, and PHD2's pieces leave the tree: `phd2-guider`, its facade, its mock, its packaging and the old contract types, over several pull requests. `rp.md` is rewritten first where it names PHD2: § Guider Service, the train lease's facade step, the motion gate's text about pulses, the rotate-while-guiding ladder, `restart_guider` | `rp`'s BDD green against the native guider, and a night on pier1 guided unattended under `rp` | Not started |
+| **G6** | `rp` moves to the new contract, and PHD2's pieces leave the tree: `phd2-guider`, its facade, its mock, its packaging and the old contract types, over several pull requests. `rp.md` and `focus-model.md` are rewritten first where they name PHD2 or its facade. In `rp.md` that is § Guider Service, the train lease's facade step, the motion gate's text about pulses, the rotate-while-guiding ladder and `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train | `rp`'s BDD green against the native guider, and a night on pier1 guided unattended under `rp` | Not started |
 | **G7** | rig2 on sky under `rp`, the guider running as a Windows service with nobody logged on | The acceptance list in § 9, without the comparison against PHD2 | Not started |
+
+**The guide camera changes hands.** PHD2 opens the guide camera through
+the vendor SDK built into it, and the camera is kept out of
+`qhy-camera` by being left off that driver's `usb_devices` list. G1 and
+G5 need it under `qhy-camera` while PHD2 is still installed, and G5
+moves it back and forth within a night. G1 works the hand-over out in
+both directions and records its steps.
 
 Later, each behind a measurement: subframes, full-frame correlation,
 predicted calibration, the event server, a tuning assistant, predictive

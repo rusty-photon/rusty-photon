@@ -259,11 +259,17 @@ camera's frame depends on `SensorType`:
 - **Pixels** in this document, in the configuration and on the wire are
   pixels of the measured frame, after binning or summing.
 - **Saturation.** A star with a pixel at full scale is not chosen as a
-  guide star. Full scale is `MaxADU`. A pixel of a summed frame is at
-  full scale when any of the four camera pixels summed into it is at
-  `MaxADU`, which the guider judges on the camera's frame before it
-  sums: a star whose green pixels clip is saturated although its sums
-  stay below four times `MaxADU`.
+  guide star. Full scale is the saturation level of the camera's frame,
+  by the rule `rp` measures with
+  ([rp.md § MVP: `measure_basic` Contract](rp.md#mvp-measure_basic-contract)):
+  the frame's own clip when it shows one, `MaxADU` otherwise, and the
+  lower of the two when both are known. `MaxADU` alone is not enough:
+  `qhy-camera` reports the top of its 16-bit container, and its frames
+  clip below it. A pixel of a summed frame is at full scale when any of
+  the four camera pixels summed into it is at or above that level,
+  which the guider judges on the camera's frame before it sums: a star
+  whose green pixels clip is saturated although its sums stay below
+  four times the level.
 
 ### The camera lease
 
@@ -423,6 +429,12 @@ mount.
 
 With `control.dec.mode` set to `"off"`, legs 3 to 5 are skipped and the
 calibration has no Dec axis.
+
+**A frame with no offset.** After a star-lost or a failed frame the leg
+sends no pulse and takes frames until one measures the stars. A leg's
+steps are its pulses, so such a frame is no step and does not count
+towards `calibration.max_steps`. The state stays `calibrating`, and
+`calibration.timeout` bounds the wait.
 
 **The step.** The guider sizes the step so that a leg takes about
 `calibration.steps` steps. It works the step out from the guide rate
@@ -1086,11 +1098,12 @@ the log viewers people already use read a night of its guiding without
 change.
 
 - **Where.** In `guide-logs/` in the [state directory](#state-directory),
-  one file for each run of the service, created at its first
-  calibration or guiding run and named
+  a file for each night. A file is started by the first calibration or
+  guiding run after each local noon, and by the first one after the
+  service starts. It is named
   `PHD2_GuideLog_<YYYY-MM-DD>_<HHMMSS>.txt` by the local time of its
-  creation. A service run that never calibrates or guides writes no
-  file.
+  creation. A calibration or a guiding run stays in the file it began
+  in. A night with no calibration and no guiding run has no file.
 - **What.** A section for each calibration, with its steps and its
   result, and a section for each guiding run: a header with the pixel
   scale, the exposure, the mount's guide rates, the pointing (right
@@ -1104,10 +1117,10 @@ change.
   parser built from them accepts, and a log of the guider's is opened
   in PHD2 Log Viewer (<https://github.com/agalasso/phdlogview>) before
   the first night on sky.
-- **Retention.** At each start the service removes log files older than
-  `guide_log.retention`.
+- **Retention.** Each time it starts a file, the service removes log
+  files older than `guide_log.retention`.
 - **A log that cannot be written never stops guiding.** The failure is
-  logged and the log is off for the rest of that service run.
+  logged, and the log is off until the next file is started.
 
 ### State directory
 
