@@ -122,10 +122,10 @@ function ending({ code, signal, timedOut }, timeoutMs) {
 }
 
 // Runs one solve and prints what ASTAP said, and how it ended.
-async function solveOnce(binary, args, { dir, run, timeoutMs }) {
+async function solveOnce(binary, args, { dir, run }) {
   const log = path.join(dir, `${path.basename(args[1])}.output`);
-  const result = await run(binary, args, { cwd: dir, log, timeoutMs });
-  const how = ending(result, timeoutMs);
+  const result = await run(binary, args, { cwd: dir, log, timeoutMs: SOLVE_TIMEOUT_MS });
+  const how = ending(result, SOLVE_TIMEOUT_MS);
   io.stdout(`${path.basename(binary)} ${args.join(' ')}: ${how}\n${result.output.trimEnd()}\n`);
   return { ...result, how };
 }
@@ -137,10 +137,10 @@ async function solveOnce(binary, args, { dir, run, timeoutMs }) {
  * signals plate-solver reads are checked, its exit code, the `.wcs` and the
  * centre in it, so a change in anything else ASTAP writes does not fail it.
  */
-export async function solveFixtures({ binary, database, fixtures, dir, run = runProgram, timeoutMs = SOLVE_TIMEOUT_MS }) {
+export async function solveFixtures({ binary, database, fixtures, dir, run = runProgram }) {
   await mkdir(dir, { recursive: true });
   for (const file of [M101.file, DEGENERATE]) await copyFile(path.join(fixtures, file), path.join(dir, file));
-  const solve = { dir, run, timeoutMs };
+  const solve = { dir, run };
 
   const m101 = path.join(dir, M101.file);
   const solved = await solveOnce(binary, ['-f', m101, '-d', database, '-wcs', ...M101.hints], solve);

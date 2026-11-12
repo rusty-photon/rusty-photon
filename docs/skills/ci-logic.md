@@ -531,6 +531,16 @@ stream's log as a group.
   program's place, so the descriptors, the environment and the signals
   are real. An `'ipc'` channel added to the child's stdio lets the fake
   say when it is ready, so a test can stop it at a known point.
+- **A timeout in a test bounds only the run that is meant to miss it.**
+  Starting a process is slow on a loaded runner: a Windows pool runner
+  with 15 Bazel actions running can take longer than 300 ms to start
+  Node. So a timeout short enough for a test is never applied to a run
+  that has to finish within it. The test of the kill itself gives a run
+  that never ends a short timeout, as `runProgram`'s own test does in
+  `refresh-astap`. A test of what the logic does with a run past its
+  timeout hands the logic a double that reports that run as killed,
+  without a process, and leaves the other runs their real timeout, as
+  `detect.test.mjs`'s `timesOut` does.
 
 ### Code another program runs
 
