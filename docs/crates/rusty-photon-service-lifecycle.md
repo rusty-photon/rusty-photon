@@ -355,6 +355,7 @@ behind the same Basic Auth and TLS:
 |---|---|
 | `POST /service/v1/restart`, with a JSON body (`{}`) | `202 Accepted` with `{"instance": "<id>"}`, the process that is restarting. The restart is requested before the answer is written, and the answer still reaches the client: the server finishes a request in flight before it stops |
 | `GET /service/v1/instance` | `200` with `{"instance": "<id>"}` |
+| Either request without the service's credentials, when `server.auth` is configured | `401`, as for an Alpaca request: the restart is not requested |
 
 The instance id names one process. It is fixed when the process first
 serves and differs in every process after it, and a reload keeps it.

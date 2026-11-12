@@ -719,10 +719,14 @@ one restart of a given service runs at any time:
 
 ## Service Restart API
 
-Sentinel owns **process restart** for the rest of the stack (`rp.md`
-§Sentinel Watchdog Integration; the service-lifecycle split: drivers
-reload *themselves* after a setup-page save, sentinel restarts
-*processes*). The dashboard router exposes one endpoint:
+Sentinel restarts a process when supervision or an operator calls for it
+(`rp.md` §Sentinel Watchdog Integration). Two paths change a running
+service without sentinel: a driver reloads *itself* after a setup-page
+save, and an ASCOM driver service ends itself when a client asks it to
+restart, for its service manager to start again, which is how `rp`'s
+`restart_service` restarts a driver
+([rusty-photon-service-lifecycle § Restart on request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+The dashboard router exposes one endpoint:
 
 ```
 POST /api/services/{name}/restart

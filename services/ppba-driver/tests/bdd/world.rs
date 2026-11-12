@@ -82,6 +82,15 @@ impl bdd_infra::service_restart::ServiceRestartWorld for PpbaWorld {
     fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
         self.ppba.as_mut().expect("the service was not started")
     }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        let port = self
+            .ppba
+            .as_ref()
+            .expect("the service was not started")
+            .port();
+        (port, self.pki.as_deref().expect("TLS certs not generated"))
+    }
 }
 
 impl PpbaWorld {

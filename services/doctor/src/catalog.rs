@@ -266,11 +266,6 @@ mod tests {
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
     }
 
-    /// The six services with no sensible default config (docs/packaging.md
-    /// §Installing) declare `config_gated`; nothing else does. Drift here
-    /// means `tls.absent`/`auth.absent` either wrongly nags a hard-gated
-    /// service or wrongly stays silent about a self-defaulting one whose
-    /// config was deleted.
     /// Only `star-adventurer-gti` keeps a state file beside its config:
     /// its mount state record. The name is not measured from anywhere, so a
     /// plain assertion pins the declarations against edits.
@@ -288,6 +283,11 @@ mod tests {
         }
     }
 
+    /// The six services with no sensible default config (docs/packaging.md
+    /// §Installing) declare `config_gated`; nothing else does. Drift here
+    /// means `tls.absent`/`auth.absent` either wrongly nags a hard-gated
+    /// service or wrongly stays silent about a self-defaulting one whose
+    /// config was deleted.
     #[test]
     fn test_config_gated_matches_the_known_set() {
         const GATED: &[&str] = &[

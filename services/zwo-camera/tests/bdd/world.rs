@@ -101,6 +101,10 @@ impl bdd_infra::service_restart::ServiceRestartWorld for CameraWorld {
     fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
         self.handle.as_mut().expect("the service was not started")
     }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        (self.tls_auth.port(), self.tls_auth.pki())
+    }
 }
 
 impl TlsAuthSmokeWorld for CameraWorld {

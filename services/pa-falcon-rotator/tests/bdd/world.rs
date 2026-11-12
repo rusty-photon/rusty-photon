@@ -14,9 +14,10 @@
 //! auth credential gate is covered by the shared smoke scenario in
 //! `auth.feature` via the `TlsAuthSmokeWorld` impl below.
 //!
-//! The setup-page scenarios (`setup_pages.feature`) are the exception:
-//! a save reloads the process that served it, which only the binary's
-//! `main` can do, so they spawn the mock-feature binary through
+//! The setup-page, restart and auth scenarios are the exception. A save
+//! reloads the process that served it, and the restart routes the auth
+//! scenarios probe exist only where the binary's `main` wires them, so
+//! these scenarios spawn the mock-feature binary through
 //! [`ServiceHandle`] (`start_process`) like the other serial drivers'
 //! suites.
 
@@ -80,8 +81,10 @@ pub struct FalconRotatorWorld {
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
-    /// The service as a spawned process, for the setup-page scenarios: a
-    /// save reloads the process, which the in-process server cannot do.
+    /// The service as a spawned process, for the setup-page, restart and
+    /// auth scenarios: a save reloads the process, and the restart routes
+    /// exist only where the binary's `main` wires them, neither of which
+    /// the in-process server can do.
     pub process: Option<ServiceHandle>,
     /// The spawned process's config directory, alive for the scenario.
     pub process_dir: Option<TempDir>,
@@ -122,29 +125,13 @@ impl TlsAuthSmokeWorld for FalconRotatorWorld {
     }
 
     async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
-        // Deserialize through the typed `Config` so the smoke exercises the
-        // real config-load path: the shared `server` block (port 0 + `tls` +
-        // `auth`) maps onto `AlpacaServerConfig`.
-        let config: Config = serde_json::from_value(config).unwrap();
-
-        let mock = Arc::new(MockFalconTransportFactory::default());
-        let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
-        let bound = ServerBuilder::new()
-            .with_config(config)
-            .with_factory(factory)
-            .build()
-            .await
-            .expect("build in-process Alpaca server with TLS + auth");
-        let local_addr = bound.listen_addr();
-
-        let server_handle = tokio::spawn(async move {
-            let _ = bound.start(std::future::pending::<()>()).await;
-        });
-        self.mock = Some(mock);
-        // Torn down by `World::shutdown` from the cucumber `after` hook.
-        self.server_handle = Some(server_handle);
-        self.server_addr = Some(SocketAddr::from(([127, 0, 0, 1], local_addr.port())));
-        self.tls_auth.port = Some(bdd_infra::BoundPort::fixed(local_addr.port()));
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.process = Some(handle);
     }
 }
 
@@ -161,6 +148,10 @@ impl bdd_infra::service_restart::ServiceRestartWorld for FalconRotatorWorld {
 
     fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
         self.process.as_mut().expect("the service was not started")
+    }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        (self.tls_auth.port(), self.tls_auth.pki())
     }
 }
 

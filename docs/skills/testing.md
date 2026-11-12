@@ -619,8 +619,10 @@ fixture behind every service's `auth.feature`:
   suite in a box. The World embeds a `TlsAuthState`, implements the trait
   (base config JSON, launch mechanism, and — for non-Alpaca services — a
   `PROBE_PATH` override, usually `/health`), and invokes the macro in its
-  `auth_steps.rs`; the feature file is the byte-identical service-neutral
-  `auth.feature` (copy dsd-fp2's). Deep TLS/auth suites (ppba-driver,
+  `auth_steps.rs`; the feature file is the service-neutral `auth.feature`
+  (copy dsd-fp2's). Its second scenario, the restart routes' refusal, uses
+  the steps `service_restart_steps!` generates, so a service that is not an
+  ASCOM driver leaves it out. Deep TLS/auth suites (ppba-driver,
   ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
   `wait_until_ready` instead of hand-rolled cert plumbing.
 - `wait_until_ready` — the readiness probe: polls a URL until it answers
@@ -682,14 +684,20 @@ behind every ASCOM driver's `restart.feature`
 request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)):
 `ServiceRestartState` + `ServiceRestartWorld` + `service_restart_steps!` in
 `bdd_infra::service_restart`. The World embeds the state, implements the
-trait (the state and the running service's `ServiceHandle`), and invokes
+trait (the state, the running service's `ServiceHandle`, and the port and
+`PkiFixture` of the service as its auth scenarios start it), and invokes
 the macro in its `restart_steps.rs`; the feature starts the service with the
 suite's own steps, asks it to restart, and checks the `202` naming its own
 process and the exit with code 75, read through
 `ServiceHandle::wait_exit`. The close deadline's exit has the same code, so
 the step also requires the line the runner logs only when the service has
 closed in order. No service manager runs under test, so nothing starts the
-service again. `ppba-driver`'s suite is the reference.
+service again. The macro also generates the steps of one scenario in the
+suite's `auth.feature`: started with TLS and auth, the service refuses
+both routes without the credentials, and the restart route with a wrong
+password, with `401`, and once stopped its log shows no restart request.
+The restart scenario requires that log line, so its text cannot change
+without failing there. `ppba-driver`'s suite is the reference.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or
