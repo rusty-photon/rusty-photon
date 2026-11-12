@@ -6929,8 +6929,7 @@ for why the lossy step is deliberately confined to one function.
 ### Writer identity
 
 `Target` carries `created_by` / `updated_by` writer-identity fields
-beside the timestamps (settled in the P3 design, refining plan
-Decision 3's notes-only provenance): every operator-surface write
+beside the timestamps: every operator-surface write
 (`add_target` without `source`, `update_target`, `set_goals`) stamps
 `"operator"` on `updated_by`; an [import](#import-form-source) stamps
 `source.kind`. The store preserves `created_at` *and* `created_by`
@@ -6945,11 +6944,9 @@ last".
 
 ### Import form (`source`)
 
-`add_target`'s third parameter form, activated for the P3
-planetarium bridge ([planetarium-bridge.md](planetarium-bridge.md)
-§ rp-side contract is the design record; this section is the landed
-contract): bare `ra_hours` + `dec_degrees` + `source {kind, client,
-received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
+`add_target`'s third parameter form, the one the planetarium
+bridge sends ([planetarium-bridge.md](planetarium-bridge.md)): bare
+`ra_hours` + `dec_degrees` + `source {kind, client, received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
 `position_angle_degrees` are all rejected alongside `source` — naming
 is rp's job here, imports always land paused (`active: false`) with no
 framing angle (no planetarium channel carries one; per-target angles
@@ -6973,9 +6970,9 @@ Semantics that differ from an operator add:
   the provenance line refreshed; slug, `display_name`, and goals
   untouched; `created: false`. A match that is active,
   operator-edited, or operator-created is **never modified** — a new
-  pending target is created beside it with a suffixed slug (Decision
-  3's protection, enforced in rp, not bridge courtesy). No match
-  creates.
+  pending target is created beside it with a suffixed slug (the
+  protection is enforced in rp, not left to the bridge's courtesy).
+  No match creates.
 - **The `catalog_ref`-match branch of slug allocation is never
   consulted**: two imports 15′ apart that both resolve to "NGC 7000"
   are two targets (mosaic panels), not one. An import never takes over

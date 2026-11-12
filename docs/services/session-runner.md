@@ -13,9 +13,6 @@ provider whose `take_flats` a document calls like any other catalog
 tool ([`calibrator-flats.md`](calibrator-flats.md)). The DSL is an
 addition, not a replacement.
 
-Decision record and phase plan:
-[`docs/plans/archive/workflow-dsl.md`](../plans/archive/workflow-dsl.md).
-
 ### Tenets
 
 1. **Documents describe procedure and reaction, never choice or safety.**
@@ -46,15 +43,13 @@ Decision record and phase plan:
 ## Architecture
 
 `session-runner` is a standalone HTTP service and a session-less MCP
-client of `rp` (ADR-021). An operator, `ui-htmx`, or a scheduler starts a
+client of `rp`. An operator, `ui-htmx`, or a scheduler starts a
 run with `POST /runs`; the engine connects to `rp`'s MCP server, drives
 the session with tool calls, and owns the run end to end — it pauses on
 a safety stop or an `rp` outage, resumes in-process, and records the
 outcome where it started (`GET /runs/{id}`). Nothing is posted back to
-`rp`, which has no notion of a session (mcp-sessionless D6). In
-addition, `session-runner` subscribes to `rp`'s SSE event stream to feed
-trigger evaluation. (The pre-D6 `POST /invoke` route, through which `rp`
-used to start and re-start sessions, went with plan slice 7.)
+`rp`, which has no notion of a session. In addition, `session-runner`
+subscribes to `rp`'s SSE event stream to feed trigger evaluation.
 
 ```
   operator / ui-htmx /          session-runner (generic orchestrator)        rp (equipment gateway)
@@ -75,8 +70,8 @@ used to start and re-start sessions, went with plan slice 7.)
 
 ### Port
 
-11171 (configurable) — in the orchestrator-plugin range next to
-`calibrator-flats` (11170) and `focus-model` (11173).
+11171 (configurable) — next to `calibrator-flats` (11170),
+`polar-align` (11172) and `focus-model` (11173).
 
 ## Workflow Documents
 
@@ -103,8 +98,8 @@ A workflow document is a single JSON file. Top-level structure:
 |-------|---------|
 | `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
 | `name` / `description` | Identification for logs, events, and the run's `outcome` payload on `GET /runs/{id}`. |
-| `parameters` | Declared run parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied in the `POST /runs` body's `params` are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
-| `estimated_duration` / `max_duration` | Advisory run-length estimates for the document's readers (humantime strings). Optional; parsed and validated, enforced by nothing — the `/invoke` acknowledgment that used to return them to `rp` went with mcp-sessionless slice 7. |
+| `parameters` | Declared run parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied in the `POST /runs` body's `params` are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (see [Limits of format version 1](#limits-of-format-version-1)). Durations stay humantime strings — expressions read them via `seconds()`. |
+| `estimated_duration` / `max_duration` | Advisory run-length estimates for the document's readers (humantime strings). Optional; parsed and validated, enforced by nothing. |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
 | `root` | The procedure tree — conventionally a `sequence` container, though any instruction is structurally valid as the root. |
 
@@ -162,9 +157,9 @@ validation error — misspellings must not silently no-op.
 { "sequence": [ /* instructions, executed in order */ ] }
 ```
 
-There is deliberately no parallel container in v1 (research finding:
-marginal value; device-level concurrency already lives inside `rp` tools
-such as `capture`-while-guiding).
+There is deliberately no parallel container in v1: it would add
+little, because device-level concurrency already lives inside `rp` tools
+such as `capture`-while-guiding.
 
 #### `repeat` — loop
 
@@ -327,9 +322,9 @@ expressions, rendered into the structured log record.
 
 #### Reserved: `script`
 
-`{ "script": … }` is **reserved** for a future sandboxed Luau handler node
-(decision D3 in the plan). v1 validation rejects it with an explicit
-"reserved for a future format version" error rather than "unknown key", so
+`{ "script": … }` is **reserved** for a future sandboxed Luau handler
+node. v1 validation rejects it with an explicit "reserved for a future
+format version" error rather than "unknown key", so
 documents written against a future version fail comprehensibly on an old
 engine.
 
@@ -405,7 +400,7 @@ to the *correction* `rp` delivers rather than aborting on its own.
 when it completes or is cancelled. A poll whose tool call fails logs at
 `debug!` and skips that cycle — a flaky poll must not kill the session.
 
-Implementation pins (`src/engine/`, Phase D2):
+Implementation pins (`src/engine/`):
 
 - **The pump.** Trigger evaluation is single-threaded and runs only at
   safe points: drain buffered events (synthetic first, then the SSE
@@ -424,14 +419,13 @@ Implementation pins (`src/engine/`, Phase D2):
   calls — is evaluated at the next safe point on the procedure tree.
 - **Occurrence counters.** Because the pump consumes events for trigger
   evaluation, the engine keeps a per-event-name count of *unconsumed
-  occurrences* (names and counts only — still no event history). An
+  occurrences* (names and counts only — no event history). An
   `until_event` wait is satisfied by, and decrements, one unconsumed
   occurrence of its event name — that is how "matches every event since
   the run started" (§ `wait`) survives trigger evaluation running
-  first. A wait consumes only its own event name's occurrences; unlike
-  Phase D1's buffer draining, a wait no longer discards other names'
-  events (they remain for later waits — and have already fed
-  evaluation).
+  first. A wait consumes only its own event name's occurrences: other
+  names' events remain for later waits, and have already fed
+  evaluation.
 - **Gate timing.** `when` (together with the `once`, `cooldown`, and
   already-queued checks) is evaluated when the event is drained — a
   passing trigger queues its firing with the event payload. `while` is
@@ -535,7 +529,7 @@ offending namespace root within the expression.
 - Division or remainder by zero raises. There is no implicit type
   coercion.
 
-**Grammar pins** (fixed by the Phase B parser spike, 2026-07-03):
+**Grammar pins:**
 
 - **Number literals use JSON number syntax, unsigned** (`-` is the unary
   operator): a leading digit is required (`0.5`, not `.5`), digits must
@@ -568,9 +562,9 @@ offending namespace root within the expression.
 - **Nesting depth is capped at 64 levels** (parentheses, unary runs,
   argument lists, ternary branches). No legitimate expression comes near
   this; without the cap, adversarially deep input overflows the parser
-  stack (found by the fuzz target).
+  stack.
 
-**Evaluation pins** (fixed by the Phase B implementation, 2026-07-04):
+**Evaluation pins:**
 
 - **Path traversal is total** — it never raises. Member/index access
   through `null`, a missing key, an out-of-range / negative / non-integer
@@ -606,15 +600,16 @@ offending namespace root within the expression.
 The implementation (`src/expr/`) is a **hand-rolled lexer + Pratt parser
 with a hand-written evaluator** — the parser is dependency-free; the
 evaluator sits on the workspace's `serde_json` (values), `humantime`
-(`seconds`/`humantime`), and `chrono` (`seconds_until`). The Phase B
-spike compared this against reusing the `cel` crate's parser and an
-`oxc_parser` JS-expression subset on a 178-case conformance corpus: the
-cel parser silently collapses unary-operator runs (`- -x` → `-x`) and
-cannot enforce the pins above from its AST; the oxc subset can, but only
-with wrapper lexical checks approximating the hand lexer on top of 73
-dependencies. See the plan's Phase B spike outcome for the full
-evidence. The corpus ships as the module's conformance suite, alongside
-proptest round-trip/no-panic properties and a cargo-fuzz target
+(`seconds`/`humantime`), and `chrono` (`seconds_until`). A parser crate
+does not replace it: the `cel` crate's parser (0.14) collapses a run of
+identical unary operators into one (`- -x` → `-x`, a silent sign flip)
+and its AST has no parenthesis nodes, so the non-chaining comparison
+rule cannot be checked; an `oxc_parser` (0.138) JS-expression subset
+enforces the pins above only behind wrapper lexical checks that
+duplicate the hand lexer, on top of 73 dependencies
+([the comparison of the three parsers](../plans/archive/workflow-dsl.md)).
+The conformance corpus (`src/expr/conformance_tests.rs`) is the module's
+suite, alongside proptest round-trip/no-panic properties and a cargo-fuzz target
 (`services/session-runner/fuzz/`, standalone workspace, run with
 `cargo +nightly fuzz run expr_parse`). Parse-time errors (lexing,
 parsing, static checks: namespace roots, known functions and arities,
@@ -670,7 +665,7 @@ session rather than repeat it, documents must be **re-entrant**:
 The format provides three tools for this, in preference order:
 
 1. **Dispatch-driven loops.** A capture loop that asks `get_next_target`
-   and records progress with `record_exposure` is naturally re-entrant —
+   before every frame is naturally re-entrant —
    the frames `capture` already wrote *are* the resume state, since
    `rp` derives progress from them on every read (rp.md § Progress
    derivation). This is the ecosystem lesson (Ekos counts frames on
@@ -724,7 +719,7 @@ capture that names no panel as its `light_source` (per `rp.md`
 and one in flight runs to its end, so a run of darks or panel flats
 carries on through the transition.
 There is no MCP session to terminate — the transport is session-less
-(ADR-021) — so the engine sees a safety stop as two signals: the
+— so the engine sees a safety stop as two signals: the
 in-flight call fails with `cancelled: safety`, and its next gated call
 or sky capture fails with the safety error. Both are the engine's
 **safety pause**. Because `rp` refuses the next sky capture, a run
@@ -733,8 +728,8 @@ during one: `deep_sky.json`'s capture loop calls only ungated tools
 between frames and still pauses at its next frame, and so does
 `sky_flat.json`'s.
 
-The engine's error posture is three-way (mcp-sessionless D9), pinned in
-the MCP client's error mapping:
+The engine's error posture is three-way, pinned in the MCP client's
+error mapping:
 
 | The call… | Engine error | Posture |
 |-----------|--------------|---------|
@@ -777,8 +772,8 @@ re-executes, so an outage that ends unsafe simply becomes a safety
 pause. `GET /runs/{id}` reports `paused_reason: "rp_outage"` during the
 wait.
 
-Nothing exits to await a re-invocation, because nothing re-invokes:
-`rp` keeps no session registry (D6). A `POST /runs/{id}/stop` during
+Both waits happen in this process: `rp` keeps no session registry and
+never starts or restarts a run. A `POST /runs/{id}/stop` during
 either wait ends the run at once as `stopped`, without `finally`
 blocks — `rp` secured the equipment on the unsafe transition, and
 during an outage there is nothing to talk to.
@@ -806,7 +801,7 @@ unconsumed-occurrence counters that serve `until_event` waits
 from the configured `mcp_server_url` origin unless overridden in
 configuration.
 
-Implementation pins (`src/events.rs`, Phase D):
+Implementation pins (`src/events.rs`):
 
 - The subscription is **per execution pass**: the initial connect
   completes inline on the start path (`POST /runs`, a resume), before
@@ -846,7 +841,7 @@ A run is one execution of one document, started by whoever has the
 authority to start it — an operator, `ui-htmx`, a scheduler — and owned
 end to end by `session-runner`: it starts, pauses, resumes, and ends in
 this process, and its outcome is read back here. `rp` is the run's tool
-server, nothing more (mcp-sessionless D9).
+server, nothing more.
 
 ### `POST /runs`
 
@@ -920,7 +915,7 @@ ends as `stopped`. A paused run stops at once, without `finally` blocks
 ### Self-resume on startup
 
 A run is operator-started, so a `session-runner` restart — a crash, a
-Sentinel restart, a package upgrade — must not lose it (plan O1). On
+Sentinel restart, a package upgrade — must not lose it. On
 startup, with `resume_on_start` (default `true`), every run manifest in
 `state_dir` is resumed — reserved in the run registry *before* the
 server starts serving, so a `POST /runs` arriving at boot cannot take
@@ -935,9 +930,8 @@ This is the carve-out workspace tenet 3 grants, not an exception to it:
 the tenet forbids actuation on a service start *without* an operator or
 workflow decision, and a manifest exists only because an operator
 started that run and nothing ended it — a crash is not a decision to
-stop. Resuming is that decision continuing, exactly as `rp`'s
-restart-time re-invocation was before this slice, and the resumed
-document still moves nothing until `rp` reports safe conditions. An
+stop. Resuming is that decision continuing, and the resumed document
+moves nothing until `rp` reports safe conditions. An
 operator who wants a restart to stay passive sets `resume_on_start:
 false` (or stops the run first: an ended run leaves no manifest).
 
@@ -1071,19 +1065,18 @@ rejected — it names the blackboard file.
 | `rp_outage_grace` | duration | `"10m"` | How long a paused run keeps reconnecting after `rp` becomes unreachable before it fails (§ Safety Behavior). Startup self-resume waits unbounded |
 | `safety_poll_interval` | duration | `"10s"` | `get_safety_status` cadence while a run waits for safe conditions; a `safety_changed` event ends the wait sooner |
 | `resume_on_start` | bool | `true` | Resume every run manifest in `state_dir` on startup (§ Runs → Self-resume on startup) |
-| `service_auth` | object or null | null | HTTP Basic credentials presented to `rp` — MCP calls and the event stream alike. The D6 observatory credential; doctor `--fix` wires it (see [doctor.md](doctor.md) §Provisioning) |
+| `service_auth` | object or null | null | HTTP Basic credentials presented to `rp` — MCP calls and the event stream alike. The observatory credential; doctor `--fix` wires it (see [doctor.md](doctor.md) §Provisioning) |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` for the same connections |
 
 The `server` block is the shared `ServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` means
 plain, unauthenticated HTTP.
 
 `service_auth` / `ca_cert` apply to session-runner **as a client of rp**
 — every MCP connection to the configured `mcp_server_url` and the
 derived events subscription. The MCP client is
-built through the shared `rp-mcp-client` crate
-([ADR-017](../decisions/017-standard-mcp-client-construction.md)), which
+built through the shared `rp-mcp-client` crate, which
 enforces the credentials-only-over-verified-HTTPS policy: `service_auth`
 without `ca_cert` (or on a non-HTTPS URL) is **not sent** — the client
 connects unauthenticated and logs a loud warning, so plaintext
@@ -1107,18 +1100,12 @@ until the file exists.
 
 Shipped first-party documents live in `services/session-runner/workflows/`.
 
-Panel flats are deliberately *not* a shipped document. The procedure
-first shipped as one — `calibrator_flats.json`, a port of the Rust
-`calibrator-flats` orchestrator with that service's BDD suite as its
-oracle, the worked example for choosing between a Rust orchestrator and
-a document — and was retired when `calibrator-flats` became a tool
-provider: a night document now takes flats with one `take_flats` call
-and a `train_id`, and the exposure time and panel brightness that hit
-the target are learned once and kept per train and filter in the
-provider's store, state a document cannot carry across nights. The
-decision is D1/D2 of
-[`calibrator-flats-provider.md`](../plans/archive/calibrator-flats-provider.md);
-the tool contracts are in [`calibrator-flats.md`](calibrator-flats.md).
+Panel flats are deliberately *not* a shipped document: a night
+document takes flats with one `take_flats` call and a `train_id`,
+because the exposure time and panel brightness that hit the target are
+learned once and kept per train and filter in the provider's store —
+state a document cannot carry across nights. The tool contracts are in
+[`calibrator-flats.md`](calibrator-flats.md).
 
 ### `deep_sky.json` (the night-cycle document)
 
@@ -1155,12 +1142,10 @@ validation) names every `tool` node, `focus_train` included, so without
 the provider `POST /runs` is refused even with `focus: false`. The
 target's filter is already in the path when `focus_train` runs
 (`set_filter` comes first in the pass), so the provider focuses that
-filter and starts from its stored offset. The former `camera_id` / `focuser_id` /
-`filter_wheel_id` / `focus_exposure` / `focus_step_size` /
-`focus_half_width` parameters are retired (a pre-1.0 hard cutover of
-the document's parameter contract — rp's tools keep device-id
-addressing for direct callers). `focus_min_area` / `focus_max_area`
-remain as parameters because they are **measurement policy**, not
+filter and starts from its stored offset. The document takes no device
+ids and no sweep geometry (rp's tools keep device-id addressing for
+direct callers). `focus_min_area` / `focus_max_area`
+are parameters because they are **measurement policy**, not
 sweep geometry: the HFR-degradation trigger's `measure_basic` call
 requires them (rp.md § `measure_basic` Contract — callers own that
 policy).
@@ -1244,16 +1229,14 @@ The full document lives in `workflows/deep_sky.json`; the shape:
 }
 ```
 
-**v1 adaptations.** The document is written against `rp`'s implemented
-tool surface, and its shape reflects the documented planner v1 gaps
-(`rp.md` § Dynamic Planner) — each is `rp` work, tracked as an issue, and
-the document simplifies when it lands:
+**The planner contract.** The document leaves three things to `rp`'s
+planner (`rp.md` § Dynamic Planner) and keeps no copy of them:
 
 - **The planner supplies the exposure plan; parameters are the
   fallback.** `get_next_target` returns a nested `exposure` object
   (`exposure.filter` / `exposure.duration_secs`) from the recommended
-  target's first *incomplete* plan entry (rp issues #462 and #463,
-  closed). Every dispatch pass derives its own filter and duration from
+  target's first *incomplete* plan entry. Every dispatch pass derives
+  its own filter and duration from
   that object — converting `exposure.duration_secs` to a humantime
   string with the `humantime()` builtin — and falls back to the
   `exposure_duration` / `filter` parameters only when the target has
@@ -1273,29 +1256,31 @@ the document simplifies when it lands:
   the frame will use. A pass whose filter names a wheel the train
   does not contain fails the session loudly — the train-addressed
   `set_filter` errors before the slew, since the target cannot be
-  imaged as planned. `max_frames` (`0` = unbounded) remains a run
+  imaged as planned. `max_frames` (`0` = unbounded) is a run
   parameter.
-- **Progress lives in `rp`.** After every light frame the document
-  calls `record_exposure` (rp issue #463, closed) with the pass's
-  target and filter, feeding the planner's per-target/per-filter
-  counters — that is what rotates plans, balances tied targets, and
-  makes `end_of_session` reachable mid-night once every goal is met.
-  The call is wrapped in `try`/`catch`-log: losing one count degrades
-  planning, ending the night over bookkeeping would be worse (tenet:
-  robustness). The blackboard keeps only the document's own budget
+- **Progress lives in `rp`, in the frames.** Each `capture` carries the
+  pass's `target` and `frame_type: Light`, so the frame lands in the
+  target's directory and `rp` derives per-goal progress from the files
+  on every planner call (rp.md § Progress derivation) — that is what
+  rotates plans, balances tied targets, and makes `end_of_session`
+  reachable mid-night once every goal is met. After every light frame
+  the document calls `record_exposure`, which reads that progress back
+  and fails for a target the planner cannot see; it stores nothing, so
+  the call sits in `try`/`catch`-log and its failure costs no frame.
+  The blackboard keeps only the document's own budget
   (`session.total_frames`, mirrored to `session.report.total_frames`
   for the run's `outcome` payload) — `max_frames` is a session cap, not an
-  integration goal. rp's counters survive a safety interrupt/resume
-  (same `rp` process), so a resumed dispatch continues where the
-  night left off; they reset when a fresh session starts.
+  integration goal. Derived progress survives a safety pause, an `rp`
+  restart and a new session alike, so a resumed dispatch continues
+  where the frames left off.
 - **Dawn belongs to the planner.** `get_next_target` distinguishes dusk
-  from dawn by the Sun's trend (rp issue #465, closed): `end_of_session`
+  from dawn by the Sun's trend: `end_of_session`
   when the sky is bright and the Sun is rising, `wait_for_twilight` when
   it is not yet dark and the Sun is descending. The document trusts the
   reason alone — `end_of_session` ends the session, any other
-  target-less reason waits 5 minutes and re-asks. (An earlier revision
-  disambiguated dawn by frames-captured progress in the document; the
-  heuristic is gone.)
+  target-less reason waits 5 minutes and re-asks. It keeps no
+  frames-captured heuristic of its own: a document that read a twilight
+  wait after sunrise as dusk would wait forever.
 
 **Triggers.** Six reactive rules. The four imaging-loop rules are
 gated `while session.imaging == true` so they stay silent during
@@ -1378,12 +1363,10 @@ catch-log:
 
 In all five focus triggers the sweep call is wrapped in `try` with
 a logging `catch`: a failed focus sweep degrades the night, but ending
-the session over it would be worse (tenet: robustness). The skeleton's
-`handle-correction` trigger from earlier drafts is **not** shipped: no
-first-party plugin emits corrections yet, so it would be untestable
-speculation — the synthetic `correction_requested` source remains
-engine-tested and the trigger joins the document alongside the first
-correction-emitting plugin.
+the session over it would be worse (tenet: robustness). The document
+ships no `correction_requested` trigger: nothing in the workspace emits
+a correction, so the trigger would be untested. The engine's synthetic
+`correction_requested` source is pinned by the engine's own tests.
 
 **Re-entrancy.** The dispatch loop re-derives everything from the
 blackboard + the planner: after a crash or safety interruption the same
@@ -1403,8 +1386,8 @@ idempotent by rp's contract.
 
 Twilight sky flats: point the mount at the zenith, and per filter capture
 flats while re-scaling the exposure after **every** frame against the
-changing sky. This is the expression layer's stress test (the plan's
-"convergence-loop ceiling"): unlike a panel flat's find-then-capture
+changing sky. This is the expression layer's stress test: unlike a
+panel flat's find-then-capture
 shape (`calibrator-flats`' `take_flats` — a panel that holds still, so
 the search runs once and the converged duration is reused) the sky brightens or
 dims continuously, so there is no separate search: every pass is
@@ -1415,8 +1398,8 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   the local sidereal time (`get_local_sidereal_time`, plus an optional
   `ra_offset_hours`, normalized with the
   `((x % 24) + 24) % 24` idiom because `%` follows the dividend's
-  sign); zenith declination is the site latitude — which no `rp` tool
-  exposes, so it is a required parameter (`site_latitude_degrees`).
+  sign); zenith declination is the site latitude, which the document
+  takes as a required parameter (`site_latitude_degrees`).
   `slew` requires tracking, so the order is unpark → tracking on →
   `start_cooldown` → slew → tracking **off** (stars trail through
   untracked flats and median-combine away in the stack). The flats and
@@ -1433,7 +1416,8 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   frame is logged and discarded (the file stays on disk — the stacking
   software selects by the report, not the engine). Either way the next
   duration is `clamp(duration × target/median, exp_min, exp_max)` —
-  with the `median == 0 ? duration × 2` guard from the flats port.
+  with a `median == 0 ? duration × 2` guard, since a zero median
+  cannot be scaled from.
 - **Every frame names the sky.** Each `capture` sends
   `light_source: "sky"`, which `rp` records on the frame's exposure
   document (`rp.md` § Capture Tool Details, *Light source*). It sends
@@ -1473,8 +1457,8 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   lands after a filter's count is already met captures nothing extra.
 
 The adaptation math cannot be pinned against OmniSim — the simulator's
-image content does not track exposure duration — so, as with the flats
-port, the engine's exec tests run the shipped document against scripted
+image content does not track exposure duration — so the engine's exec
+tests run the shipped document against scripted
 medians (convergence, discard-and-rescale, both window closures, the
 budget fallback), and the BDD scenario pins the plumbing end-to-end
 (zenith slew from live LST, per-filter captures, park).
@@ -1500,21 +1484,15 @@ budget fallback), and the BDD scenario pins the plumbing end-to-end
 | Engine crash / power failure | Blackboard reflects every completed `set`; on restart the run manifest is resumed by itself (`_recovery.reason = "engine_restart"`) per the re-entrancy contract. |
 | Blackboard write fails | Workflow error (fail loud — continuing with unpersistable state would silently break resume). |
 
-## MVP Scope
+## Limits of format version 1
 
-**In scope (v1):** the instruction vocabulary above; expressions per the
-semantics above; `event` / `poll` / `correction_requested` triggers with
-`when`/`while`/`once`/`cooldown`; blackboard persistence + re-derive resume;
-schema + catalog + parameter validation and `/validate`; SSE consumption
-with replay; the two shipped documents (`deep_sky.json`, `sky_flat.json`).
-
-**Deferred:** Luau `script` nodes (schema key reserved); container-scoped
-triggers (use `while` gates); parallel containers; sub-workflow
-imports/templates; a `ui-htmx` document editor; typed array-element
-declarations (v1 `array` parameters are opaque JSON arrays — the sky-flat
-document's filter plan needs no more, and element-shape mistakes still
-fail loudly, as run-time expression errors instead of load-time
-findings).
+Format version 1 has no `script` node (the key is reserved), no
+container-scoped triggers (a `while` gate scopes a trigger), no parallel
+container, no sub-workflow imports or templates, and no typed
+array-element declarations: an `array` parameter is an opaque JSON
+array — the sky-flat document's filter plan needs no more, and an
+element-shape mistake fails loudly, as a run-time expression error
+instead of a load-time finding. `ui-htmx` has no document editor.
 
 ## Module Structure
 
@@ -1527,14 +1505,14 @@ services/session-runner/
     lib.rs             ServerBuilder (two-phase: build → start)
     config.rs          Service configuration
     error.rs           SessionRunnerError (thiserror)
-    document/          Document model, schema-layer validation, parameter
-                       binding, workflow-name resolution (catalog
-                       validation joins once the MCP client exists)
-    expr/              Expression parsing + evaluation (Phase B)
+    document/          Document model, schema-layer and catalog
+                       validation, parameter binding, workflow-name
+                       resolution
+    expr/              Expression parsing + evaluation
     blackboard.rs      session.* state + atomic persistence
     engine/            Tree execution, safe points, trigger queue, resume
     events.rs          SSE client (Last-Event-ID replay)
-    mcp_client.rs      rp-mcp-client (ADR-017) wrapper to rp's /mcp; the
+    mcp_client.rs      rp-mcp-client wrapper to rp's /mcp; the
                        three-way error mapping
     runs.rs            Run registry + supervisor: the POST /runs lifecycle,
                        pause/resume waits, run manifests, self-resume on startup
@@ -1566,7 +1544,7 @@ Full process topology (OmniSim + `rp` + `session-runner`, plus
 `focus-model` for the deep-sky document, which names `focus_train`) via
 `bdd_infra::rp_harness`, the harness `calibrator-flats`' suite shares.
 Under Cargo the suite finds `focus-model`'s binary like `rp`'s, in the
-workspace `target/`, so build both first:
+workspace `target/`, so build both first.
 
 | Design section | Feature file | Representative scenarios |
 |----------------|--------------|--------------------------|
@@ -1575,14 +1553,14 @@ workspace `target/`, so build both first:
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → the run resumes **by itself** (self-resume on startup) → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage pauses the run (`paused` / `rp_outage`, service healthy, blackboard kept) and the run completes against the restarted rp — on the same port, as a real restart would — with only the remaining frames |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading pauses the run end-to-end through rp's own machinery (rp cancels the in-flight call with `cancelled: safety` and refuses the run's further gated calls with `SafetyUnsafe`; the run reports `paused` / `safety` and keeps its blackboard) and the safe transition resumes it in-process — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (the per-tool `SafetyUnsafe` gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
-| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → start_cooldown → slew → center → capture ×N → park → start_warmup); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `focus_train` from the trigger overlay (rp's focus bracket around the provider call: the `focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end. Its guiding train shares no focuser, so the plan holds only the guide step and the escalation runs the metric `auto_focus`; a second `focus_started` after `guide_focus_escalation`, beyond the one `guide-af-on-degraded` emitted, proves the wiring (sweep success is not asserted, per the OmniSim flat-HFR rule). With the guiding train's only focuser shared with the imaging train, the plan starts with a capture step, and the escalation walks `focus_train {shared: true}`: rp refuses the guide-only metric `auto_focus` there before any sweep starts, so the `focus_started` after the escalation is the walk's bracket. The guide-only scenario counts exactly two `focus_started`, one per trigger, since `guide-af-on-degraded`'s can run after the escalation. Every deep-sky scenario runs the real `focus-model` beside `rp`, registered with the `focus_tools` bracket and a starless `trains.main` block (`bdd-infra`), because a run's catalog check needs `focus_train`. The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal), and the `refocus-on-temperature` rule (fires only for the imaging train's terminal focuser, only past the delta, only once a focus has recorded a temperature, `0` disables, a null `temperature_c` keeps the baseline, a failed `get_train_info` leaves the rule off) are pinned by the engine exec tests against scripted tool results — a sweep never succeeds against OmniSim's starless frames, so the temperature baseline the rule needs cannot be seeded end to end. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → start_cooldown → slew → center → capture ×N → park → start_warmup); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose integration goal is met ends the session through rp's derived progress (the frames `capture` wrote) → exhaustion → `end_of_session`, with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `focus_train` from the trigger overlay (rp's focus bracket around the provider call: the `focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end. Its guiding train shares no focuser, so the plan holds only the guide step and the escalation runs the metric `auto_focus`; a second `focus_started` after `guide_focus_escalation`, beyond the one `guide-af-on-degraded` emitted, proves the wiring (sweep success is not asserted, per the OmniSim flat-HFR rule). With the guiding train's only focuser shared with the imaging train, the plan starts with a capture step, and the escalation walks `focus_train {shared: true}`: rp refuses the guide-only metric `auto_focus` there before any sweep starts, so the `focus_started` after the escalation is the walk's bracket. The guide-only scenario counts exactly two `focus_started`, one per trigger, since `guide-af-on-degraded`'s can run after the escalation. Every deep-sky scenario runs the real `focus-model` beside `rp`, registered with the `focus_tools` bracket and a starless `trains.main` block (`bdd-infra`), because a run's catalog check needs `focus_train`. The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal), and the `refocus-on-temperature` rule (fires only for the imaging train's terminal focuser, only past the delta, only once a focus has recorded a temperature, `0` disables, a null `temperature_c` keeps the baseline, a failed `get_train_info` leaves the rule off) are pinned by the engine exec tests against scripted tool results — a sweep never succeeds against OmniSim's starless frames, so the temperature baseline the rule needs cannot be seeded end to end. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
 | Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
 
 Every scenario starts its run with `POST /runs` on session-runner and
 observes it through `GET /runs/{id}`; nothing registers with rp. The
 resume scenarios pin the engine's own supervision — the safety wait, the
-outage reconnect, and the startup self-resume — because no external
-re-invocation exists any more (mcp-sessionless D6/D9).
+outage reconnect, and the startup self-resume — because nothing outside
+`session-runner` supervises a run.
 
 Scenarios that need a document the shipped set doesn't provide (a
 targeted `until_event` wait, resume fixtures) execute purpose-built
@@ -1614,9 +1592,3 @@ are what the unit suites pin.
   expression condition-builder.
 - **Sub-workflow composition** (`{"call": "…"}`) once shipped documents
   show real duplication.
-
-The sky-flat document — once listed here as the stress test for the
-expression layer's ceiling — shipped as `sky_flat.json` (§ Example
-Documents): the per-frame exposure adaptation fits the bounded
-expressions, so it did not become the motivating case for `script`
-nodes.
