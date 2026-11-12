@@ -781,10 +781,14 @@ camera facade over a QHY5III715C behind PHD2 2.6.14), a frame costs
 `measure_stars` included — and a 10-step move 0.17 s on average and
 0.41 s at most, so both 2 s constants hold, the frame's with a third to
 spare. With PHD2 looping, a training run there is refused at the lease
-and neither focuser moves. With PHD2 `Stopped`, the run sweeps the
-Scops OAG and puts it back, the shared EAF never moves, `phd2-guider`
-refuses every guiding operation until the run answers, and `rp` grants
-a new lease on the train afterwards
+and neither focuser moves. With PHD2 `Stopped`, the run walks its
+samples on the Scops OAG through the facade and puts it back, the
+shared EAF never moves, `phd2-guider` refuses every guiding operation
+until the run answers, and `rp` grants a new lease on the train
+afterwards. The rig was indoors and its frames held no stars, so
+every attempt ended in `not_enough_stars`: the run shows the leases,
+the capture path and the put-back, and no fit of a guiding train's
+curve on hardware
 ([the run of 2026-10-15](../plans/archive/focus-model-guiding-train-field-rig-run-2026-10.md)).
 
 ### Errors

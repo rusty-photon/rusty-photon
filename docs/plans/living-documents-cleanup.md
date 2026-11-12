@@ -430,6 +430,6 @@ for every batch.
 | B5 — shared transport and the serial drivers | Not started | — |
 | B6 — cameras and SDK crates | Not started | — |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
-| B8 — catalog, planner, focus | Design docs in review; the code comments and the guard rows follow in a second pull request | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758) |
+| B8 — catalog, planner, focus | Under way: the design docs first, the code comments and the guard rows second | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758) |
 | B9 — build, CI, runners; the empty table | Not started | — |
 | B9 — the root `Cargo.toml`, a trial slice of the method | Merged 2026-11-11 | [trial slice](https://github.com/rusty-photon/rusty-photon/pull/1744) |

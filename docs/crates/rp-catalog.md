@@ -77,9 +77,10 @@ a typo of `HD 227018` helps nobody.
 The normalization exists twice — `normalize` in `src/lib.rs` and `normalize`
 in `scripts/pack_catalog.py`, which builds the key table the Rust side
 searches — and the two must agree byte for byte. The
-`embedded_matches_committed_*` tests hold them to that: each resolves the
-names in the committed CSVs through the Rust `normalize`, against keys the
-Python one wrote.
+`embedded_matches_committed_*` tests check it for the spellings the
+committed CSVs hold: each resolves those names through the Rust `normalize`,
+against keys the Python one wrote. A rewrite that no committed name exercises
+is pinned by nothing, so a change to either `normalize` is made to both.
 
 ## Nearest-neighbor naming
 
