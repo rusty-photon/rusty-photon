@@ -2280,7 +2280,7 @@ fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
     bind_parameters(&doc.parameters, Some(&supplied)).unwrap()
 }
 
-/// `get_next_target` result carrying an exposure plan, in rp's current
+/// `get_next_target` result carrying an exposure plan, in rp's
 /// wire shape: the target's coordinate nests as `coord`, the plan
 /// entry to shoot next is a nested `exposure` object (`{filter,
 /// duration_secs}`), or `null` when the target defines no plan, and
@@ -2610,7 +2610,7 @@ async fn test_golden_deep_sky_fails_before_the_slew_when_the_train_has_no_filter
 
 #[tokio::test]
 async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_session() {
-    // The planner owns dawn (rp #465): an `end_of_session` reason ends
+    // The planner owns dawn: an `end_of_session` reason ends
     // the session on the spot — no frames-captured heuristic, no slew,
     // no capture, no 5-minute wait.
     let doc = make_doc(crate::document::corpus::golden_deep_sky());
@@ -2651,7 +2651,7 @@ async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_sess
 
 #[tokio::test]
 async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
-    // rp #463: the planner rotates within a target's plan as recorded
+    // The planner rotates within a target's plan as recorded
     // goals complete. Pass 1 recommends Red@120s, pass 2 Blue@60s on
     // the SAME target, pass 3 end_of_session. The document must
     // re-derive filter/duration on every pass — the filter changes

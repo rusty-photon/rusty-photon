@@ -225,8 +225,7 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
     );
 
     // Seed the planner targets into rp's redb store via the `add_target`
-    // MCP tool (the legacy `targets[]` config array was retired). The
-    // scenario's Given steps stage the argument objects on
+    // MCP tool. The scenario's Given steps stage the argument objects on
     // `pending_store_targets`; rp must be healthy first.
     if !world.pending_store_targets.is_empty() {
         let mcp = McpTestClient::connect(&format!("{}/mcp", world.rp_url()))

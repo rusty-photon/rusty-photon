@@ -8,8 +8,8 @@ exports_files(
 
 # rp-vocabulary is a first-party leaf (not an `@cr` entry), so it is named
 # as an explicit Bazel label rather than resolved by `all_crate_deps`.
-# `ResolvedTarget.coord` is the validated `rp_vocabulary::IcrsCoord`
-# (ADR-019), so one coordinate type spans catalog → store → planner.
+# `ResolvedTarget.coord` is the validated `rp_vocabulary::IcrsCoord`,
+# so one coordinate type spans catalog → store → planner.
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-vocabulary:rp-vocabulary",
 ]

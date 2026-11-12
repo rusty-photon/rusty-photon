@@ -4,9 +4,9 @@ Feature: Reported-position altitude floor
   return — equals the virtual pointing while its computed altitude is at or
   above report_altitude_floor_deg (default 10.0); below that it snaps to the
   idle point: RA = current sidereal time, Dec = site latitude (the zenith).
-  The floor is client-facing defense against the P3a wedge, never import
-  policy: a below-floor Align still imports. A null floor disables the policy
-  and reports raw virtual pointing.
+  The floor is defense against a client that refuses GoTo while the scope
+  reads below the horizon, never import policy: a below-floor Align still
+  imports. A null floor disables the policy and reports raw virtual pointing.
 
   Background:
     Given the configured site is latitude 33.0 longitude -117.0

@@ -1519,8 +1519,9 @@ async fn resume_after(rig: Rig<'_>, guard: &Guard, position: i32) -> Result<()> 
     }
     // A rig left with corrections paused is a rig-state failure, the
     // same class as a put-back that did not land: anything that would
-    // drive it again must stop rather than sweep through it. The text
-    // is unchanged — `tool_message` reads both variants alike.
+    // drive it again must stop rather than sweep through it. The
+    // variant sets the class and not the text: `tool_message` returns
+    // a `ToolCall`'s message bare, as it does a `Workflow`'s.
     rig.cleanup.resume_guiding().await.map_err(|e| {
         FocusModelError::ToolCall(format!(
             "the sweep finished at {position} but {GUIDING_NOT_RESUMED}: {}",

@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(to_icrs(AssumeEpoch::J2000, 14.0, -40.0, now), (14.0, -40.0));
     }
 
-    /// The P3a precession fingerprint: 14h00m / −40° read as `JNow` is
+    /// The precession fingerprint: 14h00m / −40° read as `JNow` is
     /// J2000 13h58m23s / −39°52′11″ ≈ (13.97306 h, −39.86972°). The band
     /// (within 5′ of the J2000 value, at least 15′ from the input) stays
     /// valid for years of accumulating precession.
@@ -128,8 +128,8 @@ mod tests {
         );
     }
 
-    /// Round-trip through the spike-proven forward direction: converting a
-    /// `JNow` value back to ICRS then forward again must land on the input.
+    /// A `JNow` right ascension 36 s past 0h precesses back across the
+    /// wrap; the ICRS value comes out in [0, 24), not as a negative hour.
     #[test]
     fn jnow_conversion_is_consistent_under_ra_wrap() {
         let now = Utc.with_ymd_and_hms(2026, 7, 30, 6, 0, 0).unwrap();

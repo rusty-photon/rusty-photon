@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack the committed catalog CSVs plus the fetched star layer into
 `src/data/catalog.bin` — the single embedded artifact `rp-catalog`
-reads zero-copy at runtime (issue #767).
+reads zero-copy at runtime (design: `docs/crates/rp-catalog.md`).
 
 Inputs (all relative to `src/data/` unless noted):
 
@@ -13,7 +13,7 @@ Inputs (all relative to `src/data/` unless noted):
   (hand-maintained names missing from both machine sources, e.g.
   "Tulip Nebula" → Sh2-101), then `aliases_simbad.csv` — processed in
   that order; canonical names beat aliases, first alias wins on
-  ambiguity (mirrors the pre-#767 runtime semantics).
+  ambiguity.
 - `named_stars.csv` — IAU CSN proper names; these become canonical
   star entries ("Vega") with a display override on their HD row.
 - `scripts/build/stars_iv25.csv` (uncommitted; fetch_star_layer.py).
@@ -44,8 +44,10 @@ computable):
     pool      u8 length-prefixed byte strings
 
 `normalize()` below MUST stay byte-identical to the Rust
-`rp_catalog::normalize`; the `normalize_matches_packer` unit test pins
-the shared fixture list.
+`rp_catalog::normalize`. The `embedded_matches_committed_*` tests
+resolve the spellings the committed CSVs hold through the Rust function
+— a catalog or star name to its own row, an alias only to some row — and
+check nothing else, so a change to either is made to both.
 
 Usage::
 

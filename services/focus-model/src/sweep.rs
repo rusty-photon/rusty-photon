@@ -3358,9 +3358,9 @@ mod tests {
 
     /// Each sweep walked one wing and fitted a vertex outside its
     /// samples, where the rig's own run put it; the retry centres there,
-    /// and the grid it walks holds R's focus, 29572, which half a width
-    /// left outside the second grids of the two sweeps started 200 steps
-    /// off.
+    /// and the grid it walks holds R's focus, 29572, which a shift of
+    /// half a width leaves outside the second grids of the two sweeps
+    /// started 200 steps off.
     #[test]
     fn rig2s_sweeps_started_off_focus_centre_their_retry_on_a_grid_holding_focus() {
         const FOCUS: i32 = 29_572;

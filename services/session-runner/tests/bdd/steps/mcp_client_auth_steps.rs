@@ -1,5 +1,5 @@
 //! BDD step definitions for session-runner's authenticated MCP client
-//! (`service_auth` / `ca_cert`, ADR-017).
+//! (`service_auth` / `ca_cert`).
 //!
 //! The positive scenario proves standalone /validate reaches a TLS- and
 //! auth-enabled rp when both fields are wired. The negative scenario

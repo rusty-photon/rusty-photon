@@ -1,9 +1,9 @@
 //! The MCP client — `rp`'s tool catalog for layer-2 validation and the
 //! engine's [`ToolClient`] seam for execution.
 //!
-//! Built on the standard `rp-mcp-client` crate (ADR-017): CA-pinned
-//! TLS, the observatory credential over verified HTTPS only, the
-//! session-less 2026-07-28 revision (ADR-021).
+//! Built on the standard `rp-mcp-client` crate: CA-pinned TLS, the
+//! observatory credential over verified HTTPS only, the session-less
+//! 2026-07-28 revision.
 //!
 //! Error mapping — the three-way posture pinned in
 //! `docs/services/session-runner.md` § Safety Behavior: a call that
@@ -62,7 +62,7 @@ pub struct McpClient {
 
 impl McpClient {
     /// Connect to `rp`'s MCP server at the given URL, presenting
-    /// `service_auth` per the ADR-017 credential policy.
+    /// `service_auth` only over verified HTTPS.
     ///
     /// # Errors
     ///

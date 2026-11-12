@@ -629,9 +629,9 @@ mod tests {
         assert!(fit.r_squared > 1.0 - 1e-12, "{fit:?}");
     }
 
-    /// The three dense samples of the #1187 coarse sweep, focus near
-    /// 29766: their squares dip below zero, so no hyperbola passes
-    /// through them, and the fit is the nearest V.
+    /// The three dense samples of rig2's coarse sweep of 2026-09-08,
+    /// focus near 29766: their squares dip below zero, so no hyperbola
+    /// passes through them, and the fit is the nearest V.
     #[test]
     fn three_samples_no_hyperbola_passes_through_fit_the_nearest_v() {
         let samples = [

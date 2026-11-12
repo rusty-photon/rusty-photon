@@ -95,8 +95,7 @@ bdd_infra::bdd_main! {
             })
         })
         // `@wip` scenarios are durable design artifacts for behavior that
-        // is not implemented yet (testing.md §2.7) — Phase D (triggers,
-        // resume, safety) lands its scenarios ahead of the engine work.
+        // is not implemented yet (testing.md §2.7).
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
