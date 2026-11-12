@@ -467,26 +467,19 @@ impl Corrective for CorrectiveLadder {
         outcome.push(format!("health={health}"));
 
         // Rung 2 — abort, but only a responsive service with an abort verb.
-        let aborted = if health == Healthiness::Responsive && target.binding.is_some() {
+        // A clean abort is the gentle fix — stop here.
+        if health == Healthiness::Responsive && target.binding.is_some() {
             match self.aborter.abort(target).await {
                 Ok(()) => {
                     debug!("ladder '{}': abort ok", target.service_name);
                     outcome.push("abort=ok");
-                    true
+                    return outcome;
                 }
                 Err(e) => {
                     warn!("ladder '{}': abort failed: {e}", target.service_name);
                     outcome.push("abort=failed");
-                    false
                 }
             }
-        } else {
-            false
-        };
-
-        // A clean abort is the gentle fix — stop here.
-        if aborted {
-            return outcome;
         }
 
         // Rung 3 — restart (unresponsive, abort failed, or no abort verb).

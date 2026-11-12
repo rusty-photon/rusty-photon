@@ -1202,7 +1202,7 @@ fn slope_in(samples: &[Sample], from: f64, to: f64) -> Option<f64> {
             dt.mul_add(dt, den),
         )
     });
-    (den > 0.0).then(|| num / den)
+    (den > 0.0).then_some(num / den)
 }
 
 /// Turn one axis' samples into its stop record.
@@ -1252,7 +1252,7 @@ fn analyse_stop(
         coast_deg,
         constant_decel_s: coast_deg
             .zip(speed_deg_s)
-            .and_then(|(c, v)| (v > 0.0).then(|| 2.0 * c / v)),
+            .and_then(|(c, v)| (v > 0.0).then_some(2.0 * c / v)),
         end,
         timed_out,
         pre: pre
