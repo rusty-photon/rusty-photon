@@ -6898,11 +6898,9 @@ last".
 
 ### Import form (`source`)
 
-`add_target`'s third parameter form, activated for the P3
-planetarium bridge ([planetarium-bridge.md](planetarium-bridge.md)
-§ rp-side contract is the design record; this section is the landed
-contract): bare `ra_hours` + `dec_degrees` + `source {kind, client,
-received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
+`add_target`'s third parameter form, the one the planetarium
+bridge sends ([planetarium-bridge.md](planetarium-bridge.md)): bare
+`ra_hours` + `dec_degrees` + `source {kind, client, received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
 `position_angle_degrees` are all rejected alongside `source` — naming
 is rp's job here, imports always land paused (`active: false`) with no
 framing angle (no planetarium channel carries one; per-target angles

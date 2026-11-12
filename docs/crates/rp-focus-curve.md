@@ -49,8 +49,7 @@ as a `minimum` of 0 beside its slope.
 
 The hyperbola is the right model because it *is* the defocus curve: a
 cone with a seeing floor. The choice rests on physics that holds for
-every optical train, not on one rig's numbers
-([sample-gating plan](../plans/auto-focus-sample-gating.md), G2). A
+every optical train, not on one rig's numbers. A
 parabola has the right minimum and the wrong wings: it bends where a
 defocused star grows in a straight line. The wider a sweep reaches, the
 further a parabola's vertex is pulled off focus by the wing on the longer
@@ -111,7 +110,9 @@ star count (or valid frame count).
 The closed-form start alone would weight each residual by roughly the
 square of its value, so the wings would dominate. The wings are where a
 fragmenting detector puts its worst samples
-([#1187](https://github.com/rusty-photon/rusty-photon/issues/1187)), so
+([a defocused star of rig2's coarse sweep](../../services/rp/tests/fixtures/star_detection/README.md)
+is 32 components at a median HFR of 1.51 px, beside an aperture HFR of
+38.2 px), so
 the refinement in the value itself is the fit; the starts are only
 where it begins. The crate's tests check this on noisy generated
 curves:
@@ -128,9 +129,9 @@ them, the fit is that hyperbola, at R² 1. When none does, the
 fit is the nearest V, `a` 0, at an R² below 1. That happens when the
 wings are steeper than any rounded floor allows. It is a fit and not an
 error, because it is exactly what a coarse grid measures: every sample
-sits far enough from focus that the floor never shows. The #1187 coarse
-sweep's three dense samples admit no hyperbola, and their nearest V
-centres a step from focus.
+sits far enough from focus that the floor never shows. The three dense
+samples of rig2's coarse sweep of 2026-09-08 admit no hyperbola, and
+their nearest V centres a step from focus.
 
 ## R²
 
@@ -140,8 +141,7 @@ clamped to `[0, 1]`. Samples whose values are all equal have no spread
 to explain and score 0 (they never get this far: their squares do not
 turn upward). The clamp is a requirement and not a convenience: a
 threshold of `0` has to mean "accept every fit", and a raw coefficient
-goes negative on a fit worse than the mean
-([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).
+goes negative on a fit worse than the mean.
 
 ## Errors
 
@@ -151,8 +151,8 @@ goes negative on a fit worse than the mean
 | `MonotonicCurve(why)` | `monotonic curve: ` and then the reason: `the samples sit at 2 positions, and a curve needs 3`, `design matrix is singular (det=…, scale=…)`, `the squared values do not turn upward (curvature -1.200e-3)`, or `the fitted curve flattened to a constant, which has no centre` |
 
 The provider folds `NotEnoughStars` into its own error of that name, with
-the 3 as the samples needed, so its run records read the same as they
-did with the parabola. `rp` relays the message as it stands.
+the 3 as the samples needed, so a run records `not_enough_stars`
+whichever gate refused it. `rp` relays the message as it stands.
 
 ## Consumers
 

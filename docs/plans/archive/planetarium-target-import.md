@@ -174,7 +174,7 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    against the store — not in the bridge, which sends bare ICRS
    coordinates plus `source`. The rules below are unchanged; only where
    they execute moved. See
-   [planetarium-bridge.md](../../services/planetarium-bridge.md) § Naming.)*
+   [rp.md](../../services/rp.md#import-form-source) § Import form.)*
    No name crosses the Alpaca wire. The bridge resolves the nearest catalog
    object within a tolerance (configurable, default ~10 arcmin; nearest by
    angular separation wins on ties) for `display_name`/`catalog_ref`.
@@ -449,7 +449,7 @@ sync-vs-slew and AtPark semantics.
 ## Open questions (carried into P3a) — ANSWERED 2026-07-29
 
 All three were answered by the P3a session; full findings in
-[planetarium-bridge.md](../../services/planetarium-bridge.md).
+[planetarium-bridge-skysafari-sessions-2026-07.md](planetarium-bridge-skysafari-sessions-2026-07.md).
 
 - ~~Does SkySafari honor a device-declared J2000 `EquatorialSystem`?~~
   **Yes — J2000 honored** (five GoTos matched J2000 to arcseconds; read
@@ -473,5 +473,5 @@ not horizon-gated" held only because the observed case reached an
 above-horizon point — below 0°, **both** GoTo forms are refused under
 every horizon display setting, which is what flipped the import
 gesture to Align (Decision 2's second amendment; findings in
-[planetarium-bridge.md](../../services/planetarium-bridge.md) § P3b
+[planetarium-bridge-skysafari-sessions-2026-07.md](planetarium-bridge-skysafari-sessions-2026-07.md) § P3b
 appendix).*

@@ -22,8 +22,7 @@ backlash compensation and settle rule, `capture` and `measure_stars`,
 the train model with its optical facts, the guider handshake, and the
 `focus_started` / `focus_complete` / `focus_failed` events it emits
 around the provider's `focus_train` calls. The provider never moves
-anything except through `rp`'s tools. The decision record is the
-[focus-model plan](../plans/focus-model.md).
+anything except through `rp`'s tools.
 
 ### Tenets
 
@@ -80,8 +79,7 @@ anything except through `rp`'s tools. The decision record is the
 
 `focus-model` is both an MCP **server** (`/mcp`, registered in `rp` as
 a `type: "tool_provider"` plugin) and an MCP **client** of `rp` (the
-standard `rp-mcp-client`,
-[ADR-017](../decisions/017-standard-mcp-client-construction.md)). A
+standard `rp-mcp-client`). A
 client of `rp` — a `session-runner` document, an operator's MCP client
 — calls `focus_train` on `rp`; `rp` resolves the train named by the
 argument, emits `focus_started`, proxies the call here; the tool body
@@ -151,9 +149,9 @@ with every field null would be worse than no event: `rp`'s Guide Focus
 Watch decides from that payload whether a `focus_complete` touched the
 guiding train. Declaring the tool means first nominating one sweep as
 the call's focus and carrying it at the top level — a change to the
-focus-event contract ([focus-model plan](../plans/focus-model.md),
-D11 and D15), not something a procedure can improvise. Until then the
-rig is still observable: `rp` emits its own `move_focuser_*` and
+focus-event contract, not something a procedure can improvise.
+Undeclared, the rig is still observable: `rp` emits its own
+`move_focuser_*` and
 `capture_*` operation envelopes for every primitive the procedure
 drives, and every sweep is a run `get_focus_runs` reads.
 
@@ -460,8 +458,10 @@ differences.
    the body ends, and the next call must not read a position
    mid-flight and sweep from it. Two agreeing readings is
    the only idleness there is to see — `rp` reports where a focuser
-   is, not whether it is moving — and stopping the travel is `rp`'s
-   ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure whose sweeps left guiding
+   is, not whether it is moving — and stopping the travel is `rp`'s:
+   a cancelled `move_focuser` halts the focuser and gives its slot
+   back once the halt has been sent ([rp.md § Focuser Tool
+   Details](rp.md#focuser-tool-details)). A procedure whose sweeps left guiding
    paused tries that resume once more on its way out. Every sweep
    resumes what it paused, on its put-back or after the focus it
    found, and a sweep says when neither could: the pause is then the
@@ -668,27 +668,44 @@ A **training run** is a `focus_train` call without `shared`, or a
 `determine_filter_offsets` call, addressed to the guiding train. It
 captures through the guide camera, which `rp` reaches as the PHD2
 camera facade, under `rp`'s train lease ([rp.md § Train
-Lease](rp.md#train-lease)). The rules are O4's of the [focus-model
-plan](../plans/focus-model.md), whose table is their normative
-statement, and the leases are the [device-claims
-plan](../plans/archive/device-claims-and-phd2-camera.md)'s D12 ("Settled in
-C7"). In-session guide focus is not a training run and is unchanged: a
-`shared: true` walk on the guiding train keeps its guide step on `rp`'s
-PHD2-metric `auto_focus`. An imaging train's run takes no lease.
+Lease](rp.md#train-lease)). In-session guide focus is not a training
+run: a `shared: true` walk on the guiding train keeps its guide step on
+`rp`'s PHD2-metric `auto_focus`. An imaging train's run takes no lease.
+
+Where the guide path's focuser sits decides how it is focused:
+
+- **A focuser of its own.** A guide path with its own motorised focuser
+  — a separate guide scope, an off-axis guider with a motorised helical
+  — is swept in its own right, by a training run, and carries filter
+  offsets of its own when a wheel is in its light path. A guide path
+  that shares an upstream focuser with the imaging train and keeps its
+  own terminal focuser is this case. In-session, its focus stays on
+  `rp`'s PHD2-metric sweep.
+- **No focuser of its own.** Such a guide path gets no sweep and
+  carries no offsets. Behind a focuser the imaging train holds, it is
+  focused by that train's sweep: a focuser an imaging train holds is
+  focused through the imaging camera only, the guide camera taken as
+  parfocal with it — `rp`'s refocus plan runs that focuser in the
+  imaging train, and `rp`'s metric `auto_focus` refuses it. A
+  fixed-focus guide scope is focused by hand: `rp` accepts a
+  camera-only train and reports `terminal_focuser_id: null`, and the
+  focus tools refuse it.
+
+A training run keeps these rules:
 
 - **The guard.** A training run is refused, before anything moves and
   with nothing recorded, when the guiding train's terminal focuser is a
   member of another train. `get_train_info` names those trains in
   `terminal_focuser_shared_with`, and any other train is an imaging
   train, since `rp` allows one guiding train. Such a guide path has no
-  focuser of its own, and the imaging train's sweep focuses it (O4
-  rules 1 and 4): *"guiding train 'guide' has no focuser of its own:
+  focuser of its own, and the imaging train's sweep focuses it:
+  *"guiding train 'guide' has no focuser of its own:
   its terminal focuser 'main-focuser' is in train 'main', whose sweep
   focuses it"*. An upstream focuser the two trains share is no reason
   to refuse. `pier1`'s guiding train sweeps its Scops OAG, and its
   lease holds the shared EAF still.
 - **The camera.** That the guide camera is the facade, with PHD2
-  `Stopped`, is `rp`'s to check when it grants the lease (O4 rule 7). A
+  `Stopped`, is `rp`'s to check when it grants the lease. A
   guiding train whose camera is not the facade, or whose PHD2 is
   guiding or looping, is refused at the acquire, and the provider
   relays `rp`'s refusal.
@@ -699,9 +716,9 @@ PHD2-metric `auto_focus`. An imaging train's run takes no lease.
   start between two sweeps, and then the next acquire is refused,
   naming PHD2's state, before that sweep moves anything. The refusal
   ends the procedure as a failed device does, with the rig put back.
-  The lease guarantees each sweep, not the procedure, so O4's "must not
-  run while an imaging session is using that wheel" stays an operator
-  precondition across sweeps.
+  The lease guarantees each sweep, not the procedure: that the
+  procedure does not run while an imaging session is using that wheel
+  stays an operator precondition across sweeps.
 - **When.** The acquire follows the reads, the sizing, and the
   refusals of a focuser outside its travel and of a grid that cannot
   be walked. It comes before the guiding handshake and the first move,
@@ -749,48 +766,26 @@ PHD2-metric `auto_focus`. An imaging train's run takes no lease.
   on the client a cancellation cannot reach. One that fails is logged,
   not raised, because the lease ends on its own 60 s after its last
   call.
-- **Ordering.** Focusing the guiding train after the imaging train
-  (O4 rules 2–3) is the caller's job: a training run focuses one train.
+- **Ordering.** Focusing the guiding train after the imaging train is
+  the caller's job: a training run focuses one train, and no
+  `focus_train` call orders two trains that share no focuser. Only a
+  `shared: true` walk on a guiding train that shares a focuser with the
+  imaging train carries the order itself, its imaging capture step
+  before its guide step.
 
-**Real-hardware validation.** 2026-10-15, on the field rig (Raspberry
-Pi 5, aarch64), at `307f0921`: `rp`, `focus-model` and `phd2-guider`
-built from the branch, with the guiding train `[zwo-eaf, scops-oag,
-guide camera]` ending in the PHD2 camera facade over the rig's
-QHY5III715C behind PHD2 2.6.14, and the real EAF, Scops OAG and Falcon.
-The rig was indoors, so the room-lit frames had no stars, and the train
-block pinned a detection threshold no frame could clear, so the sweep
-ended in `not_enough_stars`. Its sweep was configured, 9 points 10 steps
-apart, with 1 s exposures and two attempts. A probe that asserted every
-outcome passed each check:
-
-- with PHD2 looping, the run was refused at the lease, relaying "PHD2
-  is Looping"; neither focuser moved and no sweep lease was left;
-- with PHD2 `Stopped`, the run asked for a 2m 36s lease, walked both
-  attempts' 18 samples through the facade and failed on its stars. It
-  put the OAG back where it started and never moved the EAF, the
-  shared focuser the lease held still. PHD2 stayed `Stopped`;
-- `phd2-guider` refused every guiding operation the probe sent during
-  the run, every 2 s, naming the sweep lease or a frame still exposing,
-  and accepted them again once the run had answered;
-- the run was recorded with its 18 curve points, and `rp` then granted
-  a new lease on the train, so nothing of the old one was left.
-
-The run held its lease for 46.7 s. From `focus-model`'s own call log, a
-frame cost 1.40 s beyond its 1 s exposure on average and 1.47 s at
-most, the full 3864 × 2192 frame through PHD2, the facade, `rp`'s FITS
-write and `measure_stars` included, and a 10-step move cost 0.17 s on
-average and 0.41 s at most. Both 2 s constants hold, the frame's with
-a third to spare.
-
-The first attempt found the OAG at 0, the bottom of its travel. `rp`'s
-config sets no travel bounds for it, so the provider did not clamp its
-grid, and the driver refused the first sample at −40. The run failed
-and put the OAG back, and the probe started the next run at 200. That
-gap was older than the training run and applied to every train
-([#1529](https://github.com/rusty-photon/rusty-photon/issues/1529)):
-`rp` now reports a focuser's driver travel, `0` to `MaxStep`, as its
-bounds where the config sets none, so the provider clamps such a grid
-at `0`.
+**Real-hardware validation.** On the field rig (a Raspberry Pi 5; the
+guiding train `[zwo-eaf, scops-oag, guide camera]`, its camera the PHD2
+camera facade over a QHY5III715C behind PHD2 2.6.14), a frame costs
+1.40 s beyond its exposure on average and 1.47 s at most — the full
+3864 × 2192 frame through PHD2, the facade, `rp`'s FITS write and
+`measure_stars` included — and a 10-step move 0.17 s on average and
+0.41 s at most, so both 2 s constants hold, the frame's with a third to
+spare. With PHD2 looping, a training run there is refused at the lease
+and neither focuser moves. With PHD2 `Stopped`, the run sweeps the
+Scops OAG and puts it back, the shared EAF never moves, `phd2-guider`
+refuses every guiding operation until the run answers, and `rp` grants
+a new lease on the train afterwards
+([the run of 2026-10-15](../plans/archive/focus-model-guiding-train-field-rig-run-2026-10.md)).
 
 ### Errors
 
@@ -924,9 +919,7 @@ the rim, so an obstructed train's stars grow faster with defocus and
 its sweep is narrower. A train whose `rp` config sets no
 `obstruction_mm` reports a ratio of 0 and is sized as unobstructed; a
 ratio `rp` cannot report, on a train without an aperture, leaves no
-focal ratio to size from either. Before S8 the provider used `c` =
-0.35, the unobstructed value rounded, so an unobstructed train's
-derived half width shrinks by about 1% and can lose a step (plan D9).
+focal ratio to size from either.
 The step is the width that gives
 `sweep.points` samples (default 9) across the sweep, floored at half a
 critical focus zone because samples closer together than that measure
@@ -951,16 +944,15 @@ the `slope` line — `microns_per_step`, the focal length or aperture
 behind `N`, the pixel size, or the obstruction behind `c` — and
 `get_sweep_plan` reports both side by side.
 
-**Real-hardware validation.** 2026-11-04, on `rig2` (Windows 11, a
-530 mm f/5 refractor, a QHY600M with its wheel and a FocusLynx), at
-`00b87c77`: the derived sweep, a predicted start and a hand-entered
-offset on a filter change, under a real sky. The check above caught a
-wrong input there. `rp` took `microns_per_step` from the FocusLynx
-server's `StepSize`, 1.06985 µm, and the runs measured a wing slope
-about 2.1× the predicted one, so the sweep's ends sat at 5.0–8.1× the
-focused HFR.
-With 2.1 µm configured, the ends sat at 2.9–3.5×
-([record](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
+**Real-hardware validation.** On `rig2` (Windows 11, a 530 mm f/5
+refractor, a QHY600M with its wheel and a FocusLynx) the derived sweep,
+a predicted start and a hand-entered offset on a filter change hold
+under a real sky, and the check above catches a wrong input: with
+`microns_per_step` as `rp` reads it from the FocusLynx server's
+`StepSize`, 1.06985 µm, the runs measure a wing slope about 2.1× the
+predicted one and the sweep's ends sit at 5.0–8.1× the focused HFR;
+with 2.1 µm configured, the ends sit at 2.9–3.5×
+([the rig2 record of 2026-11-04](../validation/2026-11-04-focus-model-rig2-windows/README.md)).
 
 ## The predicted start
 
@@ -1064,7 +1056,10 @@ its `auto_focus` is the guiding train's PHD2-metric sweep
 imaging train's sweep follows these rules:
 
 1. The grid is `centre ± half_width` in `step_size` increments, clamped
-   to the focuser's bounds (points outside are dropped, not coerced),
+   to the focuser's bounds (points outside are dropped, not coerced;
+   where `rp`'s config sets no bounds they are the driver's travel, `0`
+   to `MaxStep` — [rp.md § Focuser Tool
+   Details](rp.md#focuser-tool-details)),
    walked in the focuser's backlash approach direction so every sample
    is reached from the side of the final move; a grid with fewer than
    `min_fit_points` positions is an error before any motion — checked
@@ -1089,9 +1084,8 @@ imaging train's sweep follows these rules:
    as the blur spreads their light (on rig2 the count falls as
    HFR^−1.7 to HFR^−2.5), while an aperture placed on a star already
    known keeps it, so the count says how many of the same stars were
-   measurable at that focus, not how bright the field looked there
-   (the [sample-gating plan](../plans/auto-focus-sample-gating.md)'s
-   G3c). A reference frame with no stars leaves the list empty: the
+   measurable at that focus, not how bright the field looked there.
+   A reference frame with no stars leaves the list empty: the
    attempt still walks its grid and records each frame, every point
    starless, and ends `not_enough_stars`, and its retry takes a new
    reference frame.
@@ -1149,7 +1143,7 @@ imaging train's sweep follows these rules:
    every curve point, and the retry walks the same grid (step 6).
    Unset, the quality is reported and never enforced, because how clean
    a real sweep looks is a property of the rig. A train's own runs
-   are what justify a number for that train (the plan's D13).
+   are what justify a number for that train.
 5. Confirmation: move to the vertex, one more frame, measured with the
    list; accepted when it measures at least two listed stars and at
    most `(1 + confirmation_tolerance)` times the lowest accepted
@@ -1236,8 +1230,7 @@ imaging train's sweep follows these rules:
      of stars — a sky that thinned for a frame or two recovers on it.
      The test is strict on purpose: a shift costs a whole grid of
      exposures, and the one that went the wrong way would have spent
-     the attempt a same-grid retry could have won (the plan's D13
-     records the survey behind it).
+     the attempt a same-grid retry could have won.
    - After `poor_fit` the grid is the same one. The curve has its
      minimum among the samples, just not a V-shaped enough one for
      the threshold, so there is no side to shift toward, and the next
@@ -1372,7 +1365,7 @@ file written by a newer build.
   source](#the-temperature-source)). The filters are a set: the same names
   in another wheel order are the same optics, and every offset and
   last good focus is keyed by name, not by position. The optical
-  facts follow two rules (plan O8):
+  facts follow two rules:
   - *An unknown is not a change.* `focal_length_mm`, `aperture_mm`,
     `microns_per_step` and `pixel_size_um` are compared only when the
     record and the train both know them. A camera that has not
@@ -1466,9 +1459,9 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11173 }` | The shared `ServerConfig` ([ADR-016](../decisions/016-service-config-ownership-and-doctor.md)): `port`, `bind_address`, optional `tls` / `auth`. Guards `/mcp` and `/health` alike |
+| `server` | object | `{ "port": 11173 }` | The shared `ServerConfig` (`rusty-photon-server-config`): `port`, `bind_address`, optional `tls` / `auth`. Guards `/mcp` and `/health` alike |
 | `mcp_server_url` | string | required | `rp`'s MCP endpoint, dialed per tool call |
-| `service_auth` | object or null | null | HTTP Basic credential presented to `rp` — the observatory credential; sent only over verified HTTPS ([ADR-017](../decisions/017-standard-mcp-client-construction.md)) |
+| `service_auth` | object or null | null | HTTP Basic credential presented to `rp` — the observatory credential; sent only over verified HTTPS |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` |
 | `sweep.end_ratio` | float | 4.0 | Where the sweep ends, as a multiple of the focused HFR; greater than 1 |
 | `sweep.points` | int | 9 | Samples the derived step aims for across the sweep; at least 3. The critical-focus-zone floor on the step can leave the grid with fewer, which is what the plan's `points` reports |
@@ -1553,9 +1546,9 @@ services/focus-model/src/
   error.rs           FocusModelError (thiserror)
   store.rs           FocusStore (redb), FocusRecord, FocusRun, LastGood, staleness, the cap
   mcp_client.rs      McpClient: rp-mcp-client wrapper; cancellable calls; FocusRig impl
-  sizing.rs          The sweep derivation from the optics (D9) and the sweep plan
+  sizing.rs          The sweep derivation from the optics and the sweep plan
   lease.rs           A training run's train lease: its id, its size, the not-held refusal
-  prediction.rs      The predicted start (D4)
+  prediction.rs      The predicted start
   sweep.rs           Grid, star list, gate, the fit's bound and threshold, confirmation, retry — the V-curve;
                      the hyperbola itself is rp-focus-curve's
   offsets.rs         The offsets procedure: rounds, differences, medians
@@ -1667,10 +1660,9 @@ credential — and that `tools/list` answers with no `rp` running.
   curves generated across a spread of focal ratios,
   `microns_per_step` values and seeing floors and sized as the
   provider sizes them, the rig's recorded sweeps as the star list
-  measures them — the two of
-  [#1187](https://github.com/rusty-photon/rusty-photon/issues/1187)
-  and the 2026-09-26 sized ones, each placed where the G3c replay
-  placed it — the confirmation
+  measures them — rig2's fine and coarse sweeps of 2026-09-08
+  and the 2026-09-26 sized ones, each placed where its replay through
+  `rp`'s `measure_stars` places it — the confirmation
   verdict and its reason, the 2026-09-26 sizing sweep's confirmation
   frame accepted on its listed stars, the retry centre — the shift onto a monotonic curve's
   extrapolated vertex and its cap, rig2's 2026-11-05 sweeps started off
@@ -1718,36 +1710,3 @@ credential — and that `tools/list` answers with no `rp` running.
   naming its threshold, and a refusal leaving the record untouched.
 - Tools: the result shapes and the error text for the argument-level
   refusals.
-
-## Future Considerations
-
-- **The guiding train** (plan O4, settled): when it is swept, in what
-  order, whether it has offsets of its own, and which transport a
-  training run uses are the eight rules of that plan's O4 table, which
-  is the single normative statement of them — this doc deliberately
-  does not restate the conditions. The transport itself is the PHD2
-  camera facade of
-  [device-claims-and-phd2-camera.md](../plans/archive/device-claims-and-phd2-camera.md),
-  to which that O4 defers. In summary: an independently
-  focused guide path is swept in its own right and can carry its own
-  offsets, a guide path with no focuser of its own gets no sweep and
-  carries none — behind a focuser shared with the imaging train it is
-  focused by that train's sweep, and a fixed-focus guide scope is
-  focused by hand (one that shares an upstream focuser but keeps its
-  own terminal focuser is the first case, not this) — and in-session
-  guide focus stays on the
-  PHD2-metric sweep wherever the guide path has a focuser of its own
-  to move (a fixed-focus path has none; `rp`'s train model accepts a
-  camera-only train and reports `terminal_focuser_id: null`, and it is
-  the focus tools that refuse it). A focuser an imaging train holds
-  is focused through the imaging camera only, the guide camera being
-  taken as parfocal (the plan's O4 rules 2, 4 and 8, the owner's rule
-  of 2026-10-15): `rp`'s refocus plan runs it in the imaging train,
-  and `rp`'s metric `auto_focus` refuses it. Who sequences that sweep against
-  the imaging train's is rules 2–3 and depends on whether the two
-  share a focuser — one `focus_train` call never orders two trains
-  that share none. The record shape admits a
-  filterless train, but a guiding train is not necessarily one. A
-  training run on a guiding train is built ([Training runs on a
-  guiding train](#training-runs-on-a-guiding-train)), and so is the
-  rest of the plan's S10, `rp`'s plan and refusal above (C7e).
