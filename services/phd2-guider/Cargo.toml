@@ -41,6 +41,9 @@ schemars = { workspace = true }
 ndarray = { workspace = true }
 uuid = { workspace = true }
 rusty-photon-rolling-stats = { workspace = true }
+# `systemctl show` for PHD2's unit, run under a deadline (docs/services/phd2-guider.md
+# § "PHD2 under the service manager").
+rusty-photon-process = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no
@@ -71,8 +74,23 @@ section = "science"
 priority = "optional"
 # $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
 depends = "$auto, adduser"
+# The PHD2 display's X server and the tool its start script makes the X
+# cookie with; only a host switched over to PHD2 under the service manager
+# needs them.
+recommends = "tigervnc-standalone-server, xauth"
 assets = [
     ["target/release/phd2-guider", "usr/bin/rusty-photon-phd2-guider", "755"],
+    # PHD2 under the service manager: off until the operator switches the
+    # host over (docs/packaging.md), and left running by an upgrade, which
+    # must never end PHD2 mid-guide. cargo-deb gives every unit it installs
+    # into usr/lib/systemd/system the one set of systemd-units options below,
+    # the guider's enable, start and restart, so these two go to
+    # lib/systemd/system as plain files, out of its reach: the same
+    # directory where /usr is merged, and systemd's own where it is not.
+    # pkg/prerm stops them on removal.
+    ["pkg/rusty-photon-phd2.service", "lib/systemd/system/rusty-photon-phd2.service", "644"],
+    ["pkg/rusty-photon-phd2-display.service", "lib/systemd/system/rusty-photon-phd2-display.service", "644"],
+    ["pkg/phd2-display", "usr/lib/rusty-photon/phd2-display", "755"],
 ]
 maintainer-scripts = "pkg/"
 
@@ -90,10 +108,17 @@ license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/phd2-guider", dest = "/usr/bin/rusty-photon-phd2-guider", mode = "755" },
     { source = "pkg/rusty-photon-phd2-guider.service", dest = "/usr/lib/systemd/system/rusty-photon-phd2-guider.service", mode = "644" },
+    { source = "pkg/rusty-photon-phd2.service", dest = "/usr/lib/systemd/system/rusty-photon-phd2.service", mode = "644" },
+    { source = "pkg/rusty-photon-phd2-display.service", dest = "/usr/lib/systemd/system/rusty-photon-phd2-display.service", mode = "644" },
+    { source = "pkg/phd2-display", dest = "/usr/lib/rusty-photon/phd2-display", mode = "755" },
 ]
+# /var/lib/rusty-photon/phd2 is PHD2's home under the service manager,
+# made here so the switch-over can write the VNC password into it before
+# either PHD2 unit has run. Neither PHD2 unit is enabled here: the
+# operator enables them when switching the host over.
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
-install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon /var/lib/rusty-photon/phd2
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload
 if [ "$1" -eq 1 ]; then
@@ -106,11 +131,14 @@ fi
 # Guarded: enable fires on first install only (upgrades keep the
 # operator's enable/disable choice), stop/disable on final erase only,
 # and try-restart hands a running service over to the upgraded binary
-# (the deb restart-after-upgrade equivalent).
+# (the deb restart-after-upgrade equivalent). The PHD2 units are stopped
+# on erase only and never restarted: an upgrade leaves PHD2 running.
 pre_uninstall_script = """
 if [ "$1" -eq 0 ]; then
     systemctl stop rusty-photon-phd2-guider.service || true
     systemctl disable rusty-photon-phd2-guider.service || true
+    systemctl stop rusty-photon-phd2.service rusty-photon-phd2-display.service || true
+    systemctl disable rusty-photon-phd2.service || true
 fi
 """
 # rpm has no purge lifecycle: erase preserves the runtime-created config and
@@ -122,6 +150,12 @@ if [ "$1" -ge 1 ]; then
 fi
 """
 require-sh = true
+
+# The PHD2 display's X server and xauth, as the deb recommends them. Newer
+# Fedora's tigervnc-x11-server provides tigervnc-server-minimal.
+[package.metadata.generate-rpm.recommends]
+tigervnc-server-minimal = "*"
+xorg-x11-xauth = "*"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

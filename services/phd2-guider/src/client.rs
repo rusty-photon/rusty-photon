@@ -145,6 +145,7 @@ impl Phd2Client {
             state.connected = true;
             state.reconnecting = false;
         }
+        self.shared.count_connection();
 
         // Start the reader task
         let reader_handle = spawn_reader_task(
@@ -230,6 +231,13 @@ impl Phd2Client {
     /// Get the PHD2 version (available after connection)
     pub async fn get_phd2_version(&self) -> Option<String> {
         self.shared.get_phd2_version().await
+    }
+
+    /// How many connections to PHD2 this client has established, by
+    /// [`Self::connect`] or by its auto-reconnect. A connection whose
+    /// count is above an earlier reading was made after that reading.
+    pub fn connection_count(&self) -> u64 {
+        self.shared.connection_count()
     }
 
     /// Subscribe to PHD2 events

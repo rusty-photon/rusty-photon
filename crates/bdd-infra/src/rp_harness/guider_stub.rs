@@ -157,9 +157,11 @@ pub enum GuiderStubBehavior {
     Canned(CannedGuiding),
     /// Every endpoint returns a structured error envelope. `code`
     /// matches the service's `ErrorCode` (`invalid_request`,
-    /// `not_guiding`, `guide_failed`, `settle_timeout`,
-    /// `stop_timeout`, `phd2_unreachable`, `internal`); the
-    /// appropriate HTTP status is selected per the service's mapping.
+    /// `not_guiding`, `camera_busy`, `camera_connected`,
+    /// `guiding_active`, `guide_failed`, `settle_timeout`,
+    /// `stop_timeout`, `phd2_unreachable`, `restart_failed`,
+    /// `restart_unsupported`, `internal`); the appropriate HTTP status
+    /// is selected per the service's mapping.
     Error { code: String, message: String },
 }
 
@@ -232,6 +234,7 @@ impl GuiderStub {
             .route("/api/v1/equipment", get(equipment_handler))
             .route("/api/v1/calibration/clear", post(calibration_clear_handler))
             .route("/api/v1/star/reselect", post(reselect_handler))
+            .route("/api/v1/phd2/restart", post(restart_handler))
             .route("/health", get(health_handler))
             .with_state(state);
 
@@ -317,10 +320,13 @@ async fn record_and_check(
         GuiderStubBehavior::Error { code, message } => {
             let status = match code.as_str() {
                 "invalid_request" => StatusCode::BAD_REQUEST,
-                "not_guiding" => StatusCode::CONFLICT,
+                "not_guiding" | "camera_busy" | "camera_connected" | "guiding_active" => {
+                    StatusCode::CONFLICT
+                }
                 "guide_failed" => StatusCode::UNPROCESSABLE_ENTITY,
                 "settle_timeout" | "stop_timeout" => StatusCode::GATEWAY_TIMEOUT,
-                "phd2_unreachable" => StatusCode::BAD_GATEWAY,
+                "phd2_unreachable" | "restart_failed" => StatusCode::BAD_GATEWAY,
+                "restart_unsupported" => StatusCode::NOT_IMPLEMENTED,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             let body = Json(serde_json::json!({
@@ -383,6 +389,24 @@ async fn stop_handler(
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
     Json(serde_json::json!({ "state": "stopped" })).into_response()
+}
+
+/// `POST /api/v1/phd2/restart`: the canned answer of a restart that
+/// stopped PHD2, had it started again and connected its equipment.
+async fn restart_handler(
+    State(state): State<StubState>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if let Some(err) = record_and_check(&state, &uri, body).await {
+        return err;
+    }
+    Json(serde_json::json!({
+        "phd2": "restarted",
+        "equipment": "connected",
+        "elapsed_ms": 1500,
+    }))
+    .into_response()
 }
 
 async fn pause_handler(
@@ -590,6 +614,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_phd2_restart_answers_restarted_and_records_its_body() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding::default())).await;
+        let restart: Value = reqwest::Client::new()
+            .post(format!("{}/api/v1/phd2/restart", stub.url))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(restart["phd2"], "restarted");
+        assert_eq!(restart["equipment"], "connected");
+        let restarts = stub.requests_to("/phd2/restart").await;
+        assert_eq!(restarts, vec![serde_json::json!({})]);
+    }
+
+    #[tokio::test]
     async fn stats_totals_grow_by_one_reads_worth_on_every_read() {
         let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
             totals: Some(CannedTotals {
@@ -770,10 +812,15 @@ mod tests {
         for (code, expected_status) in [
             ("invalid_request", 400),
             ("not_guiding", 409),
+            ("camera_busy", 409),
+            ("camera_connected", 409),
+            ("guiding_active", 409),
             ("guide_failed", 422),
             ("settle_timeout", 504),
             ("stop_timeout", 504),
             ("phd2_unreachable", 502),
+            ("restart_failed", 502),
+            ("restart_unsupported", 501),
             ("internal", 500),
         ] {
             let stub = GuiderStub::start(GuiderStubBehavior::Error {

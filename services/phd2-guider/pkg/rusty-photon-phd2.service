@@ -1,0 +1,35 @@
+[Unit]
+Description=Rusty Photon PHD2 - PHD2 under the service manager, on the PHD2 display
+# Wants=, not Requires= or BindsTo=: a display whose start fails does not
+# fail PHD2's start job, and a display that crashes takes PHD2 down
+# through X. Either way PHD2's own Restart=always tries again every 2 s,
+# and each start pulls the display in, until both are up. A unit that
+# systemd stops, as BindsTo= would, is never restarted.
+Wants=rusty-photon-phd2-display.service
+After=rusty-photon-phd2-display.service network.target
+# PHD2 is built from source and installs here.
+ConditionPathExists=/usr/bin/phd2
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/phd2
+# phd2-guider restarts PHD2 by asking it to shut down over its RPC; this
+# starts it again, as it does after any other exit.
+Restart=always
+RestartSec=2
+User=rusty-photon
+Group=rusty-photon
+Environment=HOME=/var/lib/rusty-photon/phd2
+Environment=DISPLAY=:20
+Environment=XAUTHORITY=/var/lib/rusty-photon/phd2/.Xauthority
+WorkingDirectory=/var/lib/rusty-photon/phd2
+# PHD2 saves its profile on a clean exit.
+TimeoutStopSec=30
+# PHD2 opens the guide camera over USB, as the camera packages' udev
+# rules allow the rusty-photon group, so the unit keeps the host's /dev.
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

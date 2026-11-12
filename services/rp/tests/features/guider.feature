@@ -1,8 +1,8 @@
 @serial
 Feature: Guider MCP tools
   The guiding tools (start_guiding, stop_guiding, dither, pause_guiding,
-  resume_guiding, get_guiding_stats) proxy to the guider rp-managed
-  service over HTTP. All quantities are guide-camera pixels. The
+  resume_guiding, get_guiding_stats, restart_guider) proxy to the guider
+  rp-managed service over HTTP. All quantities are guide-camera pixels. The
   guider is configured at equipment.mount.guiding — guiding is
   mount-scoped, so the block cannot exist without a mount. Settle
   parameters merge field by field: a per-call value wins over the
@@ -23,8 +23,12 @@ Feature: Guider MCP tools
   dither_started/dither_settled/dither_failed), with the settle
   deadline carried on the started envelope when a settle timeout is
   known; stop_guiding emits the guide_stopped point event with reason
-  "requested". Without a guiding block every tool errors with "guider
-  not configured"; service errors propagate as code plus message.
+  "requested". restart_guider posts an empty JSON object to the
+  service's PHD2 restart route and returns its answer, phd2 restarted
+  and equipment connected; the service's refusals reach the caller as
+  tool errors that carry its code and message. Without a guiding block
+  every tool errors with "guider not configured"; service errors
+  propagate as code plus message.
 
   Scenario: Tool catalog includes the guider tools
     Given a running Alpaca simulator
@@ -38,6 +42,7 @@ Feature: Guider MCP tools
     And the tool list should include "pause_guiding"
     And the tool list should include "resume_guiding"
     And the tool list should include "get_guiding_stats"
+    And the tool list should include "restart_guider"
 
   Scenario: start_guiding returns the settled RMS snapshot
     Given a running Alpaca simulator
@@ -210,6 +215,32 @@ Feature: Guider MCP tools
     And the test webhook receiver should receive a "guide_stopped" event
     And the "guide_stopped" event payload field "reason" should be "requested"
 
+  Scenario: restart_guider returns the guider service's restart of PHD2
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "restart_guider"
+    Then the guider result should contain "phd2" with value "restarted"
+    And the guider result should contain "equipment" with value "connected"
+    And the stub guider should have received a PHD2 restart request with an empty JSON object
+
+  Scenario Outline: restart_guider carries the guider service's refusals
+    Given a running Alpaca simulator
+    And a stub guider returning error code "<code>" with message "<message>"
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "restart_guider"
+    Then the tool call should return an error
+    And the error message should contain "restart_guider: <code>: <message>"
+
+    Examples:
+      | code                | message                                        |
+      | restart_unsupported | phd2.managed is false                          |
+      | guiding_active      | PHD2 is Guiding; stop guiding first            |
+      | camera_connected    | the camera facade's camera is connected        |
+      | restart_failed      | step equipment: PHD2 did not connect in time   |
+
   Scenario: pause_guiding forwards full and resume_guiding resumes
     Given a running Alpaca simulator
     And a stub guider returning canned guiding stats
@@ -249,6 +280,7 @@ Feature: Guider MCP tools
       | pause_guiding     |
       | resume_guiding    |
       | get_guiding_stats |
+      | restart_guider    |
 
   Scenario: dither without a configured guider returns an error
     Given a running Alpaca simulator

@@ -3,8 +3,10 @@
 //! The `@wip` filter follows `docs/skills/testing.md` §2.7: scenarios
 //! land before their implementation carry the tag and are skipped at
 //! runtime; the tag is removed in the commit that lands the
-//! implementation. Both tag forms (with and without the leading `@`)
-//! are accepted, matching `services/rp/tests/bdd.rs`.
+//! implementation. Scenarios tagged `@unix` run only on Unix, where a
+//! shell script can stand in for `systemctl`. Both tag forms (with and
+//! without the leading `@`) are accepted, matching
+//! `services/rp/tests/bdd.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -40,6 +42,9 @@
 #[path = "bdd/world.rs"]
 mod world;
 
+#[path = "bdd/phd2_unit.rs"]
+mod phd2_unit;
+
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
@@ -58,15 +63,20 @@ bdd_infra::bdd_main! {
                     if let Some(handle) = world.service_handle.as_mut() {
                         handle.stop().await;
                     }
-                    // Drop kills the mock PHD2 child.
+                    // Drop kills the mock PHD2 child, and the unit's.
                     world.mock.take();
+                    world.unit.take();
                 }
             })
         })
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
-            let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
-                || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
-            !is_wip
+            let tagged = |tag: &str| {
+                let at = format!("@{tag}");
+                feat.tags.iter().chain(sc.tags.iter()).any(|t| t == tag || *t == at)
+            };
+            // `@unix` scenarios stand in for systemd with a shell script on
+            // the service's PATH.
+            !tagged("wip") && (!tagged("unix") || cfg!(unix))
         })
         .await;
 }

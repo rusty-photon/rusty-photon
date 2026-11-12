@@ -1847,7 +1847,7 @@ block is absent.
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
-| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Designed, not yet built ([phd2-guider.md](phd2-guider.md) Phase 12). Have the guider service restart PHD2 and connect its equipment. Refused while PHD2 guides or calibrates, while the PHD2 camera facade's camera is connected or capturing, and where nothing would start PHD2 again; the service's restart is bounded by 120 s, and `rp` waits up to 130 s |
+| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Have the guider service restart PHD2 and connect its equipment. Refused while PHD2 guides or calibrates, while the PHD2 camera facade's camera is connected or capturing, and where nothing would start PHD2 again; the service's restart is bounded by 120 s, and `rp` waits up to 130 s |
 
 **Compute (image analysis)**
 
@@ -4628,7 +4628,6 @@ out of `rp` until `connect_device`.
 
 #### Restarting PHD2
 
-Designed, not yet built ([phd2-guider.md](phd2-guider.md) Phase 12).
 `restart_guider` has the guider service restart PHD2, which drives the
 guide camera through its own SDK and the mount through Alpaca, so PHD2
 too meets its equipment in a fresh process (decisions 5 and 10). The dusk
@@ -5399,7 +5398,7 @@ this protocol so `rp` speaks only HTTP.
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
 `get_guiding_stats`, and `restart_guider`, § [Power
-Switching](#power-switching), designed and not yet built). `rp` proxies these tool calls to the guider
+Switching](#power-switching)). `rp` proxies these tool calls to the guider
 service's HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
 control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
