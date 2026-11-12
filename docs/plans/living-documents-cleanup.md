@@ -397,9 +397,11 @@ for every batch.
 - Records: nothing in `docs/plans/`, `docs/plans/archive/`,
   `docs/decisions/`, `docs/validation/` or a `CHANGELOG.md` is edited,
   except the one Status line an ADR gains when superseded in full and
-  the target of a link from a record into a passage a batch moved,
-  which follows the passage — where the link points changes, what the
-  record says does not.
+  a pointer from a record into a passage a batch moved — a link's
+  target, or a section the record names in plain text — which follows
+  the passage: where the pointer leads changes, what the record says
+  does not. An open plan that tells a later step to write into a
+  passage that moved says where that writing goes now.
 - Moving the test-scope allow list out of the root `Cargo.toml`, where
   153 Rust files say it is documented: to workspace.md § Lints with
   every pointer updated, or into a `rusty-photon-ci` check that holds

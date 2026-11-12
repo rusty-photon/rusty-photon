@@ -2498,6 +2498,13 @@ visually, with the flip-back over the saddle-east wrap issuing the
 canonical short RA step
 ([the run of 2026-05-16](../plans/archive/star-adventurer-gti-rig-runs-2026.md#the-ap-park-traversal-of-2026-05-16)).
 
+On the Dec axis the traversal ran two routes: the long way around on
+the flip (+294° CW through the visible pole, from a start whose short
+path crosses the below-horizon one) and the short path on the
+flip-back (180° CCW through the same pole). The Dec rule's other
+starts are pinned by the unit tests of `flip_slew_dec_delta`, not by
+that run.
+
 ## Configuration
 
 JSON, deserialised with `serde` + `humantime-serde` for `Duration`
