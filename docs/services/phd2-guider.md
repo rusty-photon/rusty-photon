@@ -1012,17 +1012,21 @@ mutex, so guiding requests wait for it.
      the restart exists to end that. A PHD2 that accepts the connection
      but does not answer within `command_timeout` is not refused either:
      it goes straight to being ended in step 2. When the connection
-     cannot be made at all, PHD2 may be guiding behind a dropped link, so
-     the restart ends nothing and waits for the connection within its
-     bound, answering `restart_failed` if none comes.
+     cannot be made at all, the service waits for it while the process it
+     knows as PHD2 (the unit's main process on Linux, the one it started
+     on Windows) has run for less than 60 s, PHD2's start. One that has
+     run longer without accepting a connection hung before its event
+     server started, and is ended as in step 2. A guiding PHD2 always
+     accepts a connection on a loopback address, so this never ends one.
 2. **Stop.** If PHD2 answers, the service sends `stop_capture`, which
    ends a loop or a capture, then `set_connected(false)` and `shutdown`.
    PHD2 saves its profile on that clean exit. Each call is best effort.
    One that fails moves on to the next. One that times out moves
    straight on to the exit wait: PHD2's main thread is then hung, and a
    further call would hang too, so a camera whose close hangs cannot hold
-   the restart. A PHD2 that has not exited 30 s after `shutdown`, or that
-   accepted the connection and did not answer, is ended: on Linux by
+   the restart. A PHD2 that has not exited 30 s after `shutdown`, that
+   accepted the connection and did not answer, or that never accepted one
+   (step 1), is ended: on Linux by
    `SIGTERM` and, 5 s later, `SIGKILL`; on Windows by `TerminateProcess`.
 3. **Start.** On Linux, PHD2's unit starts it again. On Windows, the
    service opens PHD2's session if it is missing and starts PHD2 there.
@@ -1204,7 +1208,9 @@ PHD2 that someone started, keeps nothing running, and refuses a restart
 with `restart_unsupported`. The switch is made once, in this order:
 
 1. **Export the profile** from the operator's PHD2, with PHD2's own
-   profile export, while it still runs. A new profile means a new
+   profile export, while it still runs, to a folder the PHD2 account can
+   read: `/tmp` on Linux, `C:\Users\Public` on Windows. The operator's
+   home is closed to other accounts. A new profile means a new
    calibration and dark library, and the wizard until someone completes
    it.
 2. **Retire the operator's PHD2.** Quit it cleanly and stop whatever
@@ -1229,7 +1235,8 @@ with `restart_unsupported`. The switch is made once, in this order:
    start. On Windows the service then opens the session and starts PHD2
    there.
 6. **Import the profile** into the PHD2 account's PHD2, over VNC on Linux
-   or over RDP as the PHD2 account on Windows.
+   or over RDP as the PHD2 account on Windows, and delete the exported
+   file.
 
 ### Linux
 
@@ -2177,6 +2184,7 @@ sweep lease is held return `camera_busy` (409), see
 ### Phase 12: PHD2 under the service manager (daily power cycle plan P2)
 - [ ] `POST /api/v1/phd2/restart`, and rp's `restart_guider`
 - [ ] Linux: the `rusty-photon-phd2` and `rusty-photon-phd2-display` units
+- [ ] Sentinel's discovery skips both units, as it skips `rusty-photon-renew` (sentinel.md § Service Discovery)
 - [ ] Windows: the account and its secret in the MSI, the session the service keeps (IronRDP), PHD2 started and kept running in it, `session-password`
 - [ ] The packaging guides
 - [ ] BDD for the restart route; PHD2 in its session validated on pier1 and rig2
