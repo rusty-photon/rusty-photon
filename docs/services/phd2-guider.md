@@ -633,10 +633,12 @@ Configuration sections:
   - `connection_timeout`: TCP connection timeout (default: `"10s"`)
   - `command_timeout`: RPC command timeout (default: `"30s"`)
   - `restart_timeout`: the bound on a whole `POST /api/v1/phd2/restart`
-    (default: `"120s"`; `serve` mode only)
+    (default: `"120s"`; `serve` mode only). Phase 12, not yet built:
+    today's build refuses a config that sets it
   - `managed`: `true` once the host is switched over to PHD2 under the
     service manager (default: `false`; `serve` mode only). See
-    [Switching over](#switching-over)
+    [Switching over](#switching-over). Phase 12, not yet built: today's
+    build refuses a config that sets it
   - `auto_start`: Automatically start PHD2 if not running (declared
     for future use — no code path honors it yet, `serve` included;
     see § HTTP Service Mode)
@@ -1003,21 +1005,24 @@ mutex, so guiding requests wait for it.
      it, so the camera is disconnected first (rp's `disconnect_device`).
    - `camera_busy` (409) while a facade frame is in flight or a sweep
      lease is held.
-   - `guiding_active` (409) when PHD2 answers with a state other than
-     `Stopped`, the one state the facade's capture also allows (a
-     `Selected` PHD2 may be looping): a restart ends no guiding,
-     calibration, loop or pause as a side effect.
-     `POST /api/v1/guiding/stop` comes first. A PHD2 that does not answer
-     within `command_timeout` is not refused: it goes straight to being
-     ended in step 2, which is the case a restart after a power cycle
-     exists for.
-2. **Stop.** If PHD2 answers, the service sends `set_connected(false)`
-   and `shutdown`. PHD2 saves its profile on that clean exit. Each call
-   is best effort: one that fails or times out moves straight on to the
-   exit wait, so a camera whose close hangs cannot hold the restart. A
-   PHD2 that has not exited 30 s after `shutdown`, or that does not
-   answer at all, is ended: on Linux by `SIGTERM` and, 5 s later,
-   `SIGKILL`; on Windows by `TerminateProcess`.
+   - `guiding_active` (409) when PHD2 answers with a state that guides:
+     `Guiding`, `Calibrating`, `Paused` or `LostLock`. A restart ends no
+     guiding or calibration as a side effect, so
+     `POST /api/v1/guiding/stop` comes first. A loop, a selected star or
+     a capture is no refusal: decision 11's wedged guide camera leaves
+     PHD2 reading out a frame for a minute or more, still answering, and
+     the restart exists to end that. A PHD2 that does not answer within
+     `command_timeout` is not refused either: it goes straight to being
+     ended in step 2.
+2. **Stop.** If PHD2 answers, the service sends `stop_capture`, which
+   ends a loop or a capture, then `set_connected(false)` and `shutdown`.
+   PHD2 saves its profile on that clean exit. Each call is best effort.
+   One that fails moves on to the next. One that times out moves
+   straight on to the exit wait: PHD2's main thread is then hung, and a
+   further call would hang too, so a camera whose close hangs cannot hold
+   the restart. A PHD2 that has not exited 30 s after `shutdown`, or that
+   does not answer at all, is ended: on Linux by `SIGTERM` and, 5 s
+   later, `SIGKILL`; on Windows by `TerminateProcess`.
 3. **Start.** On Linux, PHD2's unit starts it again. On Windows, the
    service opens PHD2's session if it is missing and starts PHD2 there.
 4. **Answer.** The service waits for PHD2's event server to accept a
@@ -1159,8 +1164,8 @@ omitted from the wire when there is nothing to attach):
 | `stop_timeout` | 504 | PHD2 did not reach `Stopped` within `stop_timeout`. |
 | `phd2_unreachable` | 502 | No PHD2 connection, or the RPC failed to send. |
 | `restart_failed` | 502 | `phd2/restart`: PHD2 did not exit, start, answer or connect its equipment within `phd2.restart_timeout`, or a step failed. `message` names the step. |
-| `restart_unsupported` | 501 | `phd2/restart` where nothing would start PHD2 again: `phd2.managed` is `false`, on Linux the `rusty-photon-phd2` unit is not active or `phd2.host` is not loopback, or the host is macOS. |
-| `guiding_active` | 409 | `phd2/restart` while PHD2 answers with a state other than `Stopped`. |
+| `restart_unsupported` | 501 | `phd2/restart` where nothing would start PHD2 again: `phd2.managed` is `false`, `phd2.host` is neither `localhost` nor a loopback address, on Linux the `rusty-photon-phd2` unit is not active, or the host is macOS. |
+| `guiding_active` | 409 | `phd2/restart` while PHD2 answers with a state that guides: `Guiding`, `Calibrating`, `Paused` or `LostLock`. |
 | `internal` | 500 | Unexpected service failure. |
 
 ### Supervision and recovery
@@ -1243,10 +1248,12 @@ The package installs two units, disabled until the switch:
   with its home at `/var/lib/rusty-photon/phd2`, where PHD2 keeps its
   profile (`.PHDGuidingV2`). The package creates that directory, so the
   switch-over can write the VNC password there before either unit has
-  run. It binds to the display unit (`BindsTo=` and
-  `After=`), so a display that stops takes PHD2 with it and its restart
-  brings PHD2 back. It starts only where `/usr/bin/phd2` exists, the path
-  PHD2's own build installs to.
+  run. It needs the display unit (`Requires=` and `After=`). A display
+  that crashes takes PHD2 down through X, and PHD2's own restart brings
+  it back once the display is up again. It does not bind to the display
+  (`BindsTo=`): systemd would then stop PHD2's unit itself, and a unit
+  that systemd stops is not restarted. It starts only where
+  `/usr/bin/phd2` exists, the path PHD2's own build installs to.
 
 Both units start their process again 2 s after any exit
 (`Restart=always`), and neither has a start limit
@@ -1302,15 +1309,18 @@ account's session logged on and disconnected:
    30 s, the wait doubling up to 30 min, and each attempt disconnects the
    active session only at the moment it logs on. A password the host
    rejects is not tried again, so the account cannot be locked out: the
-   service logs the rejection and tries again only after it restarts.
-   Every failure is logged with Windows' reason.
+   service logs the rejection and tries again only after it restarts. An
+   account the host reports locked out is retried with the backoff,
+   since the lockout ends by itself. Every failure is logged with
+   Windows' reason.
 3. **Starting PHD2.** It starts `phd2.executable_path` (default
    `C:\Program Files (x86)\PHDGuiding2\phd2.exe`) in the session as the
    account (`WTSQueryUserToken`, `CreateProcessAsUser`, desktop
    `winsta0\default`). It starts it only from beneath `%ProgramFiles%` or
-   `%ProgramFiles(x86)%`, where only administrators can write, so a
-   setup-page save cannot have the service run another program as the
-   account. A PHD2 already running in the session, started by
+   `%ProgramFiles(x86)%`, judged on the path resolved to its final
+   location (no `..`, links or junctions), and only when the `Users` group
+   cannot write the file or its folder. So a setup-page save cannot have
+   the service run another program as the account. A PHD2 already running in the session, started by
    an earlier run of the service, is adopted instead. PHD2 keeps its
    profile in that account's registry.
 4. **Keeping it running.** It starts PHD2 again 2 s after it exits, as
