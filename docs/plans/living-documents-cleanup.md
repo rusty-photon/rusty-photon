@@ -165,12 +165,13 @@ applied at scale.
      `[undici issue 5360](url)`.
 
    An ADR id and a `docs/` path to a plan, archived or live, are record
-   links too ([workspace.md § Comments](../workspace.md#comments)) and
-   take the same test: most are noise beside a sentence that stands
-   without them, or a pointer whose knowledge belongs in the design
-   doc; one that is kept is written as its `docs/decisions/` or
-   `docs/plans/` path. The Decisions and Plans index rows in
-   workspace.md stay (decision 5).
+   links too ([workspace.md § Living documents and
+   records](../workspace.md#living-documents-and-records) and
+   [§ Comments](../workspace.md#comments)) and take the same test: most
+   are noise beside a sentence that stands without them, or a pointer
+   whose knowledge belongs in the design doc; one that is kept is
+   written as its `docs/decisions/` or `docs/plans/` path. The
+   Decisions and Plans index rows in workspace.md stay (decision 5).
 
 4. **Narration becomes a fact or a counterfactual.** "Used to",
    "previously", "before #N", "the old …" frame the code against a past
@@ -185,8 +186,8 @@ applied at scale.
    or deleted.
 
 5. **A record inside a living document moves out whole.** The passage
-   becomes a new file in `docs/plans/archive/` that opens the way the
-   two non-plan records already there do
+   becomes a new file in `docs/plans/archive/` (decision 8) that opens
+   the way the two non-plan records already there do
    ([`code-review-record-2026-10.md`](archive/code-review-record-2026-10.md),
    [`rp-mvp-timeline.md`](archive/rp-mvp-timeline.md)): one line
    saying it is a record, what it holds, and the file and date it was
@@ -286,8 +287,8 @@ not read.
 | B5 | `crates/rusty-photon-shared-transport` (17), `services/pa-falcon-rotator` (9), `services/qhy-focuser` (3), `services/dsd-fp2`, `services/pa-scops-oag`, `services/ppba-driver` (1 each); `docs/services/upbv2-driver.md` (4), `docs/services/gemini-powerbox-adv3-driver.md` (4), `docs/services/dsd-fp2.md` (4), `docs/services/ppba-driver.md` (2), `docs/services/falcon-rotator.md`, `docs/services/qhy-focuser.md`, `README.md` (1 each) | 32 | 17 | The shared transport has no design doc: the startup gate, the moving-mount refusal, the command lock's run-to-completion and the reconnect ownership live in `shared.rs` comments that cite issues. B5 writes `docs/crates/rusty-photon-shared-transport.md`, shrinks the Shared Crates row to point at it, and makes the adopters' copied `acquire()` comments link it. The "Relationship to issue #1173" sections in upbv2 and gemini state the open design question as a question; dsd-fp2.md's ConformU citation gets a worded link text (step 3) |
 | B6 | `crates/zwo-rs` (6), `crates/svbony-rs` (2), `crates/qhyccd-rs` (1, the `Audit #11` internal numbering), `services/zwo-camera`, `services/qhy-camera`, `services/svbony-camera` (1 each), `services/svbony-camera/pkg/rusty-photon-svbony-sdk-install` (2); `docs/services/svbony-camera.md` (29), `docs/services/zwo-camera.md` (6), `docs/services/qhy-camera.md` (4), `docs/services/sky-survey-camera.md` (1), `docs/svbony-camera-windows-install.md` (1) | 14 | 41 | zwo-camera.md holds the per-sensor `MaxADU` and the departure measurements (`docs/validation/2026-10-06-zwo-camera-departure-linux/`, `docs/validation/2026-10-07-zwo-camera-departure-windows/`), svbony-camera.md the udev rule and the readout ladder. Records out: svbony-camera.md's banner stack and its dated validation subsections (the runs are in `docs/validation/`); svbony-camera.md's § Delivery phasing, which its archived plan holds, and zwo-camera.md's, which its live plan ([zwo-driver.md](zwo-driver.md)) holds, so one present-tense sentence replaces each — for zwo after the section's *Remaining* items are checked against the code (step 9) and the plan carries what is still open; qhy-camera.md's § Delivery phasing and § Implementation notes, which no plan holds, so both move out whole. The Windows install guide says what the MSI ships today. Dual-homed crates cite by URL |
 | B7 | `services/phd2-guider` (7), `services/plate-solver` (6) with `plate-solver-smoke.yml` (2), `services/sentinel` (6), `crates/rusty-photon-tls` (4), `crates/rusty-photon-service-lifecycle` (2), `crates/rusty-photon-driver` (1); `docs/skills/service-lifecycle.md` (5), `docs/crates/rusty-photon-service-lifecycle.md` (4), `docs/services/plate-solver.md` (4), `docs/packaging.md` (2), `docs/crates/rusty-photon-setup.md`, `docs/services/phd2-guider.md`, `docs/services/sentinel.md` (1 each) | 28 | 18 | The lifecycle docs say what one `Shutdown` handle guarantees, in the counterfactual form, not what twelve services did before it. sentinel.md holds the degraded-answer rule, plate-solver.md the smoke test's pinned fixture and its timing guard. Record out: phd2-guider.md § Implementation Phases |
-| B8 | `crates/rp-catalog` (3) with its `scripts/*.py` (6), `services/session-runner` (3), `services/focus-model` (2), `crates/rp-focus-curve` (1); `docs/services/planetarium-bridge.md` (4), `docs/services/session-runner.md` (4), `docs/services/focus-model.md` (3), `docs/crates/rp-focus-curve.md` (2) | 15 | 13 | planetarium-bridge.md and the catalog scripts describe the catalog as it is (Messier, NGC, IC, the star layer, the corrected coordinates), not as what one issue widened it to; session-runner.md states the planner contract its three `rp` issues delivered; the focus docs cite the coarse-sweep measurement by its fixture README. Records out: planetarium-bridge.md's two spike appendices |
-| B9 | `MODULE.bazel` (10), `.bazelrc` (7), `check.yml` (6), `bazel.yml` (1), `ui-browser-nightly.yml` (1), `.github/actions/lib/install.mjs` and its test (2), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1); `docs/skills/raspberry-pi-runner.md` (3), `docs/skills/proxmox-runner-pool.md` (2), `docs/skills/babysitting-prs.md`, `docs/skills/ci-logic.md`, `tools/bazel-cache-worker/README.md` (1 each), the upstream link text in workspace.md's ascom-alpaca fork notes (1), plus `docs/skills/coverage.md` § History, the archive links in workspace.md's living tables, and the narration candidates in the files no subsystem batch names (104 files and 240 candidate lines on 2026-11-11, `docs/references/qhyccd-sdk-manual.md` the heaviest, `docs/services/zwo-focuser.md` among them) | 29 | 9 | The Windows file-system rationale in `MODULE.bazel` and `.bazelrc` stays as rationale with its upstream URLs; the comments in `check.yml` and the pre-commit hook that explain the two clippy passes link [pre-push.md](../skills/pre-push.md), which already holds the reason. workspace.md's own history goes: § Holding a transitive dependency back describes a rust-embed hold at 8.11.0 that the lock does not have, and `.bazelrc`'s two E0463 root-cause notes rest on it; § Lints says how the lint groups were widened; the fork sentence under Build Notes says "the old path". Records out: coverage.md's Codecov era and zwo-focuser.md's dated run. B9 also closes the plan: the guard's doc comment and workspace.md § Comments say `PENDING` is empty and a new number is reworded |
+| B8 | `crates/rp-catalog` (3) with its `scripts/*.py` (6), `services/session-runner` (3), `services/focus-model` (2), `crates/rp-focus-curve` (1); `docs/services/planetarium-bridge.md` (4), `docs/services/session-runner.md` (4), `docs/services/focus-model.md` (3), `docs/crates/rp-focus-curve.md` (2) | 15 | 13 | The catalog's contents (Messier, NGC, IC, the star layer, the corrected coordinates) and its resolution are described once, in a new `docs/crates/rp-catalog.md` that the Shared Crates row points at (decision 10), and planetarium-bridge.md and the catalog scripts point there rather than at the issue that widened it; session-runner.md states the planner contract its three `rp` issues delivered; the focus docs cite the coarse-sweep measurement by its fixture README. Records out: planetarium-bridge.md's two spike appendices |
+| B9 | `MODULE.bazel` (10), `.bazelrc` (7), `check.yml` (6), `bazel.yml` (1), `ui-browser-nightly.yml` (1), `.github/actions/lib/install.mjs` and its test (2), `.cargo-husky/hooks/pre-commit` (1), `tools/bazel-cache-worker/src/cache.js` (1); `docs/skills/raspberry-pi-runner.md` (3), `docs/skills/proxmox-runner-pool.md` (2), `docs/skills/babysitting-prs.md`, `docs/skills/ci-logic.md`, `tools/bazel-cache-worker/README.md` (1 each), the upstream link text in workspace.md's ascom-alpaca fork notes (1), plus `docs/skills/coverage.md` § History, the `rp-ephemeris` and `rusty-photon-i18n` archive links in workspace.md's Shared Crates rows (decision 10), and the narration candidates in the files no subsystem batch names (104 files and 240 candidate lines on 2026-11-11, `docs/references/qhyccd-sdk-manual.md` the heaviest, `docs/services/zwo-focuser.md` among them) | 29 | 9 | The Windows file-system rationale in `MODULE.bazel` and `.bazelrc` stays as rationale with its upstream URLs; the comments in `check.yml` and the pre-commit hook that explain the two clippy passes link [pre-push.md](../skills/pre-push.md), which already holds the reason. workspace.md's own history goes: § Holding a transitive dependency back describes a rust-embed hold at 8.11.0 that the lock does not have, and `.bazelrc`'s two E0463 root-cause notes rest on it; § Lints says how the lint groups were widened; the fork sentence under Build Notes says "the old path". Records out: coverage.md's Codecov era and zwo-focuser.md's dated run. B9 also closes the plan: the guard's doc comment and workspace.md § Comments say `PENDING` is empty and a new number is reworded |
 
 B9 is last because it ends with the empty table; B1–B8 are independent
 and run in any order, one at a time so that the guard's table has one
@@ -298,9 +299,9 @@ it.
 
 ## Decisions
 
-Settled before this plan was written, in the rule's pull request and
-the guard's, and one in the method's trial slice; they hold for every
-batch.
+Settled in the rule's pull request and the guard's, one in the method's
+trial slice and five by the owner before the first batch; they hold
+for every batch.
 
 1. **A convention and an AGENTS.md rule, not a tenet and not an ADR.**
    The tenets say what the system does at night; the rule's record is
@@ -326,58 +327,43 @@ batch.
    reads.** The first pass over the root `Cargo.toml` kept all 27 of
    its comments and reworded them, and with the history gone the result
    read worse than before; the merged pass asks method step 2's question
-   first and leaves 85 comment lines of 196, ten comments gone whole,
+   first and leaves 85 comment lines of 210, ten comments gone whole,
    ten shrunk, seven as they were.
-
-## Open decisions
-
-For the owner, before the batch that needs them.
-
-- **O1 — where extracted records go.** The method above puts them in
-  `docs/plans/archive/` as new files, one per passage, named for the
-  subject and the span (`star-adventurer-gti-phase-record.md`,
-  `svbony-camera-delivery-record-2026-07.md`), on the precedent of the
-  two non-plan records already there. The alternative is a
-  `docs/records/` directory for records that were never plans; it
-  would also be the natural home of `docs/decisions/archive/` and
-  `docs/validation/`, and so a wider move than this plan. Recommended:
-  `docs/plans/archive/`, and revisit if the directory stops reading as
-  one list.
-- **O2 — the first ADR archival.** ADR-008 is superseded in part twice
-  (ADR-010 reversed its canonical-home decision, ADR-014 its
-  unconditional link) and so stays by decision 3; the census finds no
-  ADR superseded in full. Recommended: B9 writes the ADR step into
-  archiving-plans.md next to the plan step, so the procedure exists
-  before the first ADR needs it, and `docs/decisions/archive/` is
-  created by that first file, not empty.
-- **O3 — archive links in living tables.** The Shared Crates rows for
-  `rp-ephemeris`, `rp-catalog` and `rusty-photon-i18n` link archived
-  plans "for the original implementation plan"; nothing in those rows
-  needs the link to be believed, but for `rp-catalog` it is the row's
-  only pointer to a design — the crate has no `docs/crates/` page.
-  Recommended: drop the `rp-ephemeris` and `rusty-photon-i18n` links in
-  B9 (their rows point at a crate doc and a live plan); B8 gives the
-  catalog a design home — a short `docs/crates/rp-catalog.md`, or the
-  section of planetarium-bridge.md that describes its contents and
-  resolution — and the row points there. The Plans index rows keep
-  theirs (decision 5).
-- **O4 — slice and phase labels.** `D2`–`D6b` in doctor.md, `E10`,
-  `C1a`, `GO5` in the camera docs and `Phase 4` in the GTi doc are used
-  as names by tests, validation records and the code. Recommended: a
-  label that something else uses as a name stays as a name; "Phase E
-  of issue #257" and a label nothing else uses go.
-- **O5 — the guard and Markdown.** A reader for Markdown in
-  `bare_refs.rs` — with the records' directories and workspace.md's
-  quoted examples exempt — would keep the living docs clean as the
-  comments are kept. It can come first, seeded with its own rows from
-  this census, so that a doc a batch has cleaned cannot regress while
-  the other batches run; the cost is a second table of some 230 rows
-  and Bazel `data` for every living Markdown file. Or it can come last,
-  as an issue filed when B9 merges, with the review rating (method step
-  12) the only guard for docs until then and B9's final scan catching
-  what slipped past it. Recommended: last, since the rating already
-  rates a breach in added text a fix; first if the batches are expected
-  to run long.
+8. **Extracted records go to `docs/plans/archive/`,** one file per
+   passage, named for the subject and the span
+   (`star-adventurer-gti-phase-record.md`,
+   `svbony-camera-delivery-record-2026-07.md`), beside the two non-plan
+   records already there. A `docs/records/` directory for records that
+   were never plans would also be the natural home of
+   `docs/decisions/archive/` and `docs/validation/`, a wider move than
+   this plan; the question is reopened if the archive stops reading as
+   one list.
+9. **The ADR archival procedure is written when an ADR needs it.** No
+   ADR is superseded in full: ADR-008 is superseded in part twice
+   (ADR-010 supersedes its canonical-home decision, ADR-014 its
+   unconditional link) and stays by decision 3. The pull request that
+   first supersedes an ADR in full writes the ADR step into
+   archiving-plans.md next to the plan step and creates
+   `docs/decisions/archive/` with that first file; no batch of this
+   plan does.
+10. **`rp-catalog` gets a design page; the other two Shared Crates links
+    to archived plans go.** Nothing in the `rp-ephemeris`, `rp-catalog`
+    and `rusty-photon-i18n` rows needs "the original implementation
+    plan" to be believed. The `rp-ephemeris` and `rusty-photon-i18n`
+    rows point at a crate doc and a live plan, so B9 drops their links;
+    `rp-catalog`'s link is the row's only pointer to a design, so B8
+    writes a short `docs/crates/rp-catalog.md` and the row points there.
+    The Plans index rows keep theirs (decision 5).
+11. **A slice or phase label stays where something else uses it as a
+    name.** `D2`–`D6b` in doctor.md, `E10`, `C1a` and `GO5` in the
+    camera docs and `Phase 4` in the GTi doc are the names tests,
+    validation records and the code use, and stay as names. "Phase E of
+    issue #257" and a label nothing else uses go.
+12. **The guard reads code comments only.** `bare_refs.rs` gets no
+    Markdown reader, now or later: the review rating
+    (method step 12) rates a breach in text a pull request adds a fix,
+    which is the guard for the living documents, and B9's final scan is
+    the check that they are clean when the plan ends.
 
 ## Definition of done
 
@@ -397,8 +383,12 @@ For the owner, before the batch that needs them.
   came from holds one present-tense paragraph in its place.
 - Every ADR id and plan path left in a comment or a living document
   passes method step 3's test, or is an index row of workspace.md.
-- `docs/crates/rusty-photon-shared-transport.md` exists and the Shared
-  Crates row points at it.
+- `docs/crates/rusty-photon-shared-transport.md` and
+  `docs/crates/rp-catalog.md` exist and their Shared Crates rows point
+  at them; the `rp-ephemeris` and `rusty-photon-i18n` rows link no
+  archived plan.
+- Every slice or phase label left in a living document is a name that
+  a test, a validation record or the code uses (decision 11).
 - Every batch row in the status table names its merged pull request(s),
   and the plan is archived per archiving-plans.md.
 
@@ -418,7 +408,12 @@ For the owner, before the batch that needs them.
   collapse the duplicate `blake2` and `digest` chains, a pin or a floor
   whose own comment says it does nothing (method step 9). Each is the
   owner's decision, taken in that batch's pull request or outside it.
-- Extending the guard to Markdown, Python, shell or `.wxs` files (O5).
+- Extending the guard to Python, shell or `.wxs` files; a Markdown
+  reader is not built at all (decision 12).
+- A `docs/records/` directory (decision 8).
+- The ADR step of archiving-plans.md and `docs/decisions/archive/`: the
+  pull request that first supersedes an ADR in full writes them
+  (decision 9).
 - Rewriting rationale that is already present-tense and number-free
   because it is long: the Windows flake blocks in `MODULE.bazel` and
   `.bazelrc` lose their issue numbers and keep their length.
