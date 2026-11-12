@@ -154,8 +154,9 @@ end-to-end:
    (canonical short path, ~0.024° of polar-axis rotation) + Dec
    −180° CCW via NCP. The earlier sign-blind heuristic issued a
    +3.625 M-tick CW full revolution instead and the operator
-   powered the mount off mid-sweep — see §"Through-wrap slew
-   routing" above for the path-aware fix.
+   powered the mount off mid-sweep — see
+   [§"Through-wrap slew routing" above](../../services/star-adventurer-gti.md#through-wrap-slew-routing)
+   for the path-aware fix.
 5. `Park → Park 3 N`: clean unwind.
 
 All five poses confirmed visually. The dec axis's analogous routing

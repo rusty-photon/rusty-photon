@@ -559,6 +559,18 @@ goto target.
 A stopped axis keeps its mode bits: the GTi's idle `:f1` is `=101`,
 tracking and initialised but not running.
 
+`blocked` is not a stall detector. The GTi has no position encoder on
+either axis: `:j` reads the firmware's count of the steps it has
+commanded, and a motor stalled against a hard stop goes on counting, so
+on the wire a stall is motion. No run or probe on the rig has seen the
+firmware set `blocked`, and the one stall on the rig was heard, with the
+tube standing still and the count still advancing
+([the phase record, §Phase 4 driver-logic changes](../plans/archive/star-adventurer-gti-phase-record.md#phase-4-driver-logic-changes-that-real-hardware-required)).
+The watchers' abort on `blocked` is defence in depth. What keeps the
+mount off the pier is the CW exclusion zone, which the driver enforces
+on the count
+([§Safety envelope (CW exclusion zone)](#safety-envelope-cw-exclusion-zone)).
+
 ### Initialisation sequence
 
 After opening the transport and before the first motion command:
@@ -1930,6 +1942,12 @@ end of the dec axis can contact the tripod or pier — is the
 contiguous range `(+0.95, +11.05)`. The constraint is **one-sided**:
 the negative-mech_HA half puts the CW into the floor beneath the
 pier rather than above the mount head, so no mirror zone applies.
+
+Nothing on the wire reports the contact: a motor stalled against the
+pier goes on counting its steps
+([§Motion-mode and status bytes](#motion-mode-and-status-bytes)). The
+driver therefore keeps the mount out of that range by the count alone,
+and cannot notice a contact that happens all the same.
 
 The driver enforces this as a single interval on the **chosen-side
 encoder mech_HA**, in `MountConfig::cw_exclusion_zone` — an active
@@ -3709,7 +3727,7 @@ stop coast under [§Safety stop at startup](#safety-stop-at-startup),
 the live rate change and its edge steps under "What the rig measured"
 in [§PulseGuide lifecycle](#pulseguide-lifecycle), the AP park
 traversal under [§Hardware validation](#hardware-validation) in
-§Meridian flip — and the dated runs themselves are in
+§Meridian flip — and the dated runs of 2026-05 to 2026-10 are in
 [the log of the runs on the rig](../plans/archive/star-adventurer-gti-rig-runs-2026.md).
 
 ## Connection Lifecycle
