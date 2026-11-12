@@ -1847,6 +1847,7 @@ block is absent.
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
+| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Designed, not yet built ([phd2-guider.md](phd2-guider.md) Phase 12). Have the guider service restart PHD2 and connect its equipment. Refused while PHD2 guides or calibrates, while the PHD2 camera facade's camera is connected or capturing, and where nothing would start PHD2 again; the service's restart is bounded by 120 s, and `rp` waits up to 130 s |
 
 **Compute (image analysis)**
 
@@ -4409,11 +4410,13 @@ keeps using it, as an in-flight device call keeps its handle.
 A workflow switches a power box's outputs through `rp`, and takes every
 device on an output out of `rp`'s hands before it cuts the output
 ([daily power cycle plan](../plans/daily-power-cycle.md), decisions 3,
-8 and 11). Five tools carry it: `disconnect_device` and
+8 and 11). Six tools carry it: `disconnect_device` and
 `connect_device`, which hold a device out of the reconnect supervisor
 and give it back, `get_switch` and `set_switch`, which read and switch
-a power box's outputs through the power map, and `restart_service`,
-which has a held-out device's driver service restart (decision 5).
+a power box's outputs through the power map, `restart_service`, which has
+a held-out device's driver service restart (decision 5), and
+`restart_guider`, which has the guider service restart PHD2 (decision
+10).
 
 #### The power map
 
@@ -4623,7 +4626,50 @@ call's `devices` names every device the restart covered.
 start runs the handshake every start runs, and its devices stay held
 out of `rp` until `connect_device`.
 
-All five tools are ungated (§ [In-Flight Tool
+#### Restarting PHD2
+
+Designed, not yet built ([phd2-guider.md](phd2-guider.md) Phase 12).
+`restart_guider` has the guider service restart PHD2, which drives the
+guide camera through its own SDK and the mount through Alpaca, so PHD2
+too meets its equipment in a fresh process (decisions 5 and 10). The dusk
+document asks for it once the services of PHD2's equipment, the mount's
+among them, have restarted and answer. Decision 11's wedge retry for a
+guide camera behind the PHD2 camera facade asks for it in place of
+`restart_service`.
+
+`rp` sends the guider service `POST /api/v1/phd2/restart` through the
+`equipment.mount.guiding` client, with its credential and the observatory
+CA, and waits up to 130 s: the service's 120 s restart bound and a margin
+([phd2-guider.md § `POST
+/api/v1/phd2/restart`](phd2-guider.md#post-apiv1phd2restart)). The service
+stops PHD2, has it started again, and connects the equipment of PHD2's
+profile before it answers. The result is the service's answer,
+`{phd2: "restarted", equipment: "connected", elapsed_ms}`. The service's
+refusals and failures are tool errors that carry its `error` and
+`message`:
+
+- `camera_connected`: the facade's camera is connected. Disconnect it
+  through `disconnect_device` first, as for every device a restart ends a
+  session with (decision 3). The guider service checks this, since it
+  knows its facade and `rp` cannot tell a held-out camera is one.
+- `camera_busy`: a facade frame is in flight, or a sweep lease is held.
+- `guiding_active`: PHD2 is guiding, calibrating, paused or has lost its
+  star. A restart never ends guiding or calibration as a side effect, so
+  `stop_guiding` comes first. A loop or a capture, a wedged one included,
+  is no refusal: the restart ends it.
+- `restart_failed`: a step of the restart failed or ran out of time, named
+  in `message`. Asking again is safe.
+- `restart_unsupported`: nothing would start PHD2 again on that host. It
+  is not switched over to PHD2 under the service manager, or it is macOS
+  ([phd2-guider.md § Switching over](phd2-guider.md#switching-over)).
+
+Without an `equipment.mount.guiding` block the tool is an error, as every
+guider tool is. PHD2 connects its equipment only on this request, a
+workflow's (decision 1), never on a connect path or a supervisory pass of
+`rp`'s (tenet 3), and the facade's camera stays held out of `rp` until
+`connect_device`.
+
+All six tools are ungated (§ [In-Flight Tool
 Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
 weather, and a dusk document powers devices up only once `rp`'s safety
 monitors read safe with the roof open (decision 7), a check that belongs
@@ -5352,8 +5398,9 @@ this protocol so `rp` speaks only HTTP.
 
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
-`get_guiding_stats`). `rp` proxies these tool calls to the guider service's
-HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
+`get_guiding_stats`, and `restart_guider`, § [Power
+Switching](#power-switching), designed and not yet built). `rp` proxies these tool calls to the guider
+service's HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
 control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
 service that implements the same HTTP endpoints.

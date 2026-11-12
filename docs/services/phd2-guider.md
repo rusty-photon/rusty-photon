@@ -17,6 +17,10 @@ The binary has two roles:
   serves the guide camera as an Alpaca Camera on port 11128 (loopback
   only), its frames captured by PHD2. See
   [Camera facade](#camera-facade-camera).
+- **PHD2's keeper** (designed, not yet built) — on a host switched over,
+  PHD2 runs under the service manager with nobody logged on, and `serve`
+  restarts it on request. See
+  [PHD2 under the service manager](#phd2-under-the-service-manager).
 
 `phd2-guider doctor [--config <file>] [--json]` diagnoses this service's
 own config read-only without starting it — see
@@ -626,6 +630,13 @@ Configuration sections:
   - `executable_path`: Path to PHD2 executable (null for system default)
   - `connection_timeout`: TCP connection timeout (default: `"10s"`)
   - `command_timeout`: RPC command timeout (default: `"30s"`)
+  - `restart_timeout`: the bound on a whole `POST /api/v1/phd2/restart`
+    (default: `"120s"`; `serve` mode only). Phase 12, not yet built:
+    today's build refuses a config that sets it
+  - `managed`: `true` once the host is switched over to PHD2 under the
+    service manager (default: `false`; `serve` mode only). See
+    [Switching over](#switching-over). Phase 12, not yet built: today's
+    build refuses a config that sets it
   - `auto_start`: Automatically start PHD2 if not running (declared
     for future use — no code path honors it yet, `serve` included;
     see § HTTP Service Mode)
@@ -742,13 +753,15 @@ Default port: **11130** (matches the `guider.url` placeholder in
   `/health`, fails guiding requests with `phd2_unreachable`, and keeps
   retrying in the background. PHD2 starting later (or restarting
   mid-night) needs no service restart.
-- It does **not** spawn or supervise the PHD2 process in v1.
-  `Phd2Config.auto_start` and the `Phd2ProcessManager` remain
-  library/CLI functionality; under `serve` the operator (or their OS
-  supervisor) owns the PHD2 process. Process adoption is future work.
-  For installing PHD2 itself on a packaged Linux host — and running it
-  headless — see
-  [docs/packaging.md §phd2-guider: PHD2](../packaging.md#phd2-guider-phd2).
+- On a host switched over (`phd2.managed`), it **restarts PHD2 on
+  request** (`POST /api/v1/phd2/restart`), and on Windows it also **keeps
+  PHD2 running**: it opens the session PHD2 runs in and starts PHD2 there.
+  On Linux, PHD2's own systemd unit starts it. [PHD2 under the service manager](#phd2-under-the-service-manager)
+  is designed and not yet built. Until it is, the operator owns the PHD2
+  process, set up as
+  [docs/packaging.md §phd2-guider: PHD2](../packaging.md#phd2-guider-phd2)
+  describes. `Phd2Config.auto_start` and the `Phd2ProcessManager` remain
+  library and CLI functionality.
 - It is **stateless across restarts** in the way that matters:
   guiding runs *in PHD2*, so a service restart never interrupts an
   active guide loop. The only state lost is the rolling RMS window,
@@ -970,6 +983,72 @@ with PHD2's text. Mutating.
 
 Response: `{ "state": "selected" }`.
 
+#### `POST /api/v1/phd2/restart`
+
+Stop PHD2, start it again, and connect its equipment, so that PHD2's
+camera SDK meets the guide camera in a fresh process after a power cycle
+([daily power cycle plan](../plans/daily-power-cycle.md), decisions 5 and
+10). rp's `restart_guider` sends it. The body is a JSON object, `{}`, so
+that a page on another site cannot submit it as a form: a body of any
+other type is refused with `415`. Mutating: it takes the single-flight
+mutex, so guiding requests wait for it.
+
+1. **Refusals.**
+   - `restart_unsupported` (501) where nothing would start PHD2 again:
+     `phd2.managed` is `false`, `phd2.host` is neither `localhost` nor a
+     loopback address, on Linux `rusty-photon-phd2` is not active, or the
+     host is macOS.
+   - `camera_connected` (409) while a client has the camera facade's
+     camera connected: the restart ends PHD2's camera connection under
+     it, so the camera is disconnected first (rp's `disconnect_device`).
+   - `camera_busy` (409) while a facade frame is in flight or a sweep
+     lease is held.
+   - `guiding_active` (409) when PHD2 answers with a state that guides:
+     `Guiding`, `Calibrating`, `Paused` or `LostLock`. A restart ends no
+     guiding or calibration as a side effect, so
+     `POST /api/v1/guiding/stop` comes first. A loop, a selected star or
+     a capture is no refusal: decision 11's wedged guide camera leaves
+     PHD2 reading out a frame for a minute or more, still answering, and
+     the restart exists to end that. A PHD2 that accepts the connection
+     but does not answer within `command_timeout` is not refused either:
+     it goes straight to being ended in step 2. When the connection
+     cannot be made at all, the service waits for it while the process it
+     knows as PHD2 (the unit's main process on Linux, the one it started
+     on Windows) has run for less than 60 s, PHD2's start. One that has
+     run longer without accepting a connection hung before its event
+     server started, and is ended as in step 2. A guiding PHD2 always
+     accepts a connection on a loopback address, so this never ends one.
+2. **Stop.** If PHD2 answers, the service sends `stop_capture`, which
+   ends a loop or a capture, then `set_connected(false)` and `shutdown`.
+   PHD2 saves its profile on that clean exit. Each call is best effort.
+   One that fails moves on to the next. One that times out moves
+   straight on to the exit wait: PHD2's main thread is then hung, and a
+   further call would hang too, so a camera whose close hangs cannot hold
+   the restart. A PHD2 that has not exited 30 s after `shutdown`, that
+   accepted the connection and did not answer, or that never accepted one
+   (step 1), is ended: on Linux by
+   `SIGTERM` and, 5 s later, `SIGKILL`; on Windows by `TerminateProcess`.
+3. **Start.** On Linux, PHD2's unit starts it again. On Windows, the
+   service opens PHD2's session if it is missing and starts PHD2 there.
+4. **Answer.** The service waits for PHD2's event server to accept a
+   connection and send its `Version` event.
+5. **Equipment.** The service sends `set_connected(true)` and waits until
+   `get_connected` reads true: PHD2 connects the equipment of the profile
+   it started with.
+
+The whole restart is bounded by `phd2.restart_timeout` (default `"120s"`).
+Response:
+
+```json
+{ "phd2": "restarted", "equipment": "connected", "elapsed_ms": 18400 }
+```
+
+A step that fails or runs out of time answers `restart_failed` (502),
+naming the step in `message`. PHD2 may then be running with its equipment
+disconnected, and another restart is safe. While PHD2 is down, `/health`
+answers `503`, which sentinel counts as alive (see `GET /health`), so a
+restart never draws a restart of the service.
+
 #### `GET /setup` / `POST /setup`
 
 The setup page, HTML for a browser: see [Setup page](#setup-page).
@@ -1083,18 +1162,23 @@ omitted from the wire when there is nothing to attach):
 |------|-------------|---------|
 | `invalid_request` | 400 | Schema-invalid body, non-positive or non-finite `amount_px` / `settle.pixels`, unparseable durations. Rejected before any RPC. |
 | `not_guiding` | 409 | `dither` while PHD2's application state is not `Guiding`. |
-| `camera_busy` | 409 | `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` or `star/reselect` while the camera facade has a frame in flight, after a crash until that frame's deadline, or while a sweep lease is held. Never `guiding/stop`. |
+| `camera_busy` | 409 | `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear`, `star/reselect` or `phd2/restart` while the camera facade has a frame in flight, after a crash until that frame's deadline, or while a sweep lease is held. Never `guiding/stop`. |
+| `camera_connected` | 409 | `phd2/restart` while a client has the camera facade's camera connected. |
 | `guide_failed` | 422 | PHD2 reported `SettleDone{status ≠ 0}` (star lost, calibration failed, settle threshold not reached in time). PHD2's error text is in `message`. |
 | `settle_timeout` | 504 | Wall-clock backstop (`settle.timeout + 10 s`) expired without any `SettleDone`. |
 | `stop_timeout` | 504 | PHD2 did not reach `Stopped` within `stop_timeout`. |
 | `phd2_unreachable` | 502 | No PHD2 connection, or the RPC failed to send. |
+| `restart_failed` | 502 | `phd2/restart`: PHD2 did not exit, start, answer or connect its equipment within `phd2.restart_timeout`, or a step failed. `message` names the step. |
+| `restart_unsupported` | 501 | `phd2/restart` where nothing would start PHD2 again: `phd2.managed` is `false`, `phd2.host` is neither `localhost` nor a loopback address, on Linux the `rusty-photon-phd2` unit is not active, or the host is macOS. |
+| `guiding_active` | 409 | `phd2/restart` while PHD2 answers with a state that guides: `Guiding`, `Calibrating`, `Paused` or `LostLock`. |
 | `internal` | 500 | Unexpected service failure. |
 
 ### Supervision and recovery
 
-Same three-domain posture as the plate-solver: the operator's OS
-process supervisor restarts `phd2-guider serve` (and PHD2, and `rp`)
-on exit; `/health` is exposed for operational tooling; `rp`'s HTTP
+Same three-domain posture as the plate-solver: the OS service manager
+restarts `phd2-guider serve` and `rp` on exit, and PHD2 is kept running
+as [PHD2 under the service manager](#phd2-under-the-service-manager)
+describes; `/health` is exposed for operational tooling; `rp`'s HTTP
 client applies its own outer timeout as the backstop. Because guiding
 state lives in PHD2, a service restart costs at most one in-flight
 request.
@@ -1105,6 +1189,182 @@ request.
 `bound_addr=<host>:<port>` to stdout (the `bdd-infra::ServiceHandle`
 discovery convention; `port: 0` auto-assigns). Config validation
 failures exit non-zero before binding.
+
+## PHD2 under the service manager
+
+Designed, not yet built (Phase 12). PHD2 has no headless mode: it always
+shows its main window, and a new profile opens its wizard. So it runs in
+a desktop session that the service manager keeps, with nobody logged on,
+which an operator can look into to set up the profile or check on PHD2
+([daily power cycle plan](../plans/daily-power-cycle.md), decision 10).
+PHD2 runs as an account of its own, never as the operator, and keeps its
+profile with that account.
+
+### Switching over
+
+A host runs PHD2 this way only once the operator switches it over, by
+setting `phd2.managed` to `true`. Until then the service connects to a
+PHD2 that someone started, keeps nothing running, and refuses a restart
+with `restart_unsupported`. The switch is made once, in this order:
+
+1. **Export the profile** from the operator's PHD2, with PHD2's own
+   profile export, while it still runs, to a folder the PHD2 account can
+   read: `/tmp` on Linux, `C:\Users\Public` on Windows. The operator's
+   home is closed to other accounts. A new profile means a new
+   calibration and dark library, and the wizard until someone completes
+   it.
+2. **Retire the operator's PHD2.** Quit it cleanly and stop whatever
+   started it: the operator's TigerVNC session on Linux, or their own
+   logon on Windows. Two PHD2s cannot share the event server's port or
+   the guide camera.
+3. **Linux: hand the guide camera over.** Remove the camera facade
+   recipe's port rule
+   (`/etc/udev/rules.d/91-rusty-photon-phd2-guide-camera.rules`), which
+   gives the guide camera's port to the operator's group, and apply the
+   change to the camera already plugged in: `udevadm control --reload`,
+   then `udevadm trigger --action=change` for its port, as the recipe
+   does, or unplug it and plug it in again. A reload alone leaves the
+   existing device node with the operator's group. Without the rule, the
+   camera packages' own rules give the camera to `rusty-photon`, the
+   account PHD2 now runs as.
+4. **Linux: set the VNC password and enable the units.**
+   `sudo -u rusty-photon tigervncpasswd /var/lib/rusty-photon/phd2/vncpasswd`,
+   then `systemctl enable --now rusty-photon-phd2`.
+5. **Set `phd2.managed: true`**, on the setup page or in the config file,
+   and restart the service, as for any field that waits for the next
+   start. On Windows the service then opens the session and starts PHD2
+   there.
+6. **Import the profile** into the PHD2 account's PHD2, over VNC on Linux
+   or over RDP as the PHD2 account on Windows, and delete the exported
+   file.
+
+### Linux
+
+The package installs two units, disabled until the switch:
+
+- **`rusty-photon-phd2-display`** runs Xtigervnc as `rusty-photon`: a
+  virtual X display, `:20`, that serves VNC on `127.0.0.1:5920` only. A
+  VNC viewer must give the password in
+  `/var/lib/rusty-photon/phd2/vncpasswd`, which the operator sets with
+  `tigervncpasswd` as the service account. Until it exists the display
+  serves PHD2 and turns every viewer away. The X display itself admits
+  only clients that hold its cookie (`-auth`), which only the service
+  account can read. Whoever operates PHD2's window can use its file
+  dialogs as `rusty-photon`, so both guards matter. An operator views
+  PHD2 through an SSH tunnel.
+- **`rusty-photon-phd2`** runs PHD2 as `rusty-photon` on that display,
+  with its home at `/var/lib/rusty-photon/phd2`, where PHD2 keeps its
+  profile (`.PHDGuidingV2`). The package creates that directory, so the
+  switch-over can write the VNC password there before either unit has
+  run. It needs the display unit (`Requires=` and `After=`). A display
+  that crashes takes PHD2 down through X, and PHD2's own restart brings
+  it back once the display is up again. It does not bind to the display
+  (`BindsTo=`): systemd would then stop PHD2's unit itself, and a unit
+  that systemd stops is not restarted. It starts only where
+  `/usr/bin/phd2` exists, the path PHD2's own build installs to.
+
+Both units start their process again 2 s after any exit
+(`Restart=always`), and neither has a start limit
+(`StartLimitIntervalSec=0`), so a crash loop never leaves them failed,
+since nothing would start a failed unit again. Sentinel's discovery skips
+both, as it skips `rusty-photon-renew`: PHD2's health is the guider
+service's to report, and PHD2's restart is the guider service's to make,
+so neither shows as a service with no health URL, and sentinel's restart
+button never ends PHD2 mid-guide. Neither has a private
+`/tmp`, since PHD2 reaches the display through `/tmp/.X11-unix`. The
+package restarts neither unit on upgrade, so upgrading `phd2-guider`, or
+restarting it, leaves PHD2 running, guiding included.
+
+PHD2 opens the guide camera as `rusty-photon`, the group every camera
+package's udev rule gives its vendor's cameras. It writes the camera
+facade's frames to a directory the service owns, so one account does
+both and no ACL is needed.
+
+A restart is refused unless `rusty-photon-phd2` is active and `phd2.host`
+is a loopback address: only then is the PHD2 it stops one that something
+starts again. The service reads the unit's main process id before it
+sends `shutdown`, waits on that process, and signals that process, never
+a newer PHD2 the unit has started since.
+
+### Windows
+
+The MSI creates a local standard account, `rusty-photon-phd2`, unless it
+already exists, with a random password that never expires, and adds it to
+Remote Desktop Users. It turns RDP on without opening the firewall for
+it, since the service connects from the host itself, and sets the
+`DisablePrivacyExperience` policy, so the account's first logon goes
+straight to its desktop. The password is stored encrypted for the machine
+(DPAPI) in `%PROGRAMDATA%\rusty-photon\phd2-session.dat`, which only
+`LocalSystem` and administrators can read. `phd2-guider
+session-password`, run as an administrator, prints it for an operator's
+RDP logon.
+
+An upgrade keeps the account, its password and its profile: the old
+product's removal during a major upgrade touches none of them. Only a
+real uninstall logs the account's session off, removes the account and
+the file, removes the policy, and turns RDP off again if the install
+turned it on.
+
+Once `phd2.managed` is `true`, the service, as `LocalSystem`, keeps the
+account's session logged on and disconnected:
+
+1. **Opening the session.** Whenever it finds the account without a
+   session, it disconnects the active session, if there is one, and at
+   once connects to `127.0.0.1` over RDP as the account, with
+   network-level authentication. It waits up to 30 s for the session, and
+   disconnects. Windows Pro allows one active session, and a disconnected
+   one keeps running, so the operator who was connected reconnects. That
+   includes the operator who has just set `phd2.managed`. Windows' own RDP
+   client refuses a connection to the host it runs on, so the client is
+   IronRDP, built into the service.
+2. **When the session will not open.** A failed attempt is retried after
+   30 s, the wait doubling up to 30 min, and each attempt disconnects the
+   active session only at the moment it logs on. A password the host
+   rejects is not tried again, so the account cannot be locked out: the
+   service logs the rejection and tries again only after it restarts. An
+   account the host reports locked out is retried with the backoff,
+   since the lockout ends by itself. Every failure is logged with
+   Windows' reason.
+3. **Starting PHD2.** It starts `phd2.executable_path` (default
+   `C:\Program Files (x86)\PHDGuiding2\phd2.exe`) in the session as the
+   account (`WTSQueryUserToken`, `CreateProcessAsUser`, desktop
+   `winsta0\default`). It starts it only from beneath `%ProgramFiles%` or
+   `%ProgramFiles(x86)%`, judged on the path resolved to its final
+   location (no `..`, links or junctions), and only when nobody but
+   administrators, `SYSTEM` and `TrustedInstaller` can write the file or
+   its folder. So a setup-page save cannot have the service run another
+   program as the account. A PHD2 already running in the session, started by
+   an earlier run of the service, is adopted instead. PHD2 keeps its
+   profile in that account's registry.
+4. **Keeping it running.** It starts PHD2 again 2 s after it exits, as
+   the Linux unit does, except during a restart or the service's own
+   stop. Stopping or upgrading the service leaves PHD2 running.
+
+An operator looks at PHD2 by connecting over RDP as `rusty-photon-phd2`,
+which takes the session over, and leaves by disconnecting, which leaves
+PHD2 running. They never sign out: signing out ends the session and PHD2
+with it, mid-guide if PHD2 is guiding, and the service then opens a new
+session, disconnecting whoever is active. The logon disconnects the
+operator's own session, as any second logon does on Windows Pro. From another host, RDP has to be allowed through the
+firewall, which the MSI leaves as it found it.
+
+The MSI creates `%PROGRAMDATA%\rusty-photon\phd2-images`, the directory
+a switched-over host's camera facade uses. When the facade is enabled and
+`camera.image_dir` names that directory, the service grants the PHD2
+account the right to modify files in it at its start, so PHD2 can write
+the frames the service reads. It compares the path resolved to its final
+location, as Windows compares paths (case aside), and grants nothing on a
+directory that is itself a link or junction, or on any other directory.
+So neither a setup-page save nor a junction put in the directory's place
+can hand the account a system directory. An operator who points
+`image_dir` elsewhere grants the PHD2 account access there, and the
+service logs a warning that it granted nothing.
+
+### macOS
+
+Under `brew services` nothing keeps PHD2 running yet. The service
+connects to a PHD2 that someone started, and refuses a restart with
+`restart_unsupported`.
 
 ## Setup page
 
@@ -1191,9 +1451,12 @@ These are deployment rules. The facade checks the ones it can at load.
 - **PHD2's account must be able to open the guide camera** (Linux). Each
   camera package's udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's
   id, which its cameras share), gives its vendor's whole USB id to the
-  `rusty-photon` group, so PHD2, running as the operator, finds no
-  camera. A udev rule keyed on the guide camera's port gives that port to
-  the operator's group
+  `rusty-photon` group. On a host switched over to [PHD2 under the
+  service manager](#phd2-under-the-service-manager), PHD2 runs as
+  `rusty-photon` and needs nothing more, and a port rule for the operator
+  takes the camera from it. Where PHD2 runs as the operator, it finds no
+  camera, and a udev rule keyed on the guide camera's port gives that
+  port to the operator's group
   ([packaging.md](../packaging.md#phd2-guider-the-camera-facade), step 1).
   PHD2's QHY support does not look for cameras again after finding none,
   so PHD2 starts after the rule is in place. Found and fixed on the field
@@ -1643,7 +1906,7 @@ The ASCOM errors are listed under [Errors](#errors).
 ### Restart
 
 - **Graceful shutdown** during a capture sends PHD2 `stop_capture` for
-  the facade's frame (stop-class, inside the operator's session). It then
+  the facade's frame (stop-class, inside PHD2's session). It then
   waits up to `capture_grace` for the event, deletes the file and exits.
   A shutdown never stops guiding: with a capture in flight, guiding was
   refused.
@@ -1737,7 +2000,12 @@ loopback-only and off by default.
 
 ### Sharing `image_dir`
 
-PHD2 runs as the operator, under their desktop or VNC session. The
+Once a host is switched over to PHD2 under the service manager (Phase
+12), PHD2 and the service share an account on Linux, and on Windows the
+service grants the PHD2 account what it needs on the directory the MSI
+creates for the frames: see
+[PHD2 under the service manager](#phd2-under-the-service-manager). Until
+then PHD2 runs as the operator, under their desktop or VNC session. The
 packaged service runs as `rusty-photon` (Linux) or `LocalSystem`
 (Windows). The directory must let PHD2 create files and let the service
 read and delete them. The step-by-step recipe, and the acceptance test it
@@ -1912,6 +2180,14 @@ sweep lease is held return `camera_busy` (409), see
 - [x] The facade's two setup paths answer `303` to the guider's page
 - [x] The page's own rules (zero timeouts and intervals, the settle threshold, the PHD2 address) and the `image_dir` check on save
 - [x] BDD `setup_pages.feature`
+
+### Phase 12: PHD2 under the service manager (daily power cycle plan P2)
+- [ ] `POST /api/v1/phd2/restart`, and rp's `restart_guider`
+- [ ] Linux: the `rusty-photon-phd2` and `rusty-photon-phd2-display` units
+- [ ] Sentinel's discovery skips both units, as it skips `rusty-photon-renew` (sentinel.md § Service Discovery)
+- [ ] Windows: the account and its secret in the MSI, the session the service keeps (IronRDP), PHD2 started and kept running in it, `session-password`
+- [ ] The packaging guides
+- [ ] BDD for the restart route; PHD2 in its session validated on pier1 and rig2
 
 ## Dependencies
 
