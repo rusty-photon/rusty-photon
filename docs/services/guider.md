@@ -275,7 +275,9 @@ camera's frame depends on `SensorType`:
   checked when a request starts the loop, since the sensor type is the
   camera's to report, and a breach is refused with `camera_unsupported`.
 - **Pixels** in this document, in the configuration and on the wire are
-  pixels of the measured frame, after binning or summing.
+  pixels of the measured frame, after binning or summing; a camera's
+  `width` and `height` are its `CameraXSize` and `CameraYSize`, in the
+  camera's pixels.
 - **Saturation.** A star with a pixel at full scale is not chosen as a
   guide star. Full scale is the saturation level of the camera's frame,
   by the rule `rp` measures with
@@ -529,7 +531,10 @@ taken as starting values of this design.
 equator is written to `calibration.json` in the
 [state directory](#state-directory), in the slot of its pier side:
 `east`, `west` or `unknown`. A failed calibration, and one made further
-from the equator, stores nothing and leaves the slot as it was.
+from the equator, stores nothing and leaves the slot as it was. A
+record that cannot be written does not fail the calibration: the
+failure is logged, the record serves its own run, a `calibrate`
+answers with it, and the slot keeps what it held.
 
 - A record holds the RA rate as it would be at the equator: the
   measured rate divided by the cosine of the declination it was
