@@ -394,12 +394,13 @@ from their reference positions.
 adds nothing to the reference, so a change larger than
 `stars.mass_change` that lasts, as when haze clears or thin cloud
 settles in, fails the test in every frame that follows. A star that
-fails only the flux test in ten frames in a row therefore takes the
-median of its flux over those ten as its reference, and the frames
-after them are judged against it. The sharpness test keeps a hot pixel
-from becoming the reference while the star is behind cloud, and ten
-frames in a row keep out noise that reaches `stars.min_snr` in a frame
-now and then. Ten is a starting value of this design.
+fails only the flux test in ten frames in a row therefore starts its
+reference again from those ten: they take the place of its recent
+usable frames, so the frames from before the change no longer count,
+and each usable frame after them joins them. The sharpness test keeps a
+hot pixel from becoming the reference while the star is behind cloud,
+and ten frames in a row keep out noise that reaches `stars.min_snr` in
+a frame now and then. Ten is a starting value of this design.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves
@@ -1066,12 +1067,13 @@ of its interval and subtracts.
   With `control.dec.mode` `"off"` there is no Dec axis and the Dec
   pair does not grow.
 - `star_lost` counts the star-lost frames of runs.
-- `interruptions` counts each time a run stops, is paused or calibrates
-  again (`guiding/start` with `recalibrate: true` in a run state). With
-  `guiding` true at both readings and the count unchanged, the run was
-  not stopped, paused or calibrated again in the interval. The frames
-  in it that had no usable star are the change in `star_lost`, and no
-  correction followed them.
+- `interruptions` counts each time a run stops, is paused, calibrates
+  again (`guiding/start` with `recalibrate: true` in a run state) or
+  selects stars again (`star/reselect`, or `guiding/start` in
+  `star_lost`). With `guiding` true at both readings and the count
+  unchanged, the run was not stopped, paused or calibrated again in the
+  interval, and it kept its stars. The frames in it that had no usable
+  star are the change in `star_lost`, and no correction followed them.
 
 Each axis's count and sum is a `SquareSums` from
 [`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
