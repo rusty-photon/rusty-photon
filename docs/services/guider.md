@@ -71,7 +71,7 @@ the camera while nobody holds the lease, and sends guide pulses.
 | Device | Members | Access |
 |---|---|---|
 | Camera | `Connected` | Read |
-| Camera | `CameraXSize`, `CameraYSize`, `PixelSizeX`, `SensorType`, `MaxADU`, `MaxBinX`, `CanAbortExposure` | Read once per connection |
+| Camera | `CameraXSize`, `CameraYSize`, `PixelSizeX`, `SensorType`, `MaxADU`, `MaxBinX`, `CanAbortExposure` | Read once per connection, and again after a failed frame |
 | Camera | `BinX`, `BinY`, `StartX`, `StartY`, `NumX`, `NumY`, `Gain`, `Offset` | Written when the guider starts to expose |
 | Camera | `StartExposure`, `ImageReady`, `ImageArray` (as ImageBytes), `AbortExposure` | The frame cycle |
 | Telescope | `Connected` | Read |
@@ -89,11 +89,12 @@ stops a run when the mount parks or slews, whoever asked for it.
 ## Alignment with the tenets
 
 - **Project tenet 1 — make the best use of night time.** A stored
-  calibration is used again on later nights, so a rig calibrates once
-  for each pier side. A run that loses its stars keeps looking for them
-  and takes up guiding when they return. The closed-loop simulator and
-  a replay of recorded frames run before the first night on sky, so
-  that nights confirm behaviour and do not debug it.
+  calibration is used again on later nights, so a rig that calibrates
+  within 60° of the celestial equator calibrates once for each pier
+  side. A run that loses its stars keeps looking for them and takes up
+  guiding when they return. The closed-loop simulator and a replay of
+  recorded frames run before the first night on sky, so that nights
+  confirm behaviour and do not debug it.
 - **Project tenet 2 — robustness.** The configuration is validated when
   it is loaded. The guider runs in a process of its own and keeps
   guiding while `rp` restarts. When it cannot guide safely it stops and
@@ -155,10 +156,11 @@ for the stars to settle, the state is `guiding` and `stats` reports
 - **The state after every start is `idle`.** The guider takes no frame
   and sends no pulse because it started or restarted. It does not take
   up a run that was in progress when the process ended.
-- **Finding a device again changes nothing but what the guider knows
-  about it.** When the camera or the mount answers again, or reports
-  `Connected` again, the guider reads the device's static properties
-  and stays in its state.
+- **Finding a device again starts nothing.** When the camera or the
+  mount answers again, or reports `Connected` again, the guider reads
+  the device's static properties and stays in its state. The one
+  exception is a stop: a run does not go on with
+  [a camera that came back changed](#the-camera-loop).
 - **Saving the configuration starts nothing.** A save on the setup page
   is written to the file and takes effect at the next start.
 - **A service with no devices configured runs.** The default
@@ -229,6 +231,15 @@ exposure should have ended, or when its dimensions are not the ones the
 guider asked for. A failed frame is discarded and no pulse follows it.
 After `camera.max_frame_failures` consecutive failures the guider stops
 with the reason `camera_error`.
+
+**A camera that comes back changed.** A run's calibration, pixel scale
+and star positions belong to the sensor it started on. A camera that
+comes back during a run with a sensor size, pixel size or sensor type
+other than the run started with stops the run with `camera_error`. The
+guider learns of it from the camera's static properties. It reads them
+when the [device poll](#devices-and-connections) finds the camera
+again, and after every frame failure, before it writes the frame
+settings again; a read that fails there fails the next frame.
 
 **Stopping the loop.** When the loop ends for any reason the guider
 aborts its own exposure if the camera reports `CanAbortExposure`, and
@@ -352,8 +363,11 @@ has passed and `IsPulseGuiding` reads false. A pulse still in progress
 - No pulse is longer than `mount.max_pulse`.
 - A correction that works out shorter than `mount.min_pulse` is not
   sent. A mount whose driver delivers short pulses coarsely sets this
-  at or above its granularity; the GTi's is in its
-  [§ PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle).
+  at or above its granularity. The GTi's RA granularity is in its
+  [§ PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle):
+  a West pulse shorter than its trim delivers the edge steps alone. Its
+  Dec granularity is not measured, and the plan's stage G5 settles
+  `mount.min_pulse` on sky.
 - No pulse is sent in `looping`, `paused` or `star_lost`, or after a
   frame that failed.
 
@@ -385,22 +399,25 @@ within `stars.search_region_px` of its position in the last frame in
 which it was usable. A star is **usable** in a frame when its
 signal-to-noise ratio is at least `stars.min_snr`, it is not too sharp
 to be a star, and its flux is within `stars.mass_change` of its
-reference, the median of its flux over its recent usable frames. The
-frame a star was selected in is its first usable frame. The frame's
-offset is the median, on each sensor axis, of the usable stars' offsets
-from their reference positions.
+reference, the median of its flux over its last ten usable frames, or
+over all of them while it has fewer. The frame a star was selected in
+is its first usable frame. The frame's offset is the median, on each
+sensor axis, of the usable stars' offsets from their reference
+positions.
 
 **A change of brightness that lasts.** A frame that fails the flux test
 adds nothing to the reference, so a change larger than
 `stars.mass_change` that lasts, as when haze clears or thin cloud
 settles in, fails the test in every frame that follows. A star that
 fails only the flux test in ten frames in a row therefore starts its
-reference again from those ten: they take the place of its recent
+reference again from those ten: they take the place of its last ten
 usable frames, so the frames from before the change no longer count,
-and each usable frame after them joins them. The sharpness test keeps a
-hot pixel from becoming the reference while the star is behind cloud,
-and ten frames in a row keep out noise that reaches `stars.min_snr` in
-a frame now and then. Ten is a starting value of this design.
+and each usable frame after them takes its place among the ten. The
+sharpness test keeps a hot pixel from becoming the reference while the
+star is behind cloud, and ten frames in a row keep out noise that
+reaches `stars.min_snr` in a frame now and then. Ten is a starting
+value of this design, for the frames the reference is taken over and
+for the frames in a row alike.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves
@@ -477,12 +494,26 @@ rates for a mount that reports no guide rate.
 | The angle between the two axes, as its distance from 90° | 12.5° | 30° |
 | A measured rate against the rate expected from the mount's guide rate and the pixel scale, as a fraction of the expected rate. For a mount that reports no guide rate: the ratio of the two measured rates against the cosine of the declination | 0.20 | 0.50 |
 
-**No declination limit.** The guider calibrates wherever the mount
-points and records the declination. Close to the pole a West pulse
-barely moves the stars, and the West leg fails at
-`calibration.max_steps`. An operator who wants a calibration made near
-the celestial equator points there and calls `calibrate`; the stored
-record then serves every later target on that pier side.
+**Declination.** The guider calibrates wherever the mount points and
+records the declination. Close to the pole a West pulse barely moves
+the stars, and the West leg fails at `calibration.max_steps`. A record
+made more than 60° from the celestial equator serves its own run and is
+not used again. The RA rate goes into the store divided by the cosine
+of the record's declination and comes out multiplied by the cosine of
+the run's, so in the run that made the record the two cancel. In every
+other run an error in the declination the mount reported for the record
+stays in the rate: an error of one degree changes the rate by 3 % at
+60° and by 10 % at 80°. While a slot holds such a record, every
+`guiding/start` from `idle` or `looping` on that pier side calibrates
+first. That holds after a `calibrate` too, whose run ends with the
+calibration. An operator who wants a calibration made near the
+celestial equator points there and calls `calibrate`; the stored record
+then serves every later target on that pier side. The 60° and the 89°
+of the store are the limits PHD2 uses for scaling a calibration to
+another declination
+([`scope.cpp`](https://github.com/OpenPHDGuiding/phd2/blob/264a64d21710967bd37fcfab3004747cf1cae0a0/src/scope.cpp#L67-L68),
+[`mount.cpp`](https://github.com/OpenPHDGuiding/phd2/blob/264a64d21710967bd37fcfab3004747cf1cae0a0/src/mount.cpp#L1383-L1398)),
+taken as starting values of this design.
 
 **The store.** A calibration that passes is written to
 `calibration.json` in the [state directory](#state-directory), in the
@@ -491,12 +522,18 @@ calibration stores nothing and leaves the slot as it was.
 
 - The RA rate is stored as it would be at the equator: the measured
   rate divided by the cosine of the declination it was measured at.
-  A run multiplies it by the cosine of its own declination.
+  A run multiplies it by the cosine of its own declination. A run takes
+  its declination as at most 89° from the equator when it scales the RA
+  rate, and the record's declination is held the same way when the rate
+  is stored, so the run that made a record guides on the rate it
+  measured. Closer to the pole the cosine goes to zero, and neither the
+  stored rate nor a pulse worked out from the scaled rate has a bound.
 - A slot is never worked out from the other side's record.
-- **A stored record is used** when the pier side is its slot's and the
+- **A stored record is used** when the pier side is its slot's, the
   camera's pixel size, sensor size, effective binning, the configured
   focal length and the mount's two guide rates are the ones it was made
-  with, and it has a Dec axis unless `control.dec.mode` is `"off"`.
+  with, it has a Dec axis unless `control.dec.mode` is `"off"`, and it
+  was made within 60° of the celestial equator or by the run itself.
   Anything else starts a calibration. A mount that reports no guide
   rate is compared on the other values.
 - **What the guider cannot see**, it does not invalidate. A camera
@@ -549,8 +586,9 @@ is the pixel scale in arcseconds per pixel.
 
 **From pixels to a pulse.** The duration is the correction divided by
 the axis rate: the calibrated Dec rate, or the calibrated RA rate times
-the cosine of the declination read when the run started. The direction
-is the one that reduces the error. The duration is then held to the
+the cosine of the declination read when the run started, held to 89° as
+[the store](#calibration) says. The direction is the one that reduces
+the error. The duration is then held to the
 [bounds](#the-mount-checks-and-pulses) of `mount.min_pulse` and
 `mount.max_pulse`.
 
@@ -611,7 +649,7 @@ It then aborts its own exposure, sends no further pulse and goes to
 | `pier_side_changed` | The mount check found another pier side than the run's |
 | `mount_unreachable` | `mount.max_failures` consecutive cycles with a failed mount read or pulse call |
 | `pulse_timeout` | A pulse still in progress `mount.pulse_timeout` after its duration |
-| `camera_error` | `camera.max_frame_failures` consecutive failed frames |
+| `camera_error` | `camera.max_frame_failures` consecutive failed frames, or a camera that came back with another sensor size, pixel size or sensor type than the run started with |
 | `runaway` | Corrections in one direction that the error does not follow |
 | `calibration_failed` | A calibration failed inside a run that was already guiding |
 
@@ -722,9 +760,11 @@ no fields.
   degrees per second. `angle_deg` is the direction on the sensor,
   counter-clockwise from the +x axis, in which a West pulse (`ra`) or a
   North pulse (`dec`) moves the stars. `ra.rate_px_per_s` is the rate
-  at the equator. `guide_rates` and `expected` are `null` for a mount
-  that reports no guide rate, and `dec` and `orthogonality_error_deg`
-  are `null` in a record made with `control.dec.mode` `"off"`.
+  at the equator. `declination_deg` is the declination the mount
+  reported; beyond ±60 the record is [not used again](#calibration).
+  `guide_rates` and `expected` are `null` for a mount that reports no
+  guide rate, and `dec` and `orthogonality_error_deg` are `null` in a
+  record made with `control.dec.mode` `"off"`.
 - `warnings` lists the cross-checks that passed their warning
   threshold, each as `{ "check", "value", "threshold" }`.
 - A calibration that fails answers `calibration_failed`; `details`
