@@ -125,8 +125,8 @@ async fn ra_should_be(world: &mut StarAdventurerWorld, expected: f64, tolerance:
 #[then(expr = "SiderealTime should be approximately {float} hours within {float}")]
 async fn sidereal_time_should_be(world: &mut StarAdventurerWorld, _expected: f64, _tolerance: f64) {
     // The absolute literal LST value depends on the wall clock, which
-    // can't be pinned by the BDD harness without clock injection
-    // (TODO Phase 4). Until then, assert the *meaningful* invariants:
+    // can't be pinned by the BDD harness without clock injection.
+    // Assert the *meaningful* invariants:
     //  1. SiderealTime is in `[0, 24)` hours.
     //  2. Reading it twice within the same scenario advances by less
     //     than one sidereal day (a sanity check that the underlying
@@ -157,9 +157,9 @@ async fn slewing_should_be_true(world: &mut StarAdventurerWorld) {
     // Slewing depends on the polling task picking up the seeded
     // `running=true` from the mock (e.g. the "RA axis running in
     // goto mode" Given step). On a contended CI runner (e.g. a
-    // parallel coverage job competing for cores) that's still well
-    // under a second, but 2s has flaked. 5s matches the budget the
-    // other "Slewing should eventually be ..." steps already use.
+    // parallel coverage job competing for cores) that's usually well
+    // under a second, but it can exceed 2s. 5s matches the budget of
+    // the other "Slewing should eventually be ..." steps.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if world.mount().slewing().await.unwrap() {

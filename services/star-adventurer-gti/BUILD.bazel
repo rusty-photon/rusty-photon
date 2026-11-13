@@ -69,21 +69,19 @@ rust_binary(
 )
 
 # Unit tests compile the lib with `crate_features = ["mock"]` so the in-lib
-# `#[cfg(all(test, feature = "mock"))]` suites — most importantly the 184 tests
-# in src/mount_device/tests.rs — compile and run, matching the Cargo coverage
-# job's `cargo test --all-features`. The default non-mock compile cfg-excluded
-# those suites entirely, which was the dominant bazel<cargo coverage gap
-# (manager.rs/slew.rs/actions.rs etc. only got BDD coverage; see
-# docs/plans/archive/bazel-migration.md "Coverage under Bazel"). `crate_features` must be
-# set on the rust_test itself — `crate = ":..._lib_mock"` does NOT inherit the
-# library target's features (verified: it still cfg-excluded the mock tests). The
-# `mock` module is additive (real transport stays compiled) and every
-# `not(feature = "mock")` block lives in main.rs (outside this lib), so nothing
+# `#[cfg(all(test, feature = "mock"))]` suites — src/mount_device/tests.rs the
+# largest — compile and run, as they do under Cargo's `cargo test
+# --all-features`. A default-feature compile cfg-excludes them and leaves
+# manager.rs and the mount_device modules with BDD coverage only.
+# `crate_features` is set on the rust_test itself: `crate = ":..._lib_mock"`
+# does not inherit the library target's features. The `mock` module is
+# additive (the real transport stays compiled) and every
+# `not(feature = "mock")` block is in main.rs, outside this lib, so nothing
 # is lost. Same pattern as the `test_lib` target below.
 rust_test(
     name = "star-adventurer-gti_unit_test",
-    # ~184 extra mock-gated tests: bump small -> medium so the non-coverage
-    # `bazel test` run has headroom (coverage itself runs under the .bazelrc
+    # `medium` rather than `small` gives the mock-gated suites headroom in the
+    # non-coverage `bazel test` run (coverage itself runs under the .bazelrc
     # `coverage:coverage --test_timeout=900` cap).
     size = "medium",
     aliases = aliases(
@@ -190,7 +188,7 @@ rust_binary(
 
 rust_test(
     name = "bdd",
-    # 130+ scenarios, each spawning a service process; generous timeout.
+    # Every scenario spawns a service process; generous timeout.
     size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(

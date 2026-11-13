@@ -59,8 +59,8 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 /// — `SetPark` will still attempt the write against the path as given,
 /// surfacing the real error there.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable; the binary calls this from `main()`.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable; the binary calls this from `main()`.
 #[must_use]
 pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
     std::fs::canonicalize(config_path).unwrap_or_else(|e| {
@@ -81,8 +81,8 @@ pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
 /// not affected; the capability still advertises support and the actual
 /// `SetPark` will surface a structured error if the probe was correct.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable.
 pub fn warn_if_park_path_unwritable(config_path: &Path) {
     if let Err(e) = probe_park_file_writability(config_path) {
         tracing::warn!(

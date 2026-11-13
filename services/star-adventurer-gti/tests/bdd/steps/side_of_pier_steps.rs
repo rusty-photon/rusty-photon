@@ -19,8 +19,8 @@ async fn dec_encoder_reports_angle(world: &mut StarAdventurerWorld, deg: f64) {
 }
 
 // The parametric `I try to set SideOfPier to {word}` step is
-// registered in `meridian_flip_steps.rs`; existing scenarios that
-// match this phrase exactly resolve there instead.
+// registered in `meridian_flip_steps.rs`; scenarios that match this
+// phrase resolve there.
 
 #[when(expr = "I read DestinationSideOfPier for RA {float} hours and Dec {float} degrees")]
 async fn read_destination_side(world: &mut StarAdventurerWorld, ra: f64, dec: f64) {

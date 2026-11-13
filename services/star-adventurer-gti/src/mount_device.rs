@@ -28,11 +28,11 @@
 //!   it, with its failure ladder.
 //! - [`tracking_guard`] — per-connection background task that stops
 //!   tracking before the encoder `mech_HA` drifts into the CW
-//!   exclusion zone (issue #259).
+//!   exclusion zone.
 //! - [`park_persistence`] — JSON config-file read/write for `SetPark`
 //!   and the boot-time writability probe.
-//! - [`mount_state`] — the mount state record beside the config file,
-//!   and what a power-up connect makes of it.
+//! - [`mount_state`](crate::mount_state) — the mount state record beside
+//!   the config file, and what a power-up connect makes of it.
 //! - [`power_watch`] — per-connection background task that drops what
 //!   a power cut ended and keeps the mount state record current.
 
@@ -278,12 +278,12 @@ impl DriverState {
     ///     `SetTargetRA` / `SetTargetDec` call; not durable.
     ///   - `tracking_requested` — disconnect halted tracking on the
     ///     wire (`:K1`); the in-memory flag must follow.
-    ///   - `slew_in_progress` is **not** cleared here — it now lives on
-    ///     [`MountDevice`] as an [`AtomicBool`], cleared synchronously by
-    ///     [`SlewReservation`] on rollback and by the disconnect path in
-    ///     `device.rs` (the `set_connected(false)` arm) alongside this
-    ///     call. Clearing it there still tells any in-flight watcher
-    ///     iteration to bail out.
+    ///   - `slew_in_progress` is **not** cleared here — it lives on
+    ///     [`MountDevice`] as a [`SlewSlot`], released synchronously by
+    ///     [`SlewReservation`] on rollback and emptied by the disconnect
+    ///     path in `device.rs` (the `set_connected(false)` arm)
+    ///     alongside this call. Emptying it there tells any in-flight
+    ///     watcher iteration to bail out.
     ///   - `park_ra_ticks` / `park_dec_ticks` — re-loaded on next
     ///     connect from config / handshake. Clearing here means a
     ///     mid-session edit to `MountConfig::park_*_ticks` would take
@@ -327,8 +327,7 @@ pub struct MountDevice {
     /// Session held while connected. `Some` between successful
     /// `set_connected(true)` and `set_connected(false)`. The slot
     /// presence is the truth — no separate "requested" bool that can
-    /// desync from the shared transport's refcount. Replaces the
-    /// pre-migration `requested_connection: RwLock<bool>` flag.
+    /// desync from the shared transport's refcount.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<SkywatcherCodec>>>>,
     state: Arc<RwLock<DriverState>>,
@@ -511,8 +510,6 @@ impl MountDevice {
     }
 }
 
-/// RAII reservation of the `slew_in_progress` slot on [`MountDevice`].
-///
 /// The slew/park slot: empty, or held by one slew or park, which it
 /// names by that operation's [`SlewToken`].
 ///

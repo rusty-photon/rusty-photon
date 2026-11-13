@@ -65,8 +65,8 @@ impl Default for TransportConfig {
 impl TransportConfig {
     /// Human-readable label for the configured transport target. Used by
     /// the connect handshake's wrong-device diagnostic (see
-    /// [`crate::error::StarAdvError::WrongDevice`] and issue #254) to
-    /// quote the configured port in operator-facing error messages.
+    /// [`crate::error::StarAdvError::WrongDevice`]) to quote the
+    /// configured port in operator-facing error messages.
     ///
     /// * USB → the configured serial-port path verbatim (e.g.
     ///   `/dev/serial/by-id/...` or `/dev/ttyACM0`).
@@ -157,7 +157,7 @@ pub struct MountConfig {
     /// interval `(min_hours, max_hours)` are
     /// rejected with `INVALID_VALUE` and never reach the wire. Flip
     /// slews additionally check that the *path swept* by the polar
-    /// axis stays clear of the zone — see [`flip_slew_ra_delta`].
+    /// axis stays clear of the zone — see `flip_slew_ra_delta`.
     ///
     /// The physical constraint on the `GTi` is "the counterweights
     /// must not rise more than 0.95 h (≈ 14°) above horizontal at
@@ -171,18 +171,17 @@ pub struct MountConfig {
     ///
     /// Defaults are `(0.95, 11.05)` — the wide-zone reading of the
     /// "0.95 h above horizontal" rule, hardware-verified at lat
-    /// 32.7°N. The narrower `(6.95, 11.05)` zone the driver used
-    /// previously captured only the *outer* portion (CW descending
-    /// past the pier from above), missing the inner ascent through
-    /// which the OTA contacted the tripod during the 2026-05-17
-    /// session.
+    /// 32.7°N. A narrower `(6.95, 11.05)` zone covers only the
+    /// *outer* portion (CW descending past the pier from above) and
+    /// misses the inner ascent, through which the OTA contacts the
+    /// tripod during a `SetSideOfPier` from Park 3.
     ///
     /// JSON form is the active object `{ "min_hours": .., "max_hours": .. }`
     /// (validated at deserialize time), or `null` to disable the check
     /// entirely (deserialises to [`CwExclusionZone::Disabled`]); only
     /// disable for tests or for mounts whose CW exclusion arc is known to
     /// be elsewhere. See the design doc's
-    /// [§Per-pier safety envelopes](../../../docs/services/star-adventurer-gti.md#per-pier-safety-envelopes).
+    /// [§"Safety envelope (CW exclusion zone)"](../../../docs/services/star-adventurer-gti.md#safety-envelope-cw-exclusion-zone).
     #[serde(default)]
     pub cw_exclusion_zone: CwExclusionZone,
 
@@ -220,12 +219,11 @@ pub struct MountConfig {
     /// (refraction, horizon light pollution, local obstructions);
     /// negative values permit below-horizon pointing (dust-cap
     /// operations, closed-roof flats) and are logged `info!` at
-    /// startup; `-90` never rejects anything. Replaced the rectangular
-    /// `dec_limits` Dec envelope (2026-07-01); `MountConfig`'s
-    /// `deny_unknown_fields` (#484) means a stale `dec_limits` key in
-    /// an existing config file is now rejected loudly at load, naming
-    /// the field, rather than being silently ignored. See the
-    /// design doc's
+    /// startup; `-90` never rejects anything. `dec_limits`, a
+    /// rectangular Dec envelope, is a retired key: `MountConfig`'s
+    /// `deny_unknown_fields` rejects a config that carries it at
+    /// load, naming the field, rather than silently ignoring it. See
+    /// the design doc's
     /// [§Altitude floor](../../../docs/services/star-adventurer-gti.md#altitude-floor).
     #[serde(default)]
     pub min_altitude_degrees: MinAltitudeDegrees,
@@ -345,15 +343,15 @@ impl MountConfig {
     /// stopping the mount afterwards. So the config is refused at load
     /// instead.
     ///
-    /// Both hurdles are derived rather than assumed. An earlier version
-    /// took the accepted band to be `[−min_hours, min_hours − margin)`,
-    /// which is only the overlap for a zone of the symmetric shape
+    /// Both hurdles are derived rather than assumed. Taking the
+    /// accepted band to be `[−min_hours, min_hours − margin)` gives
+    /// only the overlap for a zone of the symmetric shape
     /// `(x, 12 − x)`; [`ActiveZone`] permits any
-    /// `-12 ≤ min < max ≤ 12`, and off that shape it both rejected
+    /// `-12 ≤ min < max ≤ 12`, and off that shape the band both rejects
     /// reachable offsets (zone `(2, 5)`, offset `−5`, flipping to `+7`)
-    /// and admitted unreachable ones (zone `(10, 11)`, offset `−1.5`,
-    /// flipping to `+10.5`, inside it). A later one checked the flipped
-    /// destination only at the offset, which let through
+    /// and admits unreachable ones (zone `(10, 11)`, offset `−1.5`,
+    /// flipping to `+10.5`, inside it). Checking the flipped
+    /// destination only at the offset lets through
     /// anti-meridian values like `−11.5`: legal at the offset, but
     /// tracking enabled from `mech_HA = −10` fires the trigger
     /// immediately and tries to flip to `+2`, inside the shipped zone.
@@ -489,8 +487,7 @@ pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
 //
 // Each field invariant lives in the type: an out-of-range value fails at
 // `serde_json::from_str` with the offending field named, so a bad config is
-// rejected at *load* rather than at slew/track time. This is what retired
-// the hand-rolled `validate` passes.
+// rejected at *load* rather than at slew/track time.
 
 /// Tracking-guard slack before the CW exclusion zone, hours. Valid
 /// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`. JSON form is a bare number.
@@ -628,9 +625,7 @@ impl From<ActiveZone> for ActiveZoneWire {
 /// The counterweight exclusion zone: an [`ActiveZone`] interval, or
 /// explicitly [`Disabled`](CwExclusionZone::Disabled).
 ///
-/// Replaces the old `binding_zone_min/max_hours` pair and its
-/// `min >= max = disabled` convention. JSON form is the active object, or
-/// `null` for disabled.
+/// JSON form is the active object, or `null` for disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(from = "Option<ActiveZone>", into = "Option<ActiveZone>")]
 pub enum CwExclusionZone {
@@ -849,11 +844,10 @@ impl Default for MinAltitudeDegrees {
 /// internally; callers pass `site_latitude_deg` unchanged and get back
 /// a single signed encoder-reading value.
 ///
-/// AP Park 4 and Park 5 are "east-side" (post-meridian-flip) poses;
-/// the codebase reads them with `mech_HA` at the encoder wrap (`±12 h`)
-/// for Park 4 (target on the meridian, anti-pole side) and at
-/// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
-/// horizon), and the Dec encoder is past the celestial pole.
+/// AP Park 4 and Park 5 are "east-side" poses; the codebase reads both
+/// with `mech_HA` at the encoder wrap (`±12 h`). The Dec encoder is
+/// past the celestial pole for Park 4 (anti-polar horizon) and on the
+/// natural side for Park 5 (polar-side horizon).
 // Custom Serialize/Deserialize map to the `ap_park_0..5` strings, and the
 // hand-written JsonSchema names the same strings, so the mount's setup page
 // offers and submits what the Deserialize takes.
@@ -921,11 +915,11 @@ pub enum ApPark {
     ///
     /// AP table: `Dec = (90 − Latitude)` for north,
     /// `(−90 − Latitude)` for south. The celestial dec is at the same
-    /// magnitude as Park 1 but reached from the post-flip side, so
-    /// the post-flip Dec encoder = `±(90 + |latitude|)` (sign matches
-    /// the hemisphere). Codebase reading: `mech_HA = 0` (target on
-    /// the anti-meridian, post-flip wrap brings `mech_HA` back to 0),
-    /// `dec_encoder = ±(90 + |latitude|)`.
+    /// magnitude as Park 1, and from the saddle-east position the Dec
+    /// encoder reads it directly (natural-side encoding, magnitude
+    /// < 90). Codebase reading: `mech_HA = −12 h` (= `+12 h` via the
+    /// encoder wrap), `dec_encoder = ±(90 − |latitude|)` (sign matches
+    /// the hemisphere).
     ///
     /// (`Note: Park 5 shown below is only available in APCC and the
     /// AP V2 driver.` per the AP doc — it's an APCC extension, not on
@@ -1035,7 +1029,8 @@ impl std::str::FromStr for ApPark {
 }
 
 /// Error from parsing an unrecognised AP-park token via
-/// [`ApPark::from_str`]. Carries the offending token for the message.
+/// [`ApPark::from_str`](std::str::FromStr::from_str). Carries the offending
+/// token for the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApParkParseError(pub String);
 
@@ -1658,8 +1653,7 @@ mod tests {
         assert_eq!(cfg.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(cfg.mount.name, "Star Adventurer GTi");
         // `unique_id` ships empty so the first-run materialize step mints
-        // a persistent UUIDv4; the hardcoded literal was removed for
-        // spec-compliant per-install uniqueness.
+        // a persistent UUIDv4.
         assert_eq!(cfg.mount.unique_id, "");
         assert!(cfg.mount.enabled);
         assert_eq!(cfg.mount.tracking_rate, TrackingRateName::Sidereal);
@@ -1757,9 +1751,8 @@ mod tests {
 
     #[test]
     fn mount_config_deserialises_missing_park_ticks_as_none() {
-        // Existing config files written before the SetPark feature
-        // landed do not carry `park_ra_ticks` / `park_dec_ticks`; the
-        // driver must read them as `None` rather than failing.
+        // A config file without `park_ra_ticks` / `park_dec_ticks`
+        // reads them as `None` rather than failing.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -1774,9 +1767,9 @@ mod tests {
 
     #[test]
     fn mount_config_rejects_a_stale_dec_limits_key() {
-        // dec_limits was replaced by min_altitude_degrees on 2026-07-01;
-        // before deny_unknown_fields (#484) it was silently ignored. It
-        // must now fail loudly at load, naming the field.
+        // `dec_limits` is a retired key: serde's default would silently
+        // ignore it, and `deny_unknown_fields` fails it loudly at load,
+        // naming the field.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -1956,9 +1949,8 @@ mod tests {
         // saddle position, the dec axis must rotate past the pole:
         // `dec_enc = ±(90 + |lat|)` (sign matches hemisphere).
         // Verified on hardware at lat 32.7°N (2026-05-17): the
-        // encoder pose previously labelled Park 1 N (mech_HA=−12,
-        // dec_enc=+57.3) physically corresponds to Park 5 N (saddle
-        // east) — see commit fixing the swap.
+        // encoder pose (mech_HA=−12, dec_enc=+57.3) is physically
+        // Park 5 N (saddle east), not Park 1 N.
         let n = 32.7_f64;
         let s = -33.0_f64;
         assert!(
@@ -2189,10 +2181,10 @@ mod tests {
 
     #[test]
     fn mount_config_deserialises_missing_unpark_fields_as_ship_defaults() {
-        // Pre-rename config files (and any file omitting the new keys)
-        // load cleanly: `unpark_from_ap_position` defaults to the
-        // honest `ap_park_0` (unanchored — park in place until a
-        // sync), `preferred_ap_park` to `ap_park_3`.
+        // A file omitting both keys loads cleanly:
+        // `unpark_from_ap_position` defaults to the honest
+        // `ap_park_0` (unanchored — park in place until a sync),
+        // `preferred_ap_park` to `ap_park_3`.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -2242,9 +2234,8 @@ mod tests {
 
     #[test]
     fn mount_config_deserialises_missing_tracking_guard_margin_as_default() {
-        // Configs written before the tracking-time safety guard landed
-        // do not carry `tracking_guard_margin_hours`; the driver must
-        // read them as the 0.05 h default rather than failing.
+        // A config without `tracking_guard_margin_hours` reads as the
+        // 0.05 h default rather than failing.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -2256,7 +2247,7 @@ mod tests {
         assert!((m.tracking_guard_margin_hours.value() - 0.05).abs() < f64::EPSILON);
     }
 
-    // ---- Construct-time validation (replaces the retired validate()) ----
+    // ---- Construct-time validation ----
 
     #[test]
     fn default_config_round_trips_through_json() {
@@ -2282,10 +2273,10 @@ mod tests {
 
     #[test]
     fn flip_policy_is_rejected_as_an_unknown_field() {
-        // Meridian flips are always on, so the block that switched them
-        // is gone and its auto-flip fields live in `auto_flip`. A config
-        // still carrying it fails to load naming the field, rather than
-        // the operator setting a switch nothing reads.
+        // Meridian flips are always on: no block switches them, and the
+        // auto-flip fields live in `auto_flip`. A config carrying
+        // `flip_policy` fails to load naming the field, rather than the
+        // operator setting a switch nothing reads.
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -2468,12 +2459,12 @@ mod tests {
                 "error should name the field, got: {err}"
             );
         }
-        // `-11.5` and `-12.0` were accepted while the rule checked
-        // the flipped destination only at the offset: legal there
-        // (`-11.5` flips to `+0.5`), but the watcher fires wherever
-        // tracking already is, so enabling tracking at `mech_HA = -10`
-        // would try to flip to `+2`, inside the zone. The sweep check
-        // rejects them — see the dedicated test below.
+        // `-11.5` and `-12.0` pass a check of the flipped destination
+        // at the offset alone: legal there (`-11.5` flips to `+0.5`),
+        // but the watcher fires wherever tracking already is, so
+        // enabling tracking at `mech_HA = -10` would try to flip to
+        // `+2`, inside the zone. The sweep check rejects them — see
+        // the dedicated test below.
         for good in [0.0, 0.5, 0.899, -0.95] {
             assert!(
                 auto_flip_at(good).auto_flip_offset_error().is_none(),
@@ -2486,8 +2477,8 @@ mod tests {
     fn auto_flip_offset_rule_reads_both_zone_bounds_not_a_presumed_shape() {
         // `ActiveZone` permits any `-12 <= min < max <= 12`, so the
         // accepted set cannot be derived from `min_hours` alone. Both
-        // cases below are off the shipped `(x, 12 - x)` shape and were
-        // wrong when the rule assumed it.
+        // cases below are off the shipped `(x, 12 - x)` shape, where a
+        // rule assuming it answers wrongly.
         let armed = |zone: (f64, f64), offset: f64| MountConfig {
             cw_exclusion_zone: CwExclusionZone::Active(
                 ActiveZone::try_new(zone.0, zone.1).expect("valid zone"),
@@ -2525,7 +2516,7 @@ mod tests {
         // offset. An offset is only usable if *every* position between
         // it and the guard entry flips clear.
         //
-        // `-11.5` is the case that exposed the difference: its own
+        // `-11.5` shows the difference: its own
         // flipped destination is `+0.5`, outside the zone, so a
         // point-check accepts it. But tracking enabled at `mech_HA =
         // -10` fires immediately and tries to flip to `+2`, inside the

@@ -78,10 +78,10 @@ async fn disconnect_device(world: &mut StarAdventurerWorld) {
 async fn two_clients_connect(world: &mut StarAdventurerWorld) {
     // Single-process test: drive set_connected(true) twice. The
     // device's idempotent guard makes the second call a no-op, but the
-    // ref-count semantics under that guard are unit-tested at
-    // `services/star-adventurer-gti/src/transport_manager.rs::tests::
-    // connect_is_reference_counted`. Treat this scenario as a smoke
-    // check that double-connect does not break.
+    // ref-count semantics under that guard are tested in
+    // `crates/rusty-photon-shared-transport/tests/idempotent.rs`.
+    // Treat this scenario as a smoke check that double-connect does
+    // not break.
     world.mount().set_connected(true).await.unwrap();
     // Idempotent: the second connect must also succeed (the device
     // guard treats it as a no-op). Asserting catches a regression
@@ -117,9 +117,10 @@ async fn device_should_still_be_connected(world: &mut StarAdventurerWorld) {
 
 #[then("the underlying transport should have been opened exactly once")]
 async fn transport_opened_once(world: &mut StarAdventurerWorld) {
-    // Pin the property indirectly: every connect runs the `:F1` /
-    // `:F2` handshake exactly once. Counting `:F1` frames in the
-    // command log is a proxy for "transport opened once".
+    // Pin the property indirectly: every open of the transport runs
+    // the `:F1` / `:F2` handshake exactly once, and a connect runs
+    // none. Counting `:F1` frames in the command log is a proxy for
+    // "transport opened once".
     let log = world.command_log_including_startup().await;
     let f1_count = log.iter().filter(|c| c.as_str() == ":F1\r").count();
     assert_eq!(f1_count, 1, "expected one :F1 handshake, saw log {log:?}");
@@ -128,8 +129,8 @@ async fn transport_opened_once(world: &mut StarAdventurerWorld) {
 #[then("the mount should have received startup commands in order:")]
 async fn commands_received_in_order(world: &mut StarAdventurerWorld, step: &Step) {
     let table = step.table.as_ref().expect("expected a data table");
-    // The only step that reads past the startup mark: its scenarios
-    // are about what the driver puts on the wire while starting.
+    // This step reads past the startup mark: its scenarios are
+    // about what the driver puts on the wire while starting.
     let log = world.command_log_including_startup().await;
     let mut log_idx = 0usize;
     for row in table.rows.iter().skip(1) {
@@ -155,7 +156,7 @@ async fn param_cache_cpr_ra(world: &mut StarAdventurerWorld, _expected: u32) {
     // The handshake's `:a1` reply seeded the cache. Tightest external
     // assertion is that `:a1` appears in the log; the value itself is
     // pinned by the unit test
-    // `transport_manager::tests::connect_runs_handshake_and_seeds_parameter_cache`.
+    // `manager::tests::acquire_runs_handshake_and_seeds_parameter_cache`.
     let log = world.command_log_including_startup().await;
     assert!(log.iter().any(|c| c == ":a1\r"), "no :a1 in log");
 }
