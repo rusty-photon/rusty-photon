@@ -72,7 +72,7 @@ the camera while nobody holds the lease, and sends guide pulses.
 |---|---|---|
 | Camera | `Connected` | Read |
 | Camera | `CameraXSize`, `CameraYSize`, `PixelSizeX`, `SensorType`, `MaxADU`, `MaxBinX`, `CanAbortExposure` | Read once per connection, and again after a failed frame |
-| Camera | `BinX`, `BinY`, `StartX`, `StartY`, `NumX`, `NumY`, `Gain`, `Offset` | Written when the guider starts to expose |
+| Camera | `BinX`, `BinY`, `StartX`, `StartY`, `NumX`, `NumY`, `Gain`, `Offset` | Written when the guider starts to expose, and again after a failed frame |
 | Camera | `StartExposure`, `ImageReady`, `ImageArray` (as ImageBytes), `AbortExposure` | The frame cycle |
 | Telescope | `Connected` | Read |
 | Telescope | `CanPulseGuide` | Read once per connection |
@@ -198,6 +198,13 @@ not yet read a connected device's static properties, the request reads
 them before it goes on, so no request runs on a property that is
 missing.
 
+**A call that gets no answer.** Every call to a device has a deadline:
+a call with no answer after 10 s has failed, as one that returns an
+error has. A `PulseGuide` call may last as long as its pulse, and
+`mount.pulse_timeout` bounds it. The fetch of a frame is bounded by
+`camera.frame_timeout` and not by the 10 s. Ten seconds is a starting
+value of this design.
+
 **While `rp` is away.** The guider does not depend on `rp` being
 reachable. A run continues through a restart of `rp`.
 
@@ -225,12 +232,12 @@ client may change them only under the [lease](#the-camera-lease), and
 the lease is granted only in `idle`, so settings written on leaving
 `idle` hold for as long as the guider exposes.
 
-**Frame failures.** A frame fails when a camera call returns an error,
-when the frame has not arrived `camera.frame_timeout` after its
-exposure should have ended, or when its dimensions are not the ones the
-guider asked for. A failed frame is discarded and no pulse follows it.
-After `camera.max_frame_failures` consecutive failures the guider stops
-with the reason `camera_error`.
+**Frame failures.** A frame fails when a camera call fails, when the
+frame has not arrived `camera.frame_timeout` after its exposure should
+have ended, or when its dimensions are not the ones the guider asked
+for. A failed frame is discarded and no pulse follows it. After
+`camera.max_frame_failures` consecutive failures the guider stops with
+the reason `camera_error`.
 
 **A camera that comes back changed.** A run's calibration, pixel scale
 and star positions belong to the sensor it started on. A camera that
@@ -276,11 +283,13 @@ camera's frame depends on `SensorType`:
   the frame's own clip when it shows one, `MaxADU` otherwise, and the
   lower of the two when both are known. `MaxADU` alone is not enough:
   `qhy-camera` reports the top of its 16-bit container, and its frames
-  clip below it. A pixel of a summed frame is at full scale when any of
-  the four camera pixels summed into it is at or above that level,
-  which the guider judges on the camera's frame before it sums: a star
-  whose green pixels clip is saturated although its sums stay below
-  four times the level.
+  clip below it. A star that clips on four pixels of the camera's frame
+  or fewer, in a frame where nothing else reaches the clip, is not seen
+  as saturated when `MaxADU` lies above the clip. A pixel of a summed
+  frame is at full scale when any of the four camera pixels summed into
+  it is at or above that level, which the guider judges on the camera's
+  frame before it sums: a star whose green pixels clip is saturated
+  although its sums stay below four times the level.
 
 ### The camera lease
 
@@ -340,8 +349,8 @@ decision.
 - A mount that reports no pier side, or reports it unknown, gives the
   run the side `unknown`, and the pier side is not checked. A meridian
   flip of such a mount is one of the things the guider cannot see
-  ([Calibration](#calibration)): the client that flips it starts the
-  next run with `recalibrate: true`.
+  ([Calibration](#calibration)): the client that flips it clears the
+  calibration store before the next run.
 - The check is the guider's because a driver's is not enough: the Star
   Adventurer GTi driver accepts a pulse while tracking is off
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
@@ -372,8 +381,9 @@ has passed and `IsPulseGuiding` reads false. A pulse still in progress
   frame that failed.
 
 **A mount that does not answer.** A cycle in which a mount read or a
-`PulseGuide` call fails sends no further pulse. After
-`mount.max_failures` consecutive such cycles the run stops with
+`PulseGuide` call fails sends no further pulse. A mount read that gets
+no answer fails at the [deadline of a call](#devices-and-connections).
+After `mount.max_failures` consecutive such cycles the run stops with
 `mount_unreachable`.
 
 ### Star selection and measurement
@@ -498,54 +508,55 @@ rates for a mount that reports no guide rate.
 records the declination. Close to the pole a West pulse barely moves
 the stars, and the West leg fails at `calibration.max_steps`. A record
 made more than 60° from the celestial equator serves its own run and is
-not used again. The RA rate goes into the store divided by the cosine
-of the record's declination and comes out multiplied by the cosine of
-the run's, so in the run that made the record the two cancel. In every
-other run an error in the declination the mount reported for the record
-stays in the rate: an error of one degree changes the rate by 3 % at
-60° and by 10 % at 80°. While a slot holds such a record, every
-`guiding/start` from `idle` or `looping` on that pier side calibrates
-first. That holds after a `calibrate` too, whose run ends with the
-calibration. An operator who wants a calibration made near the
-celestial equator points there and calls `calibrate`; the stored record
-then serves every later target on that pier side. The 60° and the 89°
-of the store are the limits PHD2 uses for scaling a calibration to
-another declination
+not stored; the slot keeps the record it held. A record holds the RA
+rate divided by the cosine of its declination, and a run multiplies it
+by the cosine of its own, so in the run that made the record the two
+cancel. In every other run an error in the declination the mount
+reported for the record stays in the rate: an error of one degree
+changes the rate by 3 % at 60° and by 10 % at 80°. A `calibrate` beyond
+60° answers with its record and stores nothing. While a slot holds no
+record a run can use, every `guiding/start` from `idle` or `looping`
+beyond 60° on that pier side calibrates first. An operator who wants a
+calibration made near the celestial equator points there and calls
+`calibrate`; the stored record then serves every later target on that
+pier side. The 60° and the 89° of the store are the limits PHD2 uses
+for scaling a calibration to another declination
 ([`scope.cpp`](https://github.com/OpenPHDGuiding/phd2/blob/264a64d21710967bd37fcfab3004747cf1cae0a0/src/scope.cpp#L67-L68),
 [`mount.cpp`](https://github.com/OpenPHDGuiding/phd2/blob/264a64d21710967bd37fcfab3004747cf1cae0a0/src/mount.cpp#L1383-L1398)),
 taken as starting values of this design.
 
-**The store.** A calibration that passes is written to
-`calibration.json` in the [state directory](#state-directory), in the
-slot of its pier side: `east`, `west` or `unknown`. A failed
-calibration stores nothing and leaves the slot as it was.
+**The store.** A calibration that passes within 60° of the celestial
+equator is written to `calibration.json` in the
+[state directory](#state-directory), in the slot of its pier side:
+`east`, `west` or `unknown`. A failed calibration, and one made further
+from the equator, stores nothing and leaves the slot as it was.
 
-- The RA rate is stored as it would be at the equator: the measured
-  rate divided by the cosine of the declination it was measured at.
-  A run multiplies it by the cosine of its own declination. A run takes
-  its declination as at most 89° from the equator when it scales the RA
-  rate, and the record's declination is held the same way when the rate
-  is stored, so the run that made a record guides on the rate it
-  measured. Closer to the pole the cosine goes to zero, and neither the
-  stored rate nor a pulse worked out from the scaled rate has a bound.
+- A record holds the RA rate as it would be at the equator: the
+  measured rate divided by the cosine of the declination it was
+  measured at. A run multiplies it by the cosine of its own
+  declination. A run takes its declination as at most 89° from the
+  equator when it scales the RA rate, and the record's declination is
+  held the same way when the record is made, so the run that made a
+  record guides on the rate it measured. Closer to the pole the cosine
+  goes to zero, and neither the record's rate nor a pulse worked out
+  from the scaled rate has a bound.
 - A slot is never worked out from the other side's record.
 - **A stored record is used** when the pier side is its slot's, the
   camera's pixel size, sensor size, effective binning, the configured
   focal length and the mount's two guide rates are the ones it was made
-  with, it has a Dec axis unless `control.dec.mode` is `"off"`, and it
-  was made within 60° of the celestial equator or by the run itself.
+  with, and it has a Dec axis unless `control.dec.mode` is `"off"`.
   Anything else starts a calibration. A mount that reports no guide
   rate is compared on the other values.
 - **What the guider cannot see**, it does not invalidate. A camera
   turned in its holder, a rotator that moved, or a meridian flip of a
   mount that reports no pier side changes the angles without changing
-  any of those values. The client that knows acts on it. After a
-  camera or a rotator turned, it clears the store
-  (`calibration/clear`): the turn makes the records of both pier sides
-  wrong, and a start with `recalibrate: true` replaces only the record
-  of the side it runs on. After a flip of a mount that reports no pier
-  side, it starts with `recalibrate: true`: such a mount has the one
-  slot `unknown`.
+  any of those values. The client that knows clears the store
+  (`calibration/clear`) before the next run. A start with
+  `recalibrate: true` is no substitute. A camera or a rotator that
+  turned makes the records of both pier sides wrong, and the start
+  replaces only the record of the side it runs on. A calibration made
+  more than 60° from the celestial equator replaces no record, and the
+  wrong one stays in its slot.
 - A `calibration.json` the guider cannot read is set aside under
   another name when the service starts, and the store starts empty.
 
@@ -724,8 +735,9 @@ Starts the camera loop without guiding.
 
 #### `POST /api/v1/calibrate`
 
-Calibrates the pier side the mount is on and stores the result. Takes
-no fields.
+Calibrates the pier side the mount is on, and stores the result when it
+was made within 60° of the celestial equator
+([Calibration](#calibration)). Takes no fields.
 
 ```json
 {
@@ -761,7 +773,7 @@ no fields.
   counter-clockwise from the +x axis, in which a West pulse (`ra`) or a
   North pulse (`dec`) moves the stars. `ra.rate_px_per_s` is the rate
   at the equator. `declination_deg` is the declination the mount
-  reported; beyond ±60 the record is [not used again](#calibration).
+  reported; beyond ±60 the record is [not stored](#calibration).
   `guide_rates` and `expected` are `null` for a mount that reports no
   guide rate, and `dec` and `orthogonality_error_deg` are `null` in a
   record made with `control.dec.mode` `"off"`.
@@ -920,8 +932,10 @@ Empties every slot of the calibration store. Takes no fields.
 
 Valid in `idle` and `looping`; `not_idle` in a run state. A client that
 wants a run to drop the records of both pier sides stops it, clears and
-starts again. A start with `recalibrate: true` replaces the record of
-the run's own pier side and leaves the other slot as it was.
+starts again. A start with `recalibrate: true` replaces at most the
+record of the run's own pier side: it leaves the other slot as it was,
+and its own too when the calibration is made more than 60° from the
+celestial equator ([Calibration](#calibration)).
 
 #### `POST /api/v1/camera/lease`
 
@@ -1041,7 +1055,9 @@ Acquires the [camera lease](#the-camera-lease).
 ```
 
 - The answer comes from the device poll and is at most
-  `devices.poll_interval` old; `leased` is current.
+  `devices.poll_interval` old, plus the
+  [deadline of a call](#devices-and-connections) to a device that has
+  stopped answering; `leased` is current.
 - A device that is not configured is `null`. A property that has not
   been read yet is `null`. `binning` is the effective binning.
 - `rotator` is always `null`: the guider is a client of no rotator.
