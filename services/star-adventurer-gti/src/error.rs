@@ -48,9 +48,8 @@ rusty_photon_driver::driver_error! {
         /// (serial port or UDP host) points at a different device — a power
         /// box, focuser, or unrelated USB-CDC peripheral sharing the host's
         /// USB bus on the serial path, or the wrong host / wrong network on
-        /// the UDP path. See [issue #254][issue].
-        ///
-        /// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
+        /// the UDP path. See the design doc's
+        /// [§Initialisation sequence](../../../docs/services/star-adventurer-gti.md#initialisation-sequence).
         #[error(
             "handshake to {port} returned unexpected data ({reason}); this device may not be a \
              Sky-Watcher motor controller. Common cause: the configured transport target points \

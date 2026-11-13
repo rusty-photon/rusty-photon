@@ -192,9 +192,7 @@ pub fn is_flipped_side(side: PierSide, site_latitude_deg: f64) -> bool {
 ///
 /// The RA encoder is mapped from the mechanical hour-angle
 /// `mech_HA = LST − target_RA` (signed, folded to `[−12, +12)`) and
-/// the Dec encoder is the celestial declination — the existing
-/// behaviour for every slew before Phase 6, extracted into a helper
-/// so [`target_encoder_flipped`] can share the structure.
+/// the Dec encoder is the celestial declination.
 #[must_use]
 pub fn target_encoder_normal(
     ra: Ra,
@@ -606,8 +604,7 @@ mod tests {
         // ERFA's `eraCal2jd` (reached transitively via `Dtf2d`)
         // rejects years below `IYMIN = -4799` with status `-1`,
         // which `Dtf2d` re-maps to its own `-1` ("bad year"). This
-        // is the recoverable error path that replaced the original
-        // panic.
+        // is a recoverable `Timekeeping` error, not a panic.
         //
         // We drive the chrono-typed seam directly so the test is
         // platform-portable — Windows `SystemTime` is backed by
@@ -778,9 +775,8 @@ mod tests {
 
     #[test]
     fn altitude_matches_the_altitude_floor_worked_examples() {
-        // The worked-example table backing the altitude-floor gate
-        // (plan `star-adventurer-gti-meridian-flip.md` §3.1, LAT 45°N)
-        // plus hemisphere/latitude extremes. LST is pinned to 12 h and
+        // Worked examples for the altitude-floor gate (LAT 45°N) plus
+        // hemisphere/latitude extremes. LST is pinned to 12 h and
         // `RA = LST − HA`, so the HA column is exact.
         let alt = |ha_hours: f64, dec: f64, lat: f64| {
             ra_dec_to_alt_az(Ra::new(12.0 - ha_hours), Dec::new(dec), lat, Lst::new(12.0)).0
@@ -790,7 +786,7 @@ mod tests {
         // East horizon at the celestial equator: alt = 0 (edge).
         assert!(alt(-6.0, 0.0, 45.0).abs() < 1e-6);
         // Slightly east of meridian, still low above the horizon
-        // (the plan's table rounds this row to ≈ 5°; exact is 5.33°).
+        // (≈ 5°; exact is 5.33°).
         assert!((alt(-0.5, -39.4, 45.0) - 5.33).abs() < 0.05);
         // Low west, mid-Dec: below the horizon.
         assert!((alt(-3.0, -40.0, 45.0) - (-4.1)).abs() < 0.05);
@@ -835,9 +831,8 @@ mod tests {
     #[test]
     fn pickup_target_zero_projection_matches_unprojected_math() {
         // With zero projection, pickup target must equal the same
-        // mech_ha → ticks math the slew-issue path uses. This is the
-        // backwards-compat case: pre-compensation off ⇒ identical
-        // wire behaviour to before the change.
+        // mech_ha → ticks math the slew-issue path uses:
+        // pre-compensation off ⇒ the unprojected target on the wire.
         let target_ra = Ra::new(6.0);
         let lst = Lst::new(12.0);
         let unprojected = lst.hour_angle_of(target_ra).to_mech().to_ticks(cpr());
@@ -928,13 +923,12 @@ mod tests {
         assert_eq!(shifted, 10 * p_sid);
     }
 
-    // ---------- Phase 6: target_encoder_{normal,flipped} ----------
+    // ---------- target_encoder_{normal,flipped} ----------
 
     #[test]
     fn target_encoder_normal_matches_existing_ra_dec_to_ticks_pipeline() {
-        // The "normal" helper is the existing slew-issue pipeline,
-        // extracted. Targets at LST=12h, RA=12h → mech_HA=0 (meridian);
-        // any dec → encoder reflects that dec.
+        // Targets at LST=12h, RA=12h → mech_HA=0 (meridian); any dec →
+        // encoder reflects that dec.
         let (ra_ticks, dec_ticks) =
             target_encoder_normal(Ra::new(12.0), Dec::new(30.0), Lst::new(12.0), cpr(), cpr());
         assert_eq!(ra_ticks.value(), 0);
@@ -944,8 +938,8 @@ mod tests {
     }
 
     #[test]
-    fn target_encoder_flipped_at_lat45_zenith_east_matches_plan_example() {
-        // Plan §2.0 worked example, LAT 45°N: target HA = −0.5,
+    fn target_encoder_flipped_at_lat45_zenith_east_matches_the_worked_example() {
+        // Worked example, LAT 45°N: target HA = −0.5,
         // dec = +45°. Pre-flip mech_HA = −0.5, dec_enc = +45°. Post-flip
         // mech_HA = +11.5, dec_enc = +135°.
         let lst = 5.0; // arbitrary
@@ -1038,14 +1032,13 @@ mod tests {
         );
     }
 
-    // ---------- Phase 6: select_pier_side_for_target ----------
+    // ---------- select_pier_side_for_target ----------
 
     /// The shipped CW exclusion zone: `(x, 12 − x)` with the
     /// counterweight-up allowance `x = 0.95 h = 57 min`.
     const ZONE: (f64, f64) = (0.95, 11.05);
-    /// The narrower zone the driver shipped before 2026-05-17. Kept in
-    /// the tests that predate the widening so their intent (which side
-    /// reaches what) stays readable.
+    /// A narrower zone than the shipped one, under which the
+    /// counterweight-down side reaches targets out to HA +6.95.
     const NARROW_ZONE: (f64, f64) = (6.95, 11.05);
     const LAT_NORTH: f64 = 45.0;
     const LAT_SOUTH: f64 = -33.0;
@@ -1095,11 +1088,11 @@ mod tests {
 
     #[test]
     fn select_pier_side_north_piereast_stays_for_western_target() {
-        // Issue #1301. Counterweight-up (pierEast) mount, target at
-        // HA +3 — the counterweight-down mech_HA of +3 is inside the
-        // zone, so only the counterweight-up side (mech_HA −9) reaches
-        // it. Returning the opposite side here is what made the whole
-        // western sky unreachable from the flipped side.
+        // Counterweight-up (pierEast) mount, target at HA +3 — the
+        // counterweight-down mech_HA of +3 is inside the zone, so only
+        // the counterweight-up side (mech_HA −9) reaches it. Returning
+        // the opposite side here would make the whole western sky
+        // unreachable from the flipped side.
         let lst = 12.0;
         let target_ra = lst - 3.0; // HA = +3
         let chosen = select_pier_side_for_target(
@@ -1153,9 +1146,10 @@ mod tests {
     fn select_pier_side_north_overlap_band_does_not_move_the_mount() {
         // |HA| ≤ x = 0.95 h is reachable from both sides, so the mount
         // stays wherever it is — no gratuitous flip-back for a target
-        // the current side can already see. `0.7` is past the legacy
-        // `flip_range_hours` window (0.5) that used to force a
-        // through-wrap slew back to the pre-flip side.
+        // the current side can already see. The band is the whole of
+        // |HA| ≤ x, not a narrower window around the meridian: `0.7`
+        // and `0.9` stay put too, with no through-wrap slew back to
+        // the pre-flip side.
         let lst = 12.0;
         for ha in [-0.9, -0.5, 0.0, 0.5, 0.7, 0.9] {
             for current in [PierSide::West, PierSide::East] {
@@ -1383,8 +1377,8 @@ mod tests {
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);
-        // Counterweight-up, western target at HA +3 (issue #1301's
-        // case): only the counterweight-up side reaches it. Stay.
+        // Counterweight-up, western target at HA +3: only the
+        // counterweight-up side reaches it. Stay.
         let chosen = select_pier_side_for_target(
             Ra::new(lst - 3.0),
             Lst::new(lst),
@@ -1396,7 +1390,7 @@ mod tests {
         assert_eq!(chosen, PierSide::West);
     }
 
-    // ---------- Phase 6: zone / path predicates ----------
+    // ---------- zone / path predicates ----------
 
     #[test]
     fn mech_ha_in_binding_zone_is_an_open_interval() {
@@ -1430,7 +1424,7 @@ mod tests {
         assert!(!path_crosses_binding_zone(-11.5, -0.4, ZONE));
     }
 
-    // ---------- Phase 6: encoder_to_celestial ----------
+    // ---------- encoder_to_celestial ----------
 
     #[test]
     fn encoder_to_celestial_pre_flip_inverts_pre_flip_pipeline() {
@@ -1456,7 +1450,7 @@ mod tests {
 
     #[test]
     fn encoder_to_celestial_post_flip_inverts_flipped_pipeline_north() {
-        // Plan §2.0 worked example, LAT 45°N: target HA = −0.5, dec
+        // Worked example, LAT 45°N: target HA = −0.5, dec
         // = +45°. After a flip, the encoder lands at the flipped
         // position; encoder_to_celestial must recover the celestial
         // RA/Dec of the OTA pointing.
@@ -1523,7 +1517,7 @@ mod tests {
     #[test]
     fn encoder_to_celestial_at_post_flip_wrap_dec_pole_recovers_zero_dec() {
         // Dec encoder at exactly +cpr/2 ticks (= ±180°, the encoder
-        // wrap). `dec_ticks_to_degrees` folds to -180; side_of_pier
+        // wrap). `DecTicks::to_mech_dec` folds to -180; side_of_pier
         // returns East in north (past 90°); celestial dec = -1 *
         // (180 - 180) = 0. RA mapping uses the post-flip +12h shift.
         let lst = 12.0;

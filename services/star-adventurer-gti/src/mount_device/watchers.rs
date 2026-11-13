@@ -87,8 +87,8 @@ const PICKUP_MAX_ITERATIONS: u32 = 5;
 /// tolerates before giving up. A single transient USB-CDC glitch
 /// (queue flush race, brief renumeration, …) recovers within one
 /// frame and shouldn't take the watcher offline for the rest of
-/// the slew — the original "one strike and exit" policy meant any
-/// pre-binding hiccup left a runaway motor with no observer. Three
+/// the slew — exiting on the first failure would let any pre-binding
+/// hiccup leave a runaway motor with no observer. Three
 /// attempts × [`WATCHER_POLL_RETRY_BACKOFF`] keeps the cumulative
 /// recovery window well inside the polling cadence so a genuinely
 /// blocked axis is still detected within ~1 s of the firmware
@@ -149,10 +149,9 @@ async fn halt_if_current(
 /// On retry exhaustion, the helper makes a best-effort `:L` on both
 /// axes before returning the underlying error: even when we can no
 /// longer observe state, the firmware may still be commutating step
-/// pulses, and a runaway motor with no observer is the worst case
-/// the original exit-on-first-error policy created. The `:L` calls
-/// are fire-and-forget — if they fail too, there's nothing useful
-/// the watcher can do beyond logging and bailing.
+/// pulses, and a runaway motor with no observer is the worst case.
+/// The `:L` calls are fire-and-forget — if they fail too, there's
+/// nothing useful the watcher can do beyond logging and bailing.
 pub(super) async fn watcher_poll_with_retry(
     manager: &MountManager,
     session: &Session<SkywatcherCodec>,
@@ -314,16 +313,14 @@ async fn run_completion_watcher<C, F>(
             claim.release();
             break;
         };
-        // Sky-Watcher spec §5 reports `Blocked` in the `:f` status
-        // when the motor is stepping but the encoder isn't
-        // advancing — typically the axis is against a hard stop.
-        // Issue `:L` on both axes to halt the runaway and bail out
-        // of the operation rather than letting the watcher
-        // poll-loop continue while the gearbox strains. Park-time
-        // blocked aborts deliberately skip `at_park = true` (the
-        // OTA isn't at the encoder-0 home pose, so subsequent
-        // `Unpark + slew` would compute a wrong delta) — which is
-        // enforced here by returning before the finalizer runs.
+        // `Blocked` in the `:f` status is the firmware's report that
+        // the motor cannot follow its steps. Issue `:L` on both axes
+        // and bail out of the operation rather than letting the
+        // watcher poll-loop continue against a motor that is not
+        // following. A Park that aborts here does not set
+        // `at_park = true` — the mount did not reach its park
+        // target — which is enforced by returning before the
+        // finalizer runs.
         if snap.ra.blocked() || snap.dec.blocked() {
             tracing::warn!(
                 ra_blocked = snap.ra.blocked(),
@@ -431,8 +428,8 @@ impl PickupState {
     /// the next iteration re-checks the residual. Without it, pickup
     /// chases a moving target and the residual floor matches
     /// per-iteration sidereal drift (~6″ on USB, ~14″ on UDP). See
-    /// `docs/plans/archive/star-adventurer-gti-pickup-accuracy.md`
-    /// §"Experiment B".
+    /// "What keeps the pickup residual small" in the design doc's
+    /// [§"Slew lifecycle"](../../../../docs/services/star-adventurer-gti.md#slew-lifecycle).
     ///
     /// Adaptive: uses the actually-observed time delta between
     /// consecutive pickup decisions, so the projection self-tunes
@@ -471,7 +468,7 @@ impl SlewWatchCtx {
     /// borrowing from the closure's captures. This keeps the future
     /// `Send + 'static`-compatible inside the tokio task spawned by
     /// [`spawn_slew_completion_watcher`]; an `&Arc<…>` borrow
-    /// tripped the HRTB inference on the spawn future's `Send`
+    /// trips the HRTB inference on the spawn future's `Send`
     /// bound.
     async fn step(
         self,
@@ -532,7 +529,7 @@ impl SlewWatchCtx {
             return None;
         };
         // The sample is a wire round trip or two old; bring it to the
-        // instant the LST below is taken (issue #1334).
+        // instant the LST below is taken.
         let snap = &self.manager.project_to_now(snap, &params);
         // ERFA refuses the host UTC if `eraCal2jd` rejects the year
         // (below `IYMIN = -4799`). A leap-second-table-out-of-range
@@ -693,9 +690,8 @@ impl SlewWatchCtx {
 /// target encoder pair. Pure math, no wire I/O.
 ///
 /// Flip-aware target-encoder computation: with a pre-flip target
-/// side, reuse `pickup_target_ra_ticks` for the same LST
-/// pre-compensation that pre-Phase-6 builds relied on. With a
-/// post-flip target side, compute the projected target via
+/// side, `pickup_target_ra_ticks` supplies the LST pre-compensation.
+/// With a post-flip target side, compute the projected target via
 /// `target_encoder_flipped` so the pickup re-slew lands on the
 /// flipped encoder (past-the-pole Dec and the mirror-band RA
 /// `mech_HA`) rather than undoing the flip back to the pre-flip side.

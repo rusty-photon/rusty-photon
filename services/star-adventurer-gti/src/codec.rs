@@ -21,7 +21,7 @@
 //! `!`, end with `\r`) and returns the raw frame bytes verbatim. The
 //! [`crate::MountManager::send`] wrapper then calls the protocol
 //! crate's [`Response::decode`] with the originating command, yielding
-//! the typed [`Response`] all existing call sites already expect.
+//! the typed [`Response`].
 //!
 //! [`FrameTransport`]: rusty_photon_shared_transport::FrameTransport
 //! [`Response`]: skywatcher_motor_protocol::Response
@@ -49,8 +49,8 @@ use crate::error::StarAdvError;
 /// instead of collapsing to a generic `Protocol(FrameError(...))` that
 /// would map to `INVALID_OPERATION` and lose the connect-time
 /// `Timeout` / `ConnectionFailed` classification ASCOM clients
-/// deserve. Mirrors the same fix `PpbaCodecError` and `QhyCodecError`
-/// carry — see PR #280.
+/// deserve. `PpbaCodecError` and `QhyCodecError` carry the same
+/// variant.
 #[derive(Debug, Error)]
 pub enum SkywatcherCodecError {
     /// The frame failed the wire-format check in
@@ -97,13 +97,12 @@ pub enum SkywatcherCodecError {
     /// (`:F`, `:a`, `:b`, `:g`, …) and the device-layer mapping can
     /// route the structured context (port label + reason) into
     /// [`StarAdvError::WrongDevice`] for an operator-friendly diagnostic.
-    /// See [issue #254][issue].
+    /// See [§"Initialisation sequence"](../../../docs/services/star-adventurer-gti.md#initialisation-sequence).
     ///
     /// [`ProtocolError::FrameError`]: skywatcher_motor_protocol::ProtocolError::FrameError
     /// [`ProtocolError::PayloadError`]: skywatcher_motor_protocol::ProtocolError::PayloadError
     /// [`ProtocolError::HexError`]: skywatcher_motor_protocol::ProtocolError::HexError
     /// [`ProtocolError::MountError`]: skywatcher_motor_protocol::ProtocolError::MountError
-    /// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
     #[error("wrong device on {port}: {reason}")]
     WrongDevice { port: String, reason: String },
 }
@@ -113,7 +112,7 @@ pub enum SkywatcherCodecError {
 /// codec error type so `?` works without losing the structured
 /// transport-error variant. The device-layer
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
-/// re-expands the [`Transport`] arm via the canonical
+/// re-expands the [`Transport`](SkywatcherCodecError::Transport) arm via the canonical
 /// `From<TransportError> for StarAdvError` impl used for top-level
 /// [`SessionError::Transport`].
 impl From<SessionError<Self>> for SkywatcherCodecError {
@@ -186,24 +185,20 @@ impl Codec for SkywatcherCodec {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
-        // Normalize wire quirks the legacy bespoke transports used to
-        // smooth over before the shared `FrameTransport` adapters took
-        // over framing:
+        // Normalize two wire quirks the shared `FrameTransport`
+        // adapters pass through verbatim:
         //
         // * **Trailing `\n` after `\r` on UDP** — some firmware
         //   revisions append `\n` to the `\r` terminator on UDP
-        //   replies; the reference doc lists this as tolerated. The
-        //   shared `UdpFrameTransport` returns the whole datagram
-        //   verbatim, so the `\n` survives into the codec and would
-        //   fail `validate_response_frame` (which requires `\r` as
-        //   the last byte).
+        //   replies. The shared `UdpFrameTransport` returns the whole
+        //   datagram verbatim, so the `\n` survives into the codec
+        //   and would fail `validate_response_frame` (which requires
+        //   `\r` as the last byte).
         // * **Leading junk before the first `=`/`!` on serial** — the
-        //   mount occasionally emits framing junk between frames; the
-        //   legacy `SerialTransport` skipped non-`=`/`!` bytes until
-        //   it found a real start. The shared `SerialFrameTransport`
-        //   reads until `\r` and returns the bytes verbatim, so any
-        //   leading junk lands at the head of the frame and would
-        //   fail `validate_response_frame`.
+        //   mount occasionally emits framing junk between frames. The
+        //   shared `SerialFrameTransport` reads until `\r` and returns
+        //   the bytes verbatim, so any leading junk lands at the head
+        //   of the frame and would fail `validate_response_frame`.
         //
         // Normalize once, here, so the typed-decode boundary in
         // `MountManager::send` sees a clean `=...\r` / `!...\r` frame.
@@ -226,13 +221,12 @@ impl Codec for SkywatcherCodec {
 ///
 /// * **Leading skip:** advance past any bytes that aren't `=` or `!`.
 ///   The Sky-Watcher firmware occasionally emits framing junk between
-///   frames (the legacy `SerialTransport`'s read loop dropped these
-///   before the `=`/`!` prefix). If no `=`/`!` is found the whole
-///   buffer is returned untouched so `validate_response_frame` can
-///   surface a meaningful error.
+///   frames. If no `=`/`!` is found the whole buffer is returned
+///   untouched so `validate_response_frame` can surface a meaningful
+///   error.
 /// * **Trailing `\n` strip:** if the last two bytes are `\r\n`, drop
 ///   the `\n`. Some firmware revisions on UDP append `\n` after the
-///   `\r` terminator; the reference doc lists this as tolerated.
+///   `\r` terminator.
 fn normalize_response_frame(bytes: &[u8]) -> &[u8] {
     let body = match bytes.split_last() {
         Some((&b'\n', head)) if head.ends_with(b"\r") => head,
@@ -278,8 +272,7 @@ impl From<SkywatcherCodecError> for StarAdvError {
             // surfaced *through* the handshake hook (Codec arm in the
             // outer `From<SessionError<…>>`) gets the same
             // classification as one that surfaces on a steady-state
-            // request (top-level Transport arm). See PR #280 for the
-            // bug class.
+            // request (top-level Transport arm).
             SkywatcherCodecError::Transport(t) => t.into(),
             SkywatcherCodecError::Protocol(pe) => Self::Protocol(pe),
             SkywatcherCodecError::SkipExhausted(n) => Self::Transport(format!(
@@ -370,11 +363,9 @@ mod tests {
     #[test]
     fn decode_skips_leading_junk_before_frame_start() {
         // The Sky-Watcher firmware occasionally emits framing junk
-        // (stray `\n`, residue from a prior frame) between responses;
-        // the legacy SerialTransport's read loop dropped these before
-        // the `=`/`!` prefix. The codec must do the same so the
-        // typed-decode boundary in MountManager::send sees a clean
-        // frame.
+        // (stray `\n`, residue from a prior frame) between responses.
+        // The codec drops it so the typed-decode boundary in
+        // MountManager::send sees a clean frame.
         let frame = SkywatcherCodec.decode(b"\n=000080\r").unwrap();
         assert_eq!(frame, b"=000080\r");
     }

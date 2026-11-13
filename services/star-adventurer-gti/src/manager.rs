@@ -6,8 +6,8 @@
 //! and poll-task lifetime all live in
 //! [`rusty_photon_shared_transport::SharedTransport`]. What stays here:
 //!
-//! * The Sky-Watcher handshake (`:F` × 2, `:a` × 2, `:b`, `:g` × 2,
-//!   `:e`, `:j` × 2) and the parameter cache it populates.
+//! * The Sky-Watcher handshake (`:e`, `:f` × 2, `:F` × 2, `:a` × 2,
+//!   `:b`, `:g` × 2, `:j` × 2) and the parameter cache it populates.
 //! * The background poll loop body that refreshes `:f` + `:j` on both
 //!   axes into the snapshot.
 //! * The [`PollPauseGuard`] mechanism the slew/park watchers use to
@@ -17,7 +17,7 @@
 //!   after `Sync` don't see the pre-sync position).
 //! * The per-axis record of the last `:I` step period the driver sent,
 //!   and [`MountManager::snapshot_now`], which projects the poll sample
-//!   forward to the read instant at that commanded rate (issue #1334).
+//!   forward to the read instant at that commanded rate.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -87,15 +87,15 @@ impl MountParameters {
 /// sidereal time taken *now* must first bring the sample to the read
 /// instant with [`Self::projected_to`] (via
 /// [`MountManager::snapshot_now`]); pairing a stale encoder with a live
-/// LST reads a tracking mount off by the sample's age (issue #1334).
+/// LST reads a tracking mount off by the sample's age.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AxisSnapshot {
     pub position_ticks: i32,
     /// When the `:j` request that produced `position_ticks` went out —
     /// its [`WireTiming::sent_at`] — or, for a `seed_*_position`, when
     /// the `:E` that wrote it did. The firmware latches the count as
-    /// the command arrives; the reply can reach a busy host much later
-    /// (issue #1371). `None` until the first sample.
+    /// the command arrives; the reply can reach a busy host much later.
+    /// `None` until the first sample.
     pub sampled_at: Option<Instant>,
     /// The axis' last `:f` status reply, as decoded. `None` until the
     /// first status poll (the handshake reads positions only), which
@@ -138,11 +138,11 @@ impl AxisSnapshot {
         )
     }
 
-    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
-    /// reports `Blocked` when the motor is stepping but the encoder
-    /// isn't advancing — typically because the axis is against a
-    /// mechanical stop or stalled. The slew watcher uses this to
-    /// abort a runaway goto before the gearbox is damaged.
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): `Blocked`, the
+    /// firmware's report that the motor cannot follow its steps. The
+    /// slew and park watchers abort on it. It is not a stall detector;
+    /// see the design doc's
+    /// [§"Motion-mode and status bytes"](../../../docs/services/star-adventurer-gti.md#motion-mode-and-status-bytes).
     #[must_use]
     pub const fn blocked(&self) -> bool {
         match self.status {
@@ -186,8 +186,9 @@ impl AxisSnapshot {
     /// `0`, which is exact. A goto is also `0` — its accelerating
     /// profile has no single rate, and nothing precision-critical reads
     /// the encoder mid-goto (the pickup loop reads after both axes stop).
-    /// A blocked axis is `0` too: the firmware is stepping, but the
-    /// encoder is not advancing.
+    /// A blocked axis is `0` too: the firmware reports that the motor
+    /// is not following its steps, so the commanded rate is not the
+    /// axis's rate.
     #[must_use]
     pub fn rate_ticks_per_sec(&self, tmr_freq: u32, high_speed_ratio: u32) -> f64 {
         if !self.running() || self.goto() || self.blocked() || self.step_period == 0 {
@@ -490,7 +491,7 @@ impl MountManager {
         };
         // Capture once; the handshake hook quotes this in the
         // [`StarAdvError::WrongDevice`] diagnostic when the `:e1` identity
-        // probe rejects the device on the other end of the wire (issue #254).
+        // probe rejects the device on the other end of the wire.
         let port_label: Arc<str> = Arc::from(config.transport.port_label());
 
         let hooks = build_hooks(
@@ -556,9 +557,8 @@ impl MountManager {
     /// while tracking, the RA encoder keeps moving after the poll
     /// sampled it, and `LST(now) − HA(sample)` reads the sky off by the
     /// sample's age — up to a poll interval of RA, with a random sign
-    /// between reads (issue #1334). A stopped axis is returned as
-    /// sampled. Before the handshake has cached the parameters the raw
-    /// snapshot is returned.
+    /// between reads. A stopped axis is returned as sampled. Before the
+    /// handshake has cached the parameters the raw snapshot is returned.
     pub async fn snapshot_now(&self) -> MountSnapshot {
         let snap = self.snapshot().await;
         self.parameters()
@@ -937,8 +937,8 @@ fn build_hooks(
                 verdict
             })
         }),
-        // Phase 1: run the same `:L1, :L2, :K1` safety sequence at
-        // service shutdown that runs at every last-client-disconnect.
+        // Run the same `:L1, :L2, :K1` safety sequence at service
+        // shutdown that runs at every last-client-disconnect.
         // The mount may be in any state (e.g. the supervisor was
         // mid-reconnect, a client crashed and never disconnected, the
         // last client did disconnect but a stray request landed in
@@ -978,8 +978,11 @@ fn build_hooks(
 /// foreign USB-CDC peripheral, wrong UDP host, etc.), the handshake
 /// aborts after sending exactly one frame (`:e1\r`) and surfaces
 /// [`SkywatcherCodecError::WrongDevice`] carrying the port label and a
-/// human-readable reason. See [issue #254][issue] for the hardware session
-/// that motivated this and the operator-facing diagnostic shape.
+/// human-readable reason. The probe rejects a reply that does not
+/// decode as a motor-board version, a `!` error reply, and a mount
+/// code (the high byte of the decoded value) outside the whitelist;
+/// see [§"Initialisation sequence"](../../../docs/services/star-adventurer-gti.md#initialisation-sequence)
+/// for why `:e1` goes first.
 ///
 /// On success, the rest of the handshake follows the documented order:
 /// read both axes' init flags, initialise both axes, query parameters,
@@ -987,8 +990,6 @@ fn build_hooks(
 /// say the controller restarted while the driver was serving it, the
 /// mount's last known position is written back first; see
 /// [`position_to_restore`] and the design doc's §Power cut while serving.
-///
-/// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
 async fn handshake(
     conn: &Connection<SkywatcherCodec>,
     state: HandshakeState,
@@ -1247,16 +1248,16 @@ async fn write_position(
 /// Used by both the `on_last_disconnect` hook (every `1→0` transition,
 /// and every fresh conduit) and by `shutdown_teardown`.
 ///
-/// Still log-and-continue per the hooks' infallible contract — a failed
+/// Log-and-continue per the hooks' infallible contract — a failed
 /// command never propagates and never stops the rest of the sequence —
-/// but the outcome is no longer thrown away. The shared crate watches
+/// but the outcome is returned. The shared crate watches
 /// [`Connection::request`] for commands that never reached the wire,
 /// which is blind to the case this function is the only witness to: the
 /// mount answered `!XX` and refused. `SkywatcherCodec` returns raw
 /// frames, so an error reply decodes as a perfectly good `Ok` response
 /// one layer down, and only the typed decode in [`request_typed`] sees
-/// it. Returning the verdict is what carries that out to the caller —
-/// see [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+/// it. Returning the verdict is what carries that out to the caller;
+/// see [§"Safety stop at startup"](../../../docs/services/star-adventurer-gti.md#safety-stop-at-startup).
 ///
 /// Any failure means [`StateAssertion::NotAsserted`]: a stop that the
 /// mount refused, or that never reached it, leaves axes that may still
@@ -1271,7 +1272,7 @@ async fn write_position(
 ///
 /// It also does not try to read the mount's error code and decide
 /// which failures are benign. By the time this runs the handshake has
-/// just had ten commands answered, so a mount that now cannot be
+/// just had twelve commands answered, so a mount that now cannot be
 /// halted is a mount that is broken or is not the device we think it
 /// is — the two cases where guessing "that one's probably fine" is
 /// exactly wrong.
@@ -1306,13 +1307,13 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
     //
     // `info!` rather than `debug!`, against the usual preference for
     // `debug!`: the packaged units ship `RUST_LOG=info`, so `debug!`
-    // would leave this invisible on every stock installation and the
-    // operator no better off than before. This is the record that a
-    // safety action affecting a moving telescope either did or did not
-    // reach the hardware — the one class of event where "you had to
-    // know to turn it on" is the wrong default. It fires once per start
-    // and once per last-client disconnect, so it is bounded by session
-    // count rather than by traffic.
+    // would leave this invisible on every stock installation. This is
+    // the record that a safety action affecting a moving telescope
+    // either did or did not reach the hardware — the one class of
+    // event where "you had to know to turn it on" is the wrong
+    // default. It fires once per start and once per last-client
+    // disconnect, so it is bounded by session count rather than by
+    // traffic.
     info!(verdict = ?verdict, "safety stop complete");
     verdict
 }
@@ -1331,7 +1332,7 @@ async fn shutdown_teardown(
         // is the whole of the report, and it is worth an `error!`. The
         // mount may be left moving with no driver attached; the next
         // cold start asserts the state again and refuses to serve if
-        // it cannot (see #1251), but nothing happens in between.
+        // it cannot, but nothing happens in between.
         error!(
             "the shutdown safety stop was not asserted \
              (see the warning above for the failing command); \
@@ -1475,10 +1476,11 @@ async fn poll_axis_via_session(
 /// The firmware latches the count as the command arrives, so the send
 /// is the end of the round trip to date it by. Receipt is not: a busy
 /// host can notice the reply tens of milliseconds late — 40–61 ms on
-/// the rig in issue #1371, which made a tracking `RightAscension` read
-/// about 0.042 s high — while anything that holds up the write after
-/// the stamp can only make it early. The midpoint would carry half of
-/// every such stall. See [`WireTiming`] for what each stamp guarantees.
+/// the rig with `ConformU` issuing requests on the same Pi, which would
+/// make a tracking `RightAscension` read about 0.042 s high — while
+/// anything that holds up the write after the stamp can only make it
+/// early. The midpoint would carry half of every such stall. See
+/// [`WireTiming`] for what each stamp guarantees.
 const fn record_position(out: &mut AxisSnapshot, ticks: i32, timing: WireTiming) {
     out.position_ticks = ticks;
     out.sampled_at = Some(timing.sent_at);
@@ -1612,7 +1614,7 @@ mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are
     //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! they are not re-tested here.
 
     use super::*;
     use skywatcher_motor_protocol::{InitFlags, MotionFlags, MotionMode};
@@ -1946,8 +1948,7 @@ mod tests {
     #[tokio::test]
     async fn pause_background_polling_stops_wire_traffic_and_resumes_on_drop() {
         // Hold a guard, watch for `:j`/`:f` traffic across a window
-        // during the hold, resume after drop. Mirrors the legacy
-        // `transport_manager.rs` test.
+        // during the hold, resume after drop.
         let (m, state) = fast_polling_manager();
         let session = m.transport().acquire().await.unwrap();
 
@@ -2158,8 +2159,7 @@ mod tests {
     // connect-time timeout / EOF / open failure maps to the structured
     // StarAdvError::Timeout / ConnectionFailed instead of collapsing to
     // Protocol(FrameError("transport timeout after …")) and being routed
-    // through the generic INVALID_OPERATION arm. See PR #280 for the
-    // bug class.
+    // through the generic INVALID_OPERATION arm.
     // ========================================================================
 
     use async_trait::async_trait;
@@ -2219,10 +2219,9 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_timeout_surfaces_as_staradv_timeout_not_protocol() {
-        // A read timeout during the first handshake command (`:F1`)
-        // must propagate as `StarAdvError::Timeout`, not the generic
-        // `Protocol(FrameError("transport timeout after …"))` the
-        // pre-PR-280 string-collapse would produce.
+        // A read timeout during the first handshake command (`:e1`)
+        // must propagate as `StarAdvError::Timeout`, not as a generic
+        // `Protocol(FrameError("transport timeout after …"))`.
         let manager = make_manager_with_failing_recv(TransportError::Timeout(
             std::time::Duration::from_secs(5),
         ));
@@ -2268,8 +2267,8 @@ mod tests {
     // Pre-encode validation: SetPosition / SetGotoTarget commands whose
     // `ticks` falls outside the signed-24-bit encoder range must be rejected
     // at `MountManager::send` with a structured `InvalidValue` error, *not*
-    // reach the codec's `encode` (where the prior `.expect(...)` would have
-    // panicked). See PR #285 Copilot review on codec.rs.
+    // reach the codec's `encode` (which can only log the failure and return
+    // an empty frame).
     // ========================================================================
 
     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
@@ -2365,7 +2364,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Issue #254: `:e1` runs first and gates the rest of the handshake.
+    // `:e1` runs first and gates the rest of the handshake.
     //
     // On a wrong-device handshake the driver must send exactly one frame
     // (`:e1\r`), then bail out with a structured `StarAdvError::WrongDevice`
@@ -2391,8 +2390,8 @@ mod tests {
             "first wire frame must be `:e1`; got {:?}",
             std::str::from_utf8(&log[0]).unwrap_or("<non-utf8>")
         );
-        // Sanity: the rest of the handshake still ran (`:F1` shows up
-        // somewhere after `:e1`), so reordering didn't drop commands.
+        // Sanity: the rest of the handshake ran (`:F1` shows up
+        // somewhere after `:e1`).
         assert!(
             log.iter().any(|f| f == b":F1\r"),
             "`:F1` missing from handshake log: {log:?}"
@@ -2519,9 +2518,8 @@ mod tests {
                 // u24 payload, got 3 bytes"))` for the `=100\r` reply,
                 // which `wrong_device_for_e1` reclassifies as
                 // `WrongDevice` with reason `"unexpected `:e1` reply:
-                // payload error: ..."`. There is no "non-U24 success
-                // reply" branch — that path was structurally
-                // unreachable and was removed in the 5ccfcd1 refactor.
+                // payload error: ..."`. A "non-U24 success reply" is
+                // structurally unreachable.
                 assert!(
                     reason.contains("unexpected") && reason.contains("payload error"),
                     "reason should describe the PayloadError → WrongDevice path; got {reason:?}"
@@ -2666,8 +2664,7 @@ mod tests {
     }
 
     /// A mount that answers the startup halt with `!XX` must stop the
-    /// driver coming up — the case behind
-    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    /// driver coming up.
     ///
     /// The refusal is invisible below this layer: `SkywatcherCodec`
     /// hands back the `!0\r` frame as a perfectly good response, so
@@ -2723,7 +2720,7 @@ mod tests {
     /// A mount that refuses the *shutdown* halt gets the loud log and
     /// nothing else: the lifecycle is ending, `Hooks::shutdown` has no
     /// verdict to return, and the teardown still has to finish. The
-    /// next cold start is what re-asserts the state (#1251).
+    /// next cold start is what re-asserts the state.
     ///
     /// Clearing the parameter cache is the observable proof the
     /// teardown ran past the refusal rather than bailing at it.
@@ -2768,7 +2765,7 @@ mod tests {
         );
     }
 
-    // ---------- Projecting a poll sample to the read instant (issue #1334) ----------
+    // ---------- Projecting a poll sample to the read instant ----------
 
     /// `GTi` timer frequency and a step period that divides it evenly, so
     /// the expected rates are exact: 16 MHz / 400 000 = 40 steps/s.
@@ -3196,11 +3193,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Dating a sample at the send of its `:j` (issue #1371)
+    // Dating a sample at the send of its `:j`
     // -----------------------------------------------------------------
 
-    /// How long the mock holds each reply back in the dating tests — the
-    /// 41 ms a busy host took to notice a reply on the rig in #1371.
+    /// How long the mock holds each reply back in the dating tests —
+    /// 41 ms, in the 40–61 ms a busy host takes to notice a reply on
+    /// the rig.
     const REPLY_DELAY: Duration = Duration::from_millis(41);
 
     /// When the mock last received `frame` — the instant it latched

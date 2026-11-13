@@ -221,7 +221,7 @@ errors and the process exits non-zero, the same way a wrong-device
 handshake does. So does a halt the mount *answers* without the state
 ending up asserted — it refused, or replied with something that would
 not decode, or is not a Sky-Watcher controller at all. The handshake has
-just had ten commands answered at that point, so a mount that then
+just had twelve commands answered at that point, so a mount that then
 cannot be stopped is broken or is not the device the driver thinks it
 is, and neither is something to serve clients against.
 
@@ -354,8 +354,8 @@ transport out of service, and a cold start refuses to serve (see
 
 It deliberately does not try to sort benign failures from real ones by
 reading the mount's error code. By the time any of this runs the
-handshake has just had ten commands answered, so a mount that now cannot
-be halted is broken or is not a Sky-Watcher controller at all —
+handshake has just had twelve commands answered, so a mount that now
+cannot be halted is broken or is not a Sky-Watcher controller at all —
 precisely the two cases where deciding "that error code is probably
 fine" would be the wrong call.
 
@@ -462,7 +462,9 @@ Response:   ! <errcode>                   \r       3–4 bytes  (error)
   specifies two; the GTi sends one (`!4\r`), which holds every code
   that document defines. The codec accepts both.
 - All frames terminate with a single `\r` (`0x0D`). **No `\n`.** UDP
-  responses do include a trailing `\r`.
+  responses do include a trailing `\r`. The codec is lenient on a reply
+  all the same: it skips any bytes before the first `=` or `!` and
+  drops one `\n` after the closing `\r`.
 - If the controller sees a second `:` before `\r`, it discards the partial
   frame and starts fresh — useful for resync after a corrupted packet.
 
@@ -806,10 +808,11 @@ residual) use the sample **projected to now**:
   a stopped or parked mount's RA lag by up to a poll. A goto is not
   projected (its accelerating profile has no single rate, and nothing
   precision-critical reads the encoder mid-goto). A blocked axis is not
-  projected (the firmware steps but the encoder does not advance), and
-  neither is an unknown period — none sent since the handshake: a fresh
-  conduit may be a power-cycled mount, so the handshake forgets the
-  record and resets the cached samples' status and rate.
+  projected (the firmware reports that the motor is not following its
+  steps, so the commanded rate is not the axis's rate), and neither is
+  an unknown period — none sent since the handshake: a fresh conduit
+  may be a power-cycled mount, so the handshake forgets the record and
+  resets the cached samples' status and rate.
 - **Age cap.** A sample is carried forward by at most four polling
   intervals. Past that the poll loop is failing or paused with nobody
   refreshing it, and the estimate stops advancing rather than

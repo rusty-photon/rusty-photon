@@ -2,7 +2,7 @@ Feature: Device metadata
   The mount device reports its identity, capability flags, and static
   properties via the ASCOM Alpaca HTTP API. Capability values reflect the
   MVP scope: GermanPolar alignment, Topocentric coordinates, sidereal-only
-  tracking, PulseGuide / SetGuideRates supported (since #206); no
+  tracking, PulseGuide / SetGuideRates supported; no
   MoveAxis / FindHome / Alt-Az. CanSetPark is runtime-determined —
   `true` when the driver was started with `--config` (the BDD harness
   always provides one), `false` for `Config::default()` runs.
