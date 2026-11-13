@@ -14,9 +14,10 @@ over all seven filters on the wheel against L:
 All 42 sweeps confirmed at their first attempt, R² 0.973–0.997, and both
 runs wrote their offsets and put the rig back as focus-model.md §
 `determine_filter_offsets` describes. That includes the three narrowband
-filters, at the train's one 4 s exposure. Run 2 started every sweep from
-run 1's measured offsets: each start landed 0–8 steps from the fitted
-focus, inside the critical focus zone (CFZ).
+filters, at the train's one 4 s exposure. Run 2 predicted every start
+from run 1's measured offsets across a filter change: each predicted start
+lay within 8 steps of the fitted focus, inside the critical focus zone
+(CFZ).
 
 Focus drifted about 1 step a minute through run 1, and 0.5 a minute
 through run 2. The procedure measures the reference first in every round,
@@ -88,7 +89,8 @@ and O.
 | O | −64, −61, −64 → **−64** | −57, −57, −57 → **−57** | 29.1 |
 
 The CFZ is each filter's `get_sweep_plan` `cfz_steps`. Within a run, a
-filter's three rounds lie within 3 steps of each other. Between the runs,
+filter's three rounds lie within 4 steps of each other (R in run 2), and
+within 3 for every other filter. Between the runs,
 R differs by 6 steps, G by 6, S by 7 and O by 7.
 
 ### The checks
@@ -104,7 +106,7 @@ to:
 | Writes the reference and the offsets; the result's `offsets` is the record | **pass**: `offsets_written: true`, and `get_focus_model` read the same | **pass**: the same |
 | Restores the filter selected before the call and moves the focuser to its last measured position | **pass**: L, at 29557 (round 3's L) | **pass**: L, at 29530 |
 | A coefficient fitted from one filter survives an offsets write (§ `calibrate_temperature`) | **pass**: 14.745…, `coefficient_offsets` `{}` | **pass**; also after the final `set_focus_offsets` |
-| Each sweep's predicted start | 16 of the 21 had one; each landed 2–13 steps above the fitted focus, inside the CFZ | **all 21** had one, from run 1's offsets across a filter change; −7 to +8 steps from the fitted focus, inside the CFZ |
+| Each sweep's predicted start (`prediction.start`) | 16 of the 21 had one; each lay 2–13 steps above the fitted focus, inside the CFZ | **all 21** had one, from run 1's offsets across a filter change; each lay between 8 steps below and 7 steps above the fitted focus, inside the CFZ |
 
 No filter was unmeasured, and no sweep needed a second attempt.
 
@@ -114,14 +116,17 @@ In run 1, the first L sweep's start came from the last L focus (29487 at
 the CFZ's half of 16. Round 1's G to O had no last good focus and no
 offset, so no prediction: each started where the previous filter's sweep
 left the focuser. In rounds 2 and 3 each filter predicted from its own
-previous focus, and every start lay above the focus the sweep then found:
-the drift in observation 1.
+previous focus, and every predicted start lay above the focus the sweep
+then found: the drift in observation 1.
 
-In run 2, every start was the previous sweep's focus, moved by the
-difference of the two filters' run-1 offsets. Each step from L to O
-predicted with −64 and landed +7 or +8 steps from the fitted focus. Each
-step from G to R predicted with +25 and landed on it (0). Nine of the 21
-moves were skipped, the start lying within half a CFZ of the focuser.
+In run 2, every predicted start was the previous sweep's focus, moved by
+the difference of the two filters' run-1 offsets and, in seven of them, by
+a temperature term (−1.5 steps, or −7.4 for the first). Each step from L to
+O predicted with −64 and started 7–8 steps below the fitted focus. Each
+step from G to R predicted with +25 and started on it. Nine of the 21 moves
+were skipped, the predicted start lying within half a CFZ of the focuser.
+Those sweeps began where the focuser stood, 3–13 steps from the focus they
+found.
 
 ## Observations
 
@@ -135,14 +140,18 @@ moves were skipped, the start lying within half a CFZ of the focuser.
    - **The effect:** a filter measured t minutes after its round's L
      carries about t × that rate. In run 1 the filters came 2 (R) to 11
      (O) minutes after L; in run 2, 2 (O) to 11 (R).
-   - **How the two runs differ:** each by the amount and in the direction
-     its timing predicts. R reads lower in run 2, where it came last; O
-     and S read higher in run 2, where they came first.
+   - **How the two runs differ:** mostly in the direction their timing
+     predicts. R and G read lower in run 2, where they came later; H, S
+     and O read higher, where they came earlier. B, measured 6–7 minutes
+     after L in both runs, reads the same.
 
    Correcting each difference against L interpolated linearly to the
    moment its sweep started, between that round's L and the next, brings
    the two runs within 4.7 steps of each other. Round 3 extrapolates the
-   round 2→3 rate.
+   round 2→3 rate. No gap the correction leaves has run 2 the higher: they
+   run from 0 to −4.7 steps, which a linear drift of L does not account for.
+   Drift that is not linear, or offsets that change with temperature,
+   would leave such a remainder.
 
    | filter | run 1, corrected rounds → median | run 2, corrected rounds → median | run 2 − run 1 | mean, rounded: **written** |
    |---|---|---|---:|---:|
@@ -159,16 +168,18 @@ moves were skipped, the start lying within half a CFZ of the focuser.
    `position`), not something focus-model computes. Run 2's own
    predictions point the same way: its starts across a filter change used
    run 1's uncorrected offsets, and the step from L to O, whose offset
-   carried the most drift, missed by +7 to +8 each round.
+   carried the most drift, started 7–8 steps below focus each round.
 
-2. **The focuser's probe trails the focus early in the night.** Over the
-   26 minutes of run 1's L sweeps the probe fell 0.5 °C (13.6 → 13.1), for
+2. **Early in the night, focus moved 2.4–3.7 times as far as the probe's
+   temperature predicts.** Over the 26 minutes of run 1's L sweeps the probe fell 0.5 °C (13.6 → 13.1), for
    −26 steps of focus. At 14.745 steps/°C the probe's reading accounts for
    7 of them. Run 2's L moved −14 steps over 0.4 °C (12.4 → 12.0), where
    the coefficient accounts for 6. So the predictions inside run 1 that
    carried a temperature term (−2.9 to −5.9 steps per round) still
    started 6–13 steps above where focus had gone. The coefficient's own
-   fit pools runs taken through whole nights.
+   fit pools runs taken through whole nights. These runs do not tell a
+   probe that lags the optics apart from a coefficient that does not fit
+   this hour of the night, or from drift with another cause.
 
 3. **The narrowband filters focus at the broadband exposure.** At 4 s the
    H, S and O reference frames listed 48–83 stars. Every narrowband sweep
