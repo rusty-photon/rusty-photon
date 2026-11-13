@@ -1,87 +1,12 @@
 # Zwo-Camera Service Design
 
-> **Status:** **Phase E (Track B full Camera) landed.** The `services/zwo-camera`
-> crate now implements the full ASCOM `Device` + `Camera` surface over the
-> `zwo-rs` SDK seam (`backend.rs` → production `ZwoCameraHandle` + a unit-test
-> mock): connection lifecycle, sensor geometry, symmetric binning, ROI with the
-> ASI `%8`/`%2` alignment rules, gain/offset, cooling, readout modes, ST4
-> pulse-guiding, and the snap-mode exposure state machine (start, abort
-> *discards* / graceful stop *preserves*, `ImageArray`, `CameraState`,
-> `PercentCompleted`, mid-exposure `Error`), plus serial-derived identity and the
-> setup pages. The blocking SDK chain runs on
-> `spawn_blocking` inside a detached task, with a generation counter +
-> `result_lock` so abort/disconnect invalidate a late-completing capture; the
-> camera lock is released during the integration so concurrent reads (and the
-> in-flight-exposure check) are not blocked. It is gate-green: **45 unit tests**
-> (against the mock seam), the **57 BDD scenarios** across the six camera feature
-> files (now live), a full
-> **ConformU** pass (both suites), clippy
-> `--all-features`, and **Bazel** (`lib`/`binary`/
-> `unit_test` are first-class `//...` targets verified on Linux; the `bdd` /
-> `conformu_integration` suites run under Bazel (tagged `bdd` / `conformu`),
-> mirroring qhy-camera; `MODULE.bazel.lock`
-> repinned). **EFW filter wheels are out of scope** — re-planned as a future
-> separate `zwo-filterwheel` service by
-> [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)
-> (2026-07-10), which also narrowed this binary's native link to the camera
-> SDK only (zwo-rs `camera` feature) and removed the `filterwheel.enabled`
-> config toggle + `filter_names` override this doc previously specified.
->
-> **ConformU — passes.** The `tests/conformu_integration.rs` harness is wired
-> (gated on the `conformu` feature; skipped without `CONFORMU_PATH`). Both ConformU
-> suites now pass cleanly against the simulation backend — *"no errors, warnings
-> or issues found"* and *"all members returned within their target response
-> times"*. Getting there took three fixes: (1) the `zwo-rs` sim now models the
-> writable `Exposure` control and (2) fills the 52 MB full frame in parallel
-> (rayon + bulk `RngCore::fill_bytes`, ≈11 s → ≈0.01 s, clearing the `StartExposure`
-> timeout) — both in rev `3c32e59`; and two **driver** fixes surfaced once ConformU
-> could finally run: (3a) `CameraXSize`/`CameraYSize` are reported *aligned* so the
-> full frame at every bin (`NumX = CameraXSize/bin`) is a valid ASI ROI — the
-> ASI2600's 6248 is reported as **6240** (R4), since ConformU exposes the binned
-> full frame at each bin and 6248/2 = 3124 is not a multiple of 8; and (3b)
-> `PulseGuide` is now **asynchronous** (returns immediately, `IsPulseGuiding`
-> tracks the pulse to its deadline) instead of blocking for the pulse duration,
-> which exceeded ConformU's 1 s response target. **Now also verified against real
-> hardware (2026-06-20):** both suites pass on a Linux x86_64 dev box, driven
-> against the production **non-`simulation`** binary (real FFI path), for two
-> physical cameras — a cooled **ASI1600MM-Cool** (12-bit, `MaxADU` 4095,
-> `noserial` identity fallback) and an uncooled **ASI178MM** (14-bit, `MaxADU`
-> 16383, real `ASIGetSerialNumber` identity) — exercising both the cooled/uncooled
-> cooler-gating split and both UniqueID paths. Since 2026-07-27 the
-> ASI1600MM-Cool pass is also **recorded** in
-> [docs/validation/](../validation/README.md) on both Linux **and Windows 11**
-> — the Windows run being the first real-hardware exercise of the Windows
-> link path. See *Testing* and *Delivery phasing*.
->
-> **CI provisioning (simulation by default; real link verified nightly).** The
-> `.github/actions/install-zwo-sdk` composite action provisions the SDK on
-> Linux + macOS (INDI mirror) and Windows (ZWO's developer-SDK CDN zips). Because
-> the cross-platform CI (`test.yml`, `conformu.yml`, `safety.yml`) all build the
-> `--all-features`/`conformu` (`simulation`) path — which `cfg`s out the real FFI
-> and references no SDK symbols — they set **`ZWO_SKIP_NATIVE_LINK=1`** so
-> `libzwo-sys/build.rs` omits the link directives and the workspace builds with
-> **no SDK to provision** (no install step, no Windows ~112 MB download). This
-> also lets `safety.yml` (ASan/LSan) sanitize the simulation path instead of
-> excluding the zwo crates. The **REAL** native link + FFI (`build.rs` directives,
-> bindgen bindings, and the `#[cfg(not(feature = "simulation"))]` code) is built
-> and link-checked on Linux/macOS/Windows — plus a Linux runtime FFI smoke — by
-> the dedicated **`native.yml`** workflow (nightly + on any zwo-crate change),
-> and additionally by the Bazel real variant and the Pi nightly. The aarch64
-> Pi-nightly runner provisions the SDK **per run, sudo-free** — `pi-nightly.yml`
-> runs `./.github/actions/install-zwo-sdk` with `sudo: "false"` (stages the blobs
-> under `$RUNNER_TEMP`, symlinks the system libusb/libudev runtime libs for the
-> link names, exports `ZWO_SDK_LIB_DIR` + `LD_LIBRARY_PATH`); `setup-pi-runner.sh`
-> only installs the stable host prerequisites (clang/libclang, libusb-1.0
-> runtime) and the udev device rule.
-> The **Bazel** workflows (`bazel.yml`, `bazel-coverage.yml`) also run
-> `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, like every
-> workspace crate; on the Bazel build the install is unconditional (no narrowing
-> job). **Remaining Track-A validation** (can't be
-> exercised from a Linux dev box): confirm the macOS arm64 + Windows x64 link on
-> real runners (both the Cargo *and* Bazel legs — under Bazel, the Windows
-> test-runtime DLL discovery is the one unproven piece), re-run the updated
-> `setup-pi-runner.sh` on the Pi, and pin the SDK refs / add download caching
-> (the Windows camera zip is ~112 MB). See *Gating plan* and *Open questions*.
+> **Status:** `services/zwo-camera` serves the full ASCOM `Device` + `Camera`
+> surface for every connected ASI camera over the `zwo-rs` SDK seam, with
+> serial-derived identity, device claims and the setup pages. Both ConformU
+> suites pass against the `simulation` backend in CI and against physical
+> cameras on Linux and Windows (*Testing*). Of ZWO's SDKs the binary links the
+> camera's alone: the EAF focuser is [`zwo-focuser`](zwo-focuser.md), and no
+> filter wheel is served here (*FilterWheel*).
 
 ## Overview
 
@@ -90,11 +15,11 @@ hardware. It exposes a connected ASI camera — exposures, ROI/binning,
 gain/offset, cooling, readout, ST4 pulse-guiding — over ASCOM Alpaca on a
 fixed port so the `rp` orchestrator (and any Alpaca client: NINA, SGPro,
 SharpCap) can drive it like any other device. Other ZWO device families are
-separate services (ADR-014): the EAF focuser is
+separate services: the EAF focuser is
 [`zwo-focuser`](zwo-focuser.md), and the EFW filter wheel is a future
 `zwo-filterwheel` service.
 
-It is the ZWO analogue of the in-design [`qhy-camera`](qhy-camera.md) service and
+It is the ZWO analogue of the [`qhy-camera`](qhy-camera.md) service and
 reuses the same `ascom-alpaca` server framework and the
 [`sky-survey-camera`](sky-survey-camera.md) (simulator) /
 [`qhy-focuser`](qhy-focuser.md) (hardware driver) scaffolding.
@@ -102,7 +27,7 @@ reuses the same `ascom-alpaca` server framework and the
 **Provenance.** The behaviour is derived from open ZWO drivers as a *behavioural
 reference only* — INDI `indi-asi`, INDIGO `ccd_asi`/`wheel_asi`, and
 [`python-zwoasi`](https://github.com/stevemarple/python-zwoasi). **No code is
-copied** (some references are GPL — see *Behavioural reference & licensing*),
+copied** (some references are GPL — see *References*),
 the same clean-room discipline `qhy-camera` took toward `qhyccd-alpaca`.
 
 **Not cross-platform.** Like `qhy-camera`, this service links a **native vendor
@@ -117,77 +42,69 @@ the same:
 |---|---|---|
 | **SDK license** | Closed/proprietary; redistribution unresolved → authenticated/internal cache tier | **MIT** ("Copyright 2015, ZWO Company") → blob may be cached/redistributed on the **public** R2 cache mirror |
 | **Rust FFI layer** | Published `qhyccd-rs`/`libqhyccd-sys` already exist; driver just writes the device layer | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
-| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature since ADR-014 (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`) |
+| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`) |
 
 Net: ZWO is **legally much easier** but **mechanically more work up front** (we
 build the FFI QHY got for free). The device-trait layer is *easier* than QHY — a
 cleaner C API and more ASCOM features map natively (see *ASCOM Camera surface*).
-See [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md) for the FFI-crate /
-caching decision and [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) for the
-full decision record.
 
 ---
 
 ## Native dependency & build gating (the crux)
 
-This is the single most consequential fact about this service and the reason it
-is delivered in two tracks.
+This is the single most consequential fact about this service.
 
 - The imaging path is `zwo-camera → zwo-rs → libzwo-sys → ` the **ZWO ASI
   camera SDK** (`libASICamera2`, a source-less native binary) **+ libusb-1.0**.
 - `libzwo-sys`'s `build.rs` emits `cargo:rustc-link-lib` per enabled device
-  feature (ADR-014); this service builds `zwo-rs` with `camera` only, so the
+  feature; this service builds `zwo-rs` with `camera` only, so the
   link is `ASICamera2` + `dylib=usb-1.0` (plus `stdc++`/`c++`) — the EFW/EAF
   SDKs are linked (and shipped) by their own services.
 - **Consequence:** *every machine that compiles this package* — dev laptops, CI
   runners, Bazel actions — needs the ASI camera SDK installed and discoverable,
   plus `libusb-1.0` dev headers. Not just machines with a camera attached.
   (Bazel builds the shared `zwo-rs` targets with the union of device features,
-  so Bazel actions provision all the blobs — see the ADR.)
+  so Bazel actions provision all the blobs.)
 - The `zwo-rs` **`simulation` feature** (which this service forwards as its own
   `simulation` feature) makes the build **camera-free, NOT SDK-free**: it
   fabricates fake frames (and EFW position/moving) at runtime. The native SDK is
-  still required at link time. *(The ZWO SDK ships **no** simulation backend —
+  still required at link time, unless `ZWO_SKIP_NATIVE_LINK=1` omits the link
+  directives: a `simulation` build references no SDK symbol, so it then links
+  with no SDK at all, as the CI jobs that build only that path do (*Gating
+  plan*). *(The ZWO SDK ships **no** simulation backend —
   unlike `qhyccd-rs` — so the simulator is wholly fabricated inside `zwo-rs`.)*
 
 ### Why this matters for rusty-photon specifically
 
-The workspace is **100% pure-Rust at the link layer** since the `cfitsio` purge
-([ADR-001 Amendment A](../decisions/001-fits-file-support.md)). `qhy-camera` is
-the **first** native-SDK exception; `zwo-camera` is the **second**. The
-difference is licensing: ZWO's SDK is **MIT**, so unlike the QHY blob it may live
-on the **anonymous-read public** cache mirror (`cache.rustyphoton.space`) rather
-than the authenticated/internal tier — the attribution notice must travel with
-the cached blob. See [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md).
+Outside the drivers built on a vendor SDK and their FFI crates, nothing in the
+workspace needs a native library installed to build: `qhy-camera`,
+`zwo-camera`, `zwo-focuser` and `svbony-camera` each link their vendor's SDK
+through one. What sets ZWO's apart from QHY's is
+licensing: ZWO's SDK is **MIT**, so unlike the QHY blob it may live on the
+**anonymous-read public** cache mirror (`cache.rustyphoton.space`) rather than
+the authenticated/internal tier — the attribution notice must travel with the
+cached blob.
 
 ### Gating plan
 
 | Concern | Mechanism |
 |---|---|
-| local dev (SDK required) | `zwo-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it with `bazel run //.github/actions:install -- zwo-sdk`, which installs what CI installs, by the action's own module (into `/usr/local` on Linux and macOS); `bazel build //...` then builds the package like any other. Documented here and in the service README. |
-| CI | An explicit SDK-provisioning step (`./.github/actions/install-zwo-sdk`) **pulls the pinned ASI/EFW/EAF SDK from the INDI mirror** (Linux/macOS, pinned by `REF` in the action's `zwo-sdk.mjs`) **or ZWO's CDN** (Windows, unpinned "latest") + installs `libusb-1.0-0-dev`, before building/testing this package, as `bazel.yml` / `native.yml` / `scheduled.yml` do before their builds. The Linux/macOS mirror fetch is cached (keyed on the arch folder, the files and `REF`) so a warm cache skips it — the mirror otherwise rate-limits CI's ephemeral IPs (429s; see the action's own doc comment and issue #476); the Windows download is cached per ISO week, and the newest earlier week's stands in when ZWO's CDN fails. Required wherever the real link path is exercised; the simulation-only `test.yml` / ConformU legs build SDK-free via `ZWO_SKIP_NATIVE_LINK=1`, and `cargo check`/clippy jobs (no linker) skip it too. |
-| Raspberry Pi nightly runner | **Sudo-free per-run** (the runner is sudo-less for public-repo safety): `pi-nightly.yml` runs `./.github/actions/install-zwo-sdk` with `sudo: "false"` — stages the `armv8` blobs under `$RUNNER_TEMP`, symlinks the system libusb/libudev *runtime* libs to satisfy `-lusb-1.0`/`-ludev` (no -dev package), and exports `ZWO_SDK_LIB_DIR` + `LD_LIBRARY_PATH` (the blobs carry no SONAME). `scripts/setup-pi-runner.sh` installs only the stable host prerequisites (clang/libclang-dev, libusb-1.0 runtime) — no device-access udev rule: this runner is CI-only and never has a physical camera attached, so the `99-asi.rules` rule below applies only to *production packaging* (`services/zwo-camera/pkg/`), not this runner. Mirrors the QHYCCD per-run model → self-healing for SDK bumps. **aarch64 (Pi 5) confirmed linking.** |
-| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party** ([ADR-010](../decisions/010-vendor-zwo-rs.md)), so the repo owns their `BUILD.bazel`: `libzwo-sys` is the repo's first first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. Every workspace crate builds and tests under Bazel, so a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary (linked against `zwo-rs_sim`) and bind a port — run under Bazel, tagged `bdd` / `conformu` (mirroring qhy-camera). The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep with a **narrowed** role — it no longer flips a single `@cr` variant; it just keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. Verified on Linux: `bazel build //crates/zwo-rs/... + //services/zwo-camera/...` and `bazel test //services/zwo-camera:zwo-camera_unit_test` (PASSED). A future hermetic `crate.annotation` (turning the SDK into a Bazel-managed `cc_import` dep, removing the imperative install) is optional cleanup, not a prerequisite. After any change to `Cargo.lock` or any workspace `Cargo.toml` (a version bump included), run `cargo ci repin-bazel-lock` (Rule 10). |
+| local dev (SDK required) | `zwo-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it with `bazel run //.github/actions:install -- zwo-sdk`, which installs what CI installs, by the action's own module (into `/usr/local` on Linux and macOS); `bazel build //...` then builds the package like any other. On Windows the build also needs LLVM/libclang for bindgen (`LIBCLANG_PATH`), which CI runners ship and a fresh Windows box does not, `ZWO_SDK_LIB_DIR` pointing at the SDK's `lib\x64` for the link, and `ASICamera2.dll` beside the executable to run. Documented here and in the service README. |
+| CI | An explicit SDK-provisioning step (`./.github/actions/install-zwo-sdk`) **pulls the pinned ASI/EFW/EAF SDK from the INDI mirror** (Linux/macOS, pinned by `REF` in the action's `zwo-sdk.mjs`) **or ZWO's CDN** (Windows, unpinned "latest") + installs `libusb-1.0-0-dev`, before building/testing this package, as `bazel.yml` / `conformu.yml` / `native.yml` / `scheduled.yml` do before their builds. The Linux/macOS mirror fetch is cached (keyed on the arch folder, the files and `REF`) so a warm cache skips it — the mirror otherwise rate-limits CI's ephemeral IPs (429s; see the action's own doc comment); the Windows download is cached per ISO week, and the newest earlier week's stands in when ZWO's CDN fails. `test.yml` and `safety.yml` (ASan/LSan) build only the `simulation` path and set `ZWO_SKIP_NATIVE_LINK=1`, so they provision no SDK — which also lets the sanitizers cover the zwo crates rather than exclude them — and `cargo check`/clippy jobs (no linker) skip it too. The real link and FFI are built on Linux, macOS and Windows, with a Linux runtime FFI smoke (`cargo test -p zwo-rs` against the installed SDK), by `native.yml`: nightly, and on every push to `main` that touches the zwo crates, services or the SDK action. |
+| Raspberry Pi nightly runner | **Sudo-free per-run** (the runner is sudo-less for public-repo safety): `pi-nightly.yml` runs `./.github/actions/install-zwo-sdk` with `sudo: "false"` — stages the `armv8` blobs under `$RUNNER_TEMP`, symlinks the system libusb/libudev *runtime* libs to satisfy `-lusb-1.0`/`-ludev` (no -dev package), and exports `ZWO_SDK_LIB_DIR` + `LD_LIBRARY_PATH` (the blobs carry no SONAME). `scripts/setup-pi-runner.sh` installs only the stable host prerequisites (clang/libclang-dev, libusb-1.0 runtime) — no device-access udev rule: this runner is CI-only and never has a physical camera attached, so the device rule below applies only to *production packaging* (`services/zwo-camera/pkg/`), not this runner. Mirrors the QHYCCD per-run model → self-healing for SDK bumps. **aarch64 (Pi 5) confirmed linking.** |
+| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party**, so the repo owns their `BUILD.bazel`: `libzwo-sys` is a first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. Every workspace crate builds and tests under Bazel, so a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary (linked against `zwo-rs_sim`) and bind a port — run under Bazel, tagged `bdd` / `conformu` (mirroring qhy-camera). The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep for one reason: it keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. After any change to `Cargo.lock` or any workspace `Cargo.toml` (a version bump included), run `cargo ci repin-bazel-lock` (Rule 10). |
 
 ### udev / USB
 
-ZWO devices need a udev rule (`99-asi.rules`: VID `0x03c3`, `MODE=0666`,
-`usbfs_memory_mb=200` for USB3 throughput). The EFW is USB-HID (no kernel
-driver) but the SDK still talks libusb. macOS `.dylib`s need `install_name_tool`
-fixing before linking (INDI automates this).
-
-### Open questions still to resolve before Track A lands
-
-1. **`zwo-rs` maturity.** The FFI crates are author-maintained and pre-1.0. They
-   are now **vendored first-party** (dual-homed) at `crates/zwo-rs/`
-   ([ADR-010](../decisions/010-vendor-zwo-rs.md)), so the lockstep git-rev pin is
-   retired — edits are in-tree; the crates are still published to crates.io from
-   the vendored subdirs for outside consumers.
-2. **macOS `EFWGetNum` thread-safety.** Reportedly not thread-safe on macOS →
-   enumeration is serialized (see *Concurrency*).
-3. **Pi 5 aarch64 + macOS arm64 link.** The `libzwo-sys` skeleton links green on
-   Linux x86_64 and locally on aarch64; CI green on Pi 5 + macOS arm64 is the
-   remaining long-pole item (see *Delivery phasing* Phase A).
+ZWO devices need a udev rule granting access to vendor `0x03c3` and raising
+`usbfs_memory_mb` to 200 for USB3 throughput: the package ships
+`90-rusty-photon-zwo.rules`, which gives the devices to the `rusty-photon`
+service group (*Packaging*) rather than making them world-writable
+(`MODE=0666`) as ZWO's own `99-asi.rules` does. The EFW is USB-HID (no kernel driver) but the SDK
+still talks libusb. macOS `.dylib`s need `install_name_tool` fixing before
+linking (INDI automates this). On Windows the camera needs ZWO's own USB driver
+(`asicamusb3.inf`, a direct download from ZWO; v3.28 measured): it carries no
+MS OS descriptors, so WinUSB never binds it on its own.
 
 ---
 
@@ -232,17 +149,15 @@ graph TD;
   (`ASIOpenCamera` + `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` — no
   `ASIInitCamera`, so this passive path touches no camera state); the eager
   per-device connect handshake, which does call `ASIInitCamera`, happens on
-  `set_connected(true)`. A camera that cannot even be *opened* still fails
-  enumeration outright (unchanged from before this call stopped also
-  initialising) — only a post-open **identity fallback (`mint_identity`)**
-  is graceful: older ASI models (e.g. the ASI1600) expose *neither* a hardware
-  serial (`ASIGetSerialNumber`) nor a programmed flash ID (`ASIGetID`) — that
-  read returns a general SDK error. Rather than fail the whole service, the
-  camera falls back to an identity built from its USB port
-  (`noserial-{usb_port}`, UniqueID `ZWO:{name}:noserial-{usb_port}`), so a
-  serial-less camera is still usable; every registered camera has a port
-  (U4, U10), so it is stable across bus reordering and replug. Returns a
-  `BoundServer`.
+  `set_connected(true)`. A camera that cannot be *opened* costs only itself
+  (C0, U5). One that opens but has no serial is not a failure at all — the
+  **identity fallback (`mint_identity`)**: older ASI models (e.g. the ASI1600)
+  expose *neither* a hardware serial (`ASIGetSerialNumber`) nor a programmed
+  flash ID (`ASIGetID`) — that read returns a general SDK error — so the camera
+  takes an identity built from its USB port (`noserial-{usb_port}`, UniqueID
+  `ZWO:{name}:noserial-{usb_port}`) and is still usable; every registered
+  camera has a port (U4, U10), so it is stable across bus reordering and
+  replug. Returns a `BoundServer`.
 - **`camera.rs`** — `ZwoCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `zwo-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** so the async runtime is never
@@ -258,9 +173,11 @@ graph TD;
 - **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages; `lib.rs`
   records what the running server registered, which the camera pages and the
   Cameras section read (*Setup pages*).
-- **`mock.rs`** (feature `simulation`/`mock`) — the hardware-free test backend
-  (the `zwo-rs` `simulation` camera/EFW + a tiny in-crate trait seam over the SDK
-  for unit tests).
+- **`backend.rs`** — the SDK seam (`CameraHandle`): the production
+  `ZwoCameraHandle` over `zwo-rs`, and the unit tests' `MockCameraHandle`
+  (`backend::mock`, test builds only). The `simulation` feature (alias `mock`)
+  swaps the real SDK for `zwo-rs`'s fabricated camera, with which the BDD and
+  ConformU suites run the production handle.
 
 **Concurrency.** The ASI/EFW SDKs are blocking C FFI and are **not** safe to call
 from arbitrary threads concurrently for a single device. Device state (the ROI,
@@ -269,8 +186,7 @@ temperature, the exposure state machine) is cached in atomics and
 `parking_lot::Mutex` cells, none held across an `await`; `StartExposure` pins
 everything that describes its frame, gain and offset included, in one critical
 section (B3, GO2). All SDK calls funnel through `spawn_blocking` and a single
-logical owner per device. EFW enumeration (`EFWGetNum`) is serialized for the
-macOS thread-safety caveat.
+logical owner per device.
 
 The capture's integration wait (`backend.rs`) sleeps against a **real-clock
 deadline** (`Instant::now() + duration`), not accumulated intended sleep time.
@@ -278,14 +194,15 @@ Under blocking-pool oversubscription — e.g. ConformU firing a storm of concurr
 property reads, each a `spawn_blocking` — individual `thread::sleep` calls
 overshoot, and a loop that summed *intended* naps would run the full step count
 regardless of real time, ballooning a 2 s exposure to ~10 s of wall-clock on a
-contended runner (this tripped ConformU's 10 s async-operation timeout on the
+contended runner (enough to trip ConformU's 10 s async-operation timeout on a
 macOS CI runner — a scheduling artifact, not a slow CPU). The deadline bounds the
 integration to the requested duration plus at most one overshooting nap. The same
 real-clock-deadline discipline is applied to every wait loop in the capture path
 (integration, readout-completion poll, and the test backends), so no loop counts
 fixed naps or sums *intended* sleep time. Validated under genuine concurrency:
 three cameras driven by simultaneous ConformU `conformance` suites all stayed
-within their response-time targets (see *Testing*).
+within their response-time targets
+([2026-06-21, on the dev box](../plans/archive/zwo-camera-hardware-validation-2026.md#the-runs)).
 
 **The claim is the cell.** "A capture owns this device" and "here is the cell
 that stops it" are one piece of state — `DeviceState::in_flight_capture`, where
@@ -358,11 +275,11 @@ data-preserving stop (E8) that SVBony has no analogue for.
 ## MVP scope
 
 The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what the
-ASI C API exposes and what `zwo-rs` will wrap.
+ASI C API exposes and what `zwo-rs` wraps.
 
 **In scope (v0)**
 
-- ASCOM Camera ICameraV3 for **every enumerated ASI camera** (each registered as
+- ASCOM Camera (`ICameraV4`) for **every enumerated ASI camera** (each registered as
   a device on the one port), 16-bit (`ASI_IMG_RAW16`) monochrome **and**
   one-shot-colour (Bayer) sensors.
 - Startup enumeration registers all discovered cameras;
@@ -379,7 +296,7 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure`, **including the ASI alignment rules**: width must be a multiple
   of 8 and height a multiple of 2. (The legacy ASI120 USB2 models additionally
-  require `width·height % 1024 == 0`; `check_geometry` does **not** currently
+  require `width·height % 1024 == 0`; `check_geometry` does **not**
   enforce that older-model rule — such a frame would simply be rejected by the
   SDK at `StartExposure`. Adding it is Future Work if an ASI120 USB2 is used.)
 - **Exposure** — `ExposureMin/Max/Resolution` from `ASIGetControlCaps(ASI_EXPOSURE)`
@@ -445,9 +362,9 @@ ASI C API exposes and what `zwo-rs` will wrap.
 
 - **Video mode** (`ASIStartVideoCapture`) — the high-FPS guiding/planetary path;
   v0 is snap-mode only (snap and video are mutually exclusive).
-- **EFW filter wheel** and **EAF focuser** — separate services per ADR-014:
-  the EAF is [`zwo-focuser`](zwo-focuser.md) (landed); the EFW is a future
-  `zwo-filterwheel` service (`docs/plans/zwo-driver.md` Phase F).
+- **EFW filter wheel** and **EAF focuser** — separate services:
+  the EAF is [`zwo-focuser`](zwo-focuser.md); the EFW is a future
+  `zwo-filterwheel` service (*FilterWheel*).
 - **CAA rotator** (`CAA_API.h`) — only if a ZWO rotator is ever in scope.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
 - `FullWellCapacity` (no native ASI field; supply a placeholder only if ConformU
@@ -507,7 +424,7 @@ non-empty map beside a list is refused, below):
 ```
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -595,10 +512,6 @@ Sections:
   pins it. Editable on the server page, whose save answers with the address
   the page moves to.
 
-*(The former `filterwheel.enabled` toggle and per-serial `filter_names`
-override left with the EFW re-scope — ADR-014; they will reappear in the
-future `zwo-filterwheel` service's own config.)*
-
 ### Setup pages
 
 The service configures itself on the two HTML pages the Alpaca Management
@@ -635,9 +548,7 @@ detection, depending on the threshold the client counts saturation at (ST3
 value applies at the reload the save fires, which re-creates every device;
 a hand edit applies at the next reload (`SIGHUP`) or restart.
 
-**The Cameras section** is the device-claims plan's C8, settled as
-[driver-setup-pages.md](../plans/archive/driver-setup-pages.md) D11, the same
-section `svbony-camera` serves:
+**The Cameras section** is the same section `svbony-camera` serves:
 
 - **Two modes**, chosen by a radio: *serve every ZWO camera the USB scan
   places, numbered in port order* — no list (U10) — and *serve only the
@@ -728,7 +639,8 @@ section `svbony-camera` serves:
   section and never shown.
 - **Validation** on every save is the load's: unknown keys are rejected at
   deserialize (`deny_unknown_fields`, as in zwo-focuser), so typos and
-  removed keys (notably a pre-ADR-014 `filterwheel` section) fail loudly
+  keys this service does not read (a `filterwheel` section among them: the
+  EFW is a separate service's, *FilterWheel*) fail loudly
   instead of being silently ignored, and the `usb_devices` rules above run
   at load and on every save alike (U9). `devices` keys are free-form serial
   strings and the override values free-form display strings, so there is
@@ -774,13 +686,13 @@ A listed camera keeps exactly this identity, read through the same
 uninitialised open — the list pins its number, not its identity (U5). Every
 camera the service registers has a port, listed or placed with no list
 (U10), so the `noserial-{usb_port}` fallback holds across bus reordering and
-replug, where an enumeration index let two serial-less cameras of one model
-swap (the ASI1600MM-Cool read `noserial-2` beside two other cameras and
-`noserial-0` alone, *On hardware*). It follows the socket: moved to another
-port, the camera is another device, which is what the list already asks the
-operator to edit (the device-claims plan's D4.6). A placeholder's `UniqueID`
-has its own fixed form, `placeholder:zwo-camera:{usb_port}`, which no
-camera's can take (U4).
+replug, where an enumeration index would not: the SDK's order changes with
+what else is on the bus (the ASI1600MM-Cool has enumerated at index 2 beside
+two other cameras and at 0 alone), so two serial-less cameras of one model
+could swap. It follows the socket: moved to another port, the camera is
+another device, which is what the list already asks the operator to edit. A
+placeholder's `UniqueID` has its own fixed form,
+`placeholder:zwo-camera:{usb_port}`, which no camera's can take (U4).
 
 ---
 
@@ -830,7 +742,10 @@ EAF; those belong to the other zwo services.)
   landing while that capture is still draining is E10. A camera that leaves the
   bus while connected is C6's.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
-  camera does not affect the others enumerated on the same service.
+  camera does not affect the others enumerated on the same service. On
+  hardware, with three cameras on one service, each connect left the others'
+  `Connected` as it was, and a 2 s exposure on one left the other two `Idle`
+  with `ImageReady` false.
 - **C5.** No code path in this service pushes cooler state or any other
   actuation on startup, connect, or a setup-page save (workspace tenet
   [*no actuation on connect*](../workspace.md#project-tenets)); cooler commands
@@ -838,29 +753,31 @@ EAF; those belong to the other zwo services.)
   on connect. The C0 serial read runs only `ASIOpenCamera` +
   `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera`
   (`zwo_rs::Sdk::open_uninitialised` + `UninitialisedCamera::serial`)
-  on every camera the configuration serves — every enumerated camera with no
-  `usb_devices` list, only those placed on listed ports with one (U1) — at
+  on every camera the configuration serves — every camera the USB join placed
+  with no `usb_devices` list (U10), only those placed on listed ports with one
+  (U1) — at
   *service start* and on every reload (a setup-page save's, `SIGHUP`'s, or
   U6's own) —
   `ASIOpenCamera` is documented by the vendor SDK as not affecting a capturing
   camera. It deliberately never calls `ASIInitCamera` (which resets controls,
   e.g. the cooler, to SDK defaults); that call is reserved for the per-device
   `set_connected(true)` handshake (C1), so startup and reload touch no camera
-  state. (Resolved issue #637; previously this path ran `ASIInitCamera` on
-  every enumerated camera at startup.) Gain and offset hold to the same rule:
-  the connect handshake only *reads* them (GO1), and they are written only by
-  the arm of an operator-started `StartExposure` (GO2).
+  state. Gain and offset hold to the same rule: the connect handshake only
+  *reads* them (GO1), and they are written only by the arm of an
+  operator-started `StartExposure` (GO2). On hardware, `CoolerOn` reads
+  `false` after every connect
+  ([2026-08-05 record](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md)).
 - **C6.** **A camera that has left the bus reads disconnected.** A camera that
   loses its power or its cable while connected keeps its open SDK handle, and
   `Connected` is this driver's own record of that handle: a connect sets it, a
   disconnect clears it, and nothing else changes it. Left there, a departed
-  camera answered `Connected == true` for as long as the service ran, along with
-  every member served from cache (the geometry, `BinX`, `Gain`, `Offset`,
+  camera would answer `Connected == true` for as long as the service ran, along
+  with every member served from cache (the geometry, `BinX`, `Gain`, `Offset`,
   `ReadoutMode`, and the capability flags read from `ASI_CAMERA_INFO`, E12).
-  Its next exposure failed as a generic E9 `Error`, and rp's reconnect
-  supervisor, which takes `Connected == true` as healthy, never re-established
-  it. The session stayed broken even after the camera came back, because its
-  SDK handle never recovers.
+  Its next exposure would fail as a generic E9 `Error`, and rp's reconnect
+  supervisor, which takes `Connected == true` as healthy, would never
+  re-establish it. The session would stay broken even after the camera came
+  back, because its SDK handle never recovers.
 
   **What the SDK does when a camera leaves (measured).** On Linux with ASI SDK
   1.41, with the cameras taken off the bus by cutting their hub's power:
@@ -920,7 +837,7 @@ EAF; those belong to the other zwo services.)
   camera lock: a close clears the mark as it lets the camera go, so two
   separate reads could describe a live session that never existed.
 
-  **Only a failure asks (decided 2026-10-06). A blank frame counts as one.**
+  **Only a failure asks. A blank frame counts as one.**
   Nothing else runs the check: no timer, and no check on reads. The
   `Connected` read, `CCDTemperature` and the cache-served members keep
   answering normally on a departed camera, so a client that reads only those
@@ -985,11 +902,11 @@ EAF; those belong to the other zwo services.)
     client call.
   - **Back.** A plain reconnect found each camera by its identity, each device
     opening its own body (told apart by `GainMax`).
-  - **Switched off and on with nothing failing in between.** On the build
-    before this rule, a session held across such a blink failed every
-    capture with `GENERAL_ERROR` until a client reconnected. Now its next
-    exposure fails, the check finds its ID answering `CAMERA_CLOSED`, and the
-    session ends. A reconnect then works. The cost is one failed exposure.
+  - **Switched off and on with nothing failing in between.** The session's
+    next exposure fails, the check finds its ID answering `CAMERA_CLOSED`, and
+    the session ends. A reconnect then works. The cost is one failed exposure.
+    A build without this rule, run the same way, failed every capture with
+    `GENERAL_ERROR` until a client reconnected.
   - The control camera on USB3 kept its session and took frames throughout.
 
   **Windows answers the same**, on the same three cameras and SDK 1.41, in a
@@ -1006,13 +923,12 @@ EAF; those belong to the other zwo services.)
 
 ### Device claims (`usb_devices`)
 
-The rules for an operator's `usb_devices` list (see "Configuration"),
-following the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
-Part A, of which this driver is phase C3. U1-U9 are the list's rules. U10 is
-the no-list default's, which runs the same scan, join and identity opens
-(plan C5), and U11 is what `zwo-camera doctor` reports about both.
+U1-U9 are the rules for an operator's `usb_devices` list (see
+"Configuration"). U10 is the no-list default's, which runs the same scan,
+join and identity opens, and U11 is what `zwo-camera doctor` reports about
+both.
 
-They are [`svbony-camera`](svbony-camera.md)'s U1-U9 (plan C2) with ZWO's
+They are [`svbony-camera`](svbony-camera.md)'s U1-U9 with ZWO's
 facts in place of SVBony's, and the vendor-neutral half is the same code. In
 `rusty-photon-doctor-checks`' `claims` module: the join, the list validation,
 port order, the scan source, the placeholder's error code, `UniqueID` form
@@ -1052,13 +968,13 @@ on its own (U5).
   rescan has given the newcomer the listed camera's startup index, which a
   connect tries first. A listed camera re-cabled onto an
   unlisted port while the service runs is likewise still opened at its listed
-  number. Both are a reload's to correct: it places every camera afresh. The
-  device-claims plan's D8 records watching placement as out of scope, and a
-  passive scan on every connect to re-confirm the port is the cost that would
-  close this. An SDK enumeration that fails after a scan that ran fails the
-  start or reload, with or without a list, as it always has (C0). Only the
-  scan, which the list adds, is made non-fatal and retried. None of these
-  steps initialises a camera, let alone actuates one, and a reload — a
+  number. Both are a reload's to correct: it places every camera afresh.
+  Placement is not watched: closing this would take a passive scan on every
+  connect to re-confirm the port, a cost this design does not pay. An SDK
+  enumeration that fails after a scan that ran fails the start or reload,
+  with or without a list (C0). Only the scan is non-fatal and retried (U6,
+  U10). None of these steps initialises a camera, let alone actuates one, and
+  a reload — a
   setup-page save's, `SIGHUP`'s, or U6's own — runs the same path (tenet 3,
   C5).
 - **U2. Placing a camera on a port is a join.** No ASI SDK call reports a USB
@@ -1161,11 +1077,11 @@ on its own (U5).
   Every reason ends with the way back: once the camera is fixed, restart the
   service, which re-opens every camera it serves. The failed
   scan's is the exception: the service re-scans and rebuilds on its own
-  (U6), so it says that, and sends nobody to restart anything. (The device-
-  claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
-  a port-pairing signal the collectors do not read yet, so a camera that fell
-  back to USB 2 speed is reported by the generic reasons above, and shows in
-  `doctor --devices` on its other spelling.)
+  (U6), so it says that, and sends nobody to restart anything. (A hint that
+  *a camera is on this port's USB 2.0 twin* would need a port-pairing signal
+  the collectors do not read, so a camera that fell back to USB 2 speed is
+  reported by the generic reasons above, and shows in `doctor --devices` on
+  its other spelling.)
 
   A placeholder is a registered Camera that cannot connect tonight:
 
@@ -1183,7 +1099,7 @@ on its own (U5).
   - `UniqueID` is `placeholder:zwo-camera:<usb_port>`, a form no camera's
     can take, so a client that remembers devices by `UniqueID` never mistakes
     the stand-in for the camera, and central doctor can recognise it in
-    `configureddevices` (plan C5).
+    `configureddevices`.
   - Its setup page, `/setup/v1/camera/<n>/setup`, says which port it stands
     in for and why, and links to the server page's Cameras section, where
     the list is fixed (*Setup pages*). `SupportedActions` is empty and
@@ -1224,7 +1140,7 @@ on its own (U5).
   a guider does; after the second process's `ASICloseCamera` the first's
   session still read its gain, set its region and completed an exposure. So a
   camera PHD2 holds is not refused by its open: the list, not the open, is
-  what keeps another application's camera out of this service (plan D3).
+  what keeps another application's camera out of this service.
   Windows is unmeasured.
 - **U6. A failed scan serves placeholders, and is retried until it
   succeeds.** A scan that could not run — sysfs unreadable, `powershell.exe`
@@ -1311,13 +1227,11 @@ on its own (U5).
       ]
   ```
 
-  That is the dev box's three cameras, read with no list on 2026-10-11 (the
-  real join, the production build), with the **Device** column the no-list
-  default serves since the plan's C5: the SDK listed them `2, 1, 0` in port
-  order, which C4's no-list default served, with a note that pasting the
-  block renumbers them. Rows are the SDK cameras U2 placed on a port, in port order (the
-  plan's D4.7: hop by hop from the root, each hop compared as the number the
-  platform writes, so `…-0:4.2` precedes `…-0:4.10`). **The SDK id is never
+  That is the dev box's three cameras, read with no list (the real join, the
+  production build). The SDK enumerated them at indices `2, 1, 0` in port
+  order; the **Device** column is the port order the no-list default serves
+  them in (U10). Rows are the SDK cameras U2 placed on a port, in port order
+  (hop by hop from the root, each hop compared as the number the platform writes, so `…-0:4.2` precedes `…-0:4.10`). **The SDK id is never
   shown:** ZWO's serial needs an open (*Device identity*), which `--devices`
   never makes — least of all on a camera another application may be
   streaming. The USB serial is what the bus publishes, usually nothing (`—`),
@@ -1393,23 +1307,6 @@ on its own (U5).
   Each registered camera is the same `ZwoCamera` a list serves, with its
   `UniqueID` (*Device identity*, `noserial-{usb_port}` for one with no serial
   or flash id) and the `name`/`description` its `devices` override gives it.
-
-  **Upgrading from SDK order.** Until the device-claims plan's C5 the no-list
-  default registered every camera the SDK enumerated, in SDK order, opening
-  each, with no USB scan; one camera that could not be opened failed the
-  start; and a serial-less camera was `noserial-{index}`. A rig with one
-  camera keeps its number, 0. With more than one, or a serial-less camera
-  (the ASI1600MM-Cool is one):
-  1. run `zwo-camera doctor --devices` and compare its **Device** column (the
-     numbers served now) with rp's `cameras[].device_number`, or paste its
-     block to pin them;
-  2. re-key any `devices` entry keyed `noserial-<index>` to the
-     `noserial-<port>` the camera now has (or move it into a `usb_devices`
-     entry);
-  3. re-copy any rp `unique_id` pin on a serial-less camera from rp's
-     bound-device log line or `GET /api/equipment`
-     ([rp.md](rp.md#device-identity-pin)): its `UniqueID` changed, and rp
-     refuses the stale pin by name.
 - **U11. `zwo-camera doctor` judges the claims.** The report runs the same
   scan, enumeration and join a start would — and no identity open, so it
   cannot see a camera whose open would fail — and adds the `usb-devices.*`
@@ -1437,13 +1334,14 @@ listed cameras were opened for their identity, and the log named the
 ASI120MC-S's port as neither opened nor served. `Connected = true` on the
 placeholder answered error 1344 (`0x540`) with the reason, which its
 `Description` carried too, and device 1 connected the ASI178MM (its
-`SensorName` and its aligned 3072-pixel width). (The ASI1600MM-Cool's
-`noserial-0` there is the index fallback C5 replaced.)
+`SensorName` and its aligned 3072-pixel width). (That build minted a
+serial-less camera's identity from its enumeration index, hence
+`noserial-0`; the next run shows the port-built form, U10.)
 
 **Without a list, on hardware** (the same box and SDK, 2026-10-12, the
-production build with plan C5's no-list default and a configuration of no
-`usb_devices` key). The SDK enumerated the ASI1600MM-Cool, the ASI120MC-S and
-the ASI178MM in that order, and the service registered them in port order:
+production build and a configuration with no `usb_devices` key). The SDK
+enumerated the ASI1600MM-Cool, the ASI120MC-S and the ASI178MM in that order,
+and the service registered them in port order:
 Camera 0 `ZWO:ZWO-ASI178MM:1915d5081b090900` on `…-usbv2-0:1.2.1`, Camera 1
 `ZWO:ZWO-ASI120MC-S:1f19470620070900` on `…-usbv2-0:1.2.2`, and Camera 2
 `ZWO:ZWO-ASI1600MM-Cool:noserial-pci-0000:c1:00.4-usbv3-0:1.4`, whose identity
@@ -1470,8 +1368,10 @@ in its **Device** column with no renumbering note, and closed with
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor` from the *same* alignment rule R3 validates against, so the
   reported size and the ROI check cannot be aligned to different multiples.
-  Shared with the sibling camera driver that hit the same ConformU failure on
-  different hardware.
+  `qhy-camera` and `svbony-camera` report their extents through the same
+  function. On hardware the ASI1600MM-Cool's 4656×3520 is reported as
+  **4608×3504** (multiples of 96 and 24, for bins 1–4) and the ASI178MM's
+  3096×2080 as **3072×2064**.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's `SupportedBins` and
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
@@ -1504,8 +1404,8 @@ in its **Device** column with no renumbering note, and closed with
   divisor — and walking the bins and coming back returns the client's own frame
   whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
   after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
-  truncated twice and came back 96x96 at (196,196), four pixels short in both
-  extent and origin and no way to get them back short of a reconnect.
+  would truncate twice and come back 96x96 at (196,196), four pixels short in
+  both extent and origin, with no way to get them back short of a reconnect.
   `set_num_x`/`set_num_y` store without validating (the members are set
   independently, so only the combination is checked, at `StartExposure`), so
   whatever the client last set is what the binned view is derived from — and the
@@ -1518,10 +1418,9 @@ in its **Device** column with no renumbering note, and closed with
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
-  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
-  rule was three copies until one drifted, and the drift went unseen because
-  each driver curated its own test cases, so the missing behaviour and its
-  missing test hid each other.
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/): as
+  three copies, one could drift unseen, because each driver curates its own
+  test cases, so a missing behaviour and its missing test hide each other.
 
   **The bin and the sub-frame move as a pair.** The ROI itself is bin-independent,
   but the *view* of it is not, and the two are still read separately: the bin
@@ -1551,7 +1450,10 @@ in its **Device** column with no renumbering note, and closed with
   because it decides which value a client is sent to fix — a zero bin is not a
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
-  in `BinX`.
+  in `BinX`. The messages are camera-core's `GeometryError` texts — *"NumX
+  must be a multiple of 8 and NumY a multiple of 2"*, *"StartX + NumX exceeds
+  CameraXSize / BinX"* — each `INVALID_VALUE` through one conversion, and
+  reach the client unchanged.
 
 ### Exposure
 
@@ -1603,7 +1505,20 @@ in its **Device** column with no renumbering note, and closed with
   exposure, and does not release its in-flight slot: its stop signal is its own,
   and every SDK call it makes is gated on the camera instance it started
   (*Concurrency*, "One stop signal per capture"). Its own result is discarded by
-  the generation guard.
+  the generation guard. On hardware, twelve disconnect points per camera —
+  through the integration and past it into the readout of a full frame — each
+  followed by a reconnect and a differently sized exposure, completed 12 of 12
+  with the second exposure's own geometry on all three cameras
+  ([2026-08-23 record](../validation/2026-08-23-zwo-camera-three-cameras-reconnect/README.md)).
+  The race these rules close does not fire through the Alpaca API on a
+  healthy box: a build without them, driven by the same harness, stayed clean
+  over 12 sweeps and 80 soak iterations, half of them pinned to one core
+  crowded by 64 spinners. The
+  reconnect and the next `StartExposure`, about 300 ms of USB and SDK work,
+  would have to land before the superseded capture's next 20 ms poll, which
+  takes that one capture thread delayed past them — the blocking-pool
+  overshoot of *Concurrency*. So the proof is the unit tests', which force the
+  interleaving (*Testing*).
 - **E11.** The exposure state is a **session's** state, so the members that
   report it — `CameraState`, `ImageReady`, `PercentCompleted`,
   `LastExposureStartTime`, `LastExposureDuration` — answer `NOT_CONNECTED`
@@ -1641,10 +1556,8 @@ in its **Device** column with no renumbering note, and closed with
   opposite failure: a hard-coded promise to abort or stop, made with no device
   to abort on, beside an `AbortExposure`/`StopExposure` that refuse — E11's
   `ImageReady`/`ImageArray` contradiction in a second pair. `IsPulseGuiding`
-  takes the check as session state, for E11's own reason (PG2). This supersedes
-  the earlier position that these members "describe the driver rather than a
-  session"; shared with `qhy-camera`'s E11 and `svbony-camera`'s state-machine
-  step 10 (#1281).
+  takes the check as session state, for E11's own reason (PG2). Shared with
+  `qhy-camera`'s E11 and `svbony-camera`'s state-machine step 10.
 
 ### Gain / offset / readout
 
@@ -1661,7 +1574,7 @@ in its **Device** column with no renumbering note, and closed with
   Gain to choose one"*, and the same for the offset — until a client sets one,
   and no exposure sends that control meanwhile. A failed seed read never fails
   the connect. A control the model does not advertise answers `NOT_IMPLEMENTED`
-  from all four of its members, as before (GO3); `GainMin/Max` and
+  from all four of its members (GO3); `GainMin/Max` and
   `OffsetMin/Max` are unchanged by any of this.
 - **GO2 (a gain or offset is cached, and `StartExposure` arms it).**
   `set_gain`/`set_offset` validate against the cached `[min, max]` — out of
@@ -1710,9 +1623,9 @@ in its **Device** column with no renumbering note, and closed with
 
   **Measured on hardware** (ASI1600MM-Cool, Linux —
   [record](../validation/2026-10-01-zwo-camera-asi1600mm-cool-gain-offset-linux/README.md)).
-  The two differ. With the setter writing the SDK, as before this rule, an
-  **offset** set 1.2 s into a 3 s exposure landed in that exposure's frame
-  whole — its median went from 224 to 592, the same as the next frame at the
+  The two differ. With the setter writing the SDK (a build without this
+  rule), an **offset** set 1.2 s into a 3 s exposure landed in that
+  exposure's frame whole — its median went from 224 to 592, the same as the next frame at the
   new offset — so the offset is taken at readout. A **gain** set the same way
   did not: the frame stayed at 1664 and only the next one moved (4256), so
   the gain is taken when the exposure starts. With the value cached the frame
@@ -1760,13 +1673,13 @@ in its **Device** column with no renumbering note, and closed with
   - **The first handshake to publish wins.** A handshake publishes only into
     a cell that is still empty, so a later one cannot replace an earlier
     one's seed, or a set a client has made since, with its own older
-    reading. Client requests no longer run two handshakes at once, since
+    reading. Client requests do not run two handshakes at once, since
     `set_connected` runs connection changes one at a time (C6), but the
     connect path keeps this guard rather than depending on that.
 
   The bin and ROI, which the handshake also resets, are not emptied: through
   a reconnect's handshake they still answer from the previous session. That
-  is an older gap in this driver's connect, not in the gain cache; a
+  is a gap in this driver's connect, not in the gain cache; a
   connecting gate like `qhy-camera`'s
   ([C7/C8](qhy-camera.md#behavioral-contracts)) would close it for all of
   them. Pinned by
@@ -1777,7 +1690,7 @@ in its **Device** column with no renumbering note, and closed with
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
   the formats it can deliver, in preference order `Raw16` then `Raw8`, and
-  publishes the survivors (`["Raw16", "Raw8"]` on every model measured so far).
+  publishes the survivors (`["Raw16", "Raw8"]` on every model measured).
   `ReadoutMode` defaults to index 0 — the highest precision the camera offers —
   and resets to it on every connect. `set_readout_mode` validates the index;
   out of range → `INVALID_VALUE`. Changing it while an exposure is in flight →
@@ -1791,7 +1704,11 @@ in its **Device** column with no renumbering note, and closed with
 - **RM2.** The selected mode is the driver's whole format story: it is what
   `ASISetROIFormat` receives, what sizes the download buffer
   (`w × h × bytes_per_pixel`), which unpack `ImageArray` uses (1 or 2 bytes per
-  pixel), and what `MaxADU` reports (ST3).
+  pixel), and what `MaxADU` reports (ST3). On the ASI120MC-S, switching
+  `ReadoutMode` over Alpaca changes the delivered frame and `MaxADU` together
+  — the same 64×48 sub-frame ranges 16-17872 in `Raw16` and 0-48 in `Raw8`,
+  whose `MaxADU` is 255 — so the 8-bit download path is proven on hardware,
+  not only in the simulator.
 - **RM3.** A camera advertising **neither** `Raw16` nor `Raw8` fails connect
   with `NOT_CONNECTED`, the advertised list logged at `warn!`. No such ASI model
   is known — `RAW8` is the SDK's universal baseline — but failing loudly beats
@@ -1804,11 +1721,14 @@ in its **Device** column with no renumbering note, and closed with
   `Raw8` on a mono sensor and wrong on a Bayer one while we report `RGGB`.
   **`indi-asi` additionally refuses `RAW16` on any device whose name contains
   `ASI120`/`ASI130`, and that guard is deliberately not ported**: measured on a
-  physical **ASI120MC-S**, which advertises `[Raw8, Rgb24, Y8, Raw16]` *and*
-  delivers `Raw16` correctly at 320×240, full-frame 1280×960 and bin 2 (see
-  "Real-hardware validation"). A name match would force that working camera to
-  8 bits. If a USB2 ASI120/ASI130 is ever shown to misbehave, the guard can be
-  added then — scoped by `is_usb3`, and with evidence.
+  physical **ASI120MC-S** (`is_usb3 = true`, the USB3 refresh of the USB2
+  original), which advertises `[Raw8, Rgb24, Y8, Raw16]` *and* delivers
+  `Raw16` correctly at 320×240, full-frame 1280×960 and bin 2 — read with
+  `crates/zwo-rs/examples/probe_formats.rs`, the probe to re-run against a new
+  model rather than assume this one generalises. A name match would force
+  that working camera to 8 bits. If a USB2 ASI120/ASI130 is ever shown to
+  misbehave, the guard can be added then — scoped by `is_usb3`, and with
+  evidence.
 - **RM5.** The `ImageArray` unpack is total in both directions, and reports the
   **format before the length**: a format the driver cannot unpack (RM4) is
   rejected as such even when the buffer is also short, because the length it
@@ -1827,11 +1747,20 @@ in its **Device** column with no renumbering note, and closed with
   `ASI_CAMERA_INFO.IsCoolerCam`; otherwise the related getters return
   `NOT_IMPLEMENTED`.
 - **K2.** `CCDTemperature` returns the current sensor temperature
-  (`ASI_TEMPERATURE`, 0.1 °C units) when cooling is supported.
+  (`ASI_TEMPERATURE`, 0.1 °C units) whenever the camera advertises that
+  control, cooled or not, and `NOT_IMPLEMENTED` on one that does not (*MVP
+  scope*). On the uncooled ASI178MM it reads the live sensor while the cooler
+  members answer `NOT_IMPLEMENTED` (K1). The first read straight after a
+  connect can return a stale `0.0 °C` and the next the sensor's value: the
+  driver reads the register live, so that is the SDK's `ASI_TEMPERATURE`
+  before its first internal measurement, about a second after the open.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
   `SetCCDTemperature` reads it back.
 - **K4.** `CoolerOn`/`set_cooler_on` map to `ASI_COOLER_ON`; `CoolerPower` is the
-  normalized `ASI_COOLER_POWER_PERC` percent.
+  normalized `ASI_COOLER_POWER_PERC` percent. On the ASI1600MM-Cool with its
+  TEC powered, `CoolerPower` ramps 0 → 24 % while the sensor falls 17.7 °C →
+  6.2 °C in 120 s, and returns to 0 % when the cooler is switched off
+  ([record](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md)).
 
 ### Sensor type & signal
 
@@ -1840,7 +1769,11 @@ in its **Device** column with no renumbering note, and closed with
   `ASI_BAYER_*` — which abbreviates the quad to its first row — onto
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `BayerPattern`, which locates the first red photosite; the offsets themselves
-  are **one implementation** across the three camera drivers.
+  are **one implementation** across the three camera drivers. The ASI120MC-S
+  reports `ASI_BAYER_GR` and `BayerOffsetX/Y` = (1, 0), GRBG — `Gr` and `Gb`
+  are the pair whose offsets transpose each other, so it is the case a
+  mis-mapping would show
+  ([record](../validation/2026-08-07-zwo-camera-three-cameras-linux/README.md)).
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`
   (a finite positive value), **not** `NOT_IMPLEMENTED` — read **live on every
   call**, never from the `CameraInfo` cached at enumeration and never computed.
@@ -1883,8 +1816,8 @@ in its **Device** column with no renumbering note, and closed with
   ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
   so the ceiling belongs to the container, not the ADC. Hardware-measured on a
   12-bit ASI120MC-S: every pixel's low 4 bits are zero and a saturated full
-  frame tops out at exactly `4095 << 4 = 65520` — sixteen times the 4095 this
-  driver used to report, so any client normalising by `MaxADU` mis-scaled
+  frame tops out at exactly `4095 << 4 = 65520` — sixteen times the 4095 that
+  `(2^BitDepth) - 1` gives, so a client normalising by that would mis-scale
   everything above 1/16 of range. The shift — rather than a rescale — is
   **confirmed independently on a 14-bit ASI178MM**, whose pixels carry two
   always-zero low bits at bin 1, so `16 - BitDepth` is a real packing rule and
@@ -1904,10 +1837,12 @@ in its **Device** column with no renumbering note, and closed with
   ceiling: it does not merely round badly, it can make saturation
   **undetectable**. (`rp` also reads the frame's own clip and takes the lower
   of the two — [rp.md](rp.md), `measure_basic` contract, the saturation level —
-  but a client that trusts `MaxADU` alone does not.) Measured through the driver before the margin existed, a
-  comprehensively blown-out frame gave `pixels >= MaxADU` = 0 while 13 655
-  pixels sat at the sensor's real ceiling; with it, the same frame reports
-  6 709 saturated pixels.
+  but a client that trusts `MaxADU` alone does not.) Measured through the
+  driver with `MaxADU` at the shifted full scale (65532), a comprehensively
+  blown-out frame gave `pixels >= MaxADU` = 0 while 13 655 pixels sat at the
+  sensor's real ceiling; with the margin, the same frame reports 6 709
+  saturated pixels
+  ([record](../validation/2026-08-05-zwo-camera-asi178mm-maxadu/README.md)).
 
   **The shortfall is genuinely per-model — all three cameras were blown out
   and they do not agree:**
@@ -1922,7 +1857,14 @@ in its **Device** column with no renumbering note, and closed with
   measured ceiling rather than a conservative approximation. The ASI120MC-S
   really does reach full scale — confirmed at every gain across its 0-100
   range — so identical 12-bit sensors disagree, and no formula derived from
-  `BitDepth` can be exact on all of them.
+  `BitDepth` can be exact on all of them. Driven to complete saturation (gain
+  600, 15 s), every pixel of an ASI1600MM-Cool frame sits at 65504 at every
+  bin, and the same ceiling shows as a clip at gain 100, so it is fixed rather
+  than an artifact of an over-driven gain. The ASI178MM's and the
+  ASI1600MM-Cool's runs, with their ConformU passes at the margin's values,
+  are recorded:
+  [ASI178MM](../validation/2026-08-05-zwo-camera-asi178mm-maxadu/README.md),
+  [ASI1600MM-Cool](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md).
 
   **All three ceilings are confirmed through a second, independent driver
   stack.** Driving the same three cameras through **ZWO's own ASCOM driver**
@@ -1941,7 +1883,9 @@ in its **Device** column with no renumbering note, and closed with
   free: each extra step raises the false-positive band on every sensor that
   does reach its top code, which is why it is one and not two. Any new model
   worth trusting for saturation detection should be run through
-  `probe_ceiling` (or `probe_gain_sweep` for the whole register).
+  `crates/zwo-rs/examples/probe_ceiling.rs`, which overexposes deliberately and
+  prints the histogram tail — what separates a real clip from the brightest
+  thing in the room — or `probe_gain_sweep` for the whole register.
 
   **The cost of being wrong in the safe direction is measured, and it is
   tiny.** On the ASI120MC-S, a blown-out full frame through the driver:
@@ -2029,8 +1973,10 @@ in its **Device** column with no renumbering note, and closed with
 
   - **The shift signature is a bin-1 property.** At bin ≥ 2 the SDK combines
     neighbouring ADC counts, which populates the low bits — an ASI178MM frame
-    at bin 2 looks "rescaled" by the low-bit test. The *ceiling* is unchanged,
-    so the single published `MaxADU` still describes every bin.
+    at bin 2 looks "rescaled" by the low-bit test, and the ASI1600MM-Cool
+    walks the shift down — 4 zero bits at bin 1, 2 at bin 2, none at bins 3-4,
+    consistent with the SDK averaging the binned pixels. The *ceiling* is
+    unchanged, so the single published `MaxADU` still describes every bin.
 
 ### Pulse guiding
 
@@ -2061,14 +2007,16 @@ in its **Device** column with no renumbering note, and closed with
   order are covered by unit tests, since the `simulation` backend always
   reports ST4 present.)*
 
-### FilterWheel — moved to the future `zwo-filterwheel` service
+### FilterWheel
 
-The FW1–FW3 contracts (Names/Position with the `-1` moving sentinel,
-`set_position` range validation, zero `FocusOffsets`) that this section
-previously specified move verbatim to the future separate `zwo-filterwheel`
-service (ADR-014; `docs/plans/zwo-driver.md` Phase F), along with the
-`filter_names` overrides and the removed `@wip` `filter_wheel.feature`
-scenarios.
+This service serves no filter wheel. ZWO's EFW is an independently usable
+device on its own SDK, so it is a separate `zwo-filterwheel` service's, not
+yet built ([`docs/plans/zwo-driver.md`](../plans/zwo-driver.md), Phase F).
+That service's contracts are ASCOM's FilterWheel: `Names` and `Position`,
+with `Position` reading `-1` while the wheel moves, a `Position` set validated
+against the slot range, and zero `FocusOffsets`; per-serial `filter_names`
+overrides; and serialized enumeration, since `EFWGetNum` is reportedly not
+thread-safe on macOS.
 
 ---
 
@@ -2099,7 +2047,8 @@ the SDK has reported removed counts as disconnected: `Connected` reads
 | `Offset` / `OffsetMin` / `OffsetMax` | `ASI_OFFSET`/brightness control, on `Gain`'s terms (GO1/GO2); `NOT_IMPLEMENTED` if absent |
 | `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` |
-| `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` |
+| `CoolerOn` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` (K1) |
+| `CCDTemperature` | The sensor temperature whenever the camera advertises `ASI_TEMPERATURE`, cooled or not (K2) |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam`; `NOT_CONNECTED` while disconnected (E12) |
 | `HasShutter` | `false` (ASI sensors are shutterless), read from the cached `ASI_CAMERA_INFO`; `NOT_CONNECTED` while disconnected (E12) |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E11) |
@@ -2119,36 +2068,54 @@ Standard shape per [`service-lifecycle.md`](../skills/service-lifecycle.md):
 
 ```rust
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
+use zwo_camera::{load_effective_config, serve_and_rebuild, CliOverrides, ServerBuilder};
 
 fn main() -> ServiceResult {
     let args = Args::parse();
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // `zwo-camera doctor [--json | --devices]` runs here and exits.
+
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "zwo-camera",
+        args.log_level,
+        args.service,
+    );
 
     // The default config materializes at the default path on first start. The
     // empty identity-pointer list is deliberate: ASCOM UniqueIDs are derived
     // from the camera SDK serials at enumeration (see "Device identity"), not
     // minted into config.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<zwo_camera::Config>(
         "zwo-camera",
         args.config,
-        &serde_json::to_value(Config::default())?,
+        &serde_json::to_value(zwo_camera::Config::default())?,
         &[],
     )?;
+    let overrides = CliOverrides { port: args.port };
 
     ServiceRunner::new("zwo-camera")
         .with_reload()
-        .run_with_reload(|shutdown, reload| async move {
-            loop {
-                let bound = ServerBuilder::new()
-                    .with_config_source(&config_path, CliOverrides { port: args.port })
-                    .with_reload_signal(reload.clone())
-                    .build()
-                    .await?;           // eager SDK open + enumerate/register devices
-                tokio::select! {
-                    r = bound.start(shutdown.cancelled()) => return r,
-                    () = reload.recv() => continue,
-                }
-            }
+        .scm_mode(args.service)
+        .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
+            // rusty-photon-driver's claims::serve_and_rebuild: a reload rebuilds
+            // from the config file, a failed scan's re-scan from the
+            // configuration being served (U6).
+            serve_and_rebuild(
+                shutdown.token(),
+                reload.clone(),
+                || load_effective_config(&config_path, &overrides),
+                |config, stop| {
+                    let builder = ServerBuilder::new()
+                        .with_config(config)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone())
+                        .with_restart(restart.clone());
+                    // USB scan, SDK enumeration, join, identity opens, register
+                    async move { builder.build().await?.start(stop).await }
+                },
+            )
+            .await?;
+            Ok(())
         })
 }
 ```
@@ -2167,12 +2134,10 @@ request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Testing
 
-Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
-and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **181 unit tests** (with `--all-features`; 149 without, since the
-`simulation` feature gates `lib.rs`'s thirteen `simulation_tests`, the sixteen
-`backend::handle_tests` that drive the production handle against the `zwo-rs`
-simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
+Layered per [`testing.md`](../skills/testing.md). The `simulation` feature,
+which `--all-features` turns on, gates three groups of unit tests: `lib.rs`'s
+`simulation_tests`, the `backend::handle_tests` that drive the production
+handle against the `zwo-rs` simulation, and three of `claims.rs`'s.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -2211,7 +2176,7 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   *inside* that section: that the writes precede `ASIStartExposure` rather
   than follow it under the same lock. Neither double can observe it, so it
   rests on the code's order (E5).
-- **BDD** (`bdd-infra::ServiceHandle`, the six live camera feature files) —
+- **BDD** (`bdd-infra::ServiceHandle`, the six camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
   mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1,
@@ -2221,7 +2186,6 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   (ST1–ST3), pulse-guiding (PG1–PG2), the
   capability surface a disconnected driver may not describe (E12), and
   the setup pages, driven against the `zwo-rs` `simulation` backend.
-  (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
 - **A camera that leaves the bus (C6)** — `camera_departure.feature` starts the
   `simulation` binary with the hidden `--simulation-departure-file <path>`
   flag, which gives each camera's SDK `zwo-rs`'s `Sdk::with_departure_file`.
@@ -2329,291 +2293,45 @@ simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
   `bdd_infra::run_conformu("camera", …)`. Skipped when
   `CONFORMU_PATH` is unset. **Passes both suites** (`alpacaprotocol` +
   `conformance`) against the simulation backend: *"no errors, warnings or issues
-  found"*, all members within their response-time targets. Three fixes got it
-  there — the two `zwo-rs` sim fixes in rev `3c32e59` (writable `Exposure`
-  control; parallel 52 MB frame fill, ≈11 s → ≈0.01 s, clearing the 10 s
-  `StartExposure` timeout), plus two **driver** fixes that only became reachable
-  once ConformU got past `StartExposure`: aligned reported `CameraXSize` (R4, see
-  *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). `zwo-camera` is now
-  wired into `conformu.yml` (Phase G, 2026-06-18): the conformu jobs provision the
-  ZWO SDK and run its ConformU on ubuntu/macOS/Windows.
+  found"*, all members within their response-time targets. `conformu.yml`
+  provisions the ZWO SDK and runs it on ubuntu, macOS and Windows.
 
-**Real-hardware validation (2026-06-20).** Beyond the simulation backend, both
-ConformU 4.3.0 suites (`alpacaprotocol` + `conformance`) pass against **real ZWO
-hardware** on a Linux x86_64 dev box (SDK in `/usr/local/lib`, `99-asi.rules`
-udev rule, world-RW USB node), driven against the production **non-`simulation`**
-binary so the genuine FFI path — `zwo-camera → zwo-rs → libzwo-sys → libASICamera2.so`
-— is exercised end to end, not just the fabricated simulator. Two physical
-cameras were validated, each *"no errors, warnings or issues found"* with all
-members within their response targets:
+**Real-hardware validation.** The evidence trail is
+[`docs/validation/`](../validation/README.md). Both ConformU suites pass
+against the production, non-`simulation` build — the real FFI path,
+`zwo-camera → zwo-rs → libzwo-sys → libASICamera2` — on three physical
+cameras: an ASI1600MM-Cool (cooled, mono, 12-bit, no serial), an ASI178MM
+(uncooled, mono, 14-bit) and an ASI120MC-S (uncooled, colour, 12-bit). This
+service's records, newest first:
 
-> **The `MaxADU` figures recorded below are the values the driver *reported* at
-> the time, and ST3 has since corrected the formula behind them.** Neither run
-> compared the reported ceiling against the pixel values actually delivered; the
-> later ASI120MC-S measurement (below) shows ASI left-shifts sub-16-bit data into
-> the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. The
-> **ASI178MM has since been re-measured** on the bench (2026-08-05) and now
-> reports **65528** — see *ASI178MM — the delivered ceiling* below, the run
-> that established ST3's one-step margin. The **ASI1600MM-Cool has since been
-> re-measured too** (same evening) and reports **65504**, which its hardware
-> was confirmed to deliver exactly. Both cameras named here are now measured
-> against their delivered pixels, closing
-> [#888](https://github.com/rusty-photon/rusty-photon/issues/888).
+- [2026-10-07 — a camera that leaves the bus, Windows](../validation/2026-10-07-zwo-camera-departure-windows/README.md):
+  C6's five probes repeated in a Windows 11 KVM guest, and a sweep of power
+  cuts across a full-frame exposure; ConformU clean on all three cameras.
+- [2026-10-06 — a camera that leaves the bus, Linux](../validation/2026-10-06-zwo-camera-departure-linux/README.md):
+  what the ASI SDK does when a camera leaves, and C6 on hardware; ConformU
+  clean on all three.
+- [2026-10-01 — gain and offset armed by `StartExposure`, ASI1600MM-Cool](../validation/2026-10-01-zwo-camera-asi1600mm-cool-gain-offset-linux/README.md):
+  GO1/GO2 and ST2, with the A/B of a set made during an exposure.
+- [2026-08-23 — reconnect during an exposure, three cameras](../validation/2026-08-23-zwo-camera-three-cameras-reconnect/README.md):
+  E7, E8, C3 and E10 on the real SDK.
+- [2026-08-07 — three cameras on one service](../validation/2026-08-07-zwo-camera-three-cameras-linux/README.md):
+  `rusty-photon-camera-core`'s ROI rules, Bayer offsets and unpack on
+  physical sensors.
+- [2026-08-05 — the ASI1600MM-Cool's delivered ceiling](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md):
+  65504 (ST3), and cooling with the TEC powered (K1-K4).
+- [2026-08-05 — the ASI178MM's delivered ceiling](../validation/2026-08-05-zwo-camera-asi178mm-maxadu/README.md):
+  65528 (ST3), the measurement behind ST3's one-step margin.
+- [2026-07-27 — ASI1600MM-Cool, Windows](../validation/2026-07-27-zwo-camera-asi1600mm-cool-windows/README.md):
+  the Windows link path on a physical camera, in a Windows 11 KVM guest with
+  the camera on USB passthrough.
+- [2026-07-27 — ASI1600MM-Cool, Linux](../validation/2026-07-27-zwo-camera-asi1600mm-cool-linux/README.md).
 
-- **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
-  0.00496 *(the camera was at gain 600; `ElecPerADU` is gain-scaled — see*
-  `ElecPerADU` is gain-scaled *below — so this is 4.96 e⁻/ADU at gain 0)*,
-  sensor 4656×3520 reported as **4608×3504** (R4 align — largest multiples of
-  `lcm(8·bin)`=96 / `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
-  offset 0–100, ST4 `CanPulseGuide`, both stop+abort. The cooler path was
-  separately exercised live (`CoolerPower` ramped from a −10 °C target). This
-  model exposes neither a serial nor a flash ID, so it used the `noserial-0`
-  identity fallback (`mint_identity`) — the documented older-model path.
-- **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
-  0.00258 *(at gain 510, i.e. 0.916 e⁻/ADU at gain 0)*,
-  sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
-  offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
-  hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
-  getters return `NotImplemented` — while `CCDTemperature` still reads the live
-  sensor value (25.6 °C), exactly the decoupled-temperature decision (K2). It
-  reports a real `ASIGetSerialNumber`, exercising the canonical UniqueID path.
-
-> One benign observation: the very first `CCDTemperature` read immediately after
-> connect can return a stale `0.0 °C`, then immediately reflects the sensor
-> (~15.7 °C ambient on the bench). The driver reads the value live with no caching
-> (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
-> register not yet populated until its first internal measurement cycle (~1 s) —
-> an SDK warm-up artifact, not a driver caching defect or a conformance failure.
-
-**ASI120MC-S — readout-format negotiation (RM1-RM4, ST3).** A third physical
-camera, measured on the Linux dev box against the real SDK while implementing
-the format negotiation. It matters because it is the model family
-`indi-asi` singles out as unable to do reliable 16-bit, so it is the camera
-whose behaviour decides whether enumeration is a sufficient selection rule:
-
-- **12-bit, 1280×960, colour (Bayer), USB3** (`is_usb3 = true` — the "-S"
-  refresh of the USB2 original), bins `[1, 2]`.
-- **It advertises `SupportedVideoFormat = [Raw8, Rgb24, Y8, Raw16]`** —
-  including `Raw16`. So enumerating the array alone would *not* have excluded
-  16-bit, exactly as INDI's name-based guard implies.
-- **But `Raw16` works.** `ASISetROIFormat` accepted it (no
-  `ASI_ERROR_INVALID_IMGTYPE`) and a frame downloaded correctly at 320×240,
-  full-frame 1280×960, and 640×480 bin 2. **This contradicts the premise that
-  the camera is unusable in 16-bit**, and is why INDI's blanket
-  `strstr(name, "ASI120")` guard is not ported (RM4) — it would force a working
-  camera to 8 bits.
-- **`Raw16` is a bare left shift, not a rescale**: every pixel's low 4 bits are
-  zero at bin 1, and a saturated full frame reaches exactly `4095 << 4 = 65520`
-  — the measurement behind ST3's corrected `MaxADU`. **Re-confirmed 2026-08-05**
-  with the deliberate-overexposure method: 65520 is reached at every gain
-  across the camera's 0-100 range, so unlike the ASI178MM and ASI1600MM-Cool
-  this sensor really does deliver its top ADC code. It is therefore the one
-  camera that pays for ST3's margin — measured at **3 pixels in 1 228 800**
-  called saturated one LSB early, against 6 095 correctly flagged (see ST3).
-- **End-to-end through the driver** (production non-`simulation` binary, real
-  camera, over Alpaca): `ReadoutModes` reports `["Raw16", "Raw8"]`,
-  `ReadoutMode` defaults to 0, and switching mode changes both the delivered
-  frame and `MaxADU` consistently — mode 0 gave `MaxADU` 65520 with a 64×48
-  frame ranging 16-17872, mode 1 gives `MaxADU` 255 with the same geometry
-  ranging 0-48. **The 8-bit download path is hardware-proven**, not just
-  simulated. *(The 65520 is what this run recorded; ST3 has since added the
-  one-step margin, so this camera now reports 65504 — one ADC LSB below the
-  ceiling it was measured reaching. See the ASI178MM run below for why.)*
-
-`crates/zwo-rs/examples/probe_formats.rs` is the probe that produced these
-numbers; re-run it against any new ZWO model rather than assuming this one
-generalises.
-
-**ASI178MM — the delivered ceiling (2026-08-05).** The 14-bit half of the same
-question, re-measured on the bench at commit `269a4cc3` against the real SDK,
-because the ASI120MC-S alone could not distinguish a `16 - BitDepth` left shift
-from a model that delivers 14-bit data unshifted (which would have needed
-`MaxADU` 16383 after all). Full record:
-[docs/validation/2026-08-05-zwo-camera-asi178mm-maxadu/](../validation/2026-08-05-zwo-camera-asi178mm-maxadu/README.md).
-
-- **The shift model holds.** The camera advertises `[Raw8, Raw16]`, and its
-  `Raw16` pixels carry **two always-zero low bits** at bin 1 — a left shift by
-  `16 - 14`, exactly as on the 12-bit camera. The 16383 this doc recorded in
-  2026-06-20 was wrong by a factor of four.
-- **But the sensor clips one ADC count short.** Comprehensively blown-out
-  frames top out at exactly `16382 << 2 = 65528`, never 65532 — measured at
-  gains 0/100/300/510, bins 1-3, and exposures 1 s/5 s/15 s, with ~98 000
-  pixels piled on 65528 and nothing above it. **This is the measurement behind
-  ST3's one-step margin.** Before it, the driver reported the shifted full
-  scale and a saturated full frame over Alpaca gave `pixels >= MaxADU` = **0**
-  while 13 655 pixels sat at the sensor's ceiling; with the margin the same
-  frame reports **6 709** saturated pixels.
-- **Binning changes the packing but not the ceiling.** At bin ≥ 2 the SDK
-  combines neighbouring counts and the low bits populate, so the shift
-  signature is only visible at bin 1. The ceiling stays 65528, so one published
-  `MaxADU` still describes every bin.
-- **ConformU 4.4.0 clean on both suites** against the negotiated list —
-  `ReadoutModes Read OK Raw16` / `OK Raw8` — with zero errors, issues,
-  configuration alerts or timing issues, both before the margin
-  (`MaxADU OK 65532`) and after it (`MaxADU OK 65528`).
-
-`crates/zwo-rs/examples/probe_ceiling.rs` is the probe behind this one: it
-deliberately overexposes and prints the histogram tail, which is what separates
-a real clip from the brightest thing in the room.
-
-**ASI1600MM-Cool — the delivered ceiling (2026-08-05).** The 12-bit half of
-#888, measured the same evening. Full record:
-[docs/validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md).
-
-- **It clips one ADC count short as well.** Driven to complete saturation
-  (gain 600, 15 s), **every** pixel of the frame — all 16 389 120 at bin 1,
-  and the whole frame at bins 2-4 — sits at exactly `4094 << 4` = **65504**,
-  with nothing above. The same ceiling shows as a clip at lower gains
-  (`65504×28` at gain 100), so it is fixed, not an over-driven-gain artifact.
-  End-to-end through the driver a saturated frame reports `pixels >= MaxADU` =
-  **16 146 432**, i.e. all of them.
-- **The margin is exact here too.** `((2^12) - 2) << 4 = 65504` is the measured
-  value, not an approximation — as `((2^14) - 2) << 2 = 65528` was on the
-  ASI178MM. Note this is a *different* answer from the ASI120MC-S, which shares
-  its 12-bit depth but does reach `4095 << 4`: the shortfall is a property of
-  the sensor, not of the bit depth.
-- **Binning walks the shift down** rather than destroying it: 4 zero bits at
-  bin 1, 2 at bin 2, none at bins 3-4 — consistent with the SDK averaging the
-  binned pixels. The ceiling is unchanged at every bin.
-- **Cooling (K1-K4) re-confirmed with the TEC powered**: `CoolerPower` ramps
-  0 → 24 % while the sensor falls 17.7 °C → 6.2 °C in 120 s, and returns to
-  0 % when switched off. `CoolerOn` reads `false` after every connect — tenet
-  3 holding on hardware.
-- **ConformU 4.4.0 clean on both suites** (0/0/0/0, 87 timed members) with
-  `MaxADU OK 65504`, run with the cooler powered.
-
-**Three cameras on one service (2026-08-05).** With the ASI1600MM-Cool,
-ASI178MM and ASI120MC-S all attached, the enumeration contracts were exercised
-on hardware for the first time with more than one body — the BDD suite
-presents a single simulated camera, so C0/C4 had only ever been simulated.
-
-- **C0** — all three registered with distinct UniqueIDs, exercising *both*
-  identity paths side by side: real `ASIGetSerialNumber` on the ASI178MM and
-  ASI120MC-S, and the `noserial-0` fallback on the ASI1600MM-Cool, which
-  exposes neither a serial nor a flash id.
-- **C4** — connect is per-device (`[T,F,F] → [T,T,F] → [T,T,T]`), and a
-  2 s exposure on one camera left the other two at `CameraState` `Idle` with
-  `ImageReady` false.
-- **RM1/RM4 against a camera that really offers the excluded formats** — the
-  ASI120MC-S advertises `[Raw8, Rgb24, Y8, Raw16]` and the driver publishes
-  `["Raw16", "Raw8"]`, so the `Rgb24`/`Y8` exclusion is confirmed on hardware
-  rather than only in the simulator.
-- **K1 both ways at once** — the cooled body reports
-  `CanSetCCDTemperature`/`CanGetCoolerPower` `true` while the two uncooled ones
-  return `NOT_IMPLEMENTED` for the cooler getters, in the same service.
-- **Tenet 3** — `CoolerOn` read `false` after every connect, on every run.
-
-**The shared camera-core crate on hardware (2026-08-07).** The same three
-bodies, re-run at `7e12a9b3` on ConformU 4.5.0 after the ROI rule set, the
-Bayer offsets and the single-plane `ImageArray` unpack moved out of the three
-camera drivers into
-[`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/). Both
-suites clean on all three; full record in
-[docs/validation](../validation/2026-08-07-zwo-camera-three-cameras-linux/README.md).
-What it established that the simulator could not:
-
-- **The Bayer chain end to end, on a physical mosaic.** The ASI120MC-S reports
-  `BayerOffsetX/Y = (1, 0)` — GRBG. That is `ASI_BAYER_GR` travelling through
-  `zwo-rs`'s `BayerPattern::Gr`, this driver's map onto camera-core's `Grbg`,
-  and the shared `offsets()` rule. `Gr`/`Gb` are the pair whose offsets are
-  transposes of each other, so it is the case a mis-mapping would show up in.
-- **The shared `GeometryError` text and its ASCOM code reach the client
-  unchanged.** ConformU's sub-frame rejection tests record the crate's own
-  message arriving via `From<GeometryError> for ASCOMError` — *"NumX must be a
-  multiple of 8 and NumY a multiple of 2"*, *"StartX + NumX exceeds
-  CameraXSize / BinX"* — so collapsing three `map_err` call sites into one
-  conversion altered neither the wording nor `INVALID_VALUE`.
-- **The shared unpack at both depths across three sensors**, over the
-  negotiated `Raw16`/`Raw8` modes, all within ConformU's response targets.
-
-**The reconnect contract on hardware (2026-08-23).** The same three bodies,
-re-run at `2bc56edc` on ConformU 4.5.0 after the E10 fix — the per-capture stop
-cell and the `open_epoch` gate. Both suites clean on all three; full record in
-[docs/validation](../validation/2026-08-23-zwo-camera-three-cameras-reconnect/README.md).
-Every reported figure (geometry, `MaxADU`, `ElectronsPerADU`, gain/offset
-ranges, cooling gating) matches the 2026-08-07 run exactly, which is the point:
-the change is internal to how a capture is cancelled, and nothing a client can
-observe moved. What the run adds beyond that:
-
-- **The exposure paths this touched, on the real SDK.** E7 abort discards and
-  the device reaches `Idle` (0.10 s on the ASI178MM, 0.36 s on the
-  ASI1600MM-Cool, 1.43 s on the ASI120MC-S, out of a 20 s exposure); a new
-  exposure is accepted immediately afterwards; E8's graceful stop publishes the
-  partial frame in the same order of time; C3's disconnect cancels and surfaces
-  nothing on reconnect. That is the per-capture cell draining a capture through
-  three different vendor bodies, not the simulator's approximation of it.
-- **E10 swept across the whole capture.** Twelve disconnect points per camera —
-  through integration and past the exposure's end into the readout/download
-  phase of a 12.7 MB full frame — each followed by a reconnect and a
-  *differently sized* second exposure, which had to complete on time with its
-  own geometry. 12/12 on each body. The size difference is what makes it a
-  test: a frame produced by the superseded capture carries the first exposure's
-  dimensions.
-- **A severity calibration, from a failed reproduction.** The race itself does
-  not fire through the Alpaca API on a healthy box: pre-fix `main`, built in a
-  throwaway worktree and driven by the same harness against the same camera,
-  stayed clean over 12 sweep trials and 80 soak iterations, including with the
-  service pinned to a single core crowded by 64 spinners. The window needs the
-  reconnect *and* the next `StartExposure` — ~300 ms of USB/SDK work — to land
-  before the superseded capture's next 20 ms poll, and uniform starvation
-  stretches both sides equally. It opens when that one capture thread is
-  delayed past the reconnect, i.e. under the blocking-pool overshoot documented
-  in *Concurrency* above. So the defect is real but needs a badly starved
-  capture thread, and the deterministic proof stays in the unit tests (each
-  verified to fail against the pre-fix shape) rather than on hardware.
-
-**Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
-the [hardware validation record trail](../validation/README.md), so their
-ConformU output was not preserved. Recorded re-runs against the same physical
-ASI1600MM-Cool exist for both platforms, both fully clean:
-the [Linux record](../validation/2026-07-27-zwo-camera-asi1600mm-cool-linux/README.md)
-(ConformU 4.3.0) and the
-[Windows record](../validation/2026-07-27-zwo-camera-asi1600mm-cool-windows/README.md)
-(ConformU 4.4.0) — the **first Windows real-hardware validation** of this
-service, in a Windows 11 KVM guest with the camera on QEMU USB passthrough.
-The Windows facts: ZWO's native camera driver (v3.28, `asicamusb3.inf`) is
-**required** — the camera carries no MS OS descriptors, so WinUSB never
-auto-binds (same as the SVBONY SV605CC) — but unlike SVBony's it is a
-captcha-free direct CDN download; the SDK is the `ASI_Windows_SDK_V1.41` zip
-from the same rolling developer-CDN URL `install-zwo-sdk` uses
-(`ZWO_SDK_LIB_DIR` for the link, `ASICamera2.dll` beside the exe); and
-bindgen means the build host needs LLVM/libclang (`LIBCLANG_PATH`), which CI
-runners ship but a fresh Windows box does not. UniqueID minting is identical
-on both platforms. One cross-platform SDK discrepancy surfaced
-([#741](https://github.com/rusty-photon/rusty-photon/issues/741)):
-`ASI_CAMERA_INFO.ElecPerADU` for the same camera reads **4.96** through the
-Windows v1.41 DLL but **0.00496** through the Linux v1.41 blob — an exact
-1000× split, with the Windows value the physically plausible one (the June
-narrative values above, read through the Linux blob, carry the same 1000×
-scaling); the driver reports the SDK value verbatim on both platforms (ST2).
-
-**Concurrent multi-camera validation (2026-06-21).** A single service instance
-enumerates every connected ASI camera on the one port, so concurrency *across*
-devices is a first-class case. With **three** cameras attached at once —
-**ASI178MM** (`camera/0`), **ASI120MC-S** (`camera/1`, a colour USB2 planetary
-model) and **ASI1600MM-Cool** (`camera/2`) — a full ConformU run
-(`alpacaprotocol` + `conformance`) was fired at all three **simultaneously**
-(three independent processes, isolated `$HOME`). **All three passed**, each *"no
-errors, warnings or issues found"* and — critically — *"all members returned
-within their target response times"* **under 3× concurrent load**, the very
-scenario the deadline-based integration wait (see *Concurrency*) was hardened
-for. The three suites overlapped throughout a ~46 s window with no driver-level
-errors, mid-exposure `Error` transitions, late-capture invalidations, or
-lock-contention symptoms; the service enumerated all three (`cameras=3`), shut
-down cleanly, and left every camera released on USB. New coverage from this run:
-the **ASI120MC-S colour path** (`SensorType RGGB`, `BayerOffsetX/Y`) and
-per-device independence (contract C4) under genuine concurrency. One operational
-note surfaced: the serial-less ASI1600 came up as `noserial-2` here (it is
-`noserial-0` when attached alone), so the position-based `mint_identity` UniqueID
-is **enumeration-order-dependent** in multi-camera setups — cameras that report a
-real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
-
-> **CI caveat (critical):** the `simulation` feature removes the *camera*
-> requirement, **not the SDK**. All build/test/ConformU jobs for this package
-> still link `ASICamera2` (this service's device feature — ADR-014; the shared
-> Bazel `zwo-rs` targets link the full union), so CI must install the SDK first
-> (see *Gating plan*). Only `cargo check`/clippy jobs (which don't invoke the
-> linker) can skip the SDK.
+Runs with no record there — the first ConformU passes on real hardware, the
+readout-format and colour measurements on the ASI120MC-S, three cameras on
+one service, three ConformU runs fired at one service at once — settled what
+is stated where the design rests on it (*Concurrency*, C4, R4, RM1-RM4, ST1,
+ST3, K2), and their dated account is in
+[the record of the hardware runs](../plans/archive/zwo-camera-hardware-validation-2026.md).
 
 ### `ElecPerADU` is gain-scaled — reading it live (ST2)
 
@@ -2633,9 +2351,9 @@ ASI120MC-S does not: its gain scale is 0–100 and the mapping is something else
 entirely (the 0.1 dB law would predict ÷1.33, ÷1.78, ÷3.16 at those gains).
 
 **Checked at every gain each camera advertises** (601 / 511 / 101 values, read
-through the driver over Alpaca, when a `Gain` set still reached the camera at
-the setter; the driver now arms a gain only with an exposure, so repeating the
-sweep through it takes one exposure between each set and its read — ST2):
+over Alpaca through a build whose `Gain` set reached the camera at the setter;
+this driver arms a gain only with an exposure, so the sweep through it takes
+one exposure between each set and its read — ST2):
 
 | Camera | vs `10^(gain/200)` | monotonic | distinct values |
 |---|---|---|---|
@@ -2660,29 +2378,24 @@ ASI1600, `0.916f` for the ASI178), and each reconciles with its sensor's physics
 — 0.916 e⁻/ADU against the IMX178's ≈15 ke⁻ over a 14-bit ADC ≈ 0.92, and
 3.52 e⁻/ADU against the ASI120's ≈14 ke⁻ over 12 bits.
 
-**This is what the driver got wrong.** `ElectronsPerADU` used to be served from
-the `CameraInfo` snapshot captured at enumeration, so it reported the value for
-whatever gain the camera held at service startup and never moved when a client
-changed `Gain`. A client that sets gain and then reads `ElectronsPerADU` — the
-normal sequence for SNR or exposure math — got a stale number. ST2 now reads it
-live, through `Camera::electrons_per_adu` (`ASIGetCameraPropertyByID`, an
-open-camera call, rather than the enumeration-index `ASIGetCameraProperty`).
+**Why it is not served from enumeration.** Served from the `CameraInfo`
+snapshot taken at enumeration, `ElectronsPerADU` would report the figure for
+whatever gain the camera held at service startup and never move when a client
+changed `Gain`, so a client that sets gain and then reads `ElectronsPerADU` —
+the normal sequence for SNR or exposure math — would get a stale number. ST2
+reads it live, through `Camera::electrons_per_adu` (`ASIGetCameraPropertyByID`,
+an open-camera call, rather than the enumeration-index `ASIGetCameraProperty`).
 Since a gain set reaches the camera only when an exposure arms it (GO2), the
 live value follows `Gain` from the next exposure on, not from the set: that
-client now takes one exposure between setting the gain and reading the figure.
+client takes one exposure between setting the gain and reading the figure.
 
-**It also explains a stale piece of validation folklore.** The 2026-06-20 and
-2026-07-27 hardware runs recorded `ElectronsPerADU` figures — 0.00496 for the
-ASI1600MM-Cool, 0.00258 for the ASI178MM — that look absurd next to the
-Windows-side 4.96 for the same ASI1600, and were briefly read as a 1000×
-Linux/Windows SDK split. They are neither absurd nor a platform split: those
-cameras were simply sitting at **maximum gain** (600 and 510) during the Linux
-runs, while the Windows readings were taken at gain 0 (ASI1600) and gain 210
-(ASI178). Driven back to gain 0 on Linux, the ASI1600 reports
-`4.960000038146973` — **bit-identical** to the Windows figure. The apparent
-1000× and √1000× ratios are exactly 60.000000 dB and 30.000000 dB, gain deltas
-to eight significant figures rather than decimal scaling. The figures in the
-validation records above are annotated with the gain they were taken at.
+**Linux and Windows agree.** Read on Linux at **maximum gain**, the
+ASI1600MM-Cool (600) gives 0.00496 and the ASI178MM (510) 0.00258 — 1000× and
+√1000× below readings taken on Windows at gain 0 (ASI1600) and gain 210
+(ASI178), which looks like a platform split and is not. Driven back to gain 0
+on Linux, the ASI1600 reports `4.960000038146973`, **bit-identical** to the
+Windows figure, and the two ratios are exactly 60.000000 dB and 30.000000 dB:
+gain deltas to eight significant figures rather than decimal scaling.
 
 There is consequently **no plausibility check on this value, and there must not
 be one**: at high gain a genuinely tiny `ElectronsPerADU` is correct, and
@@ -2706,46 +2419,8 @@ for (long g = 0; g <= 510; g += 255) {
 
 ## Delivery phasing
 
-This service is built in tracks to isolate the genuinely novel risk (the FFI
-crate + native system dependency) from the mechanical-but-large risk (the device
-driver itself). The FFI crate is the long pole (~40–50% of effort); once
-`simulation` works, the driver builds entirely against it, leaning on the
-`sky-survey-camera` + `qhy-camera` scaffolding. Tracks A–G mirror
-[`docs/plans/zwo-driver.md`](../plans/zwo-driver.md):
-
-- **Phase A — `libzwo-sys`** *(skeleton stood up)*. `bindgen` over `ASICamera2.h`
-  + `EFW_filter.h` + `EAF_focuser.h`; `build.rs` unconditional system-link
-  (per-device features since ADR-014). Green
-  `check` + `test` on Linux x86_64, built + tested locally on aarch64.
-  *Remaining:* confirm green link on Pi 5 aarch64 CI + macOS arm64.
-- **Phase B — `zwo-rs`** *(skeleton stood up)*. Safe `Sdk`/`Error` surface +
-  `simulation`-feature stub. *Remaining:* real safe handles/enums + error mapping
-  + the `simulation` backend (camera frames + EFW position/moving); publish 0.1.0.
-- **Phase C — Track A.** Bare `zwo-camera` serving an empty/sim Camera on
-  `:11122`; prove build/link, CI SDK provisioning (Cargo *and* Bazel
-  workflows), Pi 5 aarch64, Bazel as a first-class `//...` target (no `manual`
-  gating), repin-twice — *before* device-trait work.
-- **Phase D — design doc + ADR + workspace row + BDD feature files** *(this
-  document, [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md), the
-  `docs/workspace.md` row, and the `@wip` feature files)*.
-- **Phase E — Track B full Camera** *(landed)*. `Device + Camera` over `zwo-rs`
-  (ROI/bin, gain/offset, cooling, readout, exposure state machine, abort +
-  graceful stop, PulseGuide, sensor type), config-actions, serial identity,
-  `spawn_blocking` bridge (camera lock released during integration), `backend.rs`
-  mock seam. 45 unit tests + 57 BDD scenarios green (ConformU passes); the six camera feature files
-  are live.
-- **Phase F — EFW `FilterWheel`: re-scoped to a future separate
-  `zwo-filterwheel` service** (ADR-014, 2026-07-10) — see
-  [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) Phase F. Not part of
-  this service; the `@wip` `filter_wheel.feature` and the `filterwheel.enabled`
-  config toggle were removed with the re-scope.
-- **Phase G — test + gate + consumer.** BDD landed (Phase E). **ConformU passes
-  both suites** against the simulation backend (verified locally) after the
-  `zwo-rs` rev `3c32e59` sim fixes plus the aligned-`CameraXSize` (R4) and
-  asynchronous-`PulseGuide` driver fixes; the `conformu_integration.rs` harness
-  is in place. Remaining: wire `zwo-camera` into `conformu.yml`; `rp`
-  `CameraConfig` consumer; optional hermetic Bazel `crate.annotation` (SDK as a
-  `cc_import` dep, dropping the imperative install) — cleanup, not blocking.
+The phases this service and its FFI crates are delivered in, and what remains
+of them, are in [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md).
 
 ---
 
@@ -2755,18 +2430,13 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
 - **CAA rotator** (`CAA_API.h`) if a ZWO rotator is ever in scope.
 - **Vendoring the SDK** into `libzwo-sys` (MIT permits) to drop external
   provisioning entirely.
-- **Backport** the SDK-free-simulation / feature-gated-link improvement to
-  `qhyccd-rs` so `qhy-camera`'s default build can also be pure-Rust.
-- Per-serial connect-time tuning; `FullWellCapacity`; TLS / Basic Auth via
-  `rusty-photon-tls` / `rp-auth`.
+- Per-serial connect-time tuning; `FullWellCapacity`.
 
 ## Packaging
 
-Packaged as `rusty-photon-zwo-camera` (`.deb`/`.rpm`) per
-[ADR-012](../decisions/012-service-packaging-architecture.md) /
-[ADR-013](../decisions/013-native-sdk-payload-policy.md) and
-[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md):
-binary at `/usr/bin/rusty-photon-zwo-camera`, hardened
+Packaged as `rusty-photon-zwo-camera` (`.deb`/`.rpm`,
+[packaging.md](../packaging.md)): binary at
+`/usr/bin/rusty-photon-zwo-camera`, hardened
 `rusty-photon-zwo-camera.service` (camera class: `AF_NETLINK`, no
 `PrivateDevices`/`MemoryDenyWriteExecute`, no supplementary groups), and
 a udev rule `90-rusty-photon-zwo.rules` assigning enumerated ZWO devices
@@ -2775,7 +2445,7 @@ bump.
 
 Unlike qhy-camera, the native SDK ships **inside the package**: ZWO's
 blobs are MIT-licensed, so `libASICamera2.so` — **exactly the one SDK this
-binary links** (zwo-rs `camera` feature, ADR-014) — is downloaded at
+binary links** (zwo-rs `camera` feature) — is downloaded at
 package-build time by `cargo ci build-packages` from the same pinned
 indi-3rdparty commit `.github/actions/install-zwo-sdk` uses, and installed
 at `/usr/lib/rusty-photon/`, with the SDK license at
@@ -2790,10 +2460,11 @@ no firmware-install helper and no cold-plug upload path.
 
 ## References
 
-- Decision record: [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) ·
-  [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md)
-- FFI crates (this repo's author): [`zwo-rs`](https://github.com/ivonnyssen/zwo-rs)
-  + `libzwo-sys` (siblings to `qhyccd-rs` / `libqhyccd-sys`)
+- FFI crates: [`zwo-rs`](../../crates/zwo-rs/) + `libzwo-sys` (siblings to
+  `qhyccd-rs` / `libqhyccd-sys`), first-party and pre-1.0. They are
+  dual-homed: this repository is where they are developed, and their
+  manifests keep what publishing them to crates.io from `crates/zwo-rs/`
+  needs.
 - Same-vendor-class precedent: [`qhy-camera.md`](qhy-camera.md) ·
   [`qhy-focuser.md`](qhy-focuser.md)
 - Camera scaffolding template: [`sky-survey-camera.md`](sky-survey-camera.md)
@@ -2805,6 +2476,3 @@ no firmware-install helper and no cold-plug upload path.
   GPL-2.0+ per file), [`python-zwoasi`](https://github.com/stevemarple/python-zwoasi),
   INDIGO `indigo_drivers/{ccd,wheel,focuser}_asi`
 - ASI/EFW SDK (headers + per-arch binaries, MIT): INDI `indi-3rdparty/libasi`
-- [ADR-001 Amendment A](../decisions/001-fits-file-support.md) — the pure-Rust /
-  no-system-dep posture this service is the second exception to (after
-  `qhy-camera`)

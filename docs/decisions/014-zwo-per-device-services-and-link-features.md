@@ -99,5 +99,5 @@ all-or-nothing anyway.
   undefined-symbol tables verified 2026-07-10 on the x64 and armv8
   indi-3rdparty blobs
 - QHY contrast (hardware-forced bundling):
-  `docs/services/qhy-camera.md` "shared camera handle" /
+  [`docs/services/qhy-camera.md`](../services/qhy-camera.md#camera--cfw-share-one-physical-handle) "shared camera handle" /
   `services/qhy-camera/src/backend.rs` (`Control::CfwPort`)
