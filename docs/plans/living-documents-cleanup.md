@@ -443,7 +443,7 @@ for every batch.
 | Batch | Status | Pull request |
 |-------|--------|--------------|
 | Plan | Merged 2026-11-12 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1696) |
-| B1 — Star Adventurer GTi | Under way: the design docs first, the code comments and the guard rows second | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763) |
+| B1 — Star Adventurer GTi | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1767) |
 | B2 — doctor, ui-htmx, the installer | Not started | — |
 | B3 — rp and its client crates | Not started | — |
 | B4 — BDD infrastructure and OmniSim | Not started | — |
