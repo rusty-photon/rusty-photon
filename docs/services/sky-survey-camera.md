@@ -364,9 +364,9 @@ enum PointingSource {
   this source: it arms a one-shot override that the next light
   exposure uses in place of the mount read (F6, F7).
 
-The mode is fixed for the life of the device. Switching at runtime
-would require teaching `POST /sky-survey/position` to "fall back" or
-"override," which is feature creep without a driving use case.
+The mode is fixed for the life of the device: nothing switches a
+running device between static and telescope pointing. A follow-mode
+POST overrides the pointing of one exposure, not the source.
 
 ### `StartExposure` Pipeline
 

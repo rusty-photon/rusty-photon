@@ -42,7 +42,7 @@ the same:
 |---|---|---|
 | **SDK license** | Closed/proprietary; redistribution unresolved → authenticated/internal cache tier | **MIT** ("Copyright 2015, ZWO Company") → blob may be cached/redistributed on the **public** R2 cache mirror |
 | **Rust FFI layer** | Published `qhyccd-rs`/`libqhyccd-sys` already exist; driver just writes the device layer | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
-| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`) |
+| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`, unless `ZWO_SKIP_NATIVE_LINK=1` omits the link) |
 
 Net: ZWO is **legally much easier** but **mechanically more work up front** (we
 build the FFI QHY got for free). The device-trait layer is *easier* than QHY — a
@@ -1327,16 +1327,14 @@ on its own (U5).
 the production build started with `cargo run`). A list of the
 ASI1600MM-Cool's port at 0 (named `Main Imaging`), the ASI178MM's at 1, and
 an empty port at 2, with the ASI120MC-S left unlisted, registered exactly
-three Cameras: `ZWO:ZWO-ASI1600MM-Cool:noserial-0` as `Main Imaging`,
-`ZWO:ZWO-ASI178MM:1915d5081b090900` — the identities they have without a
-list — and `placeholder:zwo-camera:pci-0000:c1:00.4-usbv3-0:9`. Only the two
+three Cameras: the ASI1600MM-Cool as `Main Imaging` and
+`ZWO:ZWO-ASI178MM:1915d5081b090900`, each with the identity it has without a
+list, and `placeholder:zwo-camera:pci-0000:c1:00.4-usbv3-0:9`. Only the two
 listed cameras were opened for their identity, and the log named the
 ASI120MC-S's port as neither opened nor served. `Connected = true` on the
 placeholder answered error 1344 (`0x540`) with the reason, which its
 `Description` carried too, and device 1 connected the ASI178MM (its
-`SensorName` and its aligned 3072-pixel width). (That build minted a
-serial-less camera's identity from its enumeration index, hence
-`noserial-0`; the next run shows the port-built form, U10.)
+`SensorName` and its aligned 3072-pixel width).
 
 **Without a list, on hardware** (the same box and SDK, 2026-10-12, the
 production build and a configuration with no `usb_devices` key). The SDK
