@@ -59,8 +59,7 @@ impl TransportFactory for UdpTransportFactory {
         // `io::Error::other(format!(...))` so the original
         // `io::ErrorKind` (e.g. `AddrNotAvailable`, `PermissionDenied`,
         // `AddrInUse`) survives downstream classification while the
-        // bind / connect address stays in the surfaced message. See
-        // Copilot review on PR #285.
+        // bind / connect address stays in the surfaced message.
         let socket = UdpSocket::bind(bind_addr).await.map_err(|e| {
             TransportError::Open(io::Error::new(
                 e.kind(),
@@ -100,9 +99,7 @@ mod tests {
     }
 
     /// Spawn a localhost UDP echo server that returns canned replies
-    /// for any incoming datagram. Replicates the legacy
-    /// `transport::udp::tests::spawn_echo_server` so the factory's
-    /// `open()` body has the same coverage it had before Phase E.
+    /// for any incoming datagram.
     async fn spawn_echo_server(reply: Vec<u8>) -> SocketAddr {
         let server = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = server.local_addr().unwrap();
@@ -168,16 +165,14 @@ mod tests {
         assert!(matches!(err, TransportError::Timeout(_)), "got {err:?}");
     }
 
-    // The previous `factory_open_bind_fails_on_non_local_subnet` test
-    // (bind to 198.51.100.1, TEST-NET-2) was dropped: the
+    // No test here provokes a bind failure: the
     // bind-failure-surfaces-as-`TransportError::Open` contract is
-    // already exercised by the serial side's equivalent
+    // exercised by the serial side's equivalent
     // (`factory_open_nonexistent_port_returns_open_error`), and using
-    // a "guaranteed not on any local interface" address is host-dependent
-    // — it accepts under `net.ipv4.ip_nonlocal_bind=1`, `IP_FREEBIND`,
-    // and some container test runners. The mapping itself is a single
-    // `.map_err(...)` line above (`UdpSocket::bind` returns `io::Error`;
-    // we wrap it in `TransportError::Open` while preserving the kind),
-    // so a unit test of the mapping doesn't need a real bind to fire.
-    // See PR #285 review.
+    // a "guaranteed not on any local interface" address (198.51.100.1,
+    // TEST-NET-2) is host-dependent — it accepts under
+    // `net.ipv4.ip_nonlocal_bind=1`, `IP_FREEBIND`, and some container
+    // test runners. The mapping itself is a single `.map_err(...)` line
+    // above (`UdpSocket::bind` returns `io::Error`; we wrap it in
+    // `TransportError::Open` while preserving the kind).
 }

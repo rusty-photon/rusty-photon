@@ -8,9 +8,8 @@
 //! mechanical one is expected, mix RA-axis and Dec-axis ticks, or cross
 //! between frames without naming the conversion, without a compile error.
 //!
-//! This mirrors the convention `pa-falcon-rotator` established in its own
-//! `units.rs` (mechanical vs sky angle bridged by a sync offset) — see
-//! [ADR-006](../../../docs/decisions/006-typed-physical-quantities-for-mount-pointing.md).
+//! `pa-falcon-rotator` follows the same convention in its own `units.rs`
+//! (mechanical vs sky angle bridged by a sync offset).
 //!
 //! ## Frames
 //!
@@ -132,8 +131,7 @@ const fn fold_ticks_canonical(value: i32, cpr: u32) -> i32 {
 ///
 /// A `Cpr(0)` models the "parameters not yet populated" state; the
 /// tick↔angle conversions treat it defensively (returning a zero quantity)
-/// rather than dividing by zero, matching the pre-typed accessors that
-/// short-circuit before the math runs.
+/// rather than dividing by zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Cpr(u32);
 
@@ -326,7 +324,7 @@ impl RaTicks {
 ///
 /// Normally `[-90, +90]`; the constructor does **not** clamp, so a "through
 /// the pole" encoder reading can surface as a magnitude past 90° for the
-/// caller to detect (matching the pre-typed `dec_ticks_to_degrees` contract).
+/// caller to detect.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dec(f64);
 
@@ -518,9 +516,9 @@ mod tests {
     }
 
     #[test]
-    fn lat45_flip_worked_example_matches_plan() {
-        // Plan §2.0, lat 45°N: target HA = -0.5 -> post-flip mech_HA = +11.5;
-        // dec = +45° -> post-flip mech encoder = +135°.
+    fn lat45_flip_matches_the_worked_example() {
+        // Worked example, lat 45°N: target HA = -0.5 -> post-flip mech_HA =
+        // +11.5; dec = +45° -> post-flip mech encoder = +135°.
         let mech_flipped = HourAngle::new(-0.5).to_mech().flipped();
         assert!(
             (mech_flipped.value() - 11.5).abs() < EPS,

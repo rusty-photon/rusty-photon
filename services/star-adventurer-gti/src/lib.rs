@@ -249,7 +249,8 @@ impl ServerBuilder {
 
     /// Inject a [`TransportFactory`]. BDD tests pass
     /// [`MockTransportFactory`](transport::mock::MockTransportFactory);
-    /// when omitted, [`build`] picks serial / UDP from `config.transport`.
+    /// when omitted, [`build`](Self::build) picks serial / UDP from
+    /// `config.transport`.
     #[must_use]
     pub fn with_transport_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
@@ -363,7 +364,7 @@ impl ServerBuilder {
 
         // Eager hardware validation at startup: opens the port and
         // runs the handshake (which includes the wrong-device
-        // identity probe landed in PR #296) BEFORE binding the HTTP
+        // identity probe) BEFORE binding the HTTP
         // listener. On failure the error bubbles up to `main` and
         // the binary exits non-zero — systemd / orchestration treats
         // startup as failed and operators get the diagnostic at the
@@ -485,7 +486,7 @@ pub struct BoundServer {
     /// after the HTTP server stops accepting requests. In
     /// `ServiceLifetime` mode this cancels the reconnect supervisor, runs
     /// `Hooks::shutdown`, and closes the port. In `LazyAcquire` mode it's
-    /// a no-op so pre-Phase-1 deployments are unaffected.
+    /// a no-op.
     manager: Arc<MountManager>,
     /// The registered mount device and the mount it drives, retired by
     /// `start()` once serving ends. `None` when `mount.enabled` is false.
@@ -518,9 +519,10 @@ impl BoundServer {
     ) -> std::result::Result<Handover, Box<dyn std::error::Error + Send + Sync>> {
         // Capture the serve result and run `transport.shutdown()`
         // unconditionally so a serve error doesn't leave the port and
-        // the reconnect supervisor alive (the original `?` shape did
-        // skip the shutdown block on serve failure). The serve error,
-        // if any, is propagated after the transport-side teardown.
+        // the reconnect supervisor alive (a `?` on the serve result
+        // would skip the shutdown block on serve failure). The serve
+        // error, if any, is propagated after the transport-side
+        // teardown.
         let Self {
             listener,
             router,

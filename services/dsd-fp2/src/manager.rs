@@ -12,7 +12,7 @@
 //!
 //! Each cached field is stored with the instant it was brought up to date —
 //! the read that brought it, or the answer to the command that set it — and
-//! keeps the value from the latest one ([`ReadStamp`]). The poll reads its
+//! keeps the value from the latest one ([`Stamped`]). The poll reads its
 //! five fields in five turns on the wire, and a command can go between
 //! them: a light turned on after the poll read it off must not be put back
 //! off when the poll stores.
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Hooks, ReadStamp, SessionError, SharedTransport, StateAssertion, TransportFactory, WireTiming,
+    Hooks, SessionError, SharedTransport, Stamped, StateAssertion, TransportFactory, WireTiming,
 };
 use tokio::sync::RwLock;
 use tokio::time::Instant;
@@ -41,34 +41,27 @@ use crate::protocol::{Command, RawResponse, MAX_BRIGHTNESS};
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
     /// `true` while the cover motor is running (`[GMOV]→(1)`).
-    pub motor_running: Option<bool>,
+    pub motor_running: Stamped<bool>,
     /// Cover state from `[GOPS]`: `0`=closed, `1`=open, other=in-between.
-    pub cover_raw: Option<i32>,
+    pub cover_raw: Stamped<i32>,
     /// `true` if the EL panel is on (`[GLON]→(1)`).
-    pub light_on: Option<bool>,
+    pub light_on: Stamped<bool>,
     /// Brightness from `[GLBR]` (0..=4096).
-    pub brightness: Option<u16>,
-    /// Heater temperature from `[GHTT]`. `None` if no thermistor attached.
-    pub heater_temp_c: Option<f64>,
+    pub brightness: Stamped<u16>,
+    /// Heater temperature from `[GHTT]`. A stored `None` is a read that
+    /// found no thermistor attached; an empty cache is no read yet.
+    pub heater_temp_c: Stamped<Option<f64>>,
     /// Board identifier captured during handshake.
     pub firmware_board: Option<String>,
     /// Firmware version captured during handshake.
     pub firmware_version: Option<String>,
-    /// When each polled field was brought up to date.
-    pub motor_running_read: ReadStamp,
-    pub cover_read: ReadStamp,
-    pub light_read: ReadStamp,
-    pub brightness_read: ReadStamp,
-    pub heater_read: ReadStamp,
 }
 
 impl CachedState {
     /// Store the motor flag read, or set by a command answered, at
     /// `read_at`, unless the cache holds one from after it.
     pub fn store_motor_running(&mut self, running: bool, read_at: Instant) {
-        if self.motor_running_read.admit(read_at) {
-            self.motor_running = Some(running);
-        } else {
+        if !self.motor_running.offer(running, read_at) {
             debug!(running, "dropping a motor flag older than the cached one");
         }
     }
@@ -76,9 +69,7 @@ impl CachedState {
     /// Store the cover state read at `read_at`, unless the cache holds one
     /// read after it.
     pub fn store_cover(&mut self, raw: i32, read_at: Instant) {
-        if self.cover_read.admit(read_at) {
-            self.cover_raw = Some(raw);
-        } else {
+        if !self.cover_raw.offer(raw, read_at) {
             debug!(raw, "dropping a cover state older than the cached one");
         }
     }
@@ -86,9 +77,7 @@ impl CachedState {
     /// Store the light flag read, or set by a command answered, at
     /// `read_at`, unless the cache holds one from after it.
     pub fn store_light_on(&mut self, on: bool, read_at: Instant) {
-        if self.light_read.admit(read_at) {
-            self.light_on = Some(on);
-        } else {
+        if !self.light_on.offer(on, read_at) {
             debug!(on, "dropping a light flag older than the cached one");
         }
     }
@@ -96,9 +85,7 @@ impl CachedState {
     /// Store the brightness read, or set by a command answered, at
     /// `read_at`, unless the cache holds one from after it.
     pub fn store_brightness(&mut self, brightness: u16, read_at: Instant) {
-        if self.brightness_read.admit(read_at) {
-            self.brightness = Some(brightness);
-        } else {
+        if !self.brightness.offer(brightness, read_at) {
             debug!(
                 brightness,
                 "dropping a brightness older than the cached one"
@@ -109,9 +96,7 @@ impl CachedState {
     /// Store the heater temperature read at `read_at` — `None` when no
     /// thermistor is attached — unless the cache holds one read after it.
     pub fn store_heater_temp(&mut self, temp_c: Option<f64>, read_at: Instant) {
-        if self.heater_read.admit(read_at) {
-            self.heater_temp_c = temp_c;
-        } else {
+        if !self.heater_temp_c.offer(temp_c, read_at) {
             debug!("dropping a heater temperature older than the cached one");
         }
     }
@@ -313,6 +298,66 @@ mod tests {
         assert!(matches!(err, DsdFp2Error::InvalidValue(_)));
     }
 
+    /// Two instants a store can be dated by, the first before the second.
+    fn two_instants() -> (Instant, Instant) {
+        let earlier = Instant::now();
+        let later = earlier.checked_add(Duration::from_millis(1)).unwrap();
+        (earlier, later)
+    }
+
+    #[test]
+    fn a_motor_flag_older_than_the_cached_one_is_dropped() {
+        let (earlier, later) = two_instants();
+        let mut state = CachedState::default();
+        state.store_motor_running(true, later);
+        state.store_motor_running(false, earlier);
+        assert_eq!(state.motor_running.value(), Some(true));
+    }
+
+    #[test]
+    fn a_cover_state_older_than_the_cached_one_is_dropped() {
+        let (earlier, later) = two_instants();
+        let mut state = CachedState::default();
+        state.store_cover(1, later);
+        state.store_cover(0, earlier);
+        assert_eq!(state.cover_raw.value(), Some(1));
+    }
+
+    #[test]
+    fn a_light_flag_older_than_the_cached_one_is_dropped() {
+        let (earlier, later) = two_instants();
+        let mut state = CachedState::default();
+        state.store_light_on(true, later);
+        state.store_light_on(false, earlier);
+        assert_eq!(state.light_on.value(), Some(true));
+    }
+
+    #[test]
+    fn a_brightness_older_than_the_cached_one_is_dropped() {
+        let (earlier, later) = two_instants();
+        let mut state = CachedState::default();
+        state.store_brightness(2048, later);
+        state.store_brightness(0, earlier);
+        assert_eq!(state.brightness.value(), Some(2048));
+    }
+
+    #[test]
+    fn a_heater_temperature_older_than_the_cached_one_is_dropped() {
+        let (earlier, later) = two_instants();
+        let mut state = CachedState::default();
+        state.store_heater_temp(Some(21.5), later);
+        state.store_heater_temp(None, earlier);
+        assert_eq!(state.heater_temp_c.value(), Some(Some(21.5)));
+    }
+
+    #[test]
+    fn a_heater_read_that_finds_no_thermistor_is_stored_as_a_reading() {
+        let mut state = CachedState::default();
+        assert_eq!(state.heater_temp_c.value(), None);
+        state.store_heater_temp(None, Instant::now());
+        assert_eq!(state.heater_temp_c.value(), Some(None));
+    }
+
     #[test]
     fn session_err_to_warn_logs_without_panicking() {
         // The poll loop's Err arms log via `warn!` and never bubble. With
@@ -363,10 +408,10 @@ mod mock_tests {
         let s = snap.read().await.clone();
         assert_eq!(s.firmware_board.as_deref(), Some("DeepSkyDad.FP2"));
         assert!(s.firmware_version.is_some());
-        assert_eq!(s.motor_running, Some(false));
-        assert_eq!(s.cover_raw, Some(0));
-        assert_eq!(s.light_on, Some(false));
-        assert_eq!(s.brightness, Some(0));
+        assert_eq!(s.motor_running.value(), Some(false));
+        assert_eq!(s.cover_raw.value(), Some(0));
+        assert_eq!(s.light_on.value(), Some(false));
+        assert_eq!(s.brightness.value(), Some(0));
         session.close().await.unwrap();
     }
 
@@ -563,7 +608,7 @@ mod mock_tests {
         factory.reply_held().await;
 
         assert_eq!(
-            snap.read().await.light_on,
+            snap.read().await.light_on.value(),
             Some(true),
             "a poll's light read before the command put the light back off"
         );

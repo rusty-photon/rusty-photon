@@ -23,9 +23,8 @@ async fn park_mount(world: &mut StarAdventurerWorld) {
     // Scenarios chaining off "I park the mount" expect AtPark to be
     // true by the next step — wait for the watcher to land it, with
     // a deadline matching `the device is parked` in slew_steps.rs.
-    // Windows + macOS CI lost this race against the watcher on PR
-    // #244 while Linux happened to win; the explicit wait makes the
-    // step deterministic across platforms.
+    // Without the wait the step races the watcher, and Windows and
+    // macOS runners lose that race where Linux tends to win it.
     wait_for_at_park(world).await;
 }
 
@@ -95,9 +94,9 @@ async fn mount_reports_axes_stopped_at_zero(world: &mut StarAdventurerWorld) {
     // stopped at encoder 0), so the test reads more honestly when
     // it actually waits for that to land. macOS in particular
     // races the watcher behind the next step on tightly-paced
-    // scenarios like "Park is idempotent" (caught by PR #200 CI on
-    // macos-latest). Don't panic if the timeout expires — other
-    // scenarios assert the AtPark flip with their own explicit
+    // scenarios like "Park is idempotent". Don't panic if the
+    // timeout expires — other scenarios assert the AtPark flip with
+    // their own explicit
     // `Then AtPark should eventually be true within N seconds`,
     // and we'd rather their scenario-specific message fire than
     // this generic one.

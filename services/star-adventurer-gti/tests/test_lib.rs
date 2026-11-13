@@ -74,8 +74,8 @@ async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 /// Poll the endpoint until it responds (status code returned, regardless
-/// of value) or the deadline elapses. Replaces a fixed `sleep(50ms)` so
-/// the tests are robust to slow CI runners.
+/// of value) or the deadline elapses. A fixed sleep would race a slow CI
+/// runner.
 async fn poll_status(port: u16, path: &str, deadline: Duration) -> u16 {
     let url = format!("http://127.0.0.1:{port}{path}");
     let start = std::time::Instant::now();

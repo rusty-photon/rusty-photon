@@ -202,6 +202,24 @@ applied at scale.
    otherwise be disbelieved. Validation runs that are already in
    `docs/validation/` are linked there, not duplicated.
 
+   Three searches come before the move, because the link check of
+   step 11 finds none of what they find:
+
+   - **A fact the passage alone states.** Each fact in the passage is
+     looked for in the rest of the living document, and one stated
+     nowhere else is stated where it applies before the passage goes.
+     A record is where a reader checks a claim, not where they learn
+     what the system does.
+   - **A pointer the passage carries.** The passage's text is searched
+     for "above", "below" and a section named without a link: any of
+     them may point at text that stays behind.
+   - **A name another document uses.** `docs/` is searched for the
+     names the passage's parts go by — its heading, the headings under
+     it, a bullet's bold lead — as words and not only as anchors. A
+     record or a plan that names one in plain text holds a pointer that
+     follows the passage, and an open plan may tell a later step to
+     write into it (§ Out of scope).
+
 6. **A copied comment is fixed in every copy, in one batch.** The
    OmniSim comments the services' `tests/bdd.rs` files copied — the
    loud-reset diagnostic in `rp` and `calibrator-flats`, the exit-code
@@ -425,7 +443,7 @@ for every batch.
 | Batch | Status | Pull request |
 |-------|--------|--------------|
 | Plan | Merged 2026-11-12 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1696) |
-| B1 — Star Adventurer GTi | Under way: the design docs first, the code comments and the guard rows second | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763) |
+| B1 — Star Adventurer GTi | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1767) |
 | B2 — doctor, ui-htmx, the installer | Not started | — |
 | B3 — rp and its client crates | Not started | — |
 | B4 — BDD infrastructure and OmniSim | Not started | — |

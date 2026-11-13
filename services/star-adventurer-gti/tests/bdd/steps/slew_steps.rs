@@ -158,11 +158,10 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
 
     // Decode the Dec axis target — this comparison doesn't depend on
     // LST so it's deterministic in BDD. The RA target involves the
-    // `lst_at_slew_time` which we can't pin until clock injection is
-    // wired in (the unit test
-    // `coordinates::tests::ra_ticks_round_trip_through_mechanical_ha`
-    // pins the ticks ↔ RA math regardless), so for RA we still only
-    // assert that *some* `:H1` frame appears.
+    // `lst_at_slew_time`, which we can't pin without clock injection
+    // (the property test `units::tests::ra_ticks_round_trip` pins the
+    // ticks ↔ mech_HA math regardless), so for RA we only assert that
+    // *some* `:H1` frame appears.
     //
     // INDI-style slews use `:H<axis><|delta|>` (unsigned magnitude) +
     // a `:G<axis>` that carries the direction (CCW) bit. The mock
@@ -192,10 +191,10 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .expect("six payload bytes");
     let dec_magnitude = decode_u24(payload).expect("valid :H2 payload");
     // Recover the direction bit from the `:G2` that goes with the
-    // slew-issue `:H2`. The INDI sequence is
-    // `:L2 → :G2 → :I2 → :H2 → :M2 → :J2` per axis, so `:G2` is
-    // the third frame before `:H2`, not the immediately-preceding
-    // one (`:I2` sits between them). Use `rfind` over the prefix
+    // slew-issue `:H2`. The slew sequence is
+    // `:G2 → :I2 → :H2 → :M2 → :J2` per axis, so `:G2` is not the
+    // frame immediately before `:H2` (`:I2` sits between them). Use
+    // `rfind` over the prefix
     // ending at `h2`'s index: that locates the closest preceding
     // `:G2`, which is the `:G2` from the same slew-issue burst
     // regardless of how many earlier slews or handshakes ran.

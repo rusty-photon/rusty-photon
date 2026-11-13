@@ -31,10 +31,10 @@ Feature: Pier-side selection follows the counterweight exclusion zone
   encoder past the pole, the same classification SideOfPier applies.
 
   Scenario: A western target keeps a counterweight-up mount where it is
-    # Issue #1301: the flipped side is the only side that reaches
-    # HA +3 (its mech_HA is -9, outside the zone; the
-    # counterweight-down mech_HA of +3 is inside it), so staying is
-    # the only correct answer.
+    # The flipped side is the only side that reaches HA +3 (its
+    # mech_HA is -9, outside the zone; the counterweight-down
+    # mech_HA of +3 is inside it), so staying is the only correct
+    # answer.
     Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
