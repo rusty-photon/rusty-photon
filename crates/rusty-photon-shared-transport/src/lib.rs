@@ -29,7 +29,8 @@
 //! A caller stores what its request brought back after its turn on the
 //! wire ends, so stores can land out of wire order — a poll's after a
 //! write's. A cache that more than one task writes keeps each value with
-//! the instant it was read and refuses an older one: [`ReadStamp`].
+//! the instant it was read and refuses an older one: [`Stamped`], and
+//! under it [`ReadStamp`].
 //!
 //! There are two lifecycles. In `LazyAcquire` the conduit follows the
 //! clients: the first `acquire` opens it and runs the handshake, the
@@ -89,7 +90,7 @@ pub mod transport;
 pub use codec::Codec;
 pub use connection::{Connection, WireTiming};
 pub use error::{SessionError, TransportError};
-pub use read_stamp::ReadStamp;
+pub use read_stamp::{ReadStamp, Stamped};
 pub use session::{Hooks, Session, StateAssertion, WhileOpen};
 pub use shared::SharedTransport;
 pub use transport::{

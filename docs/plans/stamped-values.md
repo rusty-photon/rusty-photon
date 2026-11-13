@@ -5,10 +5,11 @@
 Much of what the workspace handles carries the time it happened: a
 frame read off a serial line, a sensor sample, a mount position, an
 exposure's start. Six serial drivers order the writes to their cache by
-that time. Each keeps a `ReadStamp` field beside every cached value and
-each store asks the stamp before it assigns, so that a poll's frame read
-just before a command cannot land after the command's readback and put
-the old value back
+that time. Each keeps a `ReadStamp` in its cache beside a value, or
+beside the values one reply carries, and each store of such a value asks
+the stamp before it assigns, so that a poll's frame read just before a
+command cannot land after the command's readback and put the old value
+back
 ([the store-order fix](https://github.com/rusty-photon/rusty-photon/pull/1720)).
 The check is right at every store today, and only review keeps it
 there: a new store that assigns without asking the stamp compiles, and
@@ -425,8 +426,8 @@ Not filed, and not part of any step; each is the owner's call.
 
 | Step | Status | Pull request |
 |------|--------|--------------|
-| Plan | Open | — |
-| S1 — `Stamped<T>`, and `dsd-fp2` | Not started | — |
+| Plan | Merged 2026-11-13 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1762) |
+| S1 — `Stamped<T>`, and `dsd-fp2` | In progress | `feature/stamped-values-s1-1727` |
 | S2 — the three power boxes | Not started | — |
 | S3 — `qhy-focuser` | Not started | — |
 | S4 — `SensorMean` reads no clock | Not started | — |
