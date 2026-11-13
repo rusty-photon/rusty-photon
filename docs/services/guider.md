@@ -381,19 +381,39 @@ and on `star/reselect`. The guider never selects stars again on its own
 in the middle of a run.
 
 **Measurement.** In each later frame every guide star is looked for
-within `stars.search_region_px` of where it was last measured. A star
-is **usable** in a frame when its signal-to-noise ratio is at least
-`stars.min_snr` and its flux is within `stars.mass_change` of its
+within `stars.search_region_px` of its position in the last frame in
+which it was usable. A star is **usable** in a frame when its
+signal-to-noise ratio is at least `stars.min_snr`, it is not too sharp
+to be a star, and its flux is within `stars.mass_change` of its
 reference, the median of its flux over its recent usable frames. The
-frame's offset is the median, on each sensor axis, of the usable stars'
-offsets from their reference positions.
+frame a star was selected in is its first usable frame. The frame's
+offset is the median, on each sensor axis, of the usable stars' offsets
+from their reference positions.
+
+**A change of brightness that lasts.** A frame that fails the flux test
+adds nothing to the reference, so a change larger than
+`stars.mass_change` that lasts, as when haze clears or thin cloud
+settles in, fails the test in every frame that follows. A star that
+fails only the flux test in ten frames in a row therefore takes the
+median of its flux over those ten as its reference, and the frames
+after them are judged against it. The sharpness test keeps a hot pixel
+from becoming the reference while the star is behind cloud, and ten
+frames in a row keep out noise that reaches `stars.min_snr` in a frame
+now and then. Ten is a starting value of this design.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves
 the state to `star_lost`; the first later frame with enough usable
-stars, found around their last measured positions, moves it back. The
-guider waits for the stars for as long as the run lasts. A client that
-has waited long enough stops the run or asks for a new selection.
+stars moves it back. The guider waits for the stars for as long as the
+run lasts, and it looks for each one only around the position it was
+last usable at. With no correction sent, the field drifts, and stars
+that drifted further than `stars.search_region_px`, behind a long cloud
+or in a long full pause, are not found again: the run then stays in
+`star_lost`. A client that has waited long enough stops the run or asks
+for a new selection, with [`star/reselect`](#post-apiv1starreselect) or
+`guiding/start`. A new selection locks on the stars where they are now,
+so the field is off by the drift, and putting it back is the client's
+work.
 
 **Metrics.** Every measured frame, in every exposing state, appends an
 entry to a window of the last 50 frames: the frame number, the median
@@ -1016,14 +1036,19 @@ with `message` as it is.
 ### Statistics
 
 **The RMS window** holds the last 50 guide steps and is cleared by
-every accepted `guiding/start`. A **guide step** is a frame measured in
-the state `guiding`, whether or not a pulse followed it. Its samples
-are the errors on the RA and the Dec axis before correction.
+every accepted `guiding/start`. A **guide step** is a frame that gave
+an offset, measured in the state `guiding` or moving `star_lost` back
+to it, whether or not a pulse followed it. A star-lost frame is no
+step. A step's samples are the errors on the RA and the Dec axis before
+correction.
 
 - `rms_ra_px` = √(mean(RA error²)), `rms_dec_px` = √(mean(Dec error²)),
   `total_rms_px` = √(`rms_ra_px`² + `rms_dec_px`²). The arcsecond
-  fields are these times the pixel scale.
-- `sample_count` is the number of steps in the window.
+  fields are these times the pixel scale. With `control.dec.mode`
+  `"off"` a step has no Dec sample, and the Dec and total fields are
+  `null`.
+- `sample_count` is the number of steps in the window. The RMS fields
+  are `null` while it is 0.
 - The window survives a stop and is lost when the service restarts.
 
 **The running totals** answer for an interval of a client's own
@@ -1302,7 +1327,7 @@ The example shows a configured rig. In the default file
 | `mount.pulse_timeout` | No | `"2s"` | How long after its duration a pulse may still be in progress |
 | `mount.max_failures` | No | `3` | Consecutive cycles with a failed mount call that stop the run |
 | `stars.max`, `stars.min` | No | `8`, `1` | The most guide stars kept, and the fewest usable ones a frame needs |
-| `stars.search_region_px` | No | `15` | How far from its last position a star is looked for |
+| `stars.search_region_px` | No | `15` | How far from the position it was last usable at a star is looked for |
 | `stars.min_snr` | No | `3.0` | The lowest signal-to-noise ratio of a usable star |
 | `stars.mass_change` | No | `0.5` | The largest change of a star's flux from its reference, as a fraction |
 | `calibration.distance_px` | No | `25` | How far a leg moves the stars |

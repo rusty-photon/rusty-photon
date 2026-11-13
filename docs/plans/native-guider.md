@@ -702,8 +702,12 @@ is not active has to clear the calibration as well: the guider keeps
 its record from run to run and cannot see the field turn. The guider's
 devices and `rp`'s guiding train are configured apart, and a lease on a
 camera that is not the train's protects nothing, so `rp` needs a way to
-tell that both name the same camera and mount. Stage G6 designs these
-changes in `rp.md` and then makes them (§ Staging).
+tell that both name the same camera and mount. The guider waits in
+`star_lost` for as long as the run lasts and never selects stars again
+by itself, so `rp` needs a policy for a `star_lost` that lasts: how
+long it waits, and whether it then asks for a new selection or stops
+the run and centres again. Stage G6 designs these changes in `rp.md`
+and then makes them (§ Staging).
 
 **Joining the workspace.** A service that is not an Alpaca device joins
 sentinel's `NON_ALPACA_SERVICES` list and about ten other hand-kept
