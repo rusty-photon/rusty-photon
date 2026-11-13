@@ -191,19 +191,22 @@ found.
 
 4. **The offsets fall into two families, broadband and narrowband.** In
    the written offsets:
-   - **Within each family, a longer wavelength focuses at a higher
-     position.** O (500.7 nm) −54, H (656.3 nm) −28, S (672.4 nm) −23.
-     Among the broadband filters R, at +13, sits above G (−12) and B (−10).
-     G and B differ by 2 steps, less than the 4.7 by which the two runs'
-     corrected values for G differ.
+   - **The narrowband filters focus higher the longer their wavelength:**
+     O (500.7 nm) −54, H (656.3 nm) −28, S (672.4 nm) −23.
+   - **Among the broadband filters R, at +13, sits above G (−12) and B
+     (−10).** B sits 2 steps above G, less than the 4.7 by which the two
+     runs' corrected values for G differ, so these runs do not order G and
+     B.
    - **L sits near the mean of R, G and B** (−3).
    - **The narrowband filters sit 36–44 steps below the broadband ones at
      like wavelengths.** H and S, at wavelengths a red filter passes, sit
      41 and 36 steps below R. O, at the edge between blue and green, sits
      44 below B and 42 below G.
 
-   Each run's own uncorrected offsets show the same order within each
-   family and a gap of 31–51 steps between them. A refractor's
+   Each run's own uncorrected offsets show the same narrowband order, R
+   above G and B, and a gap of 31–51 steps between the families. G and B
+   change places between the runs (run 1 G −13, B −14; run 2 B −14,
+   G −19). A refractor's
    colour curve does not put H 41 steps from R at so nearly the same
    wavelength, and this record does not establish what does.
 
@@ -226,6 +229,7 @@ found.
 - **`determine_filter_offsets` on a guiding train** (focus-model.md §
   Training runs on a guiding train): rig2 has none.
 - **A refit of the coefficient over several filters.** The coefficient in
-  the record was fitted from L alone. With offsets now in the record, a
-  `calibrate_temperature` call would put the R runs on L's scale and fit
-  them too. It was not run.
+  the record was fitted from L alone. With all seven filters now carrying
+  an offset, a `calibrate_temperature` call would put every filter's runs
+  on L's scale and fit them too: the 36 non-L sweeps of these two runs and
+  the earlier R runs. It was not run.
