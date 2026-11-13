@@ -553,8 +553,10 @@ either: both members answer from the cache and both setters only store
   16-bit range in Raw16 output (saturated pixels read 65535, with the low
   two bits populated — a genuine rescale, not a bare left shift), so the
   delivered data's ceiling is the format's, not the ADC's. (ASI cameras
-  left-shift sub-16-bit data into the Raw16 container instead, low bits
-  zero, so `zwo-camera`'s `MaxADU` follows the ADC depth —
+  put the ceiling in the container too, by the opposite mechanism: they
+  left-shift sub-16-bit data into Raw16, low bits zero, and by default
+  `zwo-camera`'s `MaxADU` is the ADC's full scale so shifted, one
+  quantization step below it —
   [zwo-camera.md ST3](zwo-camera.md#sensor-type--signal).)
 - **`ElectronsPerADU`** — **`NOT_IMPLEMENTED`, confirmed permanent**:
   `SVB_CAMERA_PROPERTY` carries no native electrons-per-ADU field (unlike
@@ -2287,8 +2289,9 @@ Layered per [`testing.md`](../skills/testing.md).
 
 ## Delivery phasing
 
-The driver was delivered in the seven phases, A to G, of the
-[archived plan](../plans/archive/svbony-camera.md#delivery-phasing).
+Every phase of the
+[archived plan](../plans/archive/svbony-camera.md#delivery-phasing), A to
+G, is in place; [Future Work](#future-work) lists what is still open.
 
 ---
 

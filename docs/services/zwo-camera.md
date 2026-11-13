@@ -40,7 +40,7 @@ the same:
 
 | Concern | QHY (the precedent) | ZWO (this service) |
 |---|---|---|
-| **SDK license** | Closed/proprietary; redistribution unresolved → authenticated/internal cache tier | **MIT** ("Copyright 2015, ZWO Company") → blob may be cached/redistributed on the **public** R2 cache mirror |
+| **SDK license** | Closed/proprietary, with no right to redistribute → no package ships its DLL or firmware; CI downloads it publicly from qhyccd.com | **MIT** ("Copyright 2015, ZWO Company") → redistributable with its notice, so the package ships the blob |
 | **Rust FFI layer** | Published `qhyccd-rs`/`libqhyccd-sys` already exist; driver just writes the device layer | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
 | **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`, unless `ZWO_SKIP_NATIVE_LINK=1` omits the link) |
 
@@ -80,10 +80,10 @@ Outside the drivers built on a vendor SDK and their FFI crates, nothing in the
 workspace needs a native library installed to build: `qhy-camera`,
 `zwo-camera`, `zwo-focuser` and `svbony-camera` each link their vendor's SDK
 through one. What sets ZWO's apart from QHY's is
-licensing: ZWO's SDK is **MIT**, so unlike the QHY blob it may live on the
-**anonymous-read public** cache mirror (`cache.rustyphoton.space`) rather than
-the authenticated/internal tier — the attribution notice must travel with the
-cached blob.
+licensing: ZWO's SDK is **MIT**, so `zwo-camera`'s `.deb`/`.rpm` ships
+`libASICamera2.so` with its license ([Packaging](#packaging)), while QHYCCD's
+gives no right to redistribute, so `qhy-camera`'s packages ship neither its
+DLL nor its firmware.
 
 ### Gating plan
 
