@@ -177,8 +177,10 @@ retelling them. Everything else a record holds is reached through
 | [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S6 merged — the `rp` layer, the provider itself, filter offsets and temperature calibration — and S8–S11 from the open-items review: obstruction as a train fact, the hyperbolic fit, the guiding train, a stand-in temperature probe. **Remaining: S7**, started 2026-11-04 on rig2's rig night, in three slices: S7a, the design; S7b, `session-runner` switches to `focus_train`; S7c, the capture-based `auto_focus` / `refocus_train` retire. S10, the guiding train, is done as the device-claims plan's C7, its reconciliation with S7 settled: its provider half, the training run on a guiding train under `rp`'s train lease, is C7d, merged; C7e, which focuses a focuser an imaging train holds through the imaging camera alone (O4 rules 2, 4 and 8), merged |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) exists from the CLI spike, with `ppba-driver` as its consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
 | [living-documents-cleanup.md](plans/living-documents-cleanup.md) | The cleanup behind AGENTS.md rule 16: the comments, design docs, skills, references and READMEs still narrate history and name issues by bare number — at the plan's census of 2026-11-02, 286 occurrences in the guard's `PENDING` table, 286 more in living Markdown, 11 in code files the guard does not read — plus the dated phase tables, banners and probe logs that are records inside living documents. Nine batches by subsystem, each asking of every comment and passage what it answers that a reader would otherwise get wrong and deleting the rest, rewriting the design doc first and the code second, moving each record out whole into `docs/plans/archive/`, and deleting the `PENDING` rows it clears; B9 ends with the empty table. **Census taken; the method's trial slice (the root `Cargo.toml`) merged; no decision open; batch B8 (catalog, planner, focus) merged; batch B1 (Star Adventurer GTi) under way, its design docs first; the other batches not started** |
+| [native-guider.md](plans/native-guider.md) | Guiding without PHD2: what guiding through a desktop application costs the stack, what a guider does, what the Alpaca ecosystem offers one, and ten option areas (engine, placement, ecosystem surface, measurement, calibration, control, frame path, guide-camera focus, testing, port or clean implementation), each with a recommendation — a native Rust guider as a standalone service that is an Alpaca client of one Camera and one Telescope and serves the HTTP contract `rp` already consumes. **Options only** — the staging is a proposal and the owner's decisions are listed, none taken |
 | [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged. **Remaining: T6** — the roster grouped by train, with membership editing; written for a `ui-htmx` `/equipment` page that `ui-htmx` does not serve, so it needs re-scoping onto `rp`'s `/setup` |
 | [polar-align.md](plans/polar-align.md) | Plate-solving polar alignment ([`polar-align`](services/polar-align.md), port 11172): three solved RA-axis positions fix the axis, the error is reported in observed alt/az, and an adjustment loop draws target circles while the operator turns the bolts. The service, the axis/attitude math, plate-solver `wcs_matrix`, manual-rotation mode and the PNG preview are done. **Remaining: Phase 5** (`ui-htmx` polar-alignment page) and **Phase 7** (GTi rig validation + README recipe) |
+| [stamped-values.md](plans/stamped-values.md) | One type for a cached reading and one rule for every other time a value carries. `Stamped<T>` in [`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/) holds a value with the instant it was read and stores only through `offer`, so a store that skips the stamp does not compile; it replaces the value-and-`ReadStamp` field pairs in the five serial drivers that keep one value per stamp (`dsd-fp2`, `ppba-driver`, `upbv2-driver`, `gemini-powerbox-adv3-driver`, `qhy-focuser`). The plan's census gives every other time a value carries a verdict: `pa-scops-oag`'s stamp and `star-adventurer-gti`'s snapshot stay as they are, and so do records, deadlines and sequence numbers ([Values that carry their time](#values-that-carry-their-time)). Five steps: S1 the type and `dsd-fp2`, S2 the three power boxes, S3 `qhy-focuser`, S4 `SensorMean` dated by the frame's read instant on the monotonic clock, S5 one reply-holding test transport, in a test-support crate of its own, in place of six copies. **Decisions settled; not started** |
 | [star-adventurer-gti-move-axis.md](plans/star-adventurer-gti-move-axis.md) | `MoveAxis` on the [`star-adventurer-gti`](services/star-adventurer-gti.md) driver: a rate override on one axis that hands the axis back at rate 0 — RA to sidereal tracking if `Tracking` was on, otherwise rest — and never touches the other axis, which is what N.I.N.A.'s Three Point Polar Alignment automatic mode, its telescope-tab paddle, SharpCap and SkySafari need from the mount. Five phases: M0 a hardware probe for the rate ceiling and the fast regime (the GTi has no encoder and reports a high-speed ratio of 1, so `AxisRates` comes from an operator-referenced measurement, not a formula), M1 design + `@wip` scenarios, M2 the driver together with its override guard (a rate-aware exclusion-zone margin; `CanMoveAxis` never flips without it), M3 a ConformU record plus the clients on the rig, M4 the fast regime only if M0 says it exists. No new config: always on, the ceiling a measured constant clamped by the guard margin. **Decisions settled; not started** |
 | [ui-design/](plans/ui-design/mocks/README.md) | UX exploration, not a delivery plan: self-contained HTML mocks of the activity-stream direction (`7-stream-fold.html`) that [`ui-htmx`](services/ui-htmx.md) builds out. Kept as the reference target for further UI work |
 | [vendor-qhyccd-rs.md](plans/vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into `crates/` ([ADR-009](decisions/009-vendor-qhyccd-rs.md)) — vendored and consumed by `qhy-camera`, with no `[patch.crates-io]` override. **Remaining is owner-run only**: the first `cargo publish` from the vendored subdirs, then archiving the standalone repo (runbook: [`crates/qhyccd-rs/RELEASING.md`](../crates/qhyccd-rs/RELEASING.md)) |
@@ -303,6 +305,15 @@ traits live in the
 [`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/)
 crate; each service keeps only its handshake, poll body, and cached state.
 
+ppba-driver additionally has `switches.rs` (Switch device wiring); its device
+files are `observingconditions_device.rs` + `switch_device.rs`. The
+running-mean smoothing behind its ObservingConditions readings, and the
+`AveragePeriod` policy on top of it, is shared with upbv2-driver and
+gemini-powerbox-adv3-driver and lives in the
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats/) crate.
+
+#### Values that carry their time
+
 A cache that both the poll loop and a device's requests write keeps each
 value with the instant it was read off the wire (`WireTiming::received_at`)
 and stores through the crate's `ReadStamp`, which refuses a value read
@@ -314,12 +325,31 @@ orders it after every read that went on the wire before it.
 `star-adventurer-gti` keeps the same rule per axis in
 `MountSnapshot::merge_newer`.
 
-ppba-driver additionally has `switches.rs` (Switch device wiring); its device
-files are `observingconditions_device.rs` + `switch_device.rs`. The
-running-mean smoothing behind its ObservingConditions readings, and the
-`AveragePeriod` policy on top of it, is shared with upbv2-driver and
-gemini-powerbox-adv3-driver and lives in the
-[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats/) crate.
+Which instant dates a reading is the protocol's choice, made where the
+value is stored. The request-and-reply serial drivers date a value by
+`received_at`. `star-adventurer-gti` dates a position by `sent_at`: the
+firmware latches the step count as the command arrives, and the reply can
+reach a busy host long after. Either way the stamp is a
+`tokio::time::Instant`, a monotonic clock, so a step of the wall clock
+cannot reorder two reads. A read at the instant the cache holds is stored:
+requests take turns on the wire, so two reads share an instant only on a
+paused test clock, where they are stored in turn.
+
+A stamp can move without a value. `pa-scops-oag`'s move echo and halt
+answer advance the stamp that dates its position and moving flag, so a
+report read before either cannot put the old state back.
+`star-adventurer-gti` keeps, per axis, the latest instant a stop marked the
+rate unknown, and publishes a sample read before it with its rate cleared.
+Both stay with the driver: what an answer invalidates is the protocol's.
+
+A time that leaves the process is a wall-clock time (`DateTime<Utc>` or
+`SystemTime`), taken where the record is made: an exposure's start for
+ASCOM `LastExposureStartTime`, the epoch milliseconds in `sentinel`'s
+JSON API, the times in a `session-runner` run record. A monotonic
+instant that has to be shown is converted where the record is made and
+nowhere earlier, as `sentinel` does with a service's next restart time.
+Where events are numbered (an SSE event id, the QHY filter wheel's count of
+its moves and connects) the number orders them and no clock is read.
 
 ### HTTP gateway services (rp)
 
