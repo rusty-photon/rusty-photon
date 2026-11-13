@@ -1,0 +1,1301 @@
+{
+  "run_1": {
+    "call": {
+      "tool": "determine_filter_offsets",
+      "arguments": {
+        "train_id": "main",
+        "reference": "L",
+        "rounds": 3
+      }
+    },
+    "started": "2026-11-13T00:43:39Z",
+    "answered": "2026-11-13T01:22:44Z",
+    "model_before": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-11T01:55:04Z",
+          "filter": "R",
+          "hfr": 0.9183686772661912,
+          "position": 29623,
+          "temperature_c": 15.3
+        },
+        {
+          "at": "2026-11-12T11:44:18Z",
+          "filter": "L",
+          "hfr": 1.3091790836849295,
+          "position": 29487,
+          "temperature_c": 6.4
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-12T11:44:18Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 1.1948132031904657,
+        "best_position": 29487,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "L",
+        "fit_r_squared": 0.9980633316833677,
+        "half_width": 115,
+        "hfr": 1.3091790836849295,
+        "outcome": "confirmed",
+        "position": 29487,
+        "prediction": {
+          "from_position": 29493,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29474,
+          "terms": {
+            "last_good": 29493,
+            "offset": 0,
+            "temperature": -19.2394132823273
+          }
+        },
+        "samples_used": 8,
+        "step_size": 29,
+        "sweep_source": "derived",
+        "temperature_c": 6.4,
+        "wing_slope": 4.222419707085479
+      },
+      "model": "fresh",
+      "offsets": {
+        "L": 0
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 34,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-12T14:10:18Z"
+    },
+    "result": {
+      "differences": {
+        "B": [
+          -14,
+          -14,
+          -14
+        ],
+        "G": [
+          -11,
+          -13,
+          -14
+        ],
+        "H": [
+          -34,
+          -33,
+          -35
+        ],
+        "O": [
+          -64,
+          -61,
+          -64
+        ],
+        "R": [
+          13,
+          12,
+          11
+        ],
+        "S": [
+          -33,
+          -32,
+          -31
+        ]
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -14,
+        "G": -13,
+        "H": -34,
+        "L": 0,
+        "O": -64,
+        "R": 12,
+        "S": -32
+      },
+      "recorded": {
+        "offsets_written": true,
+        "runs": 55
+      },
+      "reference": "L",
+      "restored": {
+        "filter": "L",
+        "position": 29557
+      },
+      "rounds": 3,
+      "sweeps": [
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 1.0655907058048943,
+          "position": 29583,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.9804914534818315,
+          "position": 29596,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 0.8543639353530527,
+          "position": 29572,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 1.0198583056960109,
+          "position": 29569,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.9330931983355102,
+          "position": 29549,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 0.8726005596784064,
+          "position": 29550,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.7620724024561198,
+          "position": 29519,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 1.025405861907598,
+          "position": 29568,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.8501060500277038,
+          "position": 29580,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 0.8217868373325133,
+          "position": 29555,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 0.9298708238179328,
+          "position": 29554,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.8249942095794349,
+          "position": 29535,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 0.8469546393901553,
+          "position": 29536,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.8787679395998731,
+          "position": 29507,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 0.9774999497876731,
+          "position": 29557,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.8923727447213602,
+          "position": 29568,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 0.8413640131799249,
+          "position": 29543,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 0.9596625297291103,
+          "position": 29543,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.8697529888406239,
+          "position": 29522,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 1.0046589836431399,
+          "position": 29526,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.8411582075795075,
+          "position": 29493,
+          "round": 3
+        }
+      ],
+      "train_id": "main",
+      "unmeasured": []
+    },
+    "progress": [
+      "1.0/21.0 round 1/3 L: focused at 29583, HFR 1.07",
+      "2.0/21.0 round 1/3 R: focused at 29596, HFR 0.98",
+      "3.0/21.0 round 1/3 G: focused at 29572, HFR 0.85",
+      "4.0/21.0 round 1/3 B: focused at 29569, HFR 1.02",
+      "5.0/21.0 round 1/3 H: focused at 29549, HFR 0.93",
+      "6.0/21.0 round 1/3 S: focused at 29550, HFR 0.87",
+      "7.0/21.0 round 1/3 O: focused at 29519, HFR 0.76",
+      "8.0/21.0 round 2/3 L: focused at 29568, HFR 1.03",
+      "9.0/21.0 round 2/3 R: focused at 29580, HFR 0.85",
+      "10.0/21.0 round 2/3 G: focused at 29555, HFR 0.82",
+      "11.0/21.0 round 2/3 B: focused at 29554, HFR 0.93",
+      "12.0/21.0 round 2/3 H: focused at 29535, HFR 0.82",
+      "13.0/21.0 round 2/3 S: focused at 29536, HFR 0.85",
+      "14.0/21.0 round 2/3 O: focused at 29507, HFR 0.88",
+      "15.0/21.0 round 3/3 L: focused at 29557, HFR 0.98",
+      "16.0/21.0 round 3/3 R: focused at 29568, HFR 0.89",
+      "17.0/21.0 round 3/3 G: focused at 29543, HFR 0.84",
+      "18.0/21.0 round 3/3 B: focused at 29543, HFR 0.96",
+      "19.0/21.0 round 3/3 H: focused at 29522, HFR 0.87",
+      "20.0/21.0 round 3/3 S: focused at 29526, HFR 1.00",
+      "21.0/21.0 round 3/3 O: focused at 29493, HFR 0.84"
+    ],
+    "model_after": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-13T01:09:51Z",
+          "filter": "L",
+          "hfr": 0.9774999497876731,
+          "position": 29557,
+          "temperature_c": 13.1
+        },
+        {
+          "at": "2026-11-13T01:11:58Z",
+          "filter": "R",
+          "hfr": 0.8923727447213602,
+          "position": 29568,
+          "temperature_c": 13.1
+        },
+        {
+          "at": "2026-11-13T01:14:02Z",
+          "filter": "G",
+          "hfr": 0.8413640131799249,
+          "position": 29543,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:15:51Z",
+          "filter": "B",
+          "hfr": 0.9596625297291103,
+          "position": 29543,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:17:51Z",
+          "filter": "H",
+          "hfr": 0.8697529888406239,
+          "position": 29522,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:19:24Z",
+          "filter": "S",
+          "hfr": 1.0046589836431399,
+          "position": 29526,
+          "temperature_c": 12.9
+        },
+        {
+          "at": "2026-11-13T01:21:07Z",
+          "filter": "O",
+          "hfr": 0.8411582075795075,
+          "position": 29493,
+          "temperature_c": 12.9
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-13T01:21:07Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7245061583216592,
+        "best_position": 29493,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "O",
+        "fit_r_squared": 0.9956073917258137,
+        "half_width": 87,
+        "hfr": 0.8411582075795075,
+        "outcome": "confirmed",
+        "position": 29493,
+        "prediction": {
+          "from_position": 29526,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29503,
+          "terms": {
+            "last_good": 29507,
+            "offset": 0,
+            "temperature": -4.4235969624004285
+          }
+        },
+        "samples_used": 8,
+        "step_size": 22,
+        "sweep_source": "derived",
+        "temperature_c": 12.9,
+        "wing_slope": 4.359968423402458
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -14,
+        "G": -13,
+        "H": -34,
+        "L": 0,
+        "O": -64,
+        "R": 12,
+        "S": -32
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 55,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-13T01:22:41Z"
+    }
+  },
+  "run_2": {
+    "call": {
+      "tool": "determine_filter_offsets",
+      "arguments": {
+        "train_id": "main",
+        "reference": "L",
+        "filters": [
+          "L",
+          "O",
+          "S",
+          "H",
+          "B",
+          "G",
+          "R"
+        ],
+        "rounds": 3
+      }
+    },
+    "started": "2026-11-13T01:30:59Z",
+    "answered": "2026-11-13T02:09:57Z",
+    "model_before": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-13T01:09:51Z",
+          "filter": "L",
+          "hfr": 0.9774999497876731,
+          "position": 29557,
+          "temperature_c": 13.1
+        },
+        {
+          "at": "2026-11-13T01:11:58Z",
+          "filter": "R",
+          "hfr": 0.8923727447213602,
+          "position": 29568,
+          "temperature_c": 13.1
+        },
+        {
+          "at": "2026-11-13T01:14:02Z",
+          "filter": "G",
+          "hfr": 0.8413640131799249,
+          "position": 29543,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:15:51Z",
+          "filter": "B",
+          "hfr": 0.9596625297291103,
+          "position": 29543,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:17:51Z",
+          "filter": "H",
+          "hfr": 0.8697529888406239,
+          "position": 29522,
+          "temperature_c": 13.0
+        },
+        {
+          "at": "2026-11-13T01:19:24Z",
+          "filter": "S",
+          "hfr": 1.0046589836431399,
+          "position": 29526,
+          "temperature_c": 12.9
+        },
+        {
+          "at": "2026-11-13T01:21:07Z",
+          "filter": "O",
+          "hfr": 0.8411582075795075,
+          "position": 29493,
+          "temperature_c": 12.9
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-13T01:21:07Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7245061583216592,
+        "best_position": 29493,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "O",
+        "fit_r_squared": 0.9956073917258137,
+        "half_width": 87,
+        "hfr": 0.8411582075795075,
+        "outcome": "confirmed",
+        "position": 29493,
+        "prediction": {
+          "from_position": 29526,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29503,
+          "terms": {
+            "last_good": 29507,
+            "offset": 0,
+            "temperature": -4.4235969624004285
+          }
+        },
+        "samples_used": 8,
+        "step_size": 22,
+        "sweep_source": "derived",
+        "temperature_c": 12.9,
+        "wing_slope": 4.359968423402458
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -14,
+        "G": -13,
+        "H": -34,
+        "L": 0,
+        "O": -64,
+        "R": 12,
+        "S": -32
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 55,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-13T01:22:41Z"
+    },
+    "result": {
+      "differences": {
+        "B": [
+          -13,
+          -16,
+          -14
+        ],
+        "G": [
+          -19,
+          -20,
+          -17
+        ],
+        "H": [
+          -31,
+          -33,
+          -32
+        ],
+        "O": [
+          -57,
+          -57,
+          -57
+        ],
+        "R": [
+          6,
+          4,
+          8
+        ],
+        "S": [
+          -25,
+          -24,
+          -26
+        ]
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -14,
+        "G": -19,
+        "H": -32,
+        "L": 0,
+        "O": -57,
+        "R": 6,
+        "S": -25
+      },
+      "recorded": {
+        "offsets_written": true,
+        "runs": 76
+      },
+      "reference": "L",
+      "restored": {
+        "filter": "L",
+        "position": 29530
+      },
+      "rounds": 3,
+      "sweeps": [
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 1.0066151737212845,
+          "position": 29544,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.7792747747171055,
+          "position": 29487,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 0.7851490368308067,
+          "position": 29519,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.8142788339746938,
+          "position": 29513,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 1.0140388244802514,
+          "position": 29531,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 1.176722502529922,
+          "position": 29525,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.9391453187501659,
+          "position": 29550,
+          "round": 1
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 1.0374435975365521,
+          "position": 29537,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.7945019136015892,
+          "position": 29480,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 0.7874794009326149,
+          "position": 29513,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.8000390186840131,
+          "position": 29504,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 0.876001577150932,
+          "position": 29521,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 0.8513295707124964,
+          "position": 29517,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.7611193768648441,
+          "position": 29541,
+          "round": 2
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "L",
+          "hfr": 0.8170429586989312,
+          "position": 29530,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "O",
+          "hfr": 0.725115559111603,
+          "position": 29473,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "S",
+          "hfr": 0.7454590919665524,
+          "position": 29504,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "H",
+          "hfr": 0.9325858826087288,
+          "position": 29498,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "B",
+          "hfr": 0.8392098436863762,
+          "position": 29516,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "G",
+          "hfr": 0.755781203237352,
+          "position": 29513,
+          "round": 3
+        },
+        {
+          "confirmed": true,
+          "error": null,
+          "filter": "R",
+          "hfr": 0.7601103840535227,
+          "position": 29538,
+          "round": 3
+        }
+      ],
+      "train_id": "main",
+      "unmeasured": []
+    },
+    "progress": [
+      "1.0/21.0 round 1/3 L: focused at 29544, HFR 1.01",
+      "2.0/21.0 round 1/3 O: focused at 29487, HFR 0.78",
+      "3.0/21.0 round 1/3 S: focused at 29519, HFR 0.79",
+      "4.0/21.0 round 1/3 H: focused at 29513, HFR 0.81",
+      "5.0/21.0 round 1/3 B: focused at 29531, HFR 1.01",
+      "6.0/21.0 round 1/3 G: focused at 29525, HFR 1.18",
+      "7.0/21.0 round 1/3 R: focused at 29550, HFR 0.94",
+      "8.0/21.0 round 2/3 L: focused at 29537, HFR 1.04",
+      "9.0/21.0 round 2/3 O: focused at 29480, HFR 0.79",
+      "10.0/21.0 round 2/3 S: focused at 29513, HFR 0.79",
+      "11.0/21.0 round 2/3 H: focused at 29504, HFR 0.80",
+      "12.0/21.0 round 2/3 B: focused at 29521, HFR 0.88",
+      "13.0/21.0 round 2/3 G: focused at 29517, HFR 0.85",
+      "14.0/21.0 round 2/3 R: focused at 29541, HFR 0.76",
+      "15.0/21.0 round 3/3 L: focused at 29530, HFR 0.82",
+      "16.0/21.0 round 3/3 O: focused at 29473, HFR 0.73",
+      "17.0/21.0 round 3/3 S: focused at 29504, HFR 0.75",
+      "18.0/21.0 round 3/3 H: focused at 29498, HFR 0.93",
+      "19.0/21.0 round 3/3 B: focused at 29516, HFR 0.84",
+      "20.0/21.0 round 3/3 G: focused at 29513, HFR 0.76",
+      "21.0/21.0 round 3/3 R: focused at 29538, HFR 0.76"
+    ],
+    "model_after": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-13T01:57:25Z",
+          "filter": "L",
+          "hfr": 0.8170429586989312,
+          "position": 29530,
+          "temperature_c": 12.0
+        },
+        {
+          "at": "2026-11-13T01:59:31Z",
+          "filter": "O",
+          "hfr": 0.725115559111603,
+          "position": 29473,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:01:09Z",
+          "filter": "S",
+          "hfr": 0.7454590919665524,
+          "position": 29504,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:02:44Z",
+          "filter": "H",
+          "hfr": 0.9325858826087288,
+          "position": 29498,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:04:17Z",
+          "filter": "B",
+          "hfr": 0.8392098436863762,
+          "position": 29516,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:06:04Z",
+          "filter": "G",
+          "hfr": 0.755781203237352,
+          "position": 29513,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:08:05Z",
+          "filter": "R",
+          "hfr": 0.7601103840535227,
+          "position": 29538,
+          "temperature_c": 11.8
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-13T02:08:05Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7158499852921268,
+        "best_position": 29538,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "R",
+        "fit_r_squared": 0.9895838463738135,
+        "half_width": 75,
+        "hfr": 0.7601103840535227,
+        "outcome": "confirmed",
+        "position": 29538,
+        "prediction": {
+          "from_position": 29513,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29538,
+          "terms": {
+            "last_good": 29513,
+            "offset": 25,
+            "temperature": 0.0
+          }
+        },
+        "samples_used": 8,
+        "step_size": 19,
+        "sweep_source": "derived",
+        "temperature_c": 11.8,
+        "wing_slope": 3.9540895616865828
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -14,
+        "G": -19,
+        "H": -32,
+        "L": 0,
+        "O": -57,
+        "R": 6,
+        "S": -25
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 76,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-13T02:09:54Z"
+    }
+  },
+  "final_write": {
+    "call": {
+      "tool": "set_focus_offsets",
+      "arguments": {
+        "train_id": "main",
+        "reference": "L",
+        "offsets": {
+          "R": 13,
+          "G": -12,
+          "B": -10,
+          "H": -28,
+          "S": -23,
+          "O": -54
+        }
+      }
+    },
+    "result": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-13T01:57:25Z",
+          "filter": "L",
+          "hfr": 0.8170429586989312,
+          "position": 29530,
+          "temperature_c": 12.0
+        },
+        {
+          "at": "2026-11-13T01:59:31Z",
+          "filter": "O",
+          "hfr": 0.725115559111603,
+          "position": 29473,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:01:09Z",
+          "filter": "S",
+          "hfr": 0.7454590919665524,
+          "position": 29504,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:02:44Z",
+          "filter": "H",
+          "hfr": 0.9325858826087288,
+          "position": 29498,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:04:17Z",
+          "filter": "B",
+          "hfr": 0.8392098436863762,
+          "position": 29516,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:06:04Z",
+          "filter": "G",
+          "hfr": 0.755781203237352,
+          "position": 29513,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:08:05Z",
+          "filter": "R",
+          "hfr": 0.7601103840535227,
+          "position": 29538,
+          "temperature_c": 11.8
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-13T02:08:05Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7158499852921268,
+        "best_position": 29538,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "R",
+        "fit_r_squared": 0.9895838463738135,
+        "half_width": 75,
+        "hfr": 0.7601103840535227,
+        "outcome": "confirmed",
+        "position": 29538,
+        "prediction": {
+          "from_position": 29513,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29538,
+          "terms": {
+            "last_good": 29513,
+            "offset": 25,
+            "temperature": 0.0
+          }
+        },
+        "samples_used": 8,
+        "step_size": 19,
+        "sweep_source": "derived",
+        "temperature_c": 11.8,
+        "wing_slope": 3.9540895616865828
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -10,
+        "G": -12,
+        "H": -28,
+        "L": 0,
+        "O": -54,
+        "R": 13,
+        "S": -23
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 76,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-13T02:33:27Z"
+    },
+    "model_after": {
+      "camera_id": "qhy600m",
+      "coefficient_offsets": {},
+      "coefficient_runs": 26,
+      "coefficient_span_c": 9.799999999999999,
+      "filters": [
+        "L",
+        "R",
+        "G",
+        "B",
+        "H",
+        "S",
+        "O"
+      ],
+      "focuser_id": "focuslynx",
+      "last_good": [
+        {
+          "at": "2026-11-13T01:57:25Z",
+          "filter": "L",
+          "hfr": 0.8170429586989312,
+          "position": 29530,
+          "temperature_c": 12.0
+        },
+        {
+          "at": "2026-11-13T01:59:31Z",
+          "filter": "O",
+          "hfr": 0.725115559111603,
+          "position": 29473,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:01:09Z",
+          "filter": "S",
+          "hfr": 0.7454590919665524,
+          "position": 29504,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:02:44Z",
+          "filter": "H",
+          "hfr": 0.9325858826087288,
+          "position": 29498,
+          "temperature_c": 11.9
+        },
+        {
+          "at": "2026-11-13T02:04:17Z",
+          "filter": "B",
+          "hfr": 0.8392098436863762,
+          "position": 29516,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:06:04Z",
+          "filter": "G",
+          "hfr": 0.755781203237352,
+          "position": 29513,
+          "temperature_c": 11.8
+        },
+        {
+          "at": "2026-11-13T02:08:05Z",
+          "filter": "R",
+          "hfr": 0.7601103840535227,
+          "position": 29538,
+          "temperature_c": 11.8
+        }
+      ],
+      "last_run": {
+        "at": "2026-11-13T02:08:05Z",
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7158499852921268,
+        "best_position": 29538,
+        "curve_points_recorded": 8,
+        "error": null,
+        "filter": "R",
+        "fit_r_squared": 0.9895838463738135,
+        "half_width": 75,
+        "hfr": 0.7601103840535227,
+        "outcome": "confirmed",
+        "position": 29538,
+        "prediction": {
+          "from_position": 29513,
+          "missing": [],
+          "moved": true,
+          "skipped": null,
+          "start": 29538,
+          "terms": {
+            "last_good": 29513,
+            "offset": 25,
+            "temperature": 0.0
+          }
+        },
+        "samples_used": 8,
+        "step_size": 19,
+        "sweep_source": "derived",
+        "temperature_c": 11.8,
+        "wing_slope": 3.9540895616865828
+      },
+      "model": "fresh",
+      "offsets": {
+        "B": -10,
+        "G": -12,
+        "H": -28,
+        "L": 0,
+        "O": -54,
+        "R": 13,
+        "S": -23
+      },
+      "optics": {
+        "aperture_mm": 106.0,
+        "filter_wavelengths_nm": {
+          "B": null,
+          "G": null,
+          "H": 656.3,
+          "L": null,
+          "O": 500.7,
+          "R": null,
+          "S": 672.4
+        },
+        "focal_length_mm": 530.0,
+        "microns_per_step": 2.1,
+        "obstruction_mm": null,
+        "pixel_size_um": 3.76
+      },
+      "reference_filter": "L",
+      "runs_recorded": 76,
+      "stale": [],
+      "temperature_coefficient": 14.745323208001482,
+      "temperature_sensor": null,
+      "train_id": "main",
+      "updated_at": "2026-11-13T02:33:27Z"
+    }
+  }
+}
