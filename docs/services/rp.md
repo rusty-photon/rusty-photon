@@ -108,7 +108,7 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net) | one process per service | Sentinel restarts on hang/crash |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net); rusty-photon's own [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
 | **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
@@ -116,6 +116,13 @@ authorship. Algorithms that are pure Rust math (auto-focus, centering) live
 as built-in tools even though they could in principle be plugins. They become
 rp-managed services only when they must wrap an external program (PHD2 the
 application, ASTAP the binary) that has its own crash and restart behavior.
+A first-party control loop is an rp-managed service too when it runs for
+hours, has device traffic of its own and must keep running while `rp`
+restarts
+([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md),
+decision 3). rusty-photon's own guider ([`guider.md`](guider.md), designed
+and not yet built) is the one component of this kind; an algorithm that is a
+tool call, which starts, runs and returns, stays built-in.
 
 Workflow logic stays out of `rp` (design tenet 7), but not as a
 plugin: an orchestrator is an ordinary MCP client that `rp` neither
@@ -5396,6 +5403,16 @@ PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
 this protocol so `rp` speaks only HTTP.
 
+rusty-photon's own guider is designed and not yet built
+([`guider.md`](guider.md),
+[ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)):
+a standalone service that is an Alpaca client of the guide camera and
+the mount, guides without PHD2 and serves a contract of its own. `rp`
+speaks the `phd2-guider` contract this section describes until it moves
+to that one, which is stage G6 of
+[the native guider plan](../plans/native-guider.md#staging). `rp` speaks
+one guider contract at a time and has no backend selector.
+
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
 `get_guiding_stats`, and `restart_guider`, § [Power
@@ -5404,6 +5421,8 @@ service's HTTP API. This means workflow plugins (e.g., a meridian flip plugin) c
 control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
 service that implements the same HTTP endpoints.
+The native guider is no such swap: its endpoints are its own, and `rp`
+changes to speak them.
 
 Beyond the tools, rp consumes four more guider-service endpoints
 internally (phd2-guider.md § HTTP API): the per-frame **metrics**

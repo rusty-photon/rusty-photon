@@ -4,6 +4,13 @@
 
 The PHD2 guider service provides a Rust client library and service for interacting with Open PHD Guiding 2 (PHD2). It enables programmatic control of PHD2 including starting/stopping the application, managing equipment profiles, and controlling guiding operations.
 
+rusty-photon's own guider, which guides without PHD2, is designed and
+not yet built ([`guider.md`](guider.md),
+[ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
+`rp` speaks this service's contract until it moves to that guider's, and
+this service leaves the tree with that move, which is stage G6 of
+[the native guider plan](../plans/native-guider.md#staging).
+
 The binary has two roles:
 
 - **CLI** — one-shot subcommands (`status`, `guide`, `dither`, …) for
@@ -1287,6 +1294,14 @@ sends `shutdown`, waits on that process, and signals that process, never
 a newer PHD2 the unit has started since.
 
 ### Windows
+
+This half is held and is not built: rusty-photon builds its own guider
+and drops PHD2
+([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md),
+decision 9). A Windows host stays a host that is not switched over,
+where the service connects to a PHD2 that someone started and refuses a
+restart with `restart_unsupported`. The design below is what the keeper
+does if it is built.
 
 The MSI creates a local standard account, `rusty-photon-phd2`, unless it
 already exists, with a random password that never expires, and adds it to
