@@ -220,6 +220,10 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
    camera's pixel size and a configured focal length before any
    calibration. The contract gains an explicit calibration, the
    calibration's record, a dither abort and the camera lease.
+   [`guider.md` § HTTP API](../services/guider.md#http-api) specifies
+   the contract; beyond the names it also changes `calibration/clear`,
+   which empties the whole store and is refused in a run, and adds
+   `loop`, the latest frame and the stop reason.
 
 8. **The guider writes PHD2-format guide logs from its first version.**
    The existing log viewers read a night's guiding without change. A

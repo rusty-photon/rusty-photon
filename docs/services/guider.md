@@ -583,8 +583,9 @@ correction = aggression × ((1 − hysteresis) × error + hysteresis × previous
 
 with `control.ra.hysteresis` and `control.ra.aggression`. The previous
 correction is the one the last guide step worked out, in pixels and
-before the pulse bounds. It is zero at a run's first step and after a
-step whose error was below the minimum move.
+before the pulse bounds. It is zero at a run's first step, at the first
+step after a pause, a dither or a new selection, and after a step whose
+error was below the minimum move.
 
 **Dec.** The correction is `control.dec.aggression` times the error,
 and Dec holds its direction: a correction against the direction of the
@@ -643,8 +644,9 @@ guider does not hold Dec.
   after the dither moved the lock, is answered with `settle_timeout`.
   Guiding continues: the error says the stars did not settle in time,
   not that guiding stopped.
-- A run that stops while a request waits to settle answers the request
-  with `guide_failed`, with the stop reason in `details`.
+- A run that stops by itself while a request waits to settle answers
+  the request with `guide_failed`, with the stop reason in `details`;
+  one that `guiding/stop` ends answers it with `stopped`.
 
 **Aborting a dither.** `dither/abort` sets the lock offset to where the
 stars are in the latest frame, so that the controller stops steering to
@@ -673,9 +675,9 @@ A stop on `guiding/stop` has the reason `requested`.
 
 The guider pushes no event. A client learns of a stop in three ways:
 a request that was waiting is answered with `guide_failed` and the
-reason; `stats` reports the state and, as `last_stop`, the reason and
-time of the latest stop; and the running totals count it as an
-interruption.
+reason, or with `stopped` when the stop was a `guiding/stop`; `stats`
+reports the state and, as `last_stop`, the reason and time of the
+latest stop; and the running totals count it as an interruption.
 
 ### Units
 
