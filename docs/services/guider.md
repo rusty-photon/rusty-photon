@@ -334,7 +334,7 @@ decision.
 - The check is the guider's because a driver's is not enough: the Star
   Adventurer GTi driver accepts a pulse while tracking is off
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
-- No mount member is read in `looping`.
+- The check does not run in `looping`: no pulse is sent there.
 
 **At a request.** `calibrate` and `guiding/start` run the same check
 before they start, and read `CanPulseGuide`. A mount that fails either
@@ -481,8 +481,13 @@ calibration stores nothing and leaves the slot as it was.
 - **What the guider cannot see**, it does not invalidate. A camera
   turned in its holder, a rotator that moved, or a meridian flip of a
   mount that reports no pier side changes the angles without changing
-  any of those values. The client that knows clears the store
-  (`calibration/clear`) or starts with `recalibrate: true`.
+  any of those values. The client that knows acts on it. After a
+  camera or a rotator turned, it clears the store
+  (`calibration/clear`): the turn makes the records of both pier sides
+  wrong, and a start with `recalibrate: true` replaces only the record
+  of the side it runs on. After a flip of a mount that reports no pier
+  side, it starts with `recalibrate: true`: such a mount has the one
+  slot `unknown`.
 - A `calibration.json` the guider cannot read is set aside under
   another name when the service starts, and the store starts empty.
 
@@ -782,8 +787,10 @@ fields.
 - `resume` takes no fields and is valid in `paused`; in `guiding` and
   `star_lost` it succeeds and changes nothing; otherwise `not_guiding`.
   It keeps the guide stars and the lock and does not wait for settling.
-- Both answer `{ "state": "paused" }` or `{ "state": "guiding" }`, the
-  state after the request.
+- Both answer with the state after the request: `pause` with
+  `{ "state": "paused" }`, and `resume` with `{ "state": "guiding" }`,
+  or with `{ "state": "star_lost" }` when it changed nothing in that
+  state.
 
 #### `POST /api/v1/dither`
 
@@ -851,8 +858,9 @@ Empties every slot of the calibration store. Takes no fields.
 ```
 
 Valid in `idle` and `looping`; `not_idle` in a run state. A client that
-wants a run to drop its calibration stops it, clears and starts again,
-or starts with `recalibrate: true`.
+wants a run to drop the records of both pier sides stops it, clears and
+starts again. A start with `recalibrate: true` replaces the record of
+the run's own pier side and leaves the other slot as it was.
 
 #### `POST /api/v1/camera/lease`
 
