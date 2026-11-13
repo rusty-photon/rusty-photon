@@ -145,6 +145,7 @@ impl Phd2Client {
             state.connected = true;
             state.reconnecting = false;
         }
+        self.shared.count_connection();
 
         // Start the reader task
         let reader_handle = spawn_reader_task(
@@ -230,6 +231,26 @@ impl Phd2Client {
     /// Get the PHD2 version (available after connection)
     pub async fn get_phd2_version(&self) -> Option<String> {
         self.shared.get_phd2_version().await
+    }
+
+    /// How many connections to PHD2 this client has established, by
+    /// [`Self::connect`] or by its auto-reconnect. A connection whose
+    /// count is above an earlier reading was made after that reading.
+    pub fn connection_count(&self) -> u64 {
+        self.shared.connection_count()
+    }
+
+    /// Whether PHD2's event server accepts a connection now, tried apart
+    /// from this client's own connection, which may be between attempts.
+    /// The connection is dropped at once.
+    pub async fn accepts_connection(&self) -> bool {
+        let addr = format!("{}:{}", self.config.host, self.config.port);
+        tokio::time::timeout(
+            self.config.connection_timeout,
+            self.connection_factory.can_connect(&addr),
+        )
+        .await
+        .unwrap_or(false)
     }
 
     /// Subscribe to PHD2 events

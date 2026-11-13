@@ -930,6 +930,10 @@ mod tests {
         async fn reselect_star(&self) -> Result<(), rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
+
+        async fn restart_phd2(&self) -> Result<rp_guider::RestartOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
     }
 
     /// A guider service that never confirms the stop must not delay

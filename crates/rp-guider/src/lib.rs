@@ -59,6 +59,13 @@ use thiserror::Error;
 /// arriving before rp's transport deadline cuts the connection.
 const SETTLE_BACKSTOP_MARGIN: Duration = Duration::from_secs(15);
 
+/// How long [`GuiderClient::restart_phd2`] waits for the service's answer.
+///
+/// The service bounds a restart by its `phd2.restart_timeout`, 120 s by
+/// default, and this leaves a margin so its own `restart_failed` arrives
+/// before the transport deadline (rp.md § Restarting PHD2).
+pub const RESTART_REQUEST_TIMEOUT: Duration = Duration::from_secs(130);
+
 /// Partial settle override forwarded to the service. Omitted fields
 /// fall back to the *service's* configured `settling` block, field by
 /// field — `None` here means "omit from the wire", not "zero".
@@ -124,6 +131,18 @@ pub struct SettledOutcome {
     pub total_rms_px: Option<f64>,
     /// Guide steps in the service's rolling RMS window.
     pub sample_count: u32,
+}
+
+/// Success body of `POST /api/v1/phd2/restart`: the service stopped
+/// PHD2, had it started again and connected its equipment.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RestartOutcome {
+    /// Always `"restarted"` on success.
+    pub phd2: String,
+    /// Always `"connected"` on success.
+    pub equipment: String,
+    /// How long the restart took, in milliseconds.
+    pub elapsed_ms: u64,
 }
 
 /// Success body of `GET /api/v1/guiding/stats`.
@@ -237,8 +256,10 @@ struct ErrorResponseBody {
 ///   connection timeout. The caller cannot distinguish further.
 /// - `Service { code, message, details }` — the service returned a
 ///   structured error envelope (`invalid_request`, `not_guiding`,
+///   `camera_busy`, `camera_connected`, `guiding_active`,
 ///   `guide_failed`, `settle_timeout`, `stop_timeout`,
-///   `phd2_unreachable`, `internal`). Propagate verbatim.
+///   `phd2_unreachable`, `restart_failed`, `restart_unsupported`,
+///   `internal`). Propagate verbatim.
 /// - `Internal` — a service-shaped HTTP error that didn't parse as
 ///   the structured envelope, or a Rust-side bug (rare).
 #[derive(Debug, Error)]
@@ -301,6 +322,11 @@ pub trait GuiderClient: Send + Sync {
     /// `POST /api/v1/star/reselect` — auto-select a guide star on
     /// the current frame (after a rotation moved it).
     async fn reselect_star(&self) -> Result<(), GuiderError>;
+
+    /// `POST /api/v1/phd2/restart` — have the service stop PHD2, have
+    /// it started again and connect its equipment, waiting up to
+    /// [`RESTART_REQUEST_TIMEOUT`] for the answer.
+    async fn restart_phd2(&self) -> Result<RestartOutcome, GuiderError>;
 }
 
 /// Concrete reqwest-backed implementation of [`GuiderClient`].
@@ -500,6 +526,19 @@ impl GuiderClient for GuiderServiceClient {
             .await
             .map(|_| ())
     }
+
+    async fn restart_phd2(&self) -> Result<RestartOutcome, GuiderError> {
+        let url = format!("{}/api/v1/phd2/restart", self.base_url);
+        // The service takes a JSON object, so that a page on another
+        // site cannot submit the restart as a form.
+        self.execute(
+            self.client
+                .post(&url)
+                .timeout(RESTART_REQUEST_TIMEOUT)
+                .json(&serde_json::json!({})),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -553,6 +592,7 @@ mod tests {
             .route("/api/v1/guiding/resume", post(state_handler))
             .route("/api/v1/dither", post(settled_handler))
             .route("/api/v1/guiding/stats", get(stats_handler))
+            .route("/api/v1/phd2/restart", post(restart_handler))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -625,6 +665,22 @@ mod tests {
     ) -> axum::response::Response {
         record(&state, &uri, &body).await;
         behavior_response(&state.behavior, serde_json::json!({ "state": "stopped" }))
+    }
+
+    async fn restart_handler(
+        State(state): State<StubState>,
+        uri: axum::http::Uri,
+        body: axum::body::Bytes,
+    ) -> axum::response::Response {
+        record(&state, &uri, &body).await;
+        behavior_response(
+            &state.behavior,
+            serde_json::json!({
+                "phd2": "restarted",
+                "equipment": "connected",
+                "elapsed_ms": 18400,
+            }),
+        )
     }
 
     async fn stats_handler(
@@ -759,6 +815,42 @@ mod tests {
         assert_eq!(requests[1].0, "/api/v1/guiding/pause");
         assert_eq!(requests[1].1["full"], true);
         assert_eq!(requests[2].0, "/api/v1/guiding/resume");
+    }
+
+    #[tokio::test]
+    async fn restart_phd2_posts_an_empty_object_and_returns_the_outcome() {
+        let stub = spawn_stub(StubBehavior::Success).await;
+        let client = client_for(&stub);
+
+        let outcome = client.restart_phd2().await.unwrap();
+
+        assert_eq!(outcome.phd2, "restarted");
+        assert_eq!(outcome.equipment, "connected");
+        assert_eq!(outcome.elapsed_ms, 18400);
+        let requests = stub.requests.read().await.clone();
+        assert_eq!(requests[0].0, "/api/v1/phd2/restart");
+        assert_eq!(requests[0].1, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn restart_phd2_carries_the_service_refusal() {
+        let stub = spawn_stub(StubBehavior::Error {
+            status: StatusCode::NOT_IMPLEMENTED,
+            body: serde_json::json!({
+                "error": "restart_unsupported",
+                "message": "phd2.managed is false",
+            }),
+        })
+        .await;
+        let client = client_for(&stub);
+
+        match client.restart_phd2().await.unwrap_err() {
+            GuiderError::Service { code, message, .. } => {
+                assert_eq!(code, "restart_unsupported");
+                assert_eq!(message, "phd2.managed is false");
+            }
+            other => panic!("expected Service error, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

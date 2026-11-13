@@ -15,6 +15,11 @@
 //!     - "`no_listen"`: Sleep without binding to port (tests connection timeout)
 //!     - "`slow_start"`: Wait 5 seconds before binding (tests startup timing)
 //!     - "`shutdown_fails"`: Ignore shutdown commands (tests fallback to force kill)
+//!     - "`no_answer"`: Bind and listen, then never accept: the kernel
+//!       completes each connection, and nothing ever answers on it, as
+//!       from a PHD2 whose main thread hangs
+//!   `MOCK_PHD2_APP_STATE` - the application state the mock starts in
+//!     (default "Stopped"), e.g. "Guiding"
 //!   `MOCK_PHD2_SETTLE_MODE` - What follows a `guide`/`dither` RPC:
 //!     - "`settle_ok`" (default): emit Settling, two fixed `GuideStep` events
 //!       (`RADistanceRaw` +0.3/-0.3, `DECDistanceRaw` -0.4/+0.4 so the RMS is
@@ -59,6 +64,10 @@
 //!       "Mock camera error", Path}`
 //!     - "`never_reports`": no file and no event; the capture ends
 //!       silently (drives the facade's deadline)
+//!
+//! `set_connected` connects or disconnects the profile's equipment, and
+//! `get_connected` reads it back; the equipment starts disconnected, as
+//! PHD2's does.
 //!
 //! As in PHD2, `SingleFrameComplete` goes to every connected client.
 //! One test hook is not a PHD2 method: `mock_report_frame {"path"}`
@@ -120,6 +129,9 @@ static FRAME_IN_FLIGHT: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 /// size is known only after its first frame what to answer.
 static FRAME_TAKEN: AtomicBool = AtomicBool::new(false);
 
+/// Whether the profile's equipment is connected (`set_connected`).
+static EQUIPMENT_CONNECTED: AtomicBool = AtomicBool::new(false);
+
 /// Every connected client's writer. PHD2 sends `SingleFrameComplete` to
 /// every event-server client, not only the one that asked for the frame.
 static CLIENTS: Mutex<Vec<Arc<Mutex<TcpStream>>>> = Mutex::new(Vec::new());
@@ -173,7 +185,7 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_secs(5));
             // Continue to normal startup
         }
-        "normal" | "shutdown_fails" => {
+        "normal" | "shutdown_fails" | "no_answer" => {
             // Continue to normal startup
         }
         _ => {
@@ -218,7 +230,9 @@ fn main() {
         .port();
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let app_state: AppState = Arc::new(Mutex::new("Stopped".to_string()));
+    let initial_state =
+        std::env::var("MOCK_PHD2_APP_STATE").unwrap_or_else(|_| "Stopped".to_string());
+    let app_state: AppState = Arc::new(Mutex::new(initial_state));
 
     // Set a timeout so we can check shutdown flag periodically
     listener
@@ -229,6 +243,16 @@ fn main() {
     println!("MOCK_PHD2_PORT:{actual_port}");
 
     eprintln!("Mock PHD2 listening on port {actual_port}");
+
+    if mode == "no_answer" {
+        eprintln!("Mock PHD2: no_answer mode - accepting nothing, answering nothing");
+        // The listener stays open, so the kernel keeps completing
+        // connections into its backlog.
+        let _listener = listener;
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
 
     // Store mode for use in request handler
     let ignore_shutdown = mode == "shutdown_fails";
@@ -790,6 +814,9 @@ fn handle_request(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     log_rpc(method, &params);
+    if let Some(reply) = equipment(method, &params, &id) {
+        return reply;
+    }
 
     // Mock responses: the arms that touch mock state or the
     // environment live here; everything else is a canned fixture.
@@ -886,6 +913,32 @@ fn handle_request(
     format!(r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#)
 }
 
+/// The reply to `set_connected`, which connects or disconnects the
+/// profile's equipment, and to `get_connected`, which reads it back; `None`
+/// for any other method. The client sends `set_connected` a bare boolean;
+/// PHD2 also takes `[bool]`.
+fn equipment(method: &str, params: &serde_json::Value, id: &serde_json::Value) -> Option<String> {
+    let result = match method {
+        "get_connected" => EQUIPMENT_CONNECTED.load(Ordering::Relaxed).into(),
+        "set_connected" => {
+            let Some(connect) = params
+                .as_bool()
+                .or_else(|| params.get(0).and_then(serde_json::Value::as_bool))
+            else {
+                return Some(format!(
+                    r#"{{"jsonrpc":"2.0","error":{{"code":-32602,"message":"expected connected boolean param"}},"id":{id}}}"#
+                ));
+            };
+            EQUIPMENT_CONNECTED.store(connect, Ordering::Relaxed);
+            serde_json::json!(0)
+        }
+        _ => return None,
+    };
+    Some(format!(
+        r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#
+    ))
+}
+
 /// Canned replies for the methods with no mock state to consult or
 /// update: boolean getters report "off" / "not yet", setters and
 /// one-shot commands acknowledge with the PHD2 success code 0, and the
@@ -893,14 +946,14 @@ fn handle_request(
 fn canned_response(method: &str) -> Option<serde_json::Value> {
     let value = match method {
         // Boolean getters the mock reports as "off" / "not yet".
-        "get_connected" | "get_use_subframes" | "get_calibrated" | "get_paused" => {
+        "get_use_subframes" | "get_calibrated" | "get_paused" => {
             serde_json::json!(false)
         }
         // Setters and one-shot commands with no state to update here —
         // the mock acknowledges with the PHD2 success code 0.
-        "set_connected" | "set_profile" | "set_exposure" | "clear_calibration"
-        | "flip_calibration" | "set_lock_position" | "find_star" | "set_paused"
-        | "set_algo_param" | "set_cooler_state" => {
+        "set_profile" | "set_exposure" | "clear_calibration" | "flip_calibration"
+        | "set_lock_position" | "find_star" | "set_paused" | "set_algo_param"
+        | "set_cooler_state" => {
             serde_json::json!(0)
         }
         "get_profiles" => serde_json::json!([

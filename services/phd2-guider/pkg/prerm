@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+# PHD2's units are plain files outside cargo-deb's systemd handling
+# (Cargo.toml), so a removal stops and disables them here; an upgrade
+# leaves PHD2 running.
+if [ "$1" = "remove" ]; then
+    systemctl disable rusty-photon-phd2.service > /dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl stop rusty-photon-phd2.service rusty-photon-phd2-display.service > /dev/null 2>&1 || true
+    fi
+fi
+#DEBHELPER#

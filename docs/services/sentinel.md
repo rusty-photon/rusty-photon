@@ -153,10 +153,15 @@ never carry fails config load with the field named.
 Sentinel has **no configured service registry**. It discovers the services it
 supervises from the platform service manager: at startup and every 60 s
 thereafter it enumerates the installed `rusty-photon-*` service units
-(excluding its own, and excluding scheduled-job units — currently
+(excluding its own; excluding scheduled-job units — currently
 `rusty-photon-renew`, the TLS renewal oneshot its own package ships:
 supervising a job would restart-loop a failed run, and a dashboard row
-for it would be noise) and derives everything the retired `services` map
+for it would be noise; and excluding `rusty-photon-phd2` and
+`rusty-photon-phd2-display`, the units the phd2-guider package ships for
+PHD2 and its display, whose health and restart are the guider service's
+([phd2-guider.md § PHD2 under the service
+manager](phd2-guider.md#phd2-under-the-service-manager))) and derives
+everything the retired `services` map
 used to spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
 *whether the source of truth can be down when you need it*: asking a dead
 driver how to restart itself fails that test; asking the service manager —

@@ -682,14 +682,23 @@ impl Device for Phd2Camera {
     /// A connect reads PHD2: its version, its camera's frame size and
     /// name. No equipment connection, no stop (workspace tenet 3), and
     /// no exposure but the 1 ms frame that reads a frame size PHD2 does
-    /// not know yet.
+    /// not know yet. While the camera is connected, or connecting, PHD2's
+    /// restart is refused, and a connect is refused while PHD2 restarts.
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         let _transition = self.inner.lifecycle.lock().await;
+        let ops = self.inner.engine.ops();
         if connected {
             if self.session().connected {
                 return Ok(());
             }
-            let geometry = self.read_phd2_camera().await?;
+            ops.claim_facade_camera().map_err(not_connected)?;
+            let geometry = match self.read_phd2_camera().await {
+                Ok(geometry) => geometry,
+                Err(e) => {
+                    ops.release_facade_camera();
+                    return Err(e);
+                }
+            };
             debug!(
                 width = geometry.width,
                 height = geometry.height,
@@ -699,12 +708,13 @@ impl Device for Phd2Camera {
             self.begin_session(geometry);
             return Ok(());
         }
-        self.inner.engine.ops().end_lease(LeaseEnd::Disconnected);
+        ops.end_lease(LeaseEnd::Disconnected);
         if let Some(aborted) = self.begin_abort() {
             debug!("disconnect ends the facade's exposure in flight");
             self.finish_abort(aborted).await;
         }
         self.end_session();
+        ops.release_facade_camera();
         Ok(())
     }
 
@@ -1654,6 +1664,37 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         assert!(err.message.contains("not reachable"), "{err}");
         assert!(!camera.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_failed_connect_leaves_no_claim_on_the_camera() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        camera.set_connected(true).await.unwrap_err();
+        assert!(!camera.inner.engine.ops().facade_camera_claimed());
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_gives_up_the_claim_on_the_camera() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        let ops = Arc::clone(camera.inner.engine.ops());
+        ops.claim_facade_camera().unwrap();
+        camera.set_connected(false).await.unwrap();
+        assert!(!ops.facade_camera_claimed());
+    }
+
+    #[tokio::test]
+    async fn a_connect_while_phd2_restarts_is_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let ops = Arc::clone(camera.inner.engine.ops());
+        let restarting = ops.begin_restart().unwrap();
+        let err = camera.set_connected(true).await.unwrap_err();
+        drop(restarting);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(err.message.contains("PHD2 is restarting"), "{err}");
+        assert!(!ops.facade_camera_claimed());
     }
 
     #[tokio::test]

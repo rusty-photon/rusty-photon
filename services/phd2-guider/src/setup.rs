@@ -90,6 +90,7 @@ fn page_rule_violations(config: &Config) -> Vec<(String, String)> {
         ("stop_timeout", config.stop_timeout),
         ("phd2.connection_timeout", config.phd2.connection_timeout),
         ("phd2.command_timeout", config.phd2.command_timeout),
+        ("phd2.restart_timeout", config.phd2.restart_timeout),
         ("phd2.reconnect.interval", config.phd2.reconnect.interval),
         ("settling.timeout", config.settling.timeout),
     ];
@@ -305,6 +306,7 @@ mod tests {
                 "port": 0,
                 "connection_timeout": "0s",
                 "command_timeout": "0s",
+                "restart_timeout": "0s",
                 "reconnect": { "interval": "0s" }
             },
             "settling": { "pixels": 0.0, "time": "0s", "timeout": "0s" }
@@ -316,6 +318,7 @@ mod tests {
                 "stop_timeout",
                 "phd2.connection_timeout",
                 "phd2.command_timeout",
+                "phd2.restart_timeout",
                 "phd2.reconnect.interval",
                 "settling.timeout",
                 "settling.pixels",

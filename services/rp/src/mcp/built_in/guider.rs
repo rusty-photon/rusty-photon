@@ -1,7 +1,8 @@
 //! Guider tool category: `start_guiding`, `stop_guiding`, `dither`,
-//! `pause_guiding`, `resume_guiding`, `get_guiding_stats`.
+//! `pause_guiding`, `resume_guiding`, `get_guiding_stats`, `restart_guider`.
 //!
-//! All six proxy to the guider rp-managed service (the `phd2-guider`
+//! rp.md describes `restart_guider` with the other power tools, in its
+//! power switching section. All seven proxy to the guider rp-managed service (the `phd2-guider`
 //! binary's `serve` mode) through the `rp-guider` HTTP client on
 //! `McpHandler::guider`; `None` there means every tool errors with
 //! "guider not configured". Wire quantities are **guide-camera
@@ -68,6 +69,9 @@ pub struct StartGuidingParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StopGuidingParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestartGuiderParams {}
 
 /// Unit of a `dither` amount. The guider service itself only speaks
 /// guide-camera pixels; the other units are converted by rp via the
@@ -259,6 +263,32 @@ impl McpHandler {
                 Ok(tool_success!({ "state": "stopped" }))
             }
             Err(e) => Ok(tool_error!("{}", guider_error_text("stop_guiding", &e))),
+        }
+    }
+
+    #[tool(
+        description = "Have the guider service restart PHD2 and connect its equipment, so PHD2 meets its guide camera and mount in a fresh process. Refused while PHD2 guides, calibrates, is paused or has lost its star (stop_guiding first), while the PHD2 camera facade's camera is connected or capturing (disconnect_device first), and where nothing would start PHD2 again. Waits up to 130 s. Returns phd2 (restarted), equipment (connected) and elapsed_ms"
+    )]
+    pub(crate) async fn restart_guider(
+        &self,
+        Parameters(_params): Parameters<RestartGuiderParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(client) = self.guider.clone() else {
+            return Ok(tool_error!("restart_guider: guider not configured"));
+        };
+        match client.restart_phd2().await {
+            Ok(outcome) => {
+                debug!(
+                    elapsed_ms = outcome.elapsed_ms,
+                    "the guider service restarted PHD2"
+                );
+                Ok(tool_success!({
+                    "phd2": outcome.phd2,
+                    "equipment": outcome.equipment,
+                    "elapsed_ms": outcome.elapsed_ms,
+                }))
+            }
+            Err(e) => Ok(tool_error!("{}", guider_error_text("restart_guider", &e))),
         }
     }
 

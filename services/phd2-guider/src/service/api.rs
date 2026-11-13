@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::State,
+    extract::{rejection::JsonRejection, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -31,6 +31,7 @@ pub fn build_router(ops: Arc<GuiderOps>) -> Router {
         .route("/api/v1/equipment", get(equipment))
         .route("/api/v1/calibration/clear", post(clear_calibration))
         .route("/api/v1/star/reselect", post(reselect_star))
+        .route("/api/v1/phd2/restart", post(restart_phd2))
         .route("/health", get(health))
         .with_state(ops)
 }
@@ -317,6 +318,67 @@ async fn reselect_star(
     Ok(Json(StateResponse { state: "selected" }))
 }
 
+/// The body a restart request carries: an empty JSON object, so the request
+/// has to be JSON and a page on another site cannot submit it as a form.
+///
+/// It converts from a JSON map rather than deriving a field-less struct with
+/// `deny_unknown_fields`, whose derive expands to an empty enum that
+/// `clippy::empty_enums` denies.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "serde_json::Map<String, serde_json::Value>")]
+struct RestartBody;
+
+impl TryFrom<serde_json::Map<String, serde_json::Value>> for RestartBody {
+    type Error = String;
+
+    fn try_from(fields: serde_json::Map<String, serde_json::Value>) -> Result<Self, Self::Error> {
+        fields.keys().next().map_or(Ok(Self), |field| {
+            Err(format!(
+                "a restart request carries no fields, got {field:?}"
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RestartResponse {
+    phd2: &'static str,
+    equipment: &'static str,
+    elapsed_ms: u64,
+}
+
+/// A body that is not JSON keeps axum's own `415`; a JSON body that is not
+/// an empty object is `invalid_request`.
+async fn restart_phd2(
+    State(ops): State<Arc<GuiderOps>>,
+    body: Result<Json<RestartBody>, JsonRejection>,
+) -> Response {
+    match body {
+        Ok(Json(RestartBody)) => {}
+        Err(rejection @ JsonRejection::MissingJsonContentType(_)) => {
+            return rejection.into_response();
+        }
+        Err(rejection) => {
+            return ServiceError::InvalidRequest(rejection.body_text()).into_response();
+        }
+    }
+    // The restart runs on a task of its own, so a client that goes away
+    // does not cut it off between ending PHD2 and connecting its equipment.
+    let restart = tokio::spawn(async move { ops.restart_phd2().await });
+    match restart.await {
+        Ok(Ok(done)) => Json(RestartResponse {
+            phd2: "restarted",
+            equipment: "connected",
+            elapsed_ms: u64::try_from(done.elapsed.as_millis()).unwrap_or(u64::MAX),
+        })
+        .into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => {
+            ServiceError::Internal(format!("the restart did not finish: {e}")).into_response()
+        }
+    }
+}
+
 /// The 503 means alive-but-degraded (PHD2 off is the normal daytime
 /// state); `message` is the opaque explanation sentinel displays on its
 /// dashboard without interpreting (docs/services/sentinel.md §Service
@@ -429,6 +491,68 @@ mod tests {
         let err = serde_json::from_str::<StartBody>(r#"{"recalibrate": false, "pixels": 1.0}"#)
             .unwrap_err();
         assert!(err.to_string().contains("pixels"));
+    }
+
+    #[test]
+    fn a_restart_body_is_an_empty_object() {
+        serde_json::from_str::<RestartBody>("{}").unwrap();
+        let err = serde_json::from_str::<RestartBody>(r#"{"force": true}"#).unwrap_err();
+        assert!(err.to_string().contains("\"force\""), "{err}");
+        let err = serde_json::from_str::<RestartBody>("[]").unwrap_err();
+        assert!(err.to_string().contains("map"), "{err}");
+    }
+
+    /// `POST /api/v1/phd2/restart` with `body` of `content_type` on a
+    /// guider that is not switched over: the status and the body.
+    async fn post_restart(content_type: &str, body: &'static str) -> (StatusCode, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/api/v1/phd2/restart",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, build_router(Arc::new(test_ops())))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+        let text = response.text().await.unwrap();
+        server.abort();
+        (status, text)
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // reqwest's client builds a rustls config, whose aws-lc C code Miri cannot call
+    async fn a_restart_posted_as_a_form_is_refused_with_415() {
+        let (status, body) = post_restart("application/x-www-form-urlencoded", "force=true").await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // reqwest's client builds a rustls config, whose aws-lc C code Miri cannot call
+    async fn a_restart_with_a_json_body_that_is_not_an_empty_object_is_invalid() {
+        for body in ["[]", r#"{"force": true}"#, "{"] {
+            let (status, text) = post_restart("application/json", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+            let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(envelope["error"], "invalid_request", "{body}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // reqwest's client builds a rustls config, whose aws-lc C code Miri cannot call
+    async fn a_restart_on_a_host_not_switched_over_is_unsupported() {
+        let (status, text) = post_restart("application/json", "{}").await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{text}");
+        let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(envelope["error"], "restart_unsupported", "{text}");
     }
 
     #[test]

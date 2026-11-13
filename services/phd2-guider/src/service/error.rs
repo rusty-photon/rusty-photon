@@ -37,6 +37,20 @@ pub enum ServiceError {
     #[error("PHD2 unreachable: {0}")]
     Phd2Unreachable(String),
 
+    #[error("camera connected: {0}")]
+    CameraConnected(String),
+
+    #[error("guiding active: {0}")]
+    GuidingActive(String),
+
+    /// A restart step failed or ran out of time; `step` is the design's
+    /// name for it (`refusals`, `stop`, `start`, `answer`, `equipment`).
+    #[error("restart failed in step \"{step}\": {detail}")]
+    RestartFailed { step: &'static str, detail: String },
+
+    #[error("restart unsupported: {0}")]
+    RestartUnsupported(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -53,6 +67,10 @@ pub enum ErrorCode {
     SettleTimeout,
     StopTimeout,
     Phd2Unreachable,
+    CameraConnected,
+    GuidingActive,
+    RestartFailed,
+    RestartUnsupported,
     Internal,
 }
 
@@ -76,6 +94,10 @@ impl ServiceError {
             Self::SettleTimeout(_) => ErrorCode::SettleTimeout,
             Self::StopTimeout(_) => ErrorCode::StopTimeout,
             Self::Phd2Unreachable(_) => ErrorCode::Phd2Unreachable,
+            Self::CameraConnected(_) => ErrorCode::CameraConnected,
+            Self::GuidingActive(_) => ErrorCode::GuidingActive,
+            Self::RestartFailed { .. } => ErrorCode::RestartFailed,
+            Self::RestartUnsupported(_) => ErrorCode::RestartUnsupported,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }
@@ -85,10 +107,14 @@ impl ServiceError {
     pub const fn status(&self) -> StatusCode {
         match self {
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            Self::NotGuiding(_) | Self::CameraBusy(_) => StatusCode::CONFLICT,
+            Self::NotGuiding(_)
+            | Self::CameraBusy(_)
+            | Self::CameraConnected(_)
+            | Self::GuidingActive(_) => StatusCode::CONFLICT,
             Self::GuideFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::SettleTimeout(_) | Self::StopTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
-            Self::Phd2Unreachable(_) => StatusCode::BAD_GATEWAY,
+            Self::Phd2Unreachable(_) | Self::RestartFailed { .. } => StatusCode::BAD_GATEWAY,
+            Self::RestartUnsupported(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -175,6 +201,29 @@ mod tests {
                 StatusCode::BAD_GATEWAY,
             ),
             (
+                ServiceError::CameraConnected("connected".into()),
+                ErrorCode::CameraConnected,
+                StatusCode::CONFLICT,
+            ),
+            (
+                ServiceError::GuidingActive("Guiding".into()),
+                ErrorCode::GuidingActive,
+                StatusCode::CONFLICT,
+            ),
+            (
+                ServiceError::RestartFailed {
+                    step: "start",
+                    detail: "no new process".into(),
+                },
+                ErrorCode::RestartFailed,
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ServiceError::RestartUnsupported("not managed".into()),
+                ErrorCode::RestartUnsupported,
+                StatusCode::NOT_IMPLEMENTED,
+            ),
+            (
                 ServiceError::Internal("bug".into()),
                 ErrorCode::Internal,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -194,6 +243,26 @@ mod tests {
         assert_eq!(json, "\"not_guiding\"");
         let json = serde_json::to_string(&ErrorCode::CameraBusy).unwrap();
         assert_eq!(json, "\"camera_busy\"");
+        for (code, wire) in [
+            (ErrorCode::CameraConnected, "camera_connected"),
+            (ErrorCode::GuidingActive, "guiding_active"),
+            (ErrorCode::RestartFailed, "restart_failed"),
+            (ErrorCode::RestartUnsupported, "restart_unsupported"),
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn a_failed_restart_names_its_step() {
+        let err = ServiceError::RestartFailed {
+            step: "answer",
+            detail: "PHD2 did not answer".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "restart failed in step \"answer\": PHD2 did not answer"
+        );
     }
 
     #[test]

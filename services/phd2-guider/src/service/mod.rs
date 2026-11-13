@@ -10,6 +10,7 @@ pub mod camera;
 pub mod capture;
 pub mod error;
 pub mod guider;
+pub mod keeper;
 pub mod lease;
 
 pub use camera::Phd2Camera;
@@ -97,11 +98,17 @@ impl ServerBuilder {
             .client
             .unwrap_or_else(|| Arc::new(Phd2Client::new(config.phd2.clone())));
 
-        let ops = Arc::new(GuiderOps::new(
-            Arc::clone(&client),
-            config.settling.clone(),
-            config.stop_timeout,
-        ));
+        let ops = Arc::new(
+            GuiderOps::new(
+                Arc::clone(&client),
+                config.settling.clone(),
+                config.stop_timeout,
+            )
+            .with_restart(
+                guider::RestartSettings::from_config(&config.phd2),
+                keeper::system_keeper(),
+            ),
+        );
 
         // Bind before spawning any background task: a bind failure a
         // caller chooses to handle must not leak an event pump or a
