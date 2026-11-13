@@ -96,7 +96,8 @@ pub struct MeasuredStar {
     /// for a star [`measure_listed`] measured, which takes no level.
     pub saturated: bool,
     /// The index, in the detection list, of the detection the star was
-    /// measured from.
+    /// measured from. For a star [`measure_listed`] measured, the index of
+    /// its entry in `listed`.
     pub detection: usize,
 }
 
