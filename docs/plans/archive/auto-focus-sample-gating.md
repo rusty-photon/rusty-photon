@@ -1,5 +1,20 @@
 # Auto-focus sample gating and confirmation — trust the sweep only where it can see stars
 
+**Status: COMPLETE (archived 2026-11-12).** Every phase shipped and was
+validated on rig2: G1 in [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193), G2 in
+[#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) as the focus-model plan's S9, G3a in
+[#1473](https://github.com/rusty-photon/rusty-photon/pull/1473) and [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478), and the rest of
+[#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) as G3b in [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686), G3c in
+[#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) and G3d in [#1715](https://github.com/rusty-photon/rusty-photon/pull/1715), the last two
+validated with sweeps mis-started on rig2 on 2026-11-05 and 2026-11-11.
+`rp`'s capture `auto_focus`, which carried G1's relative sparse gate,
+retired in the focus-model plan's S7c ([#1710](https://github.com/rusty-photon/rusty-photon/pull/1710)); the
+fixed star list, the two-star floor and the vertex-centred retry are
+`focus-model`'s sweep. The Deferred items stay parked: outlier
+rejection on fit residuals, per-point error bars, the in-call
+two-stage sweep and a detection fallback for a starless reference
+frame.
+
 ## Goal
 
 `auto_focus` fits a parabola to every non-null HFR sample of the sweep,
@@ -46,11 +61,11 @@ tell a clean V from a guess.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
-| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
-| G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
-| G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686) |
-| G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) |
-| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, at most three half widths from the centre that failed, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | In progress | `feature/auto-focus-retry-on-vertex` |
+| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](../focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Merged — focus-model plan S9 | [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) |
+| G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames and its binned 2026-09-09 ones. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | Merged | [#1473](https://github.com/rusty-photon/rusty-photon/pull/1473), [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478) |
+| G3b | Measurement: HFR in an aperture that follows each star (centre and radius iterated, local annulus background), one star per aperture so a fragmented donut counts once, a size cap from `max_area`, and the aggregate over the 20 brightest stars, in `measure_basic` and `measure_stars` ([rp.md](../../services/rp.md), `measure_basic` algorithm steps 9–11); `focus-model` reads the new `measure_stars.hfr` — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686) |
+| G3c | Sweep rules, in `focus-model`'s sweep: a fixed star list — a reference frame at each attempt's centre picks the stars, and every sample and the confirmation frame measure those same stars through `measure_stars`' new `stars` input ([rp.md](../../services/rp.md), `measure_stars` Contract); a sample with fewer than two of them measured is `sparse`, the fit is weighted by how many measured, `min_star_fraction` retires, and the confirmation says why it was rejected ([focus-model.md § The sweep](../../services/focus-model.md#the-sweep)) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) |
+| G3d | The retry after a monotonic curve, in `focus-model`'s sweep: when the fit extrapolated its vertex past the end of the samples the lowest one sits nearer, the next grid is centred on that vertex, at most three half widths from the centre that failed, and moves half a width only when the fit placed no such vertex ([focus-model.md § The sweep](../../services/focus-model.md#the-sweep), step 6) — [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) | Merged | [#1715](https://github.com/rusty-photon/rusty-photon/pull/1715) |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -60,7 +75,7 @@ below), and must be validated on real frames, never on synthetic ones —
 the sweep frames from the night this was found are still on the rig.
 
 **Decided 2026-09-13.** G2 lands next, in the `focus-model` provider
-([plan](focus-model.md) S9), and does **not** wait for another rig
+([plan](../focus-model.md) S9), and does **not** wait for another rig
 night. The hyperbola is the analytic defocus curve — a geometric cone
 with a seeing floor — so what makes it the right model is physics that
 holds across optical trains, not one rig's numbers; fitting it to a
@@ -117,7 +132,7 @@ admit a hyperbola, and what the solver does then was S9's to define.
 fit is the nearest V: the limit of the family as the focused HFR goes
 to 0, at an R² below 1. That is a fit, not a failure, and a
 configured threshold judges it like any other
-([focus-model.md § The sweep](../services/focus-model.md#the-sweep),
+([focus-model.md § The sweep](../../services/focus-model.md#the-sweep),
 step 4). Refusing it would refuse exactly the sweep a coarse grid
 makes, whose samples all sit far enough from focus that the floor
 never shows. The #1187 sweep is that case: at `min_fit_points` 3 its
@@ -156,7 +171,7 @@ as G3b, the measurement, then G3c, the sweep rules.
    2026-09-26 sweeps, 79 frames at known positions.
 
 *Measured in G3b* (the numbers are in
-[rp.md](../services/rp.md), `measure_basic`). In apertures, every
+[rp.md](../../services/rp.md), `measure_basic`). In apertures, every
 sweep that brackets focus keeps its vertex within six steps of the
 component HFR's, inside the ~31-step critical focus zone, at an R² of
 0.986–0.997; the wing slope is 4.1–4.7 px per 100 steps at both
@@ -201,7 +216,8 @@ run.
    `sparse`, with the fallback, and `confirmation.rejected` says why.
 4. **G3c is `focus-model`'s.** `rp`'s capture sweep keeps its relative
    gate unchanged until the focus-model plan's S7 retires it; decision
-   3's "both sweeps" goes with it.
+   3's "both sweeps" goes with it. *S7c retired that sweep, and its
+   gate with it, in [#1710](https://github.com/rusty-photon/rusty-photon/pull/1710).*
 5. **Coarse sweeps are not a target.** `focus-model` sizes its sweep to
    the optics, ending it at `sweep.end_ratio`, 4× the focused HFR, and
    this plan declines a coarse-then-fine sweep (Deferred). The #1187
@@ -314,6 +330,30 @@ their end: rig2's R grid ends 18 steps short of its half width above
 its centre, so a span past the samples would reach only 290 steps
 above it, and a sweep started 300 below focus would fail.
 
+*Measured on rig2, 2026-11-11*, on the nightly that carries G3d: four
+R sweeps started off focus by a hand-entered offset, each after an L
+control (R half widths 82–106 steps, 8 points; `max_attempts` 2).
+Every one ended `monotonic_curve` on its first attempt, retried on a
+grid centred on its fit's vertex, and fitted and confirmed on its
+second. Positions from focus are from that case's fitted R focus,
+which drifted 22 steps over the half hour with the temperature:
+
+| Start (from focus) | Attempt 1 grid | Its extrapolated vertex (from focus) | Retry centred on | Attempt 2 grid | Fitted | R² |
+|-------------------:|:---------------|-------------------------------------:|:-----------------|:---------------|-------:|---:|
+| 29851 (+206) | 29745–29934 | 29654 (+9) | 29654, the vertex | 29548–29737 | 29645 | 0.992 |
+| 29443 (−195) | 29361–29508 | 29604 (−34) | 29604, the vertex | 29522–29669 | 29638 | 0.995 |
+| 29934 (+302) | 29840–30008 | 29649 (+17) | 29652, capped at 3 × 94 | 29558–29726 | 29632 | 0.990 |
+| 29331 (−292) | 29246–29400 | 29611 (−12) | 29586, capped at 3 × 85 | 29501–29655 | 29623 | 0.996 |
+
+Each second grid held focus with at least 31 steps to spare on either
+side, the capped ones included. The L controls of the last three
+cases started from the previous R run with its offset reversed, so
+each was itself a mis-start, by 200–301 steps, and each fitted on its
+second attempt too: 7 of 7 sweeps started 195–302 steps from focus
+fitted, where the half-width retry had fitted neither of the two at
+±200. Every fit confirmed, at R² 0.990–0.998, and no sample went
+sparse or starless.
+
 G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
 ran (`threshold_sigma 10`, `min_area 40`). It is what lets a sweep run
@@ -324,7 +364,7 @@ trace the V-curve, where every sample measured a median HFR of
 sweep's best-focus frame (`services/rp/tests/fixtures/star_detection/`).
 
 Each phase follows
-[development-workflow.md](../skills/development-workflow.md): design-doc
+[development-workflow.md](../../skills/development-workflow.md): design-doc
 update (rp.md, session-runner.md) first, BDD second, code third.
 
 ## Decisions (fixed — settled 2026-09-08)
@@ -341,9 +381,9 @@ update (rp.md, session-runner.md) first, BDD second, code third.
    guide-train sweep's per-position frame count is nearly constant and
    carries no such signal. *Superseded in `focus-model` by G3c
    (decided 2026-11-01):* a sample there is `sparse` below two measured
-   stars of the attempt's star list, with no relative part; `rp`'s
-   capture sweep keeps this gate until the focus-model plan's S7
-   retires it.
+   stars of the attempt's star list, with no relative part. `rp`'s
+   capture sweep kept this gate until the focus-model plan's S7c
+   retired that sweep ([#1710](https://github.com/rusty-photon/rusty-photon/pull/1710)).
 2. **Report fit quality, do not enforce it yet.** The result carries
    `fit_r_squared`, the weighted coefficient of determination over the
    accepted samples. A threshold waits for G2.
@@ -470,4 +510,6 @@ fit on sub-pixel artefacts; the frames join the corpus. Run on rig2 on
 150 steps passed, and 200 failed on either side through the
 half-width retry, which G3d replaces. G3d is validated the same way:
 on the next clear night the ±200 mis-starts, and ±300 ones, must fit
-on their second attempt.
+on their second attempt. Run on rig2 on 2026-11-11 (*Measured on rig2,
+2026-11-11*, above): all four fitted on their second attempt and
+confirmed, the ±300 ones through the cap.

@@ -6104,8 +6104,7 @@ Requirements, checked before any motion:
 - `fit_r_squared` (f64) — weighted coefficient of determination of
   the hyperbola over the valid samples, clamped to `[0, 1]`. Reported,
   not enforced: the threshold is the focus-model provider's
-  `min_fit_r_squared`, and this sweep has no knob for one
-  ([sample-gating plan](../plans/auto-focus-sample-gating.md), G2).
+  `min_fit_r_squared`, and this sweep has no knob for one.
 - `confirmation` — `{hfd: f64 | null, frames_used: u32, accepted: bool}`,
   the sample set collected at `best_position` and its verdict.
 - `confirmed` (bool) — `confirmation.accepted`, hoisted for callers.
