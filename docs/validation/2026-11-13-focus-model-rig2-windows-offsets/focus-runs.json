@@ -1,0 +1,4076 @@
+{
+  "run_1": [
+    {
+      "at": "2026-11-13T00:43:41Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.8438375752500129,
+      "best_position": 29583,
+      "curve_points": [
+        {
+          "document_id": "56faf12b-c652-400a-88d7-1c8a23b01043",
+          "hfr": 5.3367042252663595,
+          "position": 29464,
+          "rejected": null,
+          "star_count": 1703
+        },
+        {
+          "document_id": "db3d8bff-e196-4078-884a-537367e2accf",
+          "hfr": 3.8382508504000863,
+          "position": 29497,
+          "rejected": null,
+          "star_count": 1711
+        },
+        {
+          "document_id": "b182ee90-b93d-49df-ae18-738cf6a29800",
+          "hfr": 2.4573743634708496,
+          "position": 29530,
+          "rejected": null,
+          "star_count": 1715
+        },
+        {
+          "document_id": "236e8589-822c-4f27-a45c-9433a07cbb69",
+          "hfr": 1.2588490352788788,
+          "position": 29563,
+          "rejected": null,
+          "star_count": 1749
+        },
+        {
+          "document_id": "7ecbe968-9263-4027-80b9-baf7e023df31",
+          "hfr": 1.0726431984876714,
+          "position": 29596,
+          "rejected": null,
+          "star_count": 1747
+        },
+        {
+          "document_id": "f2a448f3-3ea6-44d5-b6c1-c7ac2c48b57f",
+          "hfr": 2.0513568426149886,
+          "position": 29629,
+          "rejected": null,
+          "star_count": 1741
+        },
+        {
+          "document_id": "ba0021f7-1a50-4621-997d-16cce6a2f6b5",
+          "hfr": 3.5562672812029903,
+          "position": 29662,
+          "rejected": null,
+          "star_count": 1716
+        },
+        {
+          "document_id": "de307c50-f100-4bb1-907a-1cd6c1784761",
+          "hfr": 5.161210724103137,
+          "position": 29695,
+          "rejected": null,
+          "star_count": 1588
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.9973259498056799,
+      "half_width": 129,
+      "hfr": 1.0655907058048943,
+      "outcome": "confirmed",
+      "position": 29583,
+      "prediction": {
+        "from_position": 29487,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29593,
+        "terms": {
+          "last_good": 29487,
+          "offset": 0,
+          "temperature": 106.16632709761066
+        }
+      },
+      "reference": {
+        "document_id": "d2d14fb3-ee2d-40ec-8186-5e2e88ce6be5",
+        "listed": 1852,
+        "position": 29593
+      },
+      "samples_used": 8,
+      "step_size": 33,
+      "sweep_source": "derived",
+      "temperature_c": 13.6,
+      "wing_slope": 4.711899820436589
+    },
+    {
+      "at": "2026-11-13T00:46:05Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.8363401359774727,
+      "best_position": 29596,
+      "curve_points": [
+        {
+          "document_id": "c7596821-4c84-4697-bb8f-645c0a7c6f27",
+          "hfr": 4.486763580788598,
+          "position": 29492,
+          "rejected": null,
+          "star_count": 1229
+        },
+        {
+          "document_id": "076fd1ae-2c50-46b0-b572-5533b345cf06",
+          "hfr": 3.4825574117325404,
+          "position": 29515,
+          "rejected": null,
+          "star_count": 1224
+        },
+        {
+          "document_id": "edff2b64-6f1b-49f4-b04b-a85c9d867d76",
+          "hfr": 2.506660530633214,
+          "position": 29538,
+          "rejected": null,
+          "star_count": 1229
+        },
+        {
+          "document_id": "9d74f532-ad18-4b3d-957c-b1141744d1b2",
+          "hfr": 1.5577934829939286,
+          "position": 29561,
+          "rejected": null,
+          "star_count": 1230
+        },
+        {
+          "document_id": "d4b611b6-935c-4a20-83b4-cbe286c06e44",
+          "hfr": 1.0281748605211192,
+          "position": 29584,
+          "rejected": null,
+          "star_count": 1230
+        },
+        {
+          "document_id": "cba7f95f-a62d-465a-a485-c8df24476667",
+          "hfr": 1.0250024069206296,
+          "position": 29607,
+          "rejected": null,
+          "star_count": 1230
+        },
+        {
+          "document_id": "8183b3cd-e9a1-4113-ae79-edd83a5c9519",
+          "hfr": 1.5534456578415095,
+          "position": 29630,
+          "rejected": null,
+          "star_count": 1227
+        },
+        {
+          "document_id": "d601a03e-6e36-4c78-a72b-aebd56eba212",
+          "hfr": 2.560341515438858,
+          "position": 29653,
+          "rejected": null,
+          "star_count": 1222
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9961933006639456,
+      "half_width": 91,
+      "hfr": 0.9804914534818315,
+      "outcome": "confirmed",
+      "position": 29596,
+      "prediction": {
+        "from_position": 29583,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29598,
+        "terms": {
+          "last_good": 29623,
+          "offset": 0,
+          "temperature": -25.067049453602536
+        }
+      },
+      "reference": {
+        "document_id": "e0baa6c9-c68e-4486-a600-25e569dea3df",
+        "listed": 1255,
+        "position": 29583
+      },
+      "samples_used": 8,
+      "step_size": 23,
+      "sweep_source": "derived",
+      "temperature_c": 13.6,
+      "wing_slope": 4.377808076510211
+    },
+    {
+      "at": "2026-11-13T00:47:55Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7235058632138194,
+      "best_position": 29572,
+      "curve_points": [
+        {
+          "document_id": "951e5463-5098-4b08-8c2f-7755e71729b1",
+          "hfr": 2.614873807067477,
+          "position": 29512,
+          "rejected": null,
+          "star_count": 926
+        },
+        {
+          "document_id": "d404a089-5125-4171-8963-216ac3565535",
+          "hfr": 1.8029714009364455,
+          "position": 29533,
+          "rejected": null,
+          "star_count": 925
+        },
+        {
+          "document_id": "ea9e2c30-bd06-4fca-8f28-f2caecc415db",
+          "hfr": 1.1360005878728991,
+          "position": 29554,
+          "rejected": null,
+          "star_count": 925
+        },
+        {
+          "document_id": "f2357436-6111-4bb6-9ac6-92e8cfacb6d6",
+          "hfr": 0.8699364350462226,
+          "position": 29575,
+          "rejected": null,
+          "star_count": 925
+        },
+        {
+          "document_id": "08789906-d9da-447b-a6f2-1c94e341b57a",
+          "hfr": 1.1767611188755376,
+          "position": 29596,
+          "rejected": null,
+          "star_count": 923
+        },
+        {
+          "document_id": "cd82a90f-be6a-4c5a-ae5e-0871a3e6e276",
+          "hfr": 1.9041067773418898,
+          "position": 29617,
+          "rejected": null,
+          "star_count": 923
+        },
+        {
+          "document_id": "8041a834-976d-4366-a3d0-438c8630382d",
+          "hfr": 2.90883587745711,
+          "position": 29638,
+          "rejected": null,
+          "star_count": 912
+        },
+        {
+          "document_id": "cd6392b0-771d-44f9-8f79-3a9e05f2f5de",
+          "hfr": 4.002378462632048,
+          "position": 29659,
+          "rejected": null,
+          "star_count": 896
+        },
+        {
+          "document_id": "49315ba2-4c94-4aa8-ba9f-6b6f71a9adf0",
+          "hfr": 5.0382461069404645,
+          "position": 29680,
+          "rejected": null,
+          "star_count": 839
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9896090049821672,
+      "half_width": 84,
+      "hfr": 0.8543639353530527,
+      "outcome": "confirmed",
+      "position": 29572,
+      "prediction": {
+        "from_position": 29596,
+        "missing": [
+          "offset"
+        ],
+        "moved": false,
+        "skipped": null,
+        "start": null,
+        "terms": {
+          "last_good": null,
+          "offset": null,
+          "temperature": null
+        }
+      },
+      "reference": {
+        "document_id": "8e5d611c-fc1b-4cdb-b668-8813ebffe2b7",
+        "listed": 932,
+        "position": 29596
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.6,
+      "wing_slope": 4.67678174353334
+    },
+    {
+      "at": "2026-11-13T00:49:51Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.853138895024659,
+      "best_position": 29569,
+      "curve_points": [
+        {
+          "document_id": "8e40e128-66b8-4a0a-99c2-3fe3dda6b014",
+          "hfr": 3.596158764378262,
+          "position": 29488,
+          "rejected": null,
+          "star_count": 923
+        },
+        {
+          "document_id": "c5e03420-9c7e-4dd4-9d51-9c1eb2b2801b",
+          "hfr": 2.680884507824958,
+          "position": 29509,
+          "rejected": null,
+          "star_count": 933
+        },
+        {
+          "document_id": "5e183a97-21fe-422b-814e-e0eebefa59dc",
+          "hfr": 1.6850900293070177,
+          "position": 29530,
+          "rejected": null,
+          "star_count": 934
+        },
+        {
+          "document_id": "5db9c87e-19f4-4d4d-8d89-0ee404145f0b",
+          "hfr": 1.1165356965819517,
+          "position": 29551,
+          "rejected": null,
+          "star_count": 934
+        },
+        {
+          "document_id": "dd3809f6-d4d8-42b2-b68d-765427b4db3c",
+          "hfr": 1.002151315372274,
+          "position": 29572,
+          "rejected": null,
+          "star_count": 935
+        },
+        {
+          "document_id": "a5368076-1428-4066-b320-551e2e0b55c4",
+          "hfr": 1.2871142794493988,
+          "position": 29593,
+          "rejected": null,
+          "star_count": 935
+        },
+        {
+          "document_id": "c1d19330-9aa5-47c1-9b8b-9ddd38e0cd70",
+          "hfr": 1.9140556148991714,
+          "position": 29614,
+          "rejected": null,
+          "star_count": 922
+        },
+        {
+          "document_id": "6acc9a61-0b71-47ca-a3aa-cfd46aaf3595",
+          "hfr": 2.8380863523348174,
+          "position": 29635,
+          "rejected": null,
+          "star_count": 932
+        },
+        {
+          "document_id": "7d69ae87-bb6c-4a0a-845a-cadd26ddadb1",
+          "hfr": 3.822433807542294,
+          "position": 29656,
+          "rejected": null,
+          "star_count": 916
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9901573584250569,
+      "half_width": 84,
+      "hfr": 1.0198583056960109,
+      "outcome": "confirmed",
+      "position": 29569,
+      "prediction": {
+        "from_position": 29572,
+        "missing": [
+          "offset"
+        ],
+        "moved": false,
+        "skipped": null,
+        "start": null,
+        "terms": {
+          "last_good": null,
+          "offset": null,
+          "temperature": null
+        }
+      },
+      "reference": {
+        "document_id": "a9c82468-5740-40b7-844a-51c715d763da",
+        "listed": 947,
+        "position": 29572
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.6,
+      "wing_slope": 4.061899677006825
+    },
+    {
+      "at": "2026-11-13T00:51:48Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7559402389587115,
+      "best_position": 29549,
+      "curve_points": [
+        {
+          "document_id": "1db8676a-0d63-4ef1-acbc-6e5ceb29550c",
+          "hfr": 2.6800654202935164,
+          "position": 29485,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "6facca8a-9bc1-4067-8181-b2c45a588352",
+          "hfr": 2.0029509670852654,
+          "position": 29506,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "fe748646-7b1f-480f-8655-ad91f04c2650",
+          "hfr": 1.2462125166951092,
+          "position": 29527,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "f2b00495-50c7-4b58-a2fb-670f6c2ba9b4",
+          "hfr": 0.9326220996876133,
+          "position": 29548,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "dc688493-85cc-4405-beb5-88f3583e6202",
+          "hfr": 1.0074998406395381,
+          "position": 29569,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "baba57b7-b74a-48e7-bef7-3a958fcdf31f",
+          "hfr": 1.7214782089642706,
+          "position": 29590,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "dea83870-fc22-4de2-ad65-e3aef97689a8",
+          "hfr": 2.733925425475507,
+          "position": 29611,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "8aae858d-85f2-4256-b00c-1f59b75500a9",
+          "hfr": 3.598168357070894,
+          "position": 29632,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "0cf3177d-f63f-414e-806d-6c382e9c0974",
+          "hfr": 4.814467026550994,
+          "position": 29653,
+          "rejected": null,
+          "star_count": 50
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.9849927767965948,
+      "half_width": 84,
+      "hfr": 0.9330931983355102,
+      "outcome": "confirmed",
+      "position": 29549,
+      "prediction": {
+        "from_position": 29569,
+        "missing": [
+          "offset"
+        ],
+        "moved": false,
+        "skipped": null,
+        "start": null,
+        "terms": {
+          "last_good": null,
+          "offset": null,
+          "temperature": null
+        }
+      },
+      "reference": {
+        "document_id": "25319320-b2a2-4061-a90a-76b73b02a9d8",
+        "listed": 50,
+        "position": 29569
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.5,
+      "wing_slope": 4.519345009490254
+    },
+    {
+      "at": "2026-11-13T00:53:33Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7628412051488924,
+      "best_position": 29550,
+      "curve_points": [
+        {
+          "document_id": "00b1b134-a4d2-4241-8a2b-14c0721c5547",
+          "hfr": 3.5561017455941712,
+          "position": 29465,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "9c9157ea-d6b7-4bf3-b71f-74b8b53586a9",
+          "hfr": 2.80513571485408,
+          "position": 29486,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "bcb17b98-fdf4-4ea8-bb23-38abdb143652",
+          "hfr": 1.842308051978707,
+          "position": 29507,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "c0dad747-9ade-4f35-812a-4f4e244ceffd",
+          "hfr": 1.2252805033358416,
+          "position": 29528,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "f7c55a5e-1fdc-444b-98ea-b77c242686a3",
+          "hfr": 0.9049397085616772,
+          "position": 29549,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "c2013985-a961-4613-962a-a80e20830256",
+          "hfr": 0.9825833820804981,
+          "position": 29570,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "6c5f2536-9223-4fa0-b764-1c88cbb8e193",
+          "hfr": 1.7402978865493528,
+          "position": 29591,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "465ab3fd-ad0b-46d3-87ba-05a27ef5ff36",
+          "hfr": 2.6962926680172132,
+          "position": 29612,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "f3c24b5f-7176-4c98-bf4a-1ab25c18776a",
+          "hfr": 3.722168909627398,
+          "position": 29633,
+          "rejected": null,
+          "star_count": 69
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.988188559019336,
+      "half_width": 84,
+      "hfr": 0.8726005596784064,
+      "outcome": "confirmed",
+      "position": 29550,
+      "prediction": {
+        "from_position": 29549,
+        "missing": [
+          "offset"
+        ],
+        "moved": false,
+        "skipped": null,
+        "start": null,
+        "terms": {
+          "last_good": null,
+          "offset": null,
+          "temperature": null
+        }
+      },
+      "reference": {
+        "document_id": "15c586fc-b865-4692-85cf-0fad21245f9e",
+        "listed": 69,
+        "position": 29549
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.5,
+      "wing_slope": 4.368929221004077
+    },
+    {
+      "at": "2026-11-13T00:55:18Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.5807287079455473,
+      "best_position": 29519,
+      "curve_points": [
+        {
+          "document_id": "0e3151ca-2f9c-4178-8adb-73586d79a089",
+          "hfr": 2.35141800433668,
+          "position": 29466,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "c0d9ffe9-1aa6-4795-91d9-141920af5bc1",
+          "hfr": 1.4266569128668931,
+          "position": 29487,
+          "rejected": null,
+          "star_count": 50
+        },
+        {
+          "document_id": "085ca64f-ceca-4c4f-8f4f-69a0dc9003ed",
+          "hfr": 0.9258964533541465,
+          "position": 29508,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "f27615a0-1005-4064-9ea6-5ba95f15dc85",
+          "hfr": 0.8032699856087292,
+          "position": 29529,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "e1711f7d-52e0-428b-b0d8-fa5c90c04aa7",
+          "hfr": 1.2473296567797558,
+          "position": 29550,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "2c6dabaa-f2c3-4056-955f-7db095f66786",
+          "hfr": 2.1844008674573434,
+          "position": 29571,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "1f352a5c-7e25-4a0f-bb9d-b9cdfa3def05",
+          "hfr": 3.2815931083478573,
+          "position": 29592,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "ab8745ba-fe3d-45ea-8655-a87f1f156282",
+          "hfr": 4.384368581206011,
+          "position": 29613,
+          "rejected": null,
+          "star_count": 51
+        },
+        {
+          "document_id": "1e921c59-97e0-4546-94cd-738499b0f68e",
+          "hfr": 5.226996022450081,
+          "position": 29634,
+          "rejected": null,
+          "star_count": 50
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.9905950394979136,
+      "half_width": 84,
+      "hfr": 0.7620724024561198,
+      "outcome": "confirmed",
+      "position": 29519,
+      "prediction": {
+        "from_position": 29550,
+        "missing": [
+          "offset"
+        ],
+        "moved": false,
+        "skipped": null,
+        "start": null,
+        "terms": {
+          "last_good": null,
+          "offset": null,
+          "temperature": null
+        }
+      },
+      "reference": {
+        "document_id": "678dff5c-54db-47cd-9dde-3b4afdd9b647",
+        "listed": 51,
+        "position": 29550
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.4,
+      "wing_slope": 4.837762116709198
+    },
+    {
+      "at": "2026-11-13T00:57:03Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.8521268804907891,
+      "best_position": 29568,
+      "curve_points": [
+        {
+          "document_id": "3a1a95a8-e928-4fa4-ba9f-390470309a4e",
+          "hfr": 4.140266397160742,
+          "position": 29475,
+          "rejected": null,
+          "star_count": 2022
+        },
+        {
+          "document_id": "5c142ee8-6d08-4d67-85c9-8f35dafd0064",
+          "hfr": 2.908285470922251,
+          "position": 29502,
+          "rejected": null,
+          "star_count": 2019
+        },
+        {
+          "document_id": "652cd970-cbe3-4ad5-988c-dfb9c2322961",
+          "hfr": 1.8114221599143587,
+          "position": 29529,
+          "rejected": null,
+          "star_count": 2015
+        },
+        {
+          "document_id": "0d9271e7-8379-4646-a263-3688a08c0f7c",
+          "hfr": 1.1267869858817008,
+          "position": 29556,
+          "rejected": null,
+          "star_count": 2055
+        },
+        {
+          "document_id": "9f8f7784-ba02-4c15-ac8d-f34adefd0e73",
+          "hfr": 1.0861107579853329,
+          "position": 29583,
+          "rejected": null,
+          "star_count": 2041
+        },
+        {
+          "document_id": "67f7ba70-2c6f-41bb-9294-a697b1bfcb5a",
+          "hfr": 1.805204116975115,
+          "position": 29610,
+          "rejected": null,
+          "star_count": 2035
+        },
+        {
+          "document_id": "05469cc8-4dae-4470-b401-6c464b1159d1",
+          "hfr": 3.0689764281462777,
+          "position": 29637,
+          "rejected": null,
+          "star_count": 2005
+        },
+        {
+          "document_id": "ad6b8a99-a968-4be2-81e7-5920575b536d",
+          "hfr": 4.437588110349319,
+          "position": 29664,
+          "rejected": null,
+          "star_count": 1930
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.9907153485931874,
+      "half_width": 105,
+      "hfr": 1.025405861907598,
+      "outcome": "confirmed",
+      "position": 29568,
+      "prediction": {
+        "from_position": 29519,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29580,
+        "terms": {
+          "last_good": 29583,
+          "offset": 0,
+          "temperature": -2.9490646416002857
+        }
+      },
+      "reference": {
+        "document_id": "43980f24-a7e0-4f1e-a2c7-a17d2743f6a4",
+        "listed": 2141,
+        "position": 29580
+      },
+      "samples_used": 8,
+      "step_size": 27,
+      "sweep_source": "derived",
+      "temperature_c": 13.4,
+      "wing_slope": 4.8747851729151925
+    },
+    {
+      "at": "2026-11-13T00:59:16Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7108401496017277,
+      "best_position": 29580,
+      "curve_points": [
+        {
+          "document_id": "b386e3d7-9a84-4ff9-8648-025da7b2d47b",
+          "hfr": 3.5610751516518517,
+          "position": 29496,
+          "rejected": null,
+          "star_count": 1236
+        },
+        {
+          "document_id": "7ff8f9db-457b-4220-8909-5d8217d555a4",
+          "hfr": 2.558143630652592,
+          "position": 29521,
+          "rejected": null,
+          "star_count": 1233
+        },
+        {
+          "document_id": "7750ecd0-98e2-4c7a-8359-97b4280d76bb",
+          "hfr": 1.535843519381924,
+          "position": 29546,
+          "rejected": null,
+          "star_count": 1244
+        },
+        {
+          "document_id": "1a6b5213-ef1e-4d60-9c72-745d1795747a",
+          "hfr": 0.9867422493769442,
+          "position": 29571,
+          "rejected": null,
+          "star_count": 1249
+        },
+        {
+          "document_id": "57336ae1-c300-4473-b78b-591573207766",
+          "hfr": 0.9000042544303883,
+          "position": 29596,
+          "rejected": null,
+          "star_count": 1250
+        },
+        {
+          "document_id": "d80b0872-72d4-4482-b7ee-74e5a7c2265c",
+          "hfr": 1.6729885285057642,
+          "position": 29621,
+          "rejected": null,
+          "star_count": 1248
+        },
+        {
+          "document_id": "aeb737ea-d650-4408-91e0-b1ef35bfd2d8",
+          "hfr": 2.8996428435270145,
+          "position": 29646,
+          "rejected": null,
+          "star_count": 1218
+        },
+        {
+          "document_id": "c2ef9c8c-364e-461f-b0e3-408074191bae",
+          "hfr": 4.163710201006529,
+          "position": 29671,
+          "rejected": null,
+          "star_count": 1180
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9852295646892013,
+      "half_width": 97,
+      "hfr": 0.8501060500277038,
+      "outcome": "confirmed",
+      "position": 29580,
+      "prediction": {
+        "from_position": 29568,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29593,
+        "terms": {
+          "last_good": 29596,
+          "offset": 0,
+          "temperature": -2.9490646416002857
+        }
+      },
+      "reference": {
+        "document_id": "8499a9e8-e8cf-4ffb-b358-167a8572a23f",
+        "listed": 1275,
+        "position": 29593
+      },
+      "samples_used": 8,
+      "step_size": 25,
+      "sweep_source": "derived",
+      "temperature_c": 13.4,
+      "wing_slope": 4.981443345001529
+    },
+    {
+      "at": "2026-11-13T01:01:10Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6456876311967306,
+      "best_position": 29555,
+      "curve_points": [
+        {
+          "document_id": "c28a1410-6ae9-412d-b3f3-8e1fd31f04f6",
+          "hfr": 2.483064339552735,
+          "position": 29496,
+          "rejected": null,
+          "star_count": 1020
+        },
+        {
+          "document_id": "e02e66bb-da27-4945-9852-f0f8b0aa5f26",
+          "hfr": 1.7021378263028781,
+          "position": 29517,
+          "rejected": null,
+          "star_count": 1016
+        },
+        {
+          "document_id": "dbb90adb-ce2b-47c0-9fbf-d6bcc11e51e8",
+          "hfr": 1.047958060142279,
+          "position": 29538,
+          "rejected": null,
+          "star_count": 1016
+        },
+        {
+          "document_id": "b31b2a5f-0dd1-4e6a-9340-5f43193f9030",
+          "hfr": 0.8524691733153409,
+          "position": 29559,
+          "rejected": null,
+          "star_count": 1020
+        },
+        {
+          "document_id": "fcc83aaf-9bbc-48e0-82a7-7b22029f643d",
+          "hfr": 1.0221732824889374,
+          "position": 29580,
+          "rejected": null,
+          "star_count": 1016
+        },
+        {
+          "document_id": "3e3d390a-bade-4585-b4f9-d0c44af44a5f",
+          "hfr": 1.9307074354590503,
+          "position": 29601,
+          "rejected": null,
+          "star_count": 1016
+        },
+        {
+          "document_id": "da7327ac-d5ae-4085-a31e-70fa2ef08661",
+          "hfr": 2.9154443002489927,
+          "position": 29622,
+          "rejected": null,
+          "star_count": 1006
+        },
+        {
+          "document_id": "ff34675b-e534-4a44-a553-c81506f4e379",
+          "hfr": 4.015206336750201,
+          "position": 29643,
+          "rejected": null,
+          "star_count": 964
+        },
+        {
+          "document_id": "d4a40ab6-c1cf-4d0c-9a59-4c02be67fb4f",
+          "hfr": 5.008027217417103,
+          "position": 29664,
+          "rejected": null,
+          "star_count": 954
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9858488026359474,
+      "half_width": 84,
+      "hfr": 0.8217868373325133,
+      "outcome": "confirmed",
+      "position": 29555,
+      "prediction": {
+        "from_position": 29580,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29568,
+        "terms": {
+          "last_good": 29572,
+          "offset": 0,
+          "temperature": -4.4235969624004285
+        }
+      },
+      "reference": {
+        "document_id": "83d0fb2c-edd6-4e16-b58c-6ae0b6f9ef4b",
+        "listed": 1037,
+        "position": 29580
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.3,
+      "wing_slope": 4.788669891022611
+    },
+    {
+      "at": "2026-11-13T01:03:09Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7743346518034798,
+      "best_position": 29554,
+      "curve_points": [
+        {
+          "document_id": "1ab5b5c6-437c-4c3a-98a7-1d1c16a52785",
+          "hfr": 4.235499932109758,
+          "position": 29454,
+          "rejected": null,
+          "star_count": 947
+        },
+        {
+          "document_id": "8cf01360-acb6-466c-8e64-60919df957f3",
+          "hfr": 3.220101913764657,
+          "position": 29480,
+          "rejected": null,
+          "star_count": 959
+        },
+        {
+          "document_id": "13947824-a82f-40bc-8750-3f51e658e802",
+          "hfr": 2.073042631466373,
+          "position": 29506,
+          "rejected": null,
+          "star_count": 969
+        },
+        {
+          "document_id": "b3e4b769-c2cd-4c27-a056-50702c4bc4c4",
+          "hfr": 1.1176786510142471,
+          "position": 29532,
+          "rejected": null,
+          "star_count": 972
+        },
+        {
+          "document_id": "52b442e7-76c2-44c6-afa3-f87bfb005499",
+          "hfr": 0.9185287175025207,
+          "position": 29558,
+          "rejected": null,
+          "star_count": 972
+        },
+        {
+          "document_id": "2bdfc7b9-26b2-4a90-81a2-1e0f83be7ec7",
+          "hfr": 1.388930966068978,
+          "position": 29584,
+          "rejected": null,
+          "star_count": 972
+        },
+        {
+          "document_id": "14aa3668-8086-4e8f-a384-6020e0bf8dcc",
+          "hfr": 2.3607468164590037,
+          "position": 29610,
+          "rejected": null,
+          "star_count": 966
+        },
+        {
+          "document_id": "923a3a7d-8af1-4063-aec8-c6a6cd88fdff",
+          "hfr": 3.636187342401266,
+          "position": 29636,
+          "rejected": null,
+          "star_count": 950
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9940852043999389,
+      "half_width": 101,
+      "hfr": 0.9298708238179328,
+      "outcome": "confirmed",
+      "position": 29554,
+      "prediction": {
+        "from_position": 29555,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29563,
+        "terms": {
+          "last_good": 29569,
+          "offset": 0,
+          "temperature": -5.898129283200598
+        }
+      },
+      "reference": {
+        "document_id": "64c4d986-4710-4613-8e1c-aeb3fa71929d",
+        "listed": 988,
+        "position": 29555
+      },
+      "samples_used": 8,
+      "step_size": 26,
+      "sweep_source": "derived",
+      "temperature_c": 13.2,
+      "wing_slope": 4.321646877562093
+    },
+    {
+      "at": "2026-11-13T01:05:01Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6329409485124391,
+      "best_position": 29535,
+      "curve_points": [
+        {
+          "document_id": "ad49af03-02c2-44c8-8a7f-984d87d2f0c0",
+          "hfr": 3.098671635712253,
+          "position": 29462,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "05e18947-06dc-4795-bc28-890d0bab419e",
+          "hfr": 2.1875137831660414,
+          "position": 29485,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "78c03b06-ef82-412c-9032-678ac83fc8eb",
+          "hfr": 1.4112025363076148,
+          "position": 29508,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "b440a496-822a-4d2c-9f81-9edc3394549b",
+          "hfr": 0.8160333895676566,
+          "position": 29531,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "b1db429f-605f-4218-b111-5d402e501b69",
+          "hfr": 0.9431137177921664,
+          "position": 29554,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "27897839-e56a-4de6-8b88-9f58542f548b",
+          "hfr": 1.6520955924151886,
+          "position": 29577,
+          "rejected": null,
+          "star_count": 48
+        },
+        {
+          "document_id": "58354a03-007b-4b5f-bdac-da1a6a76175c",
+          "hfr": 2.834240909434371,
+          "position": 29600,
+          "rejected": null,
+          "star_count": 47
+        },
+        {
+          "document_id": "3c8f44c0-0f3f-4f76-be31-6787fe610e30",
+          "hfr": 4.123443817858833,
+          "position": 29623,
+          "rejected": null,
+          "star_count": 46
+        },
+        {
+          "document_id": "db4c25bf-f9e7-4edf-a779-9a55722ebed3",
+          "hfr": 5.094927828868851,
+          "position": 29646,
+          "rejected": null,
+          "star_count": 45
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.9851125713750948,
+      "half_width": 92,
+      "hfr": 0.8249942095794349,
+      "outcome": "confirmed",
+      "position": 29535,
+      "prediction": {
+        "from_position": 29554,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 19 steps of the current position",
+        "start": 29545,
+        "terms": {
+          "last_good": 29549,
+          "offset": 0,
+          "temperature": -4.423596962400455
+        }
+      },
+      "reference": {
+        "document_id": "69b36f2f-5cd8-4558-bf66-69523aceab87",
+        "listed": 48,
+        "position": 29554
+      },
+      "samples_used": 9,
+      "step_size": 23,
+      "sweep_source": "derived",
+      "temperature_c": 13.2,
+      "wing_slope": 4.6847723685204405
+    },
+    {
+      "at": "2026-11-13T01:06:45Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7115460126196084,
+      "best_position": 29536,
+      "curve_points": [
+        {
+          "document_id": "7e459461-4053-4721-a793-0845c4ecce96",
+          "hfr": 3.6097121275264654,
+          "position": 29449,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "f9f7c676-f91b-4240-ae4f-52051a80cced",
+          "hfr": 2.721736279003541,
+          "position": 29471,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "861567aa-d4d1-4002-8819-f525accb904a",
+          "hfr": 1.8189399168399232,
+          "position": 29493,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "97eb8aba-477a-4d59-8bea-773fa8556205",
+          "hfr": 1.113839199797423,
+          "position": 29515,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "baa5c742-be70-4c64-9d3a-b3690578fca2",
+          "hfr": 0.8347902456697247,
+          "position": 29537,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "62389f2c-f6ca-459c-9326-91a1997e430f",
+          "hfr": 1.0084011335721372,
+          "position": 29559,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "67143fd4-93e0-4336-8f4c-2c030a5621b9",
+          "hfr": 1.8481801796815414,
+          "position": 29581,
+          "rejected": null,
+          "star_count": 64
+        },
+        {
+          "document_id": "a170bbbb-51f4-4b0a-b937-e9f6e2bcd4ee",
+          "hfr": 2.9586874811586212,
+          "position": 29603,
+          "rejected": null,
+          "star_count": 61
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.9888415898268312,
+      "half_width": 86,
+      "hfr": 0.8469546393901553,
+      "outcome": "confirmed",
+      "position": 29536,
+      "prediction": {
+        "from_position": 29535,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 20 steps of the current position",
+        "start": 29546,
+        "terms": {
+          "last_good": 29550,
+          "offset": 0,
+          "temperature": -4.423596962400455
+        }
+      },
+      "reference": {
+        "document_id": "cb410a61-4b8d-4c24-a17b-12ad1fd866a0",
+        "listed": 65,
+        "position": 29535
+      },
+      "samples_used": 8,
+      "step_size": 22,
+      "sweep_source": "derived",
+      "temperature_c": 13.2,
+      "wing_slope": 4.432468971787464
+    },
+    {
+      "at": "2026-11-13T01:08:17Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7022789581731388,
+      "best_position": 29507,
+      "curve_points": [
+        {
+          "document_id": "384bed33-7cac-4b48-ab1b-da05e2615e62",
+          "hfr": 2.819623009711672,
+          "position": 29441,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "ddd78523-823e-4fa8-84e3-5d743684b7e8",
+          "hfr": 2.0445882253973098,
+          "position": 29460,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "d0715589-a4a8-472f-9e94-662d105f2506",
+          "hfr": 1.227432760469697,
+          "position": 29479,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "a274b319-1ff9-486c-9f9e-4dc6f9d4a132",
+          "hfr": 0.9002181595522463,
+          "position": 29498,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "6ecd6bbe-d334-4d8b-81c5-6ae5ceb6d554",
+          "hfr": 0.8073052441841875,
+          "position": 29517,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "188851f6-4f0a-4b11-b67c-cb80d84a724f",
+          "hfr": 1.3118427410353268,
+          "position": 29536,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "17faf3d0-ca0f-45fa-bac5-d7bce0b95dff",
+          "hfr": 2.0583716894383874,
+          "position": 29555,
+          "rejected": null,
+          "star_count": 60
+        },
+        {
+          "document_id": "a033358d-f150-43fe-a866-4b6d5a51b497",
+          "hfr": 2.914226217928052,
+          "position": 29574,
+          "rejected": null,
+          "star_count": 60
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.9920245087075803,
+      "half_width": 75,
+      "hfr": 0.8787679395998731,
+      "outcome": "confirmed",
+      "position": 29507,
+      "prediction": {
+        "from_position": 29536,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29516,
+        "terms": {
+          "last_good": 29519,
+          "offset": 0,
+          "temperature": -2.949064641600312
+        }
+      },
+      "reference": {
+        "document_id": "d6295554-3812-4a78-93af-5a532dd5aa4e",
+        "listed": 60,
+        "position": 29516
+      },
+      "samples_used": 8,
+      "step_size": 19,
+      "sweep_source": "derived",
+      "temperature_c": 13.2,
+      "wing_slope": 4.216798623401908
+    },
+    {
+      "at": "2026-11-13T01:09:51Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.9740038645128546,
+      "best_position": 29557,
+      "curve_points": [
+        {
+          "document_id": "2281c719-5336-4ca5-95a2-b1bfd191ca30",
+          "hfr": 4.08628288281211,
+          "position": 29463,
+          "rejected": null,
+          "star_count": 2058
+        },
+        {
+          "document_id": "ef1bb910-204d-40f6-99a1-1ca7d5d44aad",
+          "hfr": 3.0930964835209527,
+          "position": 29489,
+          "rejected": null,
+          "star_count": 2036
+        },
+        {
+          "document_id": "8fe97e52-e997-41f6-bccc-0311c4f01ddc",
+          "hfr": 1.9650467794560782,
+          "position": 29515,
+          "rejected": null,
+          "star_count": 2067
+        },
+        {
+          "document_id": "972772c7-def6-40e3-bba1-06885758e766",
+          "hfr": 1.174181807893248,
+          "position": 29541,
+          "rejected": null,
+          "star_count": 2082
+        },
+        {
+          "document_id": "ad50f7c4-439c-4a49-913f-ee98b77e985a",
+          "hfr": 1.2006876020659125,
+          "position": 29567,
+          "rejected": null,
+          "star_count": 2082
+        },
+        {
+          "document_id": "aec4d96b-d368-4ced-93ae-ec8841bcdfc8",
+          "hfr": 1.6297059136029515,
+          "position": 29593,
+          "rejected": null,
+          "star_count": 2084
+        },
+        {
+          "document_id": "3946b3c1-3462-4d33-9aa9-f4af43788845",
+          "hfr": 2.7540289969296197,
+          "position": 29619,
+          "rejected": null,
+          "star_count": 2070
+        },
+        {
+          "document_id": "6493502a-5a12-408a-a8fd-dc2c91e358ba",
+          "hfr": 4.007332149382841,
+          "position": 29645,
+          "rejected": null,
+          "star_count": 2004
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.991366952337948,
+      "half_width": 101,
+      "hfr": 0.9774999497876731,
+      "outcome": "confirmed",
+      "position": 29557,
+      "prediction": {
+        "from_position": 29507,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29564,
+        "terms": {
+          "last_good": 29568,
+          "offset": 0,
+          "temperature": -4.423596962400455
+        }
+      },
+      "reference": {
+        "document_id": "ba720164-ba9c-486c-aa4a-9b359c643d6d",
+        "listed": 2153,
+        "position": 29564
+      },
+      "samples_used": 8,
+      "step_size": 26,
+      "sweep_source": "derived",
+      "temperature_c": 13.1,
+      "wing_slope": 4.0793001987616
+    },
+    {
+      "at": "2026-11-13T01:11:58Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7146283321148472,
+      "best_position": 29568,
+      "curve_points": [
+        {
+          "document_id": "f2e3ea3f-250a-4bba-9226-1dc4cd8faed5",
+          "hfr": 3.2658896804562874,
+          "position": 29492,
+          "rejected": null,
+          "star_count": 1316
+        },
+        {
+          "document_id": "074fa890-862c-47f9-a9e1-dc7e0798cec4",
+          "hfr": 2.4035254384044937,
+          "position": 29513,
+          "rejected": null,
+          "star_count": 1318
+        },
+        {
+          "document_id": "f3e45236-02bb-44af-a008-472cebde4877",
+          "hfr": 1.5667106986334536,
+          "position": 29534,
+          "rejected": null,
+          "star_count": 1315
+        },
+        {
+          "document_id": "5e495857-967f-4f13-bcce-6d2946234a1f",
+          "hfr": 1.0618697608331717,
+          "position": 29555,
+          "rejected": null,
+          "star_count": 1328
+        },
+        {
+          "document_id": "2b92ed14-fcda-4ed5-b7d3-573bbfc21fa8",
+          "hfr": 0.8562836235936844,
+          "position": 29576,
+          "rejected": null,
+          "star_count": 1324
+        },
+        {
+          "document_id": "948382f0-e0dd-41c6-8650-4ae1c3fe2bb7",
+          "hfr": 1.1767939199956485,
+          "position": 29597,
+          "rejected": null,
+          "star_count": 1323
+        },
+        {
+          "document_id": "e41026a2-1435-4f6c-aff2-c959b492d4cd",
+          "hfr": 2.0701277262408713,
+          "position": 29618,
+          "rejected": null,
+          "star_count": 1320
+        },
+        {
+          "document_id": "d9a28f40-4750-4cce-a043-2a5d72eb9d60",
+          "hfr": 3.23519774949885,
+          "position": 29639,
+          "rejected": null,
+          "star_count": 1294
+        },
+        {
+          "document_id": "ee7e0243-de11-412b-8364-9df899324c3f",
+          "hfr": 4.164139337169133,
+          "position": 29660,
+          "rejected": null,
+          "star_count": 1227
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9830914452040946,
+      "half_width": 84,
+      "hfr": 0.8923727447213602,
+      "outcome": "confirmed",
+      "position": 29568,
+      "prediction": {
+        "from_position": 29557,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29576,
+        "terms": {
+          "last_good": 29580,
+          "offset": 0,
+          "temperature": -4.423596962400455
+        }
+      },
+      "reference": {
+        "document_id": "d568a48e-a741-4455-bfa2-4f4b70064462",
+        "listed": 1353,
+        "position": 29576
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.1,
+      "wing_slope": 4.822431559418301
+    },
+    {
+      "at": "2026-11-13T01:14:02Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7034711609675383,
+      "best_position": 29543,
+      "curve_points": [
+        {
+          "document_id": "5b9c7750-e096-42d9-892e-a887d70f567c",
+          "hfr": 3.163799721925069,
+          "position": 29470,
+          "rejected": null,
+          "star_count": 1238
+        },
+        {
+          "document_id": "0090cdad-d52b-4e6d-84ac-d893453f25da",
+          "hfr": 2.2535768824566706,
+          "position": 29491,
+          "rejected": null,
+          "star_count": 1249
+        },
+        {
+          "document_id": "aac719cb-8b40-44be-9432-f0a14b390367",
+          "hfr": 1.3939609487838474,
+          "position": 29512,
+          "rejected": null,
+          "star_count": 1257
+        },
+        {
+          "document_id": "49a780fa-1ccb-439e-b8b9-a5316f17aa33",
+          "hfr": 0.9251681908973456,
+          "position": 29533,
+          "rejected": null,
+          "star_count": 1257
+        },
+        {
+          "document_id": "3c8aa670-dd61-4800-b01f-bd850c4008ee",
+          "hfr": 0.9159106976397158,
+          "position": 29554,
+          "rejected": null,
+          "star_count": 1256
+        },
+        {
+          "document_id": "99e5fc8d-62a9-432e-8337-a1bf1c2f7fe0",
+          "hfr": 1.2556588704179679,
+          "position": 29575,
+          "rejected": null,
+          "star_count": 1250
+        },
+        {
+          "document_id": "7f64393f-4995-49dd-a1e4-08837893b7ef",
+          "hfr": 2.186111764148914,
+          "position": 29596,
+          "rejected": null,
+          "star_count": 1253
+        },
+        {
+          "document_id": "1eb1351b-c60d-49e2-9a6f-c93ffb828025",
+          "hfr": 3.3637914667929465,
+          "position": 29617,
+          "rejected": null,
+          "star_count": 1246
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9778433740159557,
+      "half_width": 81,
+      "hfr": 0.8413640131799249,
+      "outcome": "confirmed",
+      "position": 29543,
+      "prediction": {
+        "from_position": 29568,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29551,
+        "terms": {
+          "last_good": 29555,
+          "offset": 0,
+          "temperature": -4.423596962400455
+        }
+      },
+      "reference": {
+        "document_id": "f0884ff9-19f5-48d2-8abd-f3e0c1fbab36",
+        "listed": 1279,
+        "position": 29551
+      },
+      "samples_used": 8,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.0,
+      "wing_slope": 5.019363324702331
+    },
+    {
+      "at": "2026-11-13T01:15:51Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7643246694345307,
+      "best_position": 29543,
+      "curve_points": [
+        {
+          "document_id": "e108c4c6-cc15-4063-a262-65370bb643c6",
+          "hfr": 4.021302105423327,
+          "position": 29451,
+          "rejected": null,
+          "star_count": 947
+        },
+        {
+          "document_id": "c81c2933-5258-4d1b-a303-f479b261c37e",
+          "hfr": 3.034922925507388,
+          "position": 29474,
+          "rejected": null,
+          "star_count": 951
+        },
+        {
+          "document_id": "65e454b9-5fed-4343-834d-27b3ab33077a",
+          "hfr": 1.901177283673142,
+          "position": 29497,
+          "rejected": null,
+          "star_count": 968
+        },
+        {
+          "document_id": "b906b743-12fb-4d67-a0de-65bd37c4597a",
+          "hfr": 1.1281150947543523,
+          "position": 29520,
+          "rejected": null,
+          "star_count": 969
+        },
+        {
+          "document_id": "f5d69388-f5c7-4d35-b71e-e28a998a8eb7",
+          "hfr": 0.9627481545606936,
+          "position": 29543,
+          "rejected": null,
+          "star_count": 969
+        },
+        {
+          "document_id": "c83625d3-2752-4c4f-9925-40eae0b64998",
+          "hfr": 1.16525941329857,
+          "position": 29566,
+          "rejected": null,
+          "star_count": 969
+        },
+        {
+          "document_id": "2a5c4614-bbd3-4413-a1e4-884c579fcd2d",
+          "hfr": 1.9233742150957156,
+          "position": 29589,
+          "rejected": null,
+          "star_count": 969
+        },
+        {
+          "document_id": "47fa6927-300e-49b9-993b-2cd5139eedac",
+          "hfr": 2.885340602107358,
+          "position": 29612,
+          "rejected": null,
+          "star_count": 958
+        },
+        {
+          "document_id": "0cb188d6-7783-4369-822f-3621b88f829d",
+          "hfr": 4.109820225977946,
+          "position": 29635,
+          "rejected": null,
+          "star_count": 932
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9864448303835918,
+      "half_width": 92,
+      "hfr": 0.9596625297291103,
+      "outcome": "confirmed",
+      "position": 29543,
+      "prediction": {
+        "from_position": 29543,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29551,
+        "terms": {
+          "last_good": 29554,
+          "offset": 0,
+          "temperature": -2.9490646416002857
+        }
+      },
+      "reference": {
+        "document_id": "0ade55ad-d7a3-4377-b579-275518c891e3",
+        "listed": 983,
+        "position": 29543
+      },
+      "samples_used": 9,
+      "step_size": 23,
+      "sweep_source": "derived",
+      "temperature_c": 13.0,
+      "wing_slope": 4.266655075583118
+    },
+    {
+      "at": "2026-11-13T01:17:51Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6402818305856945,
+      "best_position": 29522,
+      "curve_points": [
+        {
+          "document_id": "a417523a-93e3-4e45-a7c4-0a3a9abc14f3",
+          "hfr": 2.46338230336903,
+          "position": 29462,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "d09f50e1-ee7e-45f6-8eeb-ec0d85410268",
+          "hfr": 1.704970144503556,
+          "position": 29483,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "aef45cb8-b17c-43b0-8450-6a54bd7bef0a",
+          "hfr": 1.07531423590101,
+          "position": 29504,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "30488c0d-e11e-43c0-8174-a4050c47ac73",
+          "hfr": 0.7800250288733008,
+          "position": 29525,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "1872a4d5-271b-4298-becf-cc21a4f7fd4a",
+          "hfr": 1.02498092944748,
+          "position": 29546,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "7cd0fa98-b0c6-44a0-9a9f-15f14e0516d0",
+          "hfr": 1.704194521837476,
+          "position": 29567,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "2f39d7b1-fad8-46db-be1e-27df739de0aa",
+          "hfr": 2.8635654203970167,
+          "position": 29588,
+          "rejected": null,
+          "star_count": 52
+        },
+        {
+          "document_id": "9ac49180-fe4f-4db8-901f-8f93caa28a38",
+          "hfr": 3.9525563117217017,
+          "position": 29609,
+          "rejected": null,
+          "star_count": 52
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.973539531815309,
+      "half_width": 81,
+      "hfr": 0.8697529888406239,
+      "outcome": "confirmed",
+      "position": 29522,
+      "prediction": {
+        "from_position": 29543,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 19 steps of the current position",
+        "start": 29532,
+        "terms": {
+          "last_good": 29535,
+          "offset": 0,
+          "temperature": -2.9490646416002857
+        }
+      },
+      "reference": {
+        "document_id": "1b9bb283-382c-41bc-bb68-f47362d992f5",
+        "listed": 52,
+        "position": 29543
+      },
+      "samples_used": 8,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 13.0,
+      "wing_slope": 4.734331926372478
+    },
+    {
+      "at": "2026-11-13T01:19:24Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7878995210172938,
+      "best_position": 29526,
+      "curve_points": [
+        {
+          "document_id": "5d1dfec7-aebc-461a-b434-638db7637c4c",
+          "hfr": 3.7827420216146677,
+          "position": 29438,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "852700df-1596-4e82-ba64-a508ff1ce486",
+          "hfr": 2.8581425504842075,
+          "position": 29459,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "317d5771-6d31-4e96-b3b7-b5fcf5d89700",
+          "hfr": 1.9301542763293518,
+          "position": 29480,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "ceb5c2cd-36d1-47a6-b432-eb51b056fcc1",
+          "hfr": 1.244308389625813,
+          "position": 29501,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "dc57c0d4-c33c-47b3-85f0-dbe9fc0114e3",
+          "hfr": 1.0114188512160662,
+          "position": 29522,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "9247b6be-a51f-48a9-bbe8-efdbf543520d",
+          "hfr": 1.004274090852934,
+          "position": 29543,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "46ab5bd7-7d7b-45e6-b33c-818dc29e1f0a",
+          "hfr": 1.5133770350310036,
+          "position": 29564,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "0f40459d-cbc1-4e79-9ffc-5cf065c842f1",
+          "hfr": 2.4982099357482728,
+          "position": 29585,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "5fece0a1-963c-4b8c-97cb-45e81c33de00",
+          "hfr": 3.618316680035327,
+          "position": 29606,
+          "rejected": null,
+          "star_count": 68
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.9804455462553212,
+      "half_width": 84,
+      "hfr": 1.0046589836431399,
+      "outcome": "confirmed",
+      "position": 29526,
+      "prediction": {
+        "from_position": 29522,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 20 steps of the current position",
+        "start": 29532,
+        "terms": {
+          "last_good": 29536,
+          "offset": 0,
+          "temperature": -4.4235969624004285
+        }
+      },
+      "reference": {
+        "document_id": "0705084a-64c0-471d-b08c-bcfd1389da4e",
+        "listed": 68,
+        "position": 29522
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 12.9,
+      "wing_slope": 5.011761059534103
+    },
+    {
+      "at": "2026-11-13T01:21:07Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7245061583216592,
+      "best_position": 29493,
+      "curve_points": [
+        {
+          "document_id": "b4dbdd57-c873-4834-b64c-b8d1d4b8bcd2",
+          "hfr": 3.3032207502689444,
+          "position": 29416,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "f97f2072-67be-4ce0-85b1-029047d67466",
+          "hfr": 2.4227028331780396,
+          "position": 29438,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "2435feaf-a632-4bbe-bf51-d759b9cfbdf4",
+          "hfr": 1.4964772188292,
+          "position": 29460,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "99c83f06-5190-418a-85f4-ab1cef3b7742",
+          "hfr": 0.9300012002655389,
+          "position": 29482,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "0ff4671f-9580-4ca1-9585-d73f827f534a",
+          "hfr": 0.8716012553396706,
+          "position": 29504,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "fe24323b-46f3-46a1-b9f6-3f58a0275a79",
+          "hfr": 1.4187454849657046,
+          "position": 29526,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "1888c464-e971-46a6-aa07-512c2aabb374",
+          "hfr": 2.4330256239531765,
+          "position": 29548,
+          "rejected": null,
+          "star_count": 69
+        },
+        {
+          "document_id": "98c3f6f2-61dc-46ad-8457-7c325ef5f0fb",
+          "hfr": 3.337131591262786,
+          "position": 29570,
+          "rejected": null,
+          "star_count": 69
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.9956073917258137,
+      "half_width": 87,
+      "hfr": 0.8411582075795075,
+      "outcome": "confirmed",
+      "position": 29493,
+      "prediction": {
+        "from_position": 29526,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29503,
+        "terms": {
+          "last_good": 29507,
+          "offset": 0,
+          "temperature": -4.4235969624004285
+        }
+      },
+      "reference": {
+        "document_id": "5a0fe5d7-7952-4a95-9085-961b3053a14e",
+        "listed": 70,
+        "position": 29503
+      },
+      "samples_used": 8,
+      "step_size": 22,
+      "sweep_source": "derived",
+      "temperature_c": 12.9,
+      "wing_slope": 4.359968423402458
+    }
+  ],
+  "run_2": [
+    {
+      "at": "2026-11-13T01:31:02Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.8457934066438921,
+      "best_position": 29544,
+      "curve_points": [
+        {
+          "document_id": "cc88e379-181a-4f3b-8a50-98d68dc83cdf",
+          "hfr": 3.6556151930082263,
+          "position": 29461,
+          "rejected": null,
+          "star_count": 2054
+        },
+        {
+          "document_id": "7d0d7c4e-c78e-428e-a1a5-fe83e1055226",
+          "hfr": 2.5954305094815577,
+          "position": 29485,
+          "rejected": null,
+          "star_count": 2023
+        },
+        {
+          "document_id": "351372bd-6bec-4673-85d8-cbc041a4fb6c",
+          "hfr": 1.7017706439791804,
+          "position": 29509,
+          "rejected": null,
+          "star_count": 2045
+        },
+        {
+          "document_id": "d6accb8c-2c73-498d-8f8d-4fdbf4ccc191",
+          "hfr": 1.0971844993751576,
+          "position": 29533,
+          "rejected": null,
+          "star_count": 2055
+        },
+        {
+          "document_id": "9f524056-60df-40dd-b588-59f828164be6",
+          "hfr": 1.03526135971085,
+          "position": 29557,
+          "rejected": null,
+          "star_count": 2045
+        },
+        {
+          "document_id": "7ac96853-2b68-4306-a610-9d12fa13caa9",
+          "hfr": 1.639770380226409,
+          "position": 29581,
+          "rejected": null,
+          "star_count": 2062
+        },
+        {
+          "document_id": "620ebcf7-ec58-4d71-8da1-de24a5f8a033",
+          "hfr": 2.608007450579009,
+          "position": 29605,
+          "rejected": null,
+          "star_count": 2023
+        },
+        {
+          "document_id": "438bce7f-6646-437b-bdc2-7498cf914378",
+          "hfr": 3.82111939965003,
+          "position": 29629,
+          "rejected": null,
+          "star_count": 1939
+        },
+        {
+          "document_id": "b1e43eab-939e-42b9-9658-fbbd73691010",
+          "hfr": 4.932427000963292,
+          "position": 29653,
+          "rejected": null,
+          "star_count": 1781
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.992580977532866,
+      "half_width": 96,
+      "hfr": 1.0066151737212845,
+      "outcome": "confirmed",
+      "position": 29544,
+      "prediction": {
+        "from_position": 29557,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29550,
+        "terms": {
+          "last_good": 29493,
+          "offset": 64,
+          "temperature": -7.372661604000741
+        }
+      },
+      "reference": {
+        "document_id": "c119ecd8-2602-4dd4-9520-74852845c391",
+        "listed": 2148,
+        "position": 29557
+      },
+      "samples_used": 9,
+      "step_size": 24,
+      "sweep_source": "derived",
+      "temperature_c": 12.4,
+      "wing_slope": 4.621284088034029
+    },
+    {
+      "at": "2026-11-13T01:33:24Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.738956542363395,
+      "best_position": 29487,
+      "curve_points": [
+        {
+          "document_id": "d302089d-02ad-42f6-a658-66ba3508fa8e",
+          "hfr": 3.8754454844909807,
+          "position": 29396,
+          "rejected": null,
+          "star_count": 75
+        },
+        {
+          "document_id": "e0ee50fd-2644-40b9-ab11-c10e74505c09",
+          "hfr": 2.9102563235193215,
+          "position": 29417,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "b301ef32-422e-4e8c-970c-9a7b1d4723d9",
+          "hfr": 2.1259613276978095,
+          "position": 29438,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "40e61595-8eca-432e-ab5f-cf967044009f",
+          "hfr": 1.2750948658563852,
+          "position": 29459,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "175c1cd8-6aa2-4548-80a6-81549938e369",
+          "hfr": 0.8875848691977141,
+          "position": 29480,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "4183dc35-f358-4485-a244-895f68fe5525",
+          "hfr": 0.8852170115343447,
+          "position": 29501,
+          "rejected": null,
+          "star_count": 75
+        },
+        {
+          "document_id": "95910a9d-82eb-4288-a036-e4dd38e63986",
+          "hfr": 1.626775697265379,
+          "position": 29522,
+          "rejected": null,
+          "star_count": 75
+        },
+        {
+          "document_id": "c4fae88c-8207-4d32-8908-bd78646d400f",
+          "hfr": 2.4048717816185703,
+          "position": 29543,
+          "rejected": null,
+          "star_count": 75
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.996317468566362,
+      "half_width": 83,
+      "hfr": 0.7792747747171055,
+      "outcome": "confirmed",
+      "position": 29487,
+      "prediction": {
+        "from_position": 29544,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29479,
+        "terms": {
+          "last_good": 29544,
+          "offset": -64,
+          "temperature": -1.4745323208001428
+        }
+      },
+      "reference": {
+        "document_id": "5e55f3c5-1e27-406f-b640-eefa6ef104f6",
+        "listed": 76,
+        "position": 29479
+      },
+      "samples_used": 8,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 12.3,
+      "wing_slope": 3.7052194493009107
+    },
+    {
+      "at": "2026-11-13T01:35:02Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7209742702384665,
+      "best_position": 29519,
+      "curve_points": [
+        {
+          "document_id": "5c02a6c8-4f72-4b56-9a62-4652f9e1911e",
+          "hfr": 4.087914174194841,
+          "position": 29420,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "7e39f12a-a5d7-4b46-b9d9-fb95c8405ec9",
+          "hfr": 3.092524719326691,
+          "position": 29445,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "6e7bedaa-af03-4af1-8c14-1c950782bce5",
+          "hfr": 2.0833692538419135,
+          "position": 29470,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "5685071b-2449-41f3-9dcf-fdf25f9d9197",
+          "hfr": 1.2029921731710762,
+          "position": 29495,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "d01934d2-cc5f-4460-ae75-db867d5f56da",
+          "hfr": 0.8332728677489529,
+          "position": 29520,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "3d6fe8f4-9e6f-42b5-b8dc-104d4c58c742",
+          "hfr": 1.1024786830985742,
+          "position": 29545,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "94d35f67-b8d4-432a-a6c9-ceccc3c1eaff",
+          "hfr": 2.1895822100155113,
+          "position": 29570,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "355e8ac4-47e4-4d63-ac4e-5f2d219bc632",
+          "hfr": 3.3432866584475853,
+          "position": 29595,
+          "rejected": null,
+          "star_count": 68
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.9926967626640124,
+      "half_width": 99,
+      "hfr": 0.7851490368308067,
+      "outcome": "confirmed",
+      "position": 29519,
+      "prediction": {
+        "from_position": 29487,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29519,
+        "terms": {
+          "last_good": 29487,
+          "offset": 32,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "28924dfd-f978-4b38-82c4-bcb22e674501",
+        "listed": 68,
+        "position": 29519
+      },
+      "samples_used": 8,
+      "step_size": 25,
+      "sweep_source": "derived",
+      "temperature_c": 12.3,
+      "wing_slope": 4.481615950698022
+    },
+    {
+      "at": "2026-11-13T01:36:36Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6930779571003073,
+      "best_position": 29513,
+      "curve_points": [
+        {
+          "document_id": "46a2e6a9-7b7d-4d96-8c54-505525b407b4",
+          "hfr": 3.216310691388774,
+          "position": 29433,
+          "rejected": null,
+          "star_count": 56
+        },
+        {
+          "document_id": "eb867146-c231-4c97-ad38-3a2a45d631ef",
+          "hfr": 2.4056497022777545,
+          "position": 29455,
+          "rejected": null,
+          "star_count": 56
+        },
+        {
+          "document_id": "574b1012-2011-4565-84c3-66ea32894610",
+          "hfr": 1.6937059399880283,
+          "position": 29477,
+          "rejected": null,
+          "star_count": 56
+        },
+        {
+          "document_id": "1dcca44f-bf19-4610-9cc2-74b0a087a7bb",
+          "hfr": 0.9099355859650289,
+          "position": 29499,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "671eec25-ff6f-4b66-94d6-ce7ad1b5428f",
+          "hfr": 0.8158946107975918,
+          "position": 29521,
+          "rejected": null,
+          "star_count": 56
+        },
+        {
+          "document_id": "d08934e7-97c4-4022-97f1-459704b5c5d6",
+          "hfr": 1.2215679588922914,
+          "position": 29543,
+          "rejected": null,
+          "star_count": 56
+        },
+        {
+          "document_id": "e6d08823-fdc8-4f00-bc96-c844b8e8d7f0",
+          "hfr": 2.121639501353375,
+          "position": 29565,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "b4263e0a-c5ec-4a54-9ad4-512e4e9bbbf9",
+          "hfr": 3.256320091234424,
+          "position": 29587,
+          "rejected": null,
+          "star_count": 56
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.9857342264865595,
+      "half_width": 86,
+      "hfr": 0.8142788339746938,
+      "outcome": "confirmed",
+      "position": 29513,
+      "prediction": {
+        "from_position": 29519,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 19 steps of the current position",
+        "start": 29517,
+        "terms": {
+          "last_good": 29519,
+          "offset": -2,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "d5d04ee4-f49d-4b18-8ea3-e3afddfae523",
+        "listed": 56,
+        "position": 29519
+      },
+      "samples_used": 8,
+      "step_size": 22,
+      "sweep_source": "derived",
+      "temperature_c": 12.3,
+      "wing_slope": 4.624436664413938
+    },
+    {
+      "at": "2026-11-13T01:38:09Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.8888366305716291,
+      "best_position": 29531,
+      "curve_points": [
+        {
+          "document_id": "618b747e-3b3a-4e40-84a3-761d86a205c2",
+          "hfr": 3.9879877051518937,
+          "position": 29437,
+          "rejected": null,
+          "star_count": 956
+        },
+        {
+          "document_id": "abbd0bb1-f78e-467d-8378-c3f180022445",
+          "hfr": 3.1469487715097193,
+          "position": 29461,
+          "rejected": null,
+          "star_count": 990
+        },
+        {
+          "document_id": "d1ac2455-3ec6-43b0-85ca-b2b93a5b2b1e",
+          "hfr": 1.9402732179625652,
+          "position": 29485,
+          "rejected": null,
+          "star_count": 1007
+        },
+        {
+          "document_id": "02140b76-0779-4844-a8dc-e759a114043d",
+          "hfr": 1.2271163450464304,
+          "position": 29509,
+          "rejected": null,
+          "star_count": 1007
+        },
+        {
+          "document_id": "3034268c-9adf-4868-ab13-aae213ef71df",
+          "hfr": 0.9995497048320143,
+          "position": 29533,
+          "rejected": null,
+          "star_count": 1008
+        },
+        {
+          "document_id": "16c31287-c21f-4048-a26c-3207a066b2fc",
+          "hfr": 1.344227778214909,
+          "position": 29557,
+          "rejected": null,
+          "star_count": 1008
+        },
+        {
+          "document_id": "558db241-ddf5-4ef2-92ff-76396240adf3",
+          "hfr": 2.1885954464115214,
+          "position": 29581,
+          "rejected": null,
+          "star_count": 1004
+        },
+        {
+          "document_id": "2ba37ea4-5e9f-4817-99bd-2b8d5adab1ce",
+          "hfr": 3.216103980490836,
+          "position": 29605,
+          "rejected": null,
+          "star_count": 1005
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9926201033558838,
+      "half_width": 95,
+      "hfr": 1.0140388244802514,
+      "outcome": "confirmed",
+      "position": 29531,
+      "prediction": {
+        "from_position": 29513,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29532,
+        "terms": {
+          "last_good": 29513,
+          "offset": 20,
+          "temperature": -1.474532320800169
+        }
+      },
+      "reference": {
+        "document_id": "d7a0da9a-0118-4a61-bf45-b72c4d622b67",
+        "listed": 1024,
+        "position": 29532
+      },
+      "samples_used": 8,
+      "step_size": 24,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 3.953870680776477
+    },
+    {
+      "at": "2026-11-13T01:39:56Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 1.1386451837183833,
+      "best_position": 29525,
+      "curve_points": [
+        {
+          "document_id": "8869ea61-40c1-48b8-b602-e0040ffe4456",
+          "hfr": 3.4767787988283847,
+          "position": 29448,
+          "rejected": null,
+          "star_count": 1276
+        },
+        {
+          "document_id": "413014ba-48a3-4b5d-99c6-b32e1a8cbe58",
+          "hfr": 2.6049898781627276,
+          "position": 29469,
+          "rejected": null,
+          "star_count": 1283
+        },
+        {
+          "document_id": "69815004-8f39-4f91-9558-6ba6873e4992",
+          "hfr": 1.7732345156101468,
+          "position": 29490,
+          "rejected": null,
+          "star_count": 1290
+        },
+        {
+          "document_id": "e455b7e4-ab25-4e9e-bb2e-8494f0d9346e",
+          "hfr": 1.1869891144247309,
+          "position": 29511,
+          "rejected": null,
+          "star_count": 1296
+        },
+        {
+          "document_id": "a20609fd-0b83-44c8-b8b1-304dca011165",
+          "hfr": 1.4127340412657996,
+          "position": 29532,
+          "rejected": null,
+          "star_count": 1283
+        },
+        {
+          "document_id": "8faab8c9-ea4d-4fc9-93d9-b1d859d2603b",
+          "hfr": 1.5089628835088384,
+          "position": 29553,
+          "rejected": null,
+          "star_count": 1293
+        },
+        {
+          "document_id": "394a6363-9632-454e-9c1d-965e057acdeb",
+          "hfr": 2.2033937446821277,
+          "position": 29574,
+          "rejected": null,
+          "star_count": 1286
+        },
+        {
+          "document_id": "27ae85f2-0453-416d-b099-68c3045497e5",
+          "hfr": 3.22922568435373,
+          "position": 29595,
+          "rejected": null,
+          "star_count": 1272
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9770127914921348,
+      "half_width": 83,
+      "hfr": 1.176722502529922,
+      "outcome": "confirmed",
+      "position": 29525,
+      "prediction": {
+        "from_position": 29531,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29532,
+        "terms": {
+          "last_good": 29531,
+          "offset": 1,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "7c16fd2b-896c-416c-99d0-ac0987d6b3d0",
+        "listed": 1322,
+        "position": 29531
+      },
+      "samples_used": 8,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 4.0560578171862804
+    },
+    {
+      "at": "2026-11-13T01:41:47Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.9626489167114866,
+      "best_position": 29550,
+      "curve_points": [
+        {
+          "document_id": "92e923cf-36b6-4725-940a-54f87ad92d43",
+          "hfr": 3.6891294298682773,
+          "position": 29462,
+          "rejected": null,
+          "star_count": 1274
+        },
+        {
+          "document_id": "446a8dff-b81c-44e9-8a76-bff759795df8",
+          "hfr": 2.9113279136833228,
+          "position": 29484,
+          "rejected": null,
+          "star_count": 1252
+        },
+        {
+          "document_id": "e7dd2423-43a6-499b-9fe6-bfd747a5c78a",
+          "hfr": 1.9864081117344525,
+          "position": 29506,
+          "rejected": null,
+          "star_count": 1277
+        },
+        {
+          "document_id": "cfa0b2b1-02ce-4934-aa39-624acca95927",
+          "hfr": 1.6000716944793982,
+          "position": 29528,
+          "rejected": null,
+          "star_count": 1281
+        },
+        {
+          "document_id": "a1d94b24-b71f-4599-86af-70fd87a8e413",
+          "hfr": 1.0108163546678521,
+          "position": 29550,
+          "rejected": null,
+          "star_count": 1280
+        },
+        {
+          "document_id": "22ffa452-034f-41bb-a013-2a43a4cfaae7",
+          "hfr": 1.1517523835447765,
+          "position": 29572,
+          "rejected": null,
+          "star_count": 1272
+        },
+        {
+          "document_id": "26cf2609-a61a-4652-9234-af31c3f52fdc",
+          "hfr": 1.8751758895993444,
+          "position": 29594,
+          "rejected": null,
+          "star_count": 1266
+        },
+        {
+          "document_id": "5b029c47-393f-4130-8e5a-8d5de2d4a6e7",
+          "hfr": 3.0653972392480417,
+          "position": 29616,
+          "rejected": null,
+          "star_count": 1244
+        },
+        {
+          "document_id": "fc714f78-9cc7-4791-a035-66c56c1af26c",
+          "hfr": 4.093932658482603,
+          "position": 29638,
+          "rejected": null,
+          "star_count": 1227
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9729727477346696,
+      "half_width": 88,
+      "hfr": 0.9391453187501659,
+      "outcome": "confirmed",
+      "position": 29550,
+      "prediction": {
+        "from_position": 29525,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29550,
+        "terms": {
+          "last_good": 29525,
+          "offset": 25,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "be4df395-976c-453f-8806-5c937fc20d46",
+        "listed": 1316,
+        "position": 29550
+      },
+      "samples_used": 9,
+      "step_size": 22,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 4.553073715664626
+    },
+    {
+      "at": "2026-11-13T01:43:49Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7875840808277554,
+      "best_position": 29537,
+      "curve_points": [
+        {
+          "document_id": "4195606c-bcd3-4667-b0ec-c757c2af9952",
+          "hfr": 3.7555004432387795,
+          "position": 29451,
+          "rejected": null,
+          "star_count": 1890
+        },
+        {
+          "document_id": "834d52ef-d292-4fdd-b83e-479e04cc1ec2",
+          "hfr": 2.6938890127074897,
+          "position": 29476,
+          "rejected": null,
+          "star_count": 1942
+        },
+        {
+          "document_id": "22b0f2c4-54ee-49a7-ad19-2b743ea75569",
+          "hfr": 1.5980664921532852,
+          "position": 29501,
+          "rejected": null,
+          "star_count": 1974
+        },
+        {
+          "document_id": "039ffa99-752d-4395-9623-f04bf76a521b",
+          "hfr": 1.0200489251260998,
+          "position": 29526,
+          "rejected": null,
+          "star_count": 1961
+        },
+        {
+          "document_id": "af4ccfd4-a539-40ab-8b17-18f8dadee36c",
+          "hfr": 1.0027103170131262,
+          "position": 29551,
+          "rejected": null,
+          "star_count": 1966
+        },
+        {
+          "document_id": "d4ae682c-3bff-4b69-8062-452093bbfa2f",
+          "hfr": 1.7251648567930626,
+          "position": 29576,
+          "rejected": null,
+          "star_count": 1974
+        },
+        {
+          "document_id": "20fef0fe-9d76-419d-a832-970ee18ebb6c",
+          "hfr": 2.747655658731257,
+          "position": 29601,
+          "rejected": null,
+          "star_count": 1958
+        },
+        {
+          "document_id": "f9757ccd-0df4-44b9-a15a-a98f65c35851",
+          "hfr": 4.015795311906576,
+          "position": 29626,
+          "rejected": null,
+          "star_count": 1864
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.9927403320444795,
+      "half_width": 99,
+      "hfr": 1.0374435975365521,
+      "outcome": "confirmed",
+      "position": 29537,
+      "prediction": {
+        "from_position": 29550,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29538,
+        "terms": {
+          "last_good": 29550,
+          "offset": -12,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "a72ac071-82b1-4ec5-80ad-6e0799b48699",
+        "listed": 2039,
+        "position": 29550
+      },
+      "samples_used": 8,
+      "step_size": 25,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 4.5812609102270265
+    },
+    {
+      "at": "2026-11-13T01:45:52Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7690535727131735,
+      "best_position": 29480,
+      "curve_points": [
+        {
+          "document_id": "181930e2-5fbe-486f-a810-97a955fdd38a",
+          "hfr": 3.5649966499311057,
+          "position": 29396,
+          "rejected": null,
+          "star_count": 77
+        },
+        {
+          "document_id": "2110352e-698e-4a85-9ec4-5243798f19ad",
+          "hfr": 2.5941784433523933,
+          "position": 29416,
+          "rejected": null,
+          "star_count": 77
+        },
+        {
+          "document_id": "01934f75-1e3e-405a-b7ea-0b44d49f258c",
+          "hfr": 1.7426759976326522,
+          "position": 29436,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "8d00e0eb-122c-4282-b0f2-93ea11eaeca5",
+          "hfr": 1.1716148983428398,
+          "position": 29456,
+          "rejected": null,
+          "star_count": 75
+        },
+        {
+          "document_id": "ab871b9b-dd04-48bd-b49b-d420e6030f35",
+          "hfr": 0.9041539242230521,
+          "position": 29476,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "21210ec8-f24c-4ff6-acd0-248bef97cdc8",
+          "hfr": 0.9745909126905551,
+          "position": 29496,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "615b27c1-8e31-4e21-ac90-754a3f625e16",
+          "hfr": 1.5860779278668933,
+          "position": 29516,
+          "rejected": null,
+          "star_count": 76
+        },
+        {
+          "document_id": "bcbfbc98-9036-44d3-8553-8863558a12b5",
+          "hfr": 2.3480806737411135,
+          "position": 29536,
+          "rejected": null,
+          "star_count": 75
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.9882272789065797,
+      "half_width": 77,
+      "hfr": 0.7945019136015892,
+      "outcome": "confirmed",
+      "position": 29480,
+      "prediction": {
+        "from_position": 29537,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29473,
+        "terms": {
+          "last_good": 29537,
+          "offset": -64,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "79821b4a-7f87-465e-a9e7-7ec206335017",
+        "listed": 77,
+        "position": 29473
+      },
+      "samples_used": 8,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 4.01582385024227
+    },
+    {
+      "at": "2026-11-13T01:47:32Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7959138527872315,
+      "best_position": 29513,
+      "curve_points": [
+        {
+          "document_id": "3d2d4160-bd7d-4771-a605-7aa8cea88190",
+          "hfr": 3.161508281806949,
+          "position": 29435,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "c5bf4c85-a5e0-49d4-b28d-ad09183791f7",
+          "hfr": 2.439138010455427,
+          "position": 29455,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "eff6e72f-9ba3-482f-b18e-7236c1fb32d2",
+          "hfr": 1.559614342637036,
+          "position": 29475,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "21a36156-fd26-4337-8659-5018433e4c89",
+          "hfr": 1.0894554193801658,
+          "position": 29495,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "388371bc-1109-4f52-ad6e-e0182c04e115",
+          "hfr": 0.8575781545387107,
+          "position": 29515,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "b871ffd9-81a7-4743-ac3f-ab3867430714",
+          "hfr": 1.116006956790146,
+          "position": 29535,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "12ab3fe3-c4d7-49ed-84d4-0c4ec90825df",
+          "hfr": 1.8081454921092013,
+          "position": 29555,
+          "rejected": null,
+          "star_count": 65
+        },
+        {
+          "document_id": "732d9218-81b5-4e88-a69d-17c19985a3d2",
+          "hfr": 2.5965507683821025,
+          "position": 29575,
+          "rejected": null,
+          "star_count": 65
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.9945135300109358,
+      "half_width": 77,
+      "hfr": 0.7874794009326149,
+      "outcome": "confirmed",
+      "position": 29513,
+      "prediction": {
+        "from_position": 29480,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29512,
+        "terms": {
+          "last_good": 29480,
+          "offset": 32,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "60bab5b3-ad70-4f5c-b71a-3a36dff0b7af",
+        "listed": 65,
+        "position": 29512
+      },
+      "samples_used": 8,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 12.2,
+      "wing_slope": 3.701359528979891
+    },
+    {
+      "at": "2026-11-13T01:49:07Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.674626627122835,
+      "best_position": 29504,
+      "curve_points": [
+        {
+          "document_id": "188b2dae-985c-4f63-92a0-59af4c122c7b",
+          "hfr": 2.884799976706567,
+          "position": 29433,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "5a931144-a87d-4528-9052-ab84bab97cbc",
+          "hfr": 2.217549241498724,
+          "position": 29453,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "3cca14c0-6f7e-4b12-bcf3-78e1cb59dfd1",
+          "hfr": 1.4780560982389614,
+          "position": 29473,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "078c1892-903e-4b02-8547-2e7a189e8c69",
+          "hfr": 0.9724096751530593,
+          "position": 29493,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "ef77854b-a254-4c6d-a5fb-41b7c02c379c",
+          "hfr": 0.8032768094837521,
+          "position": 29513,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "a19c9ef9-d736-4159-af74-5ec8cf5e8c42",
+          "hfr": 1.1004628794329845,
+          "position": 29533,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "eeb4e088-c312-4389-a90a-012a808c1d1b",
+          "hfr": 1.9882875591185338,
+          "position": 29553,
+          "rejected": null,
+          "star_count": 62
+        },
+        {
+          "document_id": "554c7dca-87d8-4af6-a6d8-05b406b82b90",
+          "hfr": 3.0784880918628157,
+          "position": 29573,
+          "rejected": null,
+          "star_count": 61
+        },
+        {
+          "document_id": "ae98e6e8-6702-4b29-98ac-f0a476406421",
+          "hfr": 3.948869115652329,
+          "position": 29593,
+          "rejected": null,
+          "star_count": 60
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.978106354318296,
+      "half_width": 80,
+      "hfr": 0.8000390186840131,
+      "outcome": "confirmed",
+      "position": 29504,
+      "prediction": {
+        "from_position": 29513,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 19 steps of the current position",
+        "start": 29510,
+        "terms": {
+          "last_good": 29513,
+          "offset": -2,
+          "temperature": -1.4745323208001428
+        }
+      },
+      "reference": {
+        "document_id": "3bc94415-e5b9-4c3f-b1a4-ffa30255eb09",
+        "listed": 63,
+        "position": 29513
+      },
+      "samples_used": 9,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 12.1,
+      "wing_slope": 4.817709620701157
+    },
+    {
+      "at": "2026-11-13T01:50:52Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7529770108466632,
+      "best_position": 29521,
+      "curve_points": [
+        {
+          "document_id": "e183d701-53f8-492d-9ed4-e0e24505edfd",
+          "hfr": 4.136867766468617,
+          "position": 29424,
+          "rejected": null,
+          "star_count": 989
+        },
+        {
+          "document_id": "5e291a67-97a6-49cd-8237-2e09498a3346",
+          "hfr": 3.1372344358162034,
+          "position": 29449,
+          "rejected": null,
+          "star_count": 989
+        },
+        {
+          "document_id": "5155d991-cc80-4422-b6a8-4b4b054616a8",
+          "hfr": 2.0446747887303984,
+          "position": 29474,
+          "rejected": null,
+          "star_count": 1003
+        },
+        {
+          "document_id": "9d7d296c-ed41-4db3-b61f-c2fa29bb82b9",
+          "hfr": 1.1333163705416816,
+          "position": 29499,
+          "rejected": null,
+          "star_count": 1005
+        },
+        {
+          "document_id": "c8090ba9-3435-4437-9a3e-e475f6fe4044",
+          "hfr": 0.8939886031203187,
+          "position": 29524,
+          "rejected": null,
+          "star_count": 1008
+        },
+        {
+          "document_id": "ba2db0c8-0be6-4299-bcdb-824707b08a27",
+          "hfr": 1.2566629508132912,
+          "position": 29549,
+          "rejected": null,
+          "star_count": 1008
+        },
+        {
+          "document_id": "e7a252ba-ba20-4e97-a61b-abe3f816823b",
+          "hfr": 2.243945138507754,
+          "position": 29574,
+          "rejected": null,
+          "star_count": 992
+        },
+        {
+          "document_id": "f3153c0e-fc7d-450b-8616-844638e23e9b",
+          "hfr": 3.280433410894878,
+          "position": 29599,
+          "rejected": null,
+          "star_count": 993
+        },
+        {
+          "document_id": "f34f76f5-4263-4a8c-864d-17e8dd020a98",
+          "hfr": 4.425418673908807,
+          "position": 29624,
+          "rejected": null,
+          "star_count": 971
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9959075283672195,
+      "half_width": 100,
+      "hfr": 0.876001577150932,
+      "outcome": "confirmed",
+      "position": 29521,
+      "prediction": {
+        "from_position": 29504,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29524,
+        "terms": {
+          "last_good": 29504,
+          "offset": 20,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "27f259e9-f779-4f65-855b-dd2178eeeaee",
+        "listed": 1025,
+        "position": 29524
+      },
+      "samples_used": 9,
+      "step_size": 25,
+      "sweep_source": "derived",
+      "temperature_c": 12.1,
+      "wing_slope": 4.217102176669468
+    },
+    {
+      "at": "2026-11-13T01:52:54Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6297428619018665,
+      "best_position": 29517,
+      "curve_points": [
+        {
+          "document_id": "cb12268c-3678-46da-9500-58be0deef732",
+          "hfr": 4.855459186854272,
+          "position": 29405,
+          "rejected": null,
+          "star_count": 1230
+        },
+        {
+          "document_id": "ec975f96-63d0-4552-bd7e-60286027fca9",
+          "hfr": 3.673954456586404,
+          "position": 29434,
+          "rejected": null,
+          "star_count": 1242
+        },
+        {
+          "document_id": "c502c9ef-d4c9-4cd0-ba33-4229d5e0177b",
+          "hfr": 2.297800694129516,
+          "position": 29463,
+          "rejected": null,
+          "star_count": 1284
+        },
+        {
+          "document_id": "77e6488c-0030-4997-ba79-b2fceb02af40",
+          "hfr": 1.285139552938979,
+          "position": 29492,
+          "rejected": null,
+          "star_count": 1321
+        },
+        {
+          "document_id": "8f0552ba-4f21-4730-9df1-f0183460b1cd",
+          "hfr": 0.7566389772799887,
+          "position": 29521,
+          "rejected": null,
+          "star_count": 1307
+        },
+        {
+          "document_id": "35b6a75a-9a83-4b22-9035-893dbef4c587",
+          "hfr": 1.3921619496002808,
+          "position": 29550,
+          "rejected": null,
+          "star_count": 1317
+        },
+        {
+          "document_id": "cd7bd732-9c5a-4949-82c6-2cfbc0e200f1",
+          "hfr": 2.6155121816193754,
+          "position": 29579,
+          "rejected": null,
+          "star_count": 1304
+        },
+        {
+          "document_id": "59ecf644-40fb-48cd-bf17-fd35cd188261",
+          "hfr": 4.087140934363115,
+          "position": 29608,
+          "rejected": null,
+          "star_count": 1264
+        },
+        {
+          "document_id": "af42de93-ab23-48c7-b74b-f276c87a1f36",
+          "hfr": 5.4440229436235725,
+          "position": 29637,
+          "rejected": null,
+          "star_count": 1069
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9942139144992634,
+      "half_width": 116,
+      "hfr": 0.8513295707124964,
+      "outcome": "confirmed",
+      "position": 29517,
+      "prediction": {
+        "from_position": 29521,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29522,
+        "terms": {
+          "last_good": 29521,
+          "offset": 1,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "ce74301c-19e6-4456-acf4-b67cec635a79",
+        "listed": 1384,
+        "position": 29521
+      },
+      "samples_used": 9,
+      "step_size": 29,
+      "sweep_source": "derived",
+      "temperature_c": 12.1,
+      "wing_slope": 4.6990385292460735
+    },
+    {
+      "at": "2026-11-13T01:55:29Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6733243122979268,
+      "best_position": 29541,
+      "curve_points": [
+        {
+          "document_id": "c3576c46-5f55-4d0e-91f3-6285a5775160",
+          "hfr": 3.954823350096451,
+          "position": 29448,
+          "rejected": null,
+          "star_count": 1299
+        },
+        {
+          "document_id": "441eff4a-db3a-40e1-9ed5-e32ac424e62f",
+          "hfr": 2.9322967364234946,
+          "position": 29472,
+          "rejected": null,
+          "star_count": 1294
+        },
+        {
+          "document_id": "7e16899d-a96e-4095-93ca-cde12b18c717",
+          "hfr": 1.9276353137897935,
+          "position": 29496,
+          "rejected": null,
+          "star_count": 1333
+        },
+        {
+          "document_id": "2a0028a1-0a81-43a3-b3d1-24edf5538da5",
+          "hfr": 1.1277949215735383,
+          "position": 29520,
+          "rejected": null,
+          "star_count": 1338
+        },
+        {
+          "document_id": "e3eff338-724f-4773-af5a-a897cf94638b",
+          "hfr": 0.79655743176526,
+          "position": 29544,
+          "rejected": null,
+          "star_count": 1338
+        },
+        {
+          "document_id": "25a719c2-0a4a-4b46-aceb-dbcb26076c11",
+          "hfr": 1.0927384497399106,
+          "position": 29568,
+          "rejected": null,
+          "star_count": 1333
+        },
+        {
+          "document_id": "1b4b7ae5-a7b2-48a0-adf5-e6bac8df3eff",
+          "hfr": 2.2376222091089244,
+          "position": 29592,
+          "rejected": null,
+          "star_count": 1319
+        },
+        {
+          "document_id": "dc9793c2-44b6-47d4-a04c-4daf1c2a38c6",
+          "hfr": 3.3790656577270113,
+          "position": 29616,
+          "rejected": null,
+          "star_count": 1271
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9897649474559637,
+      "half_width": 93,
+      "hfr": 0.7611193768648441,
+      "outcome": "confirmed",
+      "position": 29541,
+      "prediction": {
+        "from_position": 29517,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29541,
+        "terms": {
+          "last_good": 29517,
+          "offset": 25,
+          "temperature": -1.4745323208001428
+        }
+      },
+      "reference": {
+        "document_id": "e312b0c6-d5ae-4375-bee5-07eda63b0e61",
+        "listed": 1379,
+        "position": 29541
+      },
+      "samples_used": 8,
+      "step_size": 24,
+      "sweep_source": "derived",
+      "temperature_c": 12.0,
+      "wing_slope": 4.76318168330646
+    },
+    {
+      "at": "2026-11-13T01:57:25Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6491460726275278,
+      "best_position": 29530,
+      "curve_points": [
+        {
+          "document_id": "d0c9ee97-f5db-472a-b9bd-eceb6d667eb6",
+          "hfr": 3.986430744170465,
+          "position": 29439,
+          "rejected": null,
+          "star_count": 1989
+        },
+        {
+          "document_id": "6fc2363f-7ecc-4183-a5a5-1ade27352cee",
+          "hfr": 2.7202173520846293,
+          "position": 29465,
+          "rejected": null,
+          "star_count": 2007
+        },
+        {
+          "document_id": "e2ad6cf1-65dd-418b-a727-2f10f3557f0b",
+          "hfr": 1.7345086116214732,
+          "position": 29491,
+          "rejected": null,
+          "star_count": 2026
+        },
+        {
+          "document_id": "1a0641cb-021c-43c1-8aba-ae2e5aea4ff3",
+          "hfr": 0.9155468802606781,
+          "position": 29517,
+          "rejected": null,
+          "star_count": 2017
+        },
+        {
+          "document_id": "0e4126c5-3678-4da6-ab04-5dbe327a2f14",
+          "hfr": 0.9155097805286936,
+          "position": 29543,
+          "rejected": null,
+          "star_count": 2015
+        },
+        {
+          "document_id": "a0ea8257-477c-46bf-8770-3b048d5c02e4",
+          "hfr": 1.5931210033770655,
+          "position": 29569,
+          "rejected": null,
+          "star_count": 2004
+        },
+        {
+          "document_id": "4806a8d3-6ce6-41a7-80a5-0ebe44258075",
+          "hfr": 2.8375901714951883,
+          "position": 29595,
+          "rejected": null,
+          "star_count": 1988
+        },
+        {
+          "document_id": "ea79c34e-fe38-4473-921e-4a9839c42d06",
+          "hfr": 4.114565396672261,
+          "position": 29621,
+          "rejected": null,
+          "star_count": 1840
+        }
+      ],
+      "error": null,
+      "filter": "L",
+      "fit_r_squared": 0.99144075699196,
+      "half_width": 102,
+      "hfr": 0.8170429586989312,
+      "outcome": "confirmed",
+      "position": 29530,
+      "prediction": {
+        "from_position": 29541,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29529,
+        "terms": {
+          "last_good": 29541,
+          "offset": -12,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "c42cb128-1976-4252-96a4-fdbe1c6169eb",
+        "listed": 2108,
+        "position": 29541
+      },
+      "samples_used": 8,
+      "step_size": 26,
+      "sweep_source": "derived",
+      "temperature_c": 12.0,
+      "wing_slope": 4.848931525567683
+    },
+    {
+      "at": "2026-11-13T01:59:31Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6225671988851379,
+      "best_position": 29473,
+      "curve_points": [
+        {
+          "document_id": "1bffe4d2-32dc-41bd-b0af-0de177544b3d",
+          "hfr": 3.5748941221205124,
+          "position": 29387,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "b39d93c7-6944-44e5-a965-450c97a1d49e",
+          "hfr": 2.6986687332367287,
+          "position": 29407,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "19b0cc76-f8d7-4614-af87-b0683fcfaf15",
+          "hfr": 1.8750096952014925,
+          "position": 29427,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "7f33b424-4475-4025-bf58-f4d5fa39c869",
+          "hfr": 1.1155637276328305,
+          "position": 29447,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "67ee86b3-eb94-4a6e-bc0e-8f9a137af70c",
+          "hfr": 0.7388666721496934,
+          "position": 29467,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "9dc1a9be-12d4-4c0d-8ed3-37e22008cf38",
+          "hfr": 0.8807677608614611,
+          "position": 29487,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "2416d560-ad23-4c43-85d1-2a9c95fa3815",
+          "hfr": 1.3685926145495981,
+          "position": 29507,
+          "rejected": null,
+          "star_count": 83
+        },
+        {
+          "document_id": "bce8f312-8748-4479-acbc-79c03c0376d3",
+          "hfr": 2.2851641812231476,
+          "position": 29527,
+          "rejected": null,
+          "star_count": 81
+        }
+      ],
+      "error": null,
+      "filter": "O",
+      "fit_r_squared": 0.9934281320244195,
+      "half_width": 78,
+      "hfr": 0.725115559111603,
+      "outcome": "confirmed",
+      "position": 29473,
+      "prediction": {
+        "from_position": 29530,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29465,
+        "terms": {
+          "last_good": 29530,
+          "offset": -64,
+          "temperature": -1.4745323208001428
+        }
+      },
+      "reference": {
+        "document_id": "c701b062-098f-45a1-a76d-bf5d442952f3",
+        "listed": 83,
+        "position": 29465
+      },
+      "samples_used": 8,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 11.9,
+      "wing_slope": 4.100825110749142
+    },
+    {
+      "at": "2026-11-13T02:01:09Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6629792268563566,
+      "best_position": 29504,
+      "curve_points": [
+        {
+          "document_id": "7ffb7a3f-743e-42e6-b399-bd3c5884607c",
+          "hfr": 3.132283885404605,
+          "position": 29427,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "52b3c52b-23bd-41ff-8684-7a30ba73be52",
+          "hfr": 2.2625736972691506,
+          "position": 29447,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "87b75400-d633-4a62-b19c-d5ddc0f4e80b",
+          "hfr": 1.5565278506794251,
+          "position": 29467,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "77d48537-a541-4364-83cb-4b22a51637da",
+          "hfr": 1.0395125517790806,
+          "position": 29487,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "d31a7473-a969-453f-b989-afd9771a6c86",
+          "hfr": 0.755824415486668,
+          "position": 29507,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "a73a7781-1f64-495a-a184-40fee5f55375",
+          "hfr": 0.9341952403033809,
+          "position": 29527,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "cef7b90f-60f9-4761-8a19-a2d2384ea157",
+          "hfr": 1.64835739179272,
+          "position": 29547,
+          "rejected": null,
+          "star_count": 68
+        },
+        {
+          "document_id": "4ea804f5-f5aa-411a-98d6-a9e83c7ff859",
+          "hfr": 2.7622689598976224,
+          "position": 29567,
+          "rejected": null,
+          "star_count": 66
+        }
+      ],
+      "error": null,
+      "filter": "S",
+      "fit_r_squared": 0.9768937972686962,
+      "half_width": 78,
+      "hfr": 0.7454590919665524,
+      "outcome": "confirmed",
+      "position": 29504,
+      "prediction": {
+        "from_position": 29473,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29505,
+        "terms": {
+          "last_good": 29473,
+          "offset": 32,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "dcd45ee3-7cc7-46e0-b22a-3ff56e8cbcf3",
+        "listed": 69,
+        "position": 29505
+      },
+      "samples_used": 8,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 11.9,
+      "wing_slope": 4.5701842989856045
+    },
+    {
+      "at": "2026-11-13T02:02:44Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6601422133192646,
+      "best_position": 29498,
+      "curve_points": [
+        {
+          "document_id": "b483cda8-7fce-49d1-9bd4-e14fc755f48d",
+          "hfr": 2.9780918120283557,
+          "position": 29425,
+          "rejected": null,
+          "star_count": 54
+        },
+        {
+          "document_id": "e03b1f3b-d89c-4058-a305-0dd660d0a83c",
+          "hfr": 2.1745311083290444,
+          "position": 29445,
+          "rejected": null,
+          "star_count": 54
+        },
+        {
+          "document_id": "363dbb3f-0969-4f8b-95ce-2535eec062bb",
+          "hfr": 1.4328809833215832,
+          "position": 29465,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "8c4e69b8-efeb-48bb-b91a-5a04935cd163",
+          "hfr": 0.8966381752043255,
+          "position": 29485,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "4b1d8328-820a-4a09-8711-e28041e0fd50",
+          "hfr": 0.7604148671356653,
+          "position": 29505,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "d8ab2cb2-207d-4e99-8ec4-d6d6f045d23b",
+          "hfr": 1.1180429157887373,
+          "position": 29525,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "f0c6e554-7da0-462e-bfa7-bb1b2378a029",
+          "hfr": 1.99614782280743,
+          "position": 29545,
+          "rejected": null,
+          "star_count": 55
+        },
+        {
+          "document_id": "15914656-db8a-4a2f-9821-b7eabc701bc7",
+          "hfr": 2.8636927008565958,
+          "position": 29565,
+          "rejected": null,
+          "star_count": 55
+        }
+      ],
+      "error": null,
+      "filter": "H",
+      "fit_r_squared": 0.9920183005099114,
+      "half_width": 79,
+      "hfr": 0.9325858826087288,
+      "outcome": "confirmed",
+      "position": 29498,
+      "prediction": {
+        "from_position": 29504,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 19 steps of the current position",
+        "start": 29502,
+        "terms": {
+          "last_good": 29504,
+          "offset": -2,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "5b1c4776-adb5-4fcb-afc3-325cf418008b",
+        "listed": 55,
+        "position": 29504
+      },
+      "samples_used": 8,
+      "step_size": 20,
+      "sweep_source": "derived",
+      "temperature_c": 11.9,
+      "wing_slope": 4.364124462669646
+    },
+    {
+      "at": "2026-11-13T02:04:17Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7623900353518878,
+      "best_position": 29516,
+      "curve_points": [
+        {
+          "document_id": "8bab5e15-9068-480a-a84c-92113815882a",
+          "hfr": 3.5893742088063076,
+          "position": 29431,
+          "rejected": null,
+          "star_count": 1034
+        },
+        {
+          "document_id": "d3856e81-6ccb-4ec0-8299-cd53338ad19f",
+          "hfr": 2.602516135367828,
+          "position": 29453,
+          "rejected": null,
+          "star_count": 1039
+        },
+        {
+          "document_id": "2e6362eb-3f56-4ebb-8036-b4c507013be4",
+          "hfr": 1.6292408290032103,
+          "position": 29475,
+          "rejected": null,
+          "star_count": 1041
+        },
+        {
+          "document_id": "075d17b6-3931-49ea-a5ea-857c37a85bef",
+          "hfr": 1.0512634190987482,
+          "position": 29497,
+          "rejected": null,
+          "star_count": 1037
+        },
+        {
+          "document_id": "6bacdc3a-7cd8-4f0b-be5a-3020aa10e010",
+          "hfr": 0.8893824444556735,
+          "position": 29519,
+          "rejected": null,
+          "star_count": 1043
+        },
+        {
+          "document_id": "f897b4b2-1f7d-475c-8bed-12e626af8fa7",
+          "hfr": 1.179700615535532,
+          "position": 29541,
+          "rejected": null,
+          "star_count": 1039
+        },
+        {
+          "document_id": "f354e6d1-9d0d-4d51-8ef3-2966484d1078",
+          "hfr": 2.0656569956567896,
+          "position": 29563,
+          "rejected": null,
+          "star_count": 1040
+        },
+        {
+          "document_id": "fd41d40b-2009-412f-85d8-a616366cc3da",
+          "hfr": 2.8598593478314,
+          "position": 29585,
+          "rejected": null,
+          "star_count": 1020
+        }
+      ],
+      "error": null,
+      "filter": "B",
+      "fit_r_squared": 0.9901760622115116,
+      "half_width": 86,
+      "hfr": 0.8392098436863762,
+      "outcome": "confirmed",
+      "position": 29516,
+      "prediction": {
+        "from_position": 29498,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29517,
+        "terms": {
+          "last_good": 29498,
+          "offset": 20,
+          "temperature": -1.4745323208001428
+        }
+      },
+      "reference": {
+        "document_id": "f79fbf51-bce5-45c5-a17c-b00511e872a9",
+        "listed": 1062,
+        "position": 29517
+      },
+      "samples_used": 8,
+      "step_size": 22,
+      "sweep_source": "derived",
+      "temperature_c": 11.8,
+      "wing_slope": 3.903458034312407
+    },
+    {
+      "at": "2026-11-13T02:06:04Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.6074931200615141,
+      "best_position": 29513,
+      "curve_points": [
+        {
+          "document_id": "069963ba-0162-490c-bd91-66c7665a1094",
+          "hfr": 3.430814112519911,
+          "position": 29432,
+          "rejected": null,
+          "star_count": 1273
+        },
+        {
+          "document_id": "97d6b803-fc69-466e-8409-6e2eed43f4b5",
+          "hfr": 2.552543688779277,
+          "position": 29453,
+          "rejected": null,
+          "star_count": 1287
+        },
+        {
+          "document_id": "7ca95c30-1a41-449a-b16f-695ec2ee92af",
+          "hfr": 1.6730732023791437,
+          "position": 29474,
+          "rejected": null,
+          "star_count": 1288
+        },
+        {
+          "document_id": "d080bd60-2709-4ca1-afd5-4c4d7f0724fd",
+          "hfr": 1.01627294417123,
+          "position": 29495,
+          "rejected": null,
+          "star_count": 1288
+        },
+        {
+          "document_id": "5210049f-34e2-41ba-9d4e-aa84b62d0a0c",
+          "hfr": 0.7383540709703957,
+          "position": 29516,
+          "rejected": null,
+          "star_count": 1286
+        },
+        {
+          "document_id": "ac96e51a-261e-4457-a019-7400f8c456fb",
+          "hfr": 1.003261990366926,
+          "position": 29537,
+          "rejected": null,
+          "star_count": 1286
+        },
+        {
+          "document_id": "192341ec-1fb8-4676-8384-e703696bc742",
+          "hfr": 1.804779287468614,
+          "position": 29558,
+          "rejected": null,
+          "star_count": 1273
+        },
+        {
+          "document_id": "fd7a7ef2-0a37-406c-940b-68b8806cefd6",
+          "hfr": 2.8274374127868604,
+          "position": 29579,
+          "rejected": null,
+          "star_count": 1268
+        },
+        {
+          "document_id": "948191e7-02d2-4b2a-b507-8b639cec9f4e",
+          "hfr": 3.8847176230076115,
+          "position": 29600,
+          "rejected": null,
+          "star_count": 1229
+        }
+      ],
+      "error": null,
+      "filter": "G",
+      "fit_r_squared": 0.9883547930072077,
+      "half_width": 84,
+      "hfr": 0.755781203237352,
+      "outcome": "confirmed",
+      "position": 29513,
+      "prediction": {
+        "from_position": 29516,
+        "missing": [],
+        "moved": false,
+        "skipped": "within 16 steps of the current position",
+        "start": 29517,
+        "terms": {
+          "last_good": 29516,
+          "offset": 1,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "74ac772f-70e5-44b9-8ff9-b6c76c51ffb2",
+        "listed": 1312,
+        "position": 29516
+      },
+      "samples_used": 9,
+      "step_size": 21,
+      "sweep_source": "derived",
+      "temperature_c": 11.8,
+      "wing_slope": 4.603345249162049
+    },
+    {
+      "at": "2026-11-13T02:08:05Z",
+      "attempts": 1,
+      "attempts_log": [],
+      "best_hfr": 0.7158499852921268,
+      "best_position": 29538,
+      "curve_points": [
+        {
+          "document_id": "9cd188ee-01b3-4324-95f6-39fe3aac2ebf",
+          "hfr": 3.0661464485162075,
+          "position": 29463,
+          "rejected": null,
+          "star_count": 1399
+        },
+        {
+          "document_id": "2331e13f-408c-4ae0-bb22-7d8e91c67c61",
+          "hfr": 2.287738962184233,
+          "position": 29482,
+          "rejected": null,
+          "star_count": 1397
+        },
+        {
+          "document_id": "e8718708-5dbf-45b1-9249-cf5c539c2ce2",
+          "hfr": 1.5344817884337036,
+          "position": 29501,
+          "rejected": null,
+          "star_count": 1411
+        },
+        {
+          "document_id": "08c2b4c5-8eb2-4f63-8e87-84307a71d4ed",
+          "hfr": 1.026147263253169,
+          "position": 29520,
+          "rejected": null,
+          "star_count": 1410
+        },
+        {
+          "document_id": "82c147f8-ab38-43ac-80f5-53c721b6923b",
+          "hfr": 0.8096318579397102,
+          "position": 29539,
+          "rejected": null,
+          "star_count": 1409
+        },
+        {
+          "document_id": "2b24a6a9-01de-40b8-a089-765d8dd93142",
+          "hfr": 0.9710847214697145,
+          "position": 29558,
+          "rejected": null,
+          "star_count": 1409
+        },
+        {
+          "document_id": "a5e1e7ec-3fde-4bca-ae73-75a9acb88537",
+          "hfr": 1.5676775853944775,
+          "position": 29577,
+          "rejected": null,
+          "star_count": 1408
+        },
+        {
+          "document_id": "74d48b78-96d7-4037-8c2f-369112626eff",
+          "hfr": 2.473638754910616,
+          "position": 29596,
+          "rejected": null,
+          "star_count": 1388
+        }
+      ],
+      "error": null,
+      "filter": "R",
+      "fit_r_squared": 0.9895838463738135,
+      "half_width": 75,
+      "hfr": 0.7601103840535227,
+      "outcome": "confirmed",
+      "position": 29538,
+      "prediction": {
+        "from_position": 29513,
+        "missing": [],
+        "moved": true,
+        "skipped": null,
+        "start": 29538,
+        "terms": {
+          "last_good": 29513,
+          "offset": 25,
+          "temperature": 0.0
+        }
+      },
+      "reference": {
+        "document_id": "0cd9bdff-d9c7-4187-9af5-1955b2fb2985",
+        "listed": 1447,
+        "position": 29538
+      },
+      "samples_used": 8,
+      "step_size": 19,
+      "sweep_source": "derived",
+      "temperature_c": 11.8,
+      "wing_slope": 3.9540895616865828
+    }
+  ]
+}
