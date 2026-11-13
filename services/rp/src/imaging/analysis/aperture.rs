@@ -92,10 +92,12 @@ pub struct MeasuredStar {
     /// The aperture's radius (px).
     pub radius: f64,
     /// Whether the aperture holds a pixel at or above the frame's
-    /// saturation level. Always `false` when the level is `None`.
+    /// saturation level. Always `false` when the level is `None`, and
+    /// for a star [`measure_listed`] measured, which takes no level.
     pub saturated: bool,
     /// The index, in the detection list, of the detection the star was
-    /// measured from.
+    /// measured from. For a star [`measure_listed`] measured, the index of
+    /// its entry in `listed`.
     pub detection: usize,
 }
 
