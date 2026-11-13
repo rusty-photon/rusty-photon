@@ -394,6 +394,18 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       after 30 s as on Linux. An operator looks at PHD2 by connecting over
       RDP as the PHD2 account. The host must have RDP enabled (Validation,
       2026-11-11).
+
+      **Held 2026-11-12.** rusty-photon builds its own guider and drops
+      PHD2
+      ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md),
+      decision 9), so the session keeper is not built. A Windows host
+      stays as a host that has not switched over: `phd2-guider` connects
+      to a PHD2 that someone started and refuses a restart. The native
+      guider has no window and needs no session: it is a client of the
+      driver services, and devices that are switched off are its normal
+      daytime state
+      ([guider.md](../services/guider.md#get-health)). The Linux half above
+      is not held.
     - **macOS** has no unattended path yet. `phd2-guider` there connects to
       a PHD2 that someone started, and refuses a restart.
     - **Switching over.** A host already runs PHD2 as the operator, so it
