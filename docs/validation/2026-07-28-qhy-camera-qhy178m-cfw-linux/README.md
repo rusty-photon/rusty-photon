@@ -11,7 +11,7 @@ one physical connection.
 | Commit | [`7d9d93c9`](https://github.com/rusty-photon/rusty-photon/commit/7d9d93c9) — branch `fix/qhy-cfw-position-cache`, i.e. `origin/main` (`b2c73436`) plus the CFW position-cache fix this run required (see *Why this run needed a driver fix*) |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.96.0 |
-| SDK | QHYCCD SDK **26.06.04** — `libqhyccd.so.26.6.4.16` in `/usr/local/lib`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738`; the version the repo pins (`docs/services/qhy-camera.md` § *Resolved facts*) |
+| SDK | QHYCCD SDK **26.06.04** — `libqhyccd.so.26.6.4.16` in `/usr/local/lib`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738`; the version the repo pins ([`docs/services/qhy-camera.md`](../../services/qhy-camera.md#sdk-version-and-distribution) § *Resolved facts*) |
 | Platform | Fedora Linux 44, x86_64, kernel 7.1.4-204.fc44 — camera on the host's own USB 3 bus (no VM), `85-qhyccd.rules` udev rule, `usbfs_memory_mb` raised to 256 |
 | Camera | QHY178M, 3056×2048 reported, mono, `MaxADU` 65535 — SDK id `QHY178M-222b16468c5966524` |
 | FilterWheel | The CFW on that camera's port, **7 slots**, driven through the same physical `OpenQHYCCD` handle |

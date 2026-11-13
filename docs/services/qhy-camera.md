@@ -1,12 +1,9 @@
 # Qhy-Camera Service Design
 
-> **Status:** Implemented (v0). The driver lives in
-> [`services/qhy-camera`](../../services/qhy-camera). All 10 BDD feature suites
-> (73 scenarios) and the unit tests are green against the `qhyccd-rs`
-> `simulation` backend; ConformU runs in CI. This document remains the
-> behavioural specification — the handful of implementation deviations from the
-> original design are called out inline (search "*Implementation note*"). The
-> *Delivery phasing* § Phase 0–6 tracked the SDK-de-risk → full-driver rollout.
+> **Status:** Implemented, in
+> [`services/qhy-camera`](../../services/qhy-camera). This document is the
+> driver's behavioural specification; its runs on real hardware are in
+> [`docs/validation/`](../validation/README.md).
 
 ## Overview
 
@@ -26,8 +23,7 @@ for scaffolding) and the same-vendor [`qhy-focuser`](qhy-focuser.md) driver.
 this service is **written natively against rusty-photon conventions on top of the
 published [`qhyccd-rs`](https://crates.io/crates/qhyccd-rs) crate** (the durable,
 reusable FFI layer), using `qhyccd-alpaca`'s device-trait code only as the
-behavioural reference. See *Delivery phasing* and
-[ADR — to be written] for why.
+behavioural reference.
 
 **Requires a proprietary native SDK.** Unlike `filemonitor` /
 `sky-survey-camera`, this service links a **proprietary native SDK** that must be
@@ -41,99 +37,88 @@ OSes — but the SDK requirement is still the dominant design constraint. See
 
 ## Native dependency & build gating (the crux)
 
-This is the single most consequential fact about this service and the reason it
-is delivered in two tracks.
+This is the single most consequential fact about this service.
 
 - The imaging path is `qhy-camera → qhyccd-rs (0.1.9) → libqhyccd-sys (0.1.4) →`
   the **proprietary QHYCCD SDK** (a closed-source static lib) **+ libusb-1.0**.
   Both `qhyccd-rs` and `libqhyccd-sys` are **vendored first-party** at
-  `crates/qhyccd-rs/` (the `libqhyccd-sys` sub-crate nested inside) per
-  [ADR-009](../decisions/009-vendor-qhyccd-rs.md) — we develop them in-tree and
-  dual-home them to crates.io.
+  `crates/qhyccd-rs/` (the `libqhyccd-sys` sub-crate nested inside) — we
+  develop them in-tree and dual-home them to crates.io.
 - `libqhyccd-sys` declares `links = "qhyccd"` and its `build.rs` emits
-  `cargo:rustc-link-lib=static=qhyccd` + `dylib=usb-1.0` **unconditionally** —
-  there is **no feature/cfg gate** on the link.
-- **macOS link fix (now in-tree, no patch):** the *published* crates.io
-  `libqhyccd-sys 0.1.4` was cut before the macOS link fix landed — on macOS its
-  `build.rs` emitted only `static=qhyccd` + `dylib=c++` and **never linked
-  `libusb-1.0`**, failing with `Undefined symbols … _libusb_*`. This used to be
-  worked around with a `[patch.crates-io]` git override pinning `libqhyccd-sys`
-  to a GitHub commit. Since [ADR-009](../decisions/009-vendor-qhyccd-rs.md)
-  vendored the crate, that **patch is gone** — the fixed `build.rs` (the
-  `/opt/homebrew/lib` search path + the `dylib=usb-1.0` directive) lives in the
-  in-tree source at `crates/qhyccd-rs/libqhyccd-sys/build.rs`. Linux/Windows
-  link directives are unchanged.
-- **Consequence:** *every machine that compiles this package* — dev laptops, CI
-  runners, Bazel actions — needs the QHYCCD SDK installed and discoverable, plus
-  `libusb-1.0` dev headers. Not just machines with a camera attached.
+  `cargo:rustc-link-lib=static=qhyccd` — with `dylib=usb-1.0` and
+  `dylib=stdc++` on Linux, `dylib=usb-1.0` and `dylib=c++` on macOS — on every
+  build that does not set `QHYCCD_SKIP_NATIVE_LINK` (below): **no Cargo
+  feature gates the link**, `simulation` included.
+- **macOS links libusb from the in-tree `build.rs`.** The crates.io
+  `libqhyccd-sys 0.1.4` emits only `static=qhyccd` + `dylib=c++` on macOS and
+  never links `libusb-1.0`, so a link against it fails with
+  `Undefined symbols … _libusb_*`. The in-tree source the workspace builds,
+  `crates/qhyccd-rs/libqhyccd-sys/build.rs`, adds the Homebrew search path
+  (`/opt/homebrew/lib` on Apple Silicon) and the `dylib=usb-1.0` directive.
+- **Consequence:** *every machine that compiles this package*, short of the
+  SDK-free simulation build below — dev laptops, CI runners, Bazel actions —
+  needs the QHYCCD SDK installed and discoverable, plus `libusb-1.0` dev
+  headers. Not just machines with a camera attached.
 - The `qhyccd-rs` **`simulation` feature** (which this service forwards as its own
   `simulation` feature) makes the build **camera-free** (it fabricates fake frames
   at runtime via `rand`/`rayon`), and — with **`QHYCCD_SKIP_NATIVE_LINK=1`** —
   **SDK-free** too: the real FFI is `cfg`'d out and `libqhyccd-sys`'s `build.rs`
   omits the link (and drops the `#[link]` attribute via the `qhyccd_skip_link`
   cfg), so a simulation build needs no QHYCCD SDK installed. This mirrors zwo-rs's
-  `ZWO_SKIP_NATIVE_LINK`. *Without* that env the static `qhyccd` lib is still linked
-  even under `simulation` (so a plain `--features simulation` build with the SDK
-  present works unchanged). SDK-less dev builds, the `safety.yml`
-  sanitizer, and the per-PR `test.yml` / `conformu.yml` jobs set the env (so they
-  need no SDK); the real (non-simulation) build — `native.yml`, `scheduled.yml`,
+  `ZWO_SKIP_NATIVE_LINK`. *Without* that env the static `qhyccd` lib is linked
+  even under `simulation`, so a plain `--features simulation` build with the SDK
+  present works too. SDK-less dev builds and the nightly `safety.yml`
+  sanitizer, `test.yml` and `conformu.yml` jobs set the env (so they need no
+  SDK); the real (non-simulation) build — `native.yml`, `scheduled.yml`,
   Bazel's real variant, the Pi nightly — leaves it unset and links `static=qhyccd`.
 
 ### Why this matters for rusty-photon specifically
 
-The workspace is **currently 100% pure-Rust at the link layer — zero
-native/system-lib dependencies**. The old `cfitsio`/`fitsio-sys` requirement was
-**purged** in [ADR-001 Amendment A](../decisions/001-fits-file-support.md) (FITS
-is now pure-Rust `fitsrs` via `rp-fits`). So `qhyccd-rs` **reintroduces the first
-native build dependency** since that purge. It does not match an existing
-precedent — it creates a new one. The doc below specifies how it is gated so it
-does not break the SDK-less default build.
+Three crates in the workspace link a camera vendor's SDK — `libqhyccd-sys`
+here, `libzwo-sys` and `libsvbony-sys` for `zwo-camera` and `svbony-camera` —
+and `libqhyccd-sys` is the one that links its SDK statically into the binary
+on Linux and macOS, where the other two load theirs as shared libraries. The
+table below specifies how the SDK is gated so that a build that needs no real
+camera needs no SDK.
 
 ### Gating plan
 
 | Concern | Mechanism |
 |---|---|
-| local dev (SDK required) | `qhy-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it (CI installs it before building); `bazel build //...` then builds the package like any other. Documented in this design doc and the service README. |
-| CI | **The Cargo jobs build qhy-camera SDK-free.** `test.yml` (a nightly safety net) and `conformu.yml` both build on the `--all-features` / `--features conformu` (`simulation`) path — which `cfg`s out the real FFI — and set **`QHYCCD_SKIP_NATIVE_LINK=1`** (workflow-level env), so `libqhyccd-sys`'s `build.rs` omits the link directives and **no QHYCCD SDK or libusb is provisioned** (same pattern as `safety.yml`, and as `ZWO_SKIP_NATIVE_LINK` for the zwo crates). This drops the `ivonnyssen/qhyccd-sdk-install@v3` + libusb + macOS dylib-loader steps from every Cargo leg (ubuntu / macOS / windows / coverage in `test.yml`; Linux/macOS/Windows in `conformu.yml`). The **real native link + FFI** is still exercised by: `native.yml` (provisions the SDK via the published [`ivonnyssen/qhyccd-sdk-install@v3`](https://github.com/ivonnyssen/qhyccd-sdk-install) action on Linux/macOS/Windows, nightly + on camera-crate changes), `scheduled.yml` (nightly/beta), the **Bazel** real variant (`bazel.yml`/`bazel-coverage.yml`), and the **Pi nightly** (linux-arm64, provisioned per-run via the action's sudo-free `install: env` mode → `QHYCCD_SDK_DIR`). The SDK is publicly downloadable from qhyccd.com (no secret/auth). |
-| Raspberry Pi nightly runner | `pi-nightly.yml` provisions the SDK (26.06.04) **per run** with `ivonnyssen/qhyccd-sdk-install@v4` in its sudo-free **`install: env`** mode: the action extracts the SDK under the workspace and exports `QHYCCD_SDK_DIR`, which `libqhyccd-sys`'s `build.rs` reads on Linux (preferring it over `/usr/local/lib`) to link `libqhyccd.a` **statically** — no `ldconfig`, no `LD_LIBRARY_PATH`, nothing written to `/usr/local`. This keeps the runner intentionally **sudo-less** (public-repo safety) *and* self-healing — a new native-SDK service or SDK version bump no longer needs a manual `setup-pi-runner.sh` re-run. `setup-pi-runner.sh` therefore no longer installs the QHYCCD SDK (its `§1b` is now a pointer to this per-run flow; ZWO is still pre-provisioned there). **aarch64 confirmed available and linking** — `qhy-camera` builds on the Pi5 arm64 nightly; `libusb`/`stdc++` come from system packages already on the runner. |
-| Bazel | **SDK provisioned into the Bazel actions** (no `crate.annotation` needed). `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v3` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s and the full ConformU suite in ~33 s, matching Cargo — both verified locally with 0 errors / 0 issues). **Real/sim split (ADR-009 — first-party two-variant):** since `qhyccd-rs` is now a workspace member with its own [`BUILD.bazel`](../../crates/qhyccd-rs/BUILD.bazel), the SDK variant is chosen by *which library target a rule depends on* — prod targets (library, binary) dep on `//crates/qhyccd-rs:qhyccd-rs` (real static SDK); the sim library/binary (both `testonly`) + the **unit test** + `bdd`/`conformu_integration` dep on `//crates/qhyccd-rs:qhyccd-rs_sim` (the `testonly`, `simulation`-feature variant, so `Sdk::new()` fabricates a pure-Rust QHY178M and no USB is enumerated). **Doctests run per variant** — `qhyccd-rs_doc_test` (real) and `qhyccd-rs_sim_doc_test` (sim) — because the crate's public API forks on the feature (`Camera::new` vs `Camera::new_simulated`) while most examples hang off ungated items, so an example is only proven where it is actually compiled; the sim target must repeat `crate_features = ["simulation"]`, since `rust_doc_test` builds its own `CrateInfo` and would otherwise have rustdoc *collect* the non-simulation example set and compile it against the simulated rlib. Both run on all three OSes, but **Windows needed a `MAX_PATH` fix first** (issue #739, measured on CI): the crate's one *runnable* example (`lib.rs`, the simulated-SDK walkthrough) is the first doctest under Bazel to invoke `link.exe`, and `rust_doc_test` spells sysroot inputs relative to the runfiles tree, whose prefix alone eats 123 characters — so `libpanic_unwind-….rlib` landed at 261, one over the limit, and failed `LNK1181` while `libstd-….rlib` at 252 in the same directory resolved. The file was present and readable; only its path length was wrong, and the job's `LongPathsEnabled` step cannot help because that is opt-in per binary via a `longPathAware` manifest which `link.exe` lacks. [The vendored rustdoc Windows patch](../../third_party/patches/rustdoc_test_windows_external_repo_path.patch) now resolves `--sysroot=` through the runfiles manifest to its execroot target, which drops that path to 193 and leaves ~55 characters of headroom on the longest std member. The **sim** target additionally needs the same patch's runner restructuring: its `crate_features` reaches rustdoc as `--cfg` + `feature="simulation"`, and those embedded quotes cannot ride a batch line (`cmd.exe` tracks quote state without honouring any escape), so the patch writes the Windows runner's command into a companion `.ps1` invoked via `powershell -File` — where single-quoted arguments carry `"` literally — and re-encodes the quotes as `\"` for PowerShell 5.1's native-command marshalling, which would otherwise paste them into the child's command line unescaped. And because both variants share `libqhyccd-sys`'s `build_script.linksearchpaths` runfile — spelled bare workspace-relative, unlike the `external/`-spelled crates.io ones — the pair raced on a dangling tree entry for it when running concurrently on the same Windows runner (issue #781, exactly one victim per attempt); the patch's resolver now routes bare workspace-relative argv paths through the runfiles manifest too. Both doctest targets run on all three OSes. The unit test wraps `:qhy-camera_lib_sim` (matching zwo-camera / svbony-camera): the SDK seam is mock-doubled so the suite gains nothing from the real link, and linking it would make `bazel coverage` instrument qhyccd-rs's compiled-out real-FFI arms as never-executed lines, falsely dragging `crates/qhyccd-rs/src/camera.rs` to ~57%. `testonly` **build-enforces** the boundary: Bazel rejects any production binary that links the simulated SDK. The qhy-camera sim targets still carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`). **One retained nuance:** crate_universe resolves _one_ feature set per crate and ignores a target's `crate_features`, so the `simulation` feature's optional deps (`rand`/`rayon`) only enter `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation`. qhy-camera therefore keeps a test-only `qhyccd-rs = { features = ["simulation"] }` dev-dep **solely to keep rand/rayon in `@cr`** (verified by spike: dropping it → `qhyccd-rs_sim` fails with `unresolved import rand`). `resolver = "2"` keeps that dev-dep out of `cargo build`, so the production binary links the real SDK. (Aside: crate_universe still materializes an orphan `@cr` `libqhyccd-sys` because the path dep carries a `version` for publish — nothing depends on it; `qhyccd-rs` resolves the workspace-member edge.) Run `cargo ci repin-bazel-lock` after any change to `Cargo.lock` or any workspace `Cargo.toml` (Rule 10). |
+| local dev (SDK required) | `qhy-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it (CI installs it before building); `bazel build //...` then builds the package like any other. Documented in this design doc (the service has no README). |
+| CI | **The Cargo jobs build qhy-camera SDK-free.** `test.yml` (a nightly safety net) and `conformu.yml` (nightly) both build on the `--all-features` / `--features conformu` (`simulation`) path — which `cfg`s out the real FFI — and set **`QHYCCD_SKIP_NATIVE_LINK=1`** (workflow-level env), so `libqhyccd-sys`'s `build.rs` omits the link directives and **no QHYCCD SDK or libusb is provisioned** (same pattern as `safety.yml`, and as `ZWO_SKIP_NATIVE_LINK` for the zwo crates), on any of their legs (ubuntu / macOS / windows in `test.yml`; Linux/macOS/Windows in `conformu.yml`). The **real native link + FFI** is exercised by: `native.yml` (provisions the SDK via the published [`ivonnyssen/qhyccd-sdk-install@v4`](https://github.com/ivonnyssen/qhyccd-sdk-install) action on Linux/macOS/Windows, nightly + on a push to `main` that touches the camera crates), `scheduled.yml` (nightly/beta), the **Bazel** real variant (`bazel.yml`/`bazel-coverage.yml`), and the **Pi nightly** (linux-arm64, provisioned per-run via the action's sudo-free `install: env` mode → `QHYCCD_SDK_DIR`). The SDK is publicly downloadable from qhyccd.com (no secret/auth). |
+| Raspberry Pi nightly runner | `pi-nightly.yml` provisions the SDK (26.06.04) **per run** with `ivonnyssen/qhyccd-sdk-install@v4` in its sudo-free **`install: env`** mode: the action extracts the SDK under the workspace and exports `QHYCCD_SDK_DIR`, which `libqhyccd-sys`'s `build.rs` reads on Linux (preferring it over `/usr/local/lib`) to link `libqhyccd.a` **statically** — no `ldconfig`, no `LD_LIBRARY_PATH`, nothing written to `/usr/local`. This keeps the runner intentionally **sudo-less** (public-repo safety) *and* self-healing — a new native-SDK service or an SDK version bump needs no manual `setup-pi-runner.sh` run, and that script installs no QHYCCD SDK (its `§1b` points at this per-run flow). **aarch64 builds and links** — `qhy-camera` is in the Pi5 arm64 nightly. The static lib's dynamic `-lusb-1.0` resolves through a symlink the local `qhyccd-libusb` action makes per run in `QHYCCD_SDK_DIR`, to the libusb-1.0 runtime package `setup-pi-runner.sh` installs (the runner has no `-dev` package); `stdc++` comes from the runner's system packages. |
+| Bazel | **SDK provisioned into the Bazel actions** (no `crate.annotation` needed). On GitHub-hosted runners `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v4` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s and the full ConformU suite in ~33 s, matching Cargo — both verified locally with 0 errors / 0 issues). **Real/sim split:** `qhyccd-rs` is a workspace member with its own [`BUILD.bazel`](../../crates/qhyccd-rs/BUILD.bazel), so the SDK variant is chosen by *which library target a rule depends on* — prod targets (library, binary) dep on `//crates/qhyccd-rs:qhyccd-rs` (real static SDK); the sim library/binary (both `testonly`) + the **unit test** + `bdd`/`conformu_integration` dep on `//crates/qhyccd-rs:qhyccd-rs_sim` (the `testonly`, `simulation`-feature variant, so `Sdk::new()` fabricates a pure-Rust QHY178M and no USB is enumerated). **Doctests run per variant** — `qhyccd-rs_doc_test` (real) and `qhyccd-rs_sim_doc_test` (sim) — because the crate's public API forks on the feature (`Camera::new` vs `Camera::new_simulated`) while most examples hang off ungated items, so an example is only proven where it is actually compiled; the sim target must repeat `crate_features = ["simulation"]`, since `rust_doc_test` builds its own `CrateInfo` and would otherwise have rustdoc *collect* the non-simulation example set and compile it against the simulated rlib. Both run on all three OSes. On Windows they run only with [the vendored rustdoc patch](../../third_party/patches/rustdoc_test_windows_external_repo_path.patch), and [pre-push.md § test.yml](../skills/pre-push.md#testyml) holds why, as measured on CI: without it the crate's one *runnable* example (`lib.rs`, the simulated-SDK walkthrough) fails `LNK1181` on a sysroot rlib whose runfiles-relative path is one character past `MAX_PATH`; the sim target's quoted `--cfg feature="simulation"` cannot ride a batch line; and the two targets, which share `libqhyccd-sys`'s bare workspace-relative `build_script.linksearchpaths` runfile, race on a dangling tree entry for it when they run together on one runner. The job's `LongPathsEnabled` step cannot help with the first: long paths are opt-in per binary through a `longPathAware` manifest, which `link.exe` lacks. The unit test wraps `:qhy-camera_lib_sim` (matching zwo-camera / svbony-camera): the SDK seam is mock-doubled so the suite gains nothing from the real link, and linking it would make `bazel coverage` instrument qhyccd-rs's compiled-out real-FFI arms as never-executed lines, falsely dragging `crates/qhyccd-rs/src/camera.rs` to ~57%. `testonly` **build-enforces** the boundary: Bazel rejects any production binary that links the simulated SDK. The qhy-camera sim targets carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`). **One nuance:** crate_universe resolves _one_ feature set per crate and ignores a target's `crate_features`, so the `simulation` feature's optional deps (`rand`/`rayon`) only enter `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation`. qhy-camera therefore keeps a test-only `qhyccd-rs = { features = ["simulation"] }` dev-dep **solely to keep rand/rayon in `@cr`** (verified by spike: dropping it → `qhyccd-rs_sim` fails with `unresolved import rand`). `resolver = "2"` keeps that dev-dep out of `cargo build`, so the production binary links the real SDK. (Aside: crate_universe materializes an orphan `@cr` `libqhyccd-sys` because the path dep carries a `version` for publish — nothing depends on it; `qhyccd-rs` resolves the workspace-member edge.) Run `cargo ci repin-bazel-lock` after any change to `Cargo.lock` or any workspace `Cargo.toml` (Rule 10). |
 
-### Resolved facts (decided)
+### SDK version and distribution
 
-- **SDK version: 26.06.04** — keep the install action (x86/Bazel jobs on `@v3`
-  system mode; the Pi nightly on `@v4` `install: env` mode), `build.rs` macOS
-  dir names, and the Pi script in lockstep. **Packaging changed at 26.x:** the
-  repository dir is now the version with dots stripped (`260604`), archives are
-  `.tar.gz` (not `.tgz`), there is no `install.sh` (a staged `usr/lib/etc/sbin`
-  tree copied into `/`), and the per-OS archives were renamed
-  (`macMix`→`mac_x64`, `WinMix`→`win64`, `Arm64`→`linux_arm64`).
-  `qhyccd-sdk-install@v3` picks the scheme by a `YYMMDD ≥ 260604` threshold.
-  Validated on real hardware (QHY178M + 7-slot CFW, ConformU 0 errors).
+- **SDK version: 26.06.04** — the install action's `version:` in every
+  workflow that provisions the SDK, `libqhyccd-sys`'s `build.rs` (its macOS and
+  Windows directory names), `preflight.rs`'s `PINNED_SDK_VERSION`, the firmware
+  helper's pin and the tools crate's `packaging::qhy::VERSION` are kept in
+  lockstep; the tools crate's packaging guard checks the last four, `build.rs`
+  by its Windows directory (*Windows: qhyccd.dll resolution*). From 26.06.04
+  on, QHYCCD's packaging names the repository directory for the version with
+  dots stripped (`260604`), ships `.tar.gz` archives (not `.tgz`) with no
+  `install.sh` (a staged `usr/lib/etc/sbin` tree copied into `/`), and names
+  the per-OS archives `mac_x64`, `win64` and `linux_arm64` (`macMix`, `WinMix`
+  and `Arm64` before it). The install action picks the scheme by a
+  `YYMMDD ≥ 260604` threshold. Validated on real hardware (QHY178M + 7-slot
+  CFW, ConformU 0 errors —
+  [record](../validation/2026-07-28-qhy-camera-qhy178m-cfw-linux/README.md)).
 - **arm64: supported and linking** on the Pi5 runner — `qhy-camera` is in the
   arm64 nightly matrix.
-- **SDK distribution: public, via the published action.** *(Decision revised to
-  match the reference CI.)* The QHYCCD SDK is **publicly downloadable from
-  qhyccd.com** (`.../publish/SDK/260604/sdk_linux64_26.06.04.tar.gz`); the author's
-  `ivonnyssen/qhyccd-sdk-install@v3` action wraps the download and caches it on
+- **SDK distribution: public, via the published action.** The QHYCCD SDK is
+  **publicly downloadable from qhyccd.com**
+  (`.../publish/SDK/260604/sdk_linux64_26.06.04.tar.gz`); the author's
+  `ivonnyssen/qhyccd-sdk-install@v4` action wraps the download and caches it on
   **Linux, macOS, and Windows**. On Linux the 26.x packaging ships no `install.sh`,
   so the action copies the staged `usr/lib/etc/sbin` tree into `/`
   (→ `/usr/local/lib` + `ldconfig`); on macOS/Windows it extracts into
   `$GITHUB_WORKSPACE` where `libqhyccd-sys`'s `build.rs` looks (and adds
-  `sdk_win64_<ver>\x64` to `PATH` on Windows). So **no
-  authenticated tier, secret, or SHA pin is needed** — the earlier
-  "authenticated/internal cache tier pending the redistribution-terms question"
-  plan was superseded once the reference's CI confirmed the SDK is fetched
-  publicly. (A self-hosted cache could still front it for hermeticity, but is not
-  required.)
-
-### Open questions still to resolve before Track A lands
-
-1. **`qhyccd-rs` churn.** Single-maintainer, pre-1.0 (0.1.7/0.1.8/0.1.9 all
-   shipped within days). Pin exactly (`=0.1.9`) and track upstream closely.
-2. **Shutter actuation API** *(resolved).* `qhyccd-rs` 0.1.9 exposes only shutter
-   *presence* (`CamMechanicalShutter`), no open/close actuation. Per the E4
-   degradation clause, v0 rejects all dark frames with `NOT_IMPLEMENTED`;
-   shutter-actuated darks are Future Work.
+  `sdk_win64_<ver>\x64` to `PATH` on Windows). So CI needs **no authenticated
+  tier, secret, or SHA pin** to fetch it. (A self-hosted cache could front it
+  for hermeticity, but is not required.)
 
 ---
 
@@ -198,8 +183,8 @@ graph TD;
   `StartExposure`, which sends both on every exposure (GO2).
 - **`camera.rs`** — `QhyCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
-  runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
-  the legacy serial drivers use) so the async runtime is never stalled.
+  runs inside `tokio::task::spawn_blocking`** so the async runtime is never
+  stalled.
 - **`filterwheel.rs`** — `QhyFilterWheelDevice` (one per discovered CFW, or per
   declared one with a list) implementing `Device` + `FilterWheel` (registered
   automatically on detection — no opt-in toggle, the same rule as cameras), and
@@ -214,9 +199,25 @@ graph TD;
 - **`setup.rs`** — `ConfigurableDriver` impl behind the setup pages; `lib.rs`
   records what the running server registered, which the camera and wheel
   pages and the Cameras section read (*Setup pages*).
-- **`mock.rs`** (feature `simulation`/`mock`) — the hardware-free test backend
-  (the `qhyccd-rs` `simulation` camera + a tiny in-crate trait seam over the SDK
-  for unit tests).
+- **`backend.rs`** — the SDK seam. The device structs hold an
+  `Arc<dyn CameraHandle>` / `Arc<dyn FilterWheelHandle>`, thin traits over the
+  blocking `qhyccd-rs` handles that collapse its typed `QHYError` into one
+  `BackendError` at one boundary. The production wrappers drive the real SDK
+  through `SharedCameraConnection` (*Camera + CFW share one physical handle*);
+  the `#[cfg(test)]` `mock` module's `MockCameraHandle` and
+  `MockFilterWheelHandle` let the unit tests — the E9 `Error`-state path and
+  the colour and shutter models the mono simulation cannot show included — run
+  with no hardware and no real SDK call (*Testing*). The device logic reaches
+  the well-known controls through **typed accessors** — `handle.gain()` /
+  `set_gain(…)`, `current_temperature_celsius()`,
+  `set_target_temperature_celsius(…)`, `set_manual_cooler_pwm(…)`,
+  `cooler_power_raw()`, `exposure_range_us()`, … — which the trait provides as
+  defaults over the generic `get_parameter` / `set_parameter(ControlType, …)`,
+  mirroring `qhyccd_rs::Camera`'s own accessors. The generic pair serves the
+  capability *probes* (`is_control_available`) and any control without a
+  dedicated accessor. `qhyccd-rs`'s `ControlType` is a subset of the SDK's
+  `CONTROL_ID` list — its semantic variants plus `Other(u32)` — not the full
+  list.
 - **`preflight.rs` / `doctor.rs`** — Windows `qhyccd.dll` resolution (startup
   preflight for the delay-loaded SDK DLL) and the per-service `doctor`
   subcommand ([doctor.md §Per-service doctors](doctor.md)), which carries
@@ -231,8 +232,8 @@ limits, target temperature and last frame each sit in their own
 `parking_lot::Mutex`, and the exposure state machine's flags and counters are
 atomics. Nothing takes a reader/writer lock, so there is no shared-read fast
 path to reason about — every one of these is short and uncontended, and the
-ordering that actually matters is `result_lock`, described under *SDK call
-serialization* in **Implementation notes** below. The one exception is
+ordering that actually matters is `result_lock`, described under
+[*SDK call serialization*](#sdk-call-serialization) below. The one exception is
 `control_lock` (RM4), which is held across SDK calls and is the cooler's alone.
 The `CoolerOn` and `SetCCDTemperature` writes each hold it for their own SDK
 round trip, so they run one at a time; a readout-mode change holds it for its
@@ -247,7 +248,7 @@ under — as a bin set is (B1).
 
 Two rules with different scopes sit above that, and it is worth keeping them
 apart. *Captures* have a single logical owner per device — the in-flight claim
-(see *SDK call serialization* in **Implementation notes** below), which is about
+(see [*SDK call serialization*](#sdk-call-serialization) below), which is about
 the SDK's own ordering rules, not memory safety. Separately, `qhyccd-rs` holds
 its handle's read lock across every FFI call, so a `CloseQHYCCD` cannot free the
 device beneath a call in flight. Non-close calls still run concurrently on one handle: the SDK manual
@@ -267,20 +268,216 @@ The operational consequence is that a property read can occasionally block for
 the length of a readout, so it is not a sound liveness probe on a capturing
 camera.
 
+### SDK call serialization
+
+**A cancel never races a readout.** `qhyccd.h` documents
+`CancelQHYCCDExposingAndReadout` as *"the camera does not send back the image
+data. Host software must not readout the data"*, so the SDK cancel and
+`GetQHYCCDSingleFrame` must never overlap. The capture task is therefore split
+into three phases — start, a **cancellable wait** for the exposure to elapse,
+and an **uninterruptible readout** — and an abort is honoured only between
+them. `cancel_exposure` signals the in-flight capture's own cancel channel
+(which both raises its flag and wakes it), waits for that capture to leave the
+SDK, and *only then* issues the SDK cancel. An abort taken during the exposure
+skips the readout entirely; one taken during the readout waits for it to
+finish, after which the cancel is the same harmless pre-close reset the SDK's
+own `SingleFrameSample` performs. indi-qhy keeps exactly this discipline (its
+`AbortExposure` blocks on the imaging thread leaving `StateExposure` before
+calling the SDK cancel), and the SDK's samples never cancel concurrently with a
+readout either. Getting this wrong is not merely untidy: it leaves
+`GetQHYCCDSingleFrame` waiting on image data the camera has been told never to
+send.
+
+**Waiting for the exposure without holding the SDK.** The wait is host-side
+first (a 30-minute exposure costs no USB traffic), then
+`GetQHYCCDExposureRemaining` must agree the exposure is over before the readout
+is entered — if the host clock ran ahead, `get_single_frame` would block inside
+the readout for the remainder, re-opening the window the split exists to close.
+Polling is capped at `EXPOSURE_POLL_INTERVAL` and the confirmation phase at
+`EXPOSURE_CONFIRM_TIMEOUT`, after which the readout is entered anyway so a
+camera that never reports 0 cannot strand the frame. A failed poll enters the
+readout too, unless the C9 question it asks finds the camera gone; a departed
+camera is not read out. A cancel never waits for a poll: the capture's cancel
+channel wakes the sleep immediately.
+
+**The claim *is* the cancel channel.** The single in-flight capture is the one
+logical owner of the device's blocking SDK calls. `start_exposure` claims the
+device by installing that capture's own cancel channel in `in_flight_capture`:
+`Some` **is** the claim, so a device that reports itself exposing always has
+something an abort can signal. A capture is the usual holder but not the only
+one — a connect's handshake (C6), a disconnect's close, an abort's SDK cancel
+and a readout-mode change (B4) each take a claim of their own, on the same
+terms: while it is installed, that holder and nothing else may be inside the
+SDK. Holding the two apart — an `AtomicBool` claim taken first, a handle-wide
+cancel flag cleared a statement later — leaves a window in which an abort is
+*erased* by the exposure that admitted it, and the client then waits out the
+drain deadline for an `AbortExposure` that cancelled nothing. Because the
+channel is per capture rather than per device, no exposure can clear another's
+cancel, and an abort signals the capture it was issued against and no other.
+
+`cancel_exposure` (abort/disconnect) bumps a generation and signals that claim
+but does **not** release it — the capture task takes it back only after its SDK
+calls have fully drained, so a new exposure cannot start and race them, and
+only the installer of a claim ever takes it back. A reconnect's
+`reset_exposure_state` is the one place that could be tempted to take another
+owner's claim and deliberately does not: here the claim means *something is
+inside the SDK*, so handing the device on while that is still true is exactly
+what would let an SDK cancel land on a live readout. It signals instead, and a
+`StartExposure` in that window is rejected rather than started alongside.
+
+A short `result_lock` covers every transition of this state machine: the
+generation bump, the claim install and take, and the capture task's "check
+generation + commit result". So an abort reads the claim and bumps the
+generation knowing no start, drain or reconnect can slip between the two, a
+just-completing capture can never resurrect an aborted frame, and a successor
+exposure cannot lose its frame to a bump meant for its predecessor.
+
+The drain is **event-driven on a deadline, not a polling sleep**, and it waits
+for the *specific* claim the abort signalled rather than for the device to fall
+idle — an abort whose target has already been superseded must not sit out the
+successor's exposure and then report a failure belonging to neither. The
+capture task fires a `tokio::sync::Notify` (`exposure_drained`) the instant the
+claim leaves, and the waiter awaits it under a single `tokio::time::timeout`
+(canonical `Notified` `enable()`-before-check pattern, so a release landing
+between the check and the await is never lost). A loop of short sleeps would
+not do: repeated short sleeps can stall under scheduler pressure.
+
+**A stuck SDK call blocks the close rather than being closed through.**
+`disconnect` closes the handle only once the capture task is out of the SDK.
+Closing it under a live USB transfer frees the handle beneath libusb — a
+use-after-free that trips its `usbi_mutex_lock` assertion and can corrupt the
+SDK's shared libusb context. If the drain deadline (`CAPTURE_DRAIN_TIMEOUT`,
+30 s — sized for a readout, since the exposure wait is cancellable) expires,
+`disconnect` issues **no** SDK cancel, leaves the handle **open**, and returns
+an error. A failed disconnect is the lesser evil, and it reports the stuck
+device honestly instead of hiding it behind a close that may corrupt state.
+indi-qhy takes the same position more bluntly, with an unconditional
+`pthread_join` before its `CloseQHYCCD`.
+
+**Draining is not enough on its own — `disconnect` has to keep the device.**
+Every drain ends with the device *unclaimed*, which is exactly the state a
+`StartExposure` is waiting for: it can claim, push its ROI and exposure, and
+be inside `GetQHYCCDSingleFrame` before the close lands. So the drain and the
+close are one critical section from the ownership point of view, and
+`disconnect` holds a claim of its own across both, releasing it only after
+`close()` has returned (also when `close()` *fails*, so a refused close cannot
+wedge the device claimed forever). While that claim is installed a racing
+`StartExposure` is refused — by the connected check once
+`SharedCameraConnection` has cleared the flag, and by the ordinary E2 path in
+the window before that. The claim is what makes the close safe rather than
+merely likely to be safe: it owns the device even where the flag is still set.
+
+**A section that owns the device runs where cancellation cannot reach it.**
+Every SDK call runs off the executor, so each path that owns the device —
+`StartExposure`'s arming, `disconnect`'s seize-and-close, and `AbortExposure`'s
+drain-and-cancel — holds its claim across an `.await`. An Alpaca client
+disconnecting mid-request is enough for the server to drop that future, and
+neither answer available to a plain `.await` is safe:
+
+- *Never release.* No code of ours runs after the drop and nothing else can
+  release a claim on its behalf, so it stays installed for the life of the
+  process — every later exposure refused as already-exposing, every later
+  disconnect a drain that never completes.
+- *Release immediately.* The `spawn_blocking` call the future was awaiting is
+  **not** cancelled with it and is still inside the SDK. Handing the device
+  back then lets a successor claim it and issue calls that overlap the orphan,
+  and nothing below stops them: `qhyccd-rs` guards the handle with a *read*
+  lock that admits concurrent non-close calls by design. An SDK cancel
+  overlapping a readout is precisely what `qhyccd.h` forbids.
+
+So these sections are not run in the request future at all. Each is spawned as
+its own task and the request awaits its `JoinHandle`; dropping a `JoinHandle`
+detaches the task rather than stopping it, so the section always runs to
+completion and gives the device back only once its SDK call has returned.
+Within a section, a `Drop` guard covers the ordinary and error exits so there
+is no second release to keep in step — except `StartExposure`'s success, which
+hands the claim to the capture task instead.
+
+The claim is what makes the *shutdown* orderly — a `StartExposure` racing the
+close is refused rather than started and then torn down, and an operator gets
+a reported failure instead of a device that closed under a live transfer.
+Beneath it, `qhyccd-rs` holds its handle's read lock across every FFI call
+(`HandleCell::with_handle`), so a close waits for anything in flight rather
+than freeing the handle under it — the same guarantee `zwo-camera` and
+`svbony-camera` get from backends that hold their handle mutex across the call
+and close by clearing that same slot.
+
+The two are not redundant, and the difference is worth keeping straight when
+changing either. The lock cannot express the SDK's *ordering* rules — a cancel
+and a readout are both read guards, and `qhyccd.h` forbids overlapping them —
+and on its own it would turn a wedged readout into an unbounded block on the
+close rather than the reported refusal above. It also covers far more than the
+capture path: every property read reaches the SDK outside any claim, because a
+temperature poll is not a capture and must not be refused during one. So the
+claim decides *when* a close may be attempted, and the lock guarantees that
+once attempted it cannot land underneath a call — anyone's call, not just a
+capture's.
+
+**A disconnect wins over an exposure that starts during it.** When the drain
+ends and the device has already been re-claimed by a new capture, `disconnect`
+drains that one too and keeps going until it holds the device or the deadline
+expires — the operator asked for the device to go away, and a shutdown that
+cannot complete at an unattended rig costs more than the frame does. The
+deadline is a total budget across all rounds, not per round, so a client
+starting exposures in a loop cannot stall a disconnect indefinitely; it exits
+through the same refuse-to-close path a stuck readout takes, but is reported
+apart from it — the two ask different things of an operator, since an SDK that
+never came back usually means power-cycling the camera while a lost race just
+means retrying the disconnect. (`AbortExposure` keeps the opposite rule — E7:
+it cancels the capture it was issued against and no other, so finding the
+device re-claimed means its target is already gone and it returns `OK`.)
+Clearing the device's logical `connected` flag *in the device layer*, ahead of
+the seize, would make racing `StartExposure`s bounce on `NOT_CONNECTED` with no
+contest at all — cleaner there, but `SharedCameraConnection::connect` reads
+that flag and takes its refcount in one critical section, so clearing it
+outside that section without dropping the ref lets a concurrent connect take a
+second ref and leak the physical handle open. That would change an invariant a
+dedicated concurrency test pins, for a race the claim already closes.
+`disconnect` does clear the flag before `CloseQHYCCD`, but *inside* that
+critical section — which is what makes it safe there, and why a racing request
+sees `NOT_CONNECTED` for most of the close regardless.
+
+### Camera + CFW share one physical handle
+
+`qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
+(a QHY CFW is driven over the camera's USB, not a separate device). The SDK
+keys the open device by id, so opening that id as two independent handles and
+closing either one tears down the shared physical device and breaks the other.
+Measured on real hardware with two independent handles (QHY178M + 7-slot CFW,
+2026-06-18): disconnecting the CFW made the next camera `StartExposure` fail
+with `SetRoiError` (QHYCCD_ERROR), and disconnecting the camera made CFW
+`Position` fail with `INVALID_OPERATION` — and in both cases the
+still-"connected" device's `is_open()` kept (mis)reporting `true`. The Camera
+and FilterWheel devices therefore share ONE
+[`SharedCameraConnection`](../../services/qhy-camera/src/backend.rs): one
+`qhyccd-rs::Camera` (the CFW operates a clone that shares the same internal
+handle `Arc`) behind a refcount of logical connections — the physical
+`OpenQHYCCD` runs on the first device's connect and `CloseQHYCCD` only on the
+last device's disconnect, while each device keeps its own logical `connected`
+flag so its ASCOM `Connected` reflects that device, not the shared handle.
+Validated end-to-end on hardware (disconnect-CFW-then-expose and
+disconnect-camera-then-move-CFW both succeed) plus unit tests over the
+simulation backend (`backend::conn_tests`). `qhyccd-rs` itself shares one
+handle cell between a camera and its filter wheel and closes it on last drop,
+and `Sdk::drop` closes every open camera handle **before**
+`ReleaseQHYCCDResource` (the SDK-documented close-then-release order), so a
+device still connected at process shutdown or reload is closed rather than
+leaked.
+
 ---
 
 ## MVP scope
 
-The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
-`qhyccd-rs` / `qhyccd-alpaca` actually support today.
+What the driver serves, and what it leaves out.
 
-**In scope (v0)**
+**In scope**
 
-- ASCOM Camera ICameraV3 for **every enumerated QHY camera** (each registered as
+- ASCOM Camera (`ICameraV4`) for **every enumerated QHY camera** (each registered as
   a device on the one port), 16-bit monochrome **and** one-shot-colour (Bayer)
   sensors.
-- Startup enumeration registers all discovered cameras (+ CFWs when enabled);
-  per-device connect/disconnect lifecycle: open → single-frame mode → readout
+- Startup registers every camera the USB scan places, with the CFW the probe
+  finds on it, or the cameras and wheels a `usb_devices` list declares (C0,
+  U1–U11); per-device connect/disconnect lifecycle: open → single-frame mode → readout
   mode 0 → init → 16-bit transfer → cache the mode list and geometry/limits.
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
@@ -307,36 +504,35 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **Sensor type** — `Monochrome` vs `RGGB`/colour + `BayerOffsetX/Y`.
 - **`MaxADU`** = `(2^transfer_bits) - 1` (65535 for the 16-bit container set at
   connect), from `GetQHYCCDChipInfo`'s reported bit depth — **not**
-  `OutputDataActualBits` (see the MaxADU note under "Deliberate divergences");
+  `OutputDataActualBits` (see [*MaxADU*](#maxadu) below);
   `VALUE_NOT_SET` until a connect has read that depth (C6), and again after a
   readout-mode change that failed part-way (RM3). `SensorName` comes
   from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
-- **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
-  v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
+- **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models
+  (`qhyccd-rs` has no shutter actuation; see E4). `HasShutter` still
   reports `CamMechanicalShutter` presence, for a device the driver is holding
   open (E11).
 - Setup pages (`/setup` with the Cameras section, a page per camera and per
   wheel — *Setup pages*); hardware-derived `UniqueID` (camera/CFW SDK
   serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
-  (SDK installed in CI, no physical camera).
+  (no physical camera).
 
-**Deferred (see *Future Work*)**
+**Left out (see *Future Work*)**
 
-- **Dark/bias frames.** v0 rejects all `Light = false` exposures with
-  `NOT_IMPLEMENTED` (qhyccd-rs 0.1.9 has no shutter open/close actuation; see
-  E4). Shutter-actuated darks on mechanical-shutter models (e.g. QHY600M) and a
-  cap-on operator workflow for shutterless darks are deferred to Future Work.
-- `StopExposure` (graceful stop) — upstream returns `NOT_IMPLEMENTED`; only
+- **Dark/bias frames.** Every `Light = false` exposure is rejected with
+  `NOT_IMPLEMENTED` (`qhyccd-rs` has no shutter open/close actuation; see E4).
+  Shutter-actuated darks on mechanical-shutter models (e.g. QHY600M) and a
+  cap-on operator workflow for shutterless darks are Future Work.
+- `StopExposure` (graceful stop) — `NOT_IMPLEMENTED` (E8); only
   `AbortExposure` works.
-- `FastReadout` — upstream untested; ship as `CanFastReadout` reflecting the
-  `Speed` control but mark untested.
+- `FastReadout` — `CanFastReadout` is `false` and `FastReadout` answers
+  `NOT_IMPLEMENTED`; the SDK's `Speed` control is not used.
 - `PulseGuide` (`CanPulseGuide = false`), LiveMode, multi-frame/video.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
-- `ElectronsPerADU` / `FullWellCapacity` (upstream `NOT_IMPLEMENTED`; supply
-  placeholders only if ConformU requires them).
+- `ElectronsPerADU` / `FullWellCapacity` (`NOT_IMPLEMENTED`).
 
 ---
 
@@ -374,9 +570,15 @@ That is `rig2`'s list: its QHY5III678M, on `…#USB(14)#USB(3)`, is PHD2's guide
 camera, so it is left off.
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
-Absent `tls`/`auth` means plain, unauthenticated HTTP.
+Absent `tls`/`auth` means plain, unauthenticated HTTP. Alpaca UDP discovery
+answers only when `discovery_port` is set, as in every Alpaca service: many
+rusty-photon servers on one host would collide on the shared discovery port.
+The listener is bound by `rusty_photon_tls::server::bind_dual_stack_tokio`
+(IPv6 + IPv4, `SO_REUSEADDR`), like every other Alpaca service's, so the
+in-process reload's rebind of the same port survives a previous listener's
+lingering `TIME_WAIT`.
 
 Sections:
 
@@ -424,7 +626,7 @@ Sections:
     numbers are exactly `0..M-1`, for the same reason — rp binds
     `filter_wheels[].device_number` by position among the server's wheels.
   - `filter_names` only beside a `filter_wheel_number`, each name non-empty, as
-    `devices.<id>.filter_names` has always been checked.
+    `devices.<id>.filter_names` is.
   - Unknown keys are rejected (`deny_unknown_fields`).
   - **A non-empty `devices` map beside a list is rejected**, naming each key:
     a listed camera's `name`/`description` and its wheel's `filter_names` live in
@@ -453,10 +655,10 @@ Sections:
   SDK-derived defaults. It serves the no-list default only: beside a list it is
   rejected (above). Each camera's page edits its `name` and `description`, and
   each wheel's page its `filter_names` (*Setup pages*). Named `devices` (not
-  `overrides`), the name every camera driver's map has. v0 does
+  `overrides`), the name every camera driver's map has. The service does
   **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
   with heterogeneous cameras those are per-serial concerns and clients set them
-  over ASCOM; per-serial defaults are deferred (see *Future Work*).
+  over ASCOM; per-serial defaults are left out (*MVP scope*).
 
   ```jsonc
   "devices": {
@@ -472,8 +674,8 @@ Sections:
   Verified on hardware: unplugging the wheel drops `filter_wheels` from 1 → 0
   with no phantom device, so no opt-in flag is needed. With a list, a wheel is
   registered exactly when its entry declares one (U10).
-- **server.port** — Listening port (**11121**, next free in the 1112x family;
-  11111–11120 and 11131 are taken). One port hosts all enumerated devices.
+- **server.port** — Listening port (**11121**). One port hosts all enumerated
+  devices.
   `--port` pins it. Editable on the server page, whose save answers with the
   address the page moves to.
 
@@ -503,9 +705,8 @@ stored in config (*Device identity*). A camera's and a placeholder's
 | `/setup/v1/camera/{n}/setup` | — | by what the number serves (below) |
 | `/setup/v1/filterwheel/{n}/setup` | Filter names | the wheel's `filter_names`, in its camera's entry or override (below) |
 
-**The Cameras section** is the device-claims plan's C8, settled as
-[driver-setup-pages.md](../plans/archive/driver-setup-pages.md) D11, the section
-`svbony-camera` and `zwo-camera` serve, with a wheel column:
+**The Cameras section** is the one `svbony-camera` and `zwo-camera` serve,
+with a wheel column:
 
 - **Two modes**, chosen by a radio: *serve every QHY camera the USB scan
   places, numbered in port order* — no list (U11), with the wheels the CFW
@@ -624,8 +825,7 @@ the wheel is said, and the save refused.
 - **Secrets:** `/server/auth/password_hash`, edited through the Security
   section and never shown.
 - **Validation** on every save is the load's: unknown keys are rejected at
-  deserialize (`deny_unknown_fields`, as in zwo-camera and the other newer
-  services), the `usb_devices` rules above run at load and on every save
+  deserialize (`deny_unknown_fields`), the `usb_devices` rules above run at load and on every save
   alike (U9), and every filter name is non-empty, in an entry or a
   `devices` override. `devices` keys are free-form SDK id strings. The
   Cameras section builds only lists the rules accept.
@@ -643,12 +843,14 @@ ASCOM requires a globally-unique, never-changing `UniqueID`. **This service
 derives the UniqueID from the camera's hardware serial** (the QHYCCD SDK id,
 available from `Sdk::cameras()` at enumeration, *before* the device is opened),
 and the FilterWheel's UniqueID from the CFW's SDK id — the same scheme upstream
-`qhyccd-alpaca` uses.
+`qhyccd-alpaca` uses. A CFW's SDK id is its camera's — `qhyccd-rs`'s
+`FilterWheel` answers its camera's `id()`, the wheel being driven through the
+camera's handle — so the wheel's `UniqueID` is that id prefixed, `CFW-<id>`,
+which no camera's can equal.
 
-This is a **deliberate divergence** from the rusty-photon
-minted-UUID identity convention used by the other six drivers,
-chosen because a camera exposes a genuinely stable, globally-unique hardware
-serial. The serial is a *better* ASCOM identity than a per-install minted UUID:
+This is a **deliberate divergence** from rusty-photon's minted-UUID identity
+convention (a UUID minted into config at first start), chosen because a camera
+exposes a genuinely stable, globally-unique hardware serial. The serial is a *better* ASCOM identity than a per-install minted UUID:
 it is tied to the physical camera, so it survives an OS reinstall and moving the
 camera between machines, and swapping the camera correctly yields a new id.
 
@@ -670,9 +872,7 @@ carries a constant serial field. Two cameras share a `GetQHYCCDId` only by
 sharing a model, which `GetQHYCCDModel` reads from the id, and so the product
 id the join matches QHY cameras on (U2): they are look-alikes (U3), refused
 with a list or without (U11). So the id needs no port-based fallback, as
-`zwo-camera`'s and `svbony-camera`'s serial-less cameras have, and neither the
-`devices` key nor a wheel's `CFW-<id>` changed with the device-claims plan's
-C5 (its decision 18).
+`zwo-camera`'s and `svbony-camera`'s serial-less cameras have.
 
 ---
 
@@ -700,8 +900,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `IsQHYCCDCFWPlugged` up to three times 200 ms apart, `CloseQHYCCD`. **No
   `InitQHYCCD` runs at startup or on a reload** — the call QHY says may home a
   filter wheel (C5) — so nothing on that path can move one (tenet 3). The
-  reference driver, INDI's `indi-qhy`, inits first, and this probe used to; it
-  does not need to. Measured on the dev box's QHY178M + CFW3 under Linux (SDK
+  reference driver, INDI's `indi-qhy`, inits first; this probe does not need
+  to. Measured on the dev box's QHY178M + CFW3 under Linux (SDK
   26.06.04, 2026-10-11), in processes that ran no init before the question:
   with the CFW's 12 V on, the plug query answered yes 3 of 3 times and the slot
   count read 7; with it off, no 3 of 3 and the slot count failed, the same
@@ -808,8 +1008,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   failed at any step (RM4). A connect reads the camera's gain and offset and
   writes neither; they reach the camera only inside a `StartExposure` (GO1,
   GO2). **A connect does not home the filter wheel (measured).**
-  `OpenQHYCCD`/`InitQHYCCD` run on connect (C1), and QHY's filter wheels were
-  held to home at the firmware level on init. On the dev box's QHY178M + CFW3
+  `OpenQHYCCD`/`InitQHYCCD` run on connect (C1), and QHY's filter wheels are
+  said to home at the firmware level on init. On the dev box's QHY178M + CFW3
   ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md)),
   a wheel settled at slot 3 stayed there through two re-inits on an open
   handle and a close and re-open with its init. A fresh SDK start left it
@@ -1049,15 +1249,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C9.** **A camera that has left the bus reads disconnected.** A camera that
   loses its power or its cable while open keeps its SDK handle, and nothing in
   the handle says so: the flag `Connected` reads is this driver's own, set by a
-  connect and cleared by a disconnect. Left there, the driver answered
+  connect and cleared by a disconnect. Left there, the driver would answer
   `Connected == true`, `CameraState == Idle` and every cached member — the
   geometry, `BinX`, `Gain`, `Offset`, `ReadoutMode` — as though the camera were
   present, while every member that reached the SDK failed, and failed as the
   wrong thing: `IsQHYCCDControlAvailable` on a dead handle answers "not
-  available", so on a QHY600M whose 12 V had been cut `CanSetCCDTemperature`
-  read `false` and `CCDTemperature` / `CoolerOn` read `NOT_IMPLEMENTED` — a
-  camera reporting it has no cooler (observed on the Windows field rig,
-  2026-09-26). A client that reads capabilities at connect would plan a night
+  available", so on a QHY600M whose 12 V had been cut, a driver without this
+  rule read `CanSetCCDTemperature` `false` and `CCDTemperature` / `CoolerOn`
+  `NOT_IMPLEMENTED` — a camera reporting it has no cooler (observed on the
+  Windows field rig, 2026-09-26). A client that reads capabilities at connect would plan a night
   without cooling, and rp's reconnect supervisor, which takes `Connected == true`
   as healthy, would never re-establish it.
 
@@ -1067,7 +1267,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `CamSingleFrameMode` (C1): a camera that passed the handshake has it, and the
   SDK stops answering for it once the device has gone.
 
-  **Only a failure asks (decided 2026-10-06).** A blank frame counts as one,
+  **Only a failure asks.** A blank frame counts as one,
   as does a temperature no sensor can read (K2), and QHY's capability probes,
   which answer live rather than from a cache, ask whatever they answer. So the
   question is asked after any SDK call that fails; after every capability
@@ -1195,19 +1395,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
     yet a rule.
 
   Where the SDK went on answering for a departed camera, the probe would find
-  it present and the driver would behave as it did before this rule, so no
+  it present and the driver would answer as it would without the check, so no
   worse.
 
 ### Device claims (`usb_devices`)
 
-The rules for an operator's `usb_devices` list (see "Configuration"),
-following the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
-Part A, of which this driver is phase C4. U1-U10 are the list's rules. U11 is
-the no-list default's, which runs the same scan and join and then the CFW
-probe (plan C5), and U12 is what `qhy-camera doctor` reports about both.
+The rules for an operator's `usb_devices` list (see "Configuration"). U1-U10
+are the list's rules. U11 is the no-list default's, which runs the same scan
+and join and then the CFW probe, and U12 is what `qhy-camera doctor` reports
+about both.
 
-They are [`svbony-camera`](svbony-camera.md)'s U1-U9 (plan C2) and
-[`zwo-camera`](zwo-camera.md)'s (plan C3) with QHY's facts in place of theirs,
+They are [`svbony-camera`](svbony-camera.md)'s U1-U9 and
+[`zwo-camera`](zwo-camera.md)'s with QHY's facts in place of theirs,
 and the vendor-neutral half is the same code: the join, the list validation,
 port order, the scan source, the placeholder's error code, `UniqueID` form and
 reason text, and the `--devices` listing and block in
@@ -1216,10 +1415,10 @@ the failed scan's re-scan in `rusty-photon-driver`'s `claims` module (its
 `claims` feature). What is QHY's own is `claims.rs`: the normalizer and the
 simulated scan. U10 has no counterpart in either: a QHY CFW is driven through
 its camera's handle and served by this service, so a listed camera's wheel is
-declared in its entry and pinned to a number of its own (plan D4.7). Like
-SVBony's, a QHY camera's identity is read without an open, so **nothing in this
-section opens a camera at startup or on a reload** — not even the CFW probe,
-which a list replaces with the declaration.
+declared in its entry and pinned to a number of its own. Like SVBony's, a QHY
+camera's identity is read without an open, so **nothing a list does opens a
+camera at startup or on a reload** — not even the CFW probe, which a list
+replaces with the declaration.
 
 - **U1. The list is applied before anything could open a camera.** With a
   list, `build()` takes the host's USB scan (the passive collector of
@@ -1238,10 +1437,9 @@ which a list replaces with the declaration.
   C1), not by port. So a listed camera that is re-cabled onto an unlisted port
   while the service runs is still opened at its listed number until the next
   reload, which places it afresh: its number becomes a placeholder, and the
-  camera is left unregistered on its new port. Re-cabling is a reload's job. The
-  device-claims plan's D8 records watching placement as out of scope, and a
-  passive scan on every connect to re-confirm the port is the cost that would
-  close this. An SDK enumeration that fails after a scan that ran fails the
+  camera is left unregistered on its new port. Re-cabling is a reload's job.
+  Watching placement is out of scope: a passive scan on every connect to
+  re-confirm the port is the cost that would close this. An SDK enumeration that fails after a scan that ran fails the
   start or reload, with or without a list, as it always has (C0). A camera
   whose model alone cannot be read is not that: it is joined as a model this
   driver does not know (U2, U3), so an unreadable camera — the guide camera a
@@ -1263,7 +1461,7 @@ which a list replaces with the declaration.
   elimination below.
   The id's serial field is not offered to the join: no QHY camera has been seen
   publishing a USB serial (the dev box's QHY178M, and `rig2`'s QHY600M and
-  QHY5III678M under Windows, plan D2), so how the bus would spell one beside the
+  QHY5III678M under Windows), so how the bus would spell one beside the
   SDK's is unknown, and a serial both sides carry in different spellings would
   refuse the right camera. So QHY cameras match on **the product id** the
   normalizer gives the camera's SDK model. The product string is not compared
@@ -1292,7 +1490,7 @@ which a list replaces with the declaration.
 
   The models are what `qhyccd-rs`'s `examples/enumerate` printed, with no
   `OpenQHYCCD` before the model read; the bus records are sysfs's on Linux and the PnP properties' on
-  Windows (plan D2). A simulation build also knows its fabricated
+  Windows. A simulation build also knows its fabricated
   `QHY178M-Simulated` under `f178`, a product id chosen for the simulation (U7).
 
   Joining on the product id alone means **two cameras of one model on one host
@@ -1358,10 +1556,9 @@ which a list replaces with the declaration.
   that works on every platform: on Windows a reload does not find a camera
   that was absent when the process started (C9). A failed scan's reason is
   the exception: the service re-scans and rebuilds on its own (U6), so it
-  says that, and sends nobody to restart anything. (The device-claims plan's
-  D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
-  signal the collectors do not read yet, so a camera that fell back to USB 2
-  speed is reported by the generic reasons above, and shows in `doctor
+  says that, and sends nobody to restart anything. (A hint that *a camera is
+  on this port's USB 2.0 twin* needs a port-pairing signal the collectors do
+  not read, so a camera that fell back to USB 2 speed is reported by the generic reasons above, and shows in `doctor
   --devices` on its other spelling.)
 
   A placeholder is a registered Camera that cannot connect tonight:
@@ -1380,7 +1577,7 @@ which a list replaces with the declaration.
   - `UniqueID` is `placeholder:qhy-camera:<usb_port>`, a form no camera's can
     take, so a client that remembers devices by `UniqueID` never mistakes the
     stand-in for the camera, and central doctor can recognise it in
-    `configureddevices` (plan C5).
+    `configureddevices`.
   - Its setup page, `/setup/v1/camera/<n>/setup`, says which port it stands
     in for and why, and links to the server page's Cameras section, where
     the list is fixed (*Setup pages*). `SupportedActions` is empty and
@@ -1460,7 +1657,7 @@ which a list replaces with the declaration.
   one that outlived its server, the refused try's server may be serving: two
   failed scans' servers in a row each re-scan. That re-scan logs the SDK that
   blocks it, as above, and tries again after its next wait.
-  On a QHY178M + CFW at C4's merge, four reloads, one of them with the camera
+  On a QHY178M + CFW, four reloads, one of them with the camera
   and wheel connected, each saw the old server's `Sdk` drop return within
   0.91 s with no error logged, and the next build open the SDK again and serve
   the camera
@@ -1483,9 +1680,11 @@ which a list replaces with the declaration.
   start, naming the file; every scan reads it again, U6's re-scans included, so
   a scenario can stage a failed scan and then repair it. The simulated camera
   has a 7-slot CFW, so a declared wheel connects (U10); the hidden
-  `--simulation-empty` flag empties only the SDK's side of the join, so the
-  simulated camera's record is one no SDK camera is placed on. None of
-  these flags exists in a release build.
+  `--simulation-empty` flag empties only the SDK's side of the join — `build()`
+  is handed an empty `Sdk::new_simulated()` in place of the SDK that
+  fabricates the camera — so the simulated camera's record is one no SDK
+  camera is placed on, and C0's start with no camera is what the service
+  runs. None of these flags exists in a release build.
 - **U8. `qhy-camera doctor --devices` lists the cameras by port, and prints
   the list to paste.** Read-only and enumeration-only, like every per-service
   check — it opens no camera. It does start the SDK and scan the bus in its own
@@ -1513,8 +1712,8 @@ which a list replaces with the declaration.
       ]
   ```
 
-  Rows are the SDK cameras U2 placed on a port, in port order (the plan's D4.7:
-  hop by hop from the root, each hop compared as the number the platform
+  Rows are the SDK cameras U2 placed on a port, in port order (hop by hop
+  from the root, each hop compared as the number the platform
   writes, so `…-0:4.2` precedes `…-0:4.10`). The model and the SDK id are the
   enumeration's, free to read before any open; the USB serial is what the bus
   publishes, usually nothing (`—`), which says nothing about the camera's
@@ -1584,7 +1783,7 @@ which a list replaces with the declaration.
   number — the position rp binds `filter_wheels[].device_number` by. Numbered in
   camera order instead, a placeholder camera with a CFW would shift every wheel
   after it, and rp would connect to another camera's wheel without error and
-  move its filters: the wrong-device outcome U3 rules out (plan D4.7). An entry
+  move its filters: the wrong-device outcome U3 rules out. An entry
   without one registers no wheel, and **a CFW that is plugged in but not
   declared is not registered**.
 
@@ -1639,16 +1838,13 @@ which a list replaces with the declaration.
   each wheel the same `QhyFilterWheelDevice`, with the `UniqueID` it always
   had (*Device identity*) and the names its `devices` override gives it.
 
-  **Upgrading from SDK order.** Until the device-claims plan's C5 the no-list
-  default registered every camera the SDK enumerated, in SDK order, and
-  probed each, with no USB scan. A rig with one camera keeps its numbers, 0
-  for the camera and 0 for its wheel. With more than one, run
-  `qhy-camera doctor --devices` and compare its **Device** column (the camera
-  numbers served now) with rp's `cameras[].device_number`, and check rp's
-  `filter_wheels[].device_number` against the wheels the start logs
-  (`filter_wheels=`), or paste the block, declaring each wheel, to pin both.
-  No `UniqueID`, `devices` key or rp `unique_id` pin changes (*Device
-  identity*).
+  **Checking rp's numbers.** A rig with one camera serves it as camera 0, and
+  its wheel as wheel 0. With more than one, `qhy-camera doctor --devices`'s
+  **Device** column gives the camera numbers served now, to compare with rp's
+  `cameras[].device_number`; rp's `filter_wheels[].device_number` must match
+  the wheels the start logs (`filter_wheels=`); pasting the block, each wheel
+  declared, pins both. The numbering does not touch a `UniqueID`, a `devices`
+  key or an rp `unique_id` pin (*Device identity*).
 - **U12. `qhy-camera doctor` judges the claims.** The report runs the same
   scan, enumeration and join a start would — and no CFW probe, so it opens
   nothing and cannot see a wheel — and adds the `usb-devices.*` checks of
@@ -1791,7 +1987,9 @@ which a list replaces with the declaration.
   - its centre alternates (*n* − 1)/2 unbinned pixels either side of where
     neighbour binning would put it.
 
-  The record's follow-up section has the detail.
+  The
+  [record's follow-up section](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md#follow-up-the-scatter-is-how-this-camera-and-its-sdk-bin)
+  has the detail.
 
   **The QHY5III715C, a colour sensor, adds neighbours, so its binned frames
   have no mosaic left.** It was measured on the field rig (2026-10-18, Linux
@@ -1829,8 +2027,8 @@ which a list replaces with the declaration.
   divisor — and walking the bins and coming back returns the client's own frame
   whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
   after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
-  truncated twice and came back 96x96 at (196,196), four pixels short in both
-  extent and origin and no way to get them back short of a reconnect.
+  would truncate twice and come back 96x96 at (196,196), four pixels short in
+  both extent and origin and no way to get them back short of a reconnect.
   `set_num_x`/`set_num_y` store without validating (the members are set
   independently, so only the combination is checked, at `StartExposure`), so
   whatever the client last set is what the binned view is derived from — and the
@@ -1844,13 +2042,13 @@ which a list replaces with the declaration.
   default frame is derived from the reported sensor at the current bin like any
   other region, so it round-trips for the same reason a sub-frame does. R4's
   requirement that the reported sensor be a multiple of every supported bin is
-  no longer what makes that work — it is what keeps the *binned full frame
+  not what makes that work — it is what keeps the *binned full frame
   reachable*, i.e. an even extent the SDK will read out at all. **One
   implementation**, in
-  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
-  rule was three copies until one drifted, and the drift went unseen because
-  each driver curated its own test cases, so the missing behaviour and its
-  missing test hid each other.
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/), for
+  the three camera drivers: a copy per driver drifts unseen, because each
+  driver curates its own test cases, so a behaviour one copy lacks and the
+  test it also lacks hide each other.
 - **B4 (a readout-mode change takes the device claim).** `set_readout_mode`
   writes to the *camera* — a whole re-initialization in the new mode (RM1):
   `SetQHYCCDStreamMode`, `SetQHYCCDReadMode`, `InitQHYCCD`, the transfer depth,
@@ -1998,8 +2196,9 @@ which a list replaces with the declaration.
   region with an odd extent comes back one row or column short, the missing
   edge left zero, with no error and with the shape that was asked for. At bin 2
   either axis does it — 200x101 lost its last row, 101x200 its last column,
-  200x102 and 102x200 were whole. At bins 3 and 4 the full frames the old
-  rescale produced did it: 3192x2129 and 2394x1597 each lost their last row,
+  200x102 and 102x200 were whole. At bins 3 and 4 the full frames of a sensor
+  size not reduced by this rule did it: 3192x2129 and 2394x1597 each lost their
+  last row,
   while 3192x2128 and 102x202 were whole. At bin 1 a tall odd request does it
   (200x1001, 200x3193, 9576x6387 and 200x6387 all lost their last row) while a
   short one survives (200x101, 9576x101), and an odd *width* survives at any
@@ -2048,12 +2247,11 @@ which a list replaces with the declaration.
   the mode the exposure arms — not one a mode change finished replacing
   between the check and the claim (RM1).
 - **E4.** `StartExposure` with `Light = false` (dark/bias) returns
-  `NOT_IMPLEMENTED`. *Implementation note:* `qhyccd-rs` 0.1.9 exposes shutter
-  *presence* (`CamMechanicalShutter`) but no shutter open/close *actuation* call,
-  so v0 cannot capture a true dark on any model — the design's "close shutter +
-  capture on shutter-equipped models" degrades (as foreseen below) to reject on
-  all models. `has_shutter()` still reports presence; shutter-actuated darks move
-  to Future Work. The simulated QHY178M-Simulated is shutterless.
+  `NOT_IMPLEMENTED` on every model. `qhyccd-rs` exposes shutter *presence*
+  (`CamMechanicalShutter`) but no shutter open/close *actuation* call, so the
+  driver cannot close a mechanical shutter for a true dark, even on a model
+  that has one. `HasShutter` still reports presence (E11); shutter-actuated
+  darks are Future Work. The simulated QHY178M-Simulated is shutterless.
 - **E5.** A successful light `StartExposure` arms the cached bin, ROI, gain and
   offset and then the exposure µs (R2), runs the SDK
   single-frame capture on the blocking bridge, and on completion produces an
@@ -2121,9 +2319,8 @@ which a list replaces with the declaration.
   about a camera nobody is talking to. `CanAbortExposure = true` is the opposite
   failure: a promise to abort, made with no handle to abort with, beside an
   `AbortExposure` that refuses — E10's `ImageReady`/`ImageArray` contradiction
-  in a second pair. This supersedes the earlier position that these four
-  "describe the driver rather than a session"; shared with `zwo-camera`'s E12
-  and `svbony-camera`'s state-machine step 10 (#1281).
+  in a second pair. The rule is shared with `zwo-camera`'s E12 and
+  `svbony-camera`'s state-machine step 10.
 
 ### Gain / offset / readout
 
@@ -2177,8 +2374,8 @@ which a list replaces with the declaration.
 
   **Measured on hardware** (QHY178M, Linux —
   [record](../validation/2026-10-01-qhy-camera-qhy178m-gain-offset-linux/README.md)).
-  With the setter writing the SDK, as before this rule, an offset or a gain
-  set 1.2 s into a 3 s exposure landed in that exposure's frame whole: its
+  With a setter that writes the SDK, an offset or a gain set 1.2 s into a
+  3 s exposure landed in that exposure's frame whole: its
   bias median went from 164 to 1128 against 1116 for the next frame at the new
   offset, and its mean from 5.4 to 25.7 against 24.3 for the gain. The
   manual's reading is what the camera does. With the value cached, the frame
@@ -2189,11 +2386,11 @@ which a list replaces with the declaration.
   23.9 ms, median), against a 2.5 s single-frame readout. Rig2's QHY600M
   (Windows —
   [record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md))
-  behaves the same way before and after this rule: set 1.2 s into a 3 s
-  exposure, an offset of 25 → 85 took that frame's median from 414 to 1374
-  and a gain of 0 → 100 from 494 to 3063 on the build before it, while on
-  this one the frame in flight read 414 and 494 and the next frame took the
-  new values. Its two writes cost more than the QHY178M's: 32 ms per
+  behaves the same way with either setter: set 1.2 s into a 3 s exposure, an
+  offset of 25 → 85 took that frame's median from 414 to 1374 and a gain of
+  0 → 100 from 494 to 3063 on a build whose setter wrote the SDK, while with
+  the value cached the frame in flight read 414 and 494 and the next frame
+  took the new values. Its two writes cost more than the QHY178M's: 32 ms per
   exposure at the median (31.8 to 33.1 ms over 31 exposures, from the
   driver's log), on Windows with `qhyccd.dll` 24.1.9.12.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
@@ -2251,8 +2448,9 @@ which a list replaces with the declaration.
   **Why at the setter, when a bin and a ROI are applied at `StartExposure`.**
   `SetQHYCCDReadMode` sends nothing to the camera. In the SDK it records the
   mode number and returns; the camera is told the mode — and the SDK builds its
-  own geometry for it — only inside `InitQHYCCD` (see *Implementation notes*,
-  *What a readout-mode change is to the SDK*). A mode's effective area is
+  own geometry for it — only inside `InitQHYCCD` (see
+  [*What a readout-mode change is to the SDK*](#what-a-readout-mode-change-is-to-the-sdk)).
+  A mode's effective area is
   therefore unknowable until the camera has been switched into it and
   re-initialized. Deferred to the next exposure, the switch would leave
   `CameraXSize` describing the old mode until then, and a client reading it
@@ -2304,9 +2502,9 @@ which a list replaces with the declaration.
   `Bin3*3Mode (hardware)` is index 5 in both. Switching from mode 0 to mode 1
   and back gives full frames in each, mode 0's geometry reads back identical
   after the round trip, gain and offset carried across a switch — measured
-  with the driver of that date, which read them from the camera before the
-  switch and wrote them back after its init, before they were cached and armed
-  by `StartExposure` (GO2) — and B4's
+  with a build that read them from the camera before the switch and wrote them
+  back after its init, rather than caching them for `StartExposure` to arm
+  (GO2) — and B4's
   refusals answer as specified. A switch into mode 5 publishes that mode's
   geometry — a 3200x2144 chip, effective area (8, 0, 3192, 2124), reported
   3192x2112, and a pixel size the SDK still gives as 3.76 µm — but no exposure
@@ -2382,7 +2580,9 @@ which a list replaces with the declaration.
 - **RM4 (what the re-initialization disturbs, and what puts it back).**
   `InitQHYCCD` rebuilds the SDK's geometry for the mode and, on the QHY600,
   resets the exposure time to 5 s and the transfer depth to 16 bits (read from
-  the SDK library; see *Implementation notes*). The exposure time is pushed by
+  the SDK library; see
+  [*What a readout-mode change is to the SDK*](#what-a-readout-mode-change-is-to-the-sdk)).
+  The exposure time is pushed by
   every `StartExposure`, and the transfer depth is set as part of the switch.
   **Gain and offset** are not written by the change at all. The vendor's
   procedure says to re-set them after an init (§15); the QHY600 and QHY5III SDK
@@ -2450,6 +2650,62 @@ which a list replaces with the declaration.
   the new mode's range. `Gain` and `Offset` reads are answered from the cache
   throughout.
 
+### What a readout-mode change is to the SDK
+
+Read from the shipped `libqhyccd` (26.06.04 and 25.09.29, Linux x86_64) by
+static disassembly — nothing was run against a camera — and backing RM1, RM3
+and RM4:
+
+- `SetQHYCCDReadMode` dispatches to the camera class's `SetReadMode`, which on
+  the QHY600 class records the index in the SDK object and returns: no USB
+  transfer at all. The mode reaches the camera only in the class's
+  `InitChipRegs`, which `InitQHYCCD` calls, as an argument to the FPGA init
+  command; the same routine writes the SDK's per-mode chip size, effective
+  area and overscan. Every multi-mode class in the library reads the mode in
+  `InitChipRegs` and none sends it from `SetReadMode`.
+- A mode change **without** `InitQHYCCD` is therefore half-applied: the SDK's
+  resolution, bin and gain logic switch to the new index at once while the
+  camera stays in the old mode, and the chip info and effective area keep the
+  old mode's values. A camera with one mode cannot show it: the QHY178M's
+  base-class `SetReadMode` accepts 0 and nothing else.
+- The bin is different, which is why the vendor manual's §15 — one procedure
+  for readout mode, bin and data format — over-generalizes: `SetChipBinMode`
+  rebuilds the effective area and overscan itself, with no init, and a bare
+  `SetQHYCCDBinMode` is hardware-validated (R4) — sent, as `StartExposure`
+  sends it, just ahead of the region (B1).
+- `SetQHYCCDStreamMode` does not read the recorded mode either (no class's
+  stream-mode code refers to it), so the order of the stream mode and the
+  read mode ahead of an init does not matter to the SDK; the driver sends
+  them in connect's order.
+- `InitQHYCCD` returns success whatever `InitChipRegs` returns, and nothing
+  the SDK reports afterwards distinguishes the two: `GetQHYCCDReadMode`
+  returns the index `SetReadMode` recorded, which only the constructors and
+  `SetReadMode` write, and the chip info and effective area are whatever
+  `InitChipRegs` got as far as writing. RM3's checks therefore catch an
+  unrecorded mode and an empty readable area, not a failed init. The init
+  resets the QHY600's exposure to 5 s and transfer depth to 16
+  (8 in live mode), re-sends the SDK's stored gain, offset and USB traffic,
+  and forces DDR on; it starts one more sensor-status thread per call (the
+  SDK's own, until the handle closes). When `qhyccd.ini` sets
+  `disable_auto_cooler=true` it sets the cooler PWM to 0 on every call. Its
+  single-frame path on the QHY600 sleeps 0.4 s.
+- The QHY600 class reports **11** modes, all 9600x6422 except mode 5
+  (`Bin3*3Mode (hardware)`, 3200x2144), and four of them named
+  `(Fiber Only)`; the SDK does not filter those out over USB. Mode count,
+  names and per-mode resolution are static tables, readable without switching.
+  `GetQHYCCDReadModeResolution` is not safe to call per index on every model —
+  on the QHY294PRO it rewrites the SDK's margin state as a side effect — so the
+  driver sizes a mode from chip info read after the switch, as connect does,
+  and never from that call.
+
+Other drivers split the same way: INDI and AlpacaBridge re-initialize at the
+setter, N.I.N.A. switches inside `StartExposure` with a re-init, and INDIGO
+and several smaller drivers call `SetQHYCCDReadMode` alone. The switch has
+been run on a multi-mode camera on Windows (RM1, *Measured on hardware*), and
+what that run could see agrees with this reading — the new mode's geometry
+after the init, one more SDK thread per init until the close, the mode list
+and mode 5's size — but the Windows `qhyccd.dll` itself has not been read.
+
 ### Cooling
 
 - **K1.** `CanSetCCDTemperature` / `CanGetCoolerPower` are `true` iff the `Cooler`
@@ -2482,7 +2738,12 @@ which a list replaces with the declaration.
   `handle.set_target_temperature_celsius(…)` (the `ControlType::Cooler` typed
   accessor) at the stored `SetCCDTemperature` target; `set_cooler_on(false)`
   calls `handle.set_manual_cooler_pwm(0.0)` (the `ControlType::ManualPWM`
-  accessor). **With no target set, the setpoint comes from the reading.** The
+  accessor). It does not engage a nominal 1% *manual* PWM, as the reference
+  `qhyccd-alpaca` does: that is a different mode from the automatic
+  target-temperature regulation `SetCCDTemperature` drives, and a client's
+  ordinary `SetCCDTemperature` then `CoolerOn(true)` would leave the cooler
+  pinned near 1% power (seen on real hardware). **With no target set, the
+  setpoint comes from the reading.** The
   QHY SDK has no switch that turns a cooler on: engaging it means sending a
   target. So `CoolerOn(true)` before any `SetCCDTemperature` takes the current
   `CurTemp` as that target when it lies within −100 to 80 °C. Any other
@@ -2534,7 +2795,7 @@ which a list replaces with the declaration.
   the SDK installs under `/usr/local/lib`. Service start and a config reload
   run no such init: with a `usb_devices` list nothing is opened (U1), and
   without one the CFW probe opens and closes each camera without `InitQHYCCD`
-  (C0, decision 17). So a client's connect is the only init a running TEC
+  (C0). So a client's connect is the only init a running TEC
   meets.
 
 ### Sensor type
@@ -2545,6 +2806,27 @@ which a list replaces with the declaration.
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `BayerPattern`, which locates the first red photosite; the offsets
   themselves are **one implementation** across the three camera drivers.
+
+### MaxADU
+
+`MaxADU` is `2^bits − 1`, where `bits` is the **transfer-container depth** from
+the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 for a
+camera that *reports* a depth of 0. Not for one whose depth nothing has read
+yet: while a connect's handshake is still running its cache is empty (C6), and
+defaulting there would answer 65535 on a model whose container turns out to be
+8 bits — a valid-looking number that changes under the client when the connect
+finishes — so an unread depth is `VALUE_NOT_SET`, as it is after a
+readout-mode change that failed part-way (RM3).
+
+It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
+connect (`set_transfer_bit_16`) and the SDK left-shifts each raw sensor reading
+to fill it (zero-padding the low bits — SDK manual §14), so a client receives
+values up to the container max regardless of the sensor's native ADC depth.
+Confirmed on hardware: the 12-bit IMX290 returns values quantised in steps of
+16 up to 0xFFF0, and `OutputDataActualBits` reads 14 (IMX178) / 12 (IMX290) /
+**0** (QHY5III715C) — the last of which would make `2^OutputDataActualBits − 1`
+answer `MaxADU = 0`, which ConformU fails as below its minimum. The
+container-depth formula is uniform across all models and never 0.
 
 ### FilterWheel (when a CFW is detected)
 
@@ -2596,7 +2878,7 @@ it is registered and in learning on its connect whether a CFW answers.
   wheel names a real one; the first that reads cleanly is adopted as the
   settled slot and the cache resumes serving it. Reporting the decoded number
   instead would have given `Names` an index it has no entry for.
-- **FW3.** `FocusOffsets` returns zeros per filter in v0.
+- **FW3.** `FocusOffsets` returns zeros per filter.
 - **FW4.** The wheel shares its camera's physical connection, so it shares C9:
   once the connection is marked lost — by the camera or by the wheel's own
   failed SDK call, which asks the same question — the wheel reads
@@ -2676,9 +2958,9 @@ it is registered and in learning on its connect whether a CFW answers.
   (FW8); otherwise, once a connection has sent the wheel a slot, that cannot
   happen. Before then, the driver does not know what the SDK was last sent. Measured: a process's first move, from slot 3 to
   slot 0, named slot 0 from its first read, 120 ms after the command, while
-  the wheel turned about 3.8 s more (2 of 2 with the probe). Through the
-  service before this rule, `Position` named slot 0 0.12 s after the write
-  (2 of 2).
+  the wheel turned about 3.8 s more (2 of 2 with the probe). Through a
+  service without the prime below, `Position` named slot 0 0.12 s after the
+  write (2 of 2).
 
   So a connection's first move, and a move to the slot of one that failed
   (FW8), on a wheel that has not reported itself moving, first sends the
@@ -2780,7 +3062,7 @@ it is registered and in learning on its connect whether a CFW answers.
 
 ---
 
-## ASCOM Camera surface — v0 behaviour
+## ASCOM Camera surface
 
 **Every member below that describes the camera or its session answers
 `NOT_CONNECTED` while the device is disconnected** unless its row says
@@ -2791,7 +3073,7 @@ members (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
 `UniqueID`), which describe the driver and are how a client asks whether a
 device is there at all.
 
-| Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
+| Property / Method | Behaviour (backed by `qhyccd-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
@@ -2799,7 +3081,7 @@ device is there at all.
 | `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
-| `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
+| `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED`; never implemented, so answered at any time |
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; the value is cached — seeded from the camera at connect — and armed by `StartExposure` (GO1, GO2); `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | SDK `Offset` control; the value is cached — seeded from the camera at connect — and armed by `StartExposure` (GO1, GO2); `NOT_IMPLEMENTED` if absent |
@@ -2807,13 +3089,13 @@ device is there at all.
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control; `SensorType` is one of the `is_control_available` probes, so its "no colour control" branch takes the check on both sides of the SDK hop rather than reporting `Monochrome` off a closed handle (E11) |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
-| `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
+| `CanFastReadout` / `FastReadout` | `false` / `NOT_IMPLEMENTED`; never implemented, so answered at any time (see *Future Work*) |
 | `HasShutter` | `true` iff `CamMechanicalShutter` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
 | `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, E11) / `false` (never implemented, so answered at any time) |
 | `CanPulseGuide` | `false`; never implemented, so answered at any time (E11) |
-| `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
+| `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in `qhyccd-rs`; see E4) |
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
 | `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (E11) |
@@ -2890,12 +3172,10 @@ request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 ## Windows: qhyccd.dll resolution (delay-load · preflight · doctor)
 
 On Windows the QHYCCD SDK's `qhyccd.lib` is an **import library** for the
-proprietary `qhyccd.dll` — the exe needs the DLL at runtime, and
-[ADR-013](../decisions/013-native-sdk-payload-policy.md) forbids
-redistributing it. Per
-[ADR-015](../decisions/015-windows-packaging-architecture.md) (decision 6)
-the operator installs QHY's **All-in-One pack** (required for the signed
-device driver anyway), which also provides the DLL. Without intervention a
+proprietary `qhyccd.dll` — the exe needs the DLL at runtime, and the MSI
+does not ship it: QHYCCD's SDK gives no right to redistribute it. The
+operator installs QHY's **All-in-One pack** (required for the signed device
+driver anyway), which also provides the DLL. Without intervention a
 missing DLL kills the process **in the Windows loader before `main`** — no
 log line, just an error dialog. Three layers make that failure mode
 diagnosable instead:
@@ -2905,7 +3185,7 @@ diagnosable instead:
 - **WD1.** Windows **MSVC real-SDK** builds (not `simulation`, not
   `QHYCCD_SKIP_NATIVE_LINK`) link the qhy-camera binary — and the package's
   test binaries — with `/DELAYLOAD:qhyccd.dll` + `delayimp.lib`. The DLL is
-  no longer needed at process start; the first SDK call binds it.
+  not needed at process start; the first SDK call binds it.
 - **WD2.** The link args are emitted by **`services/qhy-camera/build.rs`**,
   *not* by `libqhyccd-sys/build.rs`: `cargo:rustc-link-arg` applies only to
   the emitting package's own link targets and does **not** propagate from a
@@ -2913,7 +3193,7 @@ diagnosable instead:
   Bazel/rules_rust likewise only `-l`/`-L` propagate from dep build scripts).
   The hand-written `BUILD.bazel` mirrors the flags on the real-SDK binary and
   unit-test targets via a `rustc_flags` `select()` for CI parity; the
-  *shipped* exe comes from the Cargo path (`cargo ci build-msi`, plan W4).
+  *shipped* exe comes from the Cargo path (`cargo ci build-msi`).
 - **WD3.** `simulation` builds take **no** delay-load args: the real FFI is
   `cfg`'d out, so no `qhyccd.dll` imports exist to delay (and `/DELAYLOAD`
   with zero imports draws linker warning LNK4199).
@@ -2927,16 +3207,18 @@ with the SCM and reports `Running` before invoking the closure, so a
 missing-DLL failure is a clean `ServiceSpecific(1)` stop that the failure
 actions restart every 5 s — whereas a process exit before SCM registration
 is a start *failure*, which aborts an entire MSI install with error 1920
-during `StartServices` (found by the MSI's verifier, now
-`cargo ci verify-msi`, plan W4):
+during `StartServices`:
 
 - **PF1.** Probe an **ordered candidate list** of directories for
   `qhyccd.dll`: (1) the exe's own directory, then (2) a **best-effort seed**
   of known All-in-One install locations under `%ProgramFiles%` /
   `%ProgramFiles(x86)%` (`QHYCCD\AllInOne\sdk\x64`, `QHYCCD\AllInOne\sdk`).
-  The exact All-in-One layout is a flagged unknown of the Windows packaging
-  plan — the list is confirmed/extended on a real Windows box and is trivially
-  extendable in `preflight::candidate_dirs`.
+  The All-in-One installs the DLL in the first seed,
+  `%ProgramFiles%\QHYCCD\AllInOne\sdk\x64` (All-in-One 25.06.16 —
+  [record](../validation/2026-07-28-qhy-camera-qhy178m-cfw-windows/README.md);
+  rig2's —
+  [record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md));
+  the list is extendable in `preflight::candidate_dirs`.
 - **PF2.** **Every existing candidate is attempted in order; the first
   successful load wins.** Each attempt uses `LOAD_WITH_ALTERED_SEARCH_PATH`
   (so the DLL's own same-directory dependencies resolve), and the winning
@@ -2958,8 +3240,9 @@ during `StartServices` (found by the MSI's verifier, now
   reason** (the 2 a.m. log says both *what* was tried and *why* it failed),
   then a clean non-zero exit. SCM/systemd failure actions restart the service
   every 5 s — the same contract as a missing serial device: the unit comes up
-  by itself once the pack is installed. (`cargo ci verify-msi`, plan W4,
-  asserts this line on a DLL-less runner.)
+  by itself once the pack is installed. (`cargo ci verify-msi` passes an
+  install on a runner without the DLL by finding this line in qhy-camera's
+  log.)
 - **PF5.** `simulation` builds skip the preflight entirely: the real FFI is
   `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not required
   at runtime. (The SDK *link* itself is only omitted under
@@ -2972,9 +3255,10 @@ during `StartServices` (found by the MSI's verifier, now
 `rusty-photon-qhy-camera doctor [--config <file>] [--json]` — the standard
 per-service doctor ([doctor.md §Per-service doctors](doctor.md):
 `config.full-shape` + `hardware.sdk-devices`, shared report schema, exit
-0/1/2), compiled on every platform and still especially useful on Windows
-(planned Start-Menu shortcut, plan W4), where its text mode can do what a
-session-0 service cannot: talk to the operator and open a browser.
+0/1/2), compiled on every platform and especially useful on Windows (the
+MSI's Start-Menu shortcut **QHY Camera Doctor** runs it), where its text mode
+can do what a session-0 service cannot: talk to the operator and open a
+browser.
 
 - **DR1.** On Windows real-SDK builds the report additionally carries:
   **(a)** `hardware.sdk-dll` — `qhyccd.dll` resolution: `ok` found at which
@@ -2985,7 +3269,7 @@ session-0 service cannot: talk to the operator and open a browser.
   the suggestion; **(b)** `hardware.sdk-version` — the **loaded** SDK
   version via `GetQHYCCDSDKVersion` vs. the **pinned build-time** SDK
   version (26.06.04): `warn` when they differ — ABI skew against whatever
-  the All-in-One ships is an accepted risk (ADR-015), surfaced here —
+  the All-in-One ships is an accepted risk, surfaced here —
   `fail` when the DLL resolved but the version is unreadable; **(c)** the
   standard `hardware.sdk-devices` check lists what the loaded SDK
   enumerates. The SDK is only called when the DLL actually resolved
@@ -3013,20 +3297,20 @@ session-0 service cannot: talk to the operator and open a browser.
   `qhyccd.dll`); `hardware.sdk-devices` enumerates the simulated cameras.
 - **DR6.** `hardware.sdk-devices` **opens no camera**: it lists what
   `ScanQHYCCD` and `GetQHYCCDId` report, the enumeration-only rule
-  [doctor.md](doctor.md) sets for every per-service probe. It used to open and
-  initialise every camera, because the SDK constructor it called ran the CFW
-  probe on each; the probe is now a separate step that only the service's
+  [doctor.md](doctor.md) sets for every per-service probe. It runs no CFW
+  probe, which opens each camera: that is a separate step only the service's
   no-list start makes (C0). `doctor --devices` lists the cameras by USB port and
   prints a `usb_devices` block to paste (U8).
 
 The pinned build-time SDK version constant lives in `preflight.rs`, kept in
 lockstep with the SDK pin in `crates/qhyccd-rs/libqhyccd-sys/build.rs` and the
-CI workflows; the tools crate's packaging guard
-(`tools/rusty-photon-ci/src/pkg_assets.rs`) checks that parity.
+CI workflows (*SDK version and distribution*); the tools crate's packaging
+guard (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks it against
+`build.rs`'s Windows directory, the firmware helper's pin and
+`packaging::qhy::VERSION`, and does not read the workflows.
 
 zwo-camera / zwo-focuser need none of this: their MIT DLLs ship in the MSI
-next to the exes (ADR-013/014), and the loader finds same-directory DLLs
-first.
+next to the exes, and the loader finds same-directory DLLs first.
 
 ---
 
@@ -3060,7 +3344,8 @@ Layered per [`testing.md`](../skills/testing.md).
   between recording a mode and applying it: `set_readout_mode` only records the
   index (which `get_readout_mode` then reports), and `init` switches the mock's
   chip and effective area to that mode's and resets the exposure time and the
-  transfer depth, as the SDK library does (*Implementation notes*). A test
+  transfer depth, as the SDK library does (*What a readout-mode change is to
+  the SDK*). A test
   builds a second mode with `with_readout_mode`, so a driver that skipped the
   init would go on reading mode 0's sensor and fail RM1's tests. Knobs model the
   models the SDK reading does not cover — an init that resets gain and offset,
@@ -3089,8 +3374,8 @@ Layered per [`testing.md`](../skills/testing.md).
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
   all unit-tested **cross-platform**. The real `LoadLibrary` path is
-  exercised by `#[cfg(windows)]` unit tests on the Windows CI legs (and by
-  plan-W4's on-Windows verification pass). The BDD doctor smoke
+  exercised by `#[cfg(windows)]` unit tests on the Windows CI legs (and, on
+  an installed MSI, by `cargo ci verify-msi`). The BDD doctor smoke
   (`doctor.feature`, shared fixture) drives the `simulation` binary, which
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
@@ -3098,7 +3383,7 @@ Layered per [`testing.md`](../skills/testing.md).
   validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
   gain/offset/readout (GO1–GO3, and RM1 and B4's readout-mode refusals as far
   as a single-mode camera reaches them), cooling (K1–K4), and FilterWheel
-  (FW1–FW3 when enabled), driven against the `qhyccd-rs` `simulation` backend.
+  (FW1–FW3), driven against the `qhyccd-rs` `simulation` backend.
   The simulated camera has one readout mode, so every valid mode it can be
   given is the one in force: a switch between two modes (RM1), a failed one
   (RM3) and what a switch carries over and puts back (RM4) are covered by unit
@@ -3200,9 +3485,9 @@ Layered per [`testing.md`](../skills/testing.md).
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
   validator with `bdd_infra::run_conformu("camera", …)` and
-  `run_conformu("filterwheel", …)` over HTTP. *Implementation note:* this matches
-  the `sky-survey-camera` / `dsd-fp2` ConformU shape (launch the real binary),
-  not a `run_conformu_tests::<dyn Camera>()` generic. `CONFORMU_PATH` unset ⇒ the
+  `run_conformu("filterwheel", …)` over HTTP — the `sky-survey-camera` /
+  `dsd-fp2` ConformU shape (launch the real binary), not a
+  `run_conformu_tests::<dyn Camera>()` generic. `CONFORMU_PATH` unset ⇒ the
   run is skipped (so the test passes without ConformU installed); CI sets it.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
@@ -3210,7 +3495,7 @@ Layered per [`testing.md`](../skills/testing.md).
 > still linked). To build/test/ConformU **SDK-free**, a job must *also* set
 > **`QHYCCD_SKIP_NATIVE_LINK=1`** — which is only safe when the `simulation`
 > feature is active (it `cfg`s out the real FFI so no SDK symbols are referenced).
-> The per-PR `test.yml` / `conformu.yml` / `safety.yml` jobs do exactly this (sim
+> The nightly `test.yml` / `conformu.yml` / `safety.yml` jobs do exactly this (sim
 > feature + skip env) and provision **no SDK**. Jobs that build the **real**
 > (non-simulation) path — `native.yml`, `scheduled.yml`, Bazel's real variant, the
 > Pi nightly — leave the env unset and must install the SDK first (see *Gating
@@ -3218,369 +3503,10 @@ Layered per [`testing.md`](../skills/testing.md).
 
 ---
 
-## Delivery phasing (E→C)
-
-This service is built in two tracks to isolate the genuinely novel risk (the
-proprietary system dependency) from the mechanical-but-large risk (the device
-driver itself).
-
-- **Phase 0 — decision gate** *(done)*. First-class managed device confirmed;
-  enumerate-all device model; SDK pinned to **25.09.29**; arm64 confirmed.
-- **Phase 1 — `ascom-alpaca` branch reconcile.** Land
-  `fix/macos-trait-recursion-overflow` onto `integration` and repin upstream
-  `qhyccd-alpaca` to `integration`, giving the fork one shared branch (fork
-  hygiene — chosen even though it is not a compile-time prerequisite for this
-  service under Option C, since `qhyccd-rs` carries no `ascom-alpaca` dep). A
-  separate-repo operation on the `ascom-alpaca-rs` fork.
-- **Phase 2 — Track A: isolate the system-dep risk.** Add `qhyccd-rs = "=0.1.9"`
-  to `[workspace.dependencies]`. Stand up SDK (25.09.29) + `libusb` provisioning
-  (CI step, `setup-pi-runner.sh` incl. arm64, Bazel `requires-cargo` tag, repin
-  twice). Create a **bare `qhy-camera` exposing an ASCOM Camera in `simulation`
-  mode on :11121** — proving build/link, CI, Pi5 arm64, and repin end-to-end
-  **before** any device-trait work. *If the Bazel sys-crate path proves
-  intractable, fall back to the `requires-cargo` carve-out (Cargo remains
-  canonical); the camera still builds and runs under Cargo.*
-- **Phase 3 — this design doc** *(done)* + the `docs/workspace.md` row.
-- **Phase 4 — Track B: full driver (Option C, confirmed)** *(done)*. Implemented
-  `Device + Camera` **and `+ FilterWheel`** natively against `qhyccd-rs`, using
-  `qhyccd-alpaca`'s `main.rs` as the behavioural spec only (no vendored fork); a
-  thin in-crate SDK seam (`backend.rs`) wraps the blocking `qhyccd-rs` handles so
-  the device logic is unit-testable without hardware. Lifecycle, hardware-derived
-  identity, and config-actions wired.
-- **Phase 5 — test + gate** *(done)*. 8 BDD feature suites (56 scenarios) + unit
-  tests green against the `simulation` backend; ConformU wired (skips without
-  `CONFORMU_PATH`); `bazel build //...` + `bazel test //...` + `cargo fmt` + clippy
-  green.
-- **Phase 6 — consumer + Bazel finish** *(Bazel done; consumer pending)*. CI/Pi
-  SDK provisioning landed. The `bdd` + `conformu_integration` Bazel targets are
-  now **first-class** (no `requires-cargo`): they depend on the `testonly`
-  simulated library `//crates/qhyccd-rs:qhyccd-rs_sim`, so they no longer call
-  the real `InitQHYCCDResource` (see the Gating plan's Bazel row + ADR-009's
-  first-party two-variant). Still pending: the `rp`
-  `CameraConfig { alpaca_url: http://localhost:11121, device_number }` consumer.
-
----
-
-## Implementation notes (v0 deviations from the original design)
-
-Behaviour the implementation pins down or diverges from the design above. The
-behavioural contracts and the BDD feature files remain the authority; these are
-the "how" decisions made while building.
-
-- **SDK seam (`backend.rs`).** The device structs hold an `Arc<dyn CameraHandle>`
-  / `Arc<dyn FilterWheelHandle>` over a thin trait that wraps the blocking
-  `qhyccd-rs` handles and collapses its `eyre::Report` into one typed error. A
-  production wrapper drives the real SDK; a test mock lets the unit tests — incl.
-  the E9 `Error`-state path and colour/shutter models the mono sim can't show —
-  run with no hardware and no *real* SDK calls. (The static `qhyccd` lib is still
-  linked into the test binary — that link is unconditional, see above; only the
-  runtime seam is mocked.) The device logic reaches the well-known controls
-  through **typed accessors** — `handle.gain()` / `set_gain(…)`,
-  `handle.current_temperature_celsius()`, `set_target_temperature_celsius(…)`,
-  `set_manual_cooler_pwm(…)`, `cooler_power_raw()`, `exposure_range_us()`, … —
-  which the trait provides as defaults over the generic
-  `get_parameter`/`set_parameter(ControlType, )` methods (mirroring
-  `qhyccd_rs::Camera`'s own accessors; Phase 2 of the
-  [convention-alignment plan](../plans/archive/qhyccd-convention-alignment.md)). The
-  generic pair stays for capability *probes* (`is_control_available`) and any
-  control without a dedicated accessor. `qhyccd-rs`'s control enum is the
-  `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
-  `CONTROL_ID` list.
-- **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
-  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 for a
-  camera that *reports* a depth of 0. Not for one whose depth nothing has read
-  yet: while a connect's handshake is still running its cache is empty (C6), and
-  defaulting there would answer 65535 on a model whose container turns out to be
-  8 bits — a valid-looking number that changes under the client when the connect
-  finishes — so an unread depth is `VALUE_NOT_SET`.
-  It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
-  connect (`set_transfer_bit_16`) and the SDK left-shifts each raw sensor reading
-  to fill it (zero-padding the low bits — SDK manual §14), so a client receives
-  values up to the container max regardless of the sensor's native ADC depth.
-  Confirmed on hardware: the 12-bit IMX290 returns values quantised in steps of 16
-  up to 0xFFF0, and `OutputDataActualBits` reads 14 (IMX178) / 12 (IMX290) / **0**
-  (QHY5III715C) — the last of which made the old `2^OutputDataActualBits − 1`
-  formula yield `MaxADU = 0` (ConformU: "below minimum"). The container-depth
-  formula is uniform across all models and never 0.
-- **Dark frames** → `NOT_IMPLEMENTED` on all models (E4) — no shutter actuation
-  in `qhyccd-rs` 0.1.9.
-- **FilterWheel `UniqueID`** is `CFW-<sdk-id>` (prefixed), because a `qhyccd-rs`
-  `FilterWheel` delegates `id()` to its underlying camera and would otherwise
-  collide with the camera's `UniqueID` on single-handle models.
-- **Empty simulation backend** (the C0 zero-camera scenario) is selected by a
-  hidden, `simulation`-feature-gated `--simulation-empty` CLI flag that makes
-  `build()` use `Sdk::new_simulated()` (empty) instead of `Sdk::new()`.
-- **Transport.** v0 serves with plain `axum::serve` on `server.port`. Alpaca
-  UDP discovery is opt-in via `server.discovery_port` (absent by default —
-  many rusty-photon servers on one host would collide on the shared
-  discovery port), like every Alpaca service.
-  The listener is created via the shared `rusty_photon_tls::server::bind_dual_stack_tokio`
-  helper (IPv6 + IPv4, `SO_REUSEADDR`) like every other Alpaca service, so the
-  in-process `with_reload` rebind survives a prior listener's lingering
-  `TIME_WAIT`. TLS termination / Basic Auth (the rest of `rusty-photon-tls` / `rp-auth`)
-  are still Future Work.
-- **A cancel may never race a readout.** `qhyccd.h` documents
-  `CancelQHYCCDExposingAndReadout` as *"the camera does not send back the image
-  data. Host software must not readout the data"*, so the SDK cancel and
-  `GetQHYCCDSingleFrame` must never overlap. The capture task is therefore split
-  into three phases — start, a **cancellable wait** for the exposure to elapse,
-  and an **uninterruptible readout** — and an abort is honoured only between
-  them. `cancel_exposure` signals the in-flight capture's own cancel channel
-  (which both raises its flag and wakes it), waits for that capture to leave the
-  SDK, and *only then* issues the SDK cancel. An abort taken during the exposure
-  skips the readout entirely; one
-  taken during the readout waits for it to finish, after which the cancel is the
-  same harmless pre-close reset the SDK's own `SingleFrameSample` performs.
-  indi-qhy keeps exactly this discipline (its `AbortExposure` blocks on the
-  imaging thread leaving `StateExposure` before calling the SDK cancel), and the
-  SDK's samples never cancel concurrently with a readout either. Getting this
-  wrong is not merely untidy: it leaves `GetQHYCCDSingleFrame` waiting on image
-  data the camera has been told never to send.
-- **Waiting for the exposure without holding the SDK.** The wait is host-side
-  first (a 30-minute exposure costs no USB traffic), then
-  `GetQHYCCDExposureRemaining` must agree the exposure is over before the readout
-  is entered — if the host clock ran ahead, `get_single_frame` would block inside
-  the readout for the remainder, re-opening the window the split exists to close.
-  Polling is capped at `EXPOSURE_POLL_INTERVAL` and the confirmation phase at
-  `EXPOSURE_CONFIRM_TIMEOUT`, after which the readout is entered anyway so a
-  camera that never reports 0 cannot strand the frame. A failed poll enters the
-  readout too, unless the C9 question it asks finds the camera gone; a departed
-  camera is not read out. A cancel never waits for
-  a poll: the capture's cancel channel wakes the sleep immediately.
-- **SDK call serialization — the claim *is* the cancel channel.** The single
-  in-flight capture is the one logical owner of the device's blocking SDK calls.
-  `start_exposure` claims the device by installing that capture's own cancel
-  channel in `in_flight_capture`: `Some` **is** the claim, so a device that
-  reports itself exposing always has something an abort can signal. A capture is
-  the usual holder but not the only one — a disconnect's close, an abort's SDK
-  cancel and a readout-mode change (B4) each take a claim of their own, on the same
-  terms: while it is installed, that holder and nothing else may be inside the
-  SDK. Holding the
-  two apart — an `AtomicBool` claim taken first, a handle-wide cancel flag
-  cleared a statement later — leaves a window in which an abort is *erased* by
-  the exposure that admitted it, and the client then waits out the drain deadline
-  for an `AbortExposure` that cancelled nothing. Because the channel is per
-  capture rather than per device, no exposure can clear another's cancel, and an
-  abort signals the capture it was issued against and no other.
-
-  `cancel_exposure` (abort/disconnect) bumps a generation and signals that claim
-  but does **not** release it — the capture task takes it back only after its SDK
-  calls have fully drained, so a new exposure cannot start and race them, and
-  only the installer of a claim ever takes it back. A reconnect's
-  `reset_exposure_state` is the one place that could be tempted to take another
-  owner's claim and deliberately does not: here the claim means *something is
-  inside the SDK*, so handing the device on while that is still true is exactly
-  what would let an SDK cancel land on a live readout. It signals instead, and a
-  `StartExposure` in that window is rejected rather than started alongside.
-
-  A short `result_lock` covers every transition of this state machine: the
-  generation bump, the claim install and take, and the capture task's "check
-  generation + commit result". So an abort reads the claim and bumps the
-  generation knowing no start, drain or reconnect can slip between the two, a
-  just-completing capture can never resurrect an aborted frame, and a successor
-  exposure cannot lose its frame to a bump meant for its predecessor.
-
-  The drain is **event-driven on a deadline, not a
-  polling sleep**, and it waits for the *specific* claim the abort signalled
-  rather than for the device to fall idle — an abort whose target has already
-  been superseded must not sit out the successor's exposure and then report a
-  failure belonging to neither. The capture task fires a `tokio::sync::Notify`
-  (`exposure_drained`) the instant the claim leaves, and the waiter awaits it
-  under a single `tokio::time::timeout` (canonical `Notified` `enable()`-before-
-  check pattern, so a release landing between the check and the await is never
-  lost). Earlier this was a `loop { sleep(5 ms) }` busy-wait, replaced because
-  repeated short sleeps can stall under scheduler pressure.
-- **A stuck SDK call blocks the close rather than being closed through.**
-  `disconnect` closes the handle only once the capture task is out of the SDK.
-  Closing it under a live USB transfer frees the handle beneath libusb — a
-  use-after-free that trips its `usbi_mutex_lock` assertion and can corrupt the
-  SDK's shared libusb context. If the drain deadline (`CAPTURE_DRAIN_TIMEOUT`,
-  30 s — sized for a readout, since the exposure wait is cancellable) expires,
-  `disconnect` issues **no** SDK cancel, leaves the handle **open**, and returns
-  an error. A failed disconnect is the lesser evil, and it reports the stuck
-  device honestly instead of hiding it behind a close that may corrupt state.
-  indi-qhy takes the same position more bluntly, with an unconditional
-  `pthread_join` before its `CloseQHYCCD`.
-
-  **Draining is not enough on its own — `disconnect` has to keep the device.**
-  Every drain ends with the device *unclaimed*, which is exactly the state a
-  `StartExposure` is waiting for: it can claim, push its ROI and exposure, and
-  be inside `GetQHYCCDSingleFrame` before the close lands. So the drain and the
-  close are one critical section from the ownership point of view, and
-  `disconnect` holds a claim of its own across both, releasing it only after
-  `close()` has returned (also when `close()` *fails*, so a refused close cannot
-  wedge the device claimed forever). While that claim is installed a racing
-  `StartExposure` is refused — by the connected check once
-  `SharedCameraConnection` has cleared the flag, and by the ordinary E2 path in
-  the window before that. The claim is what makes the close safe rather than
-  merely likely to be safe: it owns the device even where the flag is still set.
-
-  **A section that owns the device runs where cancellation cannot reach it.**
-  Every SDK call runs off the executor, so each path that owns the device —
-  `StartExposure`'s arming, `disconnect`'s seize-and-close, and `AbortExposure`'s
-  drain-and-cancel — holds its claim across an `.await`. An Alpaca client
-  disconnecting mid-request is enough for the server to drop that future, and
-  neither answer available to a plain `.await` is safe:
-
-  - *Never release.* No code of ours runs after the drop and nothing else can
-    release a claim on its behalf, so it stays installed for the life of the
-    process — every later exposure refused as already-exposing, every later
-    disconnect a drain that never completes.
-  - *Release immediately.* The `spawn_blocking` call the future was awaiting is
-    **not** cancelled with it and is still inside the SDK. Handing the device
-    back then lets a successor claim it and issue calls that overlap the orphan,
-    and nothing below stops them: `qhyccd-rs` guards the handle with a *read*
-    lock that admits concurrent non-close calls by design. An SDK cancel
-    overlapping a readout is precisely what `qhyccd.h` forbids.
-
-  So these sections are not run in the request future at all. Each is spawned as
-  its own task and the request awaits its `JoinHandle`; dropping a `JoinHandle`
-  detaches the task rather than stopping it, so the section always runs to
-  completion and gives the device back only once its SDK call has returned.
-  Within a section, a `Drop` guard covers the ordinary and error exits so there
-  is no second release to keep in step — except `StartExposure`'s success, which
-  hands the claim to the capture task instead.
-
-  The claim is what makes the *shutdown* orderly — a `StartExposure` racing the
-  close is refused rather than started and then torn down, and an operator gets
-  a reported failure instead of a device that closed under a live transfer.
-  Beneath it, `qhyccd-rs` holds its handle's read lock across every FFI call
-  (`HandleCell::with_handle`), so a close waits for anything in flight rather
-  than freeing the handle under it — the same guarantee `zwo-camera` and
-  `svbony-camera` get from backends that hold their handle mutex across the call
-  and close by clearing that same slot.
-
-  The two are not redundant, and the difference is worth keeping straight when
-  changing either. The lock cannot express the SDK's *ordering* rules — a cancel
-  and a readout are both read guards, and `qhyccd.h` forbids overlapping them —
-  and on its own it would turn a wedged readout into an unbounded block on the
-  close rather than the reported refusal above. It also covers far more than the
-  capture path: every property read reaches the SDK outside any claim, because a
-  temperature poll is not a capture and must not be refused during one. So the
-  claim decides *when* a close may be attempted, and the lock guarantees that
-  once attempted it cannot land underneath a call — anyone's call, not just a
-  capture's.
-
-  **A disconnect wins over an exposure that starts during it.** When the drain
-  ends and the device has already been re-claimed by a new capture, `disconnect`
-  drains that one too and keeps going until it holds the device or the deadline
-  expires — the operator asked for the device to go away, and a shutdown that
-  cannot complete at an unattended rig costs more than the frame does. The
-  deadline is a total budget across all rounds, not per round, so a client
-  starting exposures in a loop cannot stall a disconnect indefinitely; it exits
-  through the same refuse-to-close path a stuck readout takes, but is reported
-  apart from it — the two ask different things of an operator, since an SDK that
-  never came back usually means power-cycling the camera while a lost race just
-  means retrying the disconnect. (`AbortExposure`
-  keeps the opposite rule — E7: it cancels the capture it was issued against and
-  no other, so finding the device re-claimed means its target is already gone
-  and it returns `OK`.) The alternative considered and rejected was clearing the
-  device's logical `connected` flag *in the device layer*, ahead of the seize, so
-  racing `StartExposure`s bounce on `NOT_CONNECTED` and there is no contest at
-  all: cleaner there, but `SharedCameraConnection::connect` reads that flag and
-  takes its refcount in one critical section, so clearing it outside that
-  section without dropping the ref lets a concurrent connect take a second ref
-  and leak the physical handle open. That is a change to the one invariant in
-  this service with a dedicated concurrency test, for a race the claim already
-  closes. `disconnect` does clear the flag before `CloseQHYCCD`, but *inside*
-  that critical section — which is what makes it safe there, and why a racing
-  request sees `NOT_CONNECTED` for most of the close regardless.
-- **Camera + CFW share one physical handle — refcounted shared connection.**
-  `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
-  (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
-  keys the open device by id, so opening that id as two independent handles and
-  closing either one tears down the shared physical device and breaks the other.
-  This was **confirmed on real hardware (QHY178M + 7-slot CFW, 2026-06-18):**
-  disconnecting the CFW made the next camera `StartExposure` fail with
-  `SetRoiError` (QHYCCD_ERROR), and disconnecting the camera made CFW `Position`
-  fail with `INVALID_OPERATION` — and in both cases the still-"connected" device's
-  `is_open()` kept (mis)reporting `true`. The Camera and FilterWheel devices
-  therefore share ONE
-  [`SharedCameraConnection`](../../services/qhy-camera/src/backend.rs): one
-  `qhyccd-rs::Camera` (the CFW operates a clone that shares the same internal
-  handle `Arc`) behind a refcount of logical connections — the physical
-  `OpenQHYCCD` runs on the first device's connect and `CloseQHYCCD` only on the
-  last device's disconnect, while each device keeps its own logical `connected`
-  flag so its ASCOM `Connected` reflects that device, not the shared handle.
-  Validated end-to-end on hardware (disconnect-CFW-then-expose and
-  disconnect-camera-then-move-CFW both succeed) plus unit tests over the
-  simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
-  used independent handles "as the reference `qhyccd-alpaca` does" and deferred
-  the refcount as Future Work pending hardware.* Since the `qhyccd-rs` **Phase-1
-  handle-model alignment** ([qhyccd-convention-alignment.md](../plans/archive/qhyccd-convention-alignment.md)),
-  the crate itself shares one handle cell between a camera and its filter wheel
-  and closes it on last-drop (RAII), and `Sdk::drop` closes every open camera
-  handle **before** `ReleaseQHYCCDResource` (the SDK-documented Close-then-Release
-  order). So a device still Connected at process shutdown or reload is now torn
-  down cleanly instead of leaked; the service's own `SharedCameraConnection`
-  refcount and per-device `Connected` semantics are unchanged.
-- **Cooling model.** v0 had `set_cooler_on(true)` engage a nominal 1% *manual*
-  PWM (matching the reference), distinct from the automatic target-temperature
-  regulation `SetCCDTemperature` drives — a real ASCOM client sequence of
-  `SetCCDTemperature` then `CoolerOn(true)` left the cooler pinned near 1%
-  power (confirmed on real hardware). `set_cooler_on(true)` now
-  re-asserts the cooler target (`ControlType::Cooler`, via
-  `set_target_temperature_celsius`) with the stored target instead; see
-  [Cooling contract K4](#cooling).
-- **What a readout-mode change is to the SDK.** Read from the shipped
-  `libqhyccd` (26.06.04 and 25.09.29, Linux x86_64) by static disassembly —
-  nothing was run against a camera — and backing RM1, RM3 and RM4:
-  - `SetQHYCCDReadMode` dispatches to the camera class's `SetReadMode`, which on
-    the QHY600 class records the index in the SDK object and returns: no USB
-    transfer at all. The mode reaches the camera only in the class's
-    `InitChipRegs`, which `InitQHYCCD` calls, as an argument to the FPGA init
-    command; the same routine writes the SDK's per-mode chip size, effective
-    area and overscan. Every multi-mode class in the library reads the mode in
-    `InitChipRegs` and none sends it from `SetReadMode`.
-  - A mode change **without** `InitQHYCCD` is therefore half-applied: the SDK's
-    resolution, bin and gain logic switch to the new index at once while the
-    camera stays in the old mode, and the chip info and effective area keep the
-    old mode's values. The driver's previous `set_readout_mode` did exactly that;
-    it never ran on hardware, because every validated QHY camera (the QHY178M)
-    has one mode, whose base-class `SetReadMode` accepts 0 and nothing else.
-  - The bin is different, which is why the vendor manual's §15 — one procedure
-    for readout mode, bin and data format — over-generalizes: `SetChipBinMode`
-    rebuilds the effective area and overscan itself, with no init, and a bare
-    `SetQHYCCDBinMode` is hardware-validated (R4) — sent, as `StartExposure`
-    sends it, just ahead of the region (B1).
-  - `SetQHYCCDStreamMode` does not read the recorded mode either (no class's
-    stream-mode code refers to it), so the order of the stream mode and the
-    read mode ahead of an init does not matter to the SDK; the driver sends
-    them in connect's order.
-  - `InitQHYCCD` returns success whatever `InitChipRegs` returns, and nothing
-    the SDK reports afterwards distinguishes the two: `GetQHYCCDReadMode`
-    returns the index `SetReadMode` recorded, which only the constructors and
-    `SetReadMode` write, and the chip info and effective area are whatever
-    `InitChipRegs` got as far as writing. RM3's checks therefore catch an
-    unrecorded mode and an empty readable area, not a failed init. The init
-    resets the QHY600's exposure to 5 s and transfer depth to 16
-    (8 in live mode), re-sends the SDK's stored gain, offset and USB traffic,
-    and forces DDR on; it starts one more sensor-status thread per call (the
-    SDK's own, until the handle closes). When `qhyccd.ini` sets
-    `disable_auto_cooler=true` it sets the cooler PWM to 0 on every call. Its
-    single-frame path on the QHY600 sleeps 0.4 s.
-  - The QHY600 class reports **11** modes, all 9600x6422 except mode 5
-    (`Bin3*3Mode (hardware)`, 3200x2144), and four of them named
-    `(Fiber Only)`; the SDK does not filter those out over USB. Mode count,
-    names and per-mode resolution are static tables, readable without switching.
-    `GetQHYCCDReadModeResolution` is not safe to call per index on every model —
-    on the QHY294PRO it rewrites the SDK's margin state as a side effect — so the
-    driver sizes a mode from chip info read after the switch, as connect does,
-    and never from that call.
-
-  Other drivers split the same way: INDI and AlpacaBridge re-initialize at the
-  setter, N.I.N.A. switches inside `StartExposure` with a re-init, and INDIGO
-  and several smaller drivers call `SetQHYCCDReadMode` alone. The switch has
-  since been run on a multi-mode camera on Windows (RM1, *Measured on
-  hardware*), and what that run could see agrees with this reading — the new
-  mode's geometry after the init, one more SDK thread per init until the close,
-  the mode list and mode 5's size — but the Windows `qhyccd.dll` itself has not
-  been read.
-
 ## Future Work
 
-- **Dark/bias frames** — v0 rejects all darks (`NOT_IMPLEMENTED`) because
-  `qhyccd-rs` 0.1.9 exposes no shutter actuation. Add shutter open/close support
+- **Dark/bias frames** — the driver rejects all darks (`NOT_IMPLEMENTED`)
+  because `qhyccd-rs` exposes no shutter actuation. Add shutter open/close support
   (plus a cap-on / explicit-override workflow for shutterless models, e.g. the
   5III series) so `calibrator-flats` darks/bias work.
 - **`StopExposure`** (graceful stop with readout) — currently `NOT_IMPLEMENTED`.
@@ -3592,11 +3518,11 @@ the "how" decisions made while building.
 - **Readout modes in the simulation.** The `qhyccd-rs` simulation has one mode
   and one geometry. The mode lists and the mode-5 geometry measured on rig2
   (RM1) are what it should be seeded from if it is to model modes.
-- **FastReadout** validation on real hardware.
+- **FastReadout** through the SDK's `Speed` control, validated on real
+  hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
   evaluation could let this SDK supersede the serial [`qhy-focuser`](qhy-focuser.md).
-- **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
 - **A reconnect while the wheel travels, under Windows.** Under Linux the
@@ -3612,17 +3538,18 @@ the "how" decisions made while building.
 
 ## Packaging
 
-Packaged as `rusty-photon-qhy-camera` (`.deb`/`.rpm`) per
-[ADR-012](../decisions/012-service-packaging-architecture.md) /
-[ADR-013](../decisions/013-native-sdk-payload-policy.md) and
-[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md):
-binary at `/usr/bin/rusty-photon-qhy-camera`, hardened
+Packaged as `rusty-photon-qhy-camera` (`.deb`/`.rpm`): binary at
+`/usr/bin/rusty-photon-qhy-camera`, hardened
 `rusty-photon-qhy-camera.service` (camera class: `AF_NETLINK`, no
 `PrivateDevices`/`MemoryDenyWriteExecute`, no supplementary groups), and
 a udev rule `90-rusty-photon-qhy.rules` assigning enumerated QHY cameras
-(VID `1618`) to the `rusty-photon` service group.
+(VID `1618`) to the `rusty-photon` service group. Windows installs it from
+the MSI ([packaging-windows.md](../packaging-windows.md); the DLL it needs is
+under *Windows: qhyccd.dll resolution*), and macOS from a Homebrew formula
+([packaging-macos.md](../packaging-macos.md)).
 
-QHYCCD's proprietary firmware is **never** bundled. After installing the
+QHYCCD's proprietary firmware is **never** bundled: QHYCCD's SDK gives no
+right to redistribute it. After installing the
 package, run `/usr/sbin/rusty-photon-qhy-firmware-install` once as root:
 it downloads the sha256-pinned SDK archive from qhyccd.com and installs
 the camera firmware (`/lib/firmware/qhy`), the SDK's firmware-upload udev
@@ -3641,5 +3568,3 @@ camera to enumerate.
 - [`sky-survey-camera.md`](sky-survey-camera.md) — Camera scaffolding template
 - [`qhy-focuser.md`](qhy-focuser.md) — same-vendor hardware-driver template
 - [`rusty-photon-setup.md`](../crates/rusty-photon-setup.md) · [`service-lifecycle.md`](../skills/service-lifecycle.md) · [`development-workflow.md`](../skills/development-workflow.md)
-- [ADR-001 Amendment A](../decisions/001-fits-file-support.md) — the pure-Rust /
-  no-system-dep posture this service is the first exception to

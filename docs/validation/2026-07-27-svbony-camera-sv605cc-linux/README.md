@@ -2,7 +2,7 @@
 
 Recorded Linux ConformU run against the physical SV605CC. The original
 Linux validation (2026-07-26, narrated in
-[docs/services/svbony-camera.md](../../services/svbony-camera.md)
+[docs/services/svbony-camera.md](../../plans/archive/svbony-camera-hardware-validation-2026.md#real-hardware-validation)
 "Real-hardware validation") predated this record trail, so its ConformU
 output was not preserved; this run pins the evidence at current `main`,
 on the same physical camera and host, one day later.

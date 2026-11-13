@@ -2,7 +2,7 @@
 
 Recorded Linux ConformU run against the physical ASI1600MM-Cool. The original
 Linux validation (2026-06-20, narrated in
-[docs/services/zwo-camera.md](../../services/zwo-camera.md)
+[docs/services/zwo-camera.md](../../plans/archive/zwo-camera-hardware-validation-2026.md#the-runs)
 "Real-hardware validation") predated this record trail, so its ConformU
 output was not preserved; this run pins the evidence at current `main`,
 on the same physical camera and host, five weeks later.
