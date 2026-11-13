@@ -169,6 +169,8 @@ found.
    predictions point the same way: its starts across a filter change used
    run 1's uncorrected offsets, and the step from L to O, whose offset
    carried the most drift, started 7–8 steps below focus each round.
+   Having the procedure correct for this drift itself is
+   [#1772](https://github.com/rusty-photon/rusty-photon/issues/1772).
 
 2. **Early in the night, focus moved 2.4–3.7 times as far as the probe's
    temperature predicts.** Over the 26 minutes of run 1's L sweeps the probe fell 0.5 °C (13.6 → 13.1), for
@@ -187,12 +189,30 @@ found.
    HFRs of 0.73–1.00 px. The sweep sized them for their wavelengths:
    CFZs of 38.1, 39.1 and 29.1 steps, against 32.0 at 550 nm.
 
-4. **R − L against the hand-entered runs.** The corrected R offset is +13.
+4. **The offsets fall into two families, broadband and narrowband.** In
+   the written offsets:
+   - **Within each family, a longer wavelength focuses at a higher
+     position.** O (500.7 nm) −54, H (656.3 nm) −28, S (672.4 nm) −23.
+     Among the broadband filters R, at +13, sits above G (−12) and B (−10).
+     G and B differ by 2 steps, less than the 4.7 by which the two runs'
+     corrected values for G differ.
+   - **L sits near the mean of R, G and B** (−3).
+   - **The narrowband filters sit 36–44 steps below the broadband ones at
+     like wavelengths.** H and S, at wavelengths a red filter passes, sit
+     41 and 36 steps below R. O, at the edge between blue and green, sits
+     44 below B and 42 below G.
+
+   Each run's own uncorrected offsets show the same order within each
+   family and a gap of 31–51 steps between them. A refractor's
+   colour curve does not put H 41 steps from R at so nearly the same
+   wavelength, and this record does not establish what does.
+
+5. **R − L against the hand-entered runs.** The corrected R offset is +13.
    The hand-entered runs had measured R at L + 14 and L + 15 on 2026-11-04,
    +17 on 2026-11-05 and +9.8 on 2026-11-11. Each was an R sweep taken
    minutes after its L sweep, with the drift of its moment.
 
-5. **The record left on rig2:**
+6. **The record left on rig2:**
    - reference L, offsets `{"L": 0, "R": 13, "G": -12, "B": -10, "H": -28, "S": -23, "O": -54}`;
    - the coefficient 14.745 steps/°C unchanged, `coefficient_offsets` `{}`;
    - last good for all seven filters from run 2's round 3, 11.8–12.0 °C;
