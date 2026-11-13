@@ -284,8 +284,9 @@ impl DriverState {
     ///     path in `device.rs` (the `set_connected(false)` arm)
     ///     alongside this call. Emptying it there tells any in-flight
     ///     watcher iteration to bail out.
-    ///   - `park_ra_ticks` / `park_dec_ticks` — re-loaded on next
-    ///     connect from config / handshake. Clearing here means a
+    ///   - `park_ra_ticks` / `park_dec_ticks` — resolved again on the
+    ///     next connect, by `load_park_target_after_connect`, from
+    ///     the config and the frame's anchoring. Clearing here means a
     ///     mid-session edit to `MountConfig::park_*_ticks` would take
     ///     effect on reconnect.
     ///   - `frame_anchored` / `preferred_ap_park` — re-derived on the

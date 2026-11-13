@@ -95,14 +95,16 @@ pub fn warn_if_park_path_unwritable(config_path: &Path) {
 
 /// Decode an optional park-tick JSON value:
 ///
-/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
-///   falls back to the handshake-captured value).
+/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (the
+///   axis takes the `preferred_ap_park` pose when the frame is
+///   anchored, and otherwise has no park target, so a park stops in
+///   place).
 /// - A JSON integer in the signed-24-bit encoder range
 ///   `[POSITION_MIN, POSITION_MAX]` → `Ok(Some(n))`.
 /// - Anything else (string, float, boolean, array/object, integer
 ///   outside the i24 encoder range) → `Err(StarAdvError::Config)`.
 ///   Loud failure on operator typo is the whole reason this helper
-///   exists — silently falling back to handshake would mask the
+///   exists — silently treating a typo as absent would mask the
 ///   misconfiguration, and silently accepting an out-of-range value
 ///   would only defer the failure to `MountManager::send`'s
 ///   pre-encode validation at the first park attempt.
