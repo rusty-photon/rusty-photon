@@ -144,7 +144,7 @@ Registration](rp.md#tool-provider-registration)).
 same devices. `rp` builds `focus_complete` from the result's
 top-level `position`, `hfr`, `best_position`, `best_hfr`, `confirmed`,
 `fit_r_squared`, `samples_used` and `steps`, and a procedure that
-walks `rounds × filters` sweeps has no single one of those. A triple
+walks every filter in every round has no single one of those. A triple
 with every field null would be worse than no event: `rp`'s Guide Focus
 Watch decides from that payload whether a `focus_complete` touched the
 guiding train. Declaring the tool means first nominating one sweep as
@@ -338,7 +338,10 @@ differences.
    about a filter, and so is a grid wider than the cap a sweep may
    walk, which needs no centre to know. What the focuser's bounds
    leave of a grid does need one, and stays the round's to find.
-2. Sweeps, per round, the reference first and then each other filter.
+2. Sweeps, per round, the reference first and then each other filter,
+   and after the last round the reference once more — the closing
+   sweep, numbered with the last round — so that every other filter's
+   sweep lies between two reference sweeps.
    Every sweep is the body `focus_train` runs — prediction, sizing,
    walk, gate, fit, confirmation, and the put-back a sweep that failed
    or was cancelled makes — and is recorded on the train's record as a
@@ -354,11 +357,22 @@ differences.
    train](#training-runs-on-a-guiding-train)), and the procedure sizes
    every filter's lease before its first sweep, as it sizes the
    sweeps.
-3. Differences a round contributes: each filter's confirmed position
-   minus that round's confirmed reference position. A round whose
-   reference sweep did not confirm contributes nothing at all, having
-   nothing to difference against; a filter whose own sweep did not
-   confirm contributes nothing for that filter. The procedure carries
+3. Differences: each confirmed sweep of a filter contributes its
+   position minus where the reference stood at the moment it was
+   measured. That is the reference interpolated linearly in time
+   between the confirmed reference sweeps on either side of the
+   filter's sweep — its own round's and the next round's, or the
+   closing sweep in the last round — and rounded to whole steps, half
+   a step away from zero. A sweep is placed in time when it answers,
+   which is when its confirmation frame was taken. A reference sweep
+   that did not confirm is passed over, and the bracket reaches to the
+   nearest confirmed reference sweep on that side instead. A filter
+   sweep with no confirmed reference sweep on one side of it
+   contributes nothing, because one reference position cannot tell
+   drift from offset, and neither does a filter sweep that did not
+   confirm. A bracket whose two sweeps answered at the same moment has
+   no time to place the sweep in, and takes the midpoint of its two
+   positions. The procedure carries
    on past a sweep's own verdict on its filter — a fit that did not
    hold, or a grid that cannot be walked around where that filter's
    sweep would centre — and stops for everything else: a device that
@@ -416,7 +430,7 @@ differences.
    `unmeasured` names what *this call* could not place whether or not
    an older offset for it survives.
 6. Restores the filter that was selected before the call and moves the
-   focuser to that filter's measured position from the last round that
+   focuser to that filter's measured position from the last sweep that
    measured it — the confirmed focus, or the lowest sample the sweep
    accepted when the confirmation was rejected. Either is a place a
    frame was taken, which is what the restore is for; the differences
@@ -469,11 +483,31 @@ differences.
    sweeps report, not what their errors read like, so a call that
    ended some other way never pulses a guider it did not pause.
 
-The reference is refocused every round because the temperature drifts
-while the wheel turns: a round's differences are all against a
-reference measured inside that round, so the drift a round cannot
-outrun is the only one that reaches an offset. It is not otherwise
-modelled — that is the temperature coefficient's job.
+The reference brackets every other sweep because focus drifts while
+the wheel turns, and not only by what the temperature coefficient
+predicts. Early one night on a refractor, the reference's focus fell
+about a step a minute, 2.4–3.7 times what its probe's temperature and
+the coefficient accounted for
+([docs/validation/2026-11-13-focus-model-rig2-windows-offsets/](../validation/2026-11-13-focus-model-rig2-windows-offsets/README.md)).
+A difference against the round's opening reference alone carries the
+drift since that sweep, the filters swept late in the round the most
+of it — about 13 steps there, against a critical focus zone of 29–39
+— and every round has the same timing, so the rounds agree with each
+other and their spread does not show it. The interpolation removes the
+drift that is linear across a bracket; what still reaches an offset is
+the drift's departure from a straight line over a round's length. The
+closing sweep costs one sweep per call and gives the last round the
+bracket the others get from the round after. Walking alternate rounds
+in reverse order would spread the drift evenly over the filters but
+leave all of them biased against the reference, which still comes
+first; refocusing the reference at both ends of every round would
+double its sweeps to measure what the next round's opening sweep
+already measures.
+
+A sweep is placed in time at its end, not its start: the end stands at
+the same distance from the samples its focus was fitted to whether the
+first attempt held or a retry did, and however long the wheel took to
+turn before it.
 
 Guiding is handled per sweep rather than held across the procedure.
 Ten sweeps across a wheel is half an hour, and leaving a mount
@@ -493,14 +527,18 @@ Result:
   "rounds": 2,
   "offsets": { "Luminance": 0, "Ha": 46, "Red": -12 },
   "differences": { "Ha": [45, 47], "Red": [-12] },   // what each median was taken over
-  "unmeasured": [ { "filter": "OIII", "why": "no round confirmed both it and the reference" } ],
+  "drift": { "Ha": [-3, -4], "Red": [-6] },          // the reference's move each difference was corrected by
+  "unmeasured": [ { "filter": "OIII",
+                    "why": "no sweep of 'OIII' confirmed between two confirmed reference sweeps" } ],
   "sweeps": [
     { "round": 1, "filter": "Luminance", "confirmed": true,
-      "position": 29766, "hfr": 1.02, "error": null },   // "not_recorded" names a sweep
+      "position": 29766, "hfr": 1.02, "error": null,
+      "elapsed_s": 131.4 },                              // "not_recorded" names a sweep
                                                          // the store would not take
     { "round": 1, "filter": "OIII", "confirmed": false,
       "position": null, "hfr": null,
-      "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …" }
+      "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …",
+      "elapsed_s": 402.9 }
   ],
   "restored": { "filter": "Ha", "position": 29811 },
   "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed
@@ -520,16 +558,26 @@ could not be written says so in `error`, after the failure itself. The run the r
 sweep carries the outcome in full (`confirmed`, `fallback`,
 `not_enough_stars`, `monotonic_curve`, `poor_fit` or `error`) with its curve
 points; `get_focus_runs` is where a sweep is read in detail.
+`elapsed_s` is the seconds from the start of the rounds to the moment
+the sweep answered, to a tenth: the time the interpolation places it
+at, so every difference can be worked again from the result. The
+closing sweep is the last entry, carrying the last round's number.
 `differences` is what each median was taken over, so an operator can
-see a spread the median hid. `restored` is where the call left the
-rig. `model` is as `focus_train` reports it for the call's first
+see a spread the median hid. `drift` holds, beside each difference, how
+far the interpolated reference had moved from the confirmed reference
+sweep before that filter's sweep, in whole steps: the difference plus
+its drift is the filter's position minus that earlier reference
+position, which is what the difference would have been with no
+correction. A night whose focus walks shows it here. `restored` is
+where the call left the rig. `model` is as `focus_train` reports it for the call's first
 sweep: `empty` when the train had no record before the call, `reset:
 …` when that sweep replaced a stale one, otherwise how the record reads
 once the offsets are written.
 
 Progress: one tick per sweep, `total` the sweeps the procedure will run
-(`rounds` × `filters`), message naming the round, the filter and what
-the sweep measured.
+(`rounds` × `filters`, and the closing sweep), message naming the
+round, the filter and what the sweep measured, and marking the closing
+sweep as such.
 
 ### `calibrate_temperature {train_id}`
 
@@ -814,7 +862,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filters` holding nothing but the reference | `train 'x' has no filter to measure against 'Luminance'` |
 | `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
 | `rounds` outside its range | `rounds must be between 1 and 5` |
-| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on; a procedure ending on a device failure or a cancellation carries `; 2 of them reached no run in the history` after its own message, for the same reason |
+| No filter was measured | `no filter was measured against 'Luminance': 5 of 5 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on; a procedure ending on a device failure or a cancellation carries `; 2 of them reached no run in the history` after its own message, for the same reason |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
 | The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
@@ -1610,10 +1658,10 @@ sweep, and a walk with a step whose focuser its run train does not end
 in is refused before anything pauses or moves;
 `determine_filter_offsets` refuses a train without a wheel, a
 reference outside its filter list and a `rounds` out of range, and —
-every sweep being starless — runs the sweeps of both rounds, records
-them, restores the filter it started on and fails naming how many
-sweeps did not confirm; and `calibrate_temperature` fits a seeded
-record's runs, writes the coefficient `get_focus_model` then reports,
+every sweep being starless — runs a round and its closing sweep,
+records all three, restores the filter it started on and fails naming
+how many sweeps did not confirm; and `calibrate_temperature` fits a
+seeded record's runs, writes the coefficient `get_focus_model` then reports,
 and refuses a history too short and one too narrow in temperature,
 naming each threshold.
 
@@ -1699,10 +1747,14 @@ credential — and that `tools/list` answers with no `rp` running.
   numbers, a fresh id each time, and only `rp`'s refusal of this lease
   read as not held.
 - Offsets, against the same rig — the only place a sweep can be made
-  to confirm: the median over rounds and its even-split rounding, a
-  round the reference lost, a filter that never confirmed, the
-  argument defaults and refusals, the restore, a subset call that
-  keeps what it did not measure, a changed reference that drops what
+  to confirm: the median over rounds and its even-split rounding, the
+  closing sweep in the walk and in the progress, a focus drifting on
+  paused time while the wheel turns and the offsets coming out without
+  it, a reference sweep passed over for the nearest confirmed one, a
+  filter sweep with a reference on one side only, the drift's rounding
+  and a bracket without time, a reference and a filter that never
+  confirmed, the argument defaults and refusals, the restore, a subset
+  call that keeps what it did not measure, a changed reference that drops what
   it invalidates, and the procedure ending on a device error or a
   put-back that did not land rather than carrying on. On a guiding
   train, one lease for each sweep, released before the next, with the
