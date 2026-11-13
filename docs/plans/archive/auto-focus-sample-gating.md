@@ -1,12 +1,22 @@
 # Auto-focus sample gating and confirmation — trust the sweep only where it can see stars
 
-**Status: COMPLETE (archived 2026-11-12).** Every phase shipped and was
-validated on rig2: G1 in [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193), G2 in
-[#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) as the focus-model plan's S9, G3a in
-[#1473](https://github.com/rusty-photon/rusty-photon/pull/1473) and [#1478](https://github.com/rusty-photon/rusty-photon/pull/1478), and the rest of
-[#1684](https://github.com/rusty-photon/rusty-photon/issues/1684) as G3b in [#1686](https://github.com/rusty-photon/rusty-photon/pull/1686), G3c in
-[#1698](https://github.com/rusty-photon/rusty-photon/pull/1698) and G3d in [#1715](https://github.com/rusty-photon/rusty-photon/pull/1715), the last two
-validated with sweeps mis-started on rig2 on 2026-11-05 and 2026-11-11.
+**Status: COMPLETE (archived 2026-11-12).** Every phase shipped. G1
+landed in [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193), and rig2 ran its Validation on
+2026-09-09 ([results](https://github.com/rusty-photon/rusty-photon/pull/1193#issuecomment-5595344580)): the
+coarse sweep refused and put the focuser back, and the fallback said
+so, but focuser backlash rejected every confirmation frame that night,
+which [#1201](https://github.com/rusty-photon/rusty-photon/pull/1201) fixed. The fine sweep's confirmed run was
+not repeated on `rp`'s capture sweep before S7c retired it;
+`focus-model`'s sweep confirmed every fit of the rig2 runs of
+2026-11-05 and 2026-11-11. G2 landed in [#1675](https://github.com/rusty-photon/rusty-photon/pull/1675) as the
+focus-model plan's S9, validated, as decided on 2026-09-13, on curves
+generated over a spread of optics with rig2's two recorded sweeps as
+regression cases. G3a ([#1473](https://github.com/rusty-photon/rusty-photon/pull/1473),
+[#1478](https://github.com/rusty-photon/rusty-photon/pull/1478)) and G3b ([#1686](https://github.com/rusty-photon/rusty-photon/pull/1686)) were
+validated on rig2's recorded frames, G3c ([#1698](https://github.com/rusty-photon/rusty-photon/pull/1698)) on
+a replay of them and on sweeps mis-started on rig2 on 2026-11-05, and
+G3d ([#1715](https://github.com/rusty-photon/rusty-photon/pull/1715)) on sweeps mis-started there on
+2026-11-11; G3b to G3d are [#1684](https://github.com/rusty-photon/rusty-photon/issues/1684).
 `rp`'s capture `auto_focus`, which carried G1's relative sparse gate,
 retired in the focus-model plan's S7c ([#1710](https://github.com/rusty-photon/rusty-photon/pull/1710)); the
 fixed star list, the two-star floor and the vertex-centred retry are

@@ -81,7 +81,7 @@ Every slice is merged, S7 in three
 ([§ S7](#s7--three-slices-decided-2026-11-04)). Its rig night met three
 of the gate's five checks on rig2 on 2026-11-04, and the owner decided
 that day to start it; the other two, the `shared: true` walk and the
-temperature rule, are validated on pier1.
+temperature rule, remain to be validated on pier1.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
 ordered by what they unblock: S8 is `rp` reads plus a sizing change;
