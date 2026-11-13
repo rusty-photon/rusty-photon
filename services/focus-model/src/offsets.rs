@@ -1,6 +1,10 @@
 //! The offsets procedure: rounds of reference-then-filter sweeps, the
 //! median of the differences, the writes and the restore.
 //!
+//! The last round is closed by one more reference sweep, and each
+//! filter is differenced against the reference interpolated to the
+//! moment it was measured.
+//!
 //! docs/services/focus-model.md § `determine_filter_offsets` is the
 //! contract. Each sweep is the body `focus_train` runs, called here
 //! rather than through `rp`: the procedure holds the provider's
@@ -11,11 +15,13 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
 use crate::lease;
+use crate::prediction::round_steps;
 use crate::sizing::plan_sweep;
 use crate::store::{filter_sets_differ, fmt_filters, FocusRecord, FocusStore};
 use crate::sweep::check_span;
@@ -29,8 +35,9 @@ use crate::workflow::{
 const DEFAULT_ROUNDS: u32 = 2;
 
 /// The most rounds a call may ask for. Each is a full pass of the
-/// wheel, and the drift a median is meant to average out grows with
-/// the time the procedure takes.
+/// wheel, and the interpolation corrects only the drift that is linear
+/// across a round: the longer the procedure, the more of the night's
+/// unsteadier change its offsets stand on.
 const MAX_ROUNDS: u32 = 5;
 
 /// `determine_filter_offsets` arguments.
@@ -62,6 +69,10 @@ pub struct OffsetSweep {
     pub hfr: Option<f64>,
     /// Why the sweep gave nothing to difference; null when it focused.
     pub error: Option<String>,
+    /// Seconds from the start of the rounds to the moment the sweep
+    /// answered, to a tenth: the time its difference interpolates the
+    /// reference to, or a reference sweep's place in the interpolation.
+    pub elapsed_s: f64,
     /// Why this sweep is missing from the run history; null when it
     /// was written. A sweep that focused and could not be recorded
     /// still measured what it measured — the difference stands — but
@@ -135,6 +146,11 @@ pub struct OffsetsView {
     /// What each median was taken over, so a spread the median hid is
     /// still readable.
     pub differences: BTreeMap<String, Vec<i32>>,
+    /// Beside each difference, how far the interpolated reference had
+    /// moved from the confirmed reference sweep before that filter's
+    /// sweep. The difference plus its drift is the difference against
+    /// that sweep alone, with no correction.
+    pub drift: BTreeMap<String, Vec<i32>>,
     /// The filters that kept no offset.
     pub unmeasured: Vec<Unmeasured>,
     /// Every sweep the procedure ran, in the order it ran them.
@@ -171,9 +187,9 @@ struct Plan {
 }
 
 impl Plan {
-    /// The order one round walks: the reference first, so every
-    /// difference in the round is against a position measured inside
-    /// it, then each other filter.
+    /// The order one round walks: the reference first, so a round's
+    /// sweeps lie between its own reference sweep and the next one's,
+    /// then each other filter.
     fn order(&self) -> impl Iterator<Item = &String> {
         std::iter::once(&self.reference).chain(
             self.filters
@@ -182,10 +198,21 @@ impl Plan {
         )
     }
 
-    /// How many sweeps the whole procedure will run.
+    /// Every sweep the procedure runs, in order, each with its round:
+    /// the rounds, then the reference once more, numbered with the last
+    /// round. That closing sweep gives the last round the reference
+    /// sweep after it that every other round has in the next.
+    fn walk(&self) -> impl Iterator<Item = (u32, &String)> {
+        (1..=self.rounds)
+            .flat_map(move |round| self.order().map(move |filter| (round, filter)))
+            .chain(std::iter::once((self.rounds, &self.reference)))
+    }
+
+    /// How many sweeps the whole procedure will run, the closing one
+    /// included.
     fn sweeps(&self) -> u32 {
         let filters = u32::try_from(self.filters.len()).unwrap_or(u32::MAX);
-        self.rounds.saturating_mul(filters)
+        self.rounds.saturating_mul(filters).saturating_add(1)
     }
 }
 
@@ -203,11 +230,15 @@ struct Started {
 struct Measured {
     /// Every sweep, in order.
     sweeps: Vec<OffsetSweep>,
-    /// Per filter, one difference per round that placed it.
+    /// Per filter, one difference per confirmed sweep that confirmed
+    /// reference sweeps bracket.
     differences: BTreeMap<String, Vec<i32>>,
-    /// Whether any round's reference sweep confirmed.
+    /// Per filter, beside each difference, the reference's move it was
+    /// corrected by.
+    drift: BTreeMap<String, Vec<i32>>,
+    /// Whether any reference sweep confirmed.
     reference_placed: bool,
-    /// Per filter, the confirmed pairs whose difference did not fit a
+    /// Per filter, the confirmed sweeps whose difference did not fit a
     /// focuser position, and so could not be used.
     discarded: BTreeMap<String, usize>,
 }
@@ -236,9 +267,70 @@ impl Measured {
             );
         }
         if self.reference_placed {
-            format!("no round confirmed '{filter}' and the reference together")
+            format!("no sweep of '{filter}' confirmed between two confirmed reference sweeps")
         } else {
-            "no round's reference sweep confirmed".to_owned()
+            "no reference sweep confirmed".to_owned()
+        }
+    }
+
+    /// Difference every confirmed filter sweep against the reference
+    /// where it stood when that sweep answered: interpolated in time
+    /// between the nearest confirmed reference sweeps before and after
+    /// it, so focus that drifts steadily while the wheel turns does not
+    /// reach the offset. A filter sweep with no confirmed reference
+    /// sweep on one side contributes nothing: one reference position
+    /// cannot tell drift from offset.
+    fn difference(&mut self, reference: &str) {
+        let anchors: Vec<(usize, f64, i32)> = self
+            .sweeps
+            .iter()
+            .enumerate()
+            .filter(|(_, sweep)| sweep.filter == reference)
+            .filter_map(|(at, sweep)| {
+                confirmed_at(sweep).map(|position| (at, sweep.elapsed_s, position))
+            })
+            .collect();
+        self.reference_placed = !anchors.is_empty();
+        for (at, sweep) in self.sweeps.iter().enumerate() {
+            if sweep.filter == reference {
+                continue;
+            }
+            let Some(position) = confirmed_at(sweep) else {
+                continue;
+            };
+            let before = anchors.iter().rev().find(|(anchor, ..)| *anchor < at);
+            let after = anchors.iter().find(|(anchor, ..)| *anchor > at);
+            let (Some(&(_, t0, p0)), Some(&(_, t1, p1))) = (before, after) else {
+                continue;
+            };
+            let drift = drift_at(sweep.elapsed_s, (t0, p0), (t1, p1));
+            // Clamping here would write a rail as an offset and move a
+            // focuser to it later, so a difference that does not fit a
+            // focuser position is no difference.
+            let difference = i64::from(p0)
+                .checked_add(i64::from(drift))
+                .and_then(|reference_at| i64::from(position).checked_sub(reference_at))
+                .and_then(|difference| i32::try_from(difference).ok());
+            if let Some(difference) = difference {
+                self.differences
+                    .entry(sweep.filter.clone())
+                    .or_default()
+                    .push(difference);
+                self.drift
+                    .entry(sweep.filter.clone())
+                    .or_default()
+                    .push(drift);
+            } else {
+                let seen = self.discarded.entry(sweep.filter.clone()).or_default();
+                *seen = seen.saturating_add(1);
+                debug!(
+                    filter = %sweep.filter,
+                    position,
+                    reference = p0,
+                    drift,
+                    "the difference does not fit a focuser position"
+                );
+            }
         }
     }
 
@@ -321,7 +413,8 @@ pub async fn determine_filter_offsets(
     let plan = resolve(rig.active, store, config, params).await?;
     let started = started_state(rig.active, &plan).await?;
     let session = Session { rig, store, config };
-    let (measured, fatal, outstanding) = run_rounds(session, &plan, progress).await;
+    let (mut measured, fatal, outstanding) = run_rounds(session, &plan, progress).await;
+    measured.difference(&plan.reference);
     let offsets = offsets_from(&measured, &plan.reference);
     // A cancellation that lands after the last sweep still ends the
     // procedure. The sweeps notice one between their own primitive
@@ -381,6 +474,7 @@ pub async fn determine_filter_offsets(
         unmeasured,
         offsets,
         differences: measured.differences,
+        drift: measured.drift,
         sweeps: measured.sweeps,
         restored,
         recorded,
@@ -541,10 +635,12 @@ async fn started_state(rig: &dyn FocusRig, plan: &Plan) -> Result<Started> {
     })
 }
 
-/// Walk the rounds, collecting the sweeps and the differences. A fatal
-/// error stops the walk and is handed back beside what was measured
-/// before it, so the caller can still put the rig back — and beside
-/// what the sweeps could not undo, so it can finish that too.
+/// Walk the rounds and the closing sweep, collecting the sweeps; the
+/// differences are taken once they are all in, since each filter's
+/// waits on the reference sweep after it. A fatal error stops the walk
+/// and is handed back beside what was measured before it, so the caller
+/// can still put the rig back — and beside what the sweeps could not
+/// undo, so it can finish that too.
 async fn run_rounds(
     session: Session<'_>,
     plan: &Plan,
@@ -552,43 +648,23 @@ async fn run_rounds(
 ) -> (Measured, Option<FocusModelError>, Outstanding) {
     let mut measured = Measured::default();
     let mut outstanding = Outstanding::default();
-    let total = f64::from(plan.sweeps());
+    let total = plan.sweeps();
+    let began = Instant::now();
     let mut done: u32 = 0;
-    for round in 1..=plan.rounds {
-        let mut reference_at = None;
-        for filter in plan.order() {
-            let sweep = match one_sweep(session, plan, round, filter, &mut outstanding).await {
-                Ok(sweep) => sweep,
-                Err(error) => return (measured, Some(error), outstanding),
-            };
-            done = done.saturating_add(1);
-            progress
-                .tick(f64::from(done), Some(total), describe(&sweep, plan.rounds))
-                .await;
-            if filter == &plan.reference {
-                reference_at = sweep.position.filter(|_| sweep.confirmed);
-                measured.reference_placed |= reference_at.is_some();
-            } else if let (Some(reference), Some(position)) = (reference_at, confirmed_at(&sweep)) {
-                // Clamping here would write a rail as an offset and
-                // move a focuser to it later, so a difference that
-                // does not fit a focuser position is no difference.
-                if let Some(difference) = position.checked_sub(reference) {
-                    measured
-                        .differences
-                        .entry(filter.clone())
-                        .or_default()
-                        .push(difference);
-                } else {
-                    let seen = measured.discarded.entry(filter.clone()).or_default();
-                    *seen = seen.saturating_add(1);
-                    debug!(
-                        filter,
-                        position, reference, "the difference does not fit a focuser position"
-                    );
-                }
-            }
-            measured.sweeps.push(sweep);
-        }
+    for (round, filter) in plan.walk() {
+        let sweep = match one_sweep(session, plan, round, filter, began, &mut outstanding).await {
+            Ok(sweep) => sweep,
+            Err(error) => return (measured, Some(error), outstanding),
+        };
+        done = done.saturating_add(1);
+        progress
+            .tick(
+                f64::from(done),
+                Some(f64::from(total)),
+                describe(&sweep, plan.rounds, done == total),
+            )
+            .await;
+        measured.sweeps.push(sweep);
     }
     (measured, None, outstanding)
 }
@@ -636,6 +712,22 @@ fn confirmed_at(sweep: &OffsetSweep) -> Option<i32> {
     sweep.position.filter(|_| sweep.confirmed)
 }
 
+/// How far the reference moved, on the straight line between the
+/// confirmed reference sweeps `(t0, p0)` and `(t1, p1)`, from the first
+/// of them to the moment `t`, in whole steps. A bracket with no time
+/// between its ends cannot place `t` in it, and takes the midpoint.
+fn drift_at(t: f64, (t0, p0): (f64, i32), (t1, p1): (f64, i32)) -> i32 {
+    let span = t1 - t0;
+    let share = if span > 0.0 { (t - t0) / span } else { 0.5 };
+    round_steps(share * (f64::from(p1) - f64::from(p0)))
+}
+
+/// A duration in seconds, to a tenth: fine enough beside sweeps that
+/// take minutes, and short enough to read in a result.
+fn tenths(elapsed: std::time::Duration) -> f64 {
+    (elapsed.as_secs_f64() * 10.0).round() / 10.0
+}
+
 /// One filter's sweep. A sweep that did not fit is this filter's loss
 /// for this round and the procedure carries on. Everything else ends
 /// it — a caller that went away, a rig that failed, a store that
@@ -647,6 +739,7 @@ async fn one_sweep(
     plan: &Plan,
     round: u32,
     filter: &str,
+    began: Instant,
     outstanding: &mut Outstanding,
 ) -> Result<OffsetSweep> {
     debug!(train_id = %plan.ctx.train_id, round, filter, "sweeping for the offsets");
@@ -655,7 +748,12 @@ async fn one_sweep(
         filter: Some(filter.to_owned()),
         shared: false,
     };
-    let sweep = match focus_one(session, &params, &NoProgress, Guiding::Own, outstanding).await {
+    let outcome = focus_one(session, &params, &NoProgress, Guiding::Own, outstanding).await;
+    // The sweep is placed at its end: that stands as far from the
+    // samples its focus was fitted to whichever attempt held, and
+    // however long the wheel took to turn first.
+    let elapsed_s = tenths(began.elapsed());
+    let sweep = match outcome {
         Ok(outcome) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
@@ -663,6 +761,7 @@ async fn one_sweep(
             position: Some(outcome.position),
             hfr: Some(outcome.hfr),
             error: None,
+            elapsed_s,
             not_recorded: outcome.recorded.error,
         }),
         // `Sweep` is the sweep's own verdict on this filter: a fit
@@ -679,6 +778,7 @@ async fn one_sweep(
             position: None,
             hfr: None,
             error: Some(error.tool_message()),
+            elapsed_s,
             not_recorded: None,
         }),
         Err(error) => Err(error),
@@ -703,19 +803,23 @@ async fn one_sweep(
     Ok(sweep)
 }
 
-/// The progress message for one finished sweep.
-fn describe(sweep: &OffsetSweep, rounds: u32) -> String {
+/// The progress message for one finished sweep, the closing sweep
+/// marked as such.
+fn describe(sweep: &OffsetSweep, rounds: u32, closing: bool) -> String {
     let round = sweep.round;
     let filter = &sweep.filter;
+    let which = if closing {
+        format!("round {round}/{rounds} {filter} (closing)")
+    } else {
+        format!("round {round}/{rounds} {filter}")
+    };
     match (sweep.position, sweep.hfr, &sweep.error) {
         (Some(position), Some(hfr), _) if sweep.confirmed => {
-            format!("round {round}/{rounds} {filter}: focused at {position}, HFR {hfr:.2}")
+            format!("{which}: focused at {position}, HFR {hfr:.2}")
         }
-        (Some(position), _, _) => {
-            format!("round {round}/{rounds} {filter}: did not confirm, left at {position}")
-        }
-        (None, _, Some(error)) => format!("round {round}/{rounds} {filter}: {error}"),
-        (None, _, None) => format!("round {round}/{rounds} {filter}: no position"),
+        (Some(position), _, _) => format!("{which}: did not confirm, left at {position}"),
+        (None, _, Some(error)) => format!("{which}: {error}"),
+        (None, _, None) => format!("{which}: no position"),
     }
 }
 
@@ -840,7 +944,7 @@ async fn write_offsets(
 }
 
 /// Put the wheel and the focuser back: the filter the call found in
-/// the path, at that filter's measured position from the last round
+/// the path, at that filter's measured position from the last sweep
 /// that placed it, else where the focuser was when the call arrived.
 /// Runs on the client a cancellation cannot reach.
 async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measured) -> Restored {
@@ -1103,6 +1207,14 @@ mod tests {
         /// The leases taken and released, and the lease each move and
         /// filter change ran under, in order across both clients.
         log: Arc<Mutex<Vec<String>>>,
+        /// When the bench was built, and how far every filter's focus
+        /// moves for each minute since: the drift a night puts on all
+        /// of them alike.
+        epoch: tokio::time::Instant,
+        drift_per_minute: Arc<Mutex<f64>>,
+        /// How long the wheel takes to turn, on a bench whose clock is
+        /// paused and so passes only when something waits on it.
+        turn: Arc<Mutex<Option<std::time::Duration>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1140,7 +1252,18 @@ mod tests {
                 reorders_filters_after: Arc::new(Mutex::new(None)),
                 guiding: Arc::new(Mutex::new(None)),
                 log: Arc::new(Mutex::new(Vec::new())),
+                epoch: tokio::time::Instant::now(),
+                drift_per_minute: Arc::new(Mutex::new(0.0)),
+                turn: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// Every filter's focus moving `per_minute` steps a minute, and
+        /// a wheel that takes `turn` to move: the clock the drift runs
+        /// on is the one the wheel turns spend.
+        fn drifts(&self, per_minute: f64, turn: std::time::Duration) {
+            *self.drift_per_minute.lock().unwrap() = per_minute;
+            *self.turn.lock().unwrap() = Some(turn);
         }
 
         /// Make this the guiding train, its focuser also in `shared_with`.
@@ -1390,13 +1513,20 @@ mod tests {
             });
             let filter = Arc::clone(&self.filter);
             let log = Arc::clone(&self.log);
+            let turn = Arc::clone(&self.turn);
             rig.expect_set_filter().returning(move |_, name, lease_id| {
                 log.lock().unwrap().push(format!(
                     "filter {name} {}",
                     lease_id.as_deref().unwrap_or("-")
                 ));
                 *filter.lock().unwrap() = name.to_owned();
-                Box::pin(async { Ok(()) })
+                let turn = *turn.lock().unwrap();
+                Box::pin(async move {
+                    if let Some(turn) = turn {
+                        tokio::time::sleep(turn).await;
+                    }
+                    Ok(())
+                })
             });
         }
 
@@ -1404,11 +1534,16 @@ mod tests {
             let position = Arc::clone(&self.position);
             let filter = Arc::clone(&self.filter);
             let vertices = Arc::clone(&self.vertices);
+            let epoch = self.epoch;
+            let drift_per_minute = Arc::clone(&self.drift_per_minute);
             rig.expect_measure_stars()
                 .returning(move |_, _, _, _, stars| {
                     let at = *position.lock().unwrap();
                     let vertex = vertices.get(&*filter.lock().unwrap()).copied();
-                    let hfr = vertex.map(|vertex| (f64::from(at - vertex) / 10.0).hypot(1.0));
+                    let drift =
+                        *drift_per_minute.lock().unwrap() * epoch.elapsed().as_secs_f64() / 60.0;
+                    let hfr =
+                        vertex.map(|vertex| ((f64::from(at - vertex) - drift) / 10.0).hypot(1.0));
                     Box::pin(async move { Ok(rp_frame(hfr, 100, stars)) })
                 });
         }
@@ -1491,8 +1626,8 @@ mod tests {
     // --- the procedure --------------------------------------------------
 
     /// Each round focuses the reference and then each other filter, and
-    /// every difference is against the reference position measured
-    /// inside that round.
+    /// one more reference sweep closes the last round, so every filter
+    /// is measured between two reference sweeps.
     #[tokio::test]
     async fn every_filter_is_measured_against_the_reference_each_round() {
         let (store, _dir) = temp_store().await;
@@ -1508,16 +1643,38 @@ mod tests {
         assert_eq!(view.offsets.get("Ha"), Some(&30));
         assert_eq!(view.offsets.get("OIII"), Some(&-20));
         assert_eq!(view.differences.get("Ha"), Some(&vec![30, 30]));
-        assert_eq!(view.sweeps.len(), 6, "three filters, twice");
+        assert_eq!(
+            view.drift.get("Ha"),
+            Some(&vec![0, 0]),
+            "a focus that held still"
+        );
+        let walked: Vec<(u32, &str)> = view
+            .sweeps
+            .iter()
+            .map(|sweep| (sweep.round, sweep.filter.as_str()))
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                (1, "Luminance"),
+                (1, "Ha"),
+                (1, "OIII"),
+                (2, "Luminance"),
+                (2, "Ha"),
+                (2, "OIII"),
+                (2, "Luminance"),
+            ],
+            "three filters, twice, and the reference closing the last round"
+        );
         assert!(view.unmeasured.is_empty(), "{:?}", view.unmeasured);
         assert!(view.recorded.offsets_written);
-        assert_eq!(view.recorded.runs, Some(6));
+        assert_eq!(view.recorded.runs, Some(7));
         assert_eq!(view.model, "empty", "no record before this call");
 
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.reference_filter.as_deref(), Some("Luminance"));
         assert_eq!(record.offset_for(Some("Ha")), Some(30));
-        assert_eq!(record.run_count(None), 6);
+        assert_eq!(record.run_count(None), 7);
     }
 
     /// The wheel goes back to the filter the call found in the path,
@@ -1577,8 +1734,8 @@ mod tests {
         );
         assert_eq!(
             bench.at(),
-            24_980,
-            "the focuser stays where the last sweep put it"
+            25_000,
+            "the focuser stays where the last sweep, the closing one, put it"
         );
     }
 
@@ -1598,7 +1755,7 @@ mod tests {
         assert_eq!(unmeasured.filter, "OIII");
         assert_eq!(
             unmeasured.why,
-            "no round confirmed 'OIII' and the reference together"
+            "no sweep of 'OIII' confirmed between two confirmed reference sweeps"
         );
         let starless = view
             .sweeps
@@ -1612,10 +1769,9 @@ mod tests {
         );
     }
 
-    /// A round whose reference sweep did not confirm has nothing to
-    /// difference against, so it contributes nothing at all — and when
-    /// no round does, the call refuses to write rather than inventing
-    /// an offset.
+    /// A reference sweep that did not confirm gives no filter anything
+    /// to difference against — and when none does, the call refuses to
+    /// write rather than inventing an offset.
     #[tokio::test]
     async fn a_reference_that_never_confirms_leaves_nothing_to_write() {
         let (store, _dir) = temp_store().await;
@@ -1625,11 +1781,11 @@ mod tests {
 
         assert_eq!(
             err.tool_message(),
-            "no filter was measured against 'Luminance': 1 of 3 sweeps did not confirm"
+            "no filter was measured against 'Luminance': 2 of 4 sweeps did not confirm"
         );
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.reference_filter, None, "nothing was written");
-        assert_eq!(record.run_count(None), 3, "every sweep is still recorded");
+        assert_eq!(record.run_count(None), 4, "every sweep is still recorded");
     }
 
     /// A device that failed would meet every remaining sweep the same
@@ -1650,7 +1806,7 @@ mod tests {
         );
         let record = store.get("main").await.unwrap().unwrap();
         assert!(
-            record.run_count(None) < 6,
+            record.run_count(None) < 7,
             "the procedure stopped rather than walking every round"
         );
     }
@@ -1807,7 +1963,7 @@ mod tests {
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.reference_filter, None, "no offsets were written");
         assert!(
-            record.run_count(None) < 6,
+            record.run_count(None) < 7,
             "the rounds stopped where the cancellation landed"
         );
         assert_eq!(bench.in_path(), "Luminance", "the wheel went back");
@@ -1875,6 +2031,7 @@ mod tests {
             position: Some(position),
             hfr: Some(1.0),
             error: None,
+            elapsed_s: 0.0,
             not_recorded: None,
         };
         let measured = Measured {
@@ -1905,6 +2062,7 @@ mod tests {
             position,
             hfr: position.map(|_| 1.0),
             error,
+            elapsed_s: 0.0,
             not_recorded: not_recorded.map(str::to_owned),
         };
         let measured = Measured {
@@ -1969,11 +2127,200 @@ mod tests {
         );
         assert_eq!(
             measured.why_unmeasured("OIII"),
-            "no round confirmed 'OIII' and the reference together"
+            "no sweep of 'OIII' confirmed between two confirmed reference sweeps"
         );
         assert_eq!(
             Measured::default().why_unmeasured("Ha"),
-            "no round's reference sweep confirmed"
+            "no reference sweep confirmed"
+        );
+    }
+
+    // --- the drift ------------------------------------------------------
+
+    /// A sweep at a moment, confirmed at `position` or failed without
+    /// one.
+    fn timed(filter: &str, elapsed_s: f64, position: Option<i32>) -> OffsetSweep {
+        OffsetSweep {
+            round: 1,
+            filter: filter.to_owned(),
+            confirmed: position.is_some(),
+            position,
+            hfr: position.map(|_| 1.0),
+            error: position.is_none().then(|| "not enough stars".to_owned()),
+            elapsed_s,
+            not_recorded: None,
+        }
+    }
+
+    fn differenced(sweeps: Vec<OffsetSweep>) -> Measured {
+        let mut measured = Measured {
+            sweeps,
+            ..Measured::default()
+        };
+        measured.difference("Luminance");
+        measured
+    }
+
+    /// Focus that drifts while the wheel turns does not reach the
+    /// offsets. Every filter's focus rises a step a minute and the
+    /// wheel takes five minutes to turn, so a filter swept ten minutes
+    /// after its round's reference reads ten steps high against it.
+    /// Against the reference interpolated to its own moment, it reads
+    /// what the optics have, and the result says by how much each
+    /// difference was corrected.
+    #[tokio::test(start_paused = true)]
+    async fn focus_that_drifts_while_the_wheel_turns_does_not_reach_the_offsets() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        bench.drifts(1.0, std::time::Duration::from_secs(300));
+
+        let view = run(&bench, &store, &params(2)).await.unwrap();
+
+        let walked: Vec<(f64, Option<i32>)> = view
+            .sweeps
+            .iter()
+            .map(|sweep| (sweep.elapsed_s, sweep.position))
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                (0.0, Some(25_000)),
+                (300.0, Some(25_035)),
+                (600.0, Some(24_990)),
+                (900.0, Some(25_015)),
+                (1200.0, Some(25_050)),
+                (1500.0, Some(25_005)),
+                (1800.0, Some(25_030)),
+            ],
+            "each sweep focused where the drift had taken its filter"
+        );
+        assert_eq!(view.differences.get("Ha"), Some(&vec![30, 30]));
+        assert_eq!(view.differences.get("OIII"), Some(&vec![-20, -20]));
+        assert_eq!(view.drift.get("Ha"), Some(&vec![5, 5]));
+        assert_eq!(view.drift.get("OIII"), Some(&vec![10, 10]));
+        assert_eq!(view.offsets.get("Ha"), Some(&30));
+        assert_eq!(view.offsets.get("OIII"), Some(&-20));
+    }
+
+    /// A reference sweep that did not confirm is passed over, not the
+    /// round it opened: the filters either side of it are bracketed by
+    /// the nearest confirmed reference sweeps instead, over the longer
+    /// span between them.
+    #[test]
+    fn a_reference_sweep_that_did_not_confirm_is_passed_over() {
+        let measured = differenced(vec![
+            timed("Luminance", 0.0, Some(25_000)),
+            timed("Ha", 300.0, Some(25_027)),
+            timed("Luminance", 600.0, None),
+            timed("Ha", 900.0, Some(25_021)),
+            timed("Luminance", 1200.0, Some(24_988)),
+        ]);
+
+        assert_eq!(measured.drift.get("Ha"), Some(&vec![-3, -9]));
+        assert_eq!(measured.differences.get("Ha"), Some(&vec![30, 30]));
+    }
+
+    /// A filter sweep with a confirmed reference sweep on one side only
+    /// contributes nothing: one reference position cannot tell drift
+    /// from offset, and taking it alone would put the drift back.
+    #[test]
+    fn a_filter_sweep_with_a_reference_on_one_side_only_contributes_nothing() {
+        let measured = differenced(vec![
+            timed("Luminance", 0.0, None),
+            timed("Ha", 300.0, Some(25_030)),
+            timed("Luminance", 600.0, Some(25_000)),
+            timed("Ha", 900.0, Some(25_028)),
+            timed("Luminance", 1200.0, None),
+        ]);
+
+        assert!(
+            measured.differences.is_empty(),
+            "{:?}",
+            measured.differences
+        );
+        assert!(measured.reference_placed);
+        assert_eq!(
+            measured.why_unmeasured("Ha"),
+            "no sweep of 'Ha' confirmed between two confirmed reference sweeps"
+        );
+    }
+
+    /// The drift is whole steps, half a step going away from zero as an
+    /// offset's does, and a bracket whose ends answered at the same
+    /// moment has no time to place a sweep in, so it takes the midpoint.
+    #[test]
+    fn drift_is_whole_steps_and_a_bracket_without_time_takes_its_midpoint() {
+        assert_eq!(drift_at(1.0, (0.0, 0), (2.0, 5)), 3);
+        assert_eq!(drift_at(1.0, (0.0, 0), (2.0, -5)), -3);
+        assert_eq!(drift_at(5.0, (5.0, 100), (5.0, 90)), -5);
+    }
+
+    /// Progress counts the closing sweep among the sweeps the
+    /// procedure will run, and names it, so its tick does not read as
+    /// a round of its own.
+    #[tokio::test]
+    async fn progress_counts_and_names_the_closing_sweep() {
+        #[derive(Default)]
+        struct Ticks(Mutex<Vec<(f64, Option<f64>, String)>>);
+
+        #[async_trait::async_trait]
+        impl Progress for Ticks {
+            async fn tick(&self, progress: f64, total: Option<f64>, message: String) {
+                self.0.lock().unwrap().push((progress, total, message));
+            }
+        }
+
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        let ticks = Ticks::default();
+        let active = bench.rig();
+        let cleanup = bench.cleanup();
+
+        determine_filter_offsets(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(),
+            &params(1),
+            &ticks,
+        )
+        .await
+        .unwrap();
+
+        let ticks = ticks.0.lock().unwrap();
+        let counted: Vec<(f64, Option<f64>)> = ticks
+            .iter()
+            .map(|(progress, total, _)| (*progress, *total))
+            .collect();
+        assert_eq!(
+            counted,
+            [
+                (1.0, Some(4.0)),
+                (2.0, Some(4.0)),
+                (3.0, Some(4.0)),
+                (4.0, Some(4.0))
+            ]
+        );
+        let messages: Vec<&str> = ticks
+            .iter()
+            .map(|(_, _, message)| message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "round 1/1 Luminance: focused at 25000, HFR 1.00",
+                "round 1/1 Ha: focused at 25030, HFR 1.00",
+                "round 1/1 OIII: focused at 24980, HFR 1.00",
+                "round 1/1 Luminance (closing): focused at 25000, HFR 1.00",
+            ]
         );
     }
 
@@ -2103,9 +2450,9 @@ mod tests {
         store.put(seeded("Luminance")).await.unwrap();
         let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
         // One read resolves the train and two follow each sweep, so
-        // the fifth is the last sweep's: the caller goes away with
-        // every measurement taken and nothing yet written.
-        bench.cancels_after_train_reads(5);
+        // the seventh is the closing sweep's: the caller goes away
+        // with every measurement taken and nothing yet written.
+        bench.cancels_after_train_reads(7);
 
         let err = run(&bench, &store, &params(1)).await.unwrap_err();
 
@@ -2266,8 +2613,9 @@ mod tests {
     }
 
     /// Two rounds is what a call that does not say gets — one round
-    /// cannot average out the drift it is there to average — and zero
-    /// is refused like any other number outside the range.
+    /// gives each filter a single difference, and a median of one
+    /// shows no spread — and zero is refused like any other number
+    /// outside the range.
     #[tokio::test]
     async fn rounds_default_to_two_and_zero_is_refused() {
         let (store, _dir) = temp_store().await;
@@ -2514,7 +2862,11 @@ mod tests {
             .enumerate()
             .filter_map(|(at, entry)| entry.strip_prefix("acquire ").map(|id| (at, id)))
             .collect();
-        assert_eq!(leases.len(), 2, "one lease per sweep: {log:?}");
+        assert_eq!(
+            leases.len(),
+            3,
+            "one lease per sweep, the closing one too: {log:?}"
+        );
         assert_ne!(leases[0].1, leases[1].1, "a fresh id each time");
         for (n, (at, id)) in leases.iter().enumerate() {
             let release = log

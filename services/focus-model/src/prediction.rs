@@ -87,7 +87,7 @@ impl Bounds {
 }
 
 /// `value.round()` as a step count.
-const fn round_steps(value: f64) -> i32 {
+pub(crate) const fn round_steps(value: f64) -> i32 {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
