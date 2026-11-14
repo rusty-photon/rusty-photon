@@ -99,7 +99,12 @@ Key points:
   hardware-derived or the service has no devices — declining minting must
   never silently drop the first-start materialization. Only services whose
   config is deliberately operator-provided (the `ConditionPathExists`-gated
-  ones, `session-runner`) skip this and call `resolve_config_path` directly.
+  ones, `session-runner` among them) skip this and call `resolve_config_path`
+  directly. They hand the path to the runner as well, with
+  `.condition_path_exists(&config_path)`, and load the config inside the
+  closure: under the Windows SCM the runner stops such a service cleanly,
+  before the closure runs, while the file is absent — the MSI starts it at
+  boot like every other ([ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
   Read the file with `rusty_photon_config::load_file::<Config>`: it tells a
   JSON syntax error apart from a file that is JSON but not a valid
   configuration. See

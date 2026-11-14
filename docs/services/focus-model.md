@@ -1478,10 +1478,13 @@ file written by a newer build.
 ## Configuration
 
 The config file is required (`ConditionPathExists` on the packaged
-unit): `mcp_server_url` has no sensible default. Run standalone,
-`--config` names it; when omitted the path resolves to the platform
-default (`~/.config/rusty-photon/focus-model.json` on Linux,
-`%PROGRAMDATA%\rusty-photon\focus-model.json` on Windows) via
+unit): `mcp_server_url` has no sensible default. Run by the Windows SCM
+without the file, the service stops at once with exit code 0, which the
+failure actions leave alone (`ServiceRunner::condition_path_exists`;
+[ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
+Run standalone, `--config` names it; when omitted the path resolves to
+the platform default (`~/.config/rusty-photon/focus-model.json` on
+Linux, `%PROGRAMDATA%\rusty-photon\focus-model.json` on Windows) via
 `rusty-photon-config`.
 
 ```json

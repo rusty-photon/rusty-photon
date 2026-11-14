@@ -97,16 +97,12 @@ fn main() -> ExitCode {
     // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = init_service_tracing("plate-solver", cli.log_level, cli.service);
 
-    // Path resolution and config load share one failure arm: both are
-    // startup config errors (exit 2). `resolve_config_path` fails only
+    // A startup config error (exit 2). `resolve_config_path` fails only
     // when no home directory is resolvable at all (HOME unset/empty and
     // no passwd entry for the uid — a stripped-container state tests
-    // can't reproduce), so a dedicated arm would stay uncovered.
-    let config = match rusty_photon_config::resolve_config_path("plate-solver", cli.config)
-        .map_err(Box::<dyn std::error::Error>::from)
-        .and_then(|path| load_config(&path).map_err(Box::from))
-    {
-        Ok(c) => c,
+    // can't reproduce).
+    let config_path = match rusty_photon_config::resolve_config_path("plate-solver", cli.config) {
+        Ok(path) => path,
         Err(e) => {
             // Through tracing, not eprintln!: in console mode the subscriber
             // writes to stderr anyway, and in Windows SCM service mode stderr
@@ -118,7 +114,15 @@ fn main() -> ExitCode {
 
     let result = ServiceRunner::new("plate-solver")
         .scm_mode(cli.service)
+        // No default config to write: under the SCM the service stays
+        // stopped until the operator writes one.
+        .condition_path_exists(&config_path)
         .run(move |shutdown| async move {
+            let config = load_config(&config_path).map_err(
+                |e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::from(format!("config: {e}"))
+                },
+            )?;
             let server = ServerBuilder::new()
                 .with_config(config)
                 .build()
@@ -157,11 +161,11 @@ fn main() -> ExitCode {
             // in SCM service mode this lands in the rolling log file instead
             // of a dead handle.
             tracing::error!("plate-solver: {e:?}");
-            // Preserve the prior split: config / build failures returned
-            // 2, runtime errors returned 1. The closure surfaces both via
-            // the runner's `Report`; we recover the distinction by tagging
-            // build failures with a "build: " prefix in the closure above.
-            if msg.starts_with("build: ") {
+            // Config and build failures exit 2, runtime errors 1. The
+            // closure surfaces all of them via the runner's `Report`; the
+            // "config: " and "build: " prefixes it tags the first two with
+            // tell them apart.
+            if msg.starts_with("config: ") || msg.starts_with("build: ") {
                 ExitCode::from(2)
             } else {
                 ExitCode::from(1)

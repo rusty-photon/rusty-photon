@@ -77,11 +77,11 @@ impl PpbaSwitchDevice {
 
         match switch_id {
             SwitchId::Quad12V => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.switches.quad_12v { 1.0 } else { 0.0 })
             }
             SwitchId::AdjustableOutput => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.switches.adjustable_output {
                     1.0
                 } else {
@@ -89,56 +89,56 @@ impl PpbaSwitchDevice {
                 })
             }
             SwitchId::DewHeaterA => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(f64::from(status.dew_a))
             }
             SwitchId::DewHeaterB => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(f64::from(status.dew_b))
             }
             SwitchId::UsbHub => Ok(if cached.usb_hub_enabled { 1.0 } else { 0.0 }),
             SwitchId::AutoDew => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.switches.auto_dew { 1.0 } else { 0.0 })
             }
             SwitchId::AverageCurrent => {
-                let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
+                let stats = cached.power_stats.get().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.average_amps)
             }
             SwitchId::AmpHours => {
-                let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
+                let stats = cached.power_stats.get().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.amp_hours)
             }
             SwitchId::WattHours => {
-                let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
+                let stats = cached.power_stats.get().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.watt_hours)
             }
             SwitchId::Uptime => {
-                let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
+                let stats = cached.power_stats.get().ok_or(PpbaError::NotConnected)?;
                 Ok(stats.uptime_hours())
             }
             SwitchId::InputVoltage => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(status.voltage)
             }
             SwitchId::TotalCurrent => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(status.current)
             }
             SwitchId::Temperature => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(status.temperature)
             }
             SwitchId::Humidity => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(status.humidity)
             }
             SwitchId::Dewpoint => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(status.dewpoint)
             }
             SwitchId::PowerWarning => {
-                let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
+                let status = cached.status.get().ok_or(PpbaError::NotConnected)?;
                 Ok(if status.power_warning { 1.0 } else { 0.0 })
             }
         }
@@ -161,7 +161,7 @@ impl PpbaSwitchDevice {
         if matches!(switch_id, SwitchId::DewHeaterA | SwitchId::DewHeaterB) {
             self.manager.refresh_status(session).await?;
             let cached = self.manager.get_cached_state().await;
-            if let Some(status) = &cached.status {
+            if let Some(status) = cached.status.get() {
                 if status.switches.auto_dew {
                     return Err(PpbaError::AutoDewEnabled(id));
                 }
@@ -321,7 +321,7 @@ impl Switch for PpbaSwitchDevice {
             // If the cache hasn't been populated yet, refresh under the
             // device's session.
             let cached = self.manager.get_cached_state().await;
-            if let Some(status) = &cached.status {
+            if let Some(status) = cached.status.get() {
                 return Ok(!status.switches.auto_dew);
             }
             let guard = self.session.read().await;
@@ -331,7 +331,7 @@ impl Switch for PpbaSwitchDevice {
             self.manager.refresh_status(session).await?;
             drop(guard);
             let cached = self.manager.get_cached_state().await;
-            if let Some(status) = &cached.status {
+            if let Some(status) = cached.status.get() {
                 return Ok(!status.switches.auto_dew);
             }
         }

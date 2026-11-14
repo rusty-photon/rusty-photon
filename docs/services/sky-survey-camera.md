@@ -225,15 +225,18 @@ the operator to hand-write a unique string.
   overwritten, and a run that fills nothing performs no write. The
   next load then reads the stable, persisted id.
 - **A missing config file remains a hard error.** Unlike services that
-  have a `Config::default()`, this camera has none — the `optics`
-  fields (focal length, pixel size, sensor dimensions) are mandatory
-  and have no sensible default. Identity materialization therefore
-  runs **only when the config file already exists**; it never
-  scaffolds an identity-only file, because `load_config` would then
-  immediately fail on the missing `optics` section anyway. Operators
-  must supply a config file with at least the `optics` (and the other
-  required) sections; the `device.unique_id` is the one field they may
-  safely leave out and let the service generate.
+  have a `Config::default()`, this camera has none — the `optics` fields
+  (focal length, pixel size, sensor dimensions) are mandatory and have
+  no sensible default. Identity materialization therefore runs **only
+  when the config file already exists**; it never scaffolds an
+  identity-only file, because `load_config` would then immediately fail
+  on the missing `optics` section anyway. Operators must supply a config
+  file with at least the `optics` (and the other required) sections; the
+  `device.unique_id` is the one field they may safely leave out and let
+  the service generate. Run by the Windows SCM without the file, the
+  service stops at once with exit code 0, which the failure actions
+  leave alone (`ServiceRunner::condition_path_exists`;
+  [ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 - **The file is written only when the result loads.** The minted id is
   applied in memory first, and the file is saved only if the result
   parses as `Config` and passes the same rules `load_config` applies

@@ -1,0 +1,40 @@
+PHD2 version 2.6.14 [Linux], Log version 2.5. Log enabled at 2026-10-13 14:34:33
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:0 gdur:0 gacnt:0
+Log closed at 2026-10-13 14:37:19
+PHD2 version 2.6.14 [Linux], Log version 2.5. Log enabled at 2026-10-13 14:34:33
+INFO: Guiding parameter change, MultiStar = true
+
+Calibration Begins at 2026-10-13 14:37:44
+Equipment Profile = Simulator
+Dither = both axes, Dither scale = 1.000, Image noise reduction = none, Guide-frame time lapse = 0, Server enabled
+Pixel scale = 5.93 arc-sec/px, Binning = 1, Focal length = 160 mm
+Search region = 15 px, Star mass tolerance = 50.0%, Multi-star mode, list size = 1
+ Camera = Simulator, gain = 95, full size = 752 x 580, no dark, no defect map, pixel size = 4.6 um
+Exposure = 1000 ms
+Mount = On Camera, Calibration Step = 1650 ms, Calibration Distance = 25 px, Assume orthogonal axes = no
+RA Guide Speed = Unknown, Dec Guide Speed = Unknown
+RA/Dec = Unknown, Hour angle = Unknown, Pier side = Unknown, Rotator pos = N/A, Alt = Unknown, Az = Unknown
+Lock position = 202.152, 71.063, Star position = 202.152, 71.063, HFD = 1.78 px
+Direction,Step,dx,dy,x,y,Dist
+INFO: SETTLING STATE CHANGE, Settling failed
+Guiding Ends at 2026-10-13 15:20:29
+
+Log Summary: calcnt:0 gcnt:1 gdur:2587 gacnt:0
+Log closed at 2026-10-13 15:34:53
+PHD2 version 2.6.14 [Linux], Log version 2.5. Log enabled at 2026-10-13 14:34:33
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:1 gdur:2587 gacnt:0
+Log closed at 2026-10-13 18:09:21
+PHD2 version 2.6.14 [Linux], Log version 2.5. Log enabled at 2026-10-13 14:34:33
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:1 gdur:2587 gacnt:0
+Log closed at 2026-10-13 18:14:36
+PHD2 version 2.6.14 [Linux], Log version 2.5. Log enabled at 2026-10-13 14:34:33
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:1 gdur:2587 gacnt:0
+Log closed at 2026-10-13 18:21:17

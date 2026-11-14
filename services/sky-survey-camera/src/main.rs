@@ -94,6 +94,9 @@ fn main() -> ServiceResult {
     ServiceRunner::new("sky-survey-camera")
         .with_reload()
         .scm_mode(args.service)
+        // No default config to write: under the SCM the service stays
+        // stopped until the operator writes one.
+        .condition_path_exists(&config_path)
         .run_with_reload(move |shutdown, reload| async move {
             run_reloadable(&config_path, shutdown, reload)
                 .await

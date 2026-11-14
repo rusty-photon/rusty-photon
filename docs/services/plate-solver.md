@@ -444,10 +444,13 @@ The service reads a single JSON config file. `--config` names it
 explicitly; when omitted, the path resolves to the platform default
 (`~/.config/rusty-photon/plate-solver.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\plate-solver.json` on Windows) via
-`rusty-photon-config`. There is no built-in default config — the
-file must exist (`astap_binary_path` / `astap_db_directory` are
-mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install.
+`rusty-photon-config`. There is no built-in default config — the file
+must exist (`astap_binary_path` / `astap_db_directory` are mandatory),
+so the packaged systemd unit gates on it with `ConditionPathExists`
+instead of crash-looping on a fresh install. Run by the Windows SCM
+without the file, the service stops at once with exit code 0, which the
+failure actions leave alone (`ServiceRunner::condition_path_exists`;
+[ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 
 `plate-solver doctor [--config <file>] [--json]` diagnoses this service's
 own config read-only without starting it — see

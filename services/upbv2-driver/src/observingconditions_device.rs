@@ -488,7 +488,8 @@ mod tests {
         // mean holds exactly that sample. Asserting against the cache pins
         // each ASCOM property to its own wire field without hard-coding the
         // mock's numbers here as well as in the mock.
-        let status = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
+        let status = state.status.get().unwrap();
         let t = device.temperature().await.unwrap();
         assert!((t - status.temperature).abs() < 0.01, "temperature: {t}");
         let h = device.humidity().await.unwrap();

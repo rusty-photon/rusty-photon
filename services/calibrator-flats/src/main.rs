@@ -109,6 +109,9 @@ fn main() -> ServiceResult {
 
     ServiceRunner::new("calibrator-flats")
         .scm_mode(cli.service)
+        // No default config to write: under the SCM the service stays
+        // stopped until the operator writes one.
+        .condition_path_exists(&config_path)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
             let mut config = calibrator_flats::config::load_config(&config_path)?;
