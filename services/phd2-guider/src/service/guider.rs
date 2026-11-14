@@ -18,9 +18,17 @@
 //! sweep lease") sits beside the slot: its acquire claims it as a capture
 //! does, the same mutations are refused while it is held, and a stop ends
 //! it.
+//!
+//! PHD2's **restart** (`docs/services/phd2-guider.md` § "`POST
+//! /api/v1/phd2/restart`") is a mutation too, and lives in [`restart`].
+
+mod restart;
+
+pub use restart::{RestartDone, RestartSettings};
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -34,6 +42,7 @@ use crate::error::Phd2Error;
 use crate::events::{AppState, Phd2Event};
 
 use super::error::ServiceError;
+use super::keeper::Keeper;
 use super::lease::{self, AcquireRequest, Granted, LeaseBook, LeaseEnd, LeaseError, Token};
 
 /// Rolling RMS window size, in guide steps.
@@ -330,6 +339,15 @@ pub struct GuiderOps {
     lease: std::sync::Mutex<LeaseBook>,
     default_settle: SettleParams,
     stop_timeout: Duration,
+    /// What a restart of PHD2 takes from the config.
+    restart: RestartSettings,
+    /// What keeps PHD2 running on this host, if anything does.
+    keeper: Option<Arc<dyn Keeper>>,
+    /// A client has the camera facade's camera connected, or is connecting
+    /// it.
+    facade_camera: AtomicBool,
+    /// A restart of PHD2 is under way.
+    restarting: AtomicBool,
 }
 
 impl GuiderOps {
@@ -354,7 +372,24 @@ impl GuiderOps {
             lease: std::sync::Mutex::new(LeaseBook::default()),
             default_settle,
             stop_timeout,
+            restart: RestartSettings::default(),
+            keeper: None,
+            facade_camera: AtomicBool::new(false),
+            restarting: AtomicBool::new(false),
         }
+    }
+
+    /// Restart PHD2 with `settings` through `keeper`, the thing that keeps
+    /// PHD2 running on this host. Without it, a restart is refused.
+    #[must_use]
+    pub fn with_restart(
+        mut self,
+        settings: RestartSettings,
+        keeper: Option<Arc<dyn Keeper>>,
+    ) -> Self {
+        self.restart = settings;
+        self.keeper = keeper;
+        self
     }
 
     /// The mutex the guiding mutations serialize behind. The camera

@@ -1,0 +1,21 @@
+#!/bin/sh
+# The virtual X display PHD2 runs on, started by
+# rusty-photon-phd2-display.service as the service account.
+set -eu
+home=/var/lib/rusty-photon/phd2
+auth="$home/.Xauthority"
+umask 077
+# A fresh cookie at every start, which only the service account can read.
+rm -f "$auth"
+xauth -f "$auth" add :20 . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+# Debian's TigerVNC X server is Xtigervnc; Fedora's is Xvnc.
+if command -v Xtigervnc >/dev/null 2>&1; then
+    xvnc=Xtigervnc
+else
+    xvnc=Xvnc
+fi
+# VNC on 127.0.0.1:5920 only. Until the operator has set the password
+# file, every viewer is turned away and PHD2 still runs.
+exec "$xvnc" :20 -localhost -rfbport 5920 -nolisten tcp -auth "$auth" \
+    -SecurityTypes VncAuth -PasswordFile "$home/vncpasswd" \
+    -AlwaysShared -geometry 1280x800 -depth 24

@@ -315,7 +315,8 @@ pub fn camera_rule_violations(config: &Config) -> Vec<(String, String)> {
     violations
 }
 
-fn is_loopback_host(host: &str) -> bool {
+/// Whether `host` names this host: `localhost` or a loopback address.
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
             .trim_start_matches('[')
@@ -350,6 +351,15 @@ pub struct Phd2Config {
     #[serde(default = "default_command_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub command_timeout: Duration,
+    /// The bound on a whole `POST /api/v1/phd2/restart` (`serve` mode only).
+    #[serde(default = "default_restart_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub restart_timeout: Duration,
+    /// The host runs PHD2 under the service manager, so a restart has
+    /// something to start PHD2 again (`serve` mode only). See
+    /// `docs/services/phd2-guider.md` § "Switching over".
+    #[serde(default)]
+    pub managed: bool,
     #[serde(default)]
     pub auto_start: bool,
     #[serde(default)]
@@ -403,6 +413,8 @@ impl Default for Phd2Config {
             executable_path: None,
             connection_timeout: default_connection_timeout(),
             command_timeout: default_command_timeout(),
+            restart_timeout: default_restart_timeout(),
+            managed: false,
             auto_start: false,
             auto_connect_equipment: false,
             reconnect: ReconnectConfig::default(),
@@ -425,6 +437,10 @@ const fn default_connection_timeout() -> Duration {
 
 const fn default_command_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+const fn default_restart_timeout() -> Duration {
+    Duration::from_mins(2)
 }
 
 /// Settling parameters for guiding operations.
@@ -637,6 +653,8 @@ mod tests {
         assert_eq!(config.port, 4400);
         assert_eq!(config.connection_timeout, Duration::from_secs(10));
         assert_eq!(config.command_timeout, Duration::from_secs(30));
+        assert_eq!(config.restart_timeout, Duration::from_mins(2));
+        assert!(!config.managed);
         assert!(!config.auto_start);
         assert!(!config.auto_connect_equipment);
         assert!(config.reconnect.enabled);
@@ -702,6 +720,18 @@ mod tests {
         assert_eq!(config.server.port, 0);
         assert_eq!(config.stop_timeout, Duration::from_secs(1));
         assert_eq!(config.phd2.port, 14400);
+    }
+
+    #[test]
+    fn the_restart_keys_parse_from_json() {
+        let config: Config =
+            serde_json::from_str(r#"{"phd2": {"managed": true, "restart_timeout": "90s"}}"#)
+                .unwrap();
+        assert!(config.phd2.managed);
+        assert_eq!(config.phd2.restart_timeout, Duration::from_secs(90));
+        let persisted = serde_json::to_value(&config).unwrap();
+        assert_eq!(persisted["phd2"]["managed"], true);
+        assert_eq!(persisted["phd2"]["restart_timeout"], "1m 30s");
     }
 
     #[test]

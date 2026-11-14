@@ -604,6 +604,78 @@ no restarts, no notifications, an amber dashboard row showing the
 guider's own `message` (issue #595). Supervision still restarts the
 guider the moment it stops answering HTTP at all.
 
+### PHD2 under the service manager (Linux)
+
+The steps above run PHD2 as you, in your own TigerVNC session, which a
+reboot or a power cut leaves down until someone starts it again. The
+phd2-guider package also ships two units that run PHD2 with nobody
+logged on, so that the daily power cycle's dusk can restart it
+([phd2-guider.md § PHD2 under the service manager](services/phd2-guider.md#phd2-under-the-service-manager)):
+`rusty-photon-phd2-display`, a virtual X display (Xtigervnc on `:20`,
+VNC on `127.0.0.1:5920`), and `rusty-photon-phd2`, PHD2 on that display
+as the `rusty-photon` account. Both stay off until you switch the host
+over, once, in this order. They need TigerVNC's X server and `xauth`,
+which the package recommends (`tigervnc-standalone-server` and `xauth`
+on Debian and Raspberry Pi OS, `tigervnc-server-minimal` and
+`xorg-x11-xauth` on Fedora).
+
+1. **Export your profile** while your PHD2 still runs: in PHD2's
+   Connect Equipment dialog, Manage Profiles → Export, to `/tmp`, where
+   the `rusty-photon` account can read it.
+2. **Retire your PHD2**: quit it cleanly (File → Exit) and make sure
+   your TigerVNC session has ended (`tigervncserver -kill :1`). Two
+   PHD2s cannot share port 4400 or the guide camera.
+3. **Hand the guide camera over**, if you followed the camera facade's
+   step 1 below: remove its port rule and apply that to the camera
+   already plugged in. Without the rule, the camera packages' own rules
+   give the camera to `rusty-photon`.
+
+   ```sh
+   sudo rm /etc/udev/rules.d/91-rusty-photon-phd2-guide-camera.rules
+   sudo udevadm control --reload
+   sudo udevadm trigger --action=change --settle --property-match=ID_PATH_WITH_USB_REVISION="$PORT"
+   ```
+
+4. **Set the VNC password and start the units.** Until the password
+   file exists, PHD2 runs but the display turns every viewer away. On
+   Fedora the password tool is `vncpasswd`; on Raspberry Pi OS use
+   `tigervncpasswd`, as above.
+
+   ```sh
+   sudo -u rusty-photon tigervncpasswd /var/lib/rusty-photon/phd2/vncpasswd
+   sudo systemctl enable --now rusty-photon-phd2
+   ```
+
+5. **Set `phd2.managed: true`** in `phd2-guider.json` (the `phd2`
+   block), or on the guider's setup page, and restart the service:
+   `sudo systemctl restart rusty-photon-phd2-guider`.
+6. **Import the profile.** Tunnel the display and point a VNC viewer at
+   `localhost:5920`, then in PHD2's Manage Profiles → Import, pick the
+   file from `/tmp`. Delete the exported file afterwards.
+
+   ```sh
+   ssh -L 5920:127.0.0.1:5920 <rig-host>
+   ```
+
+7. **Verify** with PHD2 stopped (not guiding or looping). A restart
+   takes up to two minutes and answers with PHD2 restarted and its
+   equipment connected:
+
+   ```sh
+   curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+     -w '\n%{http_code}\n' http://127.0.0.1:11130/api/v1/phd2/restart
+   ```
+
+   `200` with `{"phd2":"restarted","equipment":"connected",…}` means the
+   restart works. `501` `restart_unsupported` names what is missing:
+   `phd2.managed` is still `false`, `rusty-photon-phd2` is not active,
+   or `phd2.host` is not `localhost`. Add `-u <user>:<password>` if the
+   guider has auth.
+
+An upgrade of phd2-guider restarts neither unit, so it never ends PHD2
+mid-guide. `systemctl status rusty-photon-phd2` and `journalctl -u
+rusty-photon-phd2` show PHD2's own state.
+
 ## phd2-guider: the camera facade
 
 The guider can also serve the guide camera as an ASCOM Alpaca Camera,
@@ -619,7 +691,11 @@ that driver (`qhy-camera`, `zwo-camera` or `svbony-camera`) a
 `usb_devices` list without the guide camera's port. Otherwise the driver
 and PHD2 both open it.
 
-1. **Give PHD2 the guide camera's port** (Linux). Every camera package's
+1. **Give PHD2 the guide camera's port** (Linux; skip it on a host
+   switched over to [PHD2 under the service
+   manager](#phd2-under-the-service-manager-linux), where PHD2 runs as
+   `rusty-photon` and the packages' rules already give it the camera).
+   Every camera package's
    udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's id, 03c3, which its
    cameras share), gives its vendor's whole USB id to the `rusty-photon`
    group, mode 0660, and PHD2, running as you, is not in it. Any one of
@@ -664,8 +740,11 @@ and PHD2 both open it.
    on the camera's node, and check after a reboot that the node still
    has your group. This recipe has not been worked out on such a board.
 
-2. **Create the shared directory** (Linux). PHD2 runs as you, under your
-   VNC session. The service runs as `rusty-photon` and may write only
+2. **Create the shared directory** (Linux). On a host switched over to
+   PHD2 under the service manager, PHD2 runs as `rusty-photon` too, so
+   `sudo install -d -o rusty-photon -g rusty-photon -m 0750
+   /var/lib/rusty-photon/phd2-images` is all it takes. Otherwise PHD2
+   runs as you, under your VNC session. The service runs as `rusty-photon` and may write only
    under `/var/lib/rusty-photon`, which is closed to other accounts. So
    grant your account a way through, and give the service's group read
    and write on every file PHD2 creates there:

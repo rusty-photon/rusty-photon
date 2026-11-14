@@ -9,8 +9,8 @@ This is a workspace library, not a service. It depends on `libc` (Unix),
 `thiserror` and `tracing`, and on no async runtime: it serves synchronous
 callers (`rusty-photon-doctor-checks`, which every service links, and the
 central doctor's platform inspectors) and asynchronous ones (`plate-solver`,
-`sentinel`, doctor's aggregation and the `bdd-infra` ConformU runner) through
-one implementation.
+`sentinel`, `phd2-guider`'s reading of PHD2's unit, doctor's aggregation and
+the `bdd-infra` ConformU runner) through one implementation.
 
 ## Scope
 
