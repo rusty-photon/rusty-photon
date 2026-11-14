@@ -118,7 +118,7 @@ rebuilds under `cargo rail`'s `commit` profile with no special handling; run
   `CanStopExposure = true` *and* `CanAbortExposure = true`), native `PulseGuide`
   via ST4 (`CanPulseGuide = true`), native `ElectronsPerADU`, and trivial
   `PixelSizeX == PixelSizeY`. See
-  [`zwo-camera.md`](../services/zwo-camera.md#ascom-camera-surface--v0-behaviour).
+  [`zwo-camera.md`](../services/zwo-camera.md#ascom-camera-surface).
 - **A new native build-dep.** Devs without the SDK build the rest of the
   workspace normally; `cargo rail`'s affected-packages-only mode builds
   `zwo-camera` only when its files change. CI / the Pi 5 nightly runner gain an

@@ -1,6 +1,6 @@
 # Rusty Photon SVBony camera access (installed by rusty-photon-svbony-camera).
 #
-# Group-scoped device access per ADR-013 §3: make SVBony USB devices
+# Group-scoped device access: make SVBony USB devices
 # (VID f266) accessible to the rusty-photon service group (the account's
 # own group, created with the user by every package — never plugdev, a
 # Debian base-passwd group rpm-family hosts do not have) instead of a

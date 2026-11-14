@@ -6,9 +6,10 @@
 //! tests can substitute a mock that forces paths the `zwo-rs` simulation cannot —
 //! a mid-exposure SDK error (E9), a model without an ST4 port (PG2) — without
 //! hardware, and (3) keeps the open/close lifecycle in one place. `zwo-rs`'s
-//! `Camera` is RAII (open = [`zwo_rs::Sdk::open_camera`], close = drop) and
-//! `Send + !Sync`, so the production handle keeps it behind a `parking_lot::Mutex`
-//! and re-opens on connect from the cached enumeration `index`.
+//! `Camera` is RAII (open = [`zwo_rs::CameraList::open_camera`], close = drop)
+//! and `Send + !Sync`, so the production handle keeps it behind a
+//! `parking_lot::Mutex` and, on connect, finds its camera by name and serial
+//! and re-opens it (C6).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -253,8 +254,8 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The camera's enumeration [`CameraInfo`] (cached; no open required).
     fn info(&self) -> CameraInfo;
 
-    /// Whether the handle holds a camera, and whether the SDK has answered a
-    /// call on it with `ASI_ERROR_CAMERA_REMOVED` since it was opened (C6).
+    /// Whether the handle holds a camera, and whether a failed call on it has
+    /// found it gone from the bus since it was opened (C6).
     ///
     /// The two are one reading, never two: a close clears the lost mark as it
     /// lets the camera go, so "open" read before it and "not lost" read after
@@ -671,7 +672,7 @@ impl CameraHandle for ZwoCameraHandle {
         // the integration: holding it for the whole exposure would block every
         // other SDK read — including `is_open()` from a concurrent request — for
         // the full duration. A second exposure is already barred by the device's
-        // in-flight CAS, and ASI control/status reads are safe concurrently with
+        // in-flight claim, and ASI control/status reads are safe concurrently with
         // an integrating exposure (only ROI/format changes are not, and those
         // happen only here, at the start of a capture — as do the gain and
         // offset writes, which no ASI document says are safe beside one).
@@ -712,14 +713,13 @@ impl CameraHandle for ZwoCameraHandle {
         // concurrent property reads, each a `spawn_blocking`, so the pool holds far
         // more threads than the runner has cores — an individual
         // `std::thread::sleep(20ms)` routinely overshoots its requested nap
-        // several-fold. The earlier loop summed *intended* naps
-        // (`elapsed += nap`), so it always ran the full step count regardless of
-        // how long each nap actually took: a 2 s exposure ballooned to ~10 s of
-        // wall-clock on a contended runner (observed on the macOS CI runner — a
-        // scheduling artifact, not a slow CPU), tripping ConformU's 10 s
-        // async-operation timeout. A deadline bounds the integration to the
-        // requested duration plus at most one overshooting nap, whatever the
-        // scheduler does.
+        // several-fold. A loop that sums *intended* naps (`elapsed += nap`) runs
+        // the full step count regardless of how long each nap actually takes: on
+        // a contended macOS CI runner such a loop ran a 2 s exposure to ~10 s of
+        // wall-clock — a scheduling artifact, not a slow CPU — tripping
+        // ConformU's 10 s async-operation timeout. A deadline bounds the
+        // integration to the requested duration plus at most one overshooting
+        // nap, whatever the scheduler does.
         // The duration is validated against `ExposureMax` upstream, so this
         // cannot overflow the clock; falling back to `now` would end the wait
         // immediately and let the poll below do the bounding.
@@ -825,10 +825,9 @@ impl ZwoCameraHandle {
         }
 
         // Size the buffer from the SDK's own view of the ROI, which is exactly
-        // what `download_exposure` checks it against. That view now includes the
-        // format the capture's arm set, so the non-Raw16 path this guarded
-        // against — an 8-bit readout mode (RM1/RM2) — needs no second
-        // bytes-per-pixel constant here.
+        // what `download_exposure` checks it against. That view includes the
+        // format the capture's arm set, so an 8-bit readout mode (RM1/RM2)
+        // needs no second bytes-per-pixel constant here.
         let frame_len = camera
             .roi_format()?
             .buffer_len()
@@ -1924,7 +1923,7 @@ pub(crate) mod mock {
 
         fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()> {
             self.pulse_offs_begun.fetch_add(1, Ordering::SeqCst);
-            // Bounded for the capture gate's reason (see `capture`).
+            // Bounded for the capture gate's reason (see `run_capture`).
             let gate_start = std::time::Instant::now();
             while self.pulse_off_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT
             {

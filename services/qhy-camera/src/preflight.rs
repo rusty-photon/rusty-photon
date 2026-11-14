@@ -1,14 +1,16 @@
 //! Windows `qhyccd.dll` startup preflight.
 //!
 //! On Windows the QHYCCD SDK's `qhyccd.lib` is an **import library** for the
-//! proprietary `qhyccd.dll`, which ADR-013 forbids redistributing — the
-//! operator installs QHY's "All-in-One" pack (needed for the signed device
-//! driver anyway), which provides the DLL. The binary is linked with
-//! `/DELAYLOAD:qhyccd.dll` (see `build.rs`), so a missing DLL no longer kills
-//! the process in the Windows loader before `main`; this module resolves the
-//! DLL **before any SDK call** and keeps it resident so the delay-load helper
-//! binds to the already-loaded module. Behavioral contracts PF1–PF5 in
-//! `docs/services/qhy-camera.md` § "Windows: qhyccd.dll resolution".
+//! proprietary `qhyccd.dll`, which no package redistributes (the SDK's
+//! redistribution rights are unresolved) — the operator installs QHY's
+//! "All-in-One" pack (needed for the signed device driver anyway), which
+//! provides the DLL. The binary is
+//! linked with `/DELAYLOAD:qhyccd.dll` (see `build.rs`), so a missing DLL does
+//! not kill the process in the Windows loader before `main`; this module
+//! resolves the DLL **before any SDK call** and keeps it resident so the
+//! delay-load helper binds to the already-loaded module. Behavioral contracts
+//! PF1–PF5 in `docs/services/qhy-camera.md` § "Windows: qhyccd.dll
+//! resolution".
 //!
 //! The candidate ordering, selection, and failed-load skip logic is pure
 //! (environment, fs-existence, and the loader are injected) so it is
@@ -34,9 +36,11 @@ pub const QHY_DLL_NAME: &str = "qhyccd.dll";
 /// Keep in lockstep with the SDK pin in
 /// `crates/qhyccd-rs/libqhyccd-sys/build.rs` (the `sdk_win64_26.06.04`
 /// search-path names) and the CI workflows; the tools crate's packaging guard
-/// (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks that parity. The
-/// `doctor` subcommand compares this against the version the *loaded* DLL
-/// reports, making All-in-One ABI skew visible (ADR-015 accepted risk).
+/// (`tools/rusty-photon-ci/src/pkg_assets.rs`) checks it against `build.rs`,
+/// the firmware helper's pin and `packaging::qhy::VERSION`, and does not read
+/// the workflows. The `doctor` subcommand compares this against the version
+/// the *loaded* DLL reports, making visible the ABI skew against whatever the
+/// All-in-One ships, an accepted risk.
 pub const PINNED_SDK_VERSION: PinnedSdkVersion = PinnedSdkVersion {
     year: 26,
     month: 6,
@@ -62,9 +66,6 @@ impl fmt::Display for PinnedSdkVersion {
 /// Their *existence* signals driver-pack presence (reported by `doctor`),
 /// distinct from the DLL itself; the DLL candidate list is derived from them in
 /// [`candidate_dirs`].
-///
-/// The exact All-in-One layout is a flagged unknown of
-/// `docs/plans/archive/windows-packaging.md` — confirm/extend on a real Windows box.
 pub fn driver_pack_dirs(env_var: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     ["ProgramFiles", "ProgramFiles(x86)"]
         .iter()
@@ -78,8 +79,9 @@ pub fn driver_pack_dirs(env_var: impl Fn(&str) -> Option<String>) -> Vec<PathBuf
 /// 1. the exe's own directory (an operator can always drop the DLL next to
 ///    the binary),
 /// 2. a **best-effort seed** of known All-in-One install locations under each
-///    `QHYCCD` root from [`driver_pack_dirs`] — extend by appending entries
-///    once confirmed on a real Windows install (flagged unknown of the plan).
+///    `QHYCCD` root from [`driver_pack_dirs`]. The All-in-One installs the DLL
+///    in the first, `%ProgramFiles%\QHYCCD\AllInOne\sdk\x64` (PF1); extend the
+///    seed by appending entries confirmed on a real Windows install.
 ///
 /// Pure: the environment is injected so ordering is testable cross-platform.
 pub fn candidate_dirs(
@@ -419,8 +421,8 @@ mod tests {
 
     #[test]
     fn try_candidates_skips_a_broken_candidate_and_loads_a_later_one() {
-        // The Copilot-flagged case: a stale/broken qhyccd.dll next to the exe
-        // must not mask a valid All-in-One install in a later candidate.
+        // A stale or broken qhyccd.dll next to the exe must not mask a valid
+        // All-in-One install in a later candidate.
         let candidates = vec![
             PathBuf::from("exe-dir"),
             PathBuf::from("not-installed"),

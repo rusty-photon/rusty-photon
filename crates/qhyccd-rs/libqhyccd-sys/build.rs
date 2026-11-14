@@ -52,9 +52,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
                 let arch = env::var("CARGO_CFG_TARGET_ARCH")?;
                 // The qhyccd-sdk-install action extracts the macOS SDK under the
-                // workspace root using the upstream archive's top dir. The 26.x
-                // packaging renamed the Intel variant `macMix` -> `mac_x64` (Apple
-                // Silicon stays `mac_arm`). Keep these in lockstep with the pinned
+                // workspace root using the upstream archive's top dir: `mac_arm`
+                // for Apple Silicon and, from SDK 26.06.04 on, `mac_x64` for Intel
+                // (`macMix` before it). Keep these in lockstep with the pinned
                 // `version:` in the CI workflows.
                 let sdk_path = if arch == "aarch64" {
                     format!("{workspace}/sdk_mac_arm_26.06.04/usr/local/lib")
@@ -83,7 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "windows" => {
             // NOTE (delay-load): on Windows `qhyccd.lib` is an IMPORT library
-            // for the proprietary qhyccd.dll (never redistributed, ADR-013).
+            // for the proprietary qhyccd.dll, which the project never
+            // redistributes.
             // The `/DELAYLOAD:qhyccd.dll` + `delayimp.lib` link args that keep
             // a missing DLL from killing the process pre-`main` live in
             // services/qhy-camera/build.rs (and its BUILD.bazel), NOT here:
@@ -112,8 +113,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("cargo:rustc-link-search=native={dir}");
             }
             // CI: the qhyccd-sdk-install action extracts the SDK under the
-            // workspace root — `pkg_win/` for the legacy (<= 25.x) packaging and
-            // `sdk_win64_<version>/` for the new (>= 26.06.04) packaging. Emit both
+            // workspace root — `pkg_win/` for the 25.x and earlier packaging and
+            // `sdk_win64_<version>/` from 26.06.04 on. Emit both
             // roots' arch subdirs; a non-existent search path is harmless to the
             // linker, which uses whichever actually holds `qhyccd.lib`.
             let workspace = env::var("GITHUB_WORKSPACE").ok();
@@ -128,8 +129,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // Optional in-tree vendored SDK — only add the path when it actually
-            // exists. It is not committed to this repo, so emitting it
-            // unconditionally was just noise and masked the "SDK not found" case.
+            // exists. It is not committed to this repo, and counting it as found
+            // when it is absent would silence the "SDK not found" warning below.
             let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
             let sdk_dir = manifest_dir
                 .join("qhyccd-sdk")
@@ -147,7 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             println!("cargo:rustc-link-lib=static=qhyccd");
-            // Windows SDK likely includes all dependencies
+            // Nothing else to link: `qhyccd.lib` imports qhyccd.dll, whose own
+            // dependencies the loader resolves.
         }
         _ => {
             // Linux and other Unix-like systems.
@@ -160,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // QHYCCD_SDK_DIR at the directory holding libqhyccd.a (see
             // `ivonnyssen/qhyccd-sdk-install`'s `install: env` mode). A static
             // link needs only that `-L` path; x86 jobs that system-install leave
-            // the var unset and keep using /usr/local/lib unchanged.
+            // the var unset and use /usr/local/lib.
             // A set-but-empty value is treated as unset, so the /usr/local/lib
             // fallback still applies (an empty `-L` path would otherwise produce a
             // confusing link failure instead of falling back).

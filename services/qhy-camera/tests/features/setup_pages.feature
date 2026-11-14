@@ -29,7 +29,8 @@ Feature: Setup pages
   edits its devices override on its own page. Every wheel's page, a
   placeholder wheel's too, edits its filter names, one per line: in its
   camera's entry with a list, in its camera's devices override without one.
-  The config.get, config.apply and config.schema actions are gone.
+  A camera's SupportedActions is empty, and an action such as config.get
+  answers ActionNotImplemented.
 
   The simulation build's scan holds one record, 1618:f178 on
   simulated-usbv3-0:1, where the simulated camera (SDK id SIM-QHY178M) is
@@ -221,7 +222,7 @@ Feature: Setup pages
     And the page offers no Save button
     And the page links to the Cameras section of the server page
 
-  Scenario: The config actions are gone
+  Scenario: A camera serves no custom action, so config.get is not implemented
     Given a running qhy-camera service with the simulation backend
     When the supported actions are queried on camera device 0
     Then the supported actions are empty

@@ -1,11 +1,13 @@
-//! Hardware probe for issue #881: what does a camera *advertise* as its
-//! supported output formats, and does it actually honour them?
+//! Hardware probe: what does a camera *advertise* as its supported output
+//! formats, and does it actually honour them?
 //!
 //! INDI guards RAW16 on ASI120/ASI130 by **device name**, not by checking
 //! `SupportedVideoFormat` — which implies the SDK advertises RAW16 on those
-//! models even though 16-bit does not work reliably. That would make
-//! "enumerate the array and pick" an incomplete fix. This probe measures the
-//! answer instead of inheriting the assumption.
+//! models even though 16-bit does not work reliably. That would make the
+//! advertised array alone an unsafe basis for choosing a format. This probe
+//! measures the answer instead of inheriting the assumption; what it found,
+//! and why the driver trusts the array, is [RM4 of the zwo-camera
+//! design][rm4].
 //!
 //! Run against a physically attached camera, with the real SDK linked:
 //!
@@ -15,6 +17,8 @@
 //!
 //! It is read-mostly: it opens the camera, sets ROI formats, and takes short
 //! dark exposures at a small ROI. It never touches the cooler.
+//!
+//! [rm4]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-camera.md#gain--offset--readout
 // Bench diagnostic, run by hand against attached hardware: dying loudly on a
 // missing camera or SDK fault is the intended failure mode, and the summary
 // statistics run on counters the probe itself bounds by frame size.
@@ -99,8 +103,8 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
     match camera.set_roi_format(width, height, bin, image_type) {
         Ok(()) => println!("    set_roi_format       : OK"),
         Err(e) => {
-            // This is the failure the issue predicts for an unsupported
-            // format: ASI_ERROR_INVALID_IMGTYPE surfacing through asi_check.
+            // This is the failure an unsupported format is expected to
+            // produce: ASI_ERROR_INVALID_IMGTYPE surfacing through asi_check.
             println!("    set_roi_format       : REJECTED ({e})");
             return;
         }

@@ -165,7 +165,7 @@ systemd-libs = "*"
 # and simulation (`:zwo-rs_sim`) variants, so this dev-dep does not flip a Bazel
 # variant. Its role: `crate_universe` only resolves an optional dep into `@cr`
 # if some workspace member enables the gating feature, so this keeps
-# `zwo-rs/simulation`'s optional deps (rand, rayon) present in `@cr` — which the
+# `zwo-rs/simulation`'s optional dep (rand) present in `@cr` — which the
 # `:zwo-rs_sim` target pulls via `all_crate_deps`. Resolver v2 keeps it out of
 # the production `cargo build`.
 zwo-rs = { workspace = true, features = ["simulation"] }

@@ -1,7 +1,7 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra` — the pages' and the camera drivers' Cameras section — plus
 //! the Given that starts this service behind TLS and auth, the steps on its
-//! (now empty) action list, and the ones on the filter wheels this driver's
+//! empty action list, and the ones on the filter wheels this driver's
 //! entries declare: the Cameras section's wheel column, the confirmation of
 //! a wheel's move, and each wheel's page, which edits its filter names.
 

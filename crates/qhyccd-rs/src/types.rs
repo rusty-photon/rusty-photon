@@ -128,7 +128,7 @@ pub struct ReadoutMode {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-/// returned from `SDK::version`
+/// returned from `Sdk::version`
 pub struct SDKVersion {
     /// the year of the SDK version
     pub year: u32,
@@ -145,8 +145,6 @@ pub struct SDKVersion {
 mod tests {
     use super::{BayerPattern, StreamMode};
 
-    // `BayerPattern::try_from` is backend-independent pure logic; it was previously
-    // only exercised by the deleted FFI-mock `camera_tests::bayer_mode_try_from`.
     #[test]
     fn bayer_pattern_try_from_maps_the_four_sdk_codes() {
         assert_eq!(BayerPattern::try_from(1), Ok(BayerPattern::GBRG));
@@ -157,9 +155,10 @@ mod tests {
 
     #[test]
     fn bayer_pattern_converts_to_the_four_sdk_codes() {
-        // Pins the codes in the outward direction too: with the discriminants
-        // no longer read back off the enum, this is what keeps `From` and the
-        // SDK numbering the doc comment promises from drifting apart.
+        // Pins the codes in the outward direction too: `From` writes them out
+        // rather than reading the discriminants back off the enum, so this is
+        // what keeps it and the SDK numbering the doc comment promises from
+        // drifting apart.
         assert_eq!(u32::from(BayerPattern::GBRG), 1);
         assert_eq!(u32::from(BayerPattern::GRBG), 2);
         assert_eq!(u32::from(BayerPattern::BGGR), 3);

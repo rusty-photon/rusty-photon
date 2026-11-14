@@ -13,9 +13,9 @@
 //! named constants below are hand-transcribed from reading that header (the
 //! facts — function names, parameter order/types, struct field order, enum
 //! ordinal values — are not copyrightable), the same posture `libqhyccd-sys`
-//! takes toward QHY's similarly unlicensed header. See
-//! `docs/plans/archive/svbony-camera.md` ("Verified SDK ground truth") for the full
-//! provenance trail and citation of the source URL.
+//! takes toward QHY's similarly unlicensed header.
+//! [ADR-018](https://github.com/rusty-photon/rusty-photon/blob/main/docs/decisions/018-svbony-sdk-no-license-payload-policy.md)
+//! records where the license text was looked for.
 //!
 //! ## Enum representation
 //!
@@ -31,10 +31,10 @@
 //! `build.rs` emits the native link directives for the system-installed
 //! `libSVBCameraSDK` (+ `libusb-1.0`) unless `SVBONY_SKIP_NATIVE_LINK=1` is
 //! set, in which case it also sets the `svbony_skip_link` cfg, which gates
-//! off the `#[link(...)]` attribute below (see `build.rs` for why: the
-//! compile-time attribute records a native-library dependency independently
-//! of the build script's `cargo:rustc-link-lib` directives, so both must be
-//! gated together for a link-free simulation build).
+//! off the `#[link(...)]` attribute below: the compile-time attribute
+//! records a native-library dependency independently of the build script's
+//! `cargo:rustc-link-lib` directives, so both must be gated together for a
+//! link-free simulation build.
 
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint};
 
@@ -43,22 +43,22 @@ use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint};
 /// The vendored `libSVBCameraSDK.so`/`.dylib` blob references `libusb_*`
 /// symbols **without** declaring libusb in its own `DT_NEEDED` (byte-
 /// verified via `readelf -d`, see the header comment of
-/// `.github/actions/install-svbony-sdk/svbony-sdk.mjs`), so the *consumer
-/// binary* must carry the libusb dependency for the loader to resolve them
-/// at the first camera-SDK call. The plain `-lusb-1.0`
+/// [`svbony-sdk.mjs`](https://github.com/rusty-photon/rusty-photon/blob/main/.github/actions/install-svbony-sdk/svbony-sdk.mjs)),
+/// so the *consumer binary* must carry the libusb dependency for the loader
+/// to resolve them at the first camera-SDK call. The plain `-lusb-1.0`
 /// directive from `build.rs` is not sufficient on its own: the linker's
 /// `--as-needed` default (GNU ld and rust-lld alike) drops a library no
 /// regular object references, and `svbony-rs`'s own code never calls a
 /// `libusb_*` symbol directly — only the SDK blob does, internally. This
 /// `#[used]` function-pointer static is that regular-object reference,
 /// mirroring `libzwo-sys`'s `zwo_keep_udev`. (A `-Wl,--no-as-needed` /
-/// `-Wl,--as-needed` bracket around the link-lib line, tried first, does
-/// NOT work here: `cargo:rustc-link-arg` only takes effect for the build
-/// script's *own* package's bin/cdylib/test/example targets, not
-/// transitively for downstream binaries like `svbony-camera` — verified
-/// empirically, see issue #681.) The `svbony_keep_libusb` cfg is emitted by
-/// `build.rs` exactly when the libusb link directive is (macOS/Linux, not
-/// `SVBONY_SKIP_NATIVE_LINK`).
+/// `-Wl,--as-needed` bracket around the link-lib line does NOT work here:
+/// `cargo:rustc-link-arg` only takes effect for the build script's *own*
+/// package's bin/cdylib/test/example targets, not transitively for
+/// downstream binaries like `svbony-camera` — the flag never appears on
+/// their final linker command line.) The `svbony_keep_libusb` cfg is
+/// emitted by `build.rs` exactly when the libusb link directive is
+/// (macOS/Linux, not `SVBONY_SKIP_NATIVE_LINK`).
 #[cfg(svbony_keep_libusb)]
 mod libusb_keepalive {
     extern "C" {
@@ -198,8 +198,9 @@ pub const SVB_COOLER_ENABLE: SvbControlType = 14;
 ///
 /// `SVBGetControlValue`'s own docs separately describe the
 /// target temperature as "an integer" in one place, which is ambiguous
-/// against the 0.1 °C unit note elsewhere in the same header — flagged here
-/// rather than silently resolved; needs real-hardware confirmation.
+/// against the 0.1 °C unit note elsewhere in the same header. On the rig an
+/// SV605CC at 28.7 °C ambient cooled toward a 20 °C set-point written as
+/// 200, which a whole-degree unit (a 200 °C set-point) would not explain.
 pub const SVB_TARGET_TEMPERATURE: SvbControlType = 15;
 /// Unit is 0.1 °C.
 pub const SVB_CURRENT_TEMPERATURE: SvbControlType = 16;

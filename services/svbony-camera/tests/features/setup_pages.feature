@@ -26,8 +26,9 @@ Feature: Setup pages
   A listed camera's page and a placeholder's page show what the driver
   knows and link to the Cameras section. A camera served without a list
   edits its devices override on its own page: the first save that names it
-  creates the override, and a save that clears both names deletes it. The
-  config.get, config.apply and config.schema actions are gone.
+  creates the override, and a save that clears both names deletes it. A
+  camera's SupportedActions is empty, and an action such as config.get
+  answers ActionNotImplemented.
 
   The simulation build's scan holds one record by default, f266:9a0a on
   simulated-usbv3-0:1, where the simulated camera (CameraSN
@@ -225,7 +226,7 @@ Feature: Setup pages
     And the configuration file has nothing at "/usb_devices"
     And the configuration file holds "Main" at "/devices/SVB0123456789AB/name"
 
-  Scenario: The config actions are gone
+  Scenario: A camera serves no custom action, so config.get is not implemented
     Given a running svbony-camera service with the simulation backend
     When the supported actions are queried on camera device 0
     Then the supported actions are empty

@@ -1,16 +1,16 @@
 #!/bin/sh
 # rusty-photon-svbony-sdk-install — fetch the pinned SVBony camera SDK
 # library and install it where svbony-camera's binary can find it at
-# runtime. Per ADR-018, SVBony's SDK carries no license text at all (not
-# even QHY's proprietary-but-nameable grant), so it is never bundled in
-# the package; this helper downloads it from the same public source and
-# pinned ref `.github/actions/install-svbony-sdk` (CI) uses, verifies a
-# pinned sha256, and installs:
+# runtime. SVBony's SDK carries no license text at all (not even QHY's
+# proprietary-but-nameable grant), so it is never bundled in the package;
+# this helper downloads it from the same public source and pinned ref
+# `.github/actions/install-svbony-sdk` (CI) uses, verifies a pinned
+# sha256, and installs:
 #
 #   /usr/lib/rusty-photon/libSVBCameraSDK.so   the SDK's shared library
 #
 # On a host with no rusty-photon-svbony-camera package it also installs a
-# udev rule so the SDK can open the camera at all (issue #710): libusb
+# udev rule so the SDK can open the camera at all: libusb
 # needs write access to /dev/bus/usb/... and nothing grants it for VID
 # f266 by default, so the SDK enumerates zero devices (errno 13) on a
 # developer box running the binary straight out of a checkout. The
@@ -20,12 +20,11 @@
 #
 # **RUNPATH, not ldconfig.** `libSVBCameraSDK.so` itself carries no
 # embedded DT_SONAME (byte-verified via `readelf -d`, see
-# docs/plans/archive/svbony-camera.md Phase F/G and install-svbony-sdk's header
-# comment) — CI's provisioning step works around that by installing it
-# under an ldconfig-scanned system prefix (`/usr/local/lib`) with a
-# SOVERSIONed filename, which is fine for a build host but wrong for a
-# packaged runtime install: per ADR-013, vendor blobs installed by this
-# project's own packages live in the private, package-owned
+# install-svbony-sdk's header comment) — CI's provisioning step works
+# around that by installing it under an ldconfig-scanned system prefix
+# (`/usr/local/lib`) with a SOVERSIONed filename, which is fine for a build
+# host but wrong for a packaged runtime install: vendor blobs installed by
+# this project's own packages live in the private, package-owned
 # `/usr/lib/rusty-photon/` directory (see zwo-camera's precedent) so the
 # package can cleanly own and remove the file without touching a
 # system-wide path shared with other packages — and that directory is
@@ -152,8 +151,8 @@ else
     echo "SVBony camera SDK installed to $DEST."
 fi
 
-# ---- device access (issue #710) -----------------------------------------
-# The package's own rule, group-scoped to the service account (ADR-013 §3).
+# ---- device access ------------------------------------------------------
+# The package's own rule, group-scoped to the service account.
 # Present in any of udev's rule directories, it means this host runs the
 # packaged path and this helper leaves device access alone.
 PKG_RULE=90-rusty-photon-svbony.rules

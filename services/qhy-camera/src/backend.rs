@@ -37,10 +37,10 @@ type BackendResult<T> = std::result::Result<T, BackendError>;
 /// A downloaded frame the service owns: the pixel bytes plus the dimensions
 /// `qhyccd-rs` reports.
 ///
-/// Since the convention alignment, `qhyccd-rs` writes pixels into a
-/// caller-owned buffer and returns only a [`qhyccd_rs::FrameInfo`]; this pairs
-/// that buffer with the metadata as the currency between
-/// [`CameraHandle::get_single_frame`] and the ASCOM device's image conversion.
+/// `qhyccd-rs` writes pixels into a caller-owned buffer and returns only a
+/// [`qhyccd_rs::FrameInfo`]; this pairs that buffer with the metadata as the
+/// currency between [`CameraHandle::get_single_frame`] and the ASCOM device's
+/// image conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageData {
     /// raw pixel bytes (`bits_per_pixel` / `channels` describe the layout)
@@ -226,11 +226,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     // device logic reads `handle.gain()` rather than `handle.get_parameter(
     // ControlType::Gain)`. Provided as defaults over the generic methods above
     // (mirroring `qhyccd_rs::Camera`'s own accessors), so every impl — the
-    // production wrapper and the hand-written test mock — inherits them for free
-    // and their existing per-control setup still satisfies them. The generic
-    // `get_parameter`/`set_parameter` stay for controls without a dedicated
-    // accessor (e.g. `OutputDataActualBits`) and for capability *probes* via
-    // `is_control_available`.
+    // production wrapper and the hand-written test mock — inherits them, and a
+    // mock's per-control setup answers them. The generic `get_parameter` /
+    // `set_parameter` serve any control without a dedicated accessor, and
+    // `is_control_available` the capability *probes*.
 
     /// Current sensor gain (`ControlType::Gain`).
     ///
@@ -948,15 +947,16 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
 /// crate's unit tests, so the device logic — including paths the `qhyccd-rs`
 /// simulation cannot easily force, like a mid-exposure SDK error (contract E9) —
 /// is exercised without hardware and without any *real* SDK calls. (The static
-/// `qhyccd` lib is still linked into the test binary — it is an unconditional
-/// link dependency of `libqhyccd-sys`; the mock only replaces the runtime seam.)
+/// `qhyccd` lib is still linked into the test binary unless
+/// `QHYCCD_SKIP_NATIVE_LINK` is set — no Cargo feature gates `libqhyccd-sys`'s
+/// link; the mock only replaces the runtime seam.)
 #[cfg(test)]
 pub(crate) mod mock {
     // `#[cfg(test)]`-gated test-helper infrastructure that never links into a
-    // production binary. Excluded from coverage so the figure reflects only
-    // production-shipped code — counting these never-shipped mock lines would
-    // produce false numbers (matches the six service `mock` modules excluded in
-    // PR #370 and the `#[cfg(test)] mod tests` blocks).
+    // production binary. Excluded from coverage, as the services' `mock`
+    // modules and the `#[cfg(test)] mod tests` blocks are, so the figure
+    // reflects only production-shipped code — counting these never-shipped
+    // mock lines would produce false numbers.
     #![cfg_attr(coverage_nightly, coverage(off))]
 
     use super::*;
@@ -1383,9 +1383,9 @@ pub(crate) mod mock {
         }
         /// Read back a parameter value as last written via `set_parameter`
         /// (test introspection, e.g. to assert which cooler control a call
-        /// wrote to). Note the routing above: a `ControlType::ManualPWM` write
-        /// lands under `ControlType::CurPWM`, not `ControlType::ManualPWM` — query
-        /// `CurPWM` to observe it.
+        /// wrote to). Note the routing in `set_parameter`: a
+        /// `ControlType::ManualPWM` write lands under `ControlType::CurPWM`, not
+        /// `ControlType::ManualPWM` — query `CurPWM` to observe it.
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
@@ -1412,8 +1412,8 @@ pub(crate) mod mock {
         pub fn is_in_readout(&self) -> bool {
             self.in_readout.load(Ordering::SeqCst)
         }
-        /// Report `us` microseconds still to integrate, holding the driver in the
-        /// cancellable wait until [`finish_exposure`](Self::finish_exposure).
+        /// Report `us` microseconds still to integrate; a non-zero value keeps
+        /// the driver in its cancellable wait.
         pub fn set_remaining_exposure_us(&self, us: u32) {
             self.remaining_exposure_us.store(us, Ordering::SeqCst);
         }
@@ -1589,11 +1589,6 @@ pub(crate) mod mock {
         pub fn is_in_close(&self) -> bool {
             self.in_close.load(Ordering::SeqCst)
         }
-        /// Hold `init` open once the handshake reaches it, until
-        /// [`release_init`](Self::release_init). Pair it with
-        /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
-        /// between its open and its caches while the test drives another
-        /// request past it.
         /// Share one connect/disconnect lock with the partner mock, standing in
         /// for two ASCOM devices on one physical connection.
         #[must_use]
@@ -1625,6 +1620,11 @@ pub(crate) mod mock {
             self.in_open.load(Ordering::SeqCst)
         }
 
+        /// Hold `init` open once the handshake reaches it, until
+        /// [`release_init`](Self::release_init). Pair it with
+        /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
+        /// between its open and its caches while the test drives another
+        /// request past it.
         pub fn hold_init(&self) {
             self.init_held.store(true, Ordering::SeqCst);
         }
@@ -1737,9 +1737,9 @@ pub(crate) mod mock {
         /// Where the recorded mode reaches the camera, as it does in the SDK:
         /// the mode's sensor becomes the one `get_ccd_info` and
         /// `get_effective_area` describe, and the exposure time and the
-        /// transfer depth go back to the SDK's defaults (qhy-camera.md,
-        /// Implementation notes). Gain, offset and the cooler survive unless a
-        /// test asks for the models that do not keep them.
+        /// transfer depth go back to the SDK's defaults (qhy-camera.md, *What a
+        /// readout-mode change is to the SDK*). Gain, offset and the cooler
+        /// survive unless a test asks for the models that do not keep them.
         fn init(&self) -> BackendResult<()> {
             self.on_bus()?;
             self.record("init".to_string());
@@ -1973,9 +1973,9 @@ pub(crate) mod mock {
             self.on_bus()?;
             // The real `GetQHYCCDSingleFrame` is NOT cancellable: once the readout
             // starts it runs to completion, which is why the driver must never
-            // issue an SDK cancel while this is in flight. Block for the full
-            // delay — no abort checks — so tests feel the same uninterruptible
-            // window the hardware has.
+            // issue an SDK cancel while this is in flight. A held readout blocks
+            // until released — no abort checks — so tests feel the same
+            // uninterruptible window the hardware has.
             self.single_frame_calls.fetch_add(1, Ordering::SeqCst);
             self.in_readout.store(true, Ordering::SeqCst);
             // Held readouts wait here. The deadline is a backstop against a test
@@ -2398,15 +2398,16 @@ pub(crate) mod mock {
 
 /// Tests for [`SharedCameraConnection`] — the refcount that makes the Camera and
 /// `FilterWheel` devices share ONE physical handle so disconnecting one does not
-/// tear down the other (the real-hardware bug fixed 2026-06-18). They exercise
-/// the refcount against the `qhyccd-rs` simulation backend (`Sdk::new()`
-/// enumerates a QHY178M-Simulated camera, opening nothing; its CFW is found
-/// only by `Sdk::probe_filter_wheels`), so they need no hardware.
+/// tear down the other, as closing either of two independent handles does on
+/// real hardware (docs/services/qhy-camera.md "Camera + CFW share one physical
+/// handle"). They exercise the refcount against the `qhyccd-rs` simulation
+/// backend (`Sdk::new()` enumerates a QHY178M-Simulated camera, opening
+/// nothing; its CFW is found only by `Sdk::probe_filter_wheels`), so they need
+/// no hardware.
 ///
-/// Gated on `feature = "simulation"`: `cargo test --all-features` turns it on
-/// and runs these, but the Bazel `qhy-camera_unit_test` target links the
-/// REAL SDK (no `simulation`), where `Sdk::new()` would scan USB and find no
-/// camera — so they are correctly compiled out there.
+/// Gated on `feature = "simulation"`, which `cargo test --all-features` and
+/// the Bazel `qhy-camera_unit_test` target (built on the simulated SDK) both
+/// turn on: without it `Sdk::new()` scans USB and finds no camera.
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::expect_used)]
@@ -2433,7 +2434,8 @@ mod conn_tests {
         assert!(conn.camera().is_open().unwrap(), "physical handle open");
 
         // Disconnecting the CFW must NOT close the shared physical handle while
-        // the camera is still connected — the bug this fixes.
+        // the camera is still connected — with two independent handles it does,
+        // and the camera's next exposure fails.
         fw.close().unwrap();
         assert!(!fw.is_open().unwrap());
         assert!(cam.is_open().unwrap());
@@ -2489,12 +2491,12 @@ mod conn_tests {
 
     #[test]
     fn concurrent_connect_disconnect_keeps_refcount_consistent() {
-        // Regression guard for the flag/refcount desync: the per-device flag and
-        // the shared refcount must move together under one lock. Hammer open/close
-        // on both devices from many threads; since every open is immediately
-        // matched by a close, both devices end disconnected and the shared handle
-        // MUST be physically closed (refs back to 0). A desync (flag set without
-        // the matching ref bump, or vice-versa) would leak it open.
+        // The per-device flag and the shared refcount must move together under
+        // one lock. Hammer open/close on both devices from many threads; since
+        // every open is immediately matched by a close, both devices end
+        // disconnected and the shared handle MUST be physically closed (refs
+        // back to 0). A desync (flag set without the matching ref bump, or
+        // vice-versa) would leak it open.
         let conn = SharedCameraConnection::new(sim_camera());
         let cam = QhyCameraHandle::new(conn.clone());
         let fw = QhyFilterWheelHandle::new(conn.clone());

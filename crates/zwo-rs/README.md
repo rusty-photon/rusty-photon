@@ -5,16 +5,18 @@ focuser** SDK. Sibling crate to
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs); consumed by rusty-photon's
 `zwo-camera` and `zwo-focuser` ASCOM Alpaca drivers.
 
-> **Status: under construction.** Enumeration, SDK-version queries, typed
-> ASI/EFW/EAF error mapping, the ASI **camera handle** (open/init, `CameraInfo`,
-> serial, control caps, ROI/binning, control get/set, single exposures with
-> frame download, ST4 pulse guiding), the EFW **filter-wheel handle** (open,
-> slot count, position with the `-1`-while-moving sentinel, serial, firmware,
-> calibration, rotation direction), and the EAF **focuser handle** (open,
-> `MaxStep`, position, dedicated `IsMoving`, absolute move, stop, temperature,
-> reverse, serial, firmware) are all wired to the FFI. Scope order: **Camera →
-> EFW filter wheel → EAF focuser**. See the rusty-photon `docs/plans/zwo-driver.md`
-> plan for the full design.
+> **Status:** enumeration, SDK-version queries, typed ASI/EFW/EAF error
+> mapping, the ASI **camera handle** (open/init, `CameraInfo`, serial, control
+> caps, ROI/binning, control get/set, single exposures with frame download, ST4
+> pulse guiding), the EFW **filter-wheel handle** (open, slot count, position
+> with the `-1`-while-moving sentinel, serial, firmware, calibration, rotation
+> direction), and the EAF **focuser handle** (open, `MaxStep`, position,
+> dedicated `IsMoving`, absolute move, stop, temperature, reverse, serial,
+> firmware) are all wired to the FFI. The camera and focuser handles are what
+> rusty-photon's drivers run on against physical hardware — their designs are
+> [`zwo-camera`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-camera.md) and
+> [`zwo-focuser`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-focuser.md) — and no rusty-photon
+> service drives the filter wheel.
 
 ## Crates
 
@@ -41,8 +43,8 @@ SDK **binary** is *not* vendored — it is installed on the system (below).
 The three ZWO device SDKs are independent libraries, so each device surface is
 its own additive feature: it compiles the matching module (`Camera` /
 `FilterWheel` / `Focuser`, plus the matching `Sdk` methods) and links the
-matching SDK library. **Default = all three** — a bare build behaves like the
-pre-split crate. Narrow consumers pick one:
+matching SDK library. **Default = all three** — a bare build wraps and links
+every device. Narrow consumers pick one:
 
 ```toml
 zwo-rs = { version = "0.1", default-features = false, features = ["focuser"] }
@@ -56,7 +58,7 @@ Linux, **libudev** (see the build-requirements table below).
 | Need | For | Notes |
 |---|---|---|
 | **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH` if not auto-found — e.g. `/usr/lib/<triple>` (Debian) or `/usr/lib64` (Fedora). |
-| **The enabled ZWO SDK libraries** (`libASICamera2` + **libusb-1.0** for `camera`; `libEFWFilter` for `efw`; `libEAFFocuser` for `focuser`) | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
+| **The enabled ZWO SDK libraries** (`libASICamera2` + **libusb-1.0** for `camera`; `libEFWFilter` for `efw`; `libEAFFocuser` for `focuser`) | *linking* (`build`/`test`) | Required even with `--features simulation`, unless `ZWO_SKIP_NATIVE_LINK=1` (below). `cargo check`/`clippy` do **not** link. |
 | **libudev** (Linux, `efw`/`focuser` only) | *linking* + runtime | The EFW/EAF blobs reference `udev_*` symbols without declaring libudev in their own `DT_NEEDED`, so the consumer binary links it on their behalf: `libudev-dev` (Debian/Ubuntu) / `systemd-devel` (Fedora) at build time, `libudev1` at runtime. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
@@ -91,24 +93,31 @@ that *overrides* auto-detection and forces the "couldn't find libclang" error.
 
 A hardware-free, in-Rust environment for development and tests. As in qhyccd-rs,
 enabling it removes the *camera*, **not** the SDK *link* — the native SDK is still
-linked. Build/test of the simulation path therefore still requires the SDK.
+linked. A simulation build references no SDK symbol, though, so with
+`ZWO_SKIP_NATIVE_LINK=1` set at build time, which omits `libzwo-sys`'s link
+directives, it builds and tests with no SDK installed.
 
 The simulated `ASI2600MM-Pro-Simulated` camera models the full control set
 (including the writable **Exposure** control) and an exposure that completes one
-poll after it starts. Frames are filled with sensor noise in parallel (rayon +
-the bulk `RngCore::fill_bytes` path), so even a full-frame 6248×4176 download
-returns in a few milliseconds — fast enough to stay inside conformance tools'
-`StartExposure` timeouts.
+poll after it starts. Frames are filled with placeholder sensor noise from a
+seeded xorshift64 — single-core, a few integer operations per 8 bytes — so even
+a full-frame 6248×4176 download in a debug build stays inside conformance
+tools' `StartExposure` timeouts.
 
-`Sdk::with_departure_file(path)` takes the simulated camera off the bus while
-`path` exists, for testing a camera that loses its power or cable while
-connected. It behaves as ASI SDK 1.41 was measured to on Linux: no call ever
+`Sdk::with_departure_file(path)` takes the simulated camera and EAF focuser off
+the bus while `path` exists, for testing a device that loses its power or cable
+while connected. The camera behaves as ASI SDK 1.41 does on Linux
+([record](https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-06-zwo-camera-departure-linux/README.md)): no call ever
 answers `CameraRemoved`. Until a rescan, reads answer from memory, control
 writes and guide pulses fail with `GeneralError`, an exposure ends `Failed`
 and a download answers a blank frame. A rescan drops the camera, after which
 every call on it answers `InvalidId`. Removing the file brings the camera
 back, to a fresh open. `Sdk::still_connected` is the presence check this
-calls for: a rescan, then a lookup by the camera's ID.
+calls for: a rescan, then a lookup by the camera's ID. The focuser behaves as
+EAF SDK 1.7.7 does on Linux
+([record](https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-07-zwo-focuser-departure-linux/README.md)):
+every call on it answers `Removed` at once and `InvalidId` once a rescan has
+run, so `Focuser::still_connected` needs no rescan.
 
 ## License
 

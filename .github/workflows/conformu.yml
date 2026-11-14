@@ -122,7 +122,7 @@ jobs:
       # takes in this job everywhere), so
       # svbony-camera's ConformU coverage on macOS is protocol-conformance-
       # only until a verified Apple Silicon SVBony blob exists (see
-      # docs/plans/archive/svbony-camera.md "Packaging"). Linux always gets the real
+      # docs/services/svbony-camera.md "Packaging"). Linux always gets the real
       # link; a future x86_64 macOS leg (e.g. macos-13) would too.
       - name: Install SVBony SDK (real link)
         if: runner.os == 'Linux' || runner.arch == 'X64'

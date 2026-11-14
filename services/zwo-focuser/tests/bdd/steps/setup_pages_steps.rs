@@ -1,6 +1,6 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra`, plus the Givens that start this service in each shape, the
-//! steps on its (now empty) action list, the focuser's name after a save,
+//! steps on its empty action list, the focuser's name after a save,
 //! the facts a focuser's page lists, and the server page's pinned port and
 //! the overrides it leaves to the focusers' pages.
 

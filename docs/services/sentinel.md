@@ -156,11 +156,7 @@ thereafter it enumerates the installed `rusty-photon-*` service units
 (excluding its own; excluding scheduled-job units — currently
 `rusty-photon-renew`, the TLS renewal oneshot its own package ships:
 supervising a job would restart-loop a failed run, and a dashboard row
-for it would be noise; and excluding `rusty-photon-phd2` and
-`rusty-photon-phd2-display`, the units the phd2-guider package ships for
-PHD2 and its display, whose health and restart are the guider service's
-([phd2-guider.md § PHD2 under the service
-manager](phd2-guider.md#phd2-under-the-service-manager))) and derives
+for it would be noise) and derives
 everything the retired `services` map
 used to spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
 *whether the source of truth can be down when you need it*: asking a dead
@@ -240,12 +236,21 @@ The probe path follows the service's **probe class**:
 - **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
   device number needed, so no device knowledge leaks into sentinel.
 - **Non-Alpaca services** (`rp`, `plate-solver`, `session-runner`,
-  `calibrator-flats`, `focus-model`, `polar-align`, `phd2-guider`,
-  `ui-htmx`) answer `GET {base}/health`.
+  `calibrator-flats`, `focus-model`, `polar-align`, `ui-htmx`) answer
+  `GET {base}/health`.
   These are exactly the services that define a `/health` route; the Alpaca
   drivers have none, by design. The set is a compile-time constant; a new
   non-Alpaca service must be added to it (a unit test asserts every listed
   name exists under `services/*/pkg`).
+
+**Designed and not yet built.** `guider` joins the non-Alpaca set with
+its package
+([guider.md § Supervision and recovery](guider.md#supervision-and-recovery)).
+As built, the set holds `phd2-guider`, and discovery also leaves out
+`rusty-photon-phd2` and `rusty-photon-phd2-display`, the units that
+service's package ships for PHD2 and its display. Stage G6 of
+[the native guider plan](../plans/native-guider.md#staging) removes
+that service and its units.
 
 A missing or unreadable `<svc>.json` means no probe URL can be derived: the
 service's health reports `unknown`, nothing is restarted because of it, and
@@ -616,8 +621,9 @@ auth when `service_auth` is configured. Alive means a `200`, **or a
 on the pair matching; `doctor` diagnoses a mismatched pair as
 `auth.mismatch`) — **or a `503`**, which is alive but **degraded**: a
 service that deliberately answers `503` has a live HTTP loop and is
-reporting that an external dependency is unavailable (phd2-guider without
-a running PHD2, plate-solver without its ASTAP binary or star database) —
+reporting that an external dependency is unavailable (a guider whose
+devices are switched off, plate-solver without its ASTAP binary or star
+database) —
 a condition a service restart cannot cure, so supervision must not try
 (issue #595). A degraded answer resets the outage exactly like a healthy
 one: no failure counting, no restart, no notification; the dashboard shows
@@ -643,7 +649,7 @@ sentinel makes a best-effort attempt to read an optional top-level
 opaque** to the dashboard next to the amber badge, truncated to 200
 characters and HTML-escaped at render (bodies over 4 KiB are not parsed
 at all — the supervision loop does bounded work per probe). The message lets a service say
-*why* it is degraded (`"no connection to PHD2 on localhost:4400"`) in the
+*why* it is degraded (`"the camera is not connected"`) in the
 operator's face without sentinel understanding or acting on a word of it.
 A missing, non-JSON, or message-less body simply shows no message.
 

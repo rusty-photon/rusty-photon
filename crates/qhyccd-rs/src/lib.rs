@@ -1,7 +1,7 @@
 //! # QHYCCD SDK bindings for Rust
 //!
 //! This crate provides a safe interface to the QHYCCD SDK for controlling QHYCCD cameras and filter wheels.
-//! (Focusers are supported by the QHYCCD SDK but are not yet exposed by this crate.)
+//! (Focusers are supported by the QHYCCD SDK but are not exposed by this crate.)
 //! The `libqhyccd-sys` crate provides the raw FFI bindings; this crate wraps them in a safe API, using `tracing` for logging and returning typed [`QHYError`] values (via `thiserror`) for error handling.
 //!
 //! # Example
@@ -54,7 +54,7 @@
 //!
 //! ## Custom Simulated Cameras
 //!
-//! For advanced use cases, use [`Sdk::new_simulated()`] and [`Sdk::add_simulated_camera()`]:
+//! For advanced use cases, use `Sdk::new_simulated()` and `Sdk::add_simulated_camera()`:
 //!
 //! ```
 //! # #[cfg(feature = "simulation")]
@@ -109,9 +109,7 @@ pub use libqhyccd_sys as sys;
 // the `Camera` device, its `ControlType` address space, and (only without the
 // `simulation` feature) the real-hardware handle machinery — the compile-time
 // real/sim split used by the sibling `zwo-rs` / `svbony-rs` crates (a per-method
-// `#[cfg]` fork), replacing the former runtime `CameraBackend` enum + `#[automock]`
-// FFI-mock layer. It merges the former `camera/` submodule split, `backend.rs`,
-// and `control.rs`.
+// `#[cfg]` fork).
 mod camera;
 mod error;
 mod filter_wheel;

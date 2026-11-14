@@ -4,8 +4,6 @@
 //! This is the device-file-major layout of the sibling `zwo-rs` / `svbony-rs`
 //! crates: one file per device, with the camera's behaviour grouped into `impl`
 //! blocks (lifecycle, configuration, info, imaging, parameters, readout modes).
-//! It merges the former six-file `camera/` submodule split, `backend.rs` (the
-//! `#[cfg(not(simulation))]` handle cell) and `control.rs` ([`ControlType`]).
 //!
 //! The real/simulated backend is chosen at **compile time** by the `simulation`
 //! feature: every camera method forks into a `#[cfg(not(feature = "simulation"))]`
@@ -52,7 +50,8 @@ use crate::simulation::{self, SimulatedCameraState};
 // hex and decimal coincide, so this differs from a plain `+48` decimal offset
 // only from slot 10 up — where a decimal offset would command/report the WRONG
 // physical slot. Shared by the real accessors and the simulation backend so a
-// crate round-trip stays consistent; verified only on hardware for slots >= 10.
+// crate round-trip stays consistent. The codes from slot 10 up rest on the
+// manual and indi-qhy, not on a hardware measurement.
 
 /// Slots a `CONTROL_CFWPORT` value can address. This is the encoding's bound,
 /// not a chosen limit — one hex digit names sixteen positions and no more — so
@@ -205,10 +204,10 @@ mod cfw_encoding_tests {
 /// full ~90-entry enum. Documentation is taken from the QHYCCD SDK
 /// (<https://www.qhyccd.cn/file/repository/publish/SDK/code/QHYCCD%20SDK_API_EN_V2.3.pdf>).
 ///
-/// The named variants are no longer `#[repr]`-discriminated (a data-carrying
-/// enum cannot be `as u32`-cast); use [`ControlType::to_raw`] to obtain the SDK
-/// `CONTROL_ID`, whose numeric values still match the SDK's own numbering
-/// (`Gain == 6`, `CfwPort == 17`, …).
+/// The variants carry no discriminants (a data-carrying enum cannot be
+/// `as u32`-cast); the crate maps each to its SDK `CONTROL_ID` internally, in the
+/// SDK's own numbering (`Gain == 6`, `CfwPort == 17`, …), the number given
+/// beside each variant below.
 pub enum ControlType {
     /// `CONTROL_BRIGHTNESS` (0) — image brightness.
     Brightness,
@@ -279,7 +278,7 @@ pub enum ControlType {
 
 impl ControlType {
     /// The SDK `CONTROL_ID` for this control. The numeric values match the
-    /// QHYCCD SDK's own numbering (forced fact #3 of the convention plan).
+    /// QHYCCD SDK's own numbering.
     ///
     /// Only the real FFI arms (compiled without `simulation`) and the round-trip
     /// test consume this — the simulated backend keys controls by `ControlType`
@@ -331,8 +330,8 @@ impl ControlType {
 
     /// The [`ControlType`] for an SDK `CONTROL_ID` — the inverse of
     /// [`Self::to_raw`]. Unnamed ids round-trip through [`ControlType::Other`].
-    /// Only the round-trip test consumes this today (no runtime path converts a
-    /// raw id back to a `ControlType`), so it is test-only.
+    /// No runtime path converts a raw id back to a `ControlType`, so it is
+    /// test-only: the round-trip test is its one caller.
     #[cfg(test)]
     #[must_use]
     const fn from_raw(v: u32) -> Self {
@@ -437,8 +436,7 @@ mod control_type_tests {
 // A simulated camera holds a `SimulatedCameraState` instead of a `HandleCell`,
 // and every camera method forks at compile time on the feature (see the sibling
 // `zwo-rs` / `svbony-rs` crates). These items therefore never touch the
-// simulation types and always call the real `libqhyccd-sys` FFI. They were
-// previously the separate `backend.rs` module.
+// simulation types and always call the real `libqhyccd-sys` FFI.
 
 // The handle cell below is compiled into the **test** build of the simulation
 // variant as well as into every real build. The crate's own tests build the
@@ -479,8 +477,8 @@ unsafe impl Sync for QHYCCDHandle {}
 
 /// RAII owner of one open QHYCCD device handle. Wraps the `RwLock<Option<..>>`
 /// cell so a [`Drop`] can close the device when the last strong reference is
-/// released — the zwo/svbony convention (`Camera: Drop`), which this crate
-/// previously lacked (a dropped-open camera leaked the handle). The cell is
+/// released — the zwo/svbony convention (`Camera: Drop`); without it a camera
+/// dropped while open would leak its handle. The cell is
 /// shared as `Arc<HandleCell>` by a [`Camera`] and its clones — including the
 /// filter wheel, which a QHY CFW is driven through the *same* camera handle — so
 /// `CloseQHYCCD` runs exactly once, on the last clone's drop.
@@ -641,7 +639,7 @@ impl Drop for HandleCell {
 ///
 /// The real/simulated backend is chosen at **compile time** by the `simulation`
 /// feature (matching the sibling `zwo-rs` / `svbony-rs` crates): without it a
-/// `Camera` owns a shared FFI [`HandleCell`]; with it, a shared
+/// `Camera` owns a shared FFI `HandleCell`; with it, a shared
 /// `SimulatedCameraState`. Both are shared via `Arc` so a `Camera` stays `Clone`
 /// and its filter wheel drives the *same* device. Two cameras are equal when they
 /// share an `id`, regardless of the live backend.
@@ -660,8 +658,7 @@ pub struct Camera {
 
 impl PartialEq for Camera {
     /// Two cameras are equal when they share an `id`, regardless of the live
-    /// backend handle / simulated state (id-only equality — the former
-    /// `#[partial_eq(skip)]` on the backend field).
+    /// backend handle / simulated state.
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
@@ -896,8 +893,8 @@ impl Camera {
 
     /// Returns `true` if the camera is open
     /// # Errors
-    /// Infallible today on both backends; the `Result` keeps the lifecycle
-    /// surface uniform with the sibling camera crates.
+    /// Infallible on both backends; the `Result` keeps the lifecycle surface
+    /// uniform with the sibling camera crates.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1030,7 +1027,7 @@ impl Camera {
         }
     }
 
-    /// According to c-cod ethis does not work for all cameras
+    /// Turns the SDK's debayering on or off; not every camera supports it
     /// # Errors
     /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
     /// [`QHYError::Sdk`] if the SDK rejects the change (per the note above,
@@ -1637,8 +1634,7 @@ impl Camera {
     /// for the current frame; a short buffer is rejected with
     /// [`QHYError::BufferTooSmall`] **before** the SDK is called (the FFI would
     /// otherwise write out of bounds). This is the caller-owned-buffer convention
-    /// of `zwo-rs` / `svbony-rs`, replacing the former fresh-`Vec`-per-frame
-    /// return.
+    /// of `zwo-rs` / `svbony-rs`.
     ///
     /// # Live-mode polling
     ///
@@ -1648,8 +1644,7 @@ impl Camera {
     /// failure; the SDK does not distinguish the two. Callers must therefore
     /// **poll**: treat `Err` as "retry" for a bounded number of attempts (INDI's
     /// indi-qhy retries ~10× at 1 ms) before giving up. The simulation models this
-    /// via
-    /// [`SimulatedCameraConfig::with_live_not_ready_probability`](crate::simulation::SimulatedCameraConfig::with_live_not_ready_probability).
+    /// via `SimulatedCameraConfig::with_live_not_ready_probability`.
     /// # Errors
     /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
     /// [`QHYError::BufferTooSmall`] if `buf` is shorter than the frame, or
@@ -2082,7 +2077,9 @@ impl Camera {
 impl Camera {
     /// Returns information about the control given to the function
     /// # Returns
-    /// `Err` if the control is not available
+    /// `None` if the control is not available or the camera is not open;
+    /// otherwise the SDK's answer — the Bayer pattern code for
+    /// [`ControlType::CamColor`], `QHYCCD_SUCCESS` (0) for any other control
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -2117,7 +2114,7 @@ impl Camera {
             // For CamColor the payload is the Bayer pattern value; for any other
             // control in supported_controls the real arm passes the raw
             // `IsQHYCCDControlAvailable` status through as the `Some` payload,
-            // and that is `QHYCCD_SUCCESS` (0) — so match it (was `Some(1)`).
+            // and that is `QHYCCD_SUCCESS` (0) — so match it.
             let availability = if !state.config.supported_controls.contains_key(&control) {
                 None
             } else if control == ControlType::CamColor {
@@ -2331,7 +2328,7 @@ impl Camera {
         }
     }
 
-    /// Convinience function that sets the value for a given control if it is available
+    /// Convenience function that sets the value for a given control if it is available
     /// # Errors
     /// Returns [`QHYError::IsControlAvailable`] if the control is not
     /// available, or any error [`Camera::set_parameter`] returns.
@@ -2401,7 +2398,7 @@ impl Camera {
     // `set_parameter` / `get_parameter_min_max_step` surface, mirroring
     // `svbony camera.rs`'s `gain()` / `exposure_us()` / … accessors. They are
     // the routine way to read/write the well-known controls; the generic
-    // `*_parameter(ControlType, )` methods remain for `Other` and any control
+    // `*_parameter(ControlType, )` methods serve `Other` and any control
     // without a dedicated accessor. QHY temperatures are already whole °C, so —
     // unlike svbony's 0.1 °C `SVB_*_TEMPERATURE` — no decode is applied.
     // Backend-agnostic: each delegates to a forked method above.
@@ -2491,7 +2488,7 @@ impl Camera {
     ///
     /// Actuates hardware — callers must respect the workspace's *no actuation on
     /// connect* tenet (never call from a connect/reconnect path; see
-    /// `docs/workspace.md`).
+    /// [Project Tenets](https://github.com/rusty-photon/rusty-photon/blob/main/docs/workspace.md#project-tenets)).
     /// # Errors
     /// Returns [`QHYError::Sdk`] if the value is rejected, or
     /// [`QHYError::CameraNotOpen`] if the camera is not open.

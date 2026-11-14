@@ -1,7 +1,7 @@
-//! Hardware probe for issue #888: what is the **true delivered ceiling** in
-//! `Raw16`, and does it hold across gain and binning?
+//! Hardware probe: what is the **true delivered ceiling** in `Raw16`, and does
+//! it hold across gain and binning?
 //!
-//! [`probe_formats`](probe_formats) answers *how* the ADC's bits sit in the
+//! The `probe_formats` example answers *how* the ADC's bits sit in the
 //! 16-bit container by measuring whatever the scene happened to give. That is
 //! enough to tell a left shift from a rescale, but not enough to state the
 //! ceiling: the brightest pixel in an ordinary frame is a property of the room,
@@ -12,7 +12,7 @@
 //! It sweeps gain and bin because neither is obviously neutral: gain could in
 //! principle scale the clip, and binning changes how neighbouring ADC counts
 //! are combined. The driver publishes a single `MaxADU` for all of them
-//! (ST3), so they all have to agree.
+//! ([ST3 of the zwo-camera design][st3]), so they all have to agree.
 //!
 //! Run against a physically attached camera, with the real SDK linked, in front
 //! of a light source bright enough to saturate:
@@ -24,6 +24,8 @@
 //! It takes several deliberately long exposures, so it runs for a few minutes.
 //! It is read-mostly: it sets gain, exposure and ROI format and reads frames.
 //! It never touches the cooler.
+//!
+//! [st3]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-camera.md#sensor-type--signal
 // Bench diagnostic, run by hand against attached hardware: dying loudly on a
 // missing camera or SDK fault is the intended failure mode, and the histogram
 // arithmetic runs on counters the probe itself bounds by frame size.
@@ -76,9 +78,10 @@ fn main() {
     );
 
     // Two different numbers, and conflating them is what this probe exists to
-    // avoid. `reported` is what the driver publishes as MaxADU (ST3, including
-    // its one-step margin and its `bit_depth <= 1` guard — the depth arrives as
-    // `unwrap_or(0)` at the FFI boundary). `shifted_full_scale` is what a bare
+    // avoid. `reported` is what the driver publishes as MaxADU (ST3 of
+    // docs/services/zwo-camera.md, including its one-step margin and its
+    // `bit_depth <= 1` guard — the depth arrives as `unwrap_or(0)` at the FFI
+    // boundary). `shifted_full_scale` is what a bare
     // `16 - BitDepth` shift would predict, which is the value the measurement
     // below asks whether the sensor actually reaches.
     let depth = info.bit_depth;

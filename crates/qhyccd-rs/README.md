@@ -7,7 +7,7 @@
 
 libqhyccd bindings for Rust.
 
-Current bindings are not complete, but will grow as functionality is needed for the ASCOM alpaca drivers or other projects. It is very early in the dev cycle and I am still learning a ton about Rust, so things might be in flux for a while.
+The bindings are not complete: they wrap what the [rusty-photon](https://github.com/rusty-photon/rusty-photon) ASCOM Alpaca drivers use — QHYCCD cameras and the filter wheels driven through them — and grow as more is needed.
 
 ```toml
 [dependencies]
@@ -21,7 +21,7 @@ the rusty-photon workspace's own minimum.
 
 ## Version of libqhyccd
 
-Currently the library works with [QHYCCD SDK 26.06.04](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#26.06.04). The library supports Linux, Windows, and macOS (experimental).
+The library targets [QHYCCD SDK 26.06.04](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#26.06.04). The library supports Linux, Windows, and macOS (experimental).
 
 ## Platform Support
 
@@ -40,7 +40,7 @@ This project is licensed under either of
 
 at your option.
 
-The repository contains files from the QHYCCD SDK, these are not covered by these licenses and only provided, so builds in CI pass reasonably.
+The QHYCCD SDK is proprietary and is not covered by these licenses; the crate does not ship it.
 
 ### Contribution
 
@@ -185,10 +185,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 When using the simulation feature, `Sdk::new()` automatically provides:
 
 - **Camera**: QHY178M-Simulated (`SIM-QHY178M`)
-  - 3072x2048 resolution
+  - 3072x2048 chip with a 3048x2046 effective area
   - 16-bit depth
   - Cooler support for temperature control
-  - Multiple readout modes
+  - One readout mode (`Standard`)
   - Gain, offset, and exposure controls
 
 - **Filter Wheel**: 7-position CFW
@@ -216,6 +216,10 @@ sdk.add_simulated_camera(config);
 ```
 
 ### Building with Simulation
+
+The feature removes the camera, not the SDK link: a plain `--features simulation`
+build still links the QHYCCD SDK. Set `QHYCCD_SKIP_NATIVE_LINK=1` to build one
+with no SDK installed.
 
 ```bash
 # Build with simulation

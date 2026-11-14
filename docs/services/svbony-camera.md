@@ -497,7 +497,7 @@ either: both members answer from the cache and both setters only store
 
 ## MVP scope
 
-**In scope (v0)**
+**In scope**
 
 - ASCOM Camera (`ICameraV4`) for every enumerated SVBony camera, 8/16-bit RAW
   and mono/OSC (Bayer) sensors, derived at runtime from
@@ -667,7 +667,7 @@ means plain, unauthenticated HTTP.
   none — see *Device identity*). Any device without an entry uses SDK-derived defaults. It serves the
   no-list default only: beside a list it is rejected (above), and each
   camera's page edits its own entry (*Setup pages*). No per-camera
-  connect-time tuning (gain/offset/target temperature) in v0 — deferred (see
+  connect-time tuning (gain/offset/target temperature) — deferred (see
   *Future Work*).
 
   ```jsonc
@@ -2043,7 +2043,7 @@ SV605CC (see "Real-hardware validation").
 
 ---
 
-## ASCOM Camera surface — v0 behaviour
+## ASCOM Camera surface
 
 **Every member below that describes the camera or its session answers
 `NOT_CONNECTED` while the device is disconnected** — which includes a camera
@@ -2055,7 +2055,7 @@ last row (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
 `UniqueID`), which describe the *driver* and are how a client asks whether a
 device is there at all, so they answer throughout.
 
-| Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
+| Property / Method | Behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
 | `CameraXSize` / `CameraYSize` | `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` aligned down so every binned full frame is a valid ROI (R4; SV605CC 3008×3008 → 2976×3000) | **Real** |
 | `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |

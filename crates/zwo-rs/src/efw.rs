@@ -8,9 +8,11 @@
 //! single fabricated 7-slot `EFW-Simulated` wheel is presented and the SDK is
 //! never called.
 //!
-//! Note: EFW status codes (`EFW_ERROR_CODE`) are a signed `c_int` (the header's
-//! `EFW_ERROR_END = -1` makes the enum signed), so unlike the ASI side the
-//! return value is fed to [`crate::efw_check`] directly, with no `as i32` cast.
+//! Note: EFW status codes (`EFW_ERROR_CODE`) are a signed `c_int` on every
+//! platform (the header's `EFW_ERROR_END = -1` makes the enum signed), so
+//! [`crate::efw_check`] takes an `i32` and the return value is fed to it
+//! directly. The ASI codes, unsigned on LP64, go through the bindgen alias
+//! instead ([`crate::asi_check`]).
 
 #[cfg(not(feature = "simulation"))]
 use crate::ffi_util::{c_string_field, hex8};

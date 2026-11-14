@@ -1,6 +1,6 @@
 //! `ConformU` compliance tests for sky-survey-camera.
 //!
-//! Verifies `ICameraV3` conformance against the simulator running with
+//! Verifies `ICameraV4` conformance against the simulator running with
 //! the configured `SkyView` endpoint pointed at an in-process stub HTTP
 //! server. The stub serves a minimal FITS payload synthesised by
 //! [`MockSurveyClient`]'s helper so `ConformU` can drive

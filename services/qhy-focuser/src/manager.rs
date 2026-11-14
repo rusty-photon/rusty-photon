@@ -13,7 +13,7 @@
 //!   `is_moving`, `temperature`, …).
 //!
 //! Each reading is stored with the instant it was read off the wire, and
-//! the cache keeps the reading taken last ([`ReadStamp`]). Requests take
+//! the cache keeps the reading taken last ([`Stamped`]). Requests take
 //! turns on the wire, but each stores its reading after its turn ends, so
 //! a poll's position can land after the one `is_moving`'s refresh read at
 //! the target; the poll's is then the older one and is dropped.
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
     TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
@@ -37,23 +37,17 @@ use crate::protocol::{Command, TemperatureResponse};
 /// Cached state from the QHY Q-Focuser device.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
-    /// Current focuser position.
-    pub position: Option<i64>,
-    /// When [`position`](Self::position) was read off the wire.
-    pub position_read: ReadStamp,
+    /// Current focuser position, with the instant it was read off the wire.
+    pub position: Stamped<i64>,
     /// Target position for the in-flight move.
     pub target_position: Option<i64>,
     /// True between move start and the poll that observes target reached
     /// (or a successful Abort).
     pub is_moving: bool,
-    /// Outer temperature (°C).
-    pub outer_temp: Option<f64>,
-    /// Chip temperature (°C).
-    pub chip_temp: Option<f64>,
-    /// Input voltage (V).
-    pub voltage: Option<f64>,
-    /// When the temperatures and the voltage were read off the wire.
-    pub temperature_read: ReadStamp,
+    /// Outer and chip temperatures (°C) and input voltage (V), the three
+    /// values one `ReadTemperature` answer carries, with the instant it was
+    /// read off the wire.
+    pub temperature: Stamped<TemperatureResponse>,
     /// Firmware version reported by the handshake.
     pub firmware_version: Option<String>,
     /// Board version reported by the handshake.
@@ -260,7 +254,7 @@ async fn handshake(
     let mut state = cached_state.write().await;
     state.firmware_version = Some(version.firmware_version);
     state.board_version = Some(version.board_version);
-    apply_temperature(&mut state, &temp, temp_read_at);
+    apply_temperature(&mut state, temp, temp_read_at);
     // Reset move state on every new session: a previous session may
     // have disconnected mid-move, leaving the cache claiming
     // `is_moving = true, target = Some(X)`. Without this reset, the
@@ -307,7 +301,7 @@ async fn poll_loop(
         match ctx.request_timed(Command::ReadTemperature).await {
             Ok((QhyResponse::Temperature(t), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_temperature(&mut state, &t, timing.received_at);
+                apply_temperature(&mut state, t, timing.received_at);
             }
             Ok((other, _)) => warn!("poll: ReadTemperature returned unexpected variant: {other:?}"),
             Err(e) => session_err_to_warn("ReadTemperature", &e),
@@ -344,11 +338,10 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
 /// `is_moving`'s refresh took at the target, and the focuser would report
 /// that it stopped short of where it says it arrived.
 fn apply_position(state: &mut CachedState, position: i64, read_at: Instant) {
-    if !state.position_read.admit(read_at) {
+    if !state.position.offer(position, read_at) {
         debug!(position, "dropping a position read before the cached one");
         return;
     }
-    state.position = Some(position);
     if state.is_moving {
         if let Some(target) = state.target_position {
             if position == target {
@@ -362,12 +355,8 @@ fn apply_position(state: &mut CachedState, position: i64, read_at: Instant) {
 
 /// Store the temperatures and the voltage read at `read_at`, unless the
 /// cache holds a reading taken after them.
-fn apply_temperature(state: &mut CachedState, temp: &TemperatureResponse, read_at: Instant) {
-    if state.temperature_read.admit(read_at) {
-        state.outer_temp = Some(temp.outer_temp);
-        state.chip_temp = Some(temp.chip_temp);
-        state.voltage = Some(temp.voltage);
-    } else {
+fn apply_temperature(state: &mut CachedState, temp: TemperatureResponse, read_at: Instant) {
+    if !state.temperature.offer(temp, read_at) {
         debug!("dropping a temperature reading taken before the cached one");
     }
 }
@@ -397,9 +386,10 @@ mod tests {
         let state = manager.get_cached_state().await;
         assert_eq!(state.firmware_version.as_deref(), Some("2.1.0"));
         assert_eq!(state.board_version.as_deref(), Some("1.0"));
-        assert_eq!(state.position, Some(0));
-        assert!((state.outer_temp.unwrap() - 25.0).abs() < 1e-6);
-        assert!((state.voltage.unwrap() - 12.5).abs() < 1e-6);
+        assert_eq!(state.position.value(), Some(0));
+        let temperature = state.temperature.get().unwrap();
+        assert!((temperature.outer_temp - 25.0).abs() < 1e-6);
+        assert!((temperature.voltage - 12.5).abs() < 1e-6);
         assert!(!state.is_moving);
 
         session.close().await.unwrap();
@@ -463,7 +453,7 @@ mod tests {
         manager.refresh_position(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.position, Some(500));
+        assert_eq!(state.position.value(), Some(500));
         assert!(!state.is_moving);
         assert_eq!(state.target_position, None);
 
@@ -692,7 +682,7 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         assert_eq!(
-            state.position,
+            state.position.value(),
             Some(1500),
             "a poll's position read before the refresh replaced the one at the target"
         );
@@ -700,6 +690,53 @@ mod tests {
 
         factory.release_reply();
         session.close().await.unwrap();
+    }
+
+    #[test]
+    fn a_position_read_before_the_cached_one_is_dropped_and_ends_no_move() {
+        let earlier = Instant::now();
+        let later = earlier.checked_add(Duration::from_millis(1)).unwrap();
+        let mut state = CachedState {
+            target_position: Some(1500),
+            is_moving: true,
+            ..Default::default()
+        };
+
+        // The older reading is the one at the target: stored, it would end
+        // a move the newer reading shows under way.
+        apply_position(&mut state, 1000, later);
+        apply_position(&mut state, 1500, earlier);
+
+        assert_eq!(
+            state.position.value(),
+            Some(1000),
+            "the older position replaced the newer one"
+        );
+        assert_eq!(state.position.read_at(), Some(later));
+        assert!(state.is_moving, "a dropped position ended the move");
+        assert_eq!(state.target_position, Some(1500));
+    }
+
+    #[test]
+    fn a_temperature_reading_taken_before_the_cached_one_is_dropped() {
+        let earlier = Instant::now();
+        let later = earlier.checked_add(Duration::from_millis(1)).unwrap();
+        let mut state = CachedState::default();
+        let outer = |outer_temp| TemperatureResponse {
+            outer_temp,
+            chip_temp: 30.0,
+            voltage: 12.5,
+        };
+
+        apply_temperature(&mut state, outer(20.0), later);
+        apply_temperature(&mut state, outer(25.0), earlier);
+
+        assert_eq!(
+            state.temperature.get(),
+            Some(&outer(20.0)),
+            "the older reading replaced the newer one"
+        );
+        assert_eq!(state.temperature.read_at(), Some(later));
     }
 
     /// Build a manager whose poll loop is effectively disabled (300s
@@ -871,7 +908,7 @@ mod tests {
         manager.refresh_position(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.position, Some(1000));
+        assert_eq!(state.position.value(), Some(1000));
         assert!(state.is_moving);
         assert_eq!(state.target_position, Some(5000));
 
@@ -913,9 +950,7 @@ mod tests {
         let state = manager.get_cached_state().await;
         assert_eq!(state.firmware_version, None);
         assert_eq!(state.board_version, None);
-        assert_eq!(state.position, None);
-        assert_eq!(state.outer_temp, None);
-        assert_eq!(state.chip_temp, None);
-        assert_eq!(state.voltage, None);
+        assert_eq!(state.position.value(), None);
+        assert_eq!(state.temperature.get(), None);
     }
 }

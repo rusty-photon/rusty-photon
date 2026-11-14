@@ -213,9 +213,9 @@ graph TD;
   `set_target_temperature_celsius(…)`, `set_manual_cooler_pwm(…)`,
   `cooler_power_raw()`, `exposure_range_us()`, … — which the trait provides as
   defaults over the generic `get_parameter` / `set_parameter(ControlType, …)`,
-  mirroring `qhyccd_rs::Camera`'s own accessors. The generic pair serves the
-  capability *probes* (`is_control_available`) and any control without a
-  dedicated accessor. `qhyccd-rs`'s `ControlType` is a subset of the SDK's
+  mirroring `qhyccd_rs::Camera`'s own accessors. The generic pair serves any
+  control without a dedicated accessor, and `is_control_available` the
+  capability *probes*. `qhyccd-rs`'s `ControlType` is a subset of the SDK's
   `CONTROL_ID` list — its semantic variants plus `Other(u32)` — not the full
   list.
 - **`preflight.rs` / `doctor.rs`** — Windows `qhyccd.dll` resolution (startup
@@ -318,12 +318,13 @@ cancel, and an abort signals the capture it was issued against and no other.
 `cancel_exposure` (abort/disconnect) bumps a generation and signals that claim
 but does **not** release it — the capture task takes it back only after its SDK
 calls have fully drained, so a new exposure cannot start and race them, and
-only the installer of a claim ever takes it back. A reconnect's
+only the installer of a claim ever takes it back. A connect's
 `reset_exposure_state` is the one place that could be tempted to take another
 owner's claim and deliberately does not: here the claim means *something is
 inside the SDK*, so handing the device on while that is still true is exactly
-what would let an SDK cancel land on a live readout. It signals instead, and a
-`StartExposure` in that window is rejected rather than started alongside.
+what would let an SDK cancel land on a live readout. It leaves the claim
+alone, and the connect has taken the device before it resets (C6), so no
+capture from the session before can still be inside the SDK by then.
 
 A short `result_lock` covers every transition of this state machine: the
 generation bump, the claim install and take, and the capture task's "check
@@ -1168,7 +1169,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
   A connect's own handshake also answers to the session rule: it publishes **in
   the session it established, or not at all** — the commit every cache writer
-  makes. Neither half of that check can fail on a connect today: with the
+  makes. Neither half of that check can fail on a connect: with the
   device held and the lifecycle lock taken, nothing else begins a session or
   closes the handle, and C9 gives no presence verdict while the lifecycle lock
   is held, so a camera that leaves mid-handshake shows up as a failed SDK call
@@ -2258,7 +2259,8 @@ replaces with the declaration.
   `ImageArray` of the binned sub-frame, `ImageReady = true`,
   `LastExposureStartTime`/`LastExposureDuration` set, `CameraState = Idle`.
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
-  derived from remaining-exposure µs (clamped to ≤ 100), `100` once ready.
+  derived from remaining-exposure µs (clamped to ≤ 100) while a capture is in
+  flight, and is `100` when none is, `0` in the `Error` state.
 - **E7.** `AbortExposure` during capture cancels via the SDK abort path and leaves
   `ImageReady = false`; `CanAbortExposure = true`. It returns only once the
   capture is out of the SDK and the camera has been told to stop, so a client may
@@ -3158,7 +3160,7 @@ validation plus SDK enumeration), which on Windows real-SDK builds also
 carries the installation diagnostics specified in *Windows: qhyccd.dll
 resolution* below; `--devices` lists the cameras by USB port and prints the
 `usb_devices` block to paste instead (U8). Running with no subcommand starts
-the driver exactly as before.
+the driver.
 
 **Restart on request.** The service serves `POST /service/v1/restart`
 and `GET /service/v1/instance` beside the Alpaca API, behind the same
@@ -3173,7 +3175,8 @@ request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 On Windows the QHYCCD SDK's `qhyccd.lib` is an **import library** for the
 proprietary `qhyccd.dll` — the exe needs the DLL at runtime, and the MSI
-does not ship it: QHYCCD's SDK gives no right to redistribute it. The
+does not ship it: the SDK's redistribution rights are unresolved, and no
+package redistributes it ([Packaging](#packaging)). The
 operator installs QHY's **All-in-One pack** (required for the signed device
 driver anyway), which also provides the DLL. Without intervention a
 missing DLL kills the process **in the Windows loader before `main`** — no
@@ -3548,8 +3551,9 @@ the MSI ([packaging-windows.md](../packaging-windows.md); the DLL it needs is
 under *Windows: qhyccd.dll resolution*), and macOS from a Homebrew formula
 ([packaging-macos.md](../packaging-macos.md)).
 
-QHYCCD's proprietary firmware is **never** bundled: QHYCCD's SDK gives no
-right to redistribute it. After installing the
+QHYCCD's proprietary firmware is **never** bundled: its redistribution
+rights are unresolved
+([ADR-013](../decisions/013-native-sdk-payload-policy.md)). After installing the
 package, run `/usr/sbin/rusty-photon-qhy-firmware-install` once as root:
 it downloads the sha256-pinned SDK archive from qhyccd.com and installs
 the camera firmware (`/lib/firmware/qhy`), the SDK's firmware-upload udev

@@ -13,10 +13,10 @@ default = []
 # Forwards to `svbony-rs/simulation`: a hardware-free, in-Rust simulated
 # camera for development and tests. As in zwo-camera/qhy-camera this removes
 # the *camera*, NOT the SDK *link* — the native SVBony SDK is still linked.
-# See the README and docs/services/svbony-camera.md "Native dependency &
-# build gating". It also stages the USB scan a `usb_devices` list is placed
-# from (docs/services/svbony-camera.md U7): the fabricated camera is on no bus
-# a host scan could read.
+# See docs/services/svbony-camera.md "Native dependency & build gating". It
+# also stages the USB scan the cameras are placed from
+# (docs/services/svbony-camera.md U7): the fabricated camera is on no bus a
+# host scan could read.
 simulation = ["svbony-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
@@ -33,8 +33,8 @@ workspace = true
 ascom-alpaca = { workspace = true, features = ["server", "camera"] }
 # `svbony-rs` is a DIRECT PATH dependency, not promoted into the root
 # Cargo.toml's `[workspace.dependencies]`: per CLAUDE.md Rule 10, promotion
-# happens only once a second consumer appears, and `svbony-camera` is the
-# first and (for now) only one.
+# happens only once a second consumer appears, and `svbony-camera` is its
+# only consumer.
 svbony-rs = { path = "../../crates/svbony-rs" }
 rp-auth = { workspace = true }
 rusty-photon-tls = { workspace = true }
@@ -69,13 +69,13 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 [package.metadata.conformu]
 command = "cargo test -p svbony-camera --features conformu --test conformu_integration -- --nocapture"
 
-# Packaging metadata (ADR-012 / ADR-013 / the new ADR-018 no-license-SDK
-# bucket). SVBony's SDK ships no license grant, so — like qhy-camera —
-# nothing bundles the SDK library itself: only the binary, udev rule,
-# systemd unit, and the download-on-target helper ship in the package. The
-# root-only helper (`rusty-photon-svbony-sdk-install`, analogous to
+# Packaging metadata (docs/services/svbony-camera.md "Packaging"). SVBony's
+# SDK ships no license grant, so — like qhy-camera — nothing bundles the SDK
+# library itself: only the binary, udev rule, systemd unit, and the
+# download-on-target helper ship in the package. The root-only helper
+# (`rusty-photon-svbony-sdk-install`, analogous to
 # `rusty-photon-qhy-firmware-install`) installs `libSVBCameraSDK.so` to
-# `/usr/lib/rusty-photon/` at operator request (Phase G).
+# `/usr/lib/rusty-photon/` at operator request.
 [package.metadata.deb]
 name = "rusty-photon-svbony-camera"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
@@ -90,8 +90,8 @@ priority = "optional"
 # NEEDED entry. Direct runtime needs: glibc, libgcc, C++ runtime (what
 # libSVBCameraSDK.so itself links, per readelf -d) + libusb-1.0 (the
 # *binary's own* -lusb-1.0 link — the SDK blob has no NEEDED entry for it
-# at all, see docs/plans/archive/svbony-camera.md Phase F); adduser is used by
-# postinst.
+# at all, see docs/services/svbony-camera.md "Native dependency & build
+# gating"); adduser is used by postinst.
 depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, adduser"
 assets = [
     ["target/release/svbony-camera", "usr/bin/rusty-photon-svbony-camera", "755"],
@@ -168,6 +168,10 @@ libgcc = "*"
 libusb1 = "*"
 
 [dev-dependencies]
+# `crate_universe` resolves an optional dep into `@cr` only if some member
+# enables the gating feature, so this keeps `svbony-rs/simulation`'s optional
+# dep (rand) in `@cr`, which `//crates/svbony-rs:svbony-rs_sim` pulls via
+# `all_crate_deps`. Resolver v2 keeps it out of the production `cargo build`.
 svbony-rs = { path = "../../crates/svbony-rs", features = ["simulation"] }
 # Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
 ascom-alpaca = { workspace = true, features = ["client"] }

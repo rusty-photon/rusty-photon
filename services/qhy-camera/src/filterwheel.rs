@@ -1,12 +1,14 @@
 //! `QhyFilterWheelDevice` — the ASCOM `Device` + `FilterWheel` implementation
 //! over the [`FilterWheelHandle`](crate::backend::FilterWheelHandle) seam.
 //!
-//! Registered automatically, one per discovered CFW (detection is the source of
-//! truth — there is no opt-in toggle). `Names`
-//! are the configured `filter_names` or generated `Filter0..N`; `Position`
-//! returns `None` while the commanded target differs from the actual slot (ASCOM
-//! "moving" sentinel), and an error once a move has outlived its deadline;
-//! `FocusOffsets` is zero per filter in v0.
+//! One per CFW the no-list probe finds (C0) or a `usb_devices` entry declares
+//! (U10) — there is no opt-in toggle — and, for a declared wheel whose camera
+//! cannot be served, the [`PlaceholderFilterWheel`] that holds its number.
+//! `Names` are the configured `filter_names` or generated `Filter0..N`;
+//! `Position` returns `None` while the commanded target differs from the actual
+//! slot or the wheel reports itself moving (ASCOM "moving" sentinel), and an
+//! error once a move has outlived its deadline; `FocusOffsets` is zero per
+//! filter (FW3).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -364,10 +366,11 @@ pub struct QhyFilterWheelDevice {
 }
 
 impl QhyFilterWheelDevice {
-    /// Build a CFW device. The ASCOM `UniqueID` is `CFW-<sdk-id>` (prefixed so it
-    /// never collides with the camera's `UniqueID`, which shares the SDK id on
-    /// single-handle models). `filter_names` / `name` come from the per-serial
-    /// config override.
+    /// Build a CFW device. The ASCOM `UniqueID` is `CFW-<sdk-id>`, prefixed so it
+    /// never collides with the camera's `UniqueID`: the wheel answers its
+    /// camera's SDK id, being driven through the camera's handle.
+    /// `filter_names` come from the camera's `usb_devices` entry or `devices`
+    /// override; `name`, when given, replaces `QHYCCD Filter Wheel <sdk-id>`.
     pub fn new(
         handle: Arc<dyn FilterWheelHandle>,
         filter_names: Option<Vec<String>>,
@@ -595,9 +598,10 @@ impl QhyFilterWheelDevice {
     async fn disconnect(&self) -> ASCOMResult<()> {
         // Refcounted close (`backend::SharedCameraConnection`): the underlying
         // camera is physically closed only when the LAST device sharing this SDK
-        // id disconnects. Disconnecting the wheel therefore no longer tears down a
-        // concurrently-connected camera — the real-hardware failure mode flagged
-        // in review and confirmed before this fix. See docs/services/qhy-camera.md.
+        // id disconnects, so disconnecting the wheel leaves a connected camera
+        // working. Closing the shared handle outright breaks the camera's next
+        // exposure, as measured on hardware
+        // (docs/services/qhy-camera.md#camera--cfw-share-one-physical-handle).
         self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
             .await
     }
@@ -630,7 +634,7 @@ impl Device for QhyFilterWheelDevice {
         // A `Connected` GET must be a safe boolean so health/management polling
         // never throws (matches every sibling driver). Report `false` if the seam
         // ever fails rather than erroring. `is_open()` is infallible in every
-        // current backend (it reads an atomic), so the fallback is purely
+        // backend (it reads an atomic), so the fallback is purely
         // defensive — the *mutating* `set_connected` below intentionally still
         // propagates the error, since a misread there would drive a wrong
         // open/close. A wheel whose camera has left the bus reads false while
@@ -761,8 +765,8 @@ impl FilterWheel for QhyFilterWheelDevice {
     async fn set_position(&self, position: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let count = self.filter_count()?;
-        // Range-check the slot as ASCOM sent it. Narrowing to the SDK's `u32`
-        // first would have wrapped `2^32` onto slot 0 and passed this check.
+        // Range-check the slot as ASCOM sent it. Narrowed to the SDK's `u32`
+        // first, `2^32` would wrap onto slot 0 and pass this check.
         if position >= count {
             return Err(ASCOMError::invalid_value(format!(
                 "filter position {position} out of range (0..{count})"
@@ -1263,7 +1267,7 @@ mod tests {
         assert!(device.connected().await.unwrap());
         assert_eq!(device.names().await.unwrap().len(), 7);
 
-        // already connected → no-op (the current == connected early return)
+        // already connected → no-op (the `connected == held` early return)
         device.set_connected(true).await.unwrap();
         assert!(device.connected().await.unwrap());
 
@@ -1329,8 +1333,9 @@ mod tests {
     async fn moving_to_a_valid_slot_updates_position() {
         let device = connected(None).await;
         device.set_position(3).await.unwrap();
-        // The simulated CFW move settles over a few polls; poll until it reports
-        // the target (`None` is the ASCOM "moving" sentinel).
+        // `Position` is polled until it names the target (`None` is the ASCOM
+        // "moving" sentinel); the mock lands a move at once unless
+        // `defer_move` is set.
         let mut pos = None;
         for _ in 0..10 {
             pos = device.position().await.unwrap();
@@ -1992,10 +1997,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_slot_past_the_sdk_word_is_rejected_not_wrapped() {
-        // The slot arrives from the client as a `usize`. Narrowing it to the
-        // SDK's `u32` before the range check turned every value past 2^32 into
-        // one the wheel would happily move to: 4_294_967_299 is 2^32 + 3, which
-        // used to truncate to slot 3 and pass a `0..7` range check.
+        // The slot arrives from the client as a `usize`. Narrowed to the SDK's
+        // `u32` before the range check, every value past 2^32 would become one
+        // the wheel moves to: 4_294_967_299 is 2^32 + 3, which truncates to
+        // slot 3 and passes a `0..7` range check.
         let device = connected(None).await;
 
         let err = device.set_position(4_294_967_299).await.unwrap_err();

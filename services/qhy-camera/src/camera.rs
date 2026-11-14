@@ -13,10 +13,11 @@
 //! - **ROI validation** rejects a zero or out-of-bounds sub-frame via
 //!   `StartX + NumX > CameraXSize / BinX` (contract R2), not the reference's
 //!   `StartX > NumX`.
-//! - **Dark frames** return `NOT_IMPLEMENTED` (qhyccd-rs 0.1.9 has no shutter
-//!   actuation; contract E4 degraded form).
+//! - **Dark frames** return `NOT_IMPLEMENTED` (`qhyccd-rs` has no shutter
+//!   actuation; E4).
 //! - A real **`Error` `CameraState`** (E9) when a mid-exposure SDK call fails.
-//! - **`PercentCompleted`** is percent *done*, clamped, 100 when idle (E6).
+//! - **`PercentCompleted`** is percent *done*, clamped, 100 when idle and 0 in
+//!   the `Error` state (E6).
 //!
 //! Every SDK call runs on `spawn_blocking` — the exposure ones inside a detached
 //! task, the rest through [`QhyCameraDevice::on_handle`] — so a USB round-trip
@@ -52,8 +53,8 @@ pub(crate) const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_dri
 /// How long an abort/disconnect waits for the capture task to leave the SDK.
 /// Sized for a readout, not an exposure: the task's wait for the exposure to
 /// elapse is cancellable, so the only uninterruptible stretch is
-/// `GetQHYCCDSingleFrame` itself (a full-frame USB transfer, well under a second
-/// on the QHY178M). Reaching this deadline means the SDK is genuinely stuck, and
+/// `GetQHYCCDSingleFrame` itself (a full-frame single-frame readout, about
+/// 2.5 s on the QHY178M, GO2). Reaching this deadline means the SDK is genuinely stuck, and
 /// the caller then declines to close the handle rather than close it unsafely.
 ///
 /// For a disconnect it is the budget for the *whole* attempt rather than for one
@@ -68,9 +69,8 @@ const CAPTURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPOSURE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// How long the capture task keeps asking the camera whether the exposure is
-/// over before entering the readout anyway. A camera that never reports 0 must
-/// not strand the frame forever; entering the readout is what the driver did
-/// unconditionally before, so this is a bounded fallback, not a regression.
+/// over before entering the readout anyway: a camera that never reports 0 must
+/// not strand the frame forever.
 const EXPOSURE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The [`DeviceState::bin`] value that means *no handshake has published a bin
@@ -248,9 +248,9 @@ struct DeviceState {
     result_lock: Mutex<()>,
     /// Notified the instant a claim leaves [`Self::in_flight_capture`], by
     /// whichever of the capture task, an abort or a failed start put it there.
-    /// Lets `disconnect` (and tests) await the drain on a deadline via
-    /// `tokio::time::timeout` instead of a polling sleep loop — busy-waits have
-    /// bitten us with scheduler stalls under load.
+    /// Lets an abort or a disconnect (and tests) await the drain on a deadline
+    /// via `tokio::time::timeout` instead of a polling sleep loop, which can
+    /// stall under scheduler pressure.
     exposure_drained: tokio::sync::Notify,
 }
 
@@ -576,11 +576,11 @@ impl DeviceState {
     }
 
     /// Give the device back, but only if `claim` is still the installed one.
-    /// Nothing takes a claim from its owner today ([`Self::reset_exposure_state`]
-    /// signals rather than takes, precisely so it cannot); the check is what
-    /// keeps that true rather than assuming it, since taking another owner's
-    /// claim would declare a genuinely running exposure finished and let a
-    /// second capture into the SDK beside it.
+    /// Nothing takes a claim from its owner ([`Self::reset_exposure_state`]
+    /// leaves it alone); the check is what keeps that true rather than
+    /// assuming it, since taking another owner's claim would declare a
+    /// genuinely running exposure finished and let a second capture into the
+    /// SDK beside it.
     fn release_claim(&self, claim: &Arc<CaptureCancel>) {
         {
             let _guard = self.result_lock.lock();
@@ -766,9 +766,10 @@ pub struct QhyCameraDevice {
 }
 
 impl QhyCameraDevice {
-    /// Build a device from an SDK handle and an optional per-serial config
-    /// override. The ASCOM `UniqueID` is the SDK serial; `name`/`description`
-    /// fall back to SDK-derived defaults.
+    /// Build a device from an SDK handle and its display override, if any: a
+    /// `usb_devices` entry's or a `devices` entry's name and description. The
+    /// ASCOM `UniqueID` is the SDK id; `name` falls back to it, and
+    /// `description` to `QHYCCD camera`.
     pub fn new(handle: Arc<dyn CameraHandle>, overrides: Option<&DeviceOverride>) -> Self {
         let id = handle.id();
         let name = overrides
@@ -1172,7 +1173,7 @@ impl QhyCameraDevice {
         // In the session this connect established and on a device still open,
         // or not at all — the same guard every other writer here answers to.
         // With the device held and the lifecycle lock taken, neither half can
-        // fail here today: nothing else begins a session or closes the handle,
+        // fail here: nothing else begins a session or closes the handle,
         // and C9 gives no presence verdict while the lifecycle lock is held, so
         // a camera that leaves mid-handshake shows up as a failed SDK call, not
         // as a refused commit. The check is kept as the rule every cache writer
@@ -1482,8 +1483,9 @@ impl QhyCameraDevice {
         };
         // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
         // shares this camera's SDK id, the physical handle is closed only once
-        // both devices have disconnected, so disconnecting the camera no longer
-        // breaks a concurrently-connected filter wheel. See the design doc.
+        // both devices have disconnected, so disconnecting the camera leaves a
+        // connected filter wheel working
+        // (docs/services/qhy-camera.md#camera--cfw-share-one-physical-handle).
         // Hand the device back however this ends, a close that failed included,
         // or a device that refused to close would go on refusing every exposure
         // with nothing in flight to explain why.
@@ -1879,8 +1881,8 @@ struct ControlReading {
 /// The SDK only *records* a readout mode: the camera is told it, and the SDK
 /// builds its own geometry for it, inside `InitQHYCCD`. So the mode and the init
 /// always go together — on connect with mode 0 (C1), and on a mode change with
-/// the new one (RM1) — in the order connect has always sent them. The init
-/// resets the transfer depth, which is why that is set after it.
+/// the new one (RM1), in the same order on both. The init resets the
+/// transfer depth, which is why that is set after it.
 fn initialize_in_mode(h: &dyn CameraHandle, mode: u32) -> Result<(), BackendError> {
     h.set_stream_mode_single()?;
     h.set_readout_mode(mode)?;
@@ -2139,9 +2141,10 @@ fn to_sdk_coordinates(roi: CCDChipArea, effective: CCDChipArea, bin: u32) -> CCD
 /// Measured on a QHY600M, which fills a region with an odd extent one row or
 /// column short and leaves the remainder zero — a black line along the bottom
 /// or right edge of the picture, and a zero in every statistic taken over the
-/// frame. At bin 2 and above either axis does it (a 101-row request came back
-/// with 100 rows of data, a 101-column one with 100 columns); at bin 1 a tall
-/// odd request does it (1001, 3193 and 6387 rows all lost their last row)
+/// frame. At bin 2 either axis does it (a 101-row request came back with 100
+/// rows of data, a 101-column one with 100 columns), and at bins 3 and 4 an odd
+/// full-frame height does (2129 and 1597 rows each lost their last); at bin 1 a
+/// tall odd request does it (1001, 3193 and 6387 rows all lost their last row)
 /// while a short one happens to survive. Nothing in the SDK reports the
 /// shortfall: the frame arrives with the shape that was asked for.
 ///
@@ -2385,7 +2388,7 @@ fn cached_value(
     }
 }
 
-/// `MaxADU = 2^bits - 1` (e.g. 65535 for a 16-bit sensor), saturating.
+/// `MaxADU = 2^bits - 1` (e.g. 65535 for a 16-bit container), saturating.
 fn max_adu_from_bits(bits: u32) -> u32 {
     2u32.checked_pow(bits)
         .map_or(u32::MAX, |full| full.saturating_sub(1))
@@ -2748,7 +2751,7 @@ impl Device for QhyCameraDevice {
         // A `Connected` GET must be a safe boolean so health/management polling
         // never throws (matches every sibling driver, e.g. zwo-camera /
         // sky-survey-camera / pa-falcon-rotator). Report `false` if the seam ever
-        // fails rather than erroring. `is_open()` is infallible in every current
+        // fails rather than erroring. `is_open()` is infallible in every
         // backend (it reads an atomic), so the fallback is purely defensive — the
         // *mutating* `set_connected` below intentionally still propagates the error,
         // since a misread there would drive a wrong open/close. A camera that
@@ -2818,7 +2821,7 @@ impl Device for QhyCameraDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages.
+    /// No custom action: the device is configured on its setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
         Ok(Vec::new())
     }
@@ -3417,8 +3420,8 @@ impl Camera for QhyCameraDevice {
         // covers the in-flight branch.
         self.ensure_connected()?;
         if !self.state.exposure_in_flight() {
-            // Idle: 100 once a frame is ready, 0 in the Error state (so a camera
-            // reporting CameraState::Error never also reports 100% complete).
+            // Idle: 100, or 0 in the Error state (so a camera reporting
+            // CameraState::Error never also reports 100% complete).
             return Ok(if self.state.last_error.lock().is_some() {
                 0
             } else {
@@ -3505,11 +3508,10 @@ impl Camera for QhyCameraDevice {
             ));
         }
         if !light {
-            // Dark/bias frames need the mechanical shutter closed. qhyccd-rs 0.1.9
+            // Dark/bias frames need the mechanical shutter closed. qhyccd-rs
             // exposes shutter *presence* (CamMechanicalShutter) but no open/close
-            // actuation, so v0 cannot capture a true dark on any model — darks are
-            // rejected. See docs/services/qhy-camera.md E4 / Future Work. The
-            // simulated QHY178M-Simulated is shutterless.
+            // actuation, so the driver cannot capture a true dark on any model,
+            // and darks are rejected (E4).
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
 
@@ -3964,7 +3966,8 @@ mod tests {
         // 16 in the mock), never the sensor's OutputDataActualBits: the SDK
         // left-shifts raw data to fill the container (SDK manual §14). So whether
         // the sensor reports a real depth (14) or the QHY5III715C's bogus 0, MaxADU
-        // is 65535 — and is never the 2^0 - 1 = 0 that ConformU flagged.
+        // is 65535 — and is never the 2^0 - 1 = 0 that ConformU fails as below
+        // its minimum.
         for actual_bits in [0.0, 12.0, 14.0] {
             let handle = MockCameraHandle::default()
                 .with_param(ControlType::OutputDataActualBits, actual_bits);
@@ -4245,9 +4248,9 @@ mod tests {
         );
     }
 
-    /// C8: the same order covers the other direction — a disconnect issued
-    /// alongside a burst of connects is not overtaken by them, and the device is
-    /// left where the last request to run put it.
+    /// C8 for disconnects: a burst of `Disconnect` requests is one close. Each
+    /// reads the device's state behind the lifecycle lock, so the three behind
+    /// the first find the camera already closed and never reach the SDK.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_burst_of_disconnects_closes_once() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -4644,9 +4647,10 @@ mod tests {
     }
 
     /// RM1/B1: a bin set while a readout-mode change is inside its init is
-    /// taken — a bin no longer needs the device the change owns — and lands
-    /// before the change, which then resets it to 1 with the rest of the mode's
-    /// geometry, as it does a sub-frame set at that moment.
+    /// taken — a bin set needs no device, so the change owning it is no reason
+    /// to refuse — and lands before the change, which then resets it to 1 with
+    /// the rest of the mode's geometry, as it does a sub-frame set at that
+    /// moment.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_bin_set_during_a_readout_mode_change_lands_before_it() {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
@@ -5242,8 +5246,8 @@ mod tests {
     /// Once the close has returned, the connected check refuses a commit just as
     /// the session check does, and no request can tell them apart — so the
     /// session ending is asserted directly rather than inferred from a refusal
-    /// either rule would produce. `commit_guard` needs both, and the one that
-    /// isolates the session is `a_superseded_handshake_neither_publishes_nor_closes`,
+    /// either rule would produce. `commit_guard` needs both, and the test that
+    /// isolates the session is `an_roi_edit_from_an_ended_session_is_refused`,
     /// where a later connect has reopened the handle and only the session is
     /// stale.
     #[tokio::test(flavor = "multi_thread")]
@@ -5848,7 +5852,7 @@ mod tests {
 
     #[test]
     fn ascom_bound_has_no_answer_outside_i32() {
-        // The case a cast had to invent a value for: `as` saturates here, which
+        // The case a cast has to invent a value for: `as` saturates here, which
         // would advertise `i32::MAX` as a gain the camera never offered.
         assert_eq!(ascom_bound(f64::from(i32::MAX) + 1.0), None);
         assert_eq!(ascom_bound(f64::from(i32::MIN) - 1.0), None);
@@ -6381,7 +6385,7 @@ mod tests {
     async fn cooling_capabilities_and_temperature_readback() {
         let device = connected_device(MockCameraHandle::default()).await;
         assert!(device.can_get_cooler_power().await.unwrap());
-        // CurTemp default is 20.0 °C on the simulated mono model.
+        // MockCameraHandle::default() seeds CurTemp at 20.0 °C.
         assert_eq!(device.ccd_temperature().await.unwrap(), 20.0);
     }
 
@@ -7104,7 +7108,7 @@ mod tests {
             );
         }
         // The exposure range answers as it does in a connect's window, where an
-        // unread range has always been `INVALID_VALUE`.
+        // unread range is `INVALID_VALUE`.
         for (member, code) in [
             ("ExposureMin", device.exposure_min().await.err()),
             ("ExposureMax", device.exposure_max().await.err()),
@@ -8843,12 +8847,12 @@ mod tests {
     /// The interleaving is forced rather than raced: a parked thread holds a
     /// lock `start_exposure` writes on its way out, stalling it after the claim
     /// and before the capture task exists, and the abort lands in that stall.
-    /// The clear this replaced sat two instructions after the claim, too tight
-    /// for any lock to stall inside — so the test brackets the same defect at a
-    /// point that can be held open. Put a handle-wide clear back anywhere after
-    /// the stall and this fails exactly as the field report reads: the abort
-    /// sits out the whole drain deadline and returns *the exposure could not be
-    /// aborted; the SDK did not return*.
+    /// A handle-wide clear would sit two instructions after the claim, too
+    /// tight for any lock to stall inside, so the test brackets that defect at
+    /// a point that can be held open. With a handle-wide clear anywhere after
+    /// the stall this fails as that defect does: the abort sits out the whole
+    /// drain deadline and returns *the exposure could not be aborted; the SDK
+    /// did not return*.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
@@ -8899,10 +8903,13 @@ mod tests {
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
     }
 
-    /// A reconnect clears the exposure state (C3) but must not hand the device
-    /// to a new capture while the previous one is still inside the SDK. The
-    /// claim says "something is in the SDK right now", so the reset signals it
-    /// and leaves it in place; the capture takes it back as it leaves.
+    /// The exposure-state reset a connect runs (C3) leaves the in-flight claim
+    /// alone, so it never hands the device to a new capture while the previous
+    /// one is still inside the SDK. A connect takes the device before it resets
+    /// (C6), so in the driver the reset never meets such a capture; called
+    /// directly here, it is shown to leave the device claimed if it did. The
+    /// claim says "something is in the SDK right now", and the capture takes it
+    /// back as it leaves.
     ///
     /// Clearing the claim there instead admits a second `StartExposure` beside
     /// a live `GetQHYCCDSingleFrame` — two capture tasks calling the blocking
@@ -9270,8 +9277,8 @@ mod tests {
         );
     }
 
-    /// Since GO1 the cached members never reach the SDK, so `StartExposure` is
-    /// as likely as anything to be the call that finds a departed camera out.
+    /// The cached members never reach the SDK (GO1), so `StartExposure` is as
+    /// likely as anything to be the call that finds a departed camera out.
     #[tokio::test]
     async fn a_start_exposure_on_a_departed_camera_answers_not_connected() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;

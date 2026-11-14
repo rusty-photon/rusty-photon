@@ -10,10 +10,9 @@ Feature: Camera enumeration and connection lifecycle
   serial). Connecting a device (C1) opens it via the SDK; a `Connected`
   device that receives another `set_connected(true)` is a no-op (C1b). An
   open failure leaves the device not connected (C2). Disconnecting (C3)
-  closes the device, cancelling any in-flight exposure (C3b, implemented in
-  Phase E over the generation-counter guard -- see
-  docs/plans/archive/svbony-camera.md) — proven by the next session taking a
-  frame of its own, which a capture still holding the device would refuse;
+  closes the device, cancelling any in-flight exposure (C3b) — proven by
+  the next session taking a frame of its own, which a capture still holding
+  the device would refuse;
   the exposure state that session produced is not readable once it is
   disconnected (state-machine step 9), and the connect that follows starts
   with no frame ready. Nor does a disconnected driver describe the camera's

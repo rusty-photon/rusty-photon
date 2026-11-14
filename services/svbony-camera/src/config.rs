@@ -4,8 +4,7 @@
 //! `devices` override map (keyed by SDK serial — applied to each
 //! `SvbonyCamera` at registration) mirrors `zwo-camera`'s shape. `SVBony` has
 //! exactly one device type (Camera), so there is no filter-wheel-style
-//! per-device-family config surface here (see ADR-014's precedent, though it
-//! doesn't apply to this single-device-type SDK).
+//! per-device-family config surface here.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SvbonyCameraError;
 
-/// The default Alpaca listening port. Next free in the 1112x family; 11111-
-/// 11124 are already allocated (see `docs/workspace.md`'s Services table).
+/// The default Alpaca listening port: this service's row in
+/// `docs/workspace.md`'s Services table.
 pub const DEFAULT_PORT: u16 = 11125;
 
 /// Effective service configuration.

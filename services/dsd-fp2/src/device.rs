@@ -128,7 +128,7 @@ impl Device for DsdFp2Device {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages, and the
+    /// No custom action: the device is configured on its setup pages, and the
     /// specification's answer to an unknown action name is
     /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
     /// defaults to.

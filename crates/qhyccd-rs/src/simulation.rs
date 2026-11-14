@@ -3,10 +3,9 @@
 //! This module provides simulated camera and filter wheel support, allowing
 //! library users to develop and test applications without physical QHYCCD hardware.
 //!
-//! Folded into a single file (was a `simulation/` subtree) as part of the
-//! zwo/svbony convention alignment: the simulated device state is held directly
-//! by a [`Camera`](crate::Camera) under `#[cfg(feature = "simulation")]`, not via
-//! a runtime backend enum.
+//! The simulated device state is held directly by a [`Camera`](crate::Camera)
+//! under `#[cfg(feature = "simulation")]`, as in the sibling `zwo-rs` /
+//! `svbony-rs` crates.
 //!
 //! # Example
 //!
@@ -164,7 +163,7 @@ impl Default for SimulatedCameraConfig {
             },
             // A small overscan strip distinct from the effective imaging area —
             // real `GetQHYCCDOverScanArea` reports a separate calibration region,
-            // not the full frame (audit fidelity fix).
+            // not the full frame.
             overscan_area: CCDChipArea {
                 start_x: 0,
                 start_y: 0,
@@ -217,8 +216,7 @@ impl SimulatedCameraConfig {
     }
 
     /// Adds filter wheel support with the specified number of slots, capped at
-    /// the sixteen a `CONTROL_CFWPORT` value can address
-    /// ([`CFW_MAX_SLOTS`](crate::camera::CFW_MAX_SLOTS)).
+    /// the sixteen a `CONTROL_CFWPORT` value can address (`CFW_MAX_SLOTS`).
     ///
     /// The cap keeps the simulated wheel internally consistent. Without it a
     /// larger count would be advertised through `CfwSlotsNum` and `CfwPort`'s
@@ -623,12 +621,12 @@ impl SimulatedCameraState {
                 // The SDK reports the remainder in `u32` microseconds,
                 // which runs out at ~71 minutes — a ceiling of the vendor
                 // API's shape, not this narrowing. Saturating pins there and
-                // says "still plenty left"; narrowing wrapped a long
+                // says "still plenty left"; narrowing would wrap a long
                 // exposure round to a small number, so a caller polling this
-                // as its authority would have believed the frame was nearly
-                // done. `qhy-camera` is not such a caller (it times the
-                // exposure host-side and only asks for confirmation), which
-                // bounds the blast radius to this crate's API contract.
+                // as its authority would believe the frame nearly done.
+                // `qhy-camera` is not such a caller (it times the exposure
+                // host-side and asks this only to confirm), so the ceiling
+                // binds this crate's API contract rather than that driver.
                 u32::try_from(self.exposure_duration_us.saturating_sub(elapsed_us))
                     .unwrap_or(u32::MAX)
             }
@@ -832,9 +830,8 @@ impl PixelNoise {
     /// keeping the high word is the same distribution a modulo gives, to within
     /// the same negligible bias at the spans used here (a few thousand out of
     /// 2^32) — for one multiply instead of a divide. That is worth naming: at a
-    /// megapixel per frame the divide was most of the cost of generating one,
-    /// and it dominated the loop badly enough to make an indexed write look
-    /// faster than walking the buffer.
+    /// megapixel per frame a divide here is most of the cost of generating one,
+    /// enough to make an indexed write look faster than walking the buffer.
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::as_conversions,
@@ -953,8 +950,8 @@ impl Frame {
 /// column short and leaves the remainder zero — a black line along the bottom
 /// or right edge of the picture, and a zero in every statistic taken over the
 /// frame. Nothing in the SDK says so: the frame arrives with the shape that
-/// was asked for, which is what made the shortfall a puzzle in the pictures
-/// rather than an error at the driver. The simulated camera carries it so a
+/// was asked for, so the shortfall shows as a puzzle in the pictures rather
+/// than as an error at the driver. The simulated camera carries it so a
 /// driver that asks for an odd extent gets its black line here instead of on
 /// a night at the telescope.
 ///
@@ -1629,8 +1626,8 @@ mod image_generator_tests {
     #[test]
     fn every_pattern_replicates_a_pixel_across_its_channels() {
         // One noise draw per pixel, not per byte: a colour frame whose channels
-        // diverge is speckle, and the 16-bit generators have always drawn per
-        // pixel. The 8-bit starfield background was the one that did not.
+        // diverge is speckle. Every pattern, at either depth, draws once per
+        // pixel and replicates the value across its channels.
         for pattern in [
             ImagePattern::Gradient,
             ImagePattern::StarField,
@@ -1981,9 +1978,9 @@ mod state_tests {
     fn an_exposure_past_the_sdk_word_reports_a_saturated_remainder() {
         // The SDK reports the remainder in `u32` microseconds, which runs out at
         // ~71 minutes; nothing clamps the Exposure parameter to its own control
-        // range on the way in. Narrowing wrapped a two-hour exposure round to
-        // 2.9e9 µs, so it read as *falling* and then jumping — a caller that
-        // trusted it would have committed to the readout early.
+        // range on the way in. Narrowing would wrap a two-hour exposure round to
+        // 2.9e9 µs, so it would read as *falling* and then jumping — a caller
+        // that trusted it would commit to the readout early.
         let mut state = SimulatedCameraState::new(SimulatedCameraConfig::default());
         state
             .parameters

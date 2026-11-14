@@ -38,7 +38,9 @@ zero cameras.
    match the pin — `WINDOWS_SDK_VERSION`, beside the vendor zip's
    `WINDOWS_SDK_SHA256`, in
    `.github/actions/install-svbony-sdk/svbony-sdk.mjs`).
-2. Extract it somewhere stable, e.g. `C:\SVBONY`. The pieces that matter:
+2. Extract it into `C:\`. The zip holds one top-level `SVBONY\` folder, so
+   this gives `C:\SVBONY`, the path the steps below use; extracting into
+   `C:\SVBONY` itself gives `C:\SVBONY\SVBONY`. The pieces that matter:
    `C:\SVBONY\lib\x64\SVBCameraSDK.lib` (build-time link) and
    `C:\SVBONY\lib\x64\SVBCameraSDK.dll` (runtime).
 
@@ -113,12 +115,17 @@ target\release\svbony-camera.exe
 
 ## Notes
 
-- On connect, the SVBony SDK writes a per-model parameter file
-  (`<model>_Cfg_A.bin`, from the handshake's `SVBRestoreDefaultParam`) to
-  `%APPDATA%\CKConfig\`. This is SDK behavior, harmless, and safe to delete
-  when the camera is closed. The driver turns the SDK's parameter auto-save
-  off at connect, so the SDK writes nothing there at close, and the restore
-  starts every session from the SDK's device defaults — see
+- On connect, the handshake's `SVBRestoreDefaultParam` writes a pair of
+  per-model parameter files to `%APPDATA%\CKConfig\`: `<model>_Cfg_A.bin`
+  and a byte-identical `<model>_Cfg_SAVE.bin`. Close rewrites neither. This
+  is SDK behavior, harmless, and both files are safe to delete when the
+  camera is closed. The pair and its behavior at close were observed on the
+  rig under Linux, where the SDK writes them to the working directory. The
+  driver turns the SDK's parameter auto-save off at connect, so the SDK
+  saves no session state there at close, and the restore starts every
+  session from the SDK's device defaults — see
   [svbony-camera.md § Working directory](services/svbony-camera.md#working-directory-sdk-persisted-camera-config).
 - `svbony-camera.exe --help` lists the service flags (`--config`,
-  `--port`, `--log-level`, and the `doctor` subcommand's `--json`).
+  `--port`, `--log-level`) and the `doctor` subcommand, whose own `--help`
+  lists `--config`, `--json` and `--devices` (this driver's cameras on the
+  bus by USB port, with the `usb_devices` block to paste).

@@ -21,9 +21,8 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level service configuration.
 ///
-/// `deny_unknown_fields` (as in zwo-camera and the other newer services) so
-/// typoed or removed keys fail loudly at load instead of being silently
-/// ignored.
+/// `deny_unknown_fields`, so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -185,7 +184,7 @@ impl From<&UsbDeviceEntry> for DeviceOverride {
 }
 
 /// qhy-camera's default `server` block when the config file omits it: port
-/// 11121 (next free in the 1112x family) on all interfaces, plain HTTP.
+/// 11121 on all interfaces, plain HTTP.
 const fn default_server() -> AlpacaServerConfig {
     AlpacaServerConfig::new(11121)
 }
