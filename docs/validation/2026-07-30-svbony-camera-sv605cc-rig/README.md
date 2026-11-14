@@ -4,7 +4,7 @@ First validation of the **packaged** `rusty-photon-svbony-camera`
 against the physical camera on the deployment target itself — the Pi 5
 telescope field rig, installed from the nightly apt repo. This closes
 the last open item from the Linux dev-box validation
-([docs/services/svbony-camera.md](../../services/svbony-camera.md)
+([docs/services/svbony-camera.md](../../plans/archive/svbony-camera-hardware-validation-2026.md#real-hardware-validation)
 "Real-hardware validation"): the dev-box and Windows runs exercised
 locally built binaries; this run exercises the shipped deb, the
 operator SDK-install helper, and the packaged udev rule end-to-end.
