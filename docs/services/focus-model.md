@@ -221,9 +221,9 @@ With `shared: true` the call walks `rp`'s `get_refocus_plan` for the
 train instead of sweeping its own focuser alone: each `capture` step is
 a full sweep of that step's focuser measured through its run train's
 camera and recorded on the run train's record, a `guide` step is
-`rp`'s own PHD2-metric `auto_focus` on the guiding train, and one
+`rp`'s own guide-metric `auto_focus` on the guiding train, and one
 guiding pause is held across the capture steps and released before the
-guide step, which needs the loop running to measure. A `filter` is
+guide step, which needs the guider guiding to measure. A `filter` is
 passed to each capture step and checked against that step's run train,
 so a walk started on a filterless guiding train may still name the
 filter its imaging step focuses through. A plan whose only step is the
@@ -714,11 +714,20 @@ to the record the reset had just emptied.
 
 A **training run** is a `focus_train` call without `shared`, or a
 `determine_filter_offsets` call, addressed to the guiding train. It
-captures through the guide camera, which `rp` reaches as the PHD2
-camera facade, under `rp`'s train lease ([rp.md § Train
-Lease](rp.md#train-lease)). In-session guide focus is not a training
-run: a `shared: true` walk on the guiding train keeps its guide step on
-`rp`'s PHD2-metric `auto_focus`. An imaging train's run takes no lease.
+captures through the guide camera under `rp`'s train lease
+([rp.md § Train Lease](rp.md#train-lease)), which holds the guider's
+camera lease and with it the guider idle. In-session guide focus is
+not a training run: a `shared: true` walk on the guiding train keeps
+its guide step on `rp`'s guide-metric `auto_focus`. An imaging train's
+run takes no lease.
+
+**Designed and not yet built.** The guider this section names, and its
+camera lease under `rp`'s train lease, are `rp`'s design
+([rp.md § Guider Service](rp.md#guider-service)). As built, `rp`
+reaches the guide camera as `phd2-guider`'s camera facade, and its
+train lease holds that facade's sweep lease. Stage G6 of
+[the native guider plan](../plans/native-guider.md#staging) builds
+what is written here.
 
 Where the guide path's focuser sits decides how it is focused:
 
@@ -728,7 +737,7 @@ Where the guide path's focuser sits decides how it is focused:
   offsets of its own when a wheel is in its light path. A guide path
   that shares an upstream focuser with the imaging train and keeps its
   own terminal focuser is this case. In-session, its focus stays on
-  `rp`'s PHD2-metric sweep.
+  `rp`'s guide-metric sweep.
 - **No focuser of its own.** Such a guide path gets no sweep and
   carries no offsets. Behind a focuser the imaging train holds, it is
   focused by that train's sweep: a focuser an imaging train holds is
@@ -752,17 +761,18 @@ A training run keeps these rules:
   focuses it"*. An upstream focuser the two trains share is no reason
   to refuse. `pier1`'s guiding train sweeps its Scops OAG, and its
   lease holds the shared EAF still.
-- **The camera.** That the guide camera is the facade, with PHD2
-  `Stopped`, is `rp`'s to check when it grants the lease. A
-  guiding train whose camera is not the facade, or whose PHD2 is
-  guiding or looping, is refused at the acquire, and the provider
-  relays `rp`'s refusal.
+- **The guider.** That the guider is idle, and that the camera it
+  exposes on is the train's, is `rp`'s to check when it grants the
+  lease. A guiding train whose guider is in any other state, or names
+  another camera, is refused at the acquire, and the provider relays
+  `rp`'s refusal. Where `rp` has no guider configured, it grants the
+  lease with no camera lease in it.
 - **One lease per run.** `focus_train` takes one lease for the whole
   run, its retried attempts included, so neither guiding nor mount
   motion can slip in between two attempts. `determine_filter_offsets`
   takes one for each sweep, so no lease outlives a sweep. Guiding may
   start between two sweeps, and then the next acquire is refused,
-  naming PHD2's state, before that sweep moves anything. The refusal
+  naming the guider's state, before that sweep moves anything. The refusal
   ends the procedure as a failed device does, with the rig put back.
   The lease guarantees each sweep, not the procedure: that the
   procedure does not run while an imaging session is using that wheel
@@ -770,9 +780,10 @@ A training run keeps these rules:
 - **When.** The acquire follows the reads, the sizing, and the
   refusals of a focuser outside its travel and of a grid that cannot
   be walked. It comes before the guiding handshake and the first move,
-  so a guiding PHD2 is refused at the acquire before anything pauses or
-  moves, and the handshake after it meets a `Stopped` PHD2 and does
-  nothing. Each lease has a fresh id, `focus-model-` and 32 hex digits.
+  so a guider that is guiding is refused at the acquire before anything
+  pauses or moves, and the handshake after it meets an idle guider and
+  does nothing. Each lease has a fresh id, `focus-model-` and 32 hex
+  digits.
 - **The size.** The lease asks for the time the run needs:
 
   ```
@@ -787,8 +798,8 @@ A training run keeps these rules:
   reference frame and a confirmation frame, and a move to its centre,
   to each sample and to the vertex; the
   run adds the move to the predicted start and the put-back. A frame
-  costs 2 s beyond its exposure and a move 2 s, the constants the
-  hardware check below measures. The half again on top covers what
+  costs 2 s beyond its exposure and a move 2 s; the hardware check
+  below measures the move's. The half again on top covers what
   the estimate leaves out: a filter change, the fallback frame of a
   rejected confirmation, a slower sample. An estimate over 10 minutes,
   the longest lease `rp` grants, is refused before anything moves and
@@ -803,10 +814,10 @@ A training run keeps these rules:
   included. A put-back refused because the lease is no longer held
   (`rp`'s `lease '<id>' is not held: …`) is sent again without the id,
   as an ordinary call that waits its turn. A lease that ends mid-run,
-  at its `max_duration`, on the safety transition, or when the facade
-  loses its sweep lease (a `guiding/stop`, a `phd2-guider` restart),
-  fails the run's next call with `rp`'s reason, and the run puts back
-  and records like any failed run.
+  at its `max_duration`, on the safety transition, or when the guider
+  no longer holds the camera lease (a restart of the guider), fails
+  the run's next call with `rp`'s reason, and the run puts back and
+  records like any failed run.
 - **The release.** The lease is released after the put-back on every
   path: a run that focused, one that failed, one that was cancelled,
   and an acquire that was refused or cancelled, so that a lease `rp`
@@ -822,22 +833,13 @@ A training run keeps these rules:
   its imaging capture step before its guide step.
 
 **Real-hardware validation.** On the field rig (a Raspberry Pi 5; the
-guiding train `[zwo-eaf, scops-oag, guide camera]`, its camera the PHD2
-camera facade over a QHY5III715C behind PHD2 2.6.14), a frame costs
-1.40 s beyond its exposure on average and 1.47 s at most — the full
-3864 × 2192 frame through PHD2, the facade, `rp`'s FITS write and
-`measure_stars` included — and a 10-step move 0.17 s on average and
-0.41 s at most, so both 2 s constants hold, the frame's with a third to
-spare. With PHD2 looping, a training run there is refused at the lease
-and neither focuser moves. With PHD2 `Stopped`, the run walks its
-samples on the Scops OAG through the facade and puts it back, the
-shared EAF never moves, `phd2-guider` refuses every guiding operation
-until the run answers, and `rp` grants a new lease on the train
-afterwards. The rig was indoors and its frames held no stars, so
-every attempt ended in `not_enough_stars`: the run shows the leases,
-the capture path and the put-back, and no fit of a guiding train's
-curve on hardware
+guiding train `[zwo-eaf, scops-oag, guide camera]`), a 10-step move of
+the Scops OAG costs 0.17 s on average and 0.41 s at most, so the move's
+2 s constant holds
 ([the run of 2026-10-15](../plans/archive/focus-model-guiding-train-field-rig-run-2026-10.md)).
+The frame's 2 s constant is an allowance and not a measurement: no
+training run on a guiding train is validated on hardware with the guide
+camera as a roster camera of `rp`'s and the guider beside it.
 
 ### Errors
 
@@ -877,7 +879,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | A `temperature_sensor` that names a focuser `rp` does not know (the same calls) | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 11m 19s under rp's train lease, longer than the 10m a lease may last: …` |
-| `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
+| `rp` refuses the train lease (the guider is not idle or names another camera, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
 | The train lease ended mid-run | the refused call's error, which carries `lease '<id>' is not held: <why>`, after the put-back |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
@@ -1103,7 +1105,7 @@ sensor every sweep refuses.
 
 The V-curve, driven through `rp`'s primitives: `move_focuser`,
 `capture` and `measure_stars`. `rp` has no capture sweep of its own —
-its `auto_focus` is the guiding train's PHD2-metric sweep
+its `auto_focus` is the guiding train's guide-metric sweep
 ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)) — so an
 imaging train's sweep follows these rules:
 
@@ -1666,17 +1668,18 @@ and refuses a history too short and one too narrow in temperature,
 naming each threshold.
 
 `guide_training.feature` runs training runs on a guiding train. Its
-camera is a stub of the PHD2 camera facade that answers the
-sweep-lease Actions itself, recording each, and passes every other
-Camera call through to the simulator's camera, so the sweep takes the
-simulator's starless frames. A training run on a guiding train whose
+camera is the simulator's camera, a roster camera of `rp`'s like any
+other, so the sweep takes the simulator's starless frames. Its guider
+is `bdd-infra`'s guider stub, which answers the camera-lease requests
+and the device report of the guider's contract and records each. A
+training run on a guiding train whose
 focuser the imaging train has is refused before anything moves, for
 `focus_train` and `determine_filter_offsets` alike. A `focus_train`
-run asks the facade for one sweep lease across both its attempts,
-puts the focuser back, and the lease's token is released. PHD2
+run holds one camera lease of the guider's across both its attempts,
+puts the focuser back, and the lease's token is released. A guider
 reported guiding refuses the run at the lease before anything moves,
-and so does a guiding train whose camera is not the facade, naming the
-missing Action. A run too long for one lease is refused naming the
+and so does a guider that reports another camera than the train's,
+naming both ids. A run too long for one lease is refused naming the
 numbers before the lease is asked for. The offsets procedure asks for
 one lease for each of its sweeps, releases each, and puts the wheel
 back.

@@ -73,7 +73,7 @@ and enforces safety. An orchestrator — an MCP client such as
                      ┌─────────┴──────────┐
                      ▼                    ▼
               [Orchestrator]       [Guider Service]
-              (session-runner:     (wraps PHD2)
+              (session-runner:     (the guide loop)
                self-started client)
                      │
                      │ MCP (tools/call)
@@ -92,8 +92,8 @@ and enforces safety. An orchestrator — an MCP client such as
 
 ### Service Boundaries
 
-Every component is a separate process communicating over HTTP (or JSON-RPC for
-PHD2). `rp` is one service among many. Device drivers, plugins,
+Every component is a separate process communicating over HTTP. `rp` is
+one service among many. Device drivers, plugins,
 the guider service, Sentinel, and UIs are all independent processes. This
 follows naturally from the Alpaca-only integration tenet — the device drivers
 are already separate services.
@@ -108,19 +108,19 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net); rusty-photon's own [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP / astrometry.net); the [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
 | **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
 authorship. Algorithms that are pure Rust math (auto-focus, centering) live
 as built-in tools even though they could in principle be plugins. They become
-rp-managed services only when they must wrap an external program (PHD2 the
-application, ASTAP the binary) that has its own crash and restart behavior.
+rp-managed services only when they must wrap an external program (ASTAP
+the binary) that has its own crash and restart behavior.
 A first-party control loop is an rp-managed service too when it runs for
 hours, has device traffic of its own and must keep running while `rp`
 restarts
 ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md),
-decision 3). rusty-photon's own guider ([`guider.md`](guider.md), designed
+decision 3). The guider ([`guider.md`](guider.md), designed
 and not yet built) is the one component of this kind; an algorithm that is a
 tool call, which starts, runs and returns, stays built-in.
 
@@ -740,25 +740,25 @@ most of them under N.I.N.A.'s cards, one device's entry for a list
   bounded by the same 3 s as the frame's other reads. The block is
   recorded only when a guider is configured ([Guider
   Service](#guider-service)) and both reads answer with the service's
-  running totals ([phd2-guider.md § Running
-  totals](phd2-guider.md#running-totals)), which the RMS over an
-  exposure needs: the service's rolling RMS covers its last 50 steps,
-  and an exposure can outlast them.
-  - `guided_throughout` is `true` when PHD2 reported `Guiding` at both
-    reads, the totals' `epoch` is the same in both, and no
-    interruption was counted between them: guiding was neither
-    stopped nor paused, and the service neither lost PHD2 nor skipped
-    events. It is `false` otherwise, for a frame taken with no guiding
-    at all among them.
-  - `guide_steps` is the number of guide steps PHD2 sent between the
-    two reads.
+  running totals ([guider.md § Statistics](guider.md#statistics)),
+  which the RMS over an exposure needs: the service's rolling RMS
+  covers its last 50 steps, and an exposure can outlast them.
+  - `guided_throughout` is `true` when the guider reported `guiding`
+    at both reads, the totals' `epoch` is the same in both, and no
+    interruption was counted between them: the run was neither
+    stopped nor paused, did not calibrate again, and kept its stars.
+    It is `false` otherwise, for a frame taken with no guiding at all
+    among them.
+  - `guide_steps` is the number of guide steps the guider took between
+    the two reads.
   - `rms_ra_px`, `rms_dec_px` and `total_rms_px` are the RMS guide
-    error over those steps, in guide-camera pixels, by the guider
-    service's formulas ([phd2-guider.md § RMS
-    statistics](phd2-guider.md#rms-statistics)). An axis with no
-    samples records no RMS, and `total_rms_px` needs both axes.
-  - `star_lost` is the number of times PHD2 lost the guide star
-    between the two reads.
+    error over those steps, in guide-camera pixels, by the guider's
+    formulas ([guider.md § Statistics](guider.md#statistics)). An axis
+    with no samples records no RMS, and `total_rms_px` needs both
+    axes.
+  - `star_lost` is the number of frames between the two reads in which
+    the guider had too few usable stars. No correction follows such a
+    frame.
 
   When the `epoch` changed, because the guider service restarted
   during the exposure, the block records only
@@ -1205,9 +1205,9 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `move_focuser_started` | focuser_id, position, backlash_compensated | Focuser begins move to the target position; `backlash_compensated` is `true` when the move runs as an overshoot-then-approach pair (see [Focuser Tool Details](#focuser-tool-details)) |
 | `move_focuser_complete` | focuser_id, position | Focuser settled at the read-back position |
 | `move_focuser_failed` | error | Focuser move failed or timed out |
-| `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder engaged for this move |
+| `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder paused the guider's corrections for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
-| `move_rotator_failed` | error | Rotator move failed or timed out (guiding re-selected/resumed best-effort when the ladder was engaged) |
+| `move_rotator_failed` | error | Rotator move failed or timed out (the guide stars re-selected and the corrections resumed best-effort when the ladder paused them) |
 | `plate_solve_started` | document_id, image_path, blind | Plate solve begins; `blind` is the call's own flag, not whether the solve resolved to one |
 | `plate_solve_complete` | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Plate solve succeeded |
 | `plate_solve_failed` | error | Plate solve failed |
@@ -1215,17 +1215,17 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `centering_iteration` | camera_id, document_id, residual_arcsec, solved_ra, solved_dec, action | One centering iteration completed |
 | `centering_complete` | camera_id, final_error_arcsec, attempts, final_ra, final_dec | Centering converged |
 | `centering_failed` | error | Centering failed |
-| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins. The guiding train's metric sweep emits it (with `train_id` and `method: "phd2_hfd"`, and a `null` `camera_id`, since nothing is captured), and so does the bracket rp puts around a provider tool declared in a registration's `focus_tools` map (§ [Tool Provider Registration](#tool-provider-registration)): the train's terminal camera and focuser, and the focuser's position and temperature read before the call (`null` when a read fails) |
+| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins. The guiding train's metric sweep emits it (with `train_id` and `method: "guider_hfd"`, and a `null` `camera_id`, since nothing is captured), and so does the bracket rp puts around a provider tool declared in a registration's `focus_tools` map (§ [Tool Provider Registration](#tool-provider-registration)): the train's terminal camera and focuser, and the focuser's position and temperature read before the call (`null` when a read fails) |
 | `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts, steps | Auto-focus result. `position`/`hfr` are where the focuser ended and the HFR measured there; `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree. The guiding train's metric sweep reports `hfd`/`best_hfd` and no `attempts`, since it makes one. Around a `focus_tools` call every field comes from the result's top-level field of the same name — one the result lacks is `null`, `attempts` and `steps` present only when the result carries them; `steps`, present when the run walked a refocus plan ([`get_refocus_plan`](#get_refocus_plan-contract)), lists one `{focuser_id, run_train_id, camera_id, metric, position, hfr, best_position, best_hfr, confirmed, samples_used}` per completed sweep in run order |
 | `focus_failed` | error | Auto-focus failed: the metric sweep's error (§ [`auto_focus` Contract](#auto_focus-contract), Error cases), or, around a `focus_tools` call, the provider's tool error, the cancellation reason, or the unreachable-provider error |
-| `guide_started` | recalibrate, settle_pixels, settle_time, settle_timeout | Guiding loop starting; carries the settle deadline (`max_duration_ms` = settle_timeout + the service's 10 s backstop grace) when a settle timeout is resolved |
+| `guide_started` | recalibrate, settle_pixels, settle_time, settle_timeout | Guiding starting; carries the start's deadline (`max_duration_ms` = `calibration_timeout` + settle_timeout + 15 s, since a start calibrates when the guider holds no calibration it can use) when a settle timeout is resolved |
 | `guide_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-start settle complete |
 | `guide_failed` | error | Guiding start or settle failed |
-| `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
-| `guide_rotator_unmodeled` | rotator_id, train_id | `start_guiding` settled with a rotator-coupled guide camera but PHD2 reports no connected rotator (point event — see [Guider Service](#guider-service)) |
+| `guide_stopped` | reason (`requested` \| `safety` \| `guider`), stop_reason | Guiding stopped (point event). `guider` is a run that ended without `rp` asking, which the [Guide Run Watch](#guide-run-watch) reports with `stop_reason`: the guider's own reason, `restarted` or `unreachable` (`null` for the other two reasons) |
+| `guide_star_lost` | lost_for_ms | The guider has been in `star_lost` for `star_lost_after` (point event from the [Guide Run Watch](#guide-run-watch); repeats every `star_lost_after` while the loss lasts) |
 | `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train (null when the watch runs without one), so a workflow trigger can address the guide-only sweep without knowing the rig |
 | `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full refocus of the guiding train's plan is indicated (point event; once per episode). `train_id` names the guiding train (null when the watch runs without one, same as `guide_focus_degraded`) |
-| `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
+| `dither_started` | amount_px, amount_arcsec, ra_only, settle_pixels, settle_time, settle_timeout | Dither request sent. The amount is the one sent to the guider: one of `amount_px` and `amount_arcsec`, the other `null`. Carries `max_duration_ms` = settle_timeout + 15 s when a settle timeout is resolved |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
 | `dither_failed` | error | Dither or its settle failed |
 | `mount_motion_pending` | operation (`slew` \| `dither`) | A mount motion is queued behind the [mount motion gate](#mount-motion-gate) — in-flight imaging-train exposures (or an earlier queued motion) must finish first. Point event; the motion's own `*_started` triple follows once the gate is acquired |
@@ -1792,7 +1792,7 @@ Operators can move any tool across the line with `safety.gate`
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
 | `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, terminal_focuser_shared_with, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one a focus sweep of the train moves and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), `terminal_focuser_shared_with`, the ids of the other trains that terminal focuser is a member of, in config order (empty when no other train has it, or the train has no focuser; a focus provider refuses a guiding train's training run on a focuser an imaging train has), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, obstruction_mm, obstruction_ratio, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown, `obstruction_ratio` being `0.0` on a train with an aperture and no obstruction (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
 | `get_refocus_plan` | Ungated | train_id | train_id, guide_coupled, steps | The dependency-ordered refocus sequence of a train, as a read: `steps` lists `{focuser_id, run_train_id, camera_id, metric}` in run order — the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser, a guiding-train step last with `metric` `"guide"` and a `null` `camera_id`; `guide_coupled` says whether a capture step moves a focuser the guiding train shares. Nothing moves. An unknown train, or one without focusers, is an error naming it. See the [`get_refocus_plan` Contract](#get_refocus_plan-contract) |
-| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, facade_lease, ends_by | Take a train lease for a training run, under an id the caller names: the train's camera slots, the slots of the devices the run moves or holds still, the PHD2 camera facade's sweep lease for a guiding train, and the mount motion gate shared, held until `release_train_lease`, 60 s idle, `ends_by`, the safety transition or shutdown. An overlapping lease or `auto_focus` sweep is refused at once. See [Train Lease](#train-lease) |
+| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, camera_lease, ends_by | Take a train lease for a training run, under an id the caller names: the train's camera slots, the slots of the devices the run moves or holds still, the guider's camera lease for a guiding train, and the mount motion gate shared, held until `release_train_lease`, 60 s idle, `ends_by`, the safety transition or shutdown. An overlapping lease or `auto_focus` sweep is refused at once. See [Train Lease](#train-lease) |
 | `release_train_lease` | Ungated | lease_id | released | End a train lease, or the acquire still waiting for it. Never an error: `released` is `false` for an id that holds nothing, and an id rp has not seen is recorded so a later acquire under it is refused. See [Train Lease](#train-lease) |
 
 **Cooling** (see [Camera Cooling](#camera-cooling))
@@ -1806,34 +1806,35 @@ Operators can move any tool across the line with `safety.gate`
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `start_guiding` | Gated | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
-| `stop_guiding` | Ungated | — | state | Stop guiding loop, block until confirmed (idempotent) |
-| `dither` | Gated | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled. `unit` interprets the per-call `pixels` amount; rp converts to guide-camera pixels via train pixel scales — see the note below. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
-| `pause_guiding` | Ungated | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
-| `resume_guiding` | Gated | — | state | Resume paused guiding |
-| `get_guiding_stats` | Ungated | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
+| `start_guiding` | Gated | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, rms_ra_arcsec, rms_dec_arcsec, total_rms_arcsec, sample_count | Start guiding and block until settled. The guider selects its guide stars, and calibrates first when it holds no calibration it can use; what a start keeps of a run it finds is in [guider.md § `guiding/start`](guider.md#post-apiv1guidingstart). Refused when the guider's camera or mount is not the one `rp` holds (§ [Guider Service](#guider-service)) |
+| `stop_guiding` | Ungated | — | state | Stop the guider's run or loop and block until its exposure has ended and no pulse is in flight (idempotent) |
+| `dither` | Gated | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | as `start_guiding` | Move the guider's lock and block until re-settled. `unit` says how the per-call `pixels` amount is read — see the note below. The guider refuses a dither outside `guiding`, a paused or star-lost run included. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
+| `pause_guiding` | Ungated | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also stops the guide frames |
+| `resume_guiding` | Gated | — | state | Resume paused guiding; `state` is `guiding`, or `star_lost` when the run is in it |
+| `get_guiding_stats` | Ungated | — | state, guiding, settling, pixel_scale_arcsec, rms_ra_px, rms_dec_px, total_rms_px, rms_ra_arcsec, rms_dec_arcsec, total_rms_arcsec, snr, star_mass, star_count, sample_count, last_stop | Read the guider's current statistics (cheap; safe to poll): the fields of [guider.md § `GET /api/v1/guiding/stats`](guider.md#get-apiv1guidingstats) without the running totals |
 
-The guider *service* always receives **guide-camera pixels** (PHD2's
-own pixel scale only exists after calibration, so the service accepts
-no other unit), and every guider quantity rp reports back (RMS,
-settle thresholds) stays in guide-camera pixels. `dither`'s optional
-`unit` is a conversion rp performs before the proxy call, using the
-train model's pixel-scale derivation
-`scale_arcsec_per_px = 206.265 × pixel_size_x_um / focal_length_mm`
-(train `focal_length_mm` + the camera's connect-time pixel-size read;
-square pixels assumed — the x-axis size is used):
+The settle thresholds `rp` sends, and the RMS its events report, are
+in **guide-camera pixels**: the pixels of the guider's frames, binned
+where the guider bins. The tools' results pass the guider's arcsecond
+values through beside them. `dither`'s optional `unit` says how the
+per-call `pixels` amount is read:
 
-- `arcsec` divides the amount by the **guiding train's** scale;
-- `main_px` first multiplies by the **imaging train's** scale to get
-  arcseconds, then divides by the guiding train's. It requires
+- `guide_px` sends the amount as guide-camera pixels;
+- `arcsec` sends the amount as arcseconds, which the guider converts
+  with its own pixel scale;
+- `main_px` multiplies the amount by the **imaging train's** scale and
+  sends arcseconds. The scale is the train model's derivation
+  `scale_arcsec_per_px = 206.265 × pixel_size_x_um / focal_length_mm`
+  (train `focal_length_mm` + the camera's connect-time pixel-size
+  read; square pixels assumed — the x-axis size is used). It requires
   exactly one imaging train — with several (piggyback rig), pass
   `arcsec` or `guide_px` instead;
 - a non-default `unit` requires an explicit per-call `pixels` amount
   (the `dither_pixels` config default is always guide-camera pixels),
-  and the error names whichever conversion input is missing: no
-  guiding train, a train without `focal_length_mm`, or a camera whose
-  pixel size is unavailable (connect-time read failed or camera never
-  connected).
+  and `main_px`'s error names whichever conversion input is missing:
+  no imaging train, a train without `focal_length_mm`, or a camera
+  whose pixel size is unavailable (connect-time read failed or camera
+  never connected).
 
 The tools proxy to the guider service and error with
 "guider not configured" when the `equipment.mount.guiding` config
@@ -1854,7 +1855,6 @@ block is absent.
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
-| `restart_guider` | Ungated | — | phd2 (`restarted`), equipment (`connected`), elapsed_ms | Have the guider service restart PHD2 and connect its equipment. Refused while PHD2 guides or calibrates, while the PHD2 camera facade's camera is connected or capturing, and where nothing would start PHD2 again; the service's restart is bounded by 120 s, and `rp` waits up to 130 s |
 
 **Compute (image analysis)**
 
@@ -1886,7 +1886,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | train_id (the guiding train); step_size, half_width, min_fit_points, confirmation_tolerance (all optional, each falling back to the guiding train's `auto_focus` config block) | best_position, best_hfd, fit_r_squared, confirmation, confirmed, final_position, final_hfd, samples_used, curve_points, temperature_c | The guiding train's PHD2-metric V-curve sweep: the median HFD of fresh guide frames per position, the hyperbola fitted, the fitted position confirmed with one more sample set and the best measured sample taken when the confirmation fails. Requires active guiding; never captures through the guide camera; refuses an imaging train, which the focus-model provider's `focus_train` focuses, and a focuser an imaging train holds. The sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | Ungated | train_id (the guiding train); step_size, half_width, min_fit_points, confirmation_tolerance (all optional, each falling back to the guiding train's `auto_focus` config block) | best_position, best_hfd, fit_r_squared, confirmation, confirmed, final_position, final_hfd, samples_used, curve_points, temperature_c | The guiding train's guide-metric V-curve sweep: the median HFD of fresh guide frames per position, the hyperbola fitted, the fitted position confirmed with one more sample set and the best measured sample taken when the confirmation fails. Requires active guiding; never captures through the guide camera; refuses an imaging train, which the focus-model provider's `focus_train` focuses, and a focuser an imaging train holds. The sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
@@ -2092,6 +2092,18 @@ Captures through different cameras never wait for each other.
   permit and never delays a pending slew or dither. Nothing in `rp`
   holds the gate and then waits for a camera, so the two waits cannot
   deadlock.
+- **The guide camera, under the guider's camera lease.** The guider
+  exposes on the guiding train's camera whenever it is not idle, so a
+  capture through that camera holds the guider's camera lease
+  ([guider.md § The camera lease](guider.md#the-camera-lease)) for as
+  long as it holds the camera's slot: a [train lease](#train-lease)'s
+  when it runs under one, and otherwise one of its own, taken after
+  the slot and before the gate as a train lease takes it, and released
+  with the slot. A guider that is not idle refuses the lease, and the
+  capture fails at once, naming the guider's state. A camera lease the
+  guider drops mid-exposure, by restarting, does not end the capture:
+  a guider starts idle and exposes only when asked. With no guider
+  configured the capture runs as any other.
 - **Cancel-aware.** The wait is raced against the call's cancellation,
   like the motion-gate acquire ([In-Flight Tool
   Calls](#in-flight-tool-calls)). A call cancelled while it waits — its
@@ -2107,13 +2119,11 @@ Captures through different cameras never wait for each other.
   `cancelled: <reason>`. It keeps its camera's slot until the camera
   reads `Idle` or `Error`, neither of which is exposing, and at most
   until its readout backstop (`duration` + 120 s from the exposure's
-  start), reading the camera's state every 250 ms. A driver that ignores the abort,
-  as PHD2's QHY driver behind the camera facade does, goes on
-  exposing to the frame's end, and the next capture through the
-  camera would start into that frame. At the backstop the slot is
+  start), reading the camera's state every 250 ms. A driver that ignores the abort
+  goes on exposing to the frame's end, and the next capture through
+  the camera would start into that frame. At the backstop the slot is
   released with a warning naming the camera's state, so every wait
-  behind the slot stays bounded; a facade still exposing goes on
-  refusing captures through its own claim. The frame is discarded, so
+  behind the slot stays bounded. The frame is discarded, so
   mount motion during the rest of it harms nothing, and a recovery
   slew after the safety transition goes at once, even on a camera
   whose driver ignores a stop. A capture cancelled before its
@@ -2424,39 +2434,54 @@ result.
 
 `moved_trains` on the result lists every optical train containing
 the rotator — the trains whose field orientation the move changed.
-When the list includes the guiding train, the guider is configured,
-and the guider's stats report an active guide loop, `move_rotator`
-runs the **rotate-while-guiding ladder** around the move:
+When the list includes the guiding train and a guider is configured,
+`move_rotator` reads the guider's state and runs the
+**rotate-while-guiding ladder** around the move. The guider is a
+client of no rotator and cannot see the field turn: a calibration is
+right only at the angle it was made at, and `rp` is the client that
+knows the angle has changed
+([guider.md § Calibration](guider.md#calibration)).
 
-1. **Pause guide corrections** (output-only — looping continues, so
-   the re-selection below has fresh frames). A pause failure aborts
-   the tool before any motion. The pause and the pre-move read are
-   part of the operation: `move_rotator_started` is emitted before
-   them, and their failures emit `move_rotator_failed` like any
-   other leg.
+1. **Pause guide corrections** when the guider reports `guiding`
+   (frames continue, so the re-selection below has fresh ones). A
+   pause failure aborts the tool before any motion. The pause and
+   the pre-move read are part of the operation:
+   `move_rotator_started` is emitted before them, and their failures
+   emit `move_rotator_failed` like any other leg.
 2. Read the pre-move sky angle, then run the move as usual.
-3. **Calibration decision**: query the guider service for PHD2's
-   equipment. When PHD2 reports a **connected rotator**, stop there —
-   PHD2 stores the rotator angle with each calibration and adjusts
-   for the current angle when guiding resumes, exact for any Δθ.
-   Otherwise, when |Δθ| (the sky-angle change, folded to
-   [0°, 180°]) exceeds
-   `equipment.mount.guiding.recalibrate_above_deg` (default 5°),
-   clear PHD2's mount calibration — PHD2 recalibrates on the next
-   guide start. At or below the threshold the calibration is kept:
-   the cross-axis leak (sin Δθ) sits inside guiding's noise floor.
-4. **Re-select the guide star** (the rotation moved it), then
-   **resume corrections**.
+3. **Calibration decision.** At or below
+   `equipment.mount.guiding.recalibrate_above_deg` (default 5°) of
+   |Δθ| (the sky-angle change, folded to [0°, 180°]) the guider's
+   calibrations are kept: the cross-axis leak (sin Δθ) sits inside
+   guiding's noise floor. Above it `rp` empties the guider's
+   calibration store, whether the guider guides or not: the guider
+   keeps its records from run to run. The guider refuses the clear
+   in a run state, so `rp` stops a run first.
+4. **Back to guiding**, when step 1 paused it. At or below the
+   threshold: re-select the guide stars (the rotation moved them),
+   then resume corrections. Above it: start guiding again with the
+   guiding config's settle values, which calibrates at the new
+   angle. The tool waits for that start as `start_guiding` does, the
+   calibration included, on top of the move's own ceiling.
 
-A move failure still runs re-select + resume (the field may have
-partially rotated) and reports the move error; a resume failure is a
-hard tool error on top of whatever preceded it, since a night with
-guiding silently left paused must not look like success. When guiding is not active,
-the stats read fails, or no guider is configured, the move runs bare
-(Tenet 2: a mid-day rotation must not fail because PHD2 is closed).
-The result gains `guiding_ladder`: `null` when the ladder did not
-engage, else `{ "phd2_has_rotator": bool, "delta_deg": number,
-"calibration_cleared": bool }`.
+A run that step 1 finds paused, star-lost or calibrating is not
+paused, and step 4 leaves it alone: above the threshold it is stopped
+for the clear and not started again. When the state read fails, the
+ladder goes on as for a guider that is in no run. The ladder's stop
+and its start emit the events that `stop_guiding` and `start_guiding`
+emit.
+
+A move failure still runs the re-selection and the resume (the field
+may have partially rotated) and reports the move error. A stop, a
+clear, a start, a re-selection or a resume that fails is a hard tool
+error on top of whatever preceded it: a night with guiding silently
+left paused, or with calibrations of the old angle still stored, must
+not look like success. A guider that does not answer after a turn
+above the threshold is such a failed clear. With no guider configured
+the move runs bare. The result gains `guiding_ladder`: `null` when
+the guiding train did not turn or no guider is configured, else
+`{ "delta_deg": number, "calibration_cleared": bool,
+"guiding_restarted": bool }`.
 
 Both rotator tools address the device as `rotator_id` *or*
 `train_id` — exactly one; passing both or neither is an error.
@@ -4362,14 +4387,7 @@ Consequences and constraints:
 - **Tenet 3 applies to the reconnect path exactly as to first
   connect:** re-establishing a session re-*reads* state and never
   re-commands hardware. `Connected = true` is non-actuating by driver
-  contract, with one exception the repo owner accepted: phd2-guider's
-  camera facade. When PHD2 does not know its camera's frame size yet,
-  a facade connect takes one 1 ms frame, and that frame can open an
-  INDI guide camera's mechanical shutter
-  ([phd2-guider.md § A frame size PHD2 does not know yet](phd2-guider.md#a-frame-size-phd2-does-not-know-yet)).
-  Each attempt rp makes takes the frame again, whether a startup bind,
-  a connect retry or a reconnect pass, until PHD2 has taken a frame
-  with its camera.
+  contract.
 - **In-flight calls are unaffected.** A tool call holding the old
   session handle keeps using it, together with that session's cached
   properties (the transport is stateless HTTP). A disconnected entry
@@ -4417,13 +4435,11 @@ keeps using it, as an in-flight device call keeps its handle.
 A workflow switches a power box's outputs through `rp`, and takes every
 device on an output out of `rp`'s hands before it cuts the output
 ([daily power cycle plan](../plans/daily-power-cycle.md), decisions 3,
-8 and 11). Six tools carry it: `disconnect_device` and
+8 and 11). Five tools carry it: `disconnect_device` and
 `connect_device`, which hold a device out of the reconnect supervisor
 and give it back, `get_switch` and `set_switch`, which read and switch
-a power box's outputs through the power map, `restart_service`, which has
-a held-out device's driver service restart (decision 5), and
-`restart_guider`, which has the guider service restart PHD2 (decision
-10).
+a power box's outputs through the power map, and `restart_service`,
+which has a held-out device's driver service restart (decision 5).
 
 #### The power map
 
@@ -4476,9 +4492,8 @@ The map's ids are why roster ids are unique across every kind, map or
 no map, and why no entry may be called `mount`, the id that names the
 mount: an id in `devices` or in a `disconnect_device` call names one
 device. A device `rp` does not serve has no roster id and cannot be
-listed, so `rp` cannot hold it out. A guide camera that PHD2 drives and
-that sits on a switched output is served through `phd2-guider`'s camera
-facade for that reason, among others (decision 11).
+listed, so `rp` cannot hold it out. The guide camera is a roster camera
+on its own driver service, so the map lists it like any other camera.
 
 An output the map does not list is never switched through `rp`, on or
 off: `rp` cannot know what it feeds. `get_switch` still reads it.
@@ -4513,7 +4528,7 @@ through. The tool succeeds in every case, since the hold-out is what a
 workflow needs before it cuts the output.
 
 `Connected` is device-wide, so the disconnect ends the device's session
-for every client, PHD2 included for a mount it reaches through Alpaca,
+for every client, the guider included for its camera and its mount,
 and stops whatever the driver was doing for it, an exposure included. A
 held-out safety monitor reads unsafe, as an unreachable one does
 (§ [Safety](#safety)), and a held-out power box answers no `get_switch`
@@ -4542,9 +4557,7 @@ supervisor pass never run the connect routine for one device at the same
 time.
 
 For both tools `device_id` is a roster id or `mount`, and an unknown id
-is a tool error. Both actuate nothing (tenet 3): `Connected = true`
-keeps the facade exception of § [Device Session
-Recovery](#device-session-recovery).
+is a tool error. Both actuate nothing (tenet 3).
 
 A hold-out lives in `rp`'s memory. An `rp` restart drops it, and the
 supervisor then reconnects a held-out device that stayed on the bus. The
@@ -4633,49 +4646,16 @@ call's `devices` names every device the restart covered.
 start runs the handshake every start runs, and its devices stay held
 out of `rp` until `connect_device`.
 
-#### Restarting PHD2
+#### The guider across a power cycle
 
-`restart_guider` has the guider service restart PHD2, which drives the
-guide camera through its own SDK and the mount through Alpaca, so PHD2
-too meets its equipment in a fresh process (decisions 5 and 10). The dusk
-document asks for it once the services of PHD2's equipment, the mount's
-among them, have restarted and answer. Decision 11's wedge retry for a
-guide camera behind the PHD2 camera facade asks for it in place of
-`restart_service`.
+Nothing restarts the guider at dusk (decision 10). It holds no camera
+SDK and never writes `Connected`
+([guider.md § Devices and connections](guider.md#devices-and-connections)).
+A guide camera on a switched output is held out, has its driver service
+restarted and is connected again like any other camera, and the guider
+reads the fresh driver at its next request.
 
-`rp` sends the guider service `POST /api/v1/phd2/restart` through the
-`equipment.mount.guiding` client, with its credential and the observatory
-CA, and waits up to 130 s: the service's 120 s restart bound and a margin
-([phd2-guider.md § `POST
-/api/v1/phd2/restart`](phd2-guider.md#post-apiv1phd2restart)). The service
-stops PHD2, has it started again, and connects the equipment of PHD2's
-profile before it answers. The result is the service's answer,
-`{phd2: "restarted", equipment: "connected", elapsed_ms}`. The service's
-refusals and failures are tool errors that carry its `error` and
-`message`:
-
-- `camera_connected`: the facade's camera is connected. Disconnect it
-  through `disconnect_device` first, as for every device a restart ends a
-  session with (decision 3). The guider service checks this, since it
-  knows its facade and `rp` cannot tell a held-out camera is one.
-- `camera_busy`: a facade frame is in flight, or a sweep lease is held.
-- `guiding_active`: PHD2 is guiding, calibrating, paused or has lost its
-  star. A restart never ends guiding or calibration as a side effect, so
-  `stop_guiding` comes first. A loop or a capture, a wedged one included,
-  is no refusal: the restart ends it.
-- `restart_failed`: a step of the restart failed or ran out of time, named
-  in `message`. Asking again is safe.
-- `restart_unsupported`: nothing would start PHD2 again on that host. It
-  is not switched over to PHD2 under the service manager, or it is macOS
-  ([phd2-guider.md § Switching over](phd2-guider.md#switching-over)).
-
-Without an `equipment.mount.guiding` block the tool is an error, as every
-guider tool is. PHD2 connects its equipment only on this request, a
-workflow's (decision 1), never on a connect path or a supervisory pass of
-`rp`'s (tenet 3), and the facade's camera stays held out of `rp` until
-`connect_device`.
-
-All six tools are ungated (§ [In-Flight Tool
+All five tools are ungated (§ [In-Flight Tool
 Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
 weather, and a dusk document powers devices up only once `rp`'s safety
 monitors read safe with the roof open (decision 7), a check that belongs
@@ -4795,7 +4775,7 @@ Semantics:
   reinterprets every target that inherits the default; per-target
   explicit angles freeze framing and are never reinterpreted.
 - `auto_focus` is an optional block on the **guiding** train holding
-  its PHD2-metric sweep's parameters: `step_size` and `half_width`
+  its guide-metric sweep's parameters: `step_size` and `half_width`
   (required when the block is present) plus optional `frames_per_step`
   (default `3`), `min_fit_points` (default `5`), and
   `confirmation_tolerance` (default `0.25`). `step_size`, `half_width`,
@@ -4860,8 +4840,8 @@ Consumers land phase by phase per the plan:
 | Which focuser focuses camera C? | Last focuser in C's train list |
 | AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in that imaging train, through its camera (an imaging T's sequence is its own focuser alone), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, and the focus-model provider's `focus_train {shared: true}` walks it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
-| What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only on one whose camera is the PHD2 facade, under the [Train Lease](#train-lease) — the vendor driver being excluded from the guide camera by the [device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)'s Part A — and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
+| What does rotator R rotate? | Every train containing R (when one is the guiding train and a guider is configured, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only under a [train lease](#train-lease), which holds the guider idle, and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
 | What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
 | What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names and wavelengths, the calibrator, the focusers, the sole rotator |
 | What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm`, `aperture_mm` and `obstruction_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio, obstruction ratio and pixel scale — see [Train optics](#train-optics) |
@@ -4876,7 +4856,7 @@ Consumers of the derived model:
   `focal_length_mm`, `aperture_mm`, `obstruction_mm` and terminal
   focuser's `microns_per_step`.
 - `auto_focus` on the guiding train sweeps its terminal focuser
-  against PHD2's HFD, falling back to the train's `auto_focus` block
+  against the guider's HFD, falling back to the train's `auto_focus` block
   for sweep parameters — see the
   [`auto_focus` Contract](#auto_focus-contract).
 - `capture` and `center_on_target` accept `train_id` as an
@@ -4913,31 +4893,33 @@ Consumers of the derived model:
 - `get_refocus_plan` returns the AF sequence a refocus of the train
   runs, as a read, so a focus provider can walk it step by step — see
   the [`get_refocus_plan` Contract](#get_refocus_plan-contract).
-- `dither` converts `main_px` / `arcsec` amounts to guide-camera
-  pixels via train pixel scales (train `focal_length_mm` + the
-  camera's connect-time pixel size) — see the note under the Guider
-  tool table.
+- `dither` converts a `main_px` amount to arcseconds via the imaging
+  train's pixel scale (train `focal_length_mm` + the camera's
+  connect-time pixel size) — see the note under the Guider tool
+  table.
 - The [mount motion gate](#mount-motion-gate) admits captures as
   shared holders based on train membership: captures through a
   camera terminating any train contend with mount motion, and only a
   camera outside every train is exempt.
 
 rp's own auto-focus is the **guiding train's** alone, and it never
-captures through the guide camera (PHD2 may own it at the SDK level):
-`auto_focus` on the guiding train is the PHD2-metric sweep — moving
-the focuser and reading PHD2's per-frame HFD — and requires an active
-guide loop. An imaging train is focused by the focus-model provider,
-which captures through rp's tools. The metric sweep moves only a
+captures through the guide camera, on which the guider exposes for as
+long as it guides: `auto_focus` on the guiding train is the
+guide-metric sweep — moving the focuser and reading the guider's
+per-frame HFD — and requires active guiding. An imaging train is
+focused by the focus-model provider, which captures through rp's tools.
+The metric sweep moves only a
 focuser no imaging train holds: a focuser an imaging train holds is
 focused through the imaging camera alone, the guide camera being taken
 as parfocal with it (the owner's rule of 2026-10-15, the focus-model
 plan's O4 rules 2, 4 and 8). So the AF sequence runs such a focuser in
 an imaging train, and `auto_focus` on a guiding train whose terminal
 focuser an imaging train holds is refused, naming that imaging train. A
-client may still capture through a guiding train's camera when it is
-the PHD2 camera facade ([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)): that is how
-a focus provider's training run on a guiding train samples it, under
-a [train lease](#train-lease) that holds PHD2 `Stopped`. See the
+client's capture through a guiding train's camera holds the guider's
+camera lease ([guider.md § The camera lease](guider.md#the-camera-lease))
+and with it the guider idle, whether the lease is the capture's own or
+a [train lease](#train-lease)'s: a focus provider's training run on a
+guiding train samples it under a train lease. See the
 [`auto_focus` Contract](#auto_focus-contract), the rotate-while-guiding ladder under
 [Rotator Tool Details](#rotator-tool-details), and the
 [Guide Focus Watch](#guide-focus-watch).
@@ -5039,7 +5021,7 @@ Acquisition rules:
 | Operation | Gate mode | Notes |
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
-| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
+| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the request to the guider; held through settle. A dither cancelled mid-settle sends the guider `dither/abort`, which puts the lock where the stars are and ends the move, and answers its caller at once. The permit goes to a detached holder that keeps the gate exclusive until the guider has answered the dither request — bounded by the dither's own deadline (§ [Guider Service](#guider-service)) — so no capture starts into the tail of guide pulses |
 | `capture` through a camera terminating **any** train, imaging or guiding — including the internal captures of `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency). A capture cancelled mid-exposure gives its permit back as soon as its abort is sent. A capture under a [train lease](#train-lease) takes no permit of its own: it runs under the lease's |
 | A granted [train lease](#train-lease) | Shared | Taken after the lease's slots, held from the grant until the lease ends and no capture under it that was not cancelled is in flight. Slews, dithers and flips wait for it, so none lands between two samples of a training run |
 
@@ -5076,16 +5058,16 @@ Queueing semantics (Decision 5 of the
 
 Exemptions — operations that deliberately bypass the gate:
 
-- **Guide pulses.** PHD2 corrects the mount directly; pulses are
-  sub-arcsecond by design and are the one motion imaging coexists
+- **Guide pulses.** The guider corrects the mount directly; pulses
+  are sub-arcsecond by design and are the one motion imaging coexists
   with.
 - **`capture` through a camera outside every train.** Trains are
   enrichment, not a gate (plan Decision 10): a rig without trains
   behaves exactly as before this feature. A guiding train's camera
   is not exempt. None of rp's own operations captures through it, but
-  a client's capture through the PHD2 camera facade is a focus sample
-  that a dither or slew mid-exposure would trail, so it waits for a
-  mount motion in flight like any other train's capture.
+  a client's capture through it is a focus sample that a dither or
+  slew mid-exposure would trail, so it waits for a mount motion in
+  flight like any other train's capture.
 - **`park`.** Parking is a terminal or emergency action: the safety
   enforcer (which aborts in-flight sky exposures *first*, then parks
   directly against the device registry rather than through the MCP
@@ -5126,8 +5108,8 @@ rp-issued slews behind this gate like any other.
 
 A training run on a train is many frames with focuser moves between
 them, and three things can corrupt it in the gaps between two samples:
-PHD2 starting to guide or loop on the guide camera, rp's own work on the
-same light path (a main-camera exposure while the shared focuser moves,
+the guider starting to guide or loop on the guide camera, rp's own work
+on the same light path (a main-camera exposure while the shared focuser moves,
 another move of a focuser the sweep relies on staying put), and a slew
 or dither between samples. The motion gate and the capture slots each
 cover one call. A **train lease** holds all three off for the whole run.
@@ -5136,11 +5118,11 @@ of the run, and releases it after the put-back
 ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D12,
 "Settled in C7", and its decision 20). rp takes no lease on its own: it
 cannot tell a training run from the in-session walk a focus provider
-also makes through it, and that walk runs while PHD2 guides.
+also makes through it, and that walk runs while the guider guides.
 
 | Action | Class | Parameters | Returns |
 |---|---|---|---|
-| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, facade_lease, ends_by |
+| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, camera_lease, ends_by |
 | `release_train_lease` | Ungated | lease_id | released |
 
 **The caller names the lease.** `lease_id` is a fresh id of the caller's
@@ -5191,7 +5173,7 @@ and an ordinary move, rotation or filter change of a reserved device,
 waits for the lease to end (below).
 
 It then takes five things, in this order. A refusal at any step, a
-cancellation, a release, the safety transition, or the facade lease
+cancellation, a release, the safety transition, or the camera lease
 being lost before the grant gives back what was already taken and fails
 the acquire:
 
@@ -5200,37 +5182,29 @@ the acquire:
    through it does. That includes a cancelled capture whose camera is
    still exposing ([Capture Tool Details](#capture-tool-details),
    Concurrency).
-2. **The facade lease**, before any wait on another camera or device or
-   on the gate, because it is the step that refuses at once (PHD2 not
-   `Stopped`) and so should cost little to learn. A train's camera is
-   the PHD2 camera facade when its `SupportedActions` lists
-   `rustyphoton:sweep-lease-acquire`
-   ([phd2-guider.md § The sweep lease](phd2-guider.md#the-sweep-lease)).
-   - A **guiding** train's lease requires the facade. A guiding train
-     whose camera does not list the Action is refused, naming what is
-     missing: *"camera 'guide-cam' of guiding train 'guide' does not
-     offer the sweep lease (rustyphoton:sweep-lease-acquire): it is not
-     the PHD2 camera facade, or its phd2-guider predates the lease"*. A
-     facade from before the lease lacks the Action too, so the message
-     points at a version skew as well as at the configuration. A camera
-     that is not connected, or whose `SupportedActions` cannot be read,
-     fails the acquire with that error.
-   - An **imaging** train's lease takes no facade lease.
-   - rp names the facade's token (32 lowercase hex digits, fresh for each
-     lease) and asks for a `ttl_s` of 60. A facade that refuses has its
-     refusal relayed: *"the camera facade 'guide-cam' refused the sweep
-     lease: …"*, naming PHD2's state when it is not `Stopped`.
-   - From the moment the facade lease is taken, through the rest of the
+2. **The guider's camera lease**, before any wait on another camera or
+   device or on the gate, because it is the step that refuses at once
+   (the guider not `idle`) and so should cost little to learn
+   ([guider.md § The camera lease](guider.md#the-camera-lease)).
+   - A **guiding** train's lease takes it when a guider is configured,
+     after the check that the guider's camera is the train's
+     (§ [Guider Service](#guider-service)). With no guider configured
+     nothing but `rp` exposes on the train's camera, and the step is
+     skipped. `camera_lease` in the result says whether the lease
+     holds one.
+   - An **imaging** train's lease takes no camera lease.
+   - rp names the token (32 lowercase hex digits, fresh for each lease)
+     and asks for a `ttl` of 60 s. A guider that refuses has its
+     refusal relayed: *"the guider refused the camera lease: …"*,
+     naming the guider's state when it is not `idle`. A guider that
+     does not answer fails the acquire with that error.
+   - From the moment the camera lease is taken, through the rest of the
      acquire's waits and the whole lease, rp renews it every 20 s. One
      renewal can fail and the next still lands about 20 s before the
-     facade lease would lapse; two failures in a row can lose it. rp
+     camera lease would lapse; two failures in a row can lose it. rp
      releases it when the train lease has given everything back, and on
      every failure of the acquire after it asked, including one whose
      answer never came.
-   - Step 1 has already waited out rp's own cancelled frame. So rp meets
-     the facade's in-flight refusal only for a frame another client
-     started, or one that outlived rp's readout backstop, and the
-     refusal names when that frame ends.
 3. **The devices' slots.** A move, rotation or filter change holds its
    device's slot for as long as it runs, as a capture holds its
    camera's (see [Focuser](#focuser-tool-details),
@@ -5288,8 +5262,8 @@ take an optional `lease_id`.
   call's own deadline.
 - A call whose id is not held is refused, saying why, with an error
   that contains `lease '<lease_id>' is not held: <why>`: the lease was
-  released, ended idle, reached its `max_duration`, lost its facade
-  lease, was ended by the safety transition or rp's shutdown, is still
+  released, ended idle, reached its `max_duration`, lost the guider's
+  camera lease, was ended by the safety transition or rp's shutdown, is still
   being acquired, or was never granted by this process (a restart
   forgets every lease). A caller tells this refusal from the others by
   that phrase. That is how a run learns its lease broke, and
@@ -5312,7 +5286,7 @@ the focuser at a sample position. Two of rp's own sweeps never refuse
 each other. A sweep that another client drives move by move has no such
 guard: while a guiding train's training run holds a shared upstream
 focuser still, sole control of that focuser is an operator
-precondition, as sole control of PHD2 is.
+precondition.
 
 **The lease's lifetime.** It ends:
 
@@ -5320,10 +5294,11 @@ precondition, as sole control of PHD2 is.
 - after 60 s with no call under it in flight, counted from the grant or
   the last call's end;
 - at `ends_by`;
-- when the facade refuses a renewal because its lease is no longer held
-  (a `guiding/stop`, a `phd2-guider` restart). A renewal that does not
-  reach the facade (a timeout, a dropped connection) is tried again at
-  the next tick, and the facade's TTL decides;
+- when the guider answers a renewal with `lease_not_found`: the camera
+  lease lives in the guider's memory, and a restart of the guider
+  drops it. A renewal that does not reach the guider (a timeout, a
+  dropped connection) is tried again at the next tick, and the camera
+  lease's TTL decides;
 - on the safety transition (§ [SafetyMonitor
   Polling](#safetymonitor-polling)), which must not leave the gate held
   in front of a recovery slew;
@@ -5339,109 +5314,171 @@ plus the last capture's own deadline. A cancelled capture under an
 ending lease gives the gate back at once, and keeps only its camera's
 slot until the camera is idle, as a cancelled capture outside a lease
 does ([Capture Tool Details](#capture-tool-details), Concurrency). Once
-everything is given back, rp releases the facade lease and removes the
+everything is given back, rp releases the camera lease and removes the
 reservation. If rp crashes, its side ends with the process and the
-facade's at its TTL.
+guider's at its TTL.
 
 The lease emits no events of its own. A run learns that its lease ended
 from the refusal of its next call.
 
-**Real-hardware validation.** 2026-10-14, on the field rig (Raspberry
-Pi 5, aarch64), at `1deaf8bf`: an rp built from the branch, whose
-guiding train ended in the PHD2 camera facade (`phd2-guider` from
-`main`, PHD2 2.6.14 with its Simulator camera) behind the rig's real
-EAF and Scops OAG, with the real Falcon and SV605CC in the imaging
-train. A probe that asserted every outcome passed each check:
-
-- with PHD2 looping, the acquire was refused, relaying "PHD2 is
-  Looping", and left no sweep lease behind;
-- granted, the guiding train's lease moved the Scops OAG, held the EAF
-  still and held the facade camera. `phd2-guider` then refused guiding
-  mutations with `camera_busy`, rp's own `start_guiding` included, and
-  PHD2 stayed `Stopped`;
-- the imaging train's lease was refused at once: it shares the EAF;
-- a capture, a 20-step move of the Scops OAG and its put-back ran under
-  the lease, and a move of the EAF under it was refused;
-- the lease outlived the facade's 60 s TTL through renewals, which the
-  facade logged 20.000 s apart from its grant;
-- a capture naming no lease waited until the release, then ran;
-- after a `guiding/stop`, the next renewal was refused, and the lease
-  ended with it, 22 s later;
-- a lease with nothing under it ended after 60 s and gave the facade
-  lease back;
-- at a SIGINT, rp released the facade lease within a second, instead
-  of leaving it to its TTL.
-
 ### Guider Service
 
-The guider service is an **rp-managed service** that wraps PHD2 and
-exposes an HTTP API to `rp`. The `phd2-guider` binary provides the
-PHD2 JSON-RPC integration and runs as that HTTP service via its
-`serve` mode — contract, error envelope, and supervision posture in
-[`docs/services/phd2-guider.md`](phd2-guider.md) § "HTTP Service
-Mode". Like the plate solver, it is a separate process because PHD2
-itself is an external program with its own crash/restart behavior;
-Sentinel can supervise and restart it via the standard
+The guider is an **rp-managed service**: a headless process that holds
+the guide loop, is an Alpaca client of the guide camera and the mount,
+and serves an HTTP API to `rp` — contract, error envelope and
+supervision posture in [`docs/services/guider.md`](guider.md). It is a
+separate process because the loop runs for hours and goes on through a
+restart of `rp`
+([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md));
+Sentinel supervises and restarts it via the standard
 rp-managed-service flow. `rp` talks to it through the
 `crates/rp-guider` HTTP client, configured by the optional
-`equipment.mount.guiding` block (url, timeout, settle defaults, dither
-amount, `recalibrate_above_deg`); the same client backs the safety
-enforcer's stop-guiding-on-unsafe step. Guiding is mount-scoped by
+`equipment.mount.guiding` block (url, timeout, calibration timeout,
+settle defaults, dither amount, `recalibrate_above_deg`,
+`star_lost_after`); the same client backs the safety enforcer's
+stop-guiding-on-unsafe step. Guiding is mount-scoped by
 construction — the guider corrects and dithers by moving the mount,
 which moves every train on it — so the block lives inside
 `equipment.mount` and cannot be configured without one. Like every
 outbound client `rp` builds, it trusts the top-level `ca_cert` (see
 [Configuration](#configuration)) for an `https://` `url`, and an
 optional `auth` (`{username, password}`) sends HTTP Basic Auth
-credentials to an auth-enabled guider service (issue #620); `doctor
---fix` wires it from the observatory credential once the guider
-service's own `server.auth` is on (`joins.client-auth`,
-`docs/services/doctor.md` §Client-target joins).
+credentials to an auth-enabled guider; `doctor --fix` wires it from
+the observatory credential once the guider's own `server.auth` is on
+(`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
-rule — there is no Alpaca guider device type. The guider service encapsulates
-this protocol so `rp` speaks only HTTP.
-
-rusty-photon's own guider is designed and not yet built
-([`guider.md`](guider.md),
-[ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)):
-a standalone service that is an Alpaca client of the guide camera and
-the mount, guides without PHD2 and serves a contract of its own. `rp`
-speaks the `phd2-guider` contract this section describes until it moves
-to that one, which is stage G6 of
-[the native guider plan](../plans/native-guider.md#staging). `rp` speaks
-one guider contract at a time and has no backend selector.
+**Designed and not yet built.** Everything this document says of the
+guider is its design: the guider tools' contract, the check and the
+watch below, the camera lease that a [train lease](#train-lease) and a
+capture through the guide camera hold, the rotate-while-guiding ladder
+([Rotator Tool Details](#rotator-tool-details)), the sidecar's
+`guiding` block as [Rig state](#rig-state) words it, and the modules
+`camera_lease.rs` and `guide_run_watch.rs` of
+[Module Structure](#module-structure). `rp` as built
+speaks the contract of [`phd2-guider`](phd2-guider.md), which wraps
+PHD2, and reaches the guide camera through that service's camera
+facade. Stage G6 of
+[the native guider plan](../plans/native-guider.md#staging) builds what
+is written here. `rp` speaks one guider contract and has no backend
+selector.
 
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
-`stop_guiding`, `dither`, `pause_guiding`, `resume_guiding`,
-`get_guiding_stats`, and `restart_guider`, § [Power
-Switching](#power-switching)). `rp` proxies these tool calls to the guider
-service's HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
-control guiding through the same MCP tool mechanism as any other equipment.
-Swapping in a different guiding backend requires only a different guider
-service that implements the same HTTP endpoints.
-The native guider is no such swap: its endpoints are its own, and `rp`
-changes to speak them.
+`stop_guiding`, `dither`, `pause_guiding`, `resume_guiding` and
+`get_guiding_stats`), which `rp` proxies to the guider's HTTP API. A
+workflow plugin (e.g., a meridian flip plugin) therefore controls
+guiding through the same MCP tool mechanism as any other equipment.
 
-Beyond the tools, rp consumes four more guider-service endpoints
-internally (phd2-guider.md § HTTP API): the per-frame **metrics**
-window (the guide-train sweep and the
-[Guide Focus Watch](#guide-focus-watch)), **equipment** (the
-rotate-while-guiding ladder's rotator branch), **calibration/clear**
-and **star/reselect** (the ladder's tail). And every capture reads
-**stats** at both ends of its exposure, whose running totals give the
-sidecar's `guiding` block ([Rig state](#rig-state)). When `start_guiding`
-settles and the guiding train contains a rotator but PHD2 reports no
-connected rotator, rp emits the point event
-`guide_rotator_unmodeled` (plus a warning log): rotations of the
-guide field will clear calibration above `recalibrate_above_deg`
-instead of being angle-adjusted by PHD2 — connecting the rotator in
-PHD2's profile is the better setup where the platform allows it.
+**The same camera and mount.** The guider's devices and `rp`'s are
+configured apart: the guider's in its own `devices` block, `rp`'s in
+its roster. A guider that exposes on another roster camera collides
+with the captures `rp` makes through it, which hold no camera lease,
+and a guider on another mount corrects the wrong one. So before `rp`
+asks the guider to start guiding, or for its camera lease, it reads the
+guider's [`GET /api/v1/devices`](guider.md#get-apiv1devices) and
+compares the `unique_id` reported there for each device with the one
+`rp`'s own session bound (§ [Device Identity Pin](#device-identity-pin)):
+
+- the guider's mount is `rp`'s mount;
+- the guider's camera is the guiding train's camera. On a rig with no
+  guiding train it is none of the cameras `rp` holds a session with,
+  since `rp` would expose on it with no camera lease.
+
+A difference refuses the call, naming both ids. So does an id that is
+missing where one is needed: the guider reports none until a device
+poll of its own has read the server's device list, and `rp` has none
+for a device it holds no session with. An identity that cannot be
+checked never passes. The check reads and compares, and sends no
+device anything.
+
+**Deadlines.** `timeout` (default `"90s"`) bounds a request the guider
+answers at once: a stop, a pause, a resume, a read, a lease call. The
+two that wait for a settle outlast it. `dither` runs under the resolved
+settle timeout plus 15 s. `start_guiding` runs under
+`calibration_timeout` (default `"10m"`) plus the resolved settle
+timeout plus 15 s, since a start calibrates when the guider holds no
+calibration it can use
+([guider.md § `guiding/start`](guider.md#post-apiv1guidingstart));
+`calibration_timeout` is set no lower than the guider's own
+`calibration.timeout`. When no settle timeout is resolved, per call or
+in the block, the guider's own applies, which `rp` cannot see: a
+`dither` then runs under `timeout`, and a `start_guiding` under
+`calibration_timeout` plus `timeout`.
+
+Beyond the tools, rp consumes more of the guider's API internally
+([guider.md § HTTP API](guider.md#http-api)):
+
+- the per-frame **metrics** window, for the guide-train sweep and the
+  [Guide Focus Watch](#guide-focus-watch);
+- **stats**, which every capture reads at both ends of its exposure
+  for the sidecar's `guiding` block ([Rig state](#rig-state)), and
+  which the [Guide Run Watch](#guide-run-watch) reads while it watches
+  a run;
+- **devices**, for the check above;
+- **calibration/clear** and **star/reselect**, for the
+  rotate-while-guiding ladder;
+- the **camera lease**, for a [train lease](#train-lease) and for a
+  capture through the guide camera
+  ([Capture Tool Details](#capture-tool-details), Concurrency);
+- **dither/abort**, for a cancelled `dither`
+  (§ [In-Flight Tool Calls](#in-flight-tool-calls)).
+
+### Guide Run Watch
+
+The guider pushes no event: a run it stops by itself, or one that has
+lost its stars, shows only in its `stats`
+([guider.md § Stopping on its own](guider.md#stopping-on-its-own)).
+`rp` watches the run for the orchestrator and turns what it sees into
+**events, not actions**, as the [Guide Focus Watch](#guide-focus-watch)
+does. The watch sends the guider nothing, and what follows an event is
+the orchestrator's decision (§ Orchestration).
+
+**The run it watches** is one `rp` has seen settle. The watch starts
+at a `guide_settled` and reads `GET /api/v1/guiding/stats` every 5 s.
+While a stop that `rp` itself asked for is in flight, the watch reads
+nothing. It ends when the guider has answered that stop, because the
+`stop_guiding` tool, the rotate-while-guiding ladder and the safety
+stop each report their own `guide_stopped`, and it goes on when the
+request failed. It also ends when it has reported the run's end. A
+start that fails before it settles is that call's error and no event
+of the watch's. A restart of `rp` forgets the run, and the watch
+starts again at the next `guide_settled`.
+
+**`guide_stopped`** with `reason: "guider"` is emitted once, when the
+run has ended without `rp` asking. `stop_reason` says how:
+
+- a read shows the state `idle` or `looping`, and a `last_stop`:
+  `stop_reason` is its `reason`, one of the guider's own, or
+  `requested` when another client stopped the run;
+- a read shows `idle` or `looping`, and no `last_stop`: `restarted`. A
+  guider that has stopped nothing since it started is one that started
+  under the run, and a restart ends a run
+  ([guider.md § Supervision and recovery](guider.md#supervision-and-recovery));
+- no read has answered for 60 s: `unreachable`. Sentinel restarts a
+  guider that is down, and one that answers again within the 60 s
+  shows as `restarted`.
+
+**`guide_star_lost`** is emitted when every read over
+`equipment.mount.guiding.star_lost_after` (default `"60s"`) has shown
+the state `star_lost`, and again after each further `star_lost_after`
+for as long as the loss lasts. `lost_for_ms` says how long that is. A
+read that shows another state ends the loss; a read that fails neither
+counts towards it nor ends it. The guider waits in `star_lost` for as
+long as the run lasts and never selects stars again by itself
+([guider.md § Star selection and measurement](guider.md#star-selection-and-measurement)),
+so the event repeats, and an orchestrator can ask for a new selection
+at each one until a frame has stars.
+
+The shipped `deep_sky.json` wires both (session-runner.md
+§ `deep_sky.json`). On `guide_star_lost` it reads the guider's state
+and, while that is still `star_lost`, calls `start_guiding`, which
+there selects stars on a fresh frame and takes a new lock where they
+are. On a `guide_stopped` of reason `guider` it acquires the target
+again, from the slew on.
 
 ### Guide Focus Watch
 
 When `equipment.mount.guiding.focus_watch` is present, rp runs a
-background watch over the guider service's per-frame star metrics
+background watch over the guider's per-frame star metrics
 and turns a degrading HFD trend into **events, not actions**: the
 orchestrator owns sequencing (§ Orchestration), so it decides when a
 refocus fits between exposures. Both events carry the guiding
@@ -5453,9 +5490,11 @@ over the guiding train's plan, or the guide-only `auto_focus` when
 that plan holds no capture step. rp never moves a
 focuser on its own initiative.
 
-Mechanics — the watch polls `GET /guiding/metrics` every
-`poll_interval` (default `"5s"`) while the guider reports an active
-guide loop, and is idle otherwise:
+Mechanics — the watch polls `GET /api/v1/guiding/metrics` every
+`poll_interval` (default `"5s"`) while the guider reports the state
+`guiding`, and is idle otherwise. A new `epoch` in the answer is a
+guider that has restarted and counts its frames anew, so the watch
+then forgets the highest frame number it has seen:
 
 - **Baseline**: the median HFD of the first `window` (default 10)
   valid frames after guiding becomes active. The watch subscribes
@@ -5489,7 +5528,7 @@ All `focus_watch` fields are optional —
 "escalation_deadline": "10m", "poll_interval": "5s" }` are the
 defaults; `window` must be between 3 and 50 and `degrade_ratio` a
 finite number > 1.0, rejected at load otherwise. The upper bound is the
-guider service's per-frame metrics ring — 50 frames is the whole supply
+guider's per-frame metrics window — 50 frames is the whole supply
 the watch draws medians from, so a larger window could never be filled
 and the watch would silently never fire. Omitting the block disables the
 watch entirely.
@@ -5985,12 +6024,13 @@ primitive's own path.
 
 The guiding train's focus sweep. A built-in compound tool that sweeps
 the guiding train's terminal focuser and samples each position with
-the **median HFD of fresh PHD2 guide frames**, read from the guider
-service's per-frame metrics window
-(phd2-guider.md § `GET /api/v1/guiding/metrics`). It never captures
-through the guide camera — PHD2 may own it at the SDK level. A
-client's training run that captures through the PHD2 camera facade
-is a different operation, under a [train lease](#train-lease).
+the **median HFD of fresh guide frames**, read from the guider's
+per-frame metrics window
+([guider.md § `GET /api/v1/guiding/metrics`](guider.md#get-apiv1guidingmetrics)).
+It never captures through the guide camera, on which the guider
+exposes for as long as it guides. A client's training run that
+captures through the guide camera is a different operation, under a
+[train lease](#train-lease).
 
 An imaging train has no sweep in `rp`: the focus-model provider's
 `focus_train` focuses it, capturing through `capture` and measuring
@@ -6033,8 +6073,8 @@ Requirements, checked before any motion:
 - The guiding train's terminal focuser is one no imaging train
   holds. A focuser an imaging train holds is focused through the
   imaging camera alone, with the guide camera taken as parfocal
-  ([Optical Trains](#optical-trains)), so sweeping it against PHD2's
-  HFD would move the main camera's focus by the worse camera's
+  ([Optical Trains](#optical-trains)), so sweeping it against the
+  guider's HFD would move the main camera's focus by the worse camera's
   measure. Error: "guide-train auto_focus: focuser 'main-focuser' is
   in imaging train 'main', which focuses it; the guide camera is taken
   as parfocal with that train's camera". `deep_sky.json`'s
@@ -6042,15 +6082,11 @@ Requirements, checked before any motion:
   escalation's `focus_train {shared: true}` sweeps the focuser through
   the imaging camera.
 - `equipment.mount.guiding` is configured, and the guider's stats
-  report an **active guide loop** — PHD2 only emits `GuideStep`
-  (and with it HFD) while guiding, so without it there is nothing
-  to measure. Error: "guide-train auto_focus requires active
-  guiding". Guide **corrections stay active for the whole sweep**
-  by the same logic; a defocusing star drifts little, and the
-  alternative (paused output) stops the metric stream. (Whether
-  HFD in fact streams in PHD2's paused modes is a rig-verification
-  item; `get_star_image` polling is the recorded fallback should a
-  real rig contradict this.)
+  report the state `guiding`. Error: "guide-train auto_focus requires
+  active guiding". The sweep is an in-session refocus, and guide
+  **corrections stay active for the whole sweep**: a defocusing star
+  drifts little, and a run stopped for the sweep would have to select
+  its stars and settle again after it.
 
 **Algorithm**:
 1. Read the focuser's current position and temperature once each.
@@ -6065,7 +6101,7 @@ Requirements, checked before any motion:
    from the same side as the final move (see
    [Focuser Tool Details](#focuser-tool-details)). Emit
    `focus_started` with `{camera_id: null, focuser_id, train_id,
-   position, temperature, method: "phd2_hfd"}`.
+   position, temperature, method: "guider_hfd"}`.
 2. At each grid position: `move_focuser` (the settle rule and backlash
    compensation of the primitive tool), then refresh the freshness
    watermark from the metrics window — frames exposed *during* the
@@ -6113,7 +6149,7 @@ Requirements, checked before any motion:
 5. Emit `focus_complete` with `{camera_id: null, focuser_id,
    train_id, position: final_position, hfd: final_hfd, best_position,
    best_hfd, confirmed, fit_r_squared, samples_used, method:
-   "phd2_hfd"}`.
+   "guider_hfd"}`.
 
 **Output**:
 - `best_position` (i32) and `best_hfd` (f64) — the fit's centre and
@@ -6127,8 +6163,8 @@ Requirements, checked before any motion:
   the sample set collected at `best_position` and its verdict.
 - `confirmed` (bool) — `confirmation.accepted`, hoisted for callers.
 - `final_position` (i32) and `final_hfd` (f64) — where the focuser was
-  left and the HFD measured there (step 4). HFD is PHD2's half-flux
-  **diameter**, in guide-camera pixels.
+  left and the HFD measured there (step 4). HFD is the guider's
+  half-flux **diameter**, in guide-camera pixels.
 - `samples_used` (usize) — valid samples that entered the fit.
 - `curve_points` — `[{position: i32, hfd: f64 | null, frames_used: u32}]`,
   one per grid position in walk order. There are no `document_id`s,
@@ -6203,7 +6239,7 @@ each `{focuser_id, run_train_id, camera_id, metric}`:
   that focuser's capture step in the imaging train, and no guide step;
 - `metric` is `"capture"` — measure through `camera_id`, the run
   train's terminal camera — or `"guide"` for a step whose run train
-  is the guiding train: the PHD2-metric sweep, with a `null`
+  is the guiding train: the guide-metric sweep, with a `null`
   `camera_id` because nothing is captured through the guide camera,
   and always last, since only the guiding train's own terminal
   focuser runs there. A capture step's focuser is always its run
@@ -7816,7 +7852,7 @@ returns without moving anything.
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
 | `set_filter`, `close_cover`, `calibrator_on`, `calibrator_off`, `park`, the guide-metric waits inside `auto_focus` | none: the wait ends and the device finishes on its own. A park is never aborted — a mount half-way to its park position is safer left going there, the same reasoning as `park`'s timeout |
-| `dither` | none — PHD2 has no dither abort, so the guider finishes its settle on its own. The mount is still being pulsed towards the new lock position, though, so the body's [motion-gate](#mount-motion-gate) permit moves to a detached holder that releases it when the settle RPC ends (bounded by the settle timeout plus 15 s, 90 s when none was given) |
+| `dither` | the guider's `dither/abort`, which puts the lock where the stars are and ends the move. The body's [motion-gate](#mount-motion-gate) permit moves to a detached holder that releases it when the guider has answered the dither request (bounded by the dither's own deadline, § [Guider Service](#guider-service)) |
 | `unpark`, `set_tracking` | none: each is a single driver call raced against the handle. A handle already cancelled when the body runs means the call is never issued; a cancel landing mid-call drops the request, and the transition's own park re-secures the mount either way |
 
 Long-running bodies emit `notifications/progress` while they poll
@@ -7840,7 +7876,7 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 | Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
 | Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
-| Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (the resolved settle timeout + the guider service's 10 s backstop grace; omitted when no settle timeout is configured per-call or in the `equipment.mount.guiding` block). `dither_started` → `dither_settled` carries the same deadline shape |
+| Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (`calibration_timeout` + the resolved settle timeout + 15 s; omitted when no settle timeout is configured per-call or in the `equipment.mount.guiding` block). `dither_started` → `dither_settled` carries the resolved settle timeout + 15 s |
 | Centering | `centering_started` | `centering_complete` | `max_duration_ms` from the `centering_started` envelope (rp-computed advisory outer-loop deadline: `max_attempts × (duration + centering.solve_time_estimate + centering.slew_overhead_estimate)`; per-iteration ops carry their own deadlines) |
 
 #### Corrective Actions
@@ -7935,13 +7971,7 @@ after rp restarts". Then two links: the driver's server page
 in Alpaca's spelling: `camera`, `filterwheel`, `focuser`,
 `covercalibrator`, `rotator`, `switch`, `safetymonitor`,
 `observingconditions`, `dome`, `telescope`), each following the host rule
-below. A camera that is `phd2-guider`'s facade — while connected, its
-`SupportedActions` lists the sweep lease's acquire — links the guider's
-`/setup` instead, at `mount.guiding.url` under the same host rule; the
-facade answers only on the guider's host, and its page is the guider's
-(D13). Without a `guiding` block the row says that `rp` has no guider
-address to link. Each connected camera is asked when the page is drawn,
-and one that has not answered within two seconds is drawn as any camera.
+below.
 
 Then come the entry's fields, generated from its kind's type
 (`id`, `name`, `alpaca_url` and `device_number` first, then the rest: a
@@ -8389,13 +8419,15 @@ return a structured "site not configured" error.
       "settle_after_slew": "3s",
       "slew_rate_arcsec_per_sec": 7200,
       "guiding": {
-        "url": "http://localhost:11130",
+        "url": "http://localhost:11129",
         "timeout": "90s",
+        "calibration_timeout": "10m",
         "settle_pixels": 0.8,
         "settle_time": "10s",
         "settle_timeout": "60s",
         "dither_pixels": 5,
         "recalibrate_above_deg": 5.0,
+        "star_lost_after": "60s",
         "focus_watch": { "window": 10, "degrade_ratio": 1.25,
                          "cooldown": "10m",
                          "escalation_deadline": "10m" },
@@ -8621,11 +8653,16 @@ services/rp/src/
   train_lease.rs        TrainLeases (§ Train Lease): the seen-id
                         memory, the reservation table leases and rp's
                         own sweeps share, each lease's holdings and its
-                        keeper task (facade renewals, idle and
-                        max_duration ends, the give-back)
-  train_lease/
-    facade.rs           The PHD2 camera facade's sweep-lease Actions:
-                        token, acquire, renew, release
+                        keeper task (camera-lease renewals, idle
+                        and max_duration ends, the give-back)
+  camera_lease.rs       The guider's camera lease (guider.md § The
+                        camera lease): token, acquire, renew, release,
+                        for a train lease and for a capture through
+                        the guide camera
+  guide_run_watch.rs    Guide Run Watch (§ Guide Run Watch): reads the
+                        guider's stats while a settled run lasts,
+                        guide_stopped / guide_star_lost emission —
+                        events only, never actions
   guiding_watch.rs      Guide Focus Watch (§ Guide Focus Watch):
                         polls the guider's metrics window while
                         guiding, baseline/degrade/escalation state,
@@ -8797,7 +8834,7 @@ services/rp/src/
                           ParkParams, UnparkParams, GetParkStateParams,
                           AbortSlewParams + the 9 mount tools.
       auto_focus.rs     AutoFocusToolParams + the auto_focus tool:
-                          the guiding train's PHD2-metric sweep
+                          the guiding train's guide-metric sweep
                           (median HFD per position over the guider
                           metrics window).
       rotator.rs        MoveRotatorParams, RotatorPositionParams +

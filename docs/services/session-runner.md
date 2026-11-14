@@ -1336,7 +1336,7 @@ catch-log:
   crossing is ~24 h out, so the gate goes false without
   `once`/`cooldown` bookkeeping.
 - `guide-af-on-degraded` — on `guide_focus_degraded` (rp's
-  [Guide Focus Watch](rp.md), emitted only while the watch is
+  [Guide Focus Watch](rp.md#guide-focus-watch), emitted only while the watch is
   configured and guiding): run the guide-only metric `auto_focus` on
   `event.train_id` — the guiding train named by the event, so the
   document needs no guide-train parameter. Sweep geometry comes from
@@ -1360,6 +1360,40 @@ catch-log:
   imaging focuser and so resets nothing. The plan read sits inside the
   `try`, so a plan `rp` cannot answer (a guiding train with no
   focuser) is logged like a failed sweep.
+
+**Designed and not yet built: two guide-run rules.** `rp`'s
+[Guide Run Watch](rp.md#guide-run-watch) reports a run that has lost
+its stars and a run that ended without `rp` asking. Stage G6 of
+[the native guider plan](../plans/native-guider.md#staging) adds a
+rule for each, both gated on `when params.guide == true`:
+
+- `reselect-on-star-lost` — on `guide_star_lost`: read
+  `get_guiding_stats`, and when the state is `star_lost` call
+  `start_guiding`, which there selects guide stars on a fresh frame
+  and takes a new lock where they are
+  ([guider.md § `guiding/start`](guider.md#post-apiv1guidingstart)).
+  The mount is not slewed and the target is not centred again: under
+  a cloud the plate solve fails as the star selection does, and a
+  failed acquisition ends the session, where this rule waits. A frame
+  with no star fails the call, the `catch` logs it, and the event
+  comes again after `rp`'s `star_lost_after` for as long as the loss
+  lasts. The state read makes the rule safe at any point of the
+  document: an event that is drained after the run has recovered or
+  stopped starts nothing. The capture loop goes on between attempts.
+- `reacquire-on-guider-stop` — on `guide_stopped`, when
+  `event.reason == 'guider'`: set `session.reacquire`. The dispatch
+  loop's acquisition step then runs on a target change or on that
+  flag, which it clears as it begins, so the next pass acquires the
+  target again from the slew on: stop, slew, centre, rotate, focus,
+  start guiding. Several of the reasons a guider stops for by itself
+  mean that the mount has left the target: it slewed, parked, stopped
+  tracking or changed its pier side
+  ([guider.md § Stopping on its own](guider.md#stopping-on-its-own)).
+  A start alone would then lock on whatever field the mount points
+  at. The exposure in flight is not aborted. Each re-acquisition ends
+  in a settled run or, after three failed starts, in a failed session;
+  a run that stops again starts another re-acquisition, and nothing
+  counts them.
 
 In all five focus triggers the sweep call is wrapped in `try` with
 a logging `catch`: a failed focus sweep degrades the night, but ending

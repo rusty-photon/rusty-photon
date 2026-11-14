@@ -14,9 +14,10 @@ design the implementation is written against.
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
 [`docs/plans/native-guider.md`](../plans/native-guider.md) holds the
-evidence and orders the work in stages G0 to G7. Until stage G6 moves
-`rp` to the contract below, `rp` speaks the contract of
-[`phd2-guider`](phd2-guider.md).
+evidence and orders the work in stages G0 to G7. `rp`'s side of the
+contract below is designed in
+[rp.md § Guider Service](rp.md#guider-service). Until stage G6 builds
+it, `rp` speaks the contract of [`phd2-guider`](phd2-guider.md).
 
 Four properties shape the design:
 
@@ -80,6 +81,7 @@ the camera while nobody holds the lease, and sends guide pulses.
 | Telescope | `Declination`, `GuideRateRightAscension`, `GuideRateDeclination` | Read when a run starts |
 | Telescope | `RightAscension`, `Altitude`, `Azimuth`, `SiderealTime` | Read when a run starts, for the guide log only |
 | Telescope | `PulseGuide`, `IsPulseGuiding` | The only command, and its completion |
+| Each device's server | `GET /management/v1/configureddevices` | Read in every device poll, for the `UniqueID` listed for the device |
 
 The guider is a client of no SafetyMonitor. Safety is `rp`'s
 ([rp.md § Safety](rp.md#safety)): `rp` stops guiding and parks the
@@ -177,18 +179,33 @@ The guider is a client of the Camera and the Telescope named in
 the root it trusts for an `https://` address, and a device's `auth`
 block sends HTTP Basic Auth credentials.
 
+**Which device.** A `devices` entry addresses its device as a roster
+entry of `rp`'s does: `alpaca_url` names the server, and
+`device_number` is the device's position among that server's devices
+of its kind in `GET /management/v1/configureddevices`
+([rp.md § Device Identity Pin](rp.md#device-identity-pin)). Nothing in
+that address says which device it is, and the guider's devices and
+`rp`'s are configured apart. So the guider reports the `UniqueID` the
+list gives for each of its devices, as `unique_id` in
+[`GET /api/v1/devices`](#get-apiv1devices), and `rp` compares it with
+the identity of its own device before it asks for a run or for the
+camera lease ([rp.md § Guider Service](rp.md#guider-service)). The
+guider itself pins no identity and refuses nothing over one.
+
 **The guider never writes `Connected`.** `rp` owns device connections.
 A device that is not connected is reported and never connected by the
 guider. Used without `rp`, the rig's operator connects the devices
 with any Alpaca client.
 
 **The device poll.** In every state the guider reads `Connected` on
-both devices every `devices.poll_interval`. On the first read that
-finds a device connected, and again whenever a device comes back, it
-reads that device's static properties: the camera's sensor size, pixel
-size, sensor type, `MaxADU`, `MaxBinX` and `CanAbortExposure`, and the
-mount's `CanPulseGuide`. The poll only reads. `GET /api/v1/devices` and
-`/health` answer from its results.
+both devices every `devices.poll_interval`, and with it each server's
+device list, from which it keeps the `UniqueID` listed for the device,
+stripped of the whitespace around it as `rp` strips its own. On the
+first read that finds a device connected, and again whenever a device
+comes back, it reads that device's static properties: the camera's
+sensor size, pixel size, sensor type, `MaxADU`, `MaxBinX` and
+`CanAbortExposure`, and the mount's `CanPulseGuide`. The poll only
+reads. `GET /api/v1/devices` and `/health` answer from its results.
 
 **At a request.** `loop`, `calibrate` and `guiding/start` read
 `Connected` afresh before anything else. A device that does not answer
@@ -1048,6 +1065,7 @@ Acquires the [camera lease](#the-camera-lease).
   "camera": {
     "reachable": true,
     "connected": true,
+    "unique_id": "5b0f6c1e-93a4-4f7d-8a2e-1c7d40e9b6f3",
     "leased": false,
     "sensor_type": "rggb",
     "pixel_size_um": 1.45,
@@ -1056,7 +1074,12 @@ Acquires the [camera lease](#the-camera-lease).
     "binning": 2,
     "can_abort_exposure": true
   },
-  "mount": { "reachable": true, "connected": true, "can_pulse_guide": true },
+  "mount": {
+    "reachable": true,
+    "connected": true,
+    "unique_id": "c2d94a70-6e15-4b8c-b3f1-9a05e7d2816c",
+    "can_pulse_guide": true
+  },
   "rotator": null
 }
 ```
@@ -1067,6 +1090,9 @@ Acquires the [camera lease](#the-camera-lease).
   stopped answering; `leased` is current.
 - A device that is not configured is `null`. A property that has not
   been read yet is `null`. `binning` is the effective binning.
+- `unique_id` is the `UniqueID` the device's server listed for it at
+  the last poll that read the list, and `null` until a poll has read
+  it.
 - `rotator` is always `null`: the guider is a client of no rotator.
 
 #### `GET /api/v1/frame/latest`
@@ -1382,7 +1408,7 @@ The example shows a configured rig. In the default file
 | `ca_cert` | No | `null` | A PEM file. When set it is the only root the device clients trust ([ADR-002](../decisions/002-tls-for-inter-service-communication.md)) |
 | `state_dir` | No | `null` | Overrides the [state directory](#state-directory) |
 | `devices.camera`, `devices.mount` | To guide | `null` | `alpaca_url`, `device_number` (default 0) and an optional `auth` (`{username, password}`) |
-| `devices.poll_interval` | No | `"10s"` | How often `Connected` is read on both devices |
+| `devices.poll_interval` | No | `"10s"` | How often `Connected` and the server's device list are read for both devices |
 | `optics.focal_length_mm` | To guide | `null` | The guide scope's focal length; the same number as the `focal_length_mm` of `rp`'s guiding train |
 | `camera.exposure` | No | `"2s"` | The exposure of every frame |
 | `camera.binning` | No | `1` | Hardware binning of a `Monochrome` camera; must be 1 for an `RGGB` camera |
