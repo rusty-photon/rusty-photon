@@ -112,7 +112,7 @@ Feature: Training runs on a guiding train
     When the MCP client calls "determine_filter_offsets" with {"train_id": "guide", "rounds": 1}
     Then the tool call should return an error
     And the error message should contain "no filter was measured against 'Luminance'"
-    And the stub camera facade should have been asked for 2 sweep leases
+    And the stub camera facade should have been asked for 3 sweep leases
     And every sweep lease the stub camera facade was asked for should be released by its token
     And the stub camera facade should hold no sweep lease
     And the simulator's filter wheel should be at position 0

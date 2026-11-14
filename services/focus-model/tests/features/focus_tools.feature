@@ -491,11 +491,13 @@ Feature: Focus tools served through rp
     And the error message should contain "filter 'OIII' is not on train 'main'"
 
   # One round across a two-filter wheel, measured against a simulator
-  # with no stars in it. Both sweeps run and both are recorded — the
-  # history is the account of the attempt — but an offset differences
-  # two confirmed positions, and there are none, so nothing is written
-  # and the error says how many sweeps came up short. The wheel and the
-  # focuser go back to where the call found them.
+  # with no stars in it: the reference, the other filter, and the
+  # reference again to close the round. All three sweeps run and all
+  # three are recorded — the history is the account of the attempt —
+  # but an offset differences confirmed positions, and there are none,
+  # so nothing is written and the error says how many sweeps came up
+  # short. The wheel and the focuser go back to where the call found
+  # them.
   Scenario: A procedure whose sweeps never confirm writes no offset and says so
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
@@ -505,14 +507,15 @@ Feature: Focus tools served through rp
     And the focuser is at position 25000
     When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "rounds": 1}
     Then the tool call should return an error
-    And the error message should contain "no filter was measured against 'Luminance': 2 of 2 sweeps did not confirm"
+    And the error message should contain "no filter was measured against 'Luminance': 3 of 3 sweeps did not confirm"
     And the simulator's filter wheel should be at position 0
     And the focuser should be back at position 25000 within 60 seconds
     When the MCP client calls "get_focus_runs" with {"train_id": "main"}
     Then the tool call should succeed
-    And the tool result at "/total" should be the JSON 2
-    And the tool result at "/runs/0/filter" should be the JSON "Ha"
-    And the tool result at "/runs/1/filter" should be the JSON "Luminance"
+    And the tool result at "/total" should be the JSON 3
+    And the tool result at "/runs/0/filter" should be the JSON "Luminance"
+    And the tool result at "/runs/1/filter" should be the JSON "Ha"
+    And the tool result at "/runs/2/filter" should be the JSON "Luminance"
     When the MCP client calls "get_focus_model" with {"train_id": "main"}
     Then the tool call should succeed
     And the tool result at "/reference_filter" should be the JSON null
