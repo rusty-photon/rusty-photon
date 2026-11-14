@@ -4,6 +4,7 @@
 //! the settle/stop behavior), writes a config pointing at it, and
 //! starts `phd2-guider serve` via `bdd_infra::ServiceHandle`.
 
+use crate::phd2_unit::Phd2Unit;
 use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -67,6 +68,13 @@ pub struct GuiderWorld {
 
     /// The facade image as the `ImageBytes` body the client last fetched.
     pub image_bytes: Option<Vec<u8>>,
+
+    /// The stand-in for the `rusty-photon-phd2` unit, in the restart
+    /// scenarios.
+    pub unit: Option<Phd2Unit>,
+
+    /// Environment the guider service starts with, beyond the suite's own.
+    pub service_env: Vec<(String, String)>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for GuiderWorld {
@@ -166,6 +174,20 @@ impl Drop for MockPhd2Handle {
     }
 }
 
+/// A `mock_phd2` command with `envs`, its stdout piped for the port it
+/// announces.
+fn mock_command(envs: &[(OsString, OsString)]) -> Command {
+    let mut cmd = Command::new(GuiderWorld::mock_phd2_path());
+    cmd.envs(envs.iter().map(|(key, value)| (key, value)))
+        .stdout(Stdio::piped())
+        // mock_phd2 logs verbosely to stderr; discard it so a full
+        // pipe buffer can never deadlock the mock under parallel
+        // scenarios (same policy as tests/test_integration.rs).
+        .stderr(Stdio::null());
+    apply_child_coverage_profile(&mut cmd);
+    cmd
+}
+
 /// Spawn `cmd` (`mock_phd2`) and wait for the port it announces. A
 /// wedged child fails the scenario within 10 s (and is reaped) rather
 /// than hanging the suite on an endless stdout read. Blocking: run it on
@@ -259,8 +281,17 @@ impl GuiderWorld {
         let rpc_log = dir.join("rpc_log.jsonl");
         self.rpc_log_path = Some(rpc_log.clone());
 
+        // The unit starts PHD2 again on the port it had, so a mock the unit
+        // keeps takes a port the test knows first (docs/skills/testing.md
+        // § 5.1); any other binds port 0 and announces it.
+        let keeps = self.unit.as_ref().is_some_and(Phd2Unit::keeps);
+        let port = if keeps {
+            bdd_infra::reserved_test_port_async().await
+        } else {
+            0
+        };
         let mut envs: Vec<(OsString, OsString)> = vec![
-            ("MOCK_PHD2_PORT".into(), "0".into()),
+            ("MOCK_PHD2_PORT".into(), port.to_string().into()),
             ("MOCK_PHD2_SETTLE_MODE".into(), settle_mode.into()),
             ("MOCK_PHD2_STOP_MODE".into(), stop_mode.into()),
             ("MOCK_PHD2_RPC_LOG".into(), rpc_log.into_os_string()),
@@ -275,22 +306,42 @@ impl GuiderWorld {
         // Windows runner, and a step that blocks stalls the one poll loop
         // every scenario shares (see `bdd_infra::off_loop`). A panic in
         // here fails the step with its own message.
-        let (port, child) = bdd_infra::off_loop(move || {
-            let mut cmd = Command::new(Self::mock_phd2_path());
-            cmd.envs(envs)
-                .stdout(Stdio::piped())
-                // mock_phd2 logs verbosely to stderr; discard it so a full
-                // pipe buffer can never deadlock the mock under parallel
-                // scenarios (same policy as tests/test_integration.rs).
-                .stderr(Stdio::null());
-            apply_child_coverage_profile(&mut cmd);
-            spawn_mock(cmd)
-        })
-        .await;
-        self.mock = Some(MockPhd2Handle {
-            port,
-            child: Some(child),
-        });
+        let first = envs.clone();
+        let (port, child) = bdd_infra::off_loop(move || spawn_mock(mock_command(&first))).await;
+        let child = match self.unit.as_ref().filter(|unit| unit.keeps()) {
+            Some(unit) => {
+                // The PHD2 the unit starts again is the same PHD2, without
+                // the scenario's fault: it starts Stopped and answers.
+                envs.retain(|(key, _)| key != "MOCK_PHD2_MODE" && key != "MOCK_PHD2_APP_STATE");
+                unit.adopt(child, Box::new(move || spawn_mock(mock_command(&envs))));
+                None
+            }
+            None => Some(child),
+        };
+        self.mock = Some(MockPhd2Handle { port, child });
+    }
+
+    /// Stand in for the `rusty-photon-phd2` unit: keeping PHD2 running
+    /// (`keeps`), or inactive. A mock PHD2 started after this is the unit's
+    /// main process when the unit keeps PHD2 running.
+    pub async fn stand_in_for_the_unit(&mut self, keeps: bool) {
+        let dir = self.temp_dir_path().join("unit");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create the unit's directory");
+        let unit = Phd2Unit::create(dir, keeps).await;
+        self.service_env = vec![("PATH".to_string(), unit.path_env())];
+        self.unit = Some(unit);
+    }
+
+    /// The suite's config, switched over to PHD2 under the service manager.
+    pub fn managed_config(phd2_port: u16) -> serde_json::Value {
+        let mut config = Self::service_config(phd2_port, "10s");
+        config["phd2"]["managed"] = true.into();
+        // Below the suite's HTTP timeout, so a restart that fails answers
+        // before the client gives up on it.
+        config["phd2"]["restart_timeout"] = "60s".into();
+        config
     }
 
     /// Write a config pointing at the given PHD2 port and start
@@ -374,9 +425,17 @@ impl GuiderWorld {
             .clone()
             .expect("the scenario wrote no config file");
         let config_str = config_path.to_string_lossy().into_owned();
-        let handle =
-            ServiceHandle::start_with_args("phd2-guider", &["--config", &config_str, "serve"])
-                .await;
+        let envs: Vec<(&str, &str)> = self
+            .service_env
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let handle = ServiceHandle::start_with_env(
+            "phd2-guider",
+            &["--config", &config_str, "serve"],
+            &envs,
+        )
+        .await;
         setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.service_handle = Some(handle);
     }

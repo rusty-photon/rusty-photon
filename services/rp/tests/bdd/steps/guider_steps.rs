@@ -186,6 +186,11 @@ async fn call_stop_guiding(world: &mut RpWorld) {
     call_guider_tool(world, "stop_guiding", Map::new()).await;
 }
 
+#[when("the MCP client calls \"restart_guider\"")]
+async fn call_restart_guider(world: &mut RpWorld) {
+    call_guider_tool(world, "restart_guider", Map::new()).await;
+}
+
 #[when(expr = "the MCP client calls \"dither\" with pixels {float} and ra_only {word}")]
 async fn call_dither(world: &mut RpWorld, pixels: f64, ra_only: String) {
     let mut params = Map::new();
@@ -367,6 +372,16 @@ async fn stub_dither_request(world: &mut RpWorld, amount_px: f64, ra_only: Strin
 async fn stub_stop_request(world: &mut RpWorld) {
     let stops = guider_stub(world).requests_to("/guiding/stop").await;
     assert!(!stops.is_empty(), "the stub received no stop request");
+}
+
+#[then("the stub guider should have received a PHD2 restart request with an empty JSON object")]
+async fn stub_restart_request(world: &mut RpWorld) {
+    let request = last_stub_request_to(world, "/phd2/restart").await;
+    assert_eq!(
+        request,
+        serde_json::json!({}),
+        "the PHD2 restart request's body"
+    );
 }
 
 #[then("the stub guider should have received a pause request with full true")]

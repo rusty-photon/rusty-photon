@@ -4,7 +4,7 @@
 //! and message reading from PHD2.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, Mutex, Notify, RwLock};
@@ -46,6 +46,11 @@ pub struct SharedConnectionState {
     pub auto_reconnect_enabled: Arc<AtomicBool>,
     pub stop_reconnect: Arc<Notify>,
     pub connection_factory: Arc<dyn ConnectionFactory>,
+    /// How many connections to PHD2 have been established, counted before
+    /// each one's reader starts. A later count is a later connection, so a
+    /// `Version` read while the count is above an earlier reading came on
+    /// a connection made after that reading.
+    pub connections: Arc<AtomicU64>,
 }
 
 impl SharedConnectionState {
@@ -73,7 +78,18 @@ impl SharedConnectionState {
             auto_reconnect_enabled: Arc::new(AtomicBool::new(auto_reconnect_enabled)),
             stop_reconnect: Arc::new(Notify::new()),
             connection_factory,
+            connections: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Count a connection just established, before its reader starts.
+    pub fn count_connection(&self) {
+        self.connections.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// How many connections have been established so far.
+    pub fn connection_count(&self) -> u64 {
+        self.connections.load(Ordering::SeqCst)
     }
 
     /// Check if connected
@@ -216,6 +232,7 @@ pub fn spawn_reconnect_task(
                         state_guard.connected = true;
                         state_guard.reconnecting = false;
                     }
+                    shared.count_connection();
 
                     // Start a new reader task
                     let new_reader_handle =
@@ -646,6 +663,55 @@ mod mock_tests {
 
         client.disconnect().await.unwrap();
         assert!(client.get_phd2_version().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn each_connect_counts_one_connection() {
+        let factory = Arc::new(MockConnectionFactory::new());
+        factory.add_connection(vec![Some(version_event())]);
+        factory.add_connection(vec![Some(version_event())]);
+        let client = Phd2Client::with_connection_factory(Phd2Config::default(), factory);
+        assert_eq!(client.connection_count(), 0);
+
+        client.connect().await.unwrap();
+        assert_eq!(client.connection_count(), 1);
+        client.disconnect().await.unwrap();
+        assert_eq!(client.connection_count(), 1, "a disconnect counts nothing");
+        client.connect().await.unwrap();
+        assert_eq!(client.connection_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_auto_reconnect_counts_a_connection_with_the_new_version() {
+        let factory = Arc::new(MockConnectionFactory::new());
+        // The first PHD2 says who it is and closes the connection.
+        factory.add_connection(vec![Some(version_event()), None]);
+        factory.add_connection(vec![Some(
+            r#"{"Event":"Version","PHDVersion":"2.6.14","PHDSubver":"","MsgVersion":1}"#
+                .to_string(),
+        )]);
+        let config = Phd2Config {
+            reconnect: ReconnectConfig {
+                enabled: true,
+                interval: Duration::from_millis(10),
+                max_retries: None,
+            },
+            ..Default::default()
+        };
+        let client = Phd2Client::with_connection_factory(config, factory);
+        client.connect().await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while client.get_phd2_version().await.as_deref() != Some("2.6.14") {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the client did not reconnect: {} connections, version {:?}",
+                client.connection_count(),
+                client.get_phd2_version().await
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(client.connection_count(), 2);
     }
 
     // ============================================================================

@@ -11041,8 +11041,8 @@ async fn unpark_failure_emits_started_then_failed() {
 
 use crate::config::GuiderDefaults;
 use crate::mcp::built_in::guider::{
-    DitherParams, DitherUnit, GetGuidingStatsParams, PauseGuidingParams, ResumeGuidingParams,
-    StartGuidingParams, StopGuidingParams,
+    DitherParams, DitherUnit, GetGuidingStatsParams, PauseGuidingParams, RestartGuiderParams,
+    ResumeGuidingParams, StartGuidingParams, StopGuidingParams,
 };
 use rp_guider::{GuiderError, GuidingStats, MockGuiderClient, SettledOutcome};
 
@@ -12266,6 +12266,55 @@ async fn stop_guiding_failure_errors_without_the_stopped_event() {
 }
 
 #[tokio::test]
+async fn restart_guider_returns_the_services_restart() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_restart_phd2().returning(|| {
+                Ok(rp_guider::RestartOutcome {
+                    phd2: "restarted".to_string(),
+                    equipment: "connected".to_string(),
+                    elapsed_ms: 18400,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+
+    let result = handler
+        .restart_guider(Parameters(RestartGuiderParams {}))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["phd2"], "restarted");
+    assert_eq!(json["equipment"], "connected");
+    assert_eq!(json["elapsed_ms"], 18400);
+}
+
+#[tokio::test]
+async fn restart_guider_carries_the_services_refusal() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_restart_phd2().returning(|| {
+                Err(GuiderError::Service {
+                    code: "guiding_active".to_string(),
+                    message: "PHD2 is Guiding; stop guiding first".to_string(),
+                    details: serde_json::Value::Null,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+
+    let result = handler
+        .restart_guider(Parameters(RestartGuiderParams {}))
+        .await;
+    assert_tool_error(
+        result,
+        "restart_guider: guiding_active: PHD2 is Guiding; stop guiding first",
+    );
+}
+
+#[tokio::test]
 async fn pause_guiding_forwards_full() {
     let handler = handler_with_guider(
         |mock| {
@@ -12765,6 +12814,10 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
     }
 
     async fn reselect_star(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn restart_phd2(&self) -> Result<rp_guider::RestartOutcome, GuiderError> {
         panic!("not exercised by these tests")
     }
 }

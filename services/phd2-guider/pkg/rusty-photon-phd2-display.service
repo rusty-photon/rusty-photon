@@ -1,0 +1,27 @@
+[Unit]
+Description=Rusty Photon PHD2 display - the virtual X display PHD2 runs on (VNC on 127.0.0.1:5920)
+After=network.target
+# A crash loop never leaves the unit failed: nothing would start it again.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# PHD2 runs as the service account, on this display, with nobody logged
+# on (phd2-guider.md § PHD2 under the service manager). The script makes
+# a fresh X cookie only the service account can read and starts the
+# TigerVNC X server: VNC on 127.0.0.1:5920, with the password the
+# operator sets in /var/lib/rusty-photon/phd2/vncpasswd.
+ExecStart=/usr/lib/rusty-photon/phd2-display
+Restart=always
+RestartSec=2
+User=rusty-photon
+Group=rusty-photon
+Environment=HOME=/var/lib/rusty-photon/phd2
+WorkingDirectory=/var/lib/rusty-photon/phd2
+UMask=0077
+# No private /tmp, and /tmp writable: the X server makes its socket in
+# /tmp/.X11-unix, where PHD2 reaches it.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rusty-photon/phd2 /tmp
+ProtectHome=yes

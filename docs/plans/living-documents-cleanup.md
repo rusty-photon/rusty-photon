@@ -448,7 +448,7 @@ for every batch.
 | B3 — rp and its client crates | Not started | — |
 | B4 — BDD infrastructure and OmniSim | Not started | — |
 | B5 — shared transport and the serial drivers | Not started | — |
-| B6 — cameras and SDK crates | Not started | — |
+| B6 — cameras and SDK crates | Under way: the design docs first, the code comments and the guard rows second | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779) |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
 | B8 — catalog, planner, focus | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1759) |
 | B9 — build, CI, runners; the empty table | Not started | — |

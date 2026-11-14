@@ -28,8 +28,14 @@
 //!   `packaging/postinst.udev-stanza` before `#DEBHELPER#` for
 //!   [`UDEV_STANZA`]'s packages. svbony-camera's keeps the common preamble
 //!   and spells out its own udev reload and the pointer to its SDK helper.
+//!   phd2-guider's adds [`PHD2_HOME_STANZA`] before `#DEBHELPER#`.
 //! - **Each package's own files** ([`OWN_FILES`]): its udev or polkit rule;
 //!   sentinel's doctor binary and TLS renewal units, in both flavors;
+//!   phd2-guider's units for PHD2 and its display, in both flavors, off
+//!   until a host switches over and never restarted by an upgrade (the deb
+//!   ships them as plain files in `lib/systemd/system`, out of cargo-deb's
+//!   systemd handling, and stops them on removal in its own `pkg/prerm`),
+//!   with the display's start script;
 //!   svbony-camera's SDK helper, which installs the SDK into the RUNPATH
 //!   the Linux binaries are built with (`build_packages::RUNPATH`) and
 //!   writes a development udev rule of its own, for the packaged rule's
@@ -97,8 +103,44 @@ const CAMERAS: &[&str] = &["qhy-camera", "zwo-camera", "zwo-focuser", "svbony-ca
 /// the stanza derives it, so its postinst spells that part out.
 const UDEV_STANZA: &[&str] = &["qhy-camera", "zwo-camera", "zwo-focuser"];
 
+/// What phd2-guider's postinst adds before `#DEBHELPER#`: PHD2's home
+/// under the service manager, which the switch-over writes the VNC
+/// password into before either PHD2 unit has run.
+const PHD2_HOME_STANZA: &str = "\
+# PHD2's home under the service manager (rusty-photon-phd2.service): the
+# switch-over writes the VNC password here before either unit has run.
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon/phd2
+";
+
+/// phd2-guider's prerm: the PHD2 units are outside cargo-deb's systemd
+/// handling, so a removal stops and disables them here, and an upgrade
+/// leaves them running.
+const PHD2_PRERM: &str = "\
+#!/bin/sh
+set -e
+# PHD2's units are plain files outside cargo-deb's systemd handling
+# (Cargo.toml), so a removal stops and disables them here; an upgrade
+# leaves PHD2 running.
+if [ \"$1\" = \"remove\" ]; then
+    systemctl disable rusty-photon-phd2.service > /dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl stop rusty-photon-phd2.service rusty-photon-phd2-display.service > /dev/null 2>&1 || true
+    fi
+fi
+#DEBHELPER#
+";
+
+/// The guider package, which also ships the units PHD2 runs in.
+const PHD2_GUIDER: &str = "phd2-guider";
+
 /// A file each of these packages carries in `pkg/`.
 const OWN_FILES: &[(&str, &str)] = &[
+    // PHD2 under the service manager: PHD2, its display, the display's
+    // start script, and the prerm that stops both units on removal.
+    ("phd2-guider", "rusty-photon-phd2.service"),
+    ("phd2-guider", "rusty-photon-phd2-display.service"),
+    ("phd2-guider", "phd2-display"),
+    ("phd2-guider", "prerm"),
     // The polkit rule that lets sentinel restart the other services.
     ("sentinel", "50-rusty-photon-sentinel.rules"),
     ("qhy-camera", "90-rusty-photon-qhy.rules"),
@@ -245,6 +287,22 @@ impl Service {
     /// `[package.metadata.deb]`'s `systemd-units`: one table, or several.
     fn deb_units(&self) -> Vec<&Table> {
         tables(self.deb().and_then(|deb| deb.get("systemd-units")))
+    }
+
+    /// Whether the deb's `assets` installs anything at `dest`.
+    fn deb_installs(&self, dest: &str) -> bool {
+        self.deb()
+            .and_then(|deb| deb.get("assets"))
+            .and_then(Value::as_array)
+            .is_some_and(|assets| {
+                assets.iter().any(|entry| {
+                    entry
+                        .as_array()
+                        .and_then(|items| items.get(1))
+                        .and_then(Value::as_str)
+                        == Some(dest)
+                })
+            })
     }
 
     /// Whether the deb's `assets` holds `[source, dest, mode]`.
@@ -570,6 +628,12 @@ fn maintainer_scripts(check: &mut Check, service: &Service, shared: &Shared) {
                 )
             });
         }
+    } else if svc == PHD2_GUIDER {
+        check.require(postinst == with_stanza(common, PHD2_HOME_STANZA), || {
+            format!(
+                "{svc}: pkg/postinst must be postinst.common + PHD2_HOME_STANZA before #DEBHELPER#"
+            )
+        });
     } else if svc == SVBONY {
         // Everything but postinst.common's last line, `#DEBHELPER#`, which
         // this postinst has later.
@@ -608,6 +672,9 @@ fn own_files(check: &mut Check, service: &Service) {
     }
     if svc == "sentinel" {
         sentinel(check, service);
+    }
+    if svc == PHD2_GUIDER {
+        phd2_units(check, service);
     }
     if svc == SVBONY {
         svbony_helper(check, service);
@@ -690,6 +757,107 @@ fn sentinel(check: &mut Check, service: &Service) {
     check.require(enables_timer, || {
         format!("{svc}: rpm post_install must enable rusty-photon-renew.timer")
     });
+}
+
+/// The units PHD2 runs in under the service manager ride in phd2-guider's
+/// package (phd2-guider.md § PHD2 under the service manager). Both stay
+/// off until a host switches over, and an upgrade restarts neither, so it
+/// never ends PHD2 mid-guide.
+///
+/// cargo-deb gives every unit it installs into `usr/lib/systemd/system` the
+/// one set of `systemd-units` options, the guider's, so the deb ships the
+/// PHD2 units as plain files in `lib/systemd/system`, names neither in
+/// `systemd-units`, and stops them on removal in its own `pkg/prerm`.
+fn phd2_units(check: &mut Check, service: &Service) {
+    let (svc, pkg) = (&service.name, service.pkg());
+    for (unit, exec) in [
+        ("rusty-photon-phd2", "ExecStart=/usr/bin/phd2"),
+        (
+            "rusty-photon-phd2-display",
+            "ExecStart=/usr/lib/rusty-photon/phd2-display",
+        ),
+    ] {
+        if let Some(text) = check.read(&format!("{pkg}/{unit}.service")) {
+            for (line, why) in [
+                (exec, "must start its program"),
+                ("User=rusty-photon", "must run as the service user"),
+                ("Restart=always", "must start again after any exit"),
+                (
+                    "StartLimitIntervalSec=0",
+                    "must have no start limit (nothing would start a failed unit)",
+                ),
+            ] {
+                check.require(has_line(&text, line), || {
+                    format!("{svc}: {unit}.service {why}")
+                });
+            }
+            check.require(!has_line_starting(&text, "BindsTo="), || {
+                format!("{svc}: {unit}.service must not bind to another unit (systemd's stop is never restarted)")
+            });
+        }
+        let named = service
+            .deb_units()
+            .into_iter()
+            .any(|entry| string(Some(entry), "unit-name") == Some(unit));
+        check.require(!named, || {
+            format!(
+                "{svc}: deb systemd-units must not name {unit} (its options would be the guider's)"
+            )
+        });
+        let (source, plain) = (
+            format!("pkg/{unit}.service"),
+            format!("lib/systemd/system/{unit}.service"),
+        );
+        check.require(
+            service.deb_ships([source.as_str(), plain.as_str(), "644"]),
+            || format!("{svc}: deb assets must ship {source} as {plain}"),
+        );
+        check.require(
+            !service.deb_installs(&format!("usr/{plain}")),
+            || format!("{svc}: deb assets must not install {unit}.service into usr/{plain} (cargo-deb would enable, start and restart it)"),
+        );
+        let dest = format!("/usr/{plain}");
+        check.require(service.rpm_ships("dest", &dest), || {
+            format!("{svc}: rpm assets must ship {unit}.service")
+        });
+        let restarted = string(service.rpm(), "post_uninstall_script")
+            .is_some_and(|script| script.contains(&format!("{unit}.service")));
+        check.require(!restarted, || {
+            format!("{svc}: rpm post_uninstall must not restart {unit}.service")
+        });
+        let stopped = string(service.rpm(), "pre_uninstall_script")
+            .is_some_and(|script| script.contains(&format!("{unit}.service")));
+        check.require(stopped, || {
+            format!("{svc}: rpm pre_uninstall must stop {unit}.service on erase")
+        });
+    }
+    if let Some(prerm) = check.read(&format!("{pkg}/prerm")) {
+        check.require(prerm == PHD2_PRERM, || {
+            format!("{svc}: pkg/prerm must be PHD2_PRERM (it stops the PHD2 units on removal)")
+        });
+    }
+    if let Some(text) = check.read(&format!("{pkg}/rusty-photon-phd2.service")) {
+        check.require(
+            has_line(&text, "Wants=rusty-photon-phd2-display.service"),
+            || format!("{svc}: rusty-photon-phd2.service must want the display unit"),
+        );
+    }
+    check.require(
+        service.deb_ships([
+            "pkg/phd2-display",
+            "usr/lib/rusty-photon/phd2-display",
+            "755",
+        ]),
+        || {
+            format!(
+                "{svc}: deb assets must ship pkg/phd2-display as usr/lib/rusty-photon/phd2-display"
+            )
+        },
+    );
+    check.require(
+        service.rpm_ships("dest", "/usr/lib/rusty-photon/phd2-display"),
+        || format!("{svc}: rpm assets must ship the display's start script"),
+    );
 }
 
 /// The vendor ID of the first `ATTRS{idVendor}=="<id>"` in a udev rule.
@@ -1127,6 +1295,11 @@ const SVBONY_TOML: &str = "services/svbony-camera/Cargo.toml";
 const RENEW_UNIT: &str = "services/sentinel/pkg/rusty-photon-renew.service";
 const RENEW_TIMER: &str = "services/sentinel/pkg/rusty-photon-renew.timer";
 const SENTINEL_TOML: &str = "services/sentinel/Cargo.toml";
+const PHD2_TOML: &str = "services/phd2-guider/Cargo.toml";
+const PHD2_UNIT: &str = "services/phd2-guider/pkg/rusty-photon-phd2.service";
+const PHD2_DISPLAY_UNIT: &str = "services/phd2-guider/pkg/rusty-photon-phd2-display.service";
+const PHD2_PRERM_FILE: &str = "services/phd2-guider/pkg/prerm";
+const PHD2_POSTINST: &str = "services/phd2-guider/pkg/postinst";
 const PPBA_FRAGMENT: &str = "installer/fragments/ppba-driver.wxs";
 const PLATE_SOLVER_FRAGMENT: &str = "installer/fragments/plate-solver.wxs";
 
@@ -1388,6 +1561,129 @@ fn names_each_mistake_in_sentinels_doctor_and_renewal() {
                 "",
             )],
             &["sentinel: rpm post_install must enable rusty-photon-renew.timer"],
+        ),
+    ]);
+}
+
+#[test]
+fn names_each_mistake_in_the_phd2_units() {
+    use Change::Replace;
+    assert_named(&[
+        (
+            &[Replace(PHD2_UNIT, "Restart=always", "Restart=on-failure")],
+            &["phd2-guider: rusty-photon-phd2.service must start again after any exit"],
+        ),
+        (
+            &[Replace(PHD2_DISPLAY_UNIT, "StartLimitIntervalSec=0\n", "")],
+            &["phd2-guider: rusty-photon-phd2-display.service must have no start limit"],
+        ),
+        (
+            &[Replace(
+                PHD2_UNIT,
+                "Wants=rusty-photon-phd2-display.service",
+                "Requires=rusty-photon-phd2-display.service",
+            )],
+            &["phd2-guider: rusty-photon-phd2.service must want the display unit"],
+        ),
+        (
+            &[Replace(
+                PHD2_UNIT,
+                "Wants=rusty-photon-phd2-display.service\n",
+                "Wants=rusty-photon-phd2-display.service\nBindsTo=rusty-photon-phd2-display.service\n",
+            )],
+            &["phd2-guider: rusty-photon-phd2.service must not bind to another unit"],
+        ),
+    ]);
+}
+
+#[test]
+fn names_each_mistake_in_how_the_phd2_units_ship() {
+    use Change::{Remove, Replace};
+    assert_named(&[
+        (
+            &[Replace(
+                PHD2_TOML,
+                "[package.metadata.deb.systemd-units]\n",
+                "[[package.metadata.deb.systemd-units]]\nunit-name = \"rusty-photon-phd2\"\n\n[[package.metadata.deb.systemd-units]]\n",
+            )],
+            &["phd2-guider: deb systemd-units must not name rusty-photon-phd2"],
+        ),
+        (
+            &[Replace(
+                PHD2_TOML,
+                "\"lib/systemd/system/rusty-photon-phd2.service\"",
+                "\"usr/lib/systemd/system/rusty-photon-phd2.service\"",
+            )],
+            &[
+                "phd2-guider: deb assets must ship pkg/rusty-photon-phd2.service as lib/systemd/system/rusty-photon-phd2.service",
+                "phd2-guider: deb assets must not install rusty-photon-phd2.service into usr/lib/systemd/system",
+            ],
+        ),
+        (
+            &[Replace(
+                PHD2_TOML,
+                "dest = \"/usr/lib/systemd/system/rusty-photon-phd2-display.service\"",
+                "dest = \"/usr/lib/systemd/system/phd2-display.service\"",
+            )],
+            &["phd2-guider: rpm assets must ship rusty-photon-phd2-display.service"],
+        ),
+        (
+            &[Replace(
+                PHD2_TOML,
+                "systemctl try-restart rusty-photon-phd2-guider.service || true",
+                "systemctl try-restart rusty-photon-phd2-guider.service rusty-photon-phd2.service || true",
+            )],
+            &["phd2-guider: rpm post_uninstall must not restart rusty-photon-phd2.service"],
+        ),
+        (
+            &[
+                Replace(
+                    PHD2_TOML,
+                    "stop rusty-photon-phd2.service rusty-photon-phd2-display.service",
+                    "stop rusty-photon-phd2-display.service",
+                ),
+                Replace(PHD2_TOML, "    systemctl disable rusty-photon-phd2.service || true\n", ""),
+            ],
+            &["phd2-guider: rpm pre_uninstall must stop rusty-photon-phd2.service on erase"],
+        ),
+        (
+            &[Replace(
+                PHD2_TOML,
+                "[\"pkg/phd2-display\", \"usr/lib/rusty-photon/phd2-display\", \"755\"]",
+                "[\"pkg/phd2-display\", \"usr/lib/rusty-photon/phd2-display\", \"644\"]",
+            )],
+            &["phd2-guider: deb assets must ship pkg/phd2-display"],
+        ),
+        (
+            &[Replace(
+                PHD2_TOML,
+                "dest = \"/usr/lib/rusty-photon/phd2-display\"",
+                "dest = \"/usr/lib/rusty-photon/display\"",
+            )],
+            &["phd2-guider: rpm assets must ship the display's start script"],
+        ),
+        (
+            &[Replace(
+                PHD2_PRERM_FILE,
+                "if [ \"$1\" = \"remove\" ]; then",
+                "if [ \"$1\" = \"upgrade\" ]; then",
+            )],
+            &["phd2-guider: pkg/prerm must be PHD2_PRERM"],
+        ),
+        (
+            &[Remove(PHD2_PRERM_FILE)],
+            &[
+                "phd2-guider: missing pkg/prerm",
+                "cannot read services/phd2-guider/pkg/prerm",
+            ],
+        ),
+        (
+            &[Replace(
+                PHD2_POSTINST,
+                "install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon/phd2\n",
+                "",
+            )],
+            &["phd2-guider: pkg/postinst must be postinst.common + PHD2_HOME_STANZA"],
         ),
     ]);
 }
