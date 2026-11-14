@@ -253,15 +253,67 @@ fn path_is_executable_file(path: &std::path::Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };
-    if !meta.is_file() {
-        return false;
-    }
     #[cfg(unix)]
-    {
+    let executable = {
         use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o111 == 0 {
-            return false;
+        meta.permissions().mode() & 0o111 != 0
+    };
+    // Windows has no execute bit: any regular file is executable.
+    #[cfg(not(unix))]
+    let executable = true;
+    meta.is_file() && executable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_is_executable_file;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn a_missing_path_is_not_an_executable_file() {
+        let dir = TempDir::new().unwrap();
+        assert!(!path_is_executable_file(&dir.path().join("astap_cli")));
+    }
+
+    #[test]
+    fn a_directory_is_not_an_executable_file() {
+        let dir = TempDir::new().unwrap();
+        assert!(!path_is_executable_file(dir.path()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_regular_file_without_an_execute_bit_is_not_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("astap_cli");
+        fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!path_is_executable_file(&bin));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn any_one_execute_bit_makes_a_regular_file_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("astap_cli");
+        fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        for mode in [0o744, 0o654, 0o645] {
+            fs::set_permissions(&bin, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(path_is_executable_file(&bin), "mode {mode:o}");
         }
     }
-    true
+
+    #[test]
+    #[cfg(not(unix))]
+    fn any_regular_file_is_executable() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("astap_cli.exe");
+        fs::write(&bin, b"MZ").unwrap();
+        assert!(path_is_executable_file(&bin));
+    }
 }
