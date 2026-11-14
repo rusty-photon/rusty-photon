@@ -3,16 +3,19 @@
 **Date:** 2026-11-12
 **Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](../services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
-> **Status:** decided on 2026-11-12, not started. The owner read this
-> study and settled its main questions: rusty-photon builds a native
-> guider as a standalone service that is an Alpaca client, and drops
-> PHD2
+> **Status:** decided on 2026-11-12. Stage G0 is in progress and no
+> later stage has started. The owner read this study and settled its
+> main questions: rusty-photon builds a native guider as a standalone
+> service that is an Alpaca client, and drops PHD2
 > ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
 > The service is designed in [`guider.md`](../services/guider.md).
-> § Staging orders the work, and § Decisions for the owner records what
-> is settled and what is still open. The options and the evidence below
-> are the study as the owner read it, with the corrections a review of
-> it found.
+> § Staging orders the work, and § Decisions for the owner records each
+> decision as the owner settled it; none is open. The options and the
+> evidence below are the study as the owner read it, with the
+> corrections a review of it found, with what G0 read from the rigs on
+> 2026-11-13 in § Where the rigs stand, and with what the owner settled
+> on 2026-11-14: the acceptance in § 9, and that PHD2 leaves the tree
+> before the guider is built (§ Staging).
 
 ## Goal
 
@@ -53,7 +56,7 @@ The recommendation in brief, and what the owner decided on 2026-11-12:
 5. **Write PHD2-format guide logs from the first version**, so the
    existing log viewers read them. A PHD2-compatible event server is a
    later, optional surface. **Decided** for the guide log; the event
-   server is open.
+   server is not planned (§ Decisions for the owner, 5).
 6. **Build the simulator before going on sky**, so that nights confirm
    behaviour instead of debugging it (tenet 1).
 7. **Hold the Windows session keeper** (decision 10's Windows half)
@@ -126,7 +129,7 @@ in-file test modules excluded.
 | A restart route (`POST /api/v1/phd2/restart`, `rp`'s `restart_guider`) and a restart at every dusk | PHD2's QHY support does not look for cameras again after finding none; the full-pause wedge | Same as the row above |
 | PHD2 built from source on each Debian or Raspberry Pi OS host | Neither distribution packages it | Per rig, by hand |
 | A profile made by hand in the wizard on each rig, at risk until PHD2 next exits cleanly | GUI configuration | Per rig, by hand |
-| The guide camera kept out of its vendor driver's device list | SDK ownership | Config on each rig |
+| The guide camera kept out of its vendor driver's device list | SDK ownership | Config on rig2. pier1's guide camera is under `qhy-camera` |
 | A protocol that is "the one exception to the Alpaca-only rule" in `rp`'s design | Its own protocol | In [rp.md § Guider Service](../services/rp.md#guider-service) |
 | A guider the train model cannot see into: "a global service block with no camera association"; the `guide_rotator_unmodeled` event; a backlog item for an INDI-to-Alpaca rotator bridge so that PHD2 on Linux can read a rotator ([optical-trains.md](optical-trains.md)) | PHD2 owns its equipment list | Built, with the bridge unbuilt |
 | Guiding results in guide-camera pixels; a dither that cannot be aborted | Pixel scale only after calibration; no dither abort | In the HTTP contract |
@@ -157,25 +160,114 @@ A replacement starts without any of these and has to earn each one.
 
 ### Where the rigs stand
 
-- **pier1** is a Raspberry Pi 5 with a Star Adventurer GTi on the
-  [`star-adventurer-gti`](../services/star-adventurer-gti.md) driver.
-  Its guide camera, a QHY5III715C (colour), sits on an off-axis guider
-  with a motorised helical focuser
-  ([light path](optical-trains.md#goal)). PHD2 2.6.14 is built from
-  source there.
-- **rig2** is an Intel NUC on Windows 11 Pro. A QHY5III678M is held out
-  of `qhy-camera`'s device list as PHD2's guide camera.
-- **No on-sky guiding under `rp` is on record.** The validation records
-  that involve PHD2 are facade runs and one indoor run of the guiding
-  train with no stars.
-- **How PHD2 drives each mount is not recorded.** The power-cycle plan
-  and `rp`'s design say PHD2 reaches the mount "through Alpaca", which
-  on Linux only a development build of PHD2 does. What the stable build
-  can reach on Windows, where rig2 runs, this study did not establish.
-  The one hardware profile on record for pier1 has no mount in it.
+Stage G0 read both rigs on 2026-11-13 and changed nothing on either:
+PHD2's profiles, its debug and guide logs and its binary, and the
+rusty-photon configuration beside it. Five of the guide logs are the
+fixtures in `services/guider/tests/fixtures/guide-logs/`, and the
+README there says what each one holds.
 
-So a native guider does not displace a tuned, working guiding setup.
-The costs in the table above have been paid ahead of the benefit.
+**pier1** is a Raspberry Pi 5 with a Star Adventurer GTi on the
+[`star-adventurer-gti`](../services/star-adventurer-gti.md) driver. Its
+guide camera, a QHY5III715C (colour), sits on an off-axis guider with a
+motorised helical focuser ([light path](optical-trains.md#goal)).
+
+- **Nothing on pier1 shows PHD2 driving a mount.** PHD2 2.6.14 is built
+  from source there, and the logs it holds are of three sessions, on
+  2026-10-13, 2026-10-14 and 2026-10-29. In them PHD2 connected its
+  equipment 13 times: eight times its simulator camera with the
+  "On-camera" mount (`Connected Scope:On Camera`), and five times "QHY
+  Camera" with no mount (`Connected Scope:None`), three of which found
+  the QHY5III715C. The one `guide` request in the debug logs met the
+  simulator: the guide log has a calibration header with no step under
+  it, then `Settling failed`.
+- **As installed, PHD2 reaches the GTi through an ST4 cable or not at
+  all.** Its binary holds the mount names "INDI Mount", "On-camera" and
+  "Simulator" and no string that names Alpaca, as fact 2 above says of
+  the stable release. The host has no INDI server: none is installed as
+  a package, none is on the path and none is running. Whether an ST4
+  cable runs from the guide camera to the mount is not known.
+- **Neither of its two profiles has a mount that is hardware.**
+  "Simulator", the current one, pairs the simulator camera with
+  "On-camera". "QHY5III715C guide (no mount)" has "QHY Camera" at
+  1.45 µm pixels, 360 mm and 1 s exposures, and no mount, aux mount or
+  rotator.
+- **The guide camera is under `qhy-camera` today.** That driver takes
+  every QHY camera it finds on pier1 and serves one. `rp` has the
+  camera as `qhy5iii715c` in a `guide` train, with the main focuser and
+  the off-axis guider's, and its mount entry points guiding at
+  `phd2-guider`, which is installed and running with PHD2 stopped.
+
+**rig2** is an Intel NUC on Windows 11 Pro with an Astro-Physics mount.
+
+- **PHD2 reaches the mount through its ASCOM driver, not through
+  Alpaca.** PHD2 2.6.13 has one profile, `QHY678M`. Its mount is
+  "AstroPhysics GTO V2 Mount (ASCOM)", which PHD2's debug log resolves
+  to the COM driver `AstroPhysicsV2.Telescope`; the driver installed is
+  "ASCOM Astro-Physics V2 Telescope Driver v5.60.17". The profile has
+  no aux mount, rotator or adaptive optics.
+- **The guide camera is PHD2's own.** The profile's camera is "QHY
+  Camera", which is PHD2 calling the QHY SDK itself (its debug log has
+  `QHY: call SetQHYCCDResolution roi = 3856,2180`), on a QHY5III678M
+  with 2.0 µm pixels at 530 mm: 0.78″ per pixel. `qhy-camera` on rig2
+  lists the imaging camera alone in `usb_devices`, which leaves the
+  QHY5III678M to PHD2.
+- **The profile is set up and calibrated.** PHD2 states its settings
+  in the header of every guiding run. These lines are from the first
+  run of the last night, 2025-06-17:
+
+  ```text
+  Pixel scale = 0.78 arc-sec/px, Binning = 1, Focal length = 530 mm
+  Search region = 15 px, Star mass tolerance disabled, Multi-star mode, list size = 12
+   Camera = QHY5III678M-4a94be45b27d3aa79, gain = 40, full size = 3856 x 2180, have dark, dark dur = 2500, no defect map, pixel size = 2.0 um
+  Exposure = 2500 ms
+  Mount = AstroPhysicsV2 (ASCOM), connected, guiding enabled, xAngle = 9.3, xRate = 11.331, yAngle = 109.7, yRate = 14.423, parity = +/-
+  Norm rates RA = 15.1"/s @ dec 0, Dec = 11.2"/s; ortho.err. = 10.4 deg
+  X guide algorithm = Hysteresis, Hysteresis = 0.100, Aggression = 0.700, Minimum move = 0.350
+  Y guide algorithm = Resist Switch, Minimum move = 0.350 Aggression = 100% FastSwitch = enabled
+  Backlash comp = disabled, pulse = 20 ms
+  Max RA duration = 2500, Max DEC duration = 2500, DEC guide mode = Auto
+  RA Guide Speed = 15.0 a-s/s, Dec Guide Speed = 15.0 a-s/s, Cal Dec = 54.2, Last Cal Issue = Rates, Timestamp = 6/17/2025 11:29:38 PM
+  ```
+
+  The calibration those lines name took 125 ms steps over 26 px, and it
+  is the one PHD2 still stores. The header carries
+  `Last Cal Issue = Rates` and `ortho.err. = 10.4 deg` for it.
+- **PHD2 guided there in May and June 2025.** rig2 holds 14 guide logs,
+  of 2025-05-04 to 2025-06-17, and three of them hold no guiding. The
+  other eleven hold 179 guiding runs and 62.2 h, adding up the `Time`
+  of each run's last row: 64,086 guide-step rows, 5,730 of them (8.9 %)
+  `DROP` rows, whose reason reads "Star lost" or "No star found"; 17
+  calibrations begun and 11 completed; 233 dithers; 396
+  `Settling started` notes, 254 `complete` and 148 `failed`, six of
+  those outcomes with no `Settling started` before them. Declinations
+  run from 30.9° to 54.3°, on both pier sides.
+- **How well it guided.** The 55 runs of ten minutes or more hold
+  57.0 h, counted the same way. For each, take the RMS of the star's
+  raw offset about its mean over the run: `RARawDistance` and
+  `DECRawDistance` of the `"Mount"` rows, each axis about its own mean,
+  the two combined in quadrature, at 0.78″ per pixel. Across the 55
+  runs the median is 0.69″, with quartiles at 0.49″ and 1.43″; RA alone
+  has a median of 0.50″ and Dec 0.42″. Dither and settle frames are in
+  those figures, so they overstate the error between dithers.
+- **A client drove PHD2, and the logs do not name it.** In the last
+  night's debug log, `get_connected` and `set_connected` requests on
+  PHD2's event server come before the equipment connects.
+- **Nothing on rig2 shows PHD2 running since.** Its newest log, debug
+  or guide, is of the night of 2025-06-17, and the calibration it
+  stores is that night's.
+- **rig2 does not guide under `rp`.** `phd2-guider` is not installed
+  there. `rp` on rig2 has one train, the imaging train, and no mount
+  entry, so it has no guiding entry either.
+
+**No on-sky guiding under `rp` is on record**, on either rig. The
+validation records that involve PHD2 are facade runs and one indoor run
+of the guiding train with no stars.
+
+So the native guider displaces no guiding that runs under `rp`, since
+neither rig has any. What it displaces, at G7, is rig2's PHD2 setup:
+calibrated, with 62 h of logged guiding, driven from outside `rp` and
+last used in June 2025. The costs in the table above have been paid
+ahead of the benefit.
 
 ## What a guider does
 
@@ -575,22 +667,50 @@ every level:
    exists: no simulator in the workspace models drift, periodic error
    or backlash, and none renders stars displaced by sub-pixel amounts.
    PHD2's own simulator physics is about 700 lines.
-3. **Replay of recorded frames.** PHD2 can save the frame it holds, and
-   its guide log gives its own measured offset for each frame. Frames
-   and logs collected on the rigs while PHD2 guides are labelled
-   fixtures: the native measurement runs over the same frames and the
-   two are compared. No guide-camera frame is checked in today.
+3. **Replay of recorded frames.** Guide-camera frames recorded on a rig
+   through `qhy-camera`, the mount tracking and nothing guiding, are
+   fixtures: the native measurement runs over real stars, real noise
+   and the sensor's own defects. Nothing gives the true offset of such
+   a frame, so the replay shows that the measurement holds its stars
+   and that the stars agree with one another, and not that an offset is
+   right. No guide-camera frame is checked in today.
 4. **The service, under BDD**, against simulator-backed Alpaca Camera
    and Telescope devices, with the shared test infrastructure gaining a
    Telescope stub.
 5. **On sky**, pier1 first because the mount driver is ours, then rig2.
-   Native and PHD2 alternate in blocks within one night on the same
-   target, so the comparison shares seeing and mount.
 
-Proposed acceptance: RMS error within a stated margin of PHD2's in the
-same night; no run-away under any simulator condition; recovery from a
-lost star and from a passing cloud; dither settle time no worse; and a
-full night unattended.
+The acceptance is the owner's, of 2026-11-14: "We really only need
+guiding that is good enough to get us good images." No stage measures
+the guider against PHD2, on the same night or from its logs. The
+acceptance list:
+
+- no run-away under any simulator condition;
+- recovery from a lost star and from a passing cloud;
+- tight stars in an evaluation session. The main camera takes guided
+  subs at the rig's usual exposure and, in the same hour, exposures of
+  the same field short enough that the mount's error does not widen
+  their stars. `rp`'s
+  [`measure_stars`](../services/rp.md#measure_stars-contract) measures
+  both on the same stars, and the median HFR of the subs is within
+  15 % of that of the short exposures;
+- a full night guided unattended, run as any imaging night and taking
+  no frames to compare with. The median eccentricity of the stars in
+  its subs, by `measure_stars`, is at most the rig's own limit,
+  `target_store.default_grading.max_eccentricity`
+  ([rp.md § Progress derivation](../services/rp.md#progress-derivation)),
+  or 0.6 where the rig sets none. A target's own grading does not
+  change the limit.
+
+The short exposures are for evaluating the algorithm and not for
+operation, in the owner's words of 2026-11-14: "For operations we will
+rely on HFR from the actual exposures we are taking all the time. For
+evaluating the algorithm, we can use short exposures - see tenet 1".
+Outside an evaluation session a rig takes no frames to compare with
+(tenet 1), and how well it guides shows in the HFR of the subs
+themselves. Where a rig grades its frames, the `grading` section of
+each frame's sidecar carries that HFR.
+
+The 0.6 and the 15 % are starting values of this plan.
 
 ### 10. Port or clean implementation
 
@@ -738,35 +858,71 @@ community, which supports PHD2 and not logs from another guider.
 contract at a time, with no backend selector and no second client
 (decision 7). The cost falls on the rigs instead: from G6 on, a rig
 that is not yet brought up on the native guider has no guider under a
-current build (§ Decisions for the owner, 11).
+current build (§ Decisions for the owner, 11). G6 runs first, so that
+is pier1 until G5 and rig2 until G7.
 
 ## Staging
 
-No stage has started. PHD2 stays installed on the rigs through G5 as
-the reference the native guider is measured against, and no new work is
-started for it (decision 12).
+G0 is in progress: its record is § Where the rigs stand, and what it
+changes for the later stages follows the table. No later stage has
+started. No stage measures the guider against PHD2, and no new work is
+started for PHD2 (decisions 6 and 12).
+
+The stages run in the order of the table. G6 comes right after G0, as
+the owner settled on 2026-11-14 (decision 11): PHD2's pieces leave the
+tree, and `rp` speaks the native contract, before the guider is built.
+G7a is the stage decision 13 adds.
 
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
-| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed | Not started |
+| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | In progress: `docs/native-guider-g0-rig-records` |
+| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. Several pull requests, and no compatibility is kept with the old contract or its configuration. `rp.md`, `focus-model.md`, `sentinel.md` and [`daily-power-cycle.md`](daily-power-cycle.md) are rewritten first where they name PHD2 or its facade. In `rp.md` that is § Guider Service, the train lease's facade step, the motion gate's text about pulses, the rotate-while-guiding ladder and `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `daily-power-cycle.md`, PHD2's restart in stages P2 and P4, and in P4 the guide camera's test exposure through the facade | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | Not started |
 | **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Not started |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle | The loop converges and recovers across the simulator's mount and sky conditions in CI | Not started |
-| **G3** | Replay: collect frames and guide logs on pier1 while PHD2 guides; compare measurements | Native and PHD2 offsets agree frame by frame within a stated tolerance | Not started |
-| **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. The new contract's types join `crates/rp-guider` beside the ones `rp` and `phd2-guider` use until G6 | BDD green against `guide-simulator`'s devices; ConformU is not applicable | Not started |
-| **G5** | pier1 on sky, the guider driven over its HTTP API without `rp`: calibrate, guide, dither, alternate with PHD2 | The acceptance list in § 9 | Not started |
-| **G6** | `rp` moves to the new contract, and PHD2's pieces leave the tree: `phd2-guider`, its facade, its mock, its packaging and the old contract types, over several pull requests. `rp.md`, `focus-model.md` and [`daily-power-cycle.md`](daily-power-cycle.md) are rewritten first where they name PHD2 or its facade. In `rp.md` that is § Guider Service, the train lease's facade step, the motion gate's text about pulses, the rotate-while-guiding ladder and `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `daily-power-cycle.md`, PHD2's restart in stages P2 and P4, and in P4 the guide camera's test exposure through the facade | `rp`'s BDD green against the native guider, and a night on pier1 guided unattended under `rp` | Not started |
-| **G7** | rig2 on sky under `rp`, the guider running as a Windows service with nobody logged on | The acceptance list in § 9, without the comparison against PHD2 | Not started |
+| **G3** | Replay: record guide-camera frames on sky on pier1 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within a stated tolerance | Not started |
+| **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. It serves the contract `crates/rp-guider` holds since G6, and where building it changes that contract, `rp` changes with it | BDD green against `guide-simulator`'s devices, and `rp`'s guiding scenarios green against the service in place of the double; ConformU is not applicable | Not started |
+| **G5** | pier1 on sky under `rp`: calibrate, guide and dither, in the evaluation sessions and the unattended night of § 9 | The acceptance list in § 9 | Not started |
+| **G7a** | rig2's mount over Alpaca: an Alpaca bridge in front of the vendor's ASCOM driver, and a mount entry for it in `rp` on rig2. Which bridge is not verified, nor whether the COM driver runs with nobody logged on | The mount answers over Alpaca with nobody logged on. If it does not, the question returns to the owner (decision 13) | Not started |
+| **G7** | rig2 on sky under `rp`, the guider running as a Windows service with nobody logged on | The acceptance list in § 9 | Not started |
 
-**The guide camera changes hands.** PHD2 opens the guide camera through
-the vendor SDK built into it, and the camera is kept out of
-`qhy-camera` by being left off that driver's `usb_devices` list. G1 and
-G5 need it under `qhy-camera` while PHD2 is still installed, and G5
-moves it back and forth within a night. G1 works the hand-over out in
-both directions and records its steps.
+**The guide camera changes hands on rig2.** PHD2 opens the guide camera
+through the vendor SDK built into it, and on rig2 the camera is kept
+out of `qhy-camera` by being left off that driver's `usb_devices` list.
+G1 puts it under `qhy-camera` and records the steps. On pier1 the
+camera is under `qhy-camera` already.
+
+**What G0 changes.** Three of G0's findings reach later stages, and
+the owner has settled what each of them asked.
+
+1. **On pier1 there is no PHD2 guiding to measure against**, and the
+   owner settled on 2026-11-14 that none is needed: "We don't need
+   guiding history and comparisons against phd2." PHD2 on pier1 has no
+   profile with the mount in it (§ Where the rigs stand), and it gets
+   none. G3 replays frames recorded without PHD2, G5 alternates with
+   nothing, rig2's PHD2 is not brought back to compare with, and the
+   acceptance in § 9 is on the images.
+2. **G7 needs rig2's mount served over Alpaca, and known to `rp`.** The
+   guider is an Alpaca client. rig2's mount is reached through a COM
+   driver, and `rp` there has no mount entry. Before G7, something
+   serves the Astro-Physics mount as an Alpaca Telescope, and `rp` on
+   rig2 gains its mount. The owner settled on 2026-11-14 to try a
+   bridge in front of the vendor's ASCOM driver first (decision 13):
+   that is stage G7a. A driver of this workspace for the mount is the
+   other way, and no stage holds it.
+3. **The switch at G6 takes guiding from neither rig** (decision 11).
+   rig2 does not guide under `rp`, and no on-sky guiding under `rp` is
+   on record for pier1. pier1's `rp` configuration points guiding at
+   `phd2-guider`, so the first build deployed there after G6 comes
+   with a change to that configuration.
+
+[`rp.md` § Restarting PHD2](../services/rp.md#restarting-phd2) and
+[`daily-power-cycle.md`](daily-power-cycle.md) (decision 10) say that
+PHD2 reaches the mount through Alpaca. On neither rig does it. Both
+passages describe PHD2's restart, which G6 rewrites, and they stand as
+they are until then.
 
 Later, each behind a measurement: subframes, full-frame correlation,
-predicted calibration, the event server, a tuning assistant, predictive
-PEC.
+predicted calibration, a tuning assistant, predictive PEC.
 
 **Effort.** No guider project publishes person-hours. The evidence is
 indirect: Ekos' author reports a simulated guider "after a couple of
@@ -789,36 +945,42 @@ clear nights are the scarce one, which is what G2 and G3 are for.
    internal guider, has users reporting about 1″ RMS against 0.3–0.6″
    with PHD2 on the same rigs
    (<https://forum.indilib.org/forum/ekos/12199-comparing-phd2-and-internal-guider.html>).
+   The acceptance in § 9 asks for good images and not for PHD2's
+   figures.
 2. **Calibration in the field.** It is the part with the most hidden
    knowledge and the least that a simulator can prove.
 3. **Frame cadence.** The Alpaca path may carry overhead that only
    driver work removes. G1 exists to find out first.
 4. **Night time.** Every night spent on the guider is a night not
-   imaging (tenet 1). The simulator, the replay and same-night
-   alternation are the mitigation.
+   imaging (tenet 1). The simulator and the replay are the mitigation,
+   and the night the acceptance asks for is a night of imaging.
 5. **The GTi.** It has no encoder, quantised pulses and unmeasured Dec
-   backlash. A poor first result may be the mount; alternating with
-   PHD2 on the same night separates the two.
+   backlash. A poor first result may be the mount, and no stage has
+   PHD2 guide the GTi to tell the two apart. G1's pulse timings and
+   the simulator are what the plan has for that.
 6. **A second commander of the mount.** Mitigated by the pre-pulse
    checks, bounded authority and idle-after-start.
 7. **Scope.** Predictive PEC, an assistant and a live view are each
    tempting and none is needed to guide.
-8. **No fallback in the tree.** From G6 on, PHD2 support exists only in
-   the repository's history. Bringing it back is a revert of G6's pull
-   requests, and until that lands the rigs do not guide. G5's
-   acceptance list is what stands between a guider that is not good
-   enough and that position.
-9. **Work already done for PHD2.** The Linux half of the restart route,
-   in review at this study's date, would serve PHD2 until G6 and go
-   with it (decision 12). The Windows keeper is held (decision 4) and
-   is not built.
+8. **No fallback in the tree.** G6 runs first. From then on PHD2
+   support exists only in the repository's history, and bringing it
+   back is a revert of G6's pull requests. Until the guider passes G5,
+   or that revert lands, no rig guides under a current build of `rp`.
+   G0 found no on-sky guiding under `rp` on record on either rig
+   (§ Where the rigs stand), so the rigs lose none they have.
+9. **Work already done for PHD2.** The Linux half of the restart route
+   is merged, and it goes with PHD2 at G6 (decision 12). The Windows
+   keeper is not built (decision 4).
 
 ## Decisions for the owner
 
 The owner settled decisions 1, 2, 4 and 7 on 2026-11-12, on this study.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records them with their reasons. Decisions 11 and 12 are new: they
-follow from decision 7 going further than the study recommended.
+follow from decision 7 going further than the study recommended. The
+owner settled decisions 6 and 12 on 2026-11-14, on what G0 found, and
+decisions 3, 5 and 11 the same day. Decision 13 is new with G0 and was
+settled with them.
 
 1. **Build a native guider?** Or stay with PHD2 (E0, E1), or adopt
    INDIGO's agent (E3). **Settled: a native guider is built.**
@@ -829,20 +991,31 @@ follow from decision 7 going further than the study recommended.
    and settled on the standalone service the same day. ADR-024 extends
    the sorting rule.
 3. **Clean implementation or port**, and the policy on porting
-   BSD-licensed source with attribution. **Open.** The design is
-   written from published descriptions and ports nothing (P1). The
-   question returns with the first routine G3 or G5 shows to be wrong
-   in a way a port would fix.
+   BSD-licensed source with attribution. **Settled on 2026-11-14: a
+   clean implementation, and a port of the one routine where a stage
+   shows the need.** The design is written from published descriptions
+   and ports nothing (P1). Where G3 or G5 shows a routine to be wrong
+   in a way a port would fix, that routine is ported from PHD2 (P2) or
+   from INDIGO's agent (P3) under the obligations § 10 lists, and the
+   pull request says so. The owner is not asked again for each
+   routine.
 4. **The Windows session keeper:** hold it, or build it for PHD2 in the
    meantime. **Settled: held.** With decision 7 it is not built.
 5. **Ecosystem surfaces:** the guide log from the start (recommended);
-   the PHD2-compatible event server now, later or never. **Half
-   settled:** the guide log is in the first version (ADR-024,
-   decision 8). The event server is not in the design's first version,
-   and whether it comes later or never is open.
-6. **The first rig and the acceptance margin** against PHD2. **Open**
-   for the margin. The staging takes pier1 first, where the mount
-   driver is ours.
+   the PHD2-compatible event server now, later or never. **Settled:**
+   the guide log is in the first version (ADR-024, decision 8), and
+   the event server is not planned, as the owner settled on
+   2026-11-14. `rp` drives the guider over the guider's own HTTP API.
+   The server can still be built if a need for it shows.
+6. **The first rig and the acceptance margin** against PHD2.
+   **Settled: no margin against PHD2**, in the owner's words: "We
+   don't need guiding history and comparisons against phd2. We really
+   only need guiding that is good enough to get us good images." The
+   acceptance is on the main camera's subs (§ 9). The staging takes
+   pier1 first, where the mount driver is ours. rig2's 2025 figure, a
+   median RMS of 0.69″ over 55 runs (§ Where the rigs stand), records
+   how PHD2 guided there, and nothing is accepted or refused against
+   it.
 7. **PHD2 afterwards:** retired, or kept as a supported second backend.
    **Settled: dropped**, in the owner's words: "Abandon phd2 we can
    always pick that back up if the native approach fails." There is no
@@ -862,37 +1035,53 @@ follow from decision 7 going further than the study recommended.
     experiment while the native guider is built. **Not pursued**, since
     PHD2 is dropped.
 11. **When `rp` switches.** With no second backend, `rp` speaks one
-    contract, and the switch is one stage for every rig. The staging
-    switches at G6, after pier1 passes G5 and before rig2 is brought up
-    (G7). Between the two, rig2 either stays on a build from before G6
-    or has no guider. G0 establishes whether rig2 guides at all today,
-    which decides what that costs. The alternative is to bring rig2 up
-    on the native guider, driven over its HTTP API without `rp`, before
-    G6. A setting per rig would be the second backend decision 7 rules
-    out. **Open; the staging is the default.**
-12. **What "dropped" means before G6.** The staging keeps PHD2 on the
-    rigs as a measuring reference through G5: G0 records how it guides,
-    G3 takes its frames and logs as fixtures, G5 alternates with it on
-    the same night. No new work is started for PHD2 in that time. The
-    Linux half of the restart route, in review at this study's date,
-    is not held (ADR-024, decision 9): merged, it serves PHD2 until G6
-    and goes with it. If PHD2 comes off the rigs at once instead, G3 runs
-    on the simulator alone and G5 has no same-night comparison, so the
-    acceptance in § 9 needs another yardstick. **Open; the staging is
-    the default.**
+    contract, and the switch is one stage for every rig. **Settled on
+    2026-11-14: first, before the guider is built**, in the owner's
+    words: "Right away, let's drop phd2 for now. We do not need to be
+    backwards compatible with this change, we have no users yet." G6
+    therefore runs right after G0. PHD2's pieces leave the tree, and
+    `rp`'s guiding tools speak the native contract as
+    [`guider.md`](../services/guider.md) designs it, tested against a
+    test double of it. Nothing answers that contract on a rig until the
+    service of G4 runs there, and where building the service changes
+    the contract, `rp` follows. G0 established on 2026-11-13 that the
+    switch takes guiding from neither rig: rig2 has no guider under
+    `rp`, with no mount entry, no guiding entry and no `phd2-guider`,
+    and no on-sky guiding under `rp` is on record for pier1
+    (§ Where the rigs stand).
+12. **What "dropped" means before G6.** **Settled with decision 6:
+    PHD2 is no measuring reference.** G0 recorded how it guides, and
+    five of its guide logs stay as samples of the format the guider's
+    own log is written in. G3 takes no frames or logs from PHD2, and G5
+    does not alternate with it. No new work is started for PHD2, and
+    no stage after G0 needs it installed on a rig. The Linux half of
+    the restart route is not held (ADR-024, decision 9): it is merged,
+    and it goes with PHD2. PHD2's pieces leave the tree at G6, which
+    decision 11 puts first.
+13. **rig2's mount over Alpaca.** The guider is an Alpaca client, and
+    rig2's mount is reached through a COM driver (§ Staging, "What G0
+    changes"). **Settled on 2026-11-14: a bridge first.** Stage G7a
+    puts an Alpaca bridge in front of the vendor's ASCOM driver on
+    rig2, and it passes when the mount answers over Alpaca with nobody
+    logged on. Which bridge, and whether the COM driver runs with
+    nobody logged on, are not verified. If the stage fails, the
+    question returns to the owner.
 
 ## Not verified
 
-- How PHD2 drives the mount on either rig, whether rig2 guides at all
-  (the documents disagree), and which mount rig2 has.
+- Which Astro-Physics mount rig2 has, and how its ASCOM driver reaches
+  it. Whether anything on rig2 serves that mount over Alpaca: its ASCOM
+  registry lists the Device Hub and JustAHub hub drivers beside the
+  Astro-Physics driver, and G0 did not establish what they serve. Which
+  application drove PHD2 through its event server there in 2025.
+- Whether pier1's guide camera has an ST4 cable to the GTi, and whether
+  PHD2 ran on pier1 before the three sessions its logs hold.
 - Sustained guide cadence through any camera service; the cause of the
   extra 2 s on QHY exposures; kernel timing on guide-sized frames and
   on the Pi 5.
 - The GTi's Dec backlash and its accuracy on pulses shorter than a
   second.
 - Centroid noise on real guide frames, with either rig's camera.
-- That PHD2's frame saving keeps up with every frame at guide cadence
-  (G3 depends on it).
 - Whether PHD2's Alpaca client supports HTTPS and Basic Auth (E1).
 - INDIGO as a Windows service with nobody logged on, and any guiding of
   physical devices through `indigo_system_alpaca`.

@@ -15,8 +15,8 @@ records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
 [`docs/plans/native-guider.md`](../plans/native-guider.md) holds the
 evidence and orders the work in stages G0 to G7. Until stage G6 moves
-`rp` to the contract below, the rigs guide through
-[`phd2-guider`](phd2-guider.md) and `rp` speaks that service's contract.
+`rp` to the contract below, `rp` speaks the contract of
+[`phd2-guider`](phd2-guider.md).
 
 Four properties shape the design:
 
@@ -1211,10 +1211,12 @@ change.
   star's flux and signal-to-noise ratio; and a note for each dither,
   settle, pause, resume, star-lost frame and stop.
 - **How it is kept true to the format.** Logs that PHD2 itself wrote
-  are test fixtures. The guider's writer is tested against what a
-  parser built from them accepts, and a log of the guider's is opened
-  in PHD2 Log Viewer (<https://github.com/agalasso/phdlogview>) before
-  the first night on sky.
+  are test fixtures, in `services/guider/tests/fixtures/guide-logs/`
+  with a README that says what each one holds. The guider's writer is
+  tested against what a parser built from them accepts, and a log of
+  the guider's is opened in PHD2 Log Viewer
+  (<https://github.com/agalasso/phdlogview>) before the first night on
+  sky.
 - **Retention.** Each time it starts a file, the service removes log
   files older than `guide_log.retention`.
 - **A log that cannot be written never stops guiding.** The failure is
@@ -1419,8 +1421,8 @@ distance and step count and the two warning thresholds are the values
 the options study collected from guiders in field use, with its sources
 ([native-guider.md § Options](../plans/native-guider.md#options), parts
 4 to 6). Every other number here is a starting value of this design:
-the plan's stage G1 settles the camera timings, G3 the star and control
-values on recorded frames, and G5 the rest on sky.
+the plan's stage G1 settles the camera timings, G3 the star values on
+recorded frames, and G5 the control values and the rest on sky.
 
 `guider doctor [--config <file>] [--json]` checks the configuration
 without starting the service, as every service's doctor does
@@ -1478,8 +1480,9 @@ clients as they cover `rp`'s.
   simulated hours in seconds: drift, periodic error, backlash, a mount
   that delivers short pulses coarsely, seeing, clouds, a slew in the
   middle of a run.
-- **Recorded frames.** Frames and guide logs recorded on the rigs are
-  replayed through the measurement and the controller.
+- **Recorded frames.** Guide-camera frames recorded on the rigs through
+  the camera's driver, with nothing guiding, are replayed through the
+  measurement.
 - **The service.** BDD scenarios start the `guider` binary against
   `guide-simulator`'s Alpaca devices and hold it to this document
   section by section: the states, starting idle, the lease, the mount
@@ -1526,7 +1529,7 @@ clients as they cover `rp`'s.
 - **Changing control values without a restart.** A save takes effect at
   the next start. Tuning on sky restarts the service between settings;
   a live path is built if stage G5 shows the need.
-- **An event stream**, and a PHD2-compatible event server.
+- **An event stream.** A PHD2-compatible event server is not planned.
 - **An assistant** that measures a mount and proposes settings.
 
 ## References
@@ -1535,8 +1538,8 @@ clients as they cover `rp`'s.
   — the decision this service implements.
 - [`docs/plans/native-guider.md`](../plans/native-guider.md) — the
   options study and the staging.
-- [`phd2-guider.md`](phd2-guider.md) — the service that guides the rigs
-  until `rp` moves to this one.
+- [`phd2-guider.md`](phd2-guider.md) — the service whose contract `rp`
+  speaks until it moves to this one.
 - [rp.md § Component Categories](rp.md#component-categories),
   [§ Guider Service](rp.md#guider-service),
   [§ Mount Motion Gate](rp.md#mount-motion-gate),
