@@ -35,14 +35,11 @@ impl Axis {
 /// Per the Sky-Watcher motor-controller spec §5, the `:G` payload is **two
 /// independent hex nibbles** (DB1 then DB2 on the wire — high nibble first
 /// when read as a single byte). Each nibble has its own bit definitions.
-/// This was the source of [the original codec's worst hardware bug][bug]:
-/// it treated the payload as a flat 8-bit bitfield with `goto = 0x10`,
-/// `fast = 0x20`, `reverse = 0x01`, which by coincidence produced wire
-/// bytes (`0x30` = "30") that the firmware decoded as
-/// **Tracking-Fast-CW** — i.e. continuous stepping with no auto-stop at
-/// the `:S` target.
-///
-/// [bug]: ../../docs/services/star-adventurer-gti.md "Star Adventurer GTi design doc"
+/// The payload is not a flat 8-bit bitfield: packed as one (`goto = 0x10`,
+/// `fast = 0x20`, `reverse = 0x01`), a fast forward goto goes out as
+/// `"30"`, which the firmware decodes as **Tracking-Fast-CW** — i.e.
+/// continuous stepping with no auto-stop at the goto target. See
+/// [§"Motion-mode and status bytes"](../../../docs/services/star-adventurer-gti.md#motion-mode-and-status-bytes).
 ///
 /// Prior art: INDI eqmod's `SetMotion` (`indi-eqmod/skywatcher.cpp:1643-1664`)
 /// emits the same byte pairs we do (`"10"`, `"30"`, `"20"`, `"00"` with
@@ -65,8 +62,9 @@ impl Axis {
 /// | 1   | `0x2` | `0=North`, `1=South` |
 /// | 2   | `0x4` | `0=Normal Goto`, `1=Coarse Goto` |
 ///
-/// The MVP uses just three combinations:
+/// The driver uses four combinations:
 /// * Sidereal tracking → DB1=`0x1` (Tracking, Slow), DB2=`0x0` → wire `"10"`
+/// * Tracking-Slow CCW → DB1=`0x1`, DB2=`0x1` → wire `"11"`
 /// * Goto-Fast CW → DB1=`0x0` (Goto, Fast), DB2=`0x0` → wire `"00"`
 /// * Goto-Fast CCW → DB1=`0x0`, DB2=`0x1` → wire `"01"`
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -187,8 +185,8 @@ pub enum Command {
     /// separately via the `:G` mode byte's CCW bit. INDI eqmod's
     /// `SlewTo` uses `:H` rather than `:S` so the firmware can apply a
     /// fixed deceleration ramp from the configured break point — see
-    /// the issue tracker #205 and the INDI source
-    /// (`indi-eqmod/skywatcher.cpp::SlewTo`).
+    /// [§"Slew lifecycle"](../../../docs/services/star-adventurer-gti.md#slew-lifecycle)
+    /// and the INDI source (`indi-eqmod/skywatcher.cpp::SlewTo`).
     SetGotoTargetIncrement { axis: Axis, increment: u32 },
     /// `:M<axis><breaks>` — set the goto break-point increment. INDI
     /// emits this on every slew with `breaks = min(|delta|/10, 3200)`;
@@ -345,8 +343,8 @@ mod tests {
         // Speed bit semantics flip between Goto and Tracking.
         //   Goto-Slow-CW       → DB1 bit-1 set = "2"; DB2=0 → "20"
         //   Tracking-Fast-CW   → DB1 bit-1 set = "3" (also bit-0) → "30"
-        // (so the prior codec's "30" was Tracking-Fast, not Goto-Fast —
-        // see the doc comment on MotionMode for why this matters.)
+        // (so "30" is Tracking-Fast, not Goto-Fast — see the doc
+        // comment on MotionMode for why this matters.)
         assert_eq!(
             MotionMode {
                 kind: ModeKind::Goto,

@@ -202,6 +202,24 @@ applied at scale.
    otherwise be disbelieved. Validation runs that are already in
    `docs/validation/` are linked there, not duplicated.
 
+   Three searches come before the move, because the link check of
+   step 11 finds none of what they find:
+
+   - **A fact the passage alone states.** Each fact in the passage is
+     looked for in the rest of the living document, and one stated
+     nowhere else is stated where it applies before the passage goes.
+     A record is where a reader checks a claim, not where they learn
+     what the system does.
+   - **A pointer the passage carries.** The passage's text is searched
+     for "above", "below" and a section named without a link: any of
+     them may point at text that stays behind.
+   - **A name another document uses.** `docs/` is searched for the
+     names the passage's parts go by — its heading, the headings under
+     it, a bullet's bold lead — as words and not only as anchors. A
+     record or a plan that names one in plain text holds a pointer that
+     follows the passage, and an open plan may tell a later step to
+     write into it (§ Out of scope).
+
 6. **A copied comment is fixed in every copy, in one batch.** The
    OmniSim comments the services' `tests/bdd.rs` files copied — the
    loud-reset diagnostic in `rp` and `calibrator-flats`, the exit-code
@@ -397,9 +415,11 @@ for every batch.
 - Records: nothing in `docs/plans/`, `docs/plans/archive/`,
   `docs/decisions/`, `docs/validation/` or a `CHANGELOG.md` is edited,
   except the one Status line an ADR gains when superseded in full and
-  the target of a link from a record into a passage a batch moved,
-  which follows the passage — where the link points changes, what the
-  record says does not.
+  a pointer from a record into a passage a batch moved — a link's
+  target, or a section the record names in plain text — which follows
+  the passage: where the pointer leads changes, what the record says
+  does not. An open plan that tells a later step to write into a
+  passage that moved says where that writing goes now.
 - Moving the test-scope allow list out of the root `Cargo.toml`, where
   153 Rust files say it is documented: to workspace.md § Lints with
   every pointer updated, or into a `rusty-photon-ci` check that holds
@@ -423,12 +443,12 @@ for every batch.
 | Batch | Status | Pull request |
 |-------|--------|--------------|
 | Plan | Merged 2026-11-12 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1696) |
-| B1 — Star Adventurer GTi | Not started | — |
+| B1 — Star Adventurer GTi | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1767) |
 | B2 — doctor, ui-htmx, the installer | Not started | — |
 | B3 — rp and its client crates | Not started | — |
 | B4 — BDD infrastructure and OmniSim | Not started | — |
 | B5 — shared transport and the serial drivers | Not started | — |
-| B6 — cameras and SDK crates | Not started | — |
+| B6 — cameras and SDK crates | Under way: the design docs first, the code comments and the guard rows second | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779) |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
 | B8 — catalog, planner, focus | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1759) |
 | B9 — build, CI, runners; the empty table | Not started | — |

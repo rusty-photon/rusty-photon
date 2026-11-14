@@ -1,10 +1,8 @@
 //! Unit tests for the `mount_device` module.
 //!
-//! Split out of the main module file as part of the issue-253
-//! refactor. Tests still share the same private-item visibility as
-//! the original `#[cfg(test)] mod tests` block — they live under
-//! `mount_device::tests`, so `super::*` reaches the parent module
-//! and `super::<sub>::*` reaches sibling submodules.
+//! They live under `mount_device::tests` and see the module's private
+//! items: `super::*` reaches the parent module and `super::<sub>::*`
+//! reaches sibling submodules.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -918,8 +916,8 @@ async fn slew_async_refuses_target_below_altitude_floor() {
 async fn slew_async_accepts_low_target_above_altitude_floor() {
     // Same geometry as the refusal test, but Dec = −30° puts the
     // target at apparent altitude +4.6° — above the 0° floor, so
-    // the slew is accepted even though the target is nowhere near
-    // the rectangular Dec envelope this gate replaced.
+    // the slew is accepted: the gate is on altitude, not on a Dec
+    // range.
     let d = fast_settle_connected_with_altitude_floor(0.0).await;
     let lst = d.sidereal_time().await.unwrap();
     let target_ra = (lst + 3.0).rem_euclid(24.0); // HA = −3 h
@@ -1135,11 +1133,10 @@ async fn slew_async_latches_target() {
 
 #[tokio::test]
 async fn slew_async_issues_indi_sequence_per_axis() {
-    // Phase A5 (issue #205) + issue #207: the slew path emits
-    // the INDI eqmod-style sequence — :K → poll :f → :G → :I →
-    // :H → :M → :J. (Issue #207 swapped :L for :K — :K is the
-    // spec's recommended stop, :L stays reserved for emergency
-    // aborts.) This test asserts the order of the setters and
+    // The slew path emits the INDI eqmod-style sequence — :K →
+    // poll :f → :G → :I → :H → :M → :J. (:K is the spec's
+    // recommended stop, :L stays reserved for emergency aborts.)
+    // This test asserts the order of the setters and
     // motion-start frames for each axis in the freshly-issued
     // slew, before the watcher's pickup loop (if any) re-enters
     // the sequence.
@@ -1207,10 +1204,10 @@ async fn slew_async_issues_indi_sequence_per_axis() {
 
 #[tokio::test]
 async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
-    // Phase A5: after both axes stop, if the snapshot's encoder
-    // position translates to an RA/Dec that's more than 5"
-    // away from the latched target, the watcher must re-enter
-    // the slew sequence with a fresh delta.
+    // After both axes stop, if the snapshot's encoder position
+    // translates to an RA/Dec that's more than 5" away from the
+    // latched target, the watcher must re-enter the slew sequence
+    // with a fresh delta.
     //
     // To exercise the pickup loop deterministically — independent
     // of how fast the host walks the mock through the goto chunks
@@ -1220,7 +1217,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     // background polling task picks the new state up; the watcher
     // sees both axes stopped at a position that translates to an
     // RA/Dec far from the latched target, and must re-issue the
-    // slew sequence (one fresh :L → :G → :I → :H → :M → :J per
+    // slew sequence (one fresh :K → :G → :I → :H → :M → :J per
     // axis) at least once. We assert :H1 count >= 2 (one from the
     // initial slew, one from the pickup re-issue) — strictly
     // stronger than the > 0 check, which the initial slew alone
@@ -1242,7 +1239,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
 
     // Spawn the injection task BEFORE issuing the slew so it is
     // already scheduled when the watcher starts polling. After a
-    // short delay (long enough for the initial :L → :J sequence
+    // short delay (long enough for the initial :K → :J sequence
     // to have hit the wire but well before MIN_SLEW_DWELL), force
     // the mock to declare the goto done at a position clearly
     // off-target. The watcher's next pickup check will see a
@@ -1291,10 +1288,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // Drive a slew, seed the mock to report `blocked = true` on
     // either axis, and assert the watcher issues `:L1` + `:L2`
     // and clears `slew_in_progress` instead of waiting for the
-    // running flag to drop. Mirrors the safety net we wired up
-    // after the hardware ConformU run where the motor stalled
-    // against a counterweight-up mechanical stop while the
-    // encoder counter kept advancing.
+    // running flag to drop.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
@@ -1335,9 +1329,8 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
 
     // Both axes must have seen a `:L` issued by the watcher's
     // abort path. (The driver's slew-prep stop uses the gentler
-    // `:K` since issue #207 — `:L` is reserved for genuine
-    // emergency stops like this blocked-axis abort and
-    // `AbortSlew`.)
+    // `:K` — `:L` is reserved for genuine emergency stops like
+    // this blocked-axis abort and `AbortSlew`.)
     let log = mock.lock().await.command_log.clone();
     let l1_count = log.iter().filter(|f| f.as_slice() == b":L1\r").count();
     let l2_count = log.iter().filter(|f| f.as_slice() == b":L2\r").count();
@@ -1567,9 +1560,9 @@ async fn park_rolls_back_slew_in_progress_when_motion_fails() {
 
 #[tokio::test]
 async fn disconnect_clears_slew_in_progress() {
-    // `slew_in_progress` lives outside `DriverState` now, so the
-    // disconnect arm of `set_connected` clears it directly — the coverage
-    // that used to live in the `reset_for_disconnect` field test.
+    // `slew_in_progress` lives outside `DriverState`, so
+    // `reset_for_disconnect` does not cover it: the disconnect arm of
+    // `set_connected` clears it directly.
     let d = connected_device().await;
     d.slew_in_progress.try_claim().unwrap();
     d.set_connected(false).await.unwrap();
@@ -1687,7 +1680,7 @@ async fn sync_refuses_while_a_slew_is_in_progress() {
 async fn a_sync_dates_the_positions_it_wrote_when_its_writes_went_out() {
     // Like a polled sample, a sync's seed is dated at the send of the
     // `:E` that wrote it — not when its reply was read, which a busy
-    // host can do tens of milliseconds late (issue #1371).
+    // host can do tens of milliseconds late.
     let (d, mock) = capturing_connected_device().await;
     let _paused = d.manager.pause_background_polling();
     mock.lock().await.reply_delay = Duration::from_millis(41);
@@ -2030,10 +2023,10 @@ async fn watcher_should_abort_once_an_abort_has_voided_its_claim() {
 
 #[tokio::test]
 async fn watcher_should_abort_once_the_user_disconnects() {
-    // After the shared-transport migration the "is the user still
-    // connected?" signal is the device's session-slot presence rather
-    // than `manager.is_available()`: the watcher's own session keeps the
-    // transport open even after the user disconnects.
+    // The "is the user still connected?" signal is the device's
+    // session-slot presence rather than `manager.is_available()`: the
+    // watcher's own session keeps the transport open even after the user
+    // disconnects.
     let session_slot = live_session_slot().await;
     let slot = Arc::new(SlewSlot::default());
     let reservation = reserve(&slot).unwrap();
@@ -2631,9 +2624,8 @@ async fn a_power_up_check_pending_across_a_restart_loses_a_mount_at_rest_elsewhe
 async fn debug_impl_includes_config_file_path() {
     // Pins the `derive_more::Debug` derive — adding a new field
     // that should appear in Debug requires keeping it un-`#[debug(skip)]`
-    // in the struct attributes. The path field landed in PR #221;
-    // the smoke test catches a future refactor that accidentally
-    // hides it.
+    // in the struct attributes. The test catches a refactor that
+    // hides the config file path.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let d = device_with_path(path);
@@ -2749,15 +2741,11 @@ async fn pulse_guide_refuses_while_disconnected() {
 
 #[tokio::test]
 async fn set_connected_rolls_back_transport_when_park_load_fails() {
-    // Regression test for the Copilot review on PR #221
-    // (comment 3238682044): if `transport.connect()` succeeds but
-    // the post-connect park-target load fails, the transport
-    // ref-count was being left incremented (the underlying
-    // transport open) while `requested_connection` stayed `false`
-    // — effectively leaking a connection. The fix runs the
-    // post-connect work through `load_park_target_after_connect`
-    // and calls `transport.disconnect()` on any failure before
-    // surfacing the error.
+    // A connect whose transport acquire succeeds but whose
+    // connect-time config read fails must close the session it
+    // acquired before surfacing the error — otherwise the
+    // transport stays open behind a device that reports itself
+    // disconnected.
     //
     // We trigger the failure path by handing `MountDevice` a
     // `config_file_path` that points to a non-existent file:
@@ -2773,8 +2761,8 @@ async fn set_connected_rolls_back_transport_when_park_load_fails() {
     // The transport must have been disconnected on rollback.
     // `is_available()` is the underlying MountManager flag,
     // which would be `true` if connect succeeded and no rollback
-    // ran. Asserting it false here proves we balanced the
-    // connect ref-count.
+    // ran. Asserting it false here proves the rollback closed
+    // the session the connect acquired.
     assert!(
         !d.manager.is_available(),
         "transport should be torn down after rollback"
@@ -2797,11 +2785,10 @@ async fn set_park_refuses_while_slew_in_progress() {
 
 #[tokio::test]
 async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
-    // Defence-in-depth (per Copilot review on PR #221, comment
-    // 3242621736): even if `slew_in_progress` is false — e.g. an
-    // axis is running for a reason the in-memory flag wouldn't
-    // capture — the wire snapshot's `running` flag must still
-    // gate `SetPark` to avoid persisting mid-motion encoder
+    // Defence-in-depth: even if `slew_in_progress` is false —
+    // e.g. an axis is running for a reason the in-memory flag
+    // wouldn't capture — the wire snapshot's `running` flag must
+    // still gate `SetPark` to avoid persisting mid-motion encoder
     // ticks.
     //
     // To exercise this path independently of the
@@ -2848,7 +2835,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
         "precondition: snapshot must reflect RA running=true"
     );
     // slew_in_progress flag is still false — only the wire
-    // snapshot is reporting motion. The new defence layer must
+    // snapshot is reporting motion. The wire-snapshot guard must
     // still refuse.
     assert!(!d.slew_in_progress.is_held());
     let err = d.set_park().await.unwrap_err();
@@ -3034,7 +3021,7 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     // strict `!= 0` check would skip the seed and the mount would
     // silently end up with a wrong celestial mapping. The seed is
     // observed directly via the post-seed snapshot encoder — the park
-    // target no longer reflects the seed (it tracks preferred_ap_park).
+    // target does not reflect the seed (it tracks preferred_ap_park).
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     // Force the dec encoder to a 1-tick fresh-power-up artifact
@@ -3096,8 +3083,8 @@ async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
     // ticks (~18″ at the GTi's CPR) is well above the single-tick
     // firmware artifact and indicates the operator has already moved
     // the mount; the seed must skip so the slewed-to position is not
-    // clobbered. If the tolerance is ever loosened back toward the
-    // historical 100-tick floor, this test catches it.
+    // clobbered. A tolerance of 100 ticks would take this reading for
+    // a fresh power-up.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     {
@@ -3146,7 +3133,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     assert_eq!(s.park_dec_ticks, Some(0));
 }
 
-// ---- reset_mount_encoders helper (Phase B) ----
+// ---- reset_mount_encoders helper ----
 
 #[tokio::test]
 async fn reset_mount_encoders_writes_encoder_and_clears_state() {
@@ -3230,7 +3217,7 @@ async fn the_recovery_holds_off_a_slew_until_its_encoders_are_written() {
 #[tokio::test(start_paused = true)]
 async fn reset_mount_encoders_dates_the_positions_it_wrote_when_its_writes_went_out() {
     // The connect-time / recovery seed follows the same
-    // convention as a sync's (issue #1371).
+    // convention as a sync's.
     let (d, mock) = capturing_connected_device().await;
     let _paused = d.manager.pause_background_polling();
     mock.lock().await.reply_delay = Duration::from_millis(41);
@@ -3545,9 +3532,9 @@ async fn ap_park_target_ticks_is_none_when_disconnected() {
 }
 
 #[tokio::test]
-async fn park_target_prefers_config_values_over_handshake_capture() {
-    // Config carries park values → driver should use them, not the
-    // (zeroed) handshake fallback.
+async fn park_target_uses_the_configured_tick_values() {
+    // Config carries park values → driver should use them as the
+    // park target.
     let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
@@ -3564,14 +3551,13 @@ async fn park_target_prefers_config_values_over_handshake_capture() {
 
 #[tokio::test]
 async fn reconnect_after_set_park_picks_up_persisted_values() {
-    // Regression test for the Copilot review feedback on PR #221:
     // SetPark persists the new park target to disk and updates the
     // in-memory state, but the in-memory `MountConfig` does not
     // change. A subsequent disconnect/reconnect within the same
     // process must therefore re-read the config file rather than
     // re-loading from the (stale) in-memory config — otherwise the
     // SetPark target silently reverts to whatever was in
-    // `MountConfig` at process start (or the handshake fallback).
+    // `MountConfig` at process start.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
@@ -3590,9 +3576,9 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
     assert_eq!(d.state.read().await.park_ra_ticks, None);
     assert_eq!(d.state.read().await.park_dec_ticks, None);
 
-    // Reset the mock *wire* encoders so reconnect's handshake `:j`
-    // fallback would be (0, 0) — proves the re-read picked up SetPark's
-    // persisted values rather than just re-reading the handshake.
+    // Reset the mock *wire* encoders, so the park target read back
+    // below can only have come from the file SetPark wrote, not from
+    // the encoders.
     {
         let mut s = mock.lock().await;
         s.ra.position_ticks = 0;
@@ -3735,10 +3721,9 @@ fn read_connect_fields_errors_on_invalid_ap_park() {
 
 #[test]
 fn read_connect_fields_errors_on_wrong_type() {
-    // Operator typo: park_ra_ticks declared as a string. Used to
-    // be silently treated as None (fell back to handshake);
-    // current contract is to surface the misconfiguration. Per
-    // Copilot review on PR #221 (comment 3238774050).
+    // Operator typo: park_ra_ticks declared as a string. Reading
+    // it as None would silently drop the operator's park target;
+    // the contract is to surface the misconfiguration.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let json = serde_json::json!({
@@ -3781,8 +3766,8 @@ fn read_connect_fields_errors_on_out_of_i32_range() {
     // A value that fits in i64 but not i32 — e.g. someone copied
     // a large encoder count from a higher-resolution mount, or
     // a typo added a digit. Either way we should fail loudly so
-    // the operator sees the bad value rather than silently
-    // falling back to handshake.
+    // the operator sees the bad value rather than have it
+    // silently ignored.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     let json = serde_json::json!({
@@ -4148,10 +4133,10 @@ fn guide_pulse_south_runs_dec_ccw_on_the_dec_sidereal_period() {
     );
 }
 
-// Issue #1300: past a celestial pole the Dec encoder counts against
-// declination, so `guideNorth` has to turn the Dec axis the other way
-// to keep moving the OTA north. RA is unaffected — a flip shifts
-// `mech_HA` by 12 h rather than mirroring it.
+// Past a celestial pole the Dec encoder counts against declination,
+// so `guideNorth` has to turn the Dec axis the other way to keep
+// moving the OTA north. RA is unaffected — a flip shifts `mech_HA` by
+// 12 h rather than mirroring it.
 
 #[test]
 fn guide_pulse_north_inverts_dec_on_the_counterweight_up_side() {
@@ -4324,7 +4309,7 @@ async fn pulse_start_step_period(direction: GuideDirection, axis_byte: u8) -> u3
 // 16,000,000 × 86164.0905 / 2,903,040 = 474,890 — not RA's 379,912.
 // At the default 0.5 × sidereal guide rate the pulse period is twice
 // that. A period derived from the RA CPR (759,824) steps the Dec axis
-// 1.25× too fast, which is what ConformU measured on hardware.
+// 1.25× too fast.
 const DEC_PULSE_PERIOD_AT_HALF_SIDEREAL: u32 = 949_780;
 
 #[tokio::test]
@@ -4401,8 +4386,8 @@ const PULSE_TOLERANCE_ARCSEC: f64 = 1.0;
 
 #[tokio::test(start_paused = true)]
 async fn pulse_guide_north_moves_dec_by_guide_rate_times_duration() {
-    // A Dec period derived from the RA CPR moves 47.0″ here — the 1.25×
-    // overshoot ConformU measured on hardware.
+    // A Dec period derived from the RA CPR moves 47.0″ here, 1.25× the
+    // commanded angle.
     let moved = arcsec_moved_by_five_second_pulse(GuideDirection::North).await;
     assert!(
         (moved - HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
@@ -4601,13 +4586,13 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     );
 }
 
-// ---------- Phase 6: through-wrap routing helpers ----------
+// ---------- through-wrap routing helpers ----------
 
 const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
 
 /// Hardware-verified `GTi` CW exclusion zone — the contiguous arc
 /// where the CW shaft rises more than 0.95 h above horizontal.
-/// Matches `default_binding_zone_min/max_hours` in `config.rs`.
+/// Matches `CwExclusionZone::default()` in `config.rs`.
 const GTI_CW_EXCLUSION_ZONE: (f64, f64) = (0.95, 11.05);
 
 #[test]
@@ -4624,11 +4609,10 @@ fn flip_slew_ra_delta_forward_flip_from_pre_flip_zero_uses_natural_ccw() {
 
 #[test]
 fn flip_slew_ra_delta_forward_flip_target_minus_half_h_takes_long_way() {
-    // The plan §2.0 canonical case: pre-flip mech_HA = −0.5, target
-    // post-flip mech_HA = +11.5, canonical = +cpr*11.5/24 -
-    // (-cpr*0.5/24) = +cpr/2 + small. (Approximated by +1.815M
-    // ticks at cpr_ra = 3.6288M.) Force CCW long way through the
-    // wrap.
+    // Pre-flip mech_HA = −0.5, target post-flip mech_HA = +11.5,
+    // canonical = +cpr*11.5/24 - (-cpr*0.5/24) = +cpr/2 + small.
+    // (Approximated by +1.815M ticks at cpr_ra = 3.6288M.) Force
+    // CCW long way through the wrap.
     let cpr = GTI_CPR;
     let current = -75_600; // mech_HA = -0.5
     let canonical = 1_815_000_i32;
@@ -4648,9 +4632,9 @@ fn flip_slew_ra_delta_flip_back_from_minus_half_cpr_uses_natural_cw() {
     // (positive CW). The path is mech_HA -12 → -11 → ... → -6,
     // entirely in the safe negative half. Use canonical.
     //
-    // Regression for hardware validation #3: my prior `always CCW`
-    // rule forced -3*cpr/4 here, routing through +6 to +9 binding
-    // zone and slamming the CW shaft into the pier.
+    // An `always CCW` rule would force -3*cpr/4 here, routing
+    // through the +6 to +9 binding zone and driving the CW shaft
+    // into the pier.
     let cpr = GTI_CPR;
     let current = -(cpr.cast_signed() / 2);
     let canonical = cpr.cast_signed() / 4;
@@ -4699,19 +4683,18 @@ fn flip_slew_ra_delta_zero_canonical_returns_zero() {
 
 #[test]
 fn flip_slew_ra_delta_park4_to_park5_north_uses_canonical_through_wrap() {
-    // Hardware regression (2026-05-16): Park 4 N → Park 5 N flip
-    // slew. Snap.ra ≈ raw -1,810,272 (mech_HA -11.974, post-flip
-    // pierEast just east of the saddle-east wrap). The slew planner
-    // chose pierWest (target HA -12 outside the flip window), with
-    // target encoder near +cpr/2 (mech_HA +11.999, the saddle-east
-    // wrap from the other side). fold_to_canonical_band produces a
-    // small CCW step (~-3.8k ticks) that physically nudges the RA
-    // encoder past the -12 wrap and into +12 folded — the path stays
-    // entirely in the safe arc (no positive mech_HA visited). The
-    // old sign-blind heuristic forced canonical + cpr ≈ +3.625M
-    // ticks CW, a near-full polar-axis revolution that swept
-    // mech_HA through (+6.95, +11.05) and slammed the CW shaft into
-    // the pier — the operator powered the mount off mid-sweep.
+    // Park 4 N → Park 5 N flip slew. Snap.ra ≈ raw -1,810,272
+    // (mech_HA -11.974, post-flip pierEast just east of the
+    // saddle-east wrap). The target is pierWest (target HA -12
+    // outside the flip window), with target encoder near +cpr/2
+    // (mech_HA +11.999, the saddle-east wrap from the other side).
+    // fold_to_canonical_band produces a small CCW step (~-3.8k
+    // ticks) that physically nudges the RA encoder past the -12 wrap
+    // and into +12 folded — the path stays entirely in the safe arc
+    // (no positive mech_HA visited). A sign-blind rule would force
+    // canonical + cpr ≈ +3.625M ticks CW, a near-full polar-axis
+    // revolution that sweeps mech_HA through (+6.95, +11.05) and
+    // drives the CW shaft into the pier.
     let cpr = GTI_CPR;
     let current = -1_810_272_i32;
     let canonical = -3_798_i32;
@@ -4727,9 +4710,8 @@ fn flip_slew_ra_delta_park4_to_park5_north_uses_canonical_through_wrap() {
 fn flip_slew_ra_delta_empty_binding_zone_always_uses_canonical() {
     // Empty zone (min ≥ max) disables routing; the function
     // collapses to the canonical short delta regardless of which
-    // half the current sits in. Matches the BDD-test config that
-    // sets `binding_zone_min = 24.0, binding_zone_max = 0.0` to
-    // bypass the safety gate.
+    // half the current sits in. `CwExclusionZone::Disabled` hands
+    // the function such a zone, `(+∞, −∞)`.
     let cpr = GTI_CPR;
     let empty_zone = (24.0_f64, 0.0_f64);
     for (current, canonical) in [
@@ -4770,10 +4752,8 @@ fn flip_slew_ra_delta_refuses_when_both_directions_cross_zone() {
 
 #[test]
 fn flip_slew_ra_delta_wide_zone_picks_long_way_for_zone_boundary_traversal() {
-    // Wide-zone variant of the existing
-    // `flip_slew_ra_delta_canonical_path_crossing_binding_zone_takes_long_way`
-    // success case — picks the long way around when canonical
-    // would cross and the long way is safe.
+    // Picks the long way around when canonical would cross the
+    // zone and the long way is safe.
     //
     // From mech_HA = +11.1 (just outside the wide zone, descending
     // edge) to +0.9 (just outside, ascending edge). Canonical
@@ -4818,8 +4798,8 @@ fn check_non_flip_ra_path_refuses_when_canonical_sweep_crosses_zone() {
     // Non-flip slew from mech_HA = +0.5 h to +11.5 h. Both
     // endpoints sit outside the wide zone (+0.95, +11.05) but the
     // canonical short sweep (+11 h CW) crosses the entire zone
-    // interior. Today's destination-only `check_within_safe_envelope`
-    // would let this through; the path-aware check refuses it.
+    // interior. The destination-only `check_within_safe_envelope`
+    // lets this through; the path-aware check refuses it.
     let cpr = GTI_CPR;
     let current = (cpr.cast_signed()) / 48; // mech_HA = +0.5
     let canonical = (cpr.cast_signed()) * 11 / 24; // +11 h CW
@@ -4877,11 +4857,10 @@ fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw()
 
 #[test]
 fn flip_slew_dec_delta_north_pre_flip_zero_to_post_flip_dec_zero_takes_long_way() {
-    // The bug case from the first hardware run: starting at encoder
-    // = 0 (codebase historical home), the canonical fold of a slew
-    // to dec_encoder = ±cpr/2 returns negative (CCW), which routes
+    // Starting at encoder = 0, the canonical fold of a slew to
+    // dec_encoder = ±cpr/2 returns negative (CCW), which routes
     // the Dec axis through −cpr/4 (SCP, below horizon for north).
-    // The fix forces the CW long way through +cpr/4 (NCP).
+    // The helper forces the CW long way through +cpr/4 (NCP).
     let cpr = GTI_CPR;
     let quarter = cpr.cast_signed() / 4;
     let half_cpr = cpr.cast_signed() / 2;
@@ -5009,8 +4988,8 @@ fn flip_slew_dec_delta_handles_raw_current_outside_canonical_band() {
     // and the modular-replica pole scan, so raw outside the canonical
     // band is handled naturally — no fold needed. Sanity-check that
     // a small positive canonical from a raw in the positive
-    // disagreement zone (which a prior heuristic-based version would
-    // have misread as post-flip and routed the long way through the
+    // disagreement zone (which a heuristic reading of the raw count
+    // would misread as post-flip and route the long way through the
     // below-horizon pole) passes through unchanged.
     let cpr = GTI_CPR;
     let cpr_i = cpr.cast_signed();
@@ -5033,7 +5012,7 @@ fn canonical_path_crosses_pole_north_detects_k_plus_3_replica_at_positive_wire_b
     // its modular replicas sit at `pole + k·cpr` for any integer k.
     // With `cpr_dec = 3.6M`, a sweep near `+wire/2` reaches the
     // `k = +3` replica at `-907_200 + 3·3_628_800 = +9_979_200`.
-    // The prior hardcoded `k ∈ -2..=2` scan missed this band; the
+    // A scan over a fixed `k ∈ -2..=2` misses this band; the
     // div_euclid check finds it.
     let cpr = GTI_CPR;
     let cpr_i = cpr.cast_signed();
@@ -5075,8 +5054,7 @@ fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_
         canonical_path_crosses_pole(start, delta, pole, cpr),
         "k=-3 replica at -9_979_200 must be detected inside sweep [-10M, -8.3M]"
     );
-    // End-to-end through `flip_slew_dec_delta` with `northern=false`
-    // — the test the original combined version was missing.
+    // End-to-end through `flip_slew_dec_delta` with `northern=false`.
     let issued = flip_slew_dec_delta(delta, start, cpr, false);
     assert!(
         issued < 0,
@@ -5089,7 +5067,7 @@ fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_
     );
 }
 
-// ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
+// ---------- SetSideOfPier + CanSetPierSide ----------
 
 async fn flip_test_device() -> MountDevice {
     let mut cfg = base_config();
@@ -5217,11 +5195,10 @@ async fn set_side_of_pier_keeps_the_pointing_a_sync_ahead_of_it_wrote() {
 
 // ---- watcher_poll_with_retry --------------------------------------
 //
-// The slew/park watchers' transport-error path used to exit on the
-// first failed `poll_axes_now`, which made a single transient USB-
-// CDC glitch take the watcher offline for the rest of the slew. The
-// helper now retries [`WATCHER_POLL_RETRY_LIMIT`] times and on
-// exhaustion fires a best-effort `:L` on both axes so a runaway
+// A slew/park watcher that exits on the first failed `poll_axes_now`
+// lets a single transient USB-CDC glitch take it offline for the rest
+// of the slew. The helper retries [`WATCHER_POLL_RETRY_LIMIT`] times
+// and on exhaustion fires a best-effort `:L` on both axes so a runaway
 // motor doesn't continue commutating with no observer.
 
 use async_trait::async_trait;
@@ -5237,12 +5214,12 @@ struct FlakyController {
     stop_calls_dec: AtomicU32,
 }
 
-/// Frame-transport that wraps the regular mock state machine and
-/// fails the first `fail_remaining` recv calls. Every `:L<axis>`
-/// frame the driver sends is counted on the send side, before the
-/// recv-side fail check, so a `:L` that lands during the failure
-/// window still registers (the retry-exhaustion path fires `:L`
-/// regardless of whether subsequent recvs are responsive).
+/// Frame-transport that answers with canned replies and fails the
+/// first `fail_remaining` recv calls. Every `:L<axis>` frame the
+/// driver sends is counted on the send side, before the recv-side
+/// fail check, so a `:L` that lands during the failure window still
+/// registers (the retry-exhaustion path fires `:L` regardless of
+/// whether subsequent recvs are responsive).
 struct FlakyFrameTransport {
     inner: crate::transport::mock::MockMountState,
     ctrl: Arc<FlakyController>,
@@ -5282,26 +5259,12 @@ impl FrameTransport for FlakyFrameTransport {
         if bytes.len() < 3 || bytes[0] != b':' || bytes[bytes.len() - 1] != b'\r' {
             return Err(TransportError::Framing(format!("malformed: {bytes:?}")));
         }
-        // Use the inner mock state-machine to produce the reply,
-        // but enqueue it on our own queue so we control delivery.
-        // The mock has its own `pending_replies` queue we drain.
-        // We do this by routing the command through the real mock
-        // factory's pending queue and stealing the reply.
-        // Simplest path: produce_reply via a fresh MockFrameTransport
-        // share would be heavy, so we mirror just what the test
-        // needs — defer to the inner state machine.
-        // Mock state's `process_command` writes to its own
-        // VecDeque; we capture it.
+        // Canned replies, queued here so this transport controls
+        // delivery, for the subset of commands the watcher tests
+        // need: `:F<axis>`, `:a<axis>`, `:b<axis>`, `:g<axis>`,
+        // `:e<axis>`, `:j<axis>`, `:f<axis>`, plus `:L<axis>` and
+        // `:K<axis>` acks.
         let _ = mockmod::MockMountState::default(); // type witness
-                                                    // Process directly by calling a small helper that mutates
-                                                    // `self.inner` and appends the reply to a local Vec.
-                                                    // Easiest: serialize the access through the inner mock by
-                                                    // pushing into a fresh MockFrameTransport state — but we
-                                                    // don't have a constructor that wraps an existing Arc<Mutex>.
-                                                    // Just implement the subset of commands the watcher tests
-                                                    // need: `:F<axis>`, `:a<axis>`, `:b<axis>`, `:g<axis>`,
-                                                    // `:e<axis>`, `:j<axis>`, `:f<axis>`, plus `:L<axis>` and
-                                                    // `:K<axis>` acks.
         let cmd = bytes[1];
         let axis = bytes[2];
         let reply: Vec<u8> = match cmd {
@@ -5672,9 +5635,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     // `spawn_slew_completion_watcher`: with tracking enabled before
     // the slew, the watcher must re-issue `:G1 TRACKING + :I1 sidereal
     // + :J1` after the dwell+settle, and set `tracking_requested` back
-    // to true. Without this test the entire `if tracking_was_on { ... }`
-    // block (a ~20-line section that includes the only success-path
-    // call to `state.write().tracking_requested = true`) is unexercised.
+    // to true.
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
@@ -5742,10 +5703,10 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
 async fn azimuth_altitude_and_utc_date_return_well_defined_values_when_connected() {
     // These three trait methods are pure derivations from the encoder
     // snapshot (`azimuth`/`altitude` via `ra_dec_to_alt_az`) or the
-    // host clock (`utc_date`). No earlier test exercised them
-    // directly, so a freshly-connected device sitting on the home
-    // pose suffices to pin the contract: each returns a finite,
-    // monotonically-sensible value rather than NaN / pre-epoch.
+    // host clock (`utc_date`), so a freshly-connected device
+    // sitting on the home pose suffices to pin the contract: each
+    // returns a finite, monotonically-sensible value rather than
+    // NaN / pre-epoch.
     let d = connected_device().await;
     let az = d.azimuth().await.unwrap();
     let alt = d.altitude().await.unwrap();
@@ -5758,7 +5719,7 @@ async fn azimuth_altitude_and_utc_date_return_well_defined_values_when_connected
     );
 }
 
-// ---------- RA reads pair the encoder and LST at one instant (issue #1334) ----------
+// ---------- RA reads pair the encoder and LST at one instant ----------
 //
 // These run on the real clock: the mock's motors and the LST both read
 // wall time, so a paused tokio clock would move one and not the other.
@@ -5844,9 +5805,9 @@ async fn a_dec_pulse_leaves_a_tracking_mounts_ra_where_it_was() {
     // ConformU's cross-axis check: RA read before a Dec pulse and after
     // it completes must agree. The pulse length and the wait after it
     // are deliberately not whole poll intervals — with instant mock
-    // stops and a 5 s pulse (25 × 200 ms) both reads used to land on
-    // the same poll phase, which is how the mock hid the hardware's
-    // ±0.2 s readings.
+    // stops and a 5 s pulse (25 × 200 ms) both reads would land on
+    // the same poll phase, where a read that paired a stale encoder
+    // sample with a live LST would cancel unseen.
     let d = connected_device().await;
     d.set_tracking(true).await.unwrap();
     let before = d.right_ascension().await.unwrap();
@@ -8175,8 +8136,8 @@ async fn a_result_shows_once_on_the_page_its_redirect_names() {
 async fn an_address_no_redirect_named_shows_no_result() {
     let d = connected_device_with_pages().await;
     let stopped = see_other_location(&d.setup_request(recovery_post(&[("command", "stop")])).await);
-    // An earlier number, a number nothing took, the pose an earlier build
-    // carried, and the bare page: none shows a result, and none of them
+    // An earlier number, a number nothing took, a value on `recover`
+    // itself, and the bare page: none shows a result, and none of them
     // spends the one the redirect names.
     for address in [
         "?recover&ran=0",

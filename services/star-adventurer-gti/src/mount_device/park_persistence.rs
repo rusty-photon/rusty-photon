@@ -59,8 +59,8 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 /// — `SetPark` will still attempt the write against the path as given,
 /// surfacing the real error there.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable; the binary calls this from `main()`.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable; the binary calls this from `main()`.
 #[must_use]
 pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
     std::fs::canonicalize(config_path).unwrap_or_else(|e| {
@@ -81,8 +81,8 @@ pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
 /// not affected; the capability still advertises support and the actual
 /// `SetPark` will surface a structured error if the probe was correct.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable.
 pub fn warn_if_park_path_unwritable(config_path: &Path) {
     if let Err(e) = probe_park_file_writability(config_path) {
         tracing::warn!(
@@ -95,14 +95,16 @@ pub fn warn_if_park_path_unwritable(config_path: &Path) {
 
 /// Decode an optional park-tick JSON value:
 ///
-/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
-///   falls back to the handshake-captured value).
+/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (the
+///   axis takes the `preferred_ap_park` pose when the frame is
+///   anchored, and otherwise has no park target, so a park stops in
+///   place).
 /// - A JSON integer in the signed-24-bit encoder range
 ///   `[POSITION_MIN, POSITION_MAX]` → `Ok(Some(n))`.
 /// - Anything else (string, float, boolean, array/object, integer
 ///   outside the i24 encoder range) → `Err(StarAdvError::Config)`.
 ///   Loud failure on operator typo is the whole reason this helper
-///   exists — silently falling back to handshake would mask the
+///   exists — silently treating a typo as absent would mask the
 ///   misconfiguration, and silently accepting an out-of-range value
 ///   would only defer the failure to `MountManager::send`'s
 ///   pre-encode validation at the first park attempt.

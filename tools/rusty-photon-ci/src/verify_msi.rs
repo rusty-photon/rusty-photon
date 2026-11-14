@@ -7,11 +7,12 @@
 //! `%ProgramData%\rusty-photon`, and refuses any other: windows-latest in
 //! CI, never an imaging box. The kinds of service differ as they do on Linux
 //! ([`crate::verify_packages`]):
-//! - every service is installed, demand-start when it is [`GATED`] and
-//!   automatic otherwise, to restart 5 s after a failure with the
-//!   failure-actions flag set: a serial driver's exit on its absent device is
-//!   a clean error exit, which Windows restarts only with the flag;
-//! - a [`GATED`] service stays stopped, with no config;
+//! - every service is installed automatic, to restart 5 s after a failure
+//!   with the failure-actions flag set: a serial driver's exit on its absent
+//!   device is a clean error exit, which Windows restarts only with the flag;
+//! - a [`GATED`] service with no config, started on install like the rest,
+//!   stops at once with exit code 0, which the failure actions leave alone,
+//!   and its log says why;
 //! - a [`SERIAL`] driver writes its config and logs its handshake attempt,
 //!   and the first of them a second attempt, which only a restart makes;
 //! - qhy-camera either starts or logs that `qhyccd.dll`, the operator's, is
@@ -27,10 +28,13 @@
 //!   install.
 //!
 //! With `--upgrade-from`, it first installs that MSI, an earlier nightly's,
-//! waits for sentinel's config, disables and stops its services and clears
-//! their logs, so the install under test is an upgrade in place over the
-//! configs they left. Only this proves the nightly channel's same-version
-//! upgrade (docs/packaging-windows.md, Nightly channel). After the upgrade
+//! waits for sentinel's config, writes focus-model's, as the operator of a
+//! gated service does, disables and stops its services and clears their
+//! logs, so the install under test is an upgrade in place over the configs
+//! they left. Only this proves the nightly channel's same-version upgrade
+//! (docs/packaging-windows.md, Nightly channel), and that a configured gated
+//! service runs after one: focus-model must then run and serve like the
+//! rest. After the upgrade
 //! one Programs and Features entry must remain, the new MSI's, and the
 //! shipped doctor's `--fix`, the operator's migration path, must leave no
 //! retired config key and provision TLS and the observatory credential. The
@@ -102,6 +106,17 @@ fn refused(reason: impl Into<String>) -> Error {
 /// A Windows service's state, as `sc.exe` numbers it.
 const RUNNING: u32 = 4;
 const STOPPED: u32 = 1;
+
+/// What a gated service with no config logs as it stops
+/// (`ServiceRunner::condition_path_exists`).
+const NOT_STARTED: &str = "not started: ";
+
+/// The gated service the upgrade's seed configures, and the config it
+/// writes for it: the least focus-model starts on.
+const CONFIGURED: (&str, &str) = (
+    "focus-model",
+    r#"{"mcp_server_url": "http://127.0.0.1:11115/mcp"}"#,
+);
 
 /// The Programs and Features entries of the product, one `entry:<Comments>`
 /// line each. An x64 MSI registers in the native hive, which a 64-bit
@@ -231,6 +246,8 @@ struct Run<'a, R: Runner, C: Clock> {
     credential: Option<tempfile::NamedTempFile>,
     /// Whether an earlier MSI was installed first.
     upgraded: bool,
+    /// The gated services the seed wrote a config for, which run and serve.
+    configured: Vec<String>,
 }
 
 impl<R: Runner, C: Clock> Run<'_, R, C> {
@@ -412,6 +429,11 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "sentinel",
             "timed out after 30s waiting for the prior install's self-created sentinel.json",
         )?;
+        let (service, config) = CONFIGURED;
+        let path = self.config(service);
+        fs::write(&path, config).map_err(io(&path))?;
+        self.configured.push(service.to_owned());
+        println!("== upgrade seed: wrote {service}'s config, as its operator does");
         // The checks read the services' logs, which the earlier install's
         // output would satisfy. Disabled first, so a restart the failure
         // actions already scheduled cannot start one again; the upgrade
@@ -584,16 +606,11 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         let Ok(config) = self.sc(&["qc", &name]) else {
             return Err(self.fail(service, &format!("service {name} not installed")));
         };
-        let expected = if GATED.contains(&service) {
-            "Manual"
-        } else {
-            "Automatic"
-        };
         let start = start_type(&config);
         self.require(
-            start == expected,
+            start == "Automatic",
             service,
-            &format!("StartType is {start}, expected {expected}"),
+            &format!("StartType is {start}, expected Automatic"),
         )?;
         // The flag makes a clean error exit, a serial driver's on its absent
         // device, a failure Windows restarts after (ADR-015).
@@ -611,16 +628,34 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         )
     }
 
+    /// Stopped with exit code 0, its log saying it did not start for want of
+    /// its config: a failed start's exit code would have the failure actions
+    /// restart it every 5 s.
     fn gated(&mut self, service: &str) -> Result<(), Error> {
-        let stopped = self.state_is(service, STOPPED);
-        self.require(stopped, service, "gated service is not stopped")?;
+        let held = self.wait_until(60, |run| {
+            run.state_is(service, STOPPED) && run.log_tail(service, 50).contains(NOT_STARTED)
+        });
+        self.require(
+            held,
+            service,
+            &format!(
+                "timed out after 60s waiting for: service STOPPED, its log saying '{NOT_STARTED}'"
+            ),
+        )?;
+        let query = self.sc(&["queryex", &service_name(service)])?;
+        let exit = sc_number(&query, "WIN32_EXIT_CODE");
+        self.require(
+            exit == Some(0),
+            service,
+            &format!("stopped with WIN32_EXIT_CODE {exit:?}, not 0: a failure the failure actions restart"),
+        )?;
         let config = self.config(service).exists();
         self.require(
             !config,
             service,
             "config exists on a fresh install of a gated service",
         )?;
-        println!("== {service}: OK (gated: Manual and stopped, no config)");
+        println!("== {service}: OK (gated: stopped with exit code 0, no config)");
         Ok(())
     }
 
@@ -1004,7 +1039,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "msiexec",
             &format!("silent install exited {code:?} (log: {log})"),
         )?;
-        let (gated, serial, active) = kinds(services);
+        let (gated, serial, active) = kinds(services, &self.configured);
         if self.upgraded {
             self.upgraded_in_place(msi)?;
             self.converge(&active)?;
@@ -1062,12 +1097,12 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
     }
 }
 
-/// The services by kind: the [`GATED`] ones, the [`SERIAL`] drivers, and
-/// the rest but qhy-camera, which all run and serve.
-fn kinds(services: &[String]) -> (Vec<String>, Vec<String>, Vec<String>) {
+/// The services by kind: the [`GATED`] ones but those `configured`, the
+/// [`SERIAL`] drivers, and the rest but qhy-camera, which all run and serve.
+fn kinds(services: &[String], configured: &[String]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let gated: Vec<String> = services
         .iter()
-        .filter(|service| GATED.contains(&service.as_str()))
+        .filter(|service| GATED.contains(&service.as_str()) && !configured.contains(service))
         .cloned()
         .collect();
     let serial: Vec<String> = SERIAL
@@ -1155,6 +1190,7 @@ pub fn verify(
         uninstall_log: places.temp.join("rusty-photon-msi-uninstall.log"),
         credential: None,
         upgraded: upgrade_from.is_some(),
+        configured: Vec::new(),
     };
     // The checks assume a fresh install: what an earlier one left would fail
     // them, or pass them, for the wrong reason.
@@ -1194,6 +1230,7 @@ mod tests {
     /// The services the fixture's MSI installs: one of every kind.
     const SERVICES: &[&str] = &[
         "filemonitor",
+        "focus-model",
         "phd2-guider",
         "ppba-driver",
         "qhy-camera",
@@ -1224,6 +1261,9 @@ mod tests {
         logs_cleared_at_install: Option<bool>,
         arp: Vec<String>,
         fix_report: String,
+        /// The gated services with a config when the install under test
+        /// began, which run.
+        configured: Vec<String>,
         broken: Option<Broken>,
     }
 
@@ -1231,6 +1271,9 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Broken {
         GatedRunning,
+        /// A gated service with no config fails to start, as one without
+        /// its condition does, instead of stopping clean.
+        GatedFailed,
         /// The install writes sky-survey-camera's config.
         GatedConfig,
         /// filemonitor writes no config.
@@ -1269,6 +1312,7 @@ mod tests {
                 fix_report: r#"{"checks": [{"name": "config.retired-keys", "status": "ok"}],
                     "fixes_applied": [{"op": "remove"}, {"op": "add"}]}"#
                     .to_owned(),
+                configured: Vec::new(),
                 broken: None,
             }
         }
@@ -1286,6 +1330,11 @@ mod tests {
         fn install(&mut self, msi: &str) {
             if !msi.ends_with(PRIOR) {
                 self.logs_cleared_at_install = Some(!self.places.data.join("logs").exists());
+                self.configured = GATED
+                    .iter()
+                    .filter(|service| self.places.data.join(format!("{service}.json")).is_file())
+                    .map(|service| (*service).to_owned())
+                    .collect();
             }
             for service in SERVICES {
                 write(
@@ -1304,8 +1353,10 @@ mod tests {
             ] {
                 write(&self.places.install.join(file), "");
             }
-            let (gated, serial, active) =
-                kinds(&SERVICES.iter().map(|&s| s.to_owned()).collect::<Vec<_>>());
+            let (gated, serial, active) = kinds(
+                &SERVICES.iter().map(|&s| s.to_owned()).collect::<Vec<_>>(),
+                &self.configured,
+            );
             for service in active.iter().chain(&serial) {
                 let config = self.places.data.join(format!("{service}.json"));
                 let text = if service == "ui-htmx" {
@@ -1335,6 +1386,12 @@ mod tests {
                 &self.places.data.join("logs/qhy-camera.2026-10-22"),
                 self.qhy_log,
             );
+            for service in &gated {
+                write(
+                    &self.places.data.join(format!("logs/{service}.2026-10-22")),
+                    &format!("{service}: not started: {service}.json does not exist\n"),
+                );
+            }
             if self.broken == Some(Broken::GatedConfig) {
                 for service in &gated {
                     write(&self.places.data.join(format!("{service}.json")), "{}");
@@ -1353,7 +1410,14 @@ mod tests {
             let installed = self.installed && self.running().contains(&service.as_str());
             match args.first().map(String::as_str) {
                 Some("queryex") if installed => {
-                    let gated = GATED.contains(&service.as_str()) && self.broken != Some(Broken::GatedRunning);
+                    let gated = GATED.contains(&service.as_str())
+                        && !self.configured.contains(&service)
+                        && self.broken != Some(Broken::GatedRunning);
+                    let exit = if gated && self.broken == Some(Broken::GatedFailed) {
+                        "1066  (0x42a)"
+                    } else {
+                        "0  (0x0)"
+                    };
                     let removal = self.broken == Some(Broken::FeatureRemoveStopsFocuser)
                         && service == "zwo-focuser"
                         && self.zwo_camera_removed;
@@ -1364,13 +1428,12 @@ mod tests {
                     };
                     let pid = if service == "sentinel" { self.sentinel_pid } else { 1000 };
                     Ok(format!(
-                        "SERVICE_NAME: {name}\n        STATE              : {state}  {word}\n        PID                : {pid}\n"
+                        "SERVICE_NAME: {name}\n        STATE              : {state}  {word}\n        WIN32_EXIT_CODE    : {exit}\n        PID                : {pid}\n"
                     ))
                 }
-                Some("qc") if installed => {
-                    let start = if GATED.contains(&service.as_str()) { "3   DEMAND_START" } else { "2   AUTO_START" };
-                    Ok(format!("SERVICE_NAME: {name}\n        START_TYPE         : {start}\n"))
-                }
+                Some("qc") if installed => Ok(format!(
+                    "SERVICE_NAME: {name}\n        START_TYPE         : 2   AUTO_START\n"
+                )),
                 Some("qfailure") if installed => Ok(
                     "        FAILURE_ACTIONS              : RESTART -- Delay = 5000 milliseconds.\n".to_owned(),
                 ),
@@ -1585,7 +1648,7 @@ mod tests {
         let fixture = Fixture::new();
         let sim = fixture.sim();
         let (result, lines) = fixture.verify(&sim, Script::default(), &Request::default());
-        assert_eq!(result.unwrap(), 9, "svbony-camera is not in the MSI");
+        assert_eq!(result.unwrap(), 10, "svbony-camera is not in the MSI");
         let msi = "<dist>/0.1.0/rusty-photon-0.1.0-x64.msi";
         assert_eq!(
             lines,
@@ -1624,8 +1687,8 @@ mod tests {
             ),
             (
                 "sc.exe qc rusty-photon-sky-survey-camera",
-                "        START_TYPE         : 2   AUTO_START\n",
-                "FAIL [sky-survey-camera]: StartType is Automatic, expected Manual",
+                "        START_TYPE         : 3   DEMAND_START\n",
+                "FAIL [sky-survey-camera]: StartType is Manual, expected Automatic",
             ),
             (
                 "sc.exe qc rusty-photon-sentinel",
@@ -1665,7 +1728,9 @@ mod tests {
     fn names_each_service_that_misbehaves() {
         type Breakage = Box<dyn Fn(&mut Sim)>;
         let cases: Vec<(Breakage, Script, &str)> = vec![
-            (Box::new(|sim| sim.broken = Some(Broken::GatedRunning)), Script::default(), "FAIL [sky-survey-camera]: gated service is not stopped"),
+            (Box::new(|sim| sim.broken = Some(Broken::GatedRunning)), Script::default(), "FAIL [focus-model]: timed out after 60s waiting for: service STOPPED, its log saying 'not started: '"),
+            (Box::new(|sim| sim.broken = Some(Broken::GatedFailed)), Script::default(), "FAIL [focus-model]: stopped with WIN32_EXIT_CODE Some(1066), not 0"),
+            (Box::new(|_| ()), Script::default().on("sc.exe queryex rusty-photon-sky-survey-camera", || Ok("        STATE              : 1  STOPPED\n".to_owned())), "FAIL [sky-survey-camera]: stopped with WIN32_EXIT_CODE None, not 0"),
             (Box::new(|sim| sim.ui_config = r#"{"rp": {}, "drivers": {}}"#), Script::default(), "FAIL [ui-htmx]: self-created config carries the retired drivers key"),
             (Box::new(|sim| sim.ui_config = "{"), Script::default(), "FAIL [ui-htmx]: self-created config is not JSON"),
             (Box::new(|sim| sim.ui_config = "{}"), Script::default(), "FAIL [ui-htmx]: self-created config has no rp target"),
@@ -1681,7 +1746,7 @@ mod tests {
             (Box::new(|sim| sim.broken = Some(Broken::UninstallKeepsExe)), Script::default(), "FAIL [msiexec]: exes left under"),
             (Box::new(|_| ()), Script::default().on("schtasks", || Ok(String::new())), "FAIL [doctor]: scheduled task rusty-photon-renew survived uninstall"),
             (Box::new(|sim| sim.broken = Some(Broken::UninstallTakes("sentinel.json"))), Script::default(), "FAIL [sentinel]: self-created config did not survive uninstall"),
-            (Box::new(|sim| sim.broken = Some(Broken::GatedConfig)), Script::default(), "FAIL [sky-survey-camera]: config exists on a fresh install of a gated service"),
+            (Box::new(|sim| sim.broken = Some(Broken::GatedConfig)), Script::default(), "FAIL [focus-model]: config exists on a fresh install of a gated service"),
             (Box::new(|sim| sim.broken = Some(Broken::NoConfig)), Script::default(), "FAIL [filemonitor]: timed out after 30s waiting for config self-created at "),
             (Box::new(|sim| sim.broken = Some(Broken::NoLog)), Script::default(), "FAIL [zwo-focuser]: no rolling log file under "),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveKeeps("rusty-photon-zwo-camera.exe"))), Script::default(), "FAIL [zwo-camera]: exe still present after feature remove"),
@@ -1718,7 +1783,7 @@ mod tests {
         };
         assert_eq!(
             doctor("--json", 1).unwrap(),
-            9,
+            10,
             "a diagnosis with problems passes"
         );
         assert_eq!(
@@ -1794,7 +1859,7 @@ mod tests {
         let script =
             Script::default().on("curl --max-time 5 -o NUL -s -w", || Ok("204".to_owned()));
         let (result, _) = fixture.verify(&sim, script, &Request::default());
-        assert_eq!(result.unwrap(), 9);
+        assert_eq!(result.unwrap(), 10);
     }
 
     #[test]
@@ -1863,7 +1928,7 @@ mod tests {
             Ok(String::new())
         });
         let (result, lines) = fixture.verify(&sim, script, &upgrade(&fixture));
-        assert_eq!(result.unwrap(), 9);
+        assert_eq!(result.unwrap(), 10);
         assert_eq!(sim.borrow().logs_cleared_at_install, Some(true));
         assert_eq!(*credential.borrow(), "user = \"observatory:s3cret\"\n");
         let msi = format!("<dist>/{NIGHTLY}/rusty-photon-{NIGHTLY}-x64.msi");
@@ -1890,6 +1955,7 @@ mod tests {
         ]);
         for service in [
             "filemonitor",
+            "focus-model",
             "phd2-guider",
             "sentinel",
             "ui-htmx",
@@ -1910,6 +1976,11 @@ mod tests {
             lines.contains(&curl(11111, "/management/apiversions")),
             "filemonitor's config turns nothing on"
         );
+        assert!(
+            lines.contains(&curl(11173, "/health")),
+            "the configured gated service runs and serves after the upgrade"
+        );
+        assert!(fixture.places().data.join("focus-model.json").is_file());
         let places = fixture.places();
         assert!(
             places.data.join("pki/ca.pem").is_file()
@@ -2054,7 +2125,7 @@ mod tests {
                 let path = format!("{}: ", logs.display());
                 assert!(error.starts_with(&path), "{error}");
             } else {
-                assert_eq!(result.unwrap(), 9);
+                assert_eq!(result.unwrap(), 10);
             }
         }
     }
@@ -2092,7 +2163,7 @@ mod tests {
             ..Request::default()
         };
         let (result, lines) = fixture.verify(&sim, Script::default(), &request);
-        assert_eq!(result.unwrap(), 9);
+        assert_eq!(result.unwrap(), 10);
         assert!(sim.borrow().installed);
         assert!(
             lines.last().unwrap().ends_with("REMOVE=ZwoCamera"),
@@ -2204,6 +2275,7 @@ mod tests {
             uninstall_log: PathBuf::new(),
             credential: None,
             upgraded: false,
+            configured: Vec::new(),
         };
         assert_eq!(run.log_tail("rp", 2), "2\n3");
         assert_eq!(run.log_tail("sentinel", 2), "");
@@ -2213,8 +2285,8 @@ mod tests {
     #[test]
     fn sorts_the_services_by_kind() {
         let services: Vec<String> = SERVICES.iter().map(|&s| s.to_owned()).collect();
-        let (gated, serial, active) = kinds(&services);
-        assert_eq!(gated, ["sky-survey-camera"]);
+        let (gated, serial, active) = kinds(&services, &[]);
+        assert_eq!(gated, ["focus-model", "sky-survey-camera"]);
         assert_eq!(serial, ["ppba-driver"]);
         assert_eq!(
             active,
@@ -2227,5 +2299,14 @@ mod tests {
                 "zwo-focuser"
             ]
         );
+    }
+
+    /// A gated service with its config runs and serves like the rest.
+    #[test]
+    fn sorts_a_configured_gated_service_with_the_ones_that_serve() {
+        let services: Vec<String> = SERVICES.iter().map(|&s| s.to_owned()).collect();
+        let (gated, _, active) = kinds(&services, &["focus-model".to_owned()]);
+        assert_eq!(gated, ["sky-survey-camera"]);
+        assert!(active.contains(&"focus-model".to_owned()), "{active:?}");
     }
 }

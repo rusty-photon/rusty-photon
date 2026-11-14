@@ -168,7 +168,10 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(derive_cover_state(state.motor_running, state.cover_raw))
+        Ok(derive_cover_state(
+            state.motor_running.value(),
+            state.cover_raw.value(),
+        ))
     }
 
     async fn calibrator_state(&self) -> ASCOMResult<CalibratorStatus> {
@@ -177,7 +180,7 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(derive_calibrator_state(state.light_on))
+        Ok(derive_calibrator_state(state.light_on.value()))
     }
 
     async fn brightness(&self) -> ASCOMResult<u32> {
@@ -186,7 +189,7 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(u32::from(state.brightness.unwrap_or(0)))
+        Ok(u32::from(state.brightness.value().unwrap_or(0)))
     }
 
     async fn max_brightness(&self) -> ASCOMResult<u32> {

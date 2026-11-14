@@ -48,9 +48,9 @@ pub struct AxisStatus {
 pub struct MotionFlags {
     /// Motor is currently producing step pulses.
     pub running: bool,
-    /// Motor reports `Blocked` (e.g. hit an endstop or a clutch is
-    /// preventing it from following the commanded steps). Not used by
-    /// the MVP but reported by the spec.
+    /// Motor reports `Blocked`: the firmware's report that the motor
+    /// cannot follow its steps. The driver's slew and park watchers
+    /// abort on it.
     pub blocked: bool,
 }
 
@@ -199,7 +199,7 @@ impl Response {
             Command::InquireHighSpeedRatio(_) => {
                 // Empirical: the Star Adventurer GTi returns a 2-hex-char
                 // u8 payload for `:g<axis>` (`=01\r` on both axes), not
-                // the 6-hex-char u24 the original design doc assumed.
+                // the 6-hex-char u24 that `:a`, `:b` and `:j` answer with.
                 // This matches INDI eqmod's universal handling: its
                 // `Highstr2long` (`indi-eqmod/skywatcher.cpp:1932-1939`)
                 // reads exactly the first two hex chars for `:g` on
@@ -353,8 +353,7 @@ mod tests {
         let r = Response::decode(b"=\r", &Command::StartMotion(Axis::Ra)).unwrap();
         assert_eq!(r, Response::Ack);
         // `:H` (set goto-target increment) and `:M` (set break-point
-        // increment), added for the INDI-style slew sequence in
-        // issue #205, both expect a plain `=\r` ack.
+        // increment) both expect a plain `=\r` ack.
         let r = Response::decode(
             b"=\r",
             &Command::SetGotoTargetIncrement {
@@ -376,9 +375,9 @@ mod tests {
     }
 
     #[test]
-    fn axis_of_returns_command_axis_for_new_slew_increment_commands() {
-        // Issue #205 added :H and :M; their axis routing has to
-        // match the rest of the per-axis setters.
+    fn axis_of_returns_command_axis_for_slew_increment_commands() {
+        // The axis routing of :H and :M has to match the rest of the
+        // per-axis setters.
         assert_eq!(
             Response::axis_of(&Command::SetGotoTargetIncrement {
                 axis: Axis::Ra,
@@ -417,7 +416,7 @@ mod tests {
     fn decode_high_speed_ratio_accepts_u8_payload() {
         // Empirical wire trace on a real Star Adventurer GTi:
         //   `:g1\r` → `=01\r` (and same on axis 2). The mount returns
-        // a 2-hex-byte u8, not the 6-hex-byte u24 originally assumed.
+        // a 2-hex-byte u8, not a 6-hex-byte u24.
         // Promoted to a `u32` so the parameter cache stays uniform.
         let r = Response::decode(b"=01\r", &Command::InquireHighSpeedRatio(Axis::Ra)).unwrap();
         assert_eq!(r, Response::U24(0x01));
@@ -428,8 +427,9 @@ mod tests {
 
     #[test]
     fn decode_high_speed_ratio_accepts_u24_payload() {
-        // Some Sky-Watcher mounts (per the spec PDF) reply with the
-        // full 6-hex u24 form. Both shapes must round-trip identically.
+        // The spec is ambiguous on the payload width, so the full
+        // 6-hex u24 form decodes too. Both shapes must round-trip
+        // identically.
         let r = Response::decode(b"=200000\r", &Command::InquireHighSpeedRatio(Axis::Ra)).unwrap();
         assert_eq!(r, Response::U24(0x20));
     }
@@ -489,7 +489,7 @@ mod tests {
     fn decode_single_digit_error_reply_matches_gti_wire_format() {
         // Empirically the Star Adventurer GTi sends `!X\r` (3 bytes,
         // single hex digit) for single-digit error codes 0..8 —
-        // see the doc comment on `validate_response_frame`. Both
+        // see the comment in `split_response_frame`. Both
         // widths must decode to the same `MountErrorCode`.
         let short = Response::decode(b"!2\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
         let wide = Response::decode(b"!02\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
@@ -499,8 +499,7 @@ mod tests {
             ProtocolError::MountError(MountErrorCode::MotorNotStopped)
         );
 
-        // `!4\r` was the empirical reply that surfaced this case
-        // in the first place (`NotInitialized` after a stale `:F`).
+        // `!4\r` is the GTi's `NotInitialized` reply.
         let err = Response::decode(b"!4\r", &Command::StartMotion(Axis::Ra)).unwrap_err();
         assert_eq!(
             err,
@@ -522,8 +521,7 @@ mod tests {
         assert!(s.init.initialized);
         assert!(!s.init.level_switch_on);
 
-        // 133 → nibble 1=3 (running AND blocked — the realistic
-        // "motor stepping but encoder not advancing" case);
+        // 133 → nibble 1=3 (running AND blocked);
         // nibble 2=3 (initialised + level-switch on).
         let s = AxisStatus::decode(b"133").unwrap();
         assert!(s.motion.running);

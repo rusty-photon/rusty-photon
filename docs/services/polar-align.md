@@ -345,11 +345,15 @@ and solver are reached through rp per-invocation).
 ## Configuration
 
 The service reads a single JSON config file; `--config` names it,
-otherwise the platform default (`~/.config/rusty-photon/polar-align.json`
-on Linux, `%PROGRAMDATA%\rusty-photon\polar-align.json` on Windows)
-via `rusty-photon-config`. Camera and mount ids are mandatory, so
-the packaged systemd unit gates on the file with
-`ConditionPathExists` (no built-in default config).
+otherwise the platform default
+(`~/.config/rusty-photon/polar-align.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\polar-align.json` on Windows) via
+`rusty-photon-config`. Camera and mount ids are mandatory, so the
+packaged systemd unit gates on the file with `ConditionPathExists` (no
+built-in default config). Run by the Windows SCM without the file, the
+service stops at once with exit code 0, which the failure actions leave
+alone (`ServiceRunner::condition_path_exists`;
+[ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 `deny_unknown_fields` throughout.
 
 ```json

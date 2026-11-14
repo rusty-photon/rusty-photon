@@ -44,9 +44,8 @@ impl Device for MountDevice {
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // Holding the session write lock for the entire check-and-modify
         // ensures two concurrent `Connected=true` requests can't both
-        // observe `None` and both call `acquire()`. The session slot
-        // replacing the old `requested_connection` bool means the flag
-        // and the resource are the same value — there is no second
+        // observe `None` and both call `acquire()`. The session slot is
+        // both the connected flag and the resource — there is no second
         // source to desync from the shared transport's refcount.
         //
         // A disconnect first takes both axes from any guide pulse, under
@@ -93,9 +92,7 @@ impl Device for MountDevice {
                 // `load_park_target_after_connect` resolves its park
                 // target. On any failure, `session.close().await`
                 // synchronously closes — propagating its result so the
-                // user sees a real error instead of a swallowed warning
-                // (the pre-migration "rollback-disconnect failed" log
-                // branch is gone).
+                // user sees a real error instead of a swallowed warning.
                 let connect_cfg = match self.read_connect_config().await {
                     Ok(cfg) => cfg,
                     Err(e) => {
@@ -121,8 +118,7 @@ impl Device for MountDevice {
                 // background poll loop refreshes and self-terminates
                 // when `set_connected(false)` clears the slot below.
                 // The clone shares this device's session slot, state,
-                // and manager. See [`super::tracking_guard`] and
-                // issue #259.
+                // and manager. See [`super::tracking_guard`].
                 super::tracking_guard::spawn_tracking_guard(
                     self.clone(),
                     self.manager.polling_interval_for_watcher(),

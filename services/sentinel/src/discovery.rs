@@ -47,6 +47,14 @@ const SELF_SERVICE: &str = "sentinel";
 /// the sentinel package ships (`rusty-photon-renew.service` + `.timer`).
 const JOB_SERVICES: &[&str] = &["renew"];
 
+/// The units PHD2 runs in on a host switched over to PHD2 under the
+/// service manager, which the phd2-guider package ships: PHD2 itself and
+/// its virtual display. PHD2's health is the guider service's to report
+/// and its restart the guider service's to make (phd2-guider.md § PHD2
+/// under the service manager), so neither has a health URL of its own,
+/// and a restart from sentinel could end PHD2 mid-guide.
+const GUIDER_KEPT_SERVICES: &[&str] = &["phd2", "phd2-display"];
+
 /// The services that answer `GET /health` instead of the Alpaca
 /// management API — exactly the non-Alpaca services.
 ///
@@ -406,6 +414,10 @@ pub async fn discover(
         }
         if JOB_SERVICES.contains(&name) {
             debug!("ignoring scheduled-job unit '{}'", unit.unit);
+            continue;
+        }
+        if GUIDER_KEPT_SERVICES.contains(&name) {
+            debug!("ignoring '{}', which the guider service keeps", unit.unit);
             continue;
         }
         let probe = config_dir.and_then(|dir| derive_probe(dir, name, probe_domain));

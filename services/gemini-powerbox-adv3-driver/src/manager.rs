@@ -12,7 +12,7 @@
 //!   the three sensor sliding-window means).
 //!
 //! Every frame is stored with the instant it was read off the wire, and the
-//! cache keeps the frame read last ([`ReadStamp`]). Requests take turns on
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
 //! the wire, but each stores its frame after its turn ends, so a poll's
 //! store can land after that of a write that went on the wire behind it;
 //! the poll's frame is then the older one and is dropped
@@ -36,7 +36,7 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
     TransportError, TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
@@ -59,16 +59,14 @@ pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Cached device state shared between the switch device and the
 /// observing-conditions device.
 ///
-/// The frame stays `None` until the handshake seeds it, so a read that
+/// The cache holds no frame until the handshake seeds it, so a read that
 /// arrives before the first successful poll can be answered `NOT_CONNECTED`
 /// rather than with a fabricated zero.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
-    /// The `*G` frame read last.
-    pub status: Option<StatusFrame>,
-    /// When [`status`](Self::status) was read off the wire, which is what
-    /// [`apply_status`] orders an incoming frame against.
-    pub status_read: ReadStamp,
+    /// The `*G` frame read last, with the instant it was read:
+    /// [`apply_status`] offers it each incoming frame.
+    pub status: Stamped<StatusFrame>,
     /// The firmware `>V#` reported, kept for `DriverInfo`.
     pub firmware: Option<u16>,
     pub temp_mean: SensorMean,
@@ -423,7 +421,7 @@ async fn poll_loop(
 /// A frame read before the held one shows the hub as it was before the
 /// held one was produced: stored, a poll's frame read ahead of a write
 /// would report the written switch at its old value after the write was
-/// confirmed. It is dropped, samples and all ([`ReadStamp::admit`]).
+/// confirmed. It is dropped, samples and all ([`Stamped::offer`]).
 ///
 /// The windows are fed only while the AHT20 says it is attached, and only
 /// from a field that carries a reading. The first frame whose flag reads
@@ -432,12 +430,11 @@ async fn poll_loop(
 /// a field with no reading while the flag is `1` adds no sample and clears
 /// nothing, and the window ages out on its own if that persists.
 fn apply_status(state: &mut CachedState, dated: &DatedFrame) {
-    if !state.status_read.admit(dated.read_at) {
+    let frame = &dated.frame;
+    if !state.status.offer(frame.clone(), dated.read_at) {
         debug!("dropping a frame read before the cached one");
         return;
     }
-    let frame = &dated.frame;
-    state.status = Some(frame.clone());
     if frame.ambient_sensor_attached {
         for (mean, reading) in [
             (&mut state.temp_mean, frame.ambient_temperature),
@@ -532,7 +529,7 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let frame = state.status.expect("frame seeded by handshake");
+        let frame = state.status.get().expect("frame seeded by handshake");
         assert_eq!(frame.ambient_temperature, Some(24.47));
         assert_eq!(state.firmware, Some(308));
         assert_eq!(state.temp_mean.sample_count(), 1);
@@ -565,7 +562,7 @@ mod tests {
         assert!(message.contains("GeminiFlatPanelV3"), "{message}");
         assert!(!manager.is_available());
         assert_eq!(factory.sent_commands().await, [">H#"]);
-        assert!(manager.get_cached_state().await.status.is_none());
+        assert!(manager.get_cached_state().await.status.get().is_none());
     }
 
     #[tokio::test]
@@ -674,7 +671,7 @@ mod tests {
         wait_for_cache(&manager, "a poll past a cut frame", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|f| (f.input_voltage - 12.9).abs() < f64::EPSILON)
         })
         .await;
@@ -706,7 +703,7 @@ mod tests {
     }
 
     fn dc3_on(state: &CachedState) -> bool {
-        state.status.as_ref().unwrap().dc_on(DcOutput::Dc3)
+        state.status.get().unwrap().dc_on(DcOutput::Dc3)
     }
 
     #[test]
@@ -719,7 +716,7 @@ mod tests {
         apply_status(&mut state, &dated(DC3_ON, earlier));
 
         assert!(!dc3_on(&state), "the older frame replaced the newer one");
-        assert_eq!(state.status_read.read_at(), Some(later));
+        assert_eq!(state.status.read_at(), Some(later));
         assert_eq!(
             state.temp_mean.sample_count(),
             1,
@@ -754,7 +751,7 @@ mod tests {
         let state = wait_for_cache(&manager, "the new input voltage", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|frame| (frame.input_voltage - 13.1).abs() < f64::EPSILON)
         })
         .await;
@@ -784,7 +781,7 @@ mod tests {
             |state| {
                 state
                     .status
-                    .as_ref()
+                    .get()
                     .is_some_and(|frame| (frame.input_voltage - 13.4).abs() < f64::EPSILON)
             },
         )
@@ -810,7 +807,7 @@ mod tests {
         let state = wait_for_cache(&manager, "the AHT20 reading absent", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|frame| !frame.ambient_sensor_attached)
         })
         .await;
@@ -830,7 +827,7 @@ mod tests {
             "dewpoint window cleared"
         );
         assert!(
-            state.status.as_ref().is_some_and(|f| f.lens_probe_attached),
+            state.status.get().is_some_and(|f| f.lens_probe_attached),
             "the probe's flag is untouched"
         );
 
@@ -872,6 +869,7 @@ mod tests {
                 .get_cached_state()
                 .await
                 .status
+                .get()
                 .unwrap()
                 .input_voltage,
             11.9
@@ -899,6 +897,7 @@ mod tests {
                 .get_cached_state()
                 .await
                 .status
+                .get()
                 .unwrap()
                 .dc_on(DcOutput::Dc3),
             "the cache is the caller's to update"
@@ -1185,9 +1184,9 @@ mod tests {
         drop(cache);
         factory.reply_held().await;
 
-        let frame = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
         assert!(
-            !frame.dc_on(DcOutput::Dc3),
+            !state.status.get().unwrap().dc_on(DcOutput::Dc3),
             "a poll's frame read before the write replaced the write's"
         );
 
@@ -1205,7 +1204,7 @@ mod tests {
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
         assert!(!manager.is_available());
         let state = manager.get_cached_state().await;
-        assert!(state.status.is_none());
+        assert!(state.status.get().is_none());
         assert!(state.firmware.is_none());
     }
 }

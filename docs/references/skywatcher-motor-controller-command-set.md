@@ -133,18 +133,20 @@ After opening the transport, before the first motion command:
    `skywatcher_motor_protocol::MountType` enum). On a wrong-device
    handshake (frame malformed, payload wrong shape, mount code
    outside the whitelist) the driver stops here and surfaces
-   `StarAdvError::WrongDevice` — bounding the wrong-device blast radius
-   to a single inquiry. Motivated by the 2026-05-17 hardware session
-   where the operator pointed the driver at a QHY focuser by mistake
-   (issue #254).
-2. `:F1`, `:F2` — initialize both axes
-3. `:a1`, `:a2` — record CPR per axis
-4. `:b1` — record TMR_Freq
-5. `:g1`, `:g2` — record high-speed ratio per axis
-6. `:j1`, `:j2` — record initial encoder positions
+   `StarAdvError::WrongDevice`, so a port configured to another device
+   by mistake — a focuser, say — sees a single inquiry.
+2. `:f1`, `:f2` — read each axis' init flag before anything sets it: a
+   clear flag means the controller has restarted
+3. `:F1`, `:F2` — initialize both axes
+4. `:a1`, `:a2` — record CPR per axis
+5. `:b1` — record TMR_Freq
+6. `:g1`, `:g2` — record high-speed ratio per axis
+7. `:j1`, `:j2` — record initial encoder positions
 
-Steps 2–6 seed the in-memory parameter cache used by the coordinate
-module and the slew planner.
+Steps 4–7 seed the in-memory parameter cache used by the coordinate
+module and the slew planner. The design document has the detail,
+including what a restarted controller is given back:
+[star-adventurer-gti.md § Initialisation sequence](../services/star-adventurer-gti.md#initialisation-sequence).
 
 ### Changing the step period of a running axis
 

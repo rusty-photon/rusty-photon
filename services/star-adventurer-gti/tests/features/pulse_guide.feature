@@ -169,11 +169,11 @@ Feature: PulseGuide as a temporary rate change
     And IsPulseGuiding should become false within 20000 ms
 
   Scenario: PulseGuide North on the counterweight-up side still moves the OTA north
-    # Issue #1300. Seeding the Dec encoder past the pole (135°, beyond
-    # the ±90° classification boundary) is the same state a completed
-    # meridian flip leaves behind, and is how side_of_pier.feature
-    # places the mount counterweight-up. No flip policy is configured:
-    # the inversion follows the encoder, not a planned flip.
+    # Seeding the Dec encoder past the pole (135°, beyond the ±90°
+    # classification boundary) is the same state a completed meridian
+    # flip leaves behind, and is how side_of_pier.feature places the
+    # mount counterweight-up. The inversion follows the encoder, not
+    # a planned flip.
     Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -321,15 +321,16 @@ Feature: PulseGuide as a temporary rate change
     # holds only while that pulse is in flight: pulse_guide sets
     # pulse_guiding_<axis> synchronously, then a detached watcher clears it
     # after `duration`, so a second same-axis pulse is refused only if it
-    # reaches its in-flight check before the watcher fires. With the old
-    # 1000ms pulse a slow / coverage-instrumented runner could let the
-    # watcher clear the flag before the second pulse_guide arrived — the
-    # second then succeeded ("no error captured") and the scenario flaked.
+    # reaches its in-flight check before the watcher fires. With a
+    # 1000ms pulse a slow / coverage-instrumented runner can let the
+    # watcher clear the flag before the second pulse_guide arrives — the
+    # second then succeeds ("no error captured") and the scenario fails.
     # 60s dwarfs any plausible CI scheduling latency, so the rejection is
     # deterministic. The pulse never needs to finish: each scenario spawns
     # its own service (stopped at teardown, which aborts the detached
     # watcher), so the lingering pulse is harmless; pulse completion is
-    # covered by the single- and perpendicular-pulse scenarios above.
+    # covered by the single-pulse scenarios above and the
+    # perpendicular-pulse scenario below.
     Given a running star-adventurer service
     When I connect the device
     And I pulse guide North for 60000 ms

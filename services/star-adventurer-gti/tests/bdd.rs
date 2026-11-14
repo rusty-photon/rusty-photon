@@ -54,9 +54,7 @@ bdd_infra::bdd_main! {
             })
         })
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
-            // @wip filters Phase-2-only scenarios out of the default suite.
-            // Remove the tag from a feature/scenario as Phase 3 implementation
-            // makes it pass.
+            // A feature or scenario tagged @wip is left out of the run.
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
             !is_wip

@@ -657,12 +657,11 @@ fn default_test_config() -> Config {
             // The shipped CW exclusion zone — the baseline runs the
             // safety gate operators actually run, not a disabled one.
             //
-            // What made that awkward before is that BDD scenarios pass
-            // hardcoded RA / Dec targets (the canonical example is
-            // `RA = 6.0 h, Dec = 30°`) whose computed mech_HA depends
-            // on wallclock LST, so ~42% of runs would have put the
-            // target inside `(0.95, 11.05)` and tripped
-            // `INVALID_VALUE`. `start_service` removes the wallclock
+            // BDD scenarios pass hardcoded RA / Dec targets (the
+            // canonical example is `RA = 6.0 h, Dec = 30°`) whose
+            // computed mech_HA depends on LST; at a wallclock LST ~42%
+            // of runs would put the target inside `(0.95, 11.05)` and
+            // trip `INVALID_VALUE`. `start_service` removes the wallclock
             // from the equation instead of removing the gate: it pins
             // the site longitude so LST is `REFERENCE_LST_HOURS` at
             // startup, which puts `RA 6.0` at `mech_HA = 0` — the
@@ -694,9 +693,9 @@ fn default_test_config() -> Config {
     }
 }
 
-/// Poll the Alpaca client until a Telescope device appears. The service
-/// announces itself to mDNS / discovery once the binary's listener is
-/// up; we keep retrying until then.
+/// Poll the Alpaca client until a Telescope device appears. The
+/// management API lists it once the binary's listener is up; we keep
+/// retrying until then.
 async fn acquire_mount(handle: &ServiceHandle) -> Arc<dyn Telescope> {
     let addr = SocketAddr::from(([127, 0, 0, 1], handle.port()));
     let client = AlpacaClient::new_from_addr(addr);

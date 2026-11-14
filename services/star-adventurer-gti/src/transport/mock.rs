@@ -6,8 +6,7 @@
 //! well-formed `=...\r` / `!XX\r` replies. Plugs into the shared
 //! transport via [`MockTransportFactory`] (and [`CapturingMockFactory`]
 //! for tests that need a long-lived state handle), implementing the
-//! shared crate's [`TransportFactory`] / [`FrameTransport`] traits in
-//! place of the legacy `Transport`-based mock.
+//! shared crate's [`TransportFactory`] / [`FrameTransport`] traits.
 //!
 //! The mock is deliberately not exposed unless the `mock` feature is on
 //! so a production build cannot accidentally pick it up.
@@ -46,11 +45,11 @@ pub struct AxisSimState {
     /// the mock advances the encoder accordingly.
     pub direction: Direction,
     pub speed: Speed,
-    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
-    /// reports `Blocked` when the motor is stepping but the encoder
-    /// isn't advancing. Tests seed this directly to exercise the
-    /// slew/park watchers' blocked-abort path; the mock does not
-    /// derive it from physical state.
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): `Blocked`, the
+    /// firmware's report that the motor cannot follow its steps. Tests
+    /// seed this directly to exercise the slew/park watchers'
+    /// blocked-abort path; the mock does not derive it from physical
+    /// state.
     pub blocked: bool,
     pub goto_target_ticks: i32,
     /// Last `:I` payload: timer-counter units between motor steps. In
@@ -393,7 +392,7 @@ pub struct MockMountState {
     /// How long each reply is held back after its command has acted.
     /// The command still acts — and a `:j` still latches its count — as
     /// the frame arrives; only the reply's delivery is late, the way it
-    /// is on a host too busy to notice a reply (issue #1371).
+    /// is on a host too busy to notice a reply.
     /// [`Duration::ZERO`] (the default) delivers at once.
     pub reply_delay: Duration,
     /// The controller's power and link; see [`MockLink`].
@@ -590,8 +589,8 @@ impl MockMountState {
             self.pending_replies.push_back(err_reply(0));
             return;
         };
-        // A 3-byte frame has no payload: `3..2` is `None` here, where the
-        // old slicing panicked on the backwards range.
+        // A 3-byte frame has no payload: `get(3..2)` is `None`, where
+        // indexing by the backwards range would panic.
         let payload = request
             .get(3..request.len().saturating_sub(1))
             .unwrap_or_default();

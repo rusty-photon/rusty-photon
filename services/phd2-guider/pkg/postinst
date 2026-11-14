@@ -13,4 +13,7 @@ install -d -m 0750 -o rusty-photon -g rusty-photon \
 if [ ! -e /etc/rusty-photon ]; then
     ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 fi
+# PHD2's home under the service manager (rusty-photon-phd2.service): the
+# switch-over writes the VNC password here before either unit has run.
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon/phd2
 #DEBHELPER#

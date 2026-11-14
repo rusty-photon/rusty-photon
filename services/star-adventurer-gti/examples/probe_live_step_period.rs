@@ -36,7 +36,7 @@
 //! ```text
 //! cargo run --release -p star-adventurer-gti --example probe_live_step_period -- \
 //!     --port /dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_<id>-if00 \
-//!     --out ~/probe-1299
+//!     --out ~/probe-live-step-period
 //! ```
 //!
 //! A logic-only dry run against the in-repo mock (circular by
@@ -501,7 +501,7 @@ fn crossing(a0: Option<f64>, r0: f64, a1: Option<f64>, r1: f64, t_ref: f64) -> O
     Some((a1? - a0?) / (r0 - r1) - t_ref)
 }
 
-/// Pre-registered pass criteria. Posted on the issue before the rig run.
+/// Pass criteria, fixed before a rig run.
 #[derive(Debug, Clone, Copy, Serialize)]
 struct Thresholds {
     /// A measured rate must be within this fraction of the commanded one.

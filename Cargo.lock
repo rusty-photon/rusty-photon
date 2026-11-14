@@ -3498,6 +3498,7 @@ dependencies = [
  "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
+ "rusty-photon-process",
  "rusty-photon-rolling-stats",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",

@@ -15,7 +15,7 @@ data to full Raw16 scale; R4 aligned-down `CameraXSize`/`CameraYSize` =
 2976×3000, adopted after real ConformU failed at bin 3 against the raw
 extent; responsive abort via a cancel flag checked between
 `SVBGetVideoData` poll slices, ~0.3 s drain measured vs ~8.3 s before).
-Full itemized results: [`docs/services/svbony-camera.md`](../../services/svbony-camera.md)
+Full itemized results: [`docs/services/svbony-camera.md`](svbony-camera-hardware-validation-2026.md#real-hardware-validation)
 "Real-hardware validation". Deliberately deferred, tracked outside this
 plan: the Bazel-side SDK-fetch rule ("Future work" below) and the
 field-optics items (dark-frame banding revision check, e-/ADU sweep).
@@ -65,7 +65,7 @@ the RUNPATH decision this plan left open since Phase F — resolved this
 phase: RUNPATH, matching `zwo-camera`'s mechanism, because
 `/usr/lib/rusty-photon/` is outside `ldconfig`'s default scan path
 regardless of the blob's SONAME status) and
-[`docs/services/svbony-camera.md`](../../services/svbony-camera.md)'s
+[`docs/services/svbony-camera.md`](svbony-camera-hardware-validation-2026.md#real-hardware-validation)'s
 "Real-hardware validation" section for the itemized list of open questions
 hardware access must resolve. A Bazel-side SDK-fetch repository rule and
 `scripts/build-packages.sh` SDK-staging/RUNPATH support for `svbony-camera`
@@ -570,7 +570,7 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   performed**: no physical SV605CC is available in this environment;
   hardware is on order but has not arrived. `svbony-camera` is therefore
   **v0-complete pending real-hardware validation** (see
-  `docs/services/svbony-camera.md`'s "Real-hardware validation" section for
+  [`docs/services/svbony-camera.md`](svbony-camera-hardware-validation-2026.md#real-hardware-validation)'s "Real-hardware validation" section for
   the itemized punch list). **Deliberately deferred, not attempted this
   phase** (out of this phase's explicit scope, and neither is testable
   without the real SDK/hardware anyway): a Bazel-side SDK-fetch repository

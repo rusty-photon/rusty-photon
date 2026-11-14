@@ -45,8 +45,8 @@ use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewReservati
 /// The Dec direction is derived from the pier side for the same reason
 /// it cannot be a constant: past a celestial pole the Dec encoder
 /// counts against declination, so `guideNorth` is `ccw = false` on the
-/// counterweight-down side and `ccw = true` on the counterweight-up one
-/// (issue #1300).
+/// counterweight-down side and `ccw = true` on the counterweight-up
+/// one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct GuidePulse {
     pub(super) axis: Axis,
@@ -83,10 +83,10 @@ impl GuidePulse {
         // Dec encoder and celestial declination run together. Past a
         // celestial pole `Dec = sign(θ) · (180° − |θ|)`, so the encoder
         // counts the other way and North/South must swap direction for
-        // `guideNorth` to keep moving the OTA north (issue #1300). RA
-        // needs no such correction: a flip shifts `mech_HA` by 12 h
-        // rather than mirroring it, so the East/West rate shifts mean
-        // the same thing on both sides.
+        // `guideNorth` to keep moving the OTA north. RA needs no such
+        // correction: a flip shifts `mech_HA` by 12 h rather than
+        // mirroring it, so the East/West rate shifts mean the same
+        // thing on both sides.
         let ccw = ccw ^ (axis == Axis::Dec && is_flipped_side(current_side, site_latitude_deg));
         let sidereal_period = if axis == Axis::Ra {
             params.sidereal_step_period_ra()
@@ -203,8 +203,7 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         // Encoder carried forward to *now*, to pair with the LST taken
         // now: the raw poll sample is up to a poll old, and while
-        // tracking that reads the sky off by the sample's age
-        // (issue #1334).
+        // tracking that reads the sky off by the sample's age.
         let snap = self.manager.snapshot_now().await;
         let params = self
             .manager
@@ -666,18 +665,18 @@ impl Telescope for MountDevice {
         // *physically* on — classified from the Dec encoder, exactly as
         // `SideOfPier` classifies it — and validates the target against
         // that side's `mech_HA`. Assuming the pre-flip side
-        // unconditionally (as this did until 2026-09) refuses every
-        // western target while the mount is counterweight-up, because
-        // their pre-flip `mech_HA` sits in a CW exclusion zone the
-        // mount is nowhere near; worse, it accepts the eastern ones and
-        // writes a pre-flip encoder pair, silently re-labelling a
-        // flipped mount as unflipped so every later slew plans from a
-        // false position. See the design doc's
+        // unconditionally would refuse every western target while the
+        // mount is counterweight-up, because their pre-flip `mech_HA`
+        // sits in a CW exclusion zone the mount is nowhere near; worse,
+        // it would accept the eastern ones and write a pre-flip encoder
+        // pair, silently re-labelling a flipped mount as unflipped so
+        // every later slew plans from a false position. See the
+        // design doc's
         // [§"Sync and pier side"](../../../../docs/services/star-adventurer-gti.md#sync-and-pier-side).
         //
-        // Rejecting a sync that would put the encoder outside the safe
-        // mechanical envelope stays: a bad sync lets the *next*
-        // tracking step push the OTA into a hard stop.
+        // A sync that would put the encoder outside the safe mechanical
+        // envelope is rejected: a bad sync lets the *next* tracking
+        // step push the OTA into a hard stop.
         let current_side = side_of_pier_calc(
             DecTicks::new(dec_now),
             Cpr::new(params.cpr_dec),
@@ -952,10 +951,9 @@ impl Telescope for MountDevice {
         // stable while the motors are still moving. Also catches
         // mid-park: AtPark hasn't been set yet but slew_in_progress is.
         //
-        // Two layers of defense for the concurrent-motion case (per
-        // Copilot review on PR #221, comment 3242621736):
+        // Two layers of defense for the concurrent-motion case:
         //   1. The in-memory `slew_in_progress` flag: park() and
-        //      slew_to_coordinates_async() now set this *before*
+        //      slew_to_coordinates_async() set this *before*
         //      issuing motion (with rollback-on-error), so the
         //      flag observation here is reliable.
         //   2. A fresh wire read of each axis' `running` flag (below):
@@ -974,12 +972,11 @@ impl Telescope for MountDevice {
         // encoder pair, but the cached snapshot lags the wire by up to
         // one `polling_interval` — reading it could persist a stale
         // position when the operator moved the mount out-of-band just
-        // before SetPark. The lag also made the BDD persistence scenario
-        // flaky on slow CI (issue #308): the eager service-start
-        // handshake seeds the snapshot *before* the test sets the
-        // encoder, and the user's connect is a refcount bump rather than
-        // a fresh handshake, so the captured position hinged on a
-        // background poll landing in that gap. A synchronous
+        // before SetPark. Nor should the captured position depend on a
+        // poll having run since the client connected: the eager
+        // service-start handshake seeds the snapshot, and a client's
+        // connect is a refcount bump rather than a fresh handshake, so
+        // the snapshot can be older than the connection. A synchronous
         // `poll_axes_now` removes the timing dependency (and refreshes
         // the cache as a side effect). Same session-read idiom as
         // `set_tracking` / `stop_and_wait`.

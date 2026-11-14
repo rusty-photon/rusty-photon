@@ -122,6 +122,9 @@ mockall = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+# test-util: paused tokio time (`start_paused`), so the offsets tests walk
+# a focus that drifts over minutes of sweeps without waiting them out.
+tokio = { workspace = true, features = ["test-util"] }
 cargo-husky = { workspace = true }
 
 [[test]]

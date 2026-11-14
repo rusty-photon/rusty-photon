@@ -8,7 +8,8 @@
 //! at a safe negative `mech_HA` will drift up across the zone entry
 //! (`mech_HA = +0.95` by default) with no intervention — the same
 //! physical failure mode as a zone-crossing slew, just reached via
-//! tracking drift. See issue #259.
+//! tracking drift. See the design doc's
+//! [§"Tracking-time safety guard"](../../../../docs/services/star-adventurer-gti.md#tracking-time-safety-guard).
 //!
 //! This module closes that gap with a per-connection background task
 //! that watches the live encoder `mech_HA` while tracking. Two actions
@@ -31,9 +32,8 @@
 //!   [§"Auto-flip during tracking"](../../../../docs/services/star-adventurer-gti.md#auto-flip-during-tracking).
 //!
 //! The watcher reads the snapshot the background poll loop already
-//! refreshes (it does not poll the wire itself), so it is the
-//! "extension of the existing poll loop" issue #259 describes without
-//! crossing into the transport layer.
+//! refreshes (it does not poll the wire itself), so it extends the
+//! poll loop without crossing into the transport layer.
 
 use std::sync::Arc;
 use std::time::Duration;

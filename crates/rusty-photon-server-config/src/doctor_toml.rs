@@ -12,8 +12,9 @@
 //! port = 11113
 //! # Optional: the unit hard-requires an operator-written config and never
 //! # self-creates one (docs/packaging.md's "config-gated" services, e.g.
-//! # ConditionPathExists= on Linux, start type Manual on Windows). Defaults
-//! # to false — most services self-create their defaults on first start.
+//! # ConditionPathExists= on Linux; on Windows the service stops itself
+//! # without its config). Defaults to false — most services self-create
+//! # their defaults on first start.
 //! config_gated = false
 //! # Optional: a file the service writes beside its config, holding
 //! # runtime state rather than configuration. A bare file name.

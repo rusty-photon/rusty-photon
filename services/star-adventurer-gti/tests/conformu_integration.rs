@@ -82,10 +82,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // `polling_interval` is deliberately *not* a divisor of ConformU's
     // 5 s PulseGuide duration. The mock stops an axis instantly, so at
     // 200 ms (25 polls per pulse) the RA reads before and after a pulse
-    // landed on the same poll phase, and any read that paired a stale
-    // encoder sample with a live LST cancelled out — the mock could not
-    // see the ±0.2 s cross-axis readings the hardware showed. 300 ms
-    // leaves the two reads a third of a poll apart.
+    // land on the same poll phase, and any read that pairs a stale
+    // encoder sample with a live LST cancels out — the mock cannot
+    // show the ±0.2 s cross-axis readings such a pairing gives on the
+    // hardware. 300 ms leaves the two reads a third of a poll apart.
     //
     // `ra_pulse_edge_steps` is zero because the mock's motor board adds no
     // forward step at a rate change (its `rate_change_step_ticks` defaults

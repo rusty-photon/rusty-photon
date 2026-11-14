@@ -182,8 +182,7 @@ impl MountDevice {
     /// Map a `TransportError` (from `Session::close`) into the closest
     /// ASCOM error. The shared-transport teardown is best-effort —
     /// any failure here surfaces to the ASCOM caller rather than
-    /// being swallowed by a `tracing::warn!` (the pre-migration
-    /// pattern, removed by the Phase E migration).
+    /// being swallowed by a `tracing::warn!`.
     ///
     /// Like [`ascom_session_err`](Self::ascom_session_err), the orphan
     /// rule rules out a direct `From<TransportError> for ASCOMError`;
@@ -220,13 +219,10 @@ impl MountDevice {
     /// that threshold is the configured CW exclusion zone (defaults
     /// `(0.95, 11.05)` h of `mech_HA`). Slewing the OTA past it stalls
     /// the motor against a hard stop while the encoder counter
-    /// continues to advance — on a real-hardware `ConformU` run that
-    /// drove the mount into the counterweight-up region we heard the
-    /// motor whine and saw the axis stop physically for several
-    /// seconds at a time. The 2026-05-17 San Diego session
-    /// additionally demonstrated OTA-vs-tripod contact when the
-    /// previously-narrower zone let the CW sweep through the
-    /// ascending half.
+    /// continues to advance: the motor whines and the axis stands
+    /// still for several seconds at a time. In the ascending half of
+    /// the arc the OTA can contact the tripod, so the zone covers that
+    /// half too.
     ///
     /// The check is in **encoder `mech_HA` space** (signed hours
     /// folded to `[−12, +12)`). For a target on the natural pier
@@ -540,35 +536,6 @@ impl MountDevice {
         ))
     }
 
-    /// Post-connect park-target load. Source priority, per axis:
-    ///
-    /// 1. `mount.park_*_ticks` from the **on-disk** config file when one
-    ///    was supplied via `--config` (or `self.config.park_*_ticks` for
-    ///    `Config::default()` runs). The raw-encoder override: an
-    ///    operator who pinned a specific tick pair via `SetPark` or a
-    ///    hand-edit — honored **regardless of anchoring** (raw ticks are
-    ///    the operator's own frame assertion). Per-axis — one axis can
-    ///    be pinned while the other falls through. Reading fresh from
-    ///    disk means a `SetPark` followed by disconnect/reconnect picks
-    ///    up the new target.
-    /// 2. The `preferred_ap_park` encoder pair (the design's `Park()`
-    ///    target), resolved from the configured AP park, the site
-    ///    latitude, and the handshake counts-per-revolution — **only
-    ///    when the coordinate frame is anchored** (named
-    ///    `unpark_from_ap_position`, or a sync already anchored it this
-    ///    connection). `preferred_ap_park` ships as `ap_park_3`.
-    /// 3. **No target.** With an unanchored frame (`ap_park_0`, no sync
-    ///    yet) and no raw override the axis keeps `None`: `Park()`
-    ///    stops it in place instead of slewing. Slewing to an absolute
-    ///    pose from an unanchored frame would command real motion to a
-    ///    fabricated position — the workspace tenet *no actuation on
-    ///    connect* forbids it. The sync that anchors the frame re-arms
-    ///    the target via [`Self::anchor_frame_and_rearm_park_target`].
-    ///
-    /// Extracted from `set_connected` so a failure here (file missing,
-    /// malformed JSON, lost transport mid-load) can be rolled back by the
-    /// caller without leaking the connection ref-count. See the design
-    /// doc's §"Park lifecycle" for the resolution rules.
     /// Read the connect-time `mount.*` config fields in a single disk
     /// read + parse (when started with `--config`), resolving each
     /// AP-park field to the in-memory startup value when the key is
@@ -608,6 +575,34 @@ impl MountDevice {
         })
     }
 
+    /// Post-connect park-target load. Source priority, per axis:
+    ///
+    /// 1. `mount.park_*_ticks` from the **on-disk** config file when one
+    ///    was supplied via `--config` (or `self.config.park_*_ticks` for
+    ///    `Config::default()` runs). The raw-encoder override: an
+    ///    operator who pinned a specific tick pair via `SetPark` or a
+    ///    hand-edit — honored **regardless of anchoring** (raw ticks are
+    ///    the operator's own frame assertion). Per-axis — one axis can
+    ///    be pinned while the other falls through. Reading fresh from
+    ///    disk means a `SetPark` followed by disconnect/reconnect picks
+    ///    up the new target.
+    /// 2. The `preferred_ap_park` encoder pair (the design's `Park()`
+    ///    target), resolved from the configured AP park, the site
+    ///    latitude, and the handshake counts-per-revolution — **only
+    ///    when the coordinate frame is anchored** (a named
+    ///    `unpark_from_ap_position`; a sync anchors it later in the
+    ///    connection). `preferred_ap_park` ships as `ap_park_3`.
+    /// 3. **No target.** With an unanchored frame (`ap_park_0`, no sync
+    ///    yet) and no raw override the axis keeps `None`: `Park()`
+    ///    stops it in place instead of slewing. Slewing to an absolute
+    ///    pose from an unanchored frame would command real motion to a
+    ///    fabricated position — the workspace tenet *no actuation on
+    ///    connect* forbids it. The sync that anchors the frame re-arms
+    ///    the target via [`Self::anchor_frame_and_rearm_park_target`].
+    ///
+    /// See the design doc's
+    /// [§"Park-target resolution"](../../../../docs/services/star-adventurer-gti.md#park-target-resolution)
+    /// for the resolution rules.
     pub(super) async fn load_park_target_after_connect(
         &self,
         cfg: &ConnectConfig,
@@ -723,8 +718,8 @@ impl MountDevice {
     /// 1. `:K1` / `:K2` (stop both axes) + poll `:f1` / `:f2` until idle.
     /// 2. `:E1` / `:E2` write the seed encoder values, publishing each
     ///    to the cached snapshot so an immediate read reflects it.
-    /// 3. Clear the driver-internal slew / target / tracking-request
-    ///    flags so the just-written encoder is the source of truth.
+    /// 3. Clear the driver-internal target / tracking-request state so
+    ///    the just-written encoder is the source of truth.
     ///
     /// Invoked by [`Self::seed_after_connect`] (where the stops are
     /// no-ops on a fresh-power-up mount — the motors are idle) and by
@@ -1170,7 +1165,7 @@ impl MountDevice {
         .map_err(ASCOMError::from)?;
         // Watcher spawned — hand off the claim. If the spawn above had
         // failed, `?` would have dropped `reservation` and released it,
-        // so a failed hand-off can no longer leave the driver stuck
+        // so a failed hand-off cannot leave the driver stuck
         // reporting Slewing with no watcher to clear it.
         reservation.dismiss();
         Ok(())
@@ -1411,7 +1406,7 @@ impl MountDevice {
         // RA drifts during the goto: once both axes stop, the watcher
         // reads the actual RA/Dec and re-issues a corrective goto while
         // the residual exceeds `RAGOTORESOLUTION = 5"`. Pre-shifting LST
-        // by `MIN_SLEW_DWELL` instead undershot real-hardware slews of
+        // by `MIN_SLEW_DWELL` instead undershoots real-hardware slews of
         // 3-7 s by 45-120 arc-seconds.
         let (ra_ticks, dec_ticks) = if target_is_flipped {
             target_encoder_flipped(

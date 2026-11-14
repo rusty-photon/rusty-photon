@@ -10,7 +10,7 @@
 
 This is the **evidence** task. `docs/validation/` is the proof trail that
 a given commit passed on real hardware; the per-service design docs
-narrate what was learned. Failures belong in issues, not here.
+state what the hardware does. Failures belong in issues, not here.
 
 ## The version gate — read this first
 
@@ -179,7 +179,8 @@ Every other condition holds unchanged. In particular:
 The first such record is
 [2026-10-06-star-adventurer-gti-gti-rig-pulse-trim](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md):
 the GTi's RA pulse trim defaults, with one cross-axis reading from the
-single-sample RA read that #1371 was closed on.
+single-sample RA read, which is closed as an accepted limitation of
+the mount.
 
 Working against the field rig rather than a local device:
 [rig-development.md](rig-development.md).

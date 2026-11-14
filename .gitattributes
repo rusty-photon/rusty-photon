@@ -21,6 +21,11 @@ crates/rp-catalog/src/data/*.csv -text
 *.fits -text
 *.wcs -text
 
+# PHD2 guide logs are fixtures of the guide-log format, recorded byte for byte
+# as PHD2 wrote them: CR LF line endings from PHD2 on Windows, LF from PHD2 on
+# Linux. A parser tested against them has to meet both.
+services/guider/tests/fixtures/guide-logs/*.txt -text
+
 # insta snapshot goldens (services/ui-htmx/tests/snapshots, the UI-testing plan
 # Layer B) are committed once and compared byte-for-byte across OSes. The
 # wildcard above already normalizes them, but be explicit: a CRLF golden checked

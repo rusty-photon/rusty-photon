@@ -5,7 +5,7 @@
   Note: 11117 is our Alpaca port; 11880/UDP is the mount's own SynScan wire
   protocol (outbound, no inbound exception needed).
   The fragment contract (service name, exe rename,
-  failure actions + failure-actions flag, firewall port, demand-start set) is
+  failure actions + failure-actions flag, firewall port, start and stop) is
   checked by tools/rusty-photon-ci/src/pkg_assets.rs.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"

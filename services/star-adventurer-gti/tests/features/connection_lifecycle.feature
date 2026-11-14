@@ -33,7 +33,7 @@ Feature: Connection lifecycle
     port opens eagerly at start and a later connect is a refcount bump on
     the already-open transport. The :e1 motor-board-version inquiry runs
     first so the driver can refuse to send mount-specific init commands to
-    a device that isn't a Sky-Watcher motor controller. See issue #254.
+    a device that isn't a Sky-Watcher motor controller.
     Given a running star-adventurer service
     Then the mount should have received startup commands in order:
       | command |
@@ -59,7 +59,6 @@ Feature: Connection lifecycle
     of it — is not observable from here, since reading this log needs the
     listener the halt runs before; it is pinned in the shared crate by
     `a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve`.
-    See issue #1251.
     Given a running star-adventurer service
     Then the mount should have received startup commands in order:
       | command |
@@ -74,7 +73,7 @@ Feature: Connection lifecycle
     again, and the :L1, :L2, :K1 halt runs again behind it. That second
     halt is the one that matters — a shutdown whose link was already dead
     cannot land its own, and nothing in the new lifecycle remembers that
-    it did not. See issue #1251.
+    it did not.
     Given a running star-adventurer service
     When the mount's setup page saves the description "Reloaded Mount"
     Then the reloaded service serves mount description "Reloaded Mount"
@@ -141,13 +140,13 @@ Feature: Connection lifecycle
     When two clients connect the device
     Then the underlying transport should have been opened exactly once
 
-  # Multi-client disconnect ref-counting is unit-tested at
-  # `services/star-adventurer-gti/src/transport_manager.rs::tests::
-  # connect_is_reference_counted` because BDD against a single-process
-  # binary cannot drive two distinct ASCOM client sessions through one
-  # device instance. Keeping the description here so a reader has a
-  # pointer to the assertion.
-  Scenario: Last disconnect tears the transport down
+  # Multi-client disconnect ref-counting is tested at
+  # `crates/rusty-photon-shared-transport/tests/idempotent.rs::
+  # close_returns_immediately_when_not_last_session` because BDD against
+  # a single-process binary cannot drive two distinct ASCOM client
+  # sessions through one device instance. Keeping the description here
+  # so a reader has a pointer to the assertion.
+  Scenario: The last disconnect leaves the device disconnected
     Given a running star-adventurer service
     When I connect the device
     And I disconnect the device
