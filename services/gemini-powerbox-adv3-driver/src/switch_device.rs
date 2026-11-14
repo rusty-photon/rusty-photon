@@ -122,6 +122,8 @@ impl GeminiSwitchDevice {
             .get_cached_state()
             .await
             .status
+            .get()
+            .cloned()
             .ok_or(GeminiError::NotConnected)
     }
 
@@ -173,10 +175,10 @@ impl GeminiSwitchDevice {
         session: &Session<GeminiCodec>,
         channel: DewChannel,
     ) -> Result<DewMode> {
-        let frame = match self.manager.get_cached_state().await.status {
-            Some(frame) => frame,
-            None => self.manager.refresh_status(session).await?,
-        };
+        if let Some(frame) = self.manager.get_cached_state().await.status.get() {
+            return Ok(frame.dew(channel).mode);
+        }
+        let frame = self.manager.refresh_status(session).await?;
         Ok(frame.dew(channel).mode)
     }
 

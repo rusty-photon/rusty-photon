@@ -131,10 +131,10 @@ impl Upbv2SwitchDevice {
         let switch_id = SwitchId::from_id(id).ok_or(Upbv2Error::InvalidSwitchId(id))?;
         let cached = self.manager.get_cached_state().await;
         // `Option<&T>` is `Copy`, so each arm takes the slot it needs without
-        // re-borrowing the snapshot or repeating the `as_ref()`.
-        let status = cached.status.as_ref();
-        let power = cached.power.as_ref();
-        let boot_state = cached.boot_state.as_ref();
+        // re-borrowing the snapshot or repeating the `get()`.
+        let status = cached.status.get();
+        let power = cached.power.get();
+        let boot_state = cached.boot_state.get();
 
         match switch_id {
             // ---- Controllable, read back from `PA` ----
@@ -223,7 +223,7 @@ impl Upbv2SwitchDevice {
         if let SwitchId::DewHeater(channel) = switch_id {
             self.manager.refresh_status(session).await?;
             let cached = self.manager.get_cached_state().await;
-            if let Some(status) = &cached.status {
+            if let Some(status) = cached.status.get() {
                 if status.auto_dew.controls(channel) {
                     debug!(
                         id,
@@ -289,7 +289,7 @@ impl Upbv2SwitchDevice {
     /// populated yet.
     async fn dew_heater_writable(&self, channel: DewChannel) -> ASCOMResult<bool> {
         let cached = self.manager.get_cached_state().await;
-        if let Some(status) = &cached.status {
+        if let Some(status) = cached.status.get() {
             return Ok(!status.auto_dew.controls(channel));
         }
 
@@ -303,7 +303,7 @@ impl Upbv2SwitchDevice {
         let cached = self.manager.get_cached_state().await;
         Ok(cached
             .status
-            .as_ref()
+            .get()
             .is_none_or(|status| !status.auto_dew.controls(channel)))
     }
 }

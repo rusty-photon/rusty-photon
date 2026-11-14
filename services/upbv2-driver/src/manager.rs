@@ -11,7 +11,7 @@
 //!   state, sensor sliding-window means).
 //!
 //! Each frame is stored with the instant it was read off the wire, and the
-//! cache keeps the frame read last ([`ReadStamp`]). Requests take turns on
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
 //! the wire, but each stores its frame after its turn ends, so a poll's
 //! store can land after the refresh that follows a write; the poll's frame
 //! is then the older one and is dropped.
@@ -33,7 +33,7 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
     TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
@@ -50,25 +50,19 @@ use crate::protocol::{
 /// Cached device state shared between the switch device and the
 /// observing-conditions device.
 ///
-/// The three frames stay `None` until the handshake seeds them, so a read
+/// The three frames stay empty until the handshake seeds them, so a read
 /// that arrives before the first successful poll can be answered
 /// `NOT_CONNECTED` rather than with a fabricated zero.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
     /// Last `PA` frame: outputs, USB ports, dew duties, sensors, per-channel
     /// currents, overcurrent flags and the auto-dew mask.
-    pub status: Option<Upbv2Status>,
-    /// When [`status`](Self::status) was read off the wire.
-    pub status_read: ReadStamp,
+    pub status: Stamped<Upbv2Status>,
     /// Last `PC` frame: the cumulative power counters.
-    pub power: Option<Upbv2PowerConsumption>,
-    /// When [`power`](Self::power) was read off the wire.
-    pub power_read: ReadStamp,
+    pub power: Stamped<Upbv2PowerConsumption>,
     /// Last `PS` frame. Read for one field only — the variable-output
     /// setpoint, which `PA` does not carry.
-    pub boot_state: Option<Upbv2BootState>,
-    /// When [`boot_state`](Self::boot_state) was read off the wire.
-    pub boot_state_read: ReadStamp,
+    pub boot_state: Stamped<Upbv2BootState>,
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
@@ -408,11 +402,10 @@ fn session_err_to_warn(op: &str, err: &SessionError<Upbv2CodecError>) {
 /// one would put an output the box has since switched back to its old
 /// state.
 fn apply_status(state: &mut CachedState, status: &Upbv2Status, read_at: Instant) {
-    if !state.status_read.admit(read_at) {
+    if !state.status.offer(status.clone(), read_at) {
         debug!("dropping a PA frame read before the cached one");
         return;
     }
-    state.status = Some(status.clone());
     state.temp_mean.add_sample(status.temperature);
     state.humidity_mean.add_sample(status.humidity);
     state.dewpoint_mean.add_sample(status.dewpoint);
@@ -421,9 +414,7 @@ fn apply_status(state: &mut CachedState, status: &Upbv2Status, read_at: Instant)
 /// Store a `PC` frame read at `read_at`, unless the cache holds one read
 /// after it.
 fn apply_power(state: &mut CachedState, power: Upbv2PowerConsumption, read_at: Instant) {
-    if state.power_read.admit(read_at) {
-        state.power = Some(power);
-    } else {
+    if !state.power.offer(power, read_at) {
         debug!("dropping a PC frame read before the cached one");
     }
 }
@@ -432,9 +423,7 @@ fn apply_power(state: &mut CachedState, power: Upbv2PowerConsumption, read_at: I
 /// after it: stored, an older one would put the variable-output setpoint
 /// back to its value before a `P8:` write.
 fn apply_boot_state(state: &mut CachedState, boot_state: Upbv2BootState, read_at: Instant) {
-    if state.boot_state_read.admit(read_at) {
-        state.boot_state = Some(boot_state);
-    } else {
+    if !state.boot_state.offer(boot_state, read_at) {
         debug!("dropping a PS frame read before the cached one");
     }
 }
@@ -498,11 +487,17 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let status = state.status.expect("status seeded by handshake");
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.temperature - 25.0).abs() < f64::EPSILON);
-        let power = state.power.expect("power counters seeded by handshake");
+        let power = state
+            .power
+            .get()
+            .expect("power counters seeded by handshake");
         assert!((power.average_amps - 1.85).abs() < f64::EPSILON);
-        let boot_state = state.boot_state.expect("boot state seeded by handshake");
+        let boot_state = state
+            .boot_state
+            .get()
+            .expect("boot state seeded by handshake");
         assert_eq!(boot_state.variable_volts, 12);
 
         session.close().await.unwrap();
@@ -516,11 +511,8 @@ mod tests {
         let manager = make_manager();
         let session = manager.transport().acquire().await.unwrap();
 
-        let status = manager
-            .get_cached_state()
-            .await
-            .status
-            .expect("status seeded by handshake");
+        let state = manager.get_cached_state().await;
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.dew_current[DewChannel::C.index()] - 0.5).abs() < f64::EPSILON);
 
         session.close().await.unwrap();
@@ -573,11 +565,11 @@ mod tests {
         let state = wait_for_cache(&manager, "the polled writes", |state| {
             let output_on = state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|status| status.outputs[output.index()]);
             let volts_seen = state
                 .boot_state
-                .as_ref()
+                .get()
                 .is_some_and(|boot| boot.variable_volts == 5);
             output_on && volts_seen
         })
@@ -586,7 +578,7 @@ mod tests {
         // The wait above proved the status arm ran — the output's state
         // moved off the handshake's seed — and the PC frame rides the same
         // tick.
-        assert!(state.power.is_some(), "poll loop should refresh PC");
+        assert!(state.power.get().is_some(), "poll loop should refresh PC");
 
         session.close().await.unwrap();
     }
@@ -613,7 +605,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.status.unwrap().dew_duty[channel.index()], 200);
+        assert_eq!(state.status.get().unwrap().dew_duty[channel.index()], 200);
 
         session.close().await.unwrap();
     }
@@ -633,7 +625,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert!(state.status.unwrap().usb_ports[port.index()]);
+        assert!(state.status.get().unwrap().usb_ports[port.index()]);
 
         session.close().await.unwrap();
     }
@@ -655,7 +647,7 @@ mod tests {
         manager.refresh_boot_state(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.boot_state.unwrap().variable_volts, 9);
+        assert_eq!(state.boot_state.get().unwrap().variable_volts, 9);
 
         session.close().await.unwrap();
     }
@@ -978,9 +970,9 @@ mod tests {
         drop(cache);
         factory.reply_held().await;
 
-        let status = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
         assert!(
-            !status.outputs[output.index()],
+            !state.status.get().unwrap().outputs[output.index()],
             "a poll's frame read before the write replaced the refreshed one"
         );
 
@@ -1021,14 +1013,92 @@ mod tests {
         drop(cache);
         factory.reply_held().await;
 
-        let boot_state = manager.get_cached_state().await.boot_state.unwrap();
+        let state = manager.get_cached_state().await;
         assert_eq!(
-            boot_state.variable_volts, 5,
+            state.boot_state.get().unwrap().variable_volts,
+            5,
             "a poll's PS read before the write replaced the refreshed one"
         );
 
         factory.release_reply();
         session.close().await.unwrap();
+    }
+
+    /// Two instants a millisecond apart, the earlier one first.
+    fn two_read_instants() -> (tokio::time::Instant, tokio::time::Instant) {
+        let earlier = tokio::time::Instant::now();
+        (earlier, earlier + Duration::from_millis(1))
+    }
+
+    #[test]
+    fn a_pa_frame_read_before_the_cached_one_is_dropped_samples_and_all() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let first_output = |on| Upbv2Status {
+            outputs: [on, false, false, false],
+            ..Upbv2Status::default()
+        };
+
+        apply_status(&mut state, &first_output(false), later);
+        apply_status(&mut state, &first_output(true), earlier);
+
+        assert_eq!(
+            state.status.get(),
+            Some(&first_output(false)),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.status.read_at(), Some(later));
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.sample_count(),
+                1,
+                "the older frame fed the {sensor} window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pc_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let up_for = |uptime| Upbv2PowerConsumption {
+            uptime,
+            ..Upbv2PowerConsumption::default()
+        };
+
+        apply_power(&mut state, up_for(Duration::from_secs(2)), later);
+        apply_power(&mut state, up_for(Duration::from_secs(1)), earlier);
+
+        assert_eq!(
+            state.power.get(),
+            Some(&up_for(Duration::from_secs(2))),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.power.read_at(), Some(later));
+    }
+
+    #[test]
+    fn a_ps_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let set_to = |variable_volts| Upbv2BootState {
+            variable_volts,
+            ..Upbv2BootState::default()
+        };
+
+        apply_boot_state(&mut state, set_to(5), later);
+        apply_boot_state(&mut state, set_to(12), earlier);
+
+        assert_eq!(
+            state.boot_state.get(),
+            Some(&set_to(5)),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.boot_state.read_at(), Some(later));
     }
 
     #[tokio::test]
@@ -1126,15 +1196,15 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         assert!(
-            state.status.is_none(),
+            state.status.get().is_none(),
             "handshake should not have seeded status"
         );
         assert!(
-            state.power.is_none(),
+            state.power.get().is_none(),
             "handshake should not have seeded power counters"
         );
         assert!(
-            state.boot_state.is_none(),
+            state.boot_state.get().is_none(),
             "handshake should not have seeded boot state"
         );
     }
