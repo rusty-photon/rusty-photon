@@ -11,7 +11,7 @@
 //!   tracking, sensor sliding-window means).
 //!
 //! Each frame is stored with the instant it was read off the wire, and the
-//! cache keeps the frame read last ([`ReadStamp`]). Requests take turns on
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
 //! the wire, but each stores its frame after its turn ends, so a poll's
 //! store can land after the refresh that follows a write; the poll's frame
 //! is then the older one and is dropped.
@@ -22,7 +22,7 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, ReadStamp, Session, SessionError, SharedTransport, StateAssertion,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
     TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
@@ -38,12 +38,10 @@ use crate::protocol::{PpbaCommand, PpbaPowerStats, PpbaStatus};
 /// observing-conditions device.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
-    pub status: Option<PpbaStatus>,
-    /// When [`status`](Self::status) was read off the wire.
-    pub status_read: ReadStamp,
-    pub power_stats: Option<PpbaPowerStats>,
-    /// When [`power_stats`](Self::power_stats) was read off the wire.
-    pub power_stats_read: ReadStamp,
+    /// The `PA` frame read last.
+    pub status: Stamped<PpbaStatus>,
+    /// The `PS` frame read last.
+    pub power_stats: Stamped<PpbaPowerStats>,
     /// USB hub state — not part of the PA reply, tracked separately.
     pub usb_hub_enabled: bool,
     pub temp_mean: SensorMean,
@@ -310,11 +308,10 @@ fn session_err_to_warn(op: &str, err: &SessionError<PpbaCodecError>) {
 /// the cache holds one read after it: that one is newer, and stored, this
 /// one would put a switch the box has since changed back to its old value.
 fn apply_status(state: &mut CachedState, status: &PpbaStatus, read_at: Instant) {
-    if !state.status_read.admit(read_at) {
+    if !state.status.offer(status.clone(), read_at) {
         debug!("dropping a PA frame read before the cached one");
         return;
     }
-    state.status = Some(status.clone());
     state.temp_mean.add_sample(status.temperature);
     state.humidity_mean.add_sample(status.humidity);
     state.dewpoint_mean.add_sample(status.dewpoint);
@@ -323,9 +320,7 @@ fn apply_status(state: &mut CachedState, status: &PpbaStatus, read_at: Instant) 
 /// Store a PS frame read at `read_at`, unless the cache holds one read
 /// after it.
 fn apply_power_stats(state: &mut CachedState, power_stats: PpbaPowerStats, read_at: Instant) {
-    if state.power_stats_read.admit(read_at) {
-        state.power_stats = Some(power_stats);
-    } else {
+    if !state.power_stats.offer(power_stats, read_at) {
         debug!("dropping a PS frame read before the cached one");
     }
 }
@@ -340,6 +335,7 @@ mod tests {
 
     use super::*;
     use crate::mock::MockPpbaTransportFactory;
+    use crate::protocol::PpbaSwitches;
     use rusty_photon_rolling_stats::observing_conditions::instantaneous_window;
 
     fn make_manager() -> Arc<PpbaManager> {
@@ -354,9 +350,12 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let status = state.status.expect("status seeded by handshake");
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.temperature - 25.0).abs() < f64::EPSILON);
-        let stats = state.power_stats.expect("power stats seeded by handshake");
+        let stats = state
+            .power_stats
+            .get()
+            .expect("power stats seeded by handshake");
         assert!((stats.average_amps - 2.5).abs() < f64::EPSILON);
 
         session.close().await.unwrap();
@@ -375,7 +374,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert!(!state.status.unwrap().switches.quad_12v);
+        assert!(!state.status.get().unwrap().switches.quad_12v);
 
         session.close().await.unwrap();
     }
@@ -734,14 +733,69 @@ mod tests {
         drop(cache);
         factory.reply_held().await;
 
-        let status = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
         assert!(
-            !status.switches.quad_12v,
+            !state.status.get().unwrap().switches.quad_12v,
             "a poll's frame read before the write replaced the refreshed one"
         );
 
         factory.release_reply();
         session.close().await.unwrap();
+    }
+
+    #[test]
+    fn a_pa_frame_read_before_the_cached_one_is_dropped_samples_and_all() {
+        let mut state = CachedState::default();
+        let earlier = Instant::now();
+        let later = earlier + Duration::from_millis(1);
+        let quad = |quad_12v| PpbaStatus {
+            switches: PpbaSwitches {
+                quad_12v,
+                ..PpbaSwitches::default()
+            },
+            ..PpbaStatus::default()
+        };
+
+        apply_status(&mut state, &quad(false), later);
+        apply_status(&mut state, &quad(true), earlier);
+
+        assert!(
+            !state.status.get().unwrap().switches.quad_12v,
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.status.read_at(), Some(later));
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.sample_count(),
+                1,
+                "the older frame fed the {sensor} window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ps_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let earlier = Instant::now();
+        let later = earlier + Duration::from_millis(1);
+        let up_for = |uptime| PpbaPowerStats {
+            uptime,
+            ..PpbaPowerStats::default()
+        };
+
+        apply_power_stats(&mut state, up_for(Duration::from_secs(2)), later);
+        apply_power_stats(&mut state, up_for(Duration::from_secs(1)), earlier);
+
+        assert_eq!(
+            state.power_stats.get().unwrap().uptime,
+            Duration::from_secs(2),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.power_stats.read_at(), Some(later));
     }
 
     #[tokio::test]
@@ -774,11 +828,11 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         assert!(
-            state.status.is_none(),
+            state.status.get().is_none(),
             "handshake should not have seeded status"
         );
         assert!(
-            state.power_stats.is_none(),
+            state.power_stats.get().is_none(),
             "handshake should not have seeded power stats"
         );
     }
