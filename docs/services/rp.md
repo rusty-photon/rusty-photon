@@ -8993,6 +8993,20 @@ Behavioral specifications for `rp`'s responsibilities:
   which can restart as a different device), while an unpinned camera
   follows its number
 - Event delivery to webhook endpoints
+- Guiding against the guider's contract (§ Guider Service), designed
+  and not yet built: seven feature files tagged `@wip`, which the
+  runner filters out. `guiding_tools.feature` holds the six tools,
+  their settle values and their events; `guider_devices_check.feature`
+  the check that the guider's camera and mount are `rp`'s;
+  `guiding_dither.feature` the dither; `guide_run_watch.feature` the
+  watch's `guide_stopped` and `guide_star_lost`;
+  `guider_camera_lease.feature` the camera lease of a train lease and
+  of a capture; `rotate_while_guiding.feature` the ladder; and
+  `guide_metric_focus.feature` the metric `auto_focus` and the guide
+  focus watch. Stage G6 of
+  [the native guider plan](../plans/native-guider.md#staging) builds
+  `bdd-infra`'s guider stub for that contract and the scenarios' step
+  definitions, and takes the tag off
 - Power failure recovery (`startup_recovery.feature`: derived
   progress survives an rp restart on disk — see § What Survives an rp
   Restart; the end-to-end restart of a run against a real engine lives
