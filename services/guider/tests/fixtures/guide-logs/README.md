@@ -31,9 +31,10 @@ on any platform holds the bytes PHD2 wrote. Every file is ASCII, calls itself
   Astro-Physics mount through its ASCOM driver, which the logs call
   `AstroPhysicsV2 (ASCOM)`. Guide speed is 15.0″/s on both axes. RA runs the
   `Hysteresis` algorithm and Dec `Resist Switch`, in multi-star mode.
-- **pier1**'s log has no star and no mount in it. The PHD2 profile in it is
-  `Simulator`: PHD2's simulator camera with the `On Camera` mount, and every
-  mount value in the header is `Unknown`.
+- **pier1**'s log is of PHD2's simulator. The PHD2 profile in it is
+  `Simulator`: the camera is `Simulator` and the mount `On Camera`, and the
+  header gives the guide speeds, the pointing and the pier side as
+  `Unknown`.
 
 ## What a log is made of
 
@@ -78,13 +79,18 @@ A **guide-step row** takes one of two forms:
   and 8 `"No star found"`. Rows of code 8 carry a star mass and an SNR; rows
   of the other codes carry `0` and `0.00`.
 
+`Time` starts over in each run: every run's first row is frame 1 with a
+`Time` between 1.379 and 5.103, and `Time` never falls from one row of a run
+to the next. The hours given for a log below read `Time` as seconds and add
+up the `Time` of each run's last row.
+
 **`INFO:` lines** stand between rows and between sections:
 `DITHER by …, new lock pos = …`, `SET LOCK POSITION, new lock pos = …`,
 `SETTLING STATE CHANGE, Settling started` (and `complete`, `failed`),
 `Guiding parameter change, MultiStar = true` (and `Exposure = N ms`), and
 `STAR LOST during calibration, Mass= …, SNR= …, Error= …, Status=…`.
 
-Three things in the files that a parser has to accept:
+Five things in the files that a parser has to accept:
 
 - A block closes while a guiding run is open. The run that begins at
   2025-05-21 22:19:25 has no `Guiding Ends` line: its rows are followed by
@@ -93,6 +99,14 @@ Three things in the files that a parser has to accept:
   calibration that is given up, and in the 2025-05-21 log two follow each
   other with one `INFO:` line between them (22:11:00 and 22:11:33).
 - The camera line of a header begins with a space.
+- A settle outcome stands with no `Settling started` before it. In the
+  2025-05-21 log a `Settling failed` note follows the `Guiding Ends` line
+  of the calibration given up at 21:54:16, and pier1's log has one
+  `Settling failed` and no `Settling started`. So that 2025-05-21 log has
+  15 settles started against 12 complete and 4 failed.
+- The exposure changes inside a run. In the 2025-05-21 log five
+  `Guiding parameter change, Exposure = N ms` notes stand between the rows
+  of two runs, so a run's header does not give the exposure of all its rows.
 
 ## `PHD2_GuideLog_2025-05-07_203810.txt`
 
@@ -129,8 +143,13 @@ A whole night with a troubled start, in two blocks.
   guide-step rows, 7.10 h, on both pier sides, at parities `+/+` and `+/-`,
   Dec 30.9° to 54.3°.
 - **Dropped frames:** 81 `DROP` rows: code 2, 73; code 3, 7; code 8, 1.
-- **Exposure:** 500 ms (162 rows) and 2500 ms (7,134 rows), with 5
-  `Guiding parameter change, Exposure = N ms` notes.
+- **Exposure:** the run headers carry `Exposure = 500 ms` (7 runs, 162
+  rows) and `Exposure = 2500 ms` (12 runs, 7,134 rows). Five
+  `Guiding parameter change, Exposure = N ms` notes stand between the rows
+  of two runs and name 1000, 200, 2500, 3000 and 2500 ms, in that order.
+  Counting each row under the last exposure written before it in its run,
+  by the header or by a note, gives 500 ms 109 rows, 200 ms 35,
+  1000 ms 11, 2500 ms 7,133 and 3000 ms 8.
 - **Dither and settle:** 2 dithers; 15 settles started, 12 complete and
   4 failed.
 

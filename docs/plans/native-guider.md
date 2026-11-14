@@ -209,9 +209,9 @@ motorised helical focuser ([light path](optical-trains.md#goal)).
   with 2.0 µm pixels at 530 mm: 0.78″ per pixel. `qhy-camera` on rig2
   lists the imaging camera alone in `usb_devices`, which leaves the
   QHY5III678M to PHD2.
-- **The profile is tuned.** PHD2 states it in the header of every
-  guiding run. These lines are from the first run of the last night,
-  2025-06-17:
+- **The profile is set up and calibrated.** PHD2 states its settings
+  in the header of every guiding run. These lines are from the first
+  run of the last night, 2025-06-17:
 
   ```text
   Pixel scale = 0.78 arc-sec/px, Binning = 1, Focal length = 530 mm
@@ -228,23 +228,25 @@ motorised helical focuser ([light path](optical-trains.md#goal)).
   ```
 
   The calibration those lines name took 125 ms steps over 26 px, and it
-  is the one PHD2 still stores.
+  is the one PHD2 still stores. The header carries
+  `Last Cal Issue = Rates` and `ortho.err. = 10.4 deg` for it.
 - **PHD2 guided there in May and June 2025.** rig2 holds 14 guide logs,
   of 2025-05-04 to 2025-06-17, and three of them hold no guiding. The
-  other eleven hold 179 guiding runs and 62.2 h between the runs' first
-  and last frames: 64,086 guide-step rows, 5,730 of them (8.9 %) `DROP`
-  rows, whose reason reads "Star lost" or "No star found"; 17
+  other eleven hold 179 guiding runs and 62.2 h, adding up the `Time`
+  of each run's last row: 64,086 guide-step rows, 5,730 of them (8.9 %)
+  `DROP` rows, whose reason reads "Star lost" or "No star found"; 17
   calibrations begun and 11 completed; 233 dithers; 396
-  `Settling started` notes, 254 `complete` and 148 `failed`.
-  Declinations run from 30.9° to 54.3°, on both pier sides.
+  `Settling started` notes, 254 `complete` and 148 `failed`, six of
+  those outcomes with no `Settling started` before them. Declinations
+  run from 30.9° to 54.3°, on both pier sides.
 - **How well it guided.** The 55 runs of ten minutes or more hold
-  57.0 h. For each, take the RMS of the star's raw offset about its
-  mean over the run: `RARawDistance` and `DECRawDistance` of the
-  `"Mount"` rows, each axis about its own mean, the two combined in
-  quadrature, at 0.78″ per pixel. Across the 55 runs the median is
-  0.69″, with quartiles at 0.49″ and 1.43″; RA alone has a median of
-  0.50″ and Dec 0.42″. Dither and settle frames are in those figures,
-  so they overstate the error between dithers.
+  57.0 h, counted the same way. For each, take the RMS of the star's
+  raw offset about its mean over the run: `RARawDistance` and
+  `DECRawDistance` of the `"Mount"` rows, each axis about its own mean,
+  the two combined in quadrature, at 0.78″ per pixel. Across the 55
+  runs the median is 0.69″, with quartiles at 0.49″ and 1.43″; RA alone
+  has a median of 0.50″ and Dec 0.42″. Dither and settle frames are in
+  those figures, so they overstate the error between dithers.
 - **A client drove PHD2, and the logs do not name it.** In the last
   night's debug log, `get_connected` and `set_connected` requests on
   PHD2's event server come before the equipment connects.
@@ -261,10 +263,10 @@ of the guiding train with no stars.
 
 So the native guider displaces no guiding that runs under `rp`, since
 neither rig has any. What it displaces, at G7, is rig2's PHD2 setup:
-tuned, with 62 h of logged guiding, driven from outside `rp` and last
-used in June 2025. That setup is also the one PHD2 reference this plan
-can measure against. The costs in the table above have been paid ahead
-of the benefit.
+calibrated, with 62 h of logged guiding, driven from outside `rp` and
+last used in June 2025. That setup is also the one PHD2 reference this
+plan can measure against. The costs in the table above have been paid
+ahead of the benefit.
 
 ## What a guider does
 
@@ -681,9 +683,10 @@ same night; no run-away under any simulator condition; recovery from a
 lost star and from a passing cloud; dither settle time no worse; and a
 full night unattended.
 
-G0 found that PHD2 has guided on rig2 only (§ Where the rigs stand).
-Items 3 and 5 as written therefore have no PHD2 to collect from or to
-alternate with on pier1, and § Staging records what that leaves open.
+G0 found PHD2 guiding on record on rig2 only, and on pier1 no PHD2
+profile with the mount in it (§ Where the rigs stand). Items 3 and 5
+as written therefore have no PHD2 to collect from or to alternate with
+on pier1, and § Staging records what that leaves open.
 
 ### 10. Port or clean implementation
 
@@ -843,7 +846,7 @@ it (decision 12).
 
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
-| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed | In progress: `docs/native-guider-g0-rig-records` |
+| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | In progress: `docs/native-guider-g0-rig-records` |
 | **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Not started |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle | The loop converges and recovers across the simulator's mount and sky conditions in CI | Not started |
 | **G3** | Replay: collect frames and guide logs on pier1 while PHD2 guides; compare measurements | Native and PHD2 offsets agree frame by frame within a stated tolerance | Not started |
@@ -870,8 +873,8 @@ starts.
    alternates with PHD2 there, and PHD2 on pier1 has no profile with
    the mount in it and reaches the GTi through an ST4 cable or not at
    all (§ Where the rigs stand). The staging never compares on rig2,
-   the one rig where PHD2 has guided: G7 runs "without the comparison
-   against PHD2". Three ways on:
+   the one rig with PHD2 guiding on record: G7 runs "without the
+   comparison against PHD2". Three ways on:
    - **Another yardstick for pier1.** G3 runs on the simulator alone,
      G5 has no same-night comparison, and the acceptance in § 9 is
      stated in numbers, with rig2's 2025 logs as the PHD2 figure. It is
