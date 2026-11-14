@@ -193,8 +193,9 @@ RA/Dec = Unknown, Hour angle = Unknown, Pier side = Unknown, Rotator pos = N/A, 
 
 The rigs held 17 guide logs on 2026-11-13: 14 on rig2 (5.8 MB, 2025-05-04 to
 2025-06-17) and 3 on pier1 (2026-10-13 to 2026-10-29). Counting two lines as
-one kind when they differ only in their numbers, the 17 logs hold 65 kinds of
-line, and these five files hold 64 of them.
+one kind when they differ only in their numbers, a number taken with its
+sign, the 17 logs hold 69 kinds of line, the empty line among them, and these
+five files hold 68.
 
 The one left out is the camera line of a rig2 night guided without a dark
 library, which only `PHD2_GuideLog_2025-05-11_204955.txt` (632 kB) has:
@@ -208,3 +209,9 @@ Its `no dark` clause is in pier1's file, with the simulator camera.
 No log on either rig holds a guiding run on pier1's mount, a defect map, a
 rotator position, backlash compensation switched on, or a guide algorithm
 other than `Hysteresis` on RA and `Resist Switch` on Dec.
+
+No line in any of the 17 logs holds the word `pause` or `resume`, in capitals
+or not, so the files give no form for a note of a pause or of a resume. A
+frame with the star lost while guiding is a `"DROP"` row in them, and the
+only `INFO:` lines about a lost star are the `STAR LOST during calibration`
+ones.
