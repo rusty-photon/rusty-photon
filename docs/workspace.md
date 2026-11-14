@@ -353,7 +353,10 @@ answer advance the stamp that dates its position and moving flag, so a
 report read before either cannot put the old state back.
 `star-adventurer-gti` keeps, per axis, the latest instant a stop marked the
 rate unknown, and publishes a sample read before it with its rate cleared.
-Both stay with the driver: what an answer invalidates is the protocol's.
+`qhy-focuser` keeps the instant its device last answered a move, and a
+position read before it is stored without ending the move, however well it
+matches the target. All three stay with the driver: what an answer
+invalidates is the protocol's.
 
 A time that leaves the process is a wall-clock time (`DateTime<Utc>` or
 `SystemTime`), taken where the record is made: an exposure's start for

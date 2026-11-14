@@ -34,7 +34,9 @@ service contributes the protocol-specific pieces:
   the cached reading is dropped: a poll's position read on the way to a
   target cannot replace the one `IsMoving`'s refresh read at the target,
   which would report the focuser stopped short of where it says it
-  arrived. See `src/manager.rs`.
+  arrived. The instant the device last answered a move is kept beside
+  the move, and only a position read from then on ends it (Connection
+  Lifecycle, step 5). See `src/manager.rs`.
 - **Protocol layer**: JSON command serialization and value-level
   response parsers (`src/protocol.rs`).
 - **ASCOM device**: `QhyFocuserDevice` holds an
@@ -303,7 +305,17 @@ cargo run -p qhy-focuser --features mock
 5. Move detection: polling compares position to target and clears
    `is_moving` when reached (`is_moving` also force-refreshes position
    on the device's session so the ASCOM property doesn't have to wait
-   up to one polling interval).
+   up to one polling interval). The position that ends a move is one
+   read after the device answered that move. Requests take turns on the
+   wire, but each reader stores its position after its turn, so a
+   position read before a move was sent can be stored after it. When
+   it equals the new target (a poll's reading held up on a loaded host
+   while a client sends the focuser to that very step) it says where
+   the focuser was, not that it has arrived: it is stored as the
+   position and ends nothing. While a move is sent and not yet
+   answered, no position ends it. A move whose client stopped waiting
+   before the answer came no longer counts as unanswered, so it cannot
+   hold `IsMoving` at true: the next position at its target ends it.
 6. On disconnect, the device calls `Session::close().await`. In
    `ServiceLifetime` mode that is a refcount release and the
    (currently noop) last-disconnect hook — the poll task keeps running
