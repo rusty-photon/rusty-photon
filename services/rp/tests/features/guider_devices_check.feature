@@ -88,12 +88,16 @@ Feature: The guider's camera and mount are rp's
       | mount  | no mount unique_id       |
       | mount  | a blank mount unique_id  |
 
+  # rp's mount is the one the guider reports, and the guider reports a
+  # camera id, so the one id missing is rp's for the train's camera.
   Scenario: A start is refused when rp holds no session with the guiding train's camera
-    Given a stub guider in state "idle"
-    And rp is running with an offline camera in a guiding train
+    Given a running Alpaca simulator
+    And a stub guider in state "idle"
+    And rp is running with a mount on the simulator and an offline camera in a guiding train
     And an MCP client connected to rp
     When the MCP client calls "start_guiding" with no arguments
     Then the tool call should return an error
+    And the error message should contain "camera"
     And the stub guider should not have received a "/guiding/start" request
 
   Scenario: A camera lease is refused when the guider's camera is not the train's, naming both ids
